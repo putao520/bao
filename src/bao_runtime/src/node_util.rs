@@ -38,13 +38,6 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, util_obj.handle(), c"types".as_ptr(), Some(util_types), 0, 0);
         w2::JS_DefineFunction(cx, util_obj.handle(), c"inherits".as_ptr(), Some(util_inherits), 2, 0);
         w2::JS_DefineFunction(cx, util_obj.handle(), c"isDeepStrictEqual".as_ptr(), Some(util_is_deep_strict_equal), 2, 0);
-
-        let promisify_custom = ObjectValue(util_obj.get());
-        rooted!(&in(cx) let pc = promisify_custom);
-        JS_DefineProperty(
-            cx.raw_cx(), util_obj.handle().into(), c"promisify".as_ptr(),
-            pc.handle().into(), JSPROP_ENUMERATE as u32,
-        );
     }
 
     cache_builtin("util", util_obj.get());

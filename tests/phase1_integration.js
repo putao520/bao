@@ -288,6 +288,99 @@ assertEq(params.get("x"), "1", "URLSearchParams.get");
 assertEq(params.has("y"), true, "URLSearchParams.has");
 
 // ============================================================
+// node:child_process
+// ============================================================
+var cp = require("child_process");
+assert(cp !== undefined, "require('child_process') returns value");
+assertEq(typeof cp.execSync, "function", "child_process.execSync is function");
+assertEq(typeof cp.exec, "function", "child_process.exec is function");
+assertEq(typeof cp.spawn, "function", "child_process.spawn is function");
+assertEq(typeof cp.fork, "function", "child_process.fork is function");
+var echoResult = cp.execSync("echo child_process_works");
+assertEq(echoResult.trim(), "child_process_works", "execSync runs shell command");
+
+// ============================================================
+// node:util
+// ============================================================
+var util = require("util");
+assert(util !== undefined, "require('util') returns value");
+assertEq(typeof util.inspect, "function", "util.inspect is function");
+assertEq(typeof util.format, "function", "util.format is function");
+assertEq(typeof util.promisify, "function", "util.promisify is function");
+assertEq(typeof util.callbackify, "function", "util.callbackify is function");
+assertEq(typeof util.types, "function", "util.types is function");
+assertEq(typeof util.inherits, "function", "util.inherits is function");
+assertEq(typeof util.isDeepStrictEqual, "function", "util.isDeepStrictEqual is function");
+assertEq(util.format("hello %s", "world"), "hello world", "util.format with %s");
+assertEq(util.format("%d + %d = %d", 1, 2, 3), "1 + 2 = 3", "util.format with %d");
+assertEq(util.isBoolean(true), true, "util.isBoolean(true)");
+assertEq(util.isNumber(42), true, "util.isNumber(42)");
+assertEq(util.isString("hi"), true, "util.isString('hi')");
+assertEq(util.isArray([1,2]), true, "util.isArray([1,2])");
+assertEq(util.isDeepStrictEqual(42, 42), true, "util.isDeepStrictEqual(42,42)");
+assertEq(util.isDeepStrictEqual("a", "b"), false, "util.isDeepStrictEqual(a,b)");
+
+// ============================================================
+// node:crypto enhanced
+// ============================================================
+var crypto = require("crypto");
+assertEq(typeof crypto.createHash, "function", "crypto.createHash exists");
+assertEq(typeof crypto.createHmac, "function", "crypto.createHmac exists");
+assertEq(typeof crypto.randomBytes, "function", "crypto.randomBytes exists");
+assertEq(typeof crypto.pbkdf2Sync, "function", "crypto.pbkdf2Sync exists");
+assertEq(typeof crypto.randomUUID, "function", "crypto.randomUUID exists");
+assertEq(typeof crypto.createCipheriv, "function", "crypto.createCipheriv exists");
+var hashResult = crypto.createHash("sha256").update("hello").digest("hex");
+assertEq(hashResult.length, 64, "sha256 hex digest length");
+var hmacResult = crypto.createHmac("sha256", "key").update("data").digest("hex");
+assertEq(hmacResult.length, 64, "HMAC-SHA256 hex digest length");
+var uuid = crypto.randomUUID();
+assertEq(uuid.length, 36, "randomUUID length is 36");
+assert(uuid.charAt(8) === "-", "randomUUID has dashes");
+var rbuf = crypto.randomBytes(16);
+assertEq(rbuf.length, 16, "randomBytes returns correct length");
+
+// ============================================================
+// node:zlib
+// ============================================================
+var zlib = require("zlib");
+assert(zlib !== undefined, "require('zlib') returns value");
+assertEq(typeof zlib.deflateSync, "function", "zlib.deflateSync exists");
+assertEq(typeof zlib.inflateSync, "function", "zlib.inflateSync exists");
+assertEq(typeof zlib.gzipSync, "function", "zlib.gzipSync exists");
+assertEq(typeof zlib.gunzipSync, "function", "zlib.gunzipSync exists");
+
+// ============================================================
+// node:dns
+// ============================================================
+var dns = require("dns");
+assert(dns !== undefined, "require('dns') returns value");
+
+// ============================================================
+// node:https
+// ============================================================
+var https = require("https");
+assert(https !== undefined, "require('https') returns value");
+
+// ============================================================
+// assert module
+// ============================================================
+var assertMod = require("assert");
+assert(assertMod !== undefined, "require('assert') returns value");
+assertEq(typeof assertMod.ok, "function", "assert.ok is function");
+assertEq(typeof assertMod.strictEqual, "function", "assert.strictEqual is function");
+assertEq(typeof assertMod.deepStrictEqual, "function", "assert.deepStrictEqual is function");
+assertEq(typeof assertMod.AssertionError, "function", "assert.AssertionError is function");
+
+// ============================================================
+// atob / btoa globals
+// ============================================================
+assertEq(typeof atob, "function", "atob is function");
+assertEq(typeof btoa, "function", "btoa is function");
+assertEq(btoa("hello"), "aGVsbG8=", "btoa('hello') encodes");
+assertEq(atob("aGVsbG8="), "hello", "atob('aGVsbG8=') decodes");
+
+// ============================================================
 // Results
 // ============================================================
 console.log("\n========== Phase 1 Integration Test ==========");

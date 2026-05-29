@@ -10,6 +10,7 @@ use mozjs::rust::wrappers2::{
 };
 use mozjs::conversions::jsstr_to_string;
 use digest::Digest;
+use base64::Engine;
 
 pub fn install_bun_global(
     cx: &mut mozjs::context::JSContext,
