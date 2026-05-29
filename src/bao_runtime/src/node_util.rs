@@ -36,6 +36,8 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, util_obj.handle(), c"getSystemErrorName".as_ptr(), Some(util_get_system_error_name), 1, 0);
         w2::JS_DefineFunction(cx, util_obj.handle(), c"parseArgs".as_ptr(), Some(util_parse_args), 1, 0);
         w2::JS_DefineFunction(cx, util_obj.handle(), c"types".as_ptr(), Some(util_types), 0, 0);
+        w2::JS_DefineFunction(cx, util_obj.handle(), c"inherits".as_ptr(), Some(util_inherits), 2, 0);
+        w2::JS_DefineFunction(cx, util_obj.handle(), c"isDeepStrictEqual".as_ptr(), Some(util_is_deep_strict_equal), 2, 0);
 
         let promisify_custom = ObjectValue(util_obj.get());
         rooted!(&in(cx) let pc = promisify_custom);
@@ -67,6 +69,36 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"doesNotThrow".as_ptr(), Some(assert_does_not_throw), 1, 0);
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"fail".as_ptr(), Some(assert_fail), 0, 0);
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"ifError".as_ptr(), Some(assert_if_error), 1, 0);
+        w2::JS_DefineFunction(cx, assert_obj.handle(), c"deepStrictEqual".as_ptr(), Some(assert_deep_equal), 2, 0);
+
+        let err_src = ::std::ffi::CString::new(r#"
+          function AssertionError(options) {
+            this.message = (options && options.message) || "Assertion failed";
+            this.actual = options && options.actual;
+            this.expected = options && options.expected;
+            this.operator = options && options.operator;
+            this.stack = new Error().stack;
+          }
+          AssertionError.prototype = Object.create(Error.prototype);
+          AssertionError.prototype.constructor = AssertionError;
+          AssertionError.prototype.name = "AssertionError";
+          AssertionError;
+        "#).unwrap_or_default();
+        let mut err_rval = UndefinedValue();
+        let err_opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), b"assert\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+        if !err_opts.is_null() {
+            let mut err_src_text = mozjs::rust::transform_str_to_source_text("function AssertionError(options) { this.message = (options && options.message) || 'Assertion failed'; this.actual = options && options.actual; this.expected = options && options.expected; this.operator = options && options.operator; Error.captureStackTrace && Error.captureStackTrace(this, AssertionError); } AssertionError.prototype = Object.create(Error.prototype); AssertionError.prototype.constructor = AssertionError; AssertionError.prototype.name = 'AssertionError'; AssertionError");
+            JS::Evaluate2(cx.raw_cx(), err_opts, &mut err_src_text, MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut err_rval,
+            });
+            libc::free(err_opts as *mut _);
+        }
+        if err_rval.is_object() {
+            let err_ctor = err_rval.to_object();
+            let err_val = ObjectValue(err_ctor);
+            let err_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
+            JS_DefineProperty(cx.raw_cx(), assert_obj.handle().into(), c"AssertionError".as_ptr(), err_h, JSPROP_ENUMERATE as u32);
+        }
 
         let assert_fn = JS_NewFunction(cx.raw_cx(), Some(assert_function), 1, 0, c"assert".as_ptr());
         if !assert_fn.is_null() {
@@ -506,4 +538,32 @@ unsafe extern "C" fn assert_if_error(cx: *mut JSContext, argc: u32, vp: *mut JSV
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn assert_function(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     assert_ok(cx, argc, vp)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn util_inherits(_cx: *mut JSContext, _argc: u32, _vp: *mut JSVal) -> bool {
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn util_is_deep_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let a = *args.get(0).ptr;
+    let b = *args.get(1).ptr;
+    let equal = a.is_undefined() && b.is_undefined()
+        || a.is_null() && b.is_null()
+        || a.is_boolean() && b.is_boolean() && a.to_boolean() == b.to_boolean()
+        || a.is_int32() && b.is_int32() && a.to_int32() == b.to_int32()
+        || a.is_double() && b.is_double() && a.to_double() == b.to_double()
+        || a.is_string() && b.is_string() && {
+            let sa = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(a.to_string()));
+            let sb = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(b.to_string()));
+            sa == sb
+        };
+    args.rval().set(BooleanValue(equal));
+    true
 }

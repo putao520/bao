@@ -2205,6 +2205,7 @@ pub unsafe fn install_all(
     crate::node_string_decoder::install(cx);
     crate::node_querystring::install(cx);
     install_web_encodings(cx, global);
+    install_atob_btoa(cx, global);
     install_queue_microtask(cx, global);
 }
 
@@ -2818,6 +2819,56 @@ fn install_web_encodings(
             }
         }
     }
+}
+
+fn install_atob_btoa(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        JS_DefineFunction(cx, global, c"atob".as_ptr(), Some(atob_fn), 1, JSPROP_ENUMERATE as u32);
+        JS_DefineFunction(cx, global, c"btoa".as_ptr(), Some(btoa_fn), 1, JSPROP_ENUMERATE as u32);
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()));
+    match base64::decode(&s) {
+        Ok(bytes) => {
+            let decoded = String::from_utf8_lossy(&bytes);
+            let c_str = ::std::ffi::CString::new(decoded.into_owned()).unwrap_or_default();
+            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            if js_str.is_null() { args.rval().set(UndefinedValue()); }
+            else { args.rval().set(StringValue(&*js_str)); }
+        }
+        Err(_) => {
+            JS_ReportErrorUTF8(cx, b"Failed to decode base64\0".as_ptr() as *const ::std::os::raw::c_char);
+            return false;
+        }
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn btoa_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()));
+    let encoded = base64::encode(s.as_bytes());
+    let c_str = ::std::ffi::CString::new(encoded).unwrap_or_default();
+    let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+    if js_str.is_null() { args.rval().set(UndefinedValue()); }
+    else { args.rval().set(StringValue(&*js_str)); }
+    true
 }
 
 fn install_queue_microtask(

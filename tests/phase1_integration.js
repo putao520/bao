@@ -109,6 +109,27 @@ var stream = require("stream");
 assert(stream !== undefined, "require('stream') returns value");
 
 // ============================================================
+// fs.createReadStream / fs.createWriteStream
+// ============================================================
+var _crsTmp = "/tmp/bao_crs_test_" + Date.now() + ".txt";
+fs.writeFileSync(_crsTmp, "read stream test");
+var readStream = fs.createReadStream(_crsTmp, { encoding: "utf-8" });
+assertEq(typeof readStream, "object", "fs.createReadStream returns object");
+assertEq(readStream.readable, true, "ReadStream.readable is true");
+assertEq(readStream.writable, false, "ReadStream.writable is false");
+assertEq(readStream.path, _crsTmp, "ReadStream.path matches");
+
+var writeStream = fs.createWriteStream(_crsTmp + ".out");
+assertEq(typeof writeStream, "object", "fs.createWriteStream returns object");
+assertEq(writeStream.readable, false, "WriteStream.readable is false");
+assertEq(writeStream.writable, true, "WriteStream.writable is true");
+assertEq(writeStream.path, _crsTmp + ".out", "WriteStream.path matches");
+writeStream.write("test");
+writeStream.end();
+try { fs.unlinkSync(_crsTmp); } catch(e) {}
+try { fs.unlinkSync(_crsTmp + ".out"); } catch(e) {}
+
+// ============================================================
 // REQ-ENG-006: Bun API
 // ============================================================
 assertEq(typeof Bun, "object", "Bun global exists");
