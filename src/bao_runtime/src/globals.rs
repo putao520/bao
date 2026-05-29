@@ -366,4 +366,5 @@ pub unsafe fn install_all(
 ) {
     install_bun_global(cx, global);
     install_process_global(cx, global);
+    crate::timers::install_timer_globals(cx, global);
 }

@@ -14,11 +14,13 @@ use crate::module_loader::ModuleLoader;
 use crate::value::{JsValue, jsval_to_jsvalue};
 
 pub type GlobalSetupFn = unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
+pub type PostEvalHook = fn(&mut mozjs::context::JSContext) -> bool;
 
 pub struct JsContext {
     runtime: Runtime,
     _engine: JSEngine,
     global_setup: Option<GlobalSetupFn>,
+    post_eval_hook: Option<PostEvalHook>,
 }
 
 impl JsContext {
@@ -48,7 +50,7 @@ impl JsContext {
 
         ModuleLoader::init(&runtime);
 
-        ::std::result::Result::Ok(JsContext { runtime, _engine: engine, global_setup: None })
+        ::std::result::Result::Ok(JsContext { runtime, _engine: engine, global_setup: None, post_eval_hook: None })
     }
 
     pub fn cx_mut(&mut self) -> &mut mozjs::context::JSContext {
@@ -57,6 +59,10 @@ impl JsContext {
 
     pub fn set_global_setup(&mut self, setup: GlobalSetupFn) {
         self.global_setup = Some(setup);
+    }
+
+    pub fn set_post_eval_hook(&mut self, hook: PostEvalHook) {
+        self.post_eval_hook = Some(hook);
     }
 
     pub fn eval(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {
@@ -102,6 +108,18 @@ impl JsContext {
             let raw_cx = cx.raw_cx();
             let old_realm = mozjs::jsapi::JS::EnterRealm(raw_cx, global.get());
             mozjs::jsapi::js::RunJobs(raw_cx);
+
+            if let Some(hook) = self.post_eval_hook {
+                for _ in 0..1000 {
+                    if !hook(cx) {
+                        break;
+                    }
+                    ::std::thread::sleep(::std::time::Duration::from_millis(1));
+                    hook(cx);
+                    mozjs::jsapi::js::RunJobs(raw_cx);
+                }
+            }
+
             mozjs::jsapi::JS::LeaveRealm(raw_cx, old_realm);
         }
 

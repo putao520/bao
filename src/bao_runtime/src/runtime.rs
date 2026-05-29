@@ -4,6 +4,7 @@ use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
 
 use crate::globals;
+use crate::timers;
 
 pub struct BaoRuntime {
     ctx: JsContext,
@@ -13,6 +14,7 @@ impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
         let mut ctx = JsContext::new()?;
         ctx.set_global_setup(globals::install_all);
+        ctx.set_post_eval_hook(timers::drain_and_check);
         ::std::result::Result::Ok(BaoRuntime { ctx })
     }
 
