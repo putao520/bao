@@ -1,11 +1,11 @@
 # Phase 6-7: Full SPEC Implementation & Maturity Push Plan
 
-## Current State (2026-05-30 Round 8 — FINAL)
+## Current State (2026-05-30 Round 9 — FINAL)
 - **成熟度**: 100.0% (Design 100% | Code 100% | Test 100%)
 - **总代码**: ~20K LOC across 6 crates
-- **测试**: 17 suites, 495 assertions, ALL PASS
+- **测试**: 18 suites, 557 assertions, ALL PASS
 - **36/36 REQ implemented** in SPEC
-- **172 SPEC 验收标准** 全部有测试覆盖
+- **172 SPEC 验收标准** 全部有测试覆盖（含 62 条 gap 补全）
 - **零 stub/placeholder/TODO/FIXME** across all bao crates
 - **SPEC Lint**: 0 errors / HEALTHY
 - **Z3 状态机**: 3 个状态机全部 SOUND (PagePool/WebView/CDP Session)
@@ -71,6 +71,7 @@
 |-------|-----------|
 | phase1_integration.js | 177 |
 | test_acceptance.js | 128 |
+| test_criteria_gap.js | 62 |
 | test_phase7_coverage.js | 35 |
 | test_node_modules.js | 34 |
 | test_nfr_benchmarks.js | 19 |
@@ -86,7 +87,7 @@
 | test_bun_build.js | 5 |
 | test_stdin.js | 4 |
 | test_bun_test.js | 3 |
-| **Total** | **495** |
+| **Total** | **557** |
 
 ## Commits (This Session)
 | Commit | Description |
@@ -96,6 +97,7 @@
 | `d8c9ebb` | Permission sandbox integration |
 | `fbc08d8` | NFR benchmarks + Bun.env/argv fix |
 | `d85670d` | Test fix: Bun.env assertion |
+| `5b315ec` | 62 SPEC criteria gap coverage tests |
 
 ## Code Quality
 - 零 TODO/FIXME/stub/placeholder/unwrap(unsafe)
