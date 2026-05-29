@@ -136,7 +136,7 @@ assertEq(typeof Bun, "object", "Bun global exists");
 assertEq(typeof Bao, "object", "Bao alias exists");
 assertEq(Bun === Bao, true, "Bun === Bao (same object)");
 assertEq(typeof Bun.version, "string", "Bun.version is string");
-assertEq(typeof Bun.env, "function", "Bun.env is function");
+assertEq(typeof Bun.env, "object", "Bun.env is object");
 assertEq(typeof Bun.file, "function", "Bun.file is function");
 assertEq(typeof Bun.write, "function", "Bun.write is function");
 assertEq(typeof Bun.readFile, "function", "Bun.readFile is function");
