@@ -1,0 +1,14 @@
+[package]
+name = "bao_bin"
+version = "0.1.0"
+description = "Bao CLI binary"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "bao"
+path = "src/main.rs"
+
+[dependencies]
+bao_engine = { path = "../bao_engine" }
+clap = { version = "4", features = ["derive"] }

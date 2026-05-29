@@ -1,0 +1,12 @@
+[package]
+name = "bao_engine"
+version = "0.1.0"
+description = "SpiderMonkey engine wrapper for Bao runtime"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mozjs.workspace = true
+mozjs_sys.workspace = true
+libc = "0.2"
+log = "0.4"

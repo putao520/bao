@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "src/bao_engine",
+    "src/bao_bin",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT OR MPL-2.0"
+repository = "https://github.com/user/bao"
+
+[workspace.dependencies]
+mozjs = { path = "../mozjs/mozjs" }
+mozjs_sys = { path = "../mozjs/mozjs-sys" }
