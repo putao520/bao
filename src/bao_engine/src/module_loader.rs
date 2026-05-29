@@ -34,6 +34,7 @@ impl ModuleLoader {
         unsafe {
             SetModuleResolveHook(rt, Some(host_resolve_imported_module));
             SetModuleMetadataHook(rt, Some(host_populate_import_meta));
+            SetModuleDynamicImportHook(rt, Some(host_dynamic_import));
         }
     }
 
@@ -181,26 +182,153 @@ unsafe extern "C" fn host_resolve_imported_module(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn host_populate_import_meta(
     raw_cx: *mut JSContext,
-    _private_value: Handle<Value>,
+    private_value: Handle<Value>,
     meta_object: Handle<*mut JSObject>,
 ) -> bool {
     unsafe {
-        let url_str = JS_NewStringCopyZ(
-            raw_cx,
-            b"file://\0".as_ptr() as *const ::std::os::raw::c_char,
-        );
+        let url_str = if private_value.is_string() {
+            let specifier = mozjs::conversions::jsstr_to_string(
+                raw_cx,
+                NonNull::new(private_value.to_string()).unwrap(),
+            );
+            let resolved = if specifier.starts_with("file://") {
+                specifier
+            } else {
+                let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
+                let path = resolve_specifier(&specifier, base_dir.as_deref());
+                match path {
+                    Some(p) => format!("file://{}", p.to_string_lossy()),
+                    None => format!("file://{}", specifier),
+                }
+            };
+            let Ok(c_url) = CString::new(resolved.as_str()) else {
+                return false;
+            };
+            JS_NewStringCopyZ(raw_cx, c_url.as_ptr())
+        } else {
+            JS_NewStringCopyZ(raw_cx, b"file://\0".as_ptr() as *const ::std::os::raw::c_char)
+        };
         if url_str.is_null() {
             return false;
         }
-
         let val = mozjs::jsval::StringValue(&*url_str);
-        let handle_val = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &val,
-        };
-
+        let handle_val = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
         JS_DefineProperty(raw_cx, meta_object, c"url".as_ptr(), handle_val, JSPROP_ENUMERATE as u32)
     }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn host_dynamic_import(
+    raw_cx: *mut JSContext,
+    _referencing_private: Handle<Value>,
+    module_request: Handle<*mut JSObject>,
+    promise: Handle<*mut JSObject>,
+) -> bool {
+    let specifier = unsafe { GetModuleRequestSpecifier(raw_cx, module_request) };
+    if specifier.is_null() {
+        return false;
+    }
+    let specifier_str = mozjs::conversions::jsstr_to_string(
+        raw_cx,
+        NonNull::new(specifier).unwrap(),
+    );
+
+    let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
+    let resolved = resolve_specifier(&specifier_str, base_dir.as_deref());
+
+    let ::std::option::Option::Some(path) = resolved else {
+        let msg = format!("Cannot find module '{}'", specifier_str);
+        let Ok(c_msg) = CString::new(msg) else { return false };
+        let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(raw_cx);
+        if !err_obj.is_null() {
+            let err_msg = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
+            if !err_msg.is_null() {
+                let msg_val = mozjs::jsval::StringValue(&*err_msg);
+                let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
+                let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
+                JS_SetProperty(raw_cx, err_h, c"message".as_ptr(), msg_h);
+            }
+            let err_val = mozjs::jsval::ObjectValue(err_obj);
+            let err_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
+            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
+            mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise_h, err_handle);
+        }
+        return true;
+    };
+
+    let canonical = path.canonicalize().unwrap_or(path.clone());
+    let cache_key = canonical.to_string_lossy().into_owned();
+
+    let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
+    if let Some(existing) = cached {
+        if !existing.is_null() {
+            let module_val = mozjs::jsval::ObjectValue(existing);
+            let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
+            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
+            mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
+            return true;
+        }
+    }
+
+    let content = match fs::read_to_string(&path) {
+        ::std::result::Result::Ok(c) => c,
+        ::std::result::Result::Err(e) => {
+            let msg = format!("Cannot read module '{}': {}", specifier_str, e);
+            let Ok(c_msg) = CString::new(msg) else { return false };
+            let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(raw_cx);
+            if !err_obj.is_null() {
+                let err_msg = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
+                if !err_msg.is_null() {
+                    let msg_val = mozjs::jsval::StringValue(&*err_msg);
+                    let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
+                    let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
+                    JS_SetProperty(raw_cx, err_h, c"message".as_ptr(), msg_h);
+                }
+                let err_val = mozjs::jsval::ObjectValue(err_obj);
+                let err_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
+                let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
+                mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise_h, err_handle);
+            }
+            return true;
+        }
+    };
+
+    unsafe {
+        let c_filename = CString::new(canonical.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| CString::new("<module>").unwrap());
+        let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
+        if opts.is_null() {
+            return false;
+        }
+        let mut src = transform_str_to_source_text(&content);
+        let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+        libc::free(opts as *mut _);
+        if module.is_null() {
+            return false;
+        }
+
+        MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, module));
+
+        let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module };
+        if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_h) {
+            return false;
+        }
+
+        let mut rval = UndefinedValue();
+        let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+        if !mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_h, rval_h) {
+            return false;
+        }
+
+        mozjs_sys::jsapi::js::RunJobs(raw_cx);
+
+        let ns_obj = mozjs_sys::jsapi::JS::GetModuleNamespace(raw_cx, module_h);
+        let ns_val = mozjs::jsval::ObjectValue(ns_obj);
+        let ns_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ns_val };
+        let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
+        mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, ns_h);
+    }
+    true
 }
 
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {

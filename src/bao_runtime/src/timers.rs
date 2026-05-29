@@ -118,8 +118,38 @@ pub fn install_timer_globals(
 }
 
 pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
+    crate::node_http::accept_connections();
+    crate::node_http::poll_http_requests(cx);
     drain_timers(cx);
-    has_pending_timers()
+    if has_pending_timers() {
+        wait_for_next_timer();
+        true
+    } else {
+        crate::node_http::has_active_servers()
+    }
+}
+
+pub fn next_deadline() -> ::std::option::Option<Instant> {
+    TIMERS.with(|t| {
+        let heap = t.borrow();
+        if heap.is_empty() {
+            return None;
+        }
+        let earliest = heap.timers.iter().map(|e| e.deadline).min();
+        earliest
+    })
+}
+
+pub fn wait_for_next_timer() {
+    let deadline = next_deadline();
+    let Some(deadline) = deadline else { return };
+    let now = Instant::now();
+    if deadline > now {
+        let wait = deadline - now;
+        if wait > Duration::from_millis(1) {
+            ::std::thread::sleep(wait.min(Duration::from_millis(100)));
+        }
+    }
 }
 
 pub fn drain_timers(cx: &mut mozjs::context::JSContext) -> bool {

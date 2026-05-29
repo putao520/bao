@@ -15,6 +15,11 @@ thread_local! {
     static REQUIRE_DIR: RefCell<Option<PathBuf>> = RefCell::new(None);
 }
 
+pub fn cache_builtin(name: &str, obj: *mut JSObject) {
+    let cache_key = format!("builtin:{}", name);
+    MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, obj));
+}
+
 pub fn install_require(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
@@ -50,6 +55,18 @@ unsafe extern "C" fn require_fn(
     }
 
     let specifier = jsstr_to_string(cx, ptr::NonNull::new(spec_val.to_string()).unwrap());
+
+    // Check built-in modules first (node:fs, node:path, fs, path, etc.)
+    let builtin_key = specifier.strip_prefix("node:").unwrap_or(&specifier);
+    let cache_key = format!("builtin:{}", builtin_key);
+    let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
+    if let Some(existing) = cached {
+        if !existing.is_null() {
+            args.rval().set(mozjs::jsval::ObjectValue(existing));
+            return true;
+        }
+    }
+
     let base_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
 
     let resolved = match resolve_specifier(&specifier, base_dir.as_deref()) {
@@ -162,7 +179,7 @@ unsafe fn load_cjs_module(
 
     let mut src = mozjs::rust::transform_str_to_source_text(source);
     let mut rval = UndefinedValue();
-    let mut rval_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+    let rval_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
     let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_handle);
     libc::free(opts as *mut _);
 
@@ -186,17 +203,6 @@ unsafe fn load_cjs_module(
     mozjs_sys::jsapi::js::RunJobs(cx);
     REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
     exports_obj
-}
-
-fn wrap_cjs(source: &str, filename: &str, dirname: &str) -> ::std::string::String {
-    format!(
-        r#"(function(exports, require, module, __filename, __dirname) {{
-{}
-}})(exports, require, module, "{}", "{}")"#,
-        source,
-        filename.replace('\\', "\\\\").replace('"', "\\\""),
-        dirname.replace('\\', "\\\\").replace('"', "\\\"")
-    )
 }
 
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {

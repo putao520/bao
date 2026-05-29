@@ -164,7 +164,7 @@ pub unsafe fn get_property(
     let c_name = ::std::ffi::CString::new(name)
         .unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
     let mut val = mozjs::jsval::UndefinedValue();
-    let mut handle = MutableHandle::<Value> {
+    let handle = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
         ptr: &mut val,
     };
