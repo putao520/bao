@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Bao - 数据模型</title>
+</head>
+<body>
+<h1>Bao 数据模型</h1>
+<p>Bao 是运行时工具，不管理持久化业务数据。数据模型描述运行时内部的核心数据结构。</p>
+
+<!-- ============================================================ -->
+<h2>§1 运行时核心数据结构</h2>
+<!-- ============================================================ -->
+
+<div id="entity-bao-runtime" data-entity="BaoRuntime">
+<h3>BaoRuntime 实体 — 运行时实例</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "BaoRuntime",
+  "description": "Bao 运行时单例，持有所有子系统引用",
+  "fields": [
+    {"name": "js_context", "type": "JSContext", "required": true, "description": "SpiderMonkey JS 上下文"},
+    {"name": "event_loop", "type": "EventLoop", "required": true, "description": "Bun 事件循环"},
+    {"name": "mode", "type": "enum[Node, Browser, Stealth]", "required": true, "description": "运行模式"},
+    {"name": "browser", "type": "Option<BrowserContext>", "required": false, "description": "浏览器上下文 (Browser 模式)"},
+    {"name": "cdp_server", "type": "Option<CdpServer>", "required": false, "description": "CDP 服务 (Browser 模式)"},
+    {"name": "stealth", "type": "Option<StealthModule>", "required": false, "description": "反指纹模块 (Stealth 模式)"},
+    {"name": "module_cache", "type": "HashMap<Url, ModuleSource>", "required": true, "description": "已解析模块缓存"},
+    {"name": "timer_heap", "type": "TimerHeap", "required": true, "description": "定时器最小堆"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-browser-context" data-entity="BrowserContext">
+<h3>BrowserContext 实体 — 浏览器上下文</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "BrowserContext",
+  "description": "对应一个浏览器标签页/上下文，持有 DOM 和渲染状态",
+  "fields": [
+    {"name": "id", "type": "uuid", "required": true, "description": "上下文唯一标识"},
+    {"name": "url", "type": "string", "required": true, "description": "当前页面 URL"},
+    {"name": "state", "type": "enum[Uninitialized, Initialized, Navigating, Loading, Interactive, Complete, Closed]", "required": true, "description": "页面加载状态"},
+    {"name": "document", "type": "DomDocument", "required": false, "description": "DOM 文档根节点"},
+    {"name": "viewport", "type": "Viewport", "required": true, "description": "视口尺寸"},
+    {"name": "display_list", "type": "Option<DisplayList>", "required": false, "description": "当前绘制指令列表"},
+    {"name": "pixel_buffer", "type": "Option<PixelBuffer>", "required": false, "description": "当前渲染结果"},
+    {"name": "network_intercepts", "type": "Vec<NetworkIntercept>", "required": false, "description": "网络请求拦截规则"},
+    {"name": "created_at", "type": "datetime", "required": true, "description": "创建时间"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-viewport" data-entity="Viewport">
+<h3>Viewport 实体 — 视口配置</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "Viewport",
+  "description": "浏览器视口/设备配置",
+  "fields": [
+    {"name": "width", "type": "integer", "required": true, "constraints": ">= 1"},
+    {"name": "height", "type": "integer", "required": true, "constraints": ">= 1"},
+    {"name": "device_scale_factor", "type": "float", "required": true, "constraints": "> 0", "description": "设备像素比"},
+    {"name": "mobile", "type": "boolean", "required": true, "description": "是否移动设备"},
+    {"name": "touch", "type": "boolean", "required": true, "description": "是否支持触摸"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-pixel-buffer" data-entity="PixelBuffer">
+<h3>PixelBuffer 实体 — 渲染像素缓冲</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "PixelBuffer",
+  "description": "Vello CPU 光栅化输出的 RGBA 像素数据",
+  "fields": [
+    {"name": "width", "type": "integer", "required": true, "description": "像素宽度"},
+    {"name": "height", "type": "integer", "required": true, "description": "像素高度"},
+    {"name": "data", "type": "array<uint8>", "required": true, "description": "RGBA 像素数据, length = width * height * 4"},
+    {"name": "format", "type": "enum[RGBA8]", "required": true, "description": "像素格式"}
+  ]
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§2 CDP 协议数据结构</h2>
+<!-- ============================================================ -->
+
+<div id="entity-cdp-session" data-entity="CdpSession">
+<h3>CdpSession 实体 — CDP 客户端会话</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "CdpSession",
+  "description": "一个 CDP WebSocket 客户端连接",
+  "fields": [
+    {"name": "session_id", "type": "uuid", "required": true, "description": "会话 ID"},
+    {"name": "target_id", "type": "uuid", "required": true, "description": "关联的 BrowserContext ID"},
+    {"name": "websocket", "type": "WebSocketConn", "required": true, "description": "WebSocket 连接"},
+    {"name": "enabled_domains", "type": "Set<string>", "required": true, "description": "已启用的 CDP domain"},
+    {"name": "breakpoints", "type": "Vec<Breakpoint>", "required": false, "description": "已设置的断点"},
+    {"name": "network_intercepts", "type": "Vec<NetworkIntercept>", "required": false, "description": "网络拦截规则"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-cdp-command" data-entity="CdpCommand">
+<h3>CdpCommand 实体 — CDP 命令</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "CdpCommand",
+  "description": "CDP JSON-RPC 请求消息",
+  "fields": [
+    {"name": "id", "type": "integer", "required": true, "description": "消息 ID"},
+    {"name": "method", "type": "string", "required": true, "description": "Domain.Method 格式"},
+    {"name": "params", "type": "json", "required": false, "description": "方法参数"},
+    {"name": "session_id", "type": "string", "required": false, "description": "目标 session"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-cdp-response" data-entity="CdpResponse">
+<h3>CdpResponse 实体 — CDP 响应</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "CdpResponse",
+  "description": "CDP JSON-RPC 响应消息",
+  "fields": [
+    {"name": "id", "type": "integer", "required": true, "description": "对应请求 ID"},
+    {"name": "result", "type": "json", "required": false, "description": "成功结果"},
+    {"name": "error", "type": "CdpError", "required": false, "description": "错误信息"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-cdp-error" data-entity="CdpError">
+<h3>CdpError 实体 — CDP 错误</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "CdpError",
+  "fields": [
+    {"name": "code", "type": "integer", "required": true, "description": "错误码: -32601=MethodNotFound, -32602=InvalidParams, -32603=InternalError"},
+    {"name": "message", "type": "string", "required": true, "description": "错误描述"}
+  ]
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§3 Stealth 模块数据结构</h2>
+<!-- ============================================================ -->
+
+<div id="entity-stealth-profile" data-entity="StealthProfile">
+<h3>StealthProfile 实体 — 反指纹配置</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "StealthProfile",
+  "description": "反指纹配置档案，定义模拟的浏览器指纹特征",
+  "fields": [
+    {"name": "id", "type": "uuid", "required": true, "description": "档案 ID"},
+    {"name": "name", "type": "string", "required": true, "description": "档案名称"},
+    {"name": "browser_target", "type": "enum[Firefox, Chrome, Safari]", "required": true, "description": "模拟的目标浏览器"},
+    {"name": "tls_profile", "type": "TlsProfile", "required": true, "description": "TLS 指纹配置"},
+    {"name": "navigator_profile", "type": "NavigatorProfile", "required": true, "description": "Navigator 属性"},
+    {"name": "screen_profile", "type": "ScreenProfile", "required": true, "description": "屏幕/视口属性"},
+    {"name": "canvas_noise", "type": "CanvasNoiseConfig", "required": true, "description": "Canvas 噪声配置"},
+    {"name": "behavior_config", "type": "BehaviorConfig", "required": true, "description": "行为模拟配置"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-tls-profile" data-entity="TlsProfile">
+<h3>TlsProfile 实体 — TLS 指纹</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "TlsProfile",
+  "description": "TLS 握手指纹模拟配置",
+  "fields": [
+    {"name": "ja3_hash", "type": "string", "required": true, "description": "目标 JA3 哈希值"},
+    {"name": "ja4_hash", "type": "string", "required": true, "description": "目标 JA4 哈希值"},
+    {"name": "cipher_suites", "type": "array<integer>", "required": true, "description": "TLS 密码套件列表 (顺序敏感)"},
+    {"name": "extensions", "type": "array<integer>", "required": true, "description": "TLS 扩展列表 (顺序敏感)"},
+    {"name": "supported_groups", "type": "array<string>", "required": true, "description": "ECDH 组列表"},
+    {"name": "signature_algorithms", "type": "array<string>", "required": true, "description": "签名算法列表"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-navigator-profile" data-entity="NavigatorProfile">
+<h3>NavigatorProfile 实体 — Navigator 指纹</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "NavigatorProfile",
+  "fields": [
+    {"name": "user_agent", "type": "string", "required": true, "description": "User-Agent 字符串"},
+    {"name": "platform", "type": "string", "required": true, "description": "navigator.platform"},
+    {"name": "language", "type": "string", "required": true, "description": "navigator.language"},
+    {"name": "languages", "type": "array<string>", "required": true, "description": "navigator.languages"},
+    {"name": "hardware_concurrency", "type": "integer", "required": true, "constraints": ">= 1"},
+    {"name": "device_memory", "type": "float", "required": true, "constraints": "> 0"},
+    {"name": "max_touch_points", "type": "integer", "required": true, "constraints": ">= 0"},
+    {"name": "webdriver", "type": "boolean", "required": true, "description": "navigator.webdriver 值 (始终 false)"}
+  ]
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4 引擎层数据结构</h2>
+<!-- ============================================================ -->
+
+<div id="entity-js-callback" data-entity="JsCallback">
+<h3>JsCallback 实体 — JS 回调桥接</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "JsCallback",
+  "description": "Rust 侧持有 SM JSFunction 引用的桥接结构",
+  "fields": [
+    {"name": "function", "type": "JS::Heap<JSFunction*>", "required": true, "description": "GC 管理的 JS 函数引用"},
+    {"name": "context", "type": "JSContext", "required": true, "description": "关联的 JS 上下文"},
+    {"name": "name", "type": "string", "required": false, "description": "调试用函数名"}
+  ]
+}
+</script>
+</div>
+
+<div id="entity-module-source" data-entity="ModuleSource">
+<h3>ModuleSource 实体 — 模块源码缓存</h3>
+<script type="application/ld+json">
+{
+  "@type": "Entity",
+  "name": "ModuleSource",
+  "description": "已解析和转译的模块源码",
+  "fields": [
+    {"name": "url", "type": "string", "required": true, "description": "模块 URL (file:// 或 http://)"},
+    {"name": "source", "type": "string", "required": true, "description": "转译后的 JS 源码"},
+    {"name": "source_map", "type": "Option<string>", "required": false, "description": "Source Map JSON"},
+    {"name": "hash", "type": "string", "required": true, "description": "源码哈希 (用于缓存验证)"},
+    {"name": "module_type", "type": "enum[ESM, CommonJS, JSON, Wasm]", "required": true, "description": "模块类型"}
+  ]
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§5 模型树</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-model-tree" data-artifact-type="diagram">
+<h3>数据模型关系树</h3>
+<pre>
+BaoRuntime (单例根)
+├── JSContext (SpiderMonkey)
+│   ├── JsCallback × N
+│   └── ModuleSource × N (缓存)
+│
+├── EventLoop
+│   └── TimerHeap
+│
+├── BrowserContext × N (Browser 模式)
+│   ├── Viewport
+│   ├── DomDocument (libservo)
+│   ├── DisplayList
+│   └── PixelBuffer
+│
+├── CdpServer (Browser 模式)
+│   └── CdpSession × N
+│       └── NetworkIntercept × N
+│
+└── StealthModule (Stealth 模式)
+    └── StealthProfile
+        ├── TlsProfile
+        ├── NavigatorProfile
+        ├── ScreenProfile (Viewport 共用)
+        ├── CanvasNoiseConfig
+        └── BehaviorConfig
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§6 缓存/索引策略</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-cache-index-strategy" data-artifact-type="table">
+<h3>缓存策略</h3>
+<table>
+<tr><td>缓存对象</td><td>存储结构</td><td>键</td><td>失效策略</td><td>预估大小</td></tr>
+<tr><td>ModuleSource</td><td>HashMap&lt;Url, ModuleSource&gt;</td><td>文件绝对路径</td><td>文件变更时 hash 不匹配</td><td>≤ 100MB</td></tr>
+<tr><td>PixelBuffer</td><td>Option&lt;PixelBuffer&gt; per BrowserContext</td><td>视口尺寸 + 页面状态</td><td>每次导航/重排失效</td><td>≤ 8MB (1080p RGBA)</td></tr>
+<tr><td>ComputedStyle</td><td>libservo 内部管理</td><td>DOM 节点 + CSS 规则</td><td>CSS/DOM 变更时失效</td><td>≤ 50MB</td></tr>
+<tr><td>Layout Box</td><td>libservo 内部管理</td><td>ComputedStyle + Viewport</td><td>样式/视口变更时失效</td><td>≤ 20MB</td></tr>
+<tr><td>HTTP 响应</td><td>Bun HTTP 栈内部缓存</td><td>URL + headers</td><td>HTTP 缓存语义</td><td>可配置</td></tr>
+<tr><td>DNS 查询</td><td>c-ares 缓存</td><td>域名</td><td>TTL 过期</td><td>≤ 1MB</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§7 Crate 数据模型</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-crate-data-model" data-artifact-type="diagram">
+<h3>新增 Crate 与数据流</h3>
+<pre>
+bao_engine/
+  持有: JSContext, JobQueue, ModuleLoader hooks
+  产出: JsCallback, ModuleSource
+  依赖: mozjs, bun_core
+
+bao_browser/
+  持有: BrowserContext, ServoEmbedder
+  产出: DomDocument, DisplayList
+  依赖: servo (libservo), bao_engine
+
+bao_render/
+  持有: Vello CPU renderer
+  输入: DisplayList + Viewport
+  产出: PixelBuffer (RGBA)
+  依赖: vello_cpu, taffy
+
+bao_cdp/
+  持有: CdpServer, CdpSession 集合
+  输入: CdpCommand (WebSocket)
+  产出: CdpResponse / CdpEvent
+  依赖: cdp-protocol, bao_browser, bao_engine
+
+bao_stealth/
+  持有: StealthProfile
+  输入: 原始 TLS/HTTP/Canvas/Navigator 数据
+  产出: 修改后的数据 (注入指纹)
+  依赖: rustls, bao_browser
+</pre>
+</div>
+
+</body>
+</html>

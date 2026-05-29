@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Bao - 核心流程</title>
+</head>
+<body>
+<h1>Bao 核心流程</h1>
+
+<!-- ============================================================ -->
+<h2>§1 JS 执行管线</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-js-execution-pipeline" data-artifact-type="diagram">
+<h3>数据流图: JS 文件执行</h3>
+<pre>
+用户代码 (index.ts)
+  │
+  ├─ [bun_transpiler] TS → JS 转译 (100% 复用 Bun)
+  │     输入: .ts/.tsx/.jsx 源码
+  │     输出: JS 字节码字符串
+  │
+  ├─ [bun_resolver] 模块解析 (100% 复用 Bun)
+  │     输入: import 路径
+  │     输出: 绝对文件路径
+  │
+  ├─ [bao_engine] SpiderMonkey 编译 + 执行
+  │     输入: JS 源码字符串
+  │     处理: SM frontend parser → Bytecode → Interpreter/JIT
+  │     输出: JS Value (result)
+  │
+  ├─ [bao_engine] JobQueue 桥接
+  │     输入: SM Promise microtask
+  │     处理: 注入 Bun event loop tick
+  │     输出: 回调执行
+  │
+  └─ [bun event loop] I/O 处理 (100% 复用 Bun)
+        输入: epoll/kqueue 事件
+        输出: 回调触发 → SM JobQueue
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§2 渲染管线</h2>
+<!-- ============================================================ -->
+
+<div id="pipe-render-1" data-pipeline="RenderPipeline" data-pipeline-type="render">
+<h3>PIPE-RENDER-001: 内存渲染管线</h3>
+<script type="application/ld+json">
+{
+  "@type": "Pipeline",
+  "name": "RenderPipeline",
+  "type": "render",
+  "stages": [
+    {"name": "HTML解析", "input": "HTML字符串", "output": "DOM树", "engine": "html5ever (libservo内部)"},
+    {"name": "样式计算", "input": "DOM树 + CSS", "output": "ComputedStyle", "engine": "Stylo (libservo内部)"},
+    {"name": "布局计算", "input": "ComputedStyle", "output": "Layout Box树", "engine": "libservo layout / taffy"},
+    {"name": "Display List", "input": "Layout Box树", "output": "绘制指令列表", "engine": "libservo paint"},
+    {"name": "光栅化", "input": "Display List", "output": "Vec<u8> RGBA", "engine": "Vello CPU"},
+    {"name": "编码输出", "input": "RGBA像素缓冲", "output": "PNG/JPEG/WebP", "engine": "图像编码库"}
+  ],
+  "constraints": ["无GPU", "无GL", "无窗口", "无WebRender", "纯内存", "零外部依赖", "可确定复现"]
+}
+</script>
+</div>
+
+<div id="artifact-render-flow" data-artifact-type="diagram">
+<h3>渲染流程时序图</h3>
+<pre>
+CDP: Page.navigate(url)
+  │
+  ├─ bao_browser: 创建/复用浏览上下文
+  │
+  ├─ libservo: 加载 URL
+  │   ├─ net 组件: HTTP 请求 (hyper)
+  │   └─ 返回 HTML 文档
+  │
+  ├─ libservo script: DOM 构建 (html5ever)
+  │   ├─ 解析 HTML → DOM 树
+  │   ├─ 加载 CSS → cssparser
+  │   ├─ 执行 JS (SpiderMonkey, 共享 JSContext)
+  │   └─ 触发 DOMContentLoaded
+  │
+  ├─ libservo style: 样式计算 (Stylo)
+  │   └─ 每个 DOM 节点 → ComputedStyle
+  │
+  ├─ libservo layout: 布局 (script layout)
+  │   └─ ComputedStyle → Layout Box 树
+  │
+  ├─ bao_render: 软件光栅化
+  │   ├─ Layout Box → Display List
+  │   ├─ Vello CPU 光栅化 Display List
+  │   └─ 输出 Vec<u8> RGBA 像素缓冲
+  │
+  ├─ bao_render: 编码
+  │   └─ RGBA → PNG (或 JPEG/WebP)
+  │
+  └─ CDP: 返回 base64 编码截图
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§3 CDP 协议流程</h2>
+<!-- ============================================================ -->
+
+<div id="pipe-cdp-1" data-pipeline="CDPProtocol" data-pipeline-type="protocol">
+<h3>PIPE-CDP-001: CDP 消息处理管线</h3>
+<script type="application/ld+json">
+{
+  "@type": "Pipeline",
+  "name": "CDPProtocol",
+  "type": "protocol",
+  "stages": [
+    {"name": "WebSocket接收", "input": "TCP流", "output": "JSON-RPC消息"},
+    {"name": "协议解析", "input": "JSON-RPC消息", "output": "CDP Command对象"},
+    {"name": "Domain路由", "input": "CDP Command", "output": "Domain Handler"},
+    {"name": "命令执行", "input": "参数", "output": "结果/事件"},
+    {"name": "响应编码", "input": "结果", "output": "JSON-RPC Response"},
+    {"name": "WebSocket发送", "input": "JSON-RPC Response", "output": "TCP流"}
+  ]
+}
+</script>
+</div>
+
+<div id="artifact-cdp-domain-routing" data-artifact-type="diagram">
+<h3>CDP Domain 路由</h3>
+<pre>
+WebSocket Client (Playwright)
+  │
+  ├─ JSON-RPC Request
+  │
+  └─ bao_cdp: Server
+      │
+      ├─ Runtime.* → SpiderMonkey Debugger API (JS层)
+      │   ├─ Runtime.evaluate      → SM eval
+      │   ├─ Runtime.callFunctionOn → SM function call
+      │   ├─ Runtime.getProperties  → SM object inspection
+      │   └─ Runtime.enable        → 启动执行上下文通知
+      │
+      ├─ Debugger.* → SpiderMonkey Debugger API (JS层)
+      │   ├─ Debugger.enable        → 启用断点
+      │   ├─ Debugger.pause         → SM Debugger.Frame onStep
+      │   ├─ Debugger.setBreakpoint → SM Debugger.Script setBreakpoint
+      │   └─ Debugger.stepOver/stepInto/stepOut → SM 单步控制
+      │
+      ├─ Page.* → libservo + bao_render
+      │   ├─ Page.navigate          → libservo 导航
+      │   ├─ Page.captureScreenshot → bao_render 截图
+      │   ├─ Page.reload            → libservo 重载
+      │   └─ Page.setContent        → libservo 设置 HTML
+      │
+      ├─ DOM.* → libservo DOM
+      │   ├─ DOM.getDocument         → DOM 树根
+      │   ├─ DOM.querySelector       → DOM 查询
+      │   ├─ DOM.getBoxModel         → 布局信息
+      │   └─ DOM.setAttributeValue   → DOM 修改
+      │
+      ├─ CSS.* → Stylo
+      │   ├─ CSS.getMatchedStylesForNode → 样式查询
+      │   └─ CSS.getComputedStyleForNode → 计算样式
+      │
+      ├─ Network.* → Bun HTTP 栈 hook
+      │   ├─ Network.enable         → 启用网络监控
+      │   ├─ Network.requestWillBeSent → 请求通知
+      │   └─ Network.getResponseBody → 响应获取
+      │
+      ├─ Fetch.* → Bun HTTP 栈 hook
+      │   ├─ Fetch.enable           → 启用请求拦截
+      │   └─ Fetch.continueRequest  → 继续请求
+      │
+      ├─ Input.* → 事件注入
+      │   ├─ Input.dispatchMouseEvent → 鼠标事件
+      │   └─ Input.dispatchKeyEvent   → 键盘事件
+      │
+      ├─ Emulation.* → 配置层
+      │   └─ Emulation.setDeviceMetricsOverride → 视口/设备
+      │
+      └─ Target.* → 进程管理
+          └─ Target.getTargets → Context/Target 发现
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4 浏览器模式状态机</h2>
+<!-- ============================================================ -->
+
+<div id="sm-browser-mode" data-state-machine="BrowserMode">
+<h3>浏览器模式状态机</h3>
+<script type="application/ld+json">
+{
+  "@type": "StateMachine",
+  "name": "BrowserMode",
+  "states": ["Uninitialized", "Initialized", "Navigating", "Loading", "Interactive", "Complete", "ScreenshotPending", "Closed"],
+  "initialState": "Uninitialized",
+  "transitions": [
+    {"from": "Uninitialized", "to": "Initialized", "on": "bao browser 启动"},
+    {"from": "Initialized", "to": "Navigating", "on": "Page.navigate"},
+    {"from": "Navigating", "to": "Loading", "on": "HTTP响应接收"},
+    {"from": "Loading", "to": "Interactive", "on": "DOMContentLoaded"},
+    {"from": "Interactive", "to": "Complete", "on": "load事件"},
+    {"from": "Complete", "to": "ScreenshotPending", "on": "captureScreenshot"},
+    {"from": "ScreenshotPending", "to": "Complete", "on": "截图完成"},
+    {"from": "Complete", "to": "Navigating", "on": "Page.navigate"},
+    {"from": "Interactive", "to": "Navigating", "on": "Page.navigate"},
+    {"from": "Complete", "to": "Closed", "on": "关闭"},
+    {"from": "Interactive", "to": "Closed", "on": "关闭"},
+    {"from": "Navigating", "to": "Complete", "on": "加载失败/空页面"}
+  ]
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§5 Event Loop 桥接流程</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-eventloop-bridge" data-artifact-type="diagram">
+<h3>SpiderMonkey JobQueue ↔ Bun uSockets 桥接</h3>
+<pre>
+┌─ SpiderMonkey Side ──────────────────────────────┐
+│                                                    │
+│  JS Promise.then()                                 │
+│    → SM 内部队列                                    │
+│    → JS::JobQueue::enqueue() ← Bao 实现             │
+│                                                    │
+└─────────────┬──────────────────────────────────────┘
+              │ 桥接点: Bao 实现的 JobQueue trait
+              │
+┌─────────────┴──────────────────────────────────────┐
+│                                                     │
+│  Bun Event Loop (uSockets)                          │
+│    → epoll/kqueue 事件                              │
+│    → Timer 到期                                     │
+│    → I/O 就绪                                       │
+│    → 每轮 tick 结尾: drain SM JobQueue               │
+│    → 执行所有 pending microtasks                     │
+│                                                     │
+└─────────────────────────────────────────────────────┘
+
+关键约束:
+- SM JobQueue 必须在 Bun event loop tick 中被 drain
+- 宏任务 (setTimeout) 由 Bun Timer 管理
+- 微任务 (Promise.then) 由 SM JobQueue 管理
+- 两者共享同一线程 (Main Thread), 无需同步
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§6 Module Loader 桥接流程</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-module-loader-bridge" data-artifact-type="diagram">
+<h3>SpiderMonkey Module Loader ↔ Bun Resolver 桥接</h3>
+<pre>
+┌─ SpiderMonkey Side ──────────────────────────────────┐
+│                                                       │
+│  import { foo } from './bar.ts'                       │
+│    → SM ESM hook: resolve(specifier, referrer)        │
+│    → Bao 实现: 委托给 Bun resolver                    │
+│    → SM ESM hook: load(url)                           │
+│    → Bao 实现: 委托给 Bun transpiler + FS read        │
+│                                                       │
+└──────────────┬────────────────────────────────────────┘
+               │ 桥接点: Bao 实现的 SM hook callbacks
+               │
+┌──────────────┴────────────────────────────────────────┐
+│                                                        │
+│  Bun Resolver (100% 复用)                              │
+│    → 路径解析 (node_modules, tsconfig paths, bunfig)  │
+│    → 缓存                                              │
+│    → 返回绝对路径                                       │
+│                                                        │
+│  Bun Transpiler (100% 复用)                            │
+│    → TS → JS                                           │
+│    → JSX → JS                                          │
+│    → 返回 JS 源码字符串                                  │
+│                                                        │
+└────────────────────────────────────────────────────────┘
+
+关键约束:
+- SM hook 必须在 JSContext 初始化时注册
+- Bun resolver 是同步的, SM hook 必须也是同步的
+- 文件读取可以异步, 但 module source 返回必须同步
+- 缓存机制: resolved URL → transpiled source 映射表
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§7 时序约束</h2>
+<!-- ============================================================ -->
+
+<div id="tmg-cdp-1" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms">
+<h3>TMG-CDP-001: CDP 命令响应时序</h3>
+<script type="application/ld+json">
+{
+  "@type": "TimingConstraint",
+  "name": "CDPResponseTime",
+  "constraint": "max_latency_ms",
+  "domains": {
+    "Runtime.evaluate": {"target": 50, "reason": "JS执行, 无I/O"},
+    "DOM.querySelector": {"target": 10, "reason": "内存DOM遍历"},
+    "Page.captureScreenshot": {"target": 500, "reason": "Vello CPU光栅化 + PNG编码"},
+    "Page.navigate": {"target": 3000, "reason": "网络请求 + DOM构建 + 样式计算"},
+    "Network.enable": {"target": 10, "reason": "注册hook"},
+    "Debugger.setBreakpoint": {"target": 20, "reason": "SM Debugger API"}
+  }
+}
+</script>
+</div>
+
+<div id="tmg-loop-1" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms">
+<h3>TMG-LOOP-001: Event Loop Tick 时序</h3>
+<script type="application/ld+json">
+{
+  "@type": "TimingConstraint",
+  "name": "EventLoopTick",
+  "constraint": "max_interval_ms",
+  "phases": {
+    "io_poll": {"target": 1, "reason": "epoll/kqueue 非阻塞"},
+    "timer_check": {"target": 0.1, "reason": "最小堆查找"},
+    "microtask_drain": {"target": 5, "reason": "SM JobQueue drain"},
+    "cdp_message_process": {"target": 10, "reason": "WebSocket 读 + 路由"},
+    "total_tick": {"target": 20, "reason": "保证 50fps 事件循环"}
+  }
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§8 线程模型与数据流</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-thread-model" data-artifact-type="diagram">
+<h3>线程间数据流</h3>
+<pre>
+Main Thread (事件循环 + JSContext + DOM)
+  │
+  ├─ 单线程访问 SpiderMonkey JSContext
+  ├─ 单线程访问 libservo DOM (script 组件)
+  ├─ CDP 命令通过 crossbeam channel 接收
+  │
+  ├─→ CDP Thread (WebSocket 服务)
+  │     ├─ 接受 CDP 客户端连接
+  │     ├─ JSON-RPC 解析/编码
+  │     └─→ Main Thread: 命令通过 channel 发送
+  │
+  ├─→ Render Thread (Vello CPU)
+  │     ├─ 接收 Display List
+  │     ├─ 软件光栅化
+  │     └─→ Main Thread: 返回像素缓冲
+  │
+  ├─→ Network Thread Pool (HTTP 请求)
+  │     ├─ Bun HTTP 栈处理
+  │     └─→ Main Thread: 回调通过 event loop
+  │
+  └─→ Worker Threads (Web Workers)
+        ├─ 每个线程独立 JSContext
+        └─→ Main Thread: postMessage 通过 channel
+
+线程安全约束:
+- JSContext: 仅 Main Thread 访问
+- DOM: 仅 Main Thread 访问 (libservo script 组件单线程)
+- 渲染: Display List 生成后传递给 Render Thread
+- 网络: Bun HTTP 栈内部处理线程安全
+- CDP: 命令路由到 Main Thread, 响应路由回 CDP Thread
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§9 异常流程</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-error-flows" data-artifact-type="diagram">
+<h3>异常处理流程</h3>
+<pre>
+JS 执行异常:
+  SM 抛出 JS Exception → Bao bridge 检测
+    → 未捕获: 输出 stack trace 到 stderr
+    → CDP Runtime: 发送 Runtime.exceptionThrown 事件
+    → 进程退出码 1
+
+DOM 解析异常:
+  html5ever 容错解析 → 生成错误恢复 DOM
+    → 不中断渲染流程
+    → CDP Console: 发送 Console.error 事件
+
+网络请求异常:
+  Bun HTTP 栈 → 超时/连接拒绝/DNS 失败
+    → 返回 NetworkError
+    → CDP Network: 发送 Network.loadingFailed 事件
+    → JS fetch: 返回 rejected Promise
+
+渲染异常:
+  Vello CPU 光栅化失败
+    → 返回空像素缓冲 (全白/全透明)
+    → CDP Page.captureScreenshot: 返回空白截图
+    → 日志记录错误
+
+CDP 协议异常:
+  未知 domain/method
+    → 返回 JSON-RPC Error (-32601 Method not found)
+  参数错误
+    → 返回 JSON-RPC Error (-32602 Invalid params)
+  内部错误
+    → 返回 JSON-RPC Error (-32603 Internal error)
+
+SpiderMonkey GC OOM:
+  SM GC 报告内存不足
+    → 触发紧急 GC
+    → 仍然不足: 抛出 OOM Error
+    → 进程退出码 134 (SIGABRT)
+</pre>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Bao - 系统架构</title>
+</head>
+<body>
+<h1>Bao 系统架构</h1>
+<p>Bao = Bun Runtime + SpiderMonkey Engine + Servo Browser Engine + CDP Server + Stealth Module</p>
+
+<!-- ============================================================ -->
+<h2>§1 整体架构</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-architecture-overview" data-artifact-type="diagram">
+<h3>架构总览</h3>
+<pre>
+┌──────────────────────────────────────────────────────────┐
+│                       Bao Runtime                         │
+│                   单进程 · 多线程 · Rust                    │
+├──────────────────────────────────────────────────────────┤
+│  CLI Layer: bao run | bao test | bao build | bao browser  │
+├──────────────────────────────────────────────────────────┤
+│  Mode Switch                                              │
+│  ┌─ Node Mode ────┐  ┌─ Browser Mode ──┐  ┌─ Stealth ─┐│
+│  │ Bun.* API      │  │ CDP Server       │  │ Module     ││
+│  │ Node.js compat │  │ libservo (DOM/   │  │ TLS/HTTP   ││
+│  │ Bundler/Test/  │  │  CSS/Layout)     │  │ Canvas     ││
+│  │ Install        │  │ Vello CPU 截图   │  │ Navigator  ││
+│  │ Bun Resolver   │  │                  │  │ Behavior   ││
+│  └───────┬────────┘  └────────┬─────────┘  └─────┬─────┘│
+│          │                    │                   │       │
+│  ┌───────┴────────────────────┴───────────────────┴─────┐│
+│  │        SpiderMonkey (统一 JS 引擎)                     ││
+│  │        mozjs crate · JS::JobQueue · ESM hooks         ││
+│  │        Debugger API (JS层) · WebAssembly · Promise     ││
+│  └───────────────────────────────────────────────────────┘│
+│          │                    │                            │
+│  ┌───────┴────────────────────┴─────────────────────────┐│
+│  │  Bun Infrastructure (100% 复用, 零修改)                ││
+│  │  HTTP栈 · Resolver · FS · Bundler · uSockets · Timer  ││
+│  └───────────────────────────────────────────────────────┘│
+└──────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§2 Bun 源项目 Crate 架构</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-bun-crate-dag" data-artifact-type="diagram">
+<h3>§2.1 Crate 依赖 DAG (13 层)</h3>
+<pre>
+L0  FOUNDATION (零内部依赖)
+    bun_opaque bun_windows_sys bun_output_tags bun_wyhash
+    bun_highway bun_simdutf_sys bun_js bun_dispatch
+    bun_jsc_macros bun_css_derive
+
+L1  bun_mimalloc_sys bun_core_macros bun_hash bun_brotli_sys bun_clap_macros
+
+L2  bun_alloc ← 全局分配器 (mimalloc + arena + hashbrown)
+
+L3  bun_core ← ★ 中心枢纽 (strings/env/logging/error)
+
+L4  bun_paths bun_ptr bun_platform bun_output bun_safety
+    bun_zstd bun_picohttp bun_lolhtml_sys bun_zlib_sys
+    bun_boringssl_sys bun_valkey bun_libuv_sys
+
+L5  bun_collections bun_errno bun_cares_sys
+
+L6  bun_sys ← ★ 系统调用层 (File/Fd/Dir/Error)
+    bun_semver bun_url bun_base64
+
+L7  bun_ast bun_http_types bun_glob bun_dns bun_sql
+    bun_boringssl bun_sha_hmac bun_spawn_sys bun_which bun_perf
+
+L8  bun_io bun_threading bun_dotenv bun_clap bun_parsers
+    bun_install_types bun_zlib bun_brotli bun_shell_parser
+    bun_uws_sys bun_md bun_csrf bun_s3_signing bun_tcc_sys
+
+L9  bun_js_parser bun_sourcemap bun_event_loop bun_uws
+    bun_options_types bun_resolve_builtins bun_libarchive
+    bun_watcher bun_analytics bun_crash_handler
+
+L10 bun_js_printer bun_http bun_resolver bun_router
+    bun_api bun_patch bun_ini bun_spawn bun_bunfig
+
+L11 bun_install bun_bundler bun_css bun_standalone_graph
+    bun_transpiler
+    ─────── JSC 边界线 ───────
+    bun_jsc ← ★ JSC FFI 核心
+
+L12 *_JSC 桥接层 (全部依赖 bun_jsc)
+    bun_ast_jsc bun_bundler_jsc bun_css_jsc bun_http_jsc
+    bun_install_jsc bun_js_parser_jsc bun_patch_jsc
+    bun_semver_jsc bun_sourcemap_jsc bun_sql_jsc bun_sys_jsc
+
+L13 bun_runtime ← 应用层 (~75 个依赖)
+    bun_bin (staticlib → libbun_rust.a)
+</pre>
+</div>
+
+<div id="artifact-bun-jsc-boundary" data-artifact-type="diagram">
+<h3>§2.2 JSC 依赖边界</h3>
+<p>关键发现：Bun 采用 <strong>foo + foo_jsc 两维分离模式</strong>，每个需要暴露给 JS 的功能域都有独立的纯 Rust crate 和 JSC 绑定 crate。</p>
+
+<table data-entity-table="BunJscBridge">
+<tr data-field="crate" data-type="string" data-required="true"><td>纯 Rust Crate</td><td>功能</td><td>JSC 桥接 Crate</td></tr>
+<tr><td>bun_ast</td><td>AST 节点</td><td>bun_ast_jsc</td></tr>
+<tr><td>bun_css</td><td>CSS 处理</td><td>bun_css_jsc</td></tr>
+<tr><td>bun_http</td><td>HTTP 协议</td><td>bun_http_jsc</td></tr>
+<tr><td>bun_install</td><td>包管理</td><td>bun_install_jsc</td></tr>
+<tr><td>bun_js_parser</td><td>JS 解析</td><td>bun_js_parser_jsc</td></tr>
+<tr><td>bun_semver</td><td>版本解析</td><td>bun_semver_jsc</td></tr>
+<tr><td>bun_sourcemap</td><td>源码映射</td><td>bun_sourcemap_jsc</td></tr>
+<tr><td>bun_sql</td><td>SQL 数据库</td><td>bun_sql_jsc</td></tr>
+<tr><td>bun_sys</td><td>系统调用</td><td>bun_sys_jsc</td></tr>
+<tr><td>bun_bundler</td><td>打包器</td><td>bun_bundler_jsc</td></tr>
+<tr><td>bun_patch</td><td>包补丁</td><td>bun_patch_jsc</td></tr>
+</table>
+
+<p>SpiderMonkey 迁移影响范围：<strong>仅 L11-L13 的 13 个 crate</strong>。L0-L10 的 ~85 个纯 Rust crate 完全不受影响。</p>
+</div>
+
+<div id="artifact-bun-crate-stats" data-artifact-type="table">
+<h3>§2.3 Crate 统计</h3>
+<table>
+<tr><td>指标</td><td>数量</td></tr>
+<tr><td>Workspace members</td><td>105</td></tr>
+<tr><td>JSC 依赖 crate</td><td>13 (bun_jsc + 12 个 *_jsc)</td></tr>
+<tr><td>JSC 无关 crate</td><td>~85</td></tr>
+<tr><td>依赖层级深度</td><td>13 层</td></tr>
+<tr><td>两维分离对数</td><td>11 对 (foo + foo_jsc)</td></tr>
+<tr><td>循环依赖</td><td>0（严格 DAG）</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§3 Servo 源项目组件架构</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-servo-component-map" data-artifact-type="diagram">
+<h3>§3.1 组件分层</h3>
+<pre>
+┌─────────────────────────────────────────────────────────┐
+│  SERVOSHELL (ports/servoshell)                          │
+│  CLI 入口, Embedder 实现, 窗口管理                        │
+├─────────────────────────────────────────────────────────┤
+│  SERVO (components/servo)                               │
+│  libservo API, Embedder trait, 公共接口导出               │
+│  ★ 嵌入入口点 — Bao 通过此 crate 接入                    │
+├───────────────┬─────────────────┬───────────────────────┤
+│  SCRIPT       │  LAYOUT         │  STYLE                │
+│  (280K LOC)   │  (42K LOC)      │  (Stylo, CSS计算)     │
+│  DOM 实现      │  布局引擎        │  ★ Firefox 共用       │
+│  ★ 依赖 mozjs │  依赖 script    │  依赖 selectors       │
+├───────────────┴─────────────────┴───────────────────────┤
+│  SCRIPT_BINDINGS (9K LOC)                               │
+│  SpiderMonkey ↔ DOM 桥接, WebIDL 代码生成                 │
+│  ★ DOM 对象通过 SM GC 管理                                │
+├─────────────────────────────────────────────────────────┤
+│  NET (21K LOC)                                          │
+│  Fetch 实现, HTTP 栈 (hyper), CORS, HSTS, Cookie         │
+│  ★ WHATWG Fetch 规范 step-by-step 实现                    │
+├─────────────────────────────────────────────────────────┤
+│  CONSTELLATION (8K LOC)                                 │
+│  中央协调器, 管理所有组件间消息                             │
+│  ★ IPC 中枢 (单进程模式下自动优化为线程间通信)              │
+├─────────────────────────────────────────────────────────┤
+│  DEVTOOLS | PAINT | FONTS | MEDIA | CANVAS | WEBGL      │
+│  WEBGPU | WEBXR | BLUETOOTH | STORAGE | GEOMETRY        │
+│  URL | TIMERS | SHARED | CONFIG | METRICS | PROFILE     │
+└─────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<div id="artifact-servo-deps" data-artifact-type="table">
+<h3>§3.2 组件依赖关系</h3>
+<table>
+<tr><td>组件</td><td>Rust LOC</td><td>依赖 mozjs</td><td>依赖 IPC</td><td>独立性</td></tr>
+<tr><td>script</td><td>280,436</td><td>是</td><td>是</td><td>深度耦合</td></tr>
+<tr><td>layout</td><td>42,637</td><td>间接</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>shared</td><td>31,872</td><td>否</td><td>否</td><td>独立</td></tr>
+<tr><td>net</td><td>21,890</td><td>否</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>script_bindings</td><td>9,032</td><td>是</td><td>否</td><td>深度耦合</td></tr>
+<tr><td>servo (libservo)</td><td>8,787</td><td>间接</td><td>是</td><td>嵌入入口</td></tr>
+<tr><td>constellation</td><td>8,082</td><td>否</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>devtools</td><td>10,092</td><td>间接</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>fonts</td><td>9,724</td><td>否</td><td>否</td><td>独立</td></tr>
+<tr><td>paint</td><td>5,688</td><td>否</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>其他 26 个</td><td>~40,000</td><td>否</td><td>部分</td><td>各异</td></tr>
+</table>
+</div>
+
+<div id="artifact-servo-key-facts" data-artifact-type="table">
+<h3>§3.3 Servo 关键数据</h3>
+<table>
+<tr><td>指标</td><td>值</td></tr>
+<tr><td>组件数量</td><td>36</td></tr>
+<tr><td>总 Rust LOC</td><td>~500,000</td></tr>
+<tr><td>依赖 mozjs 的组件</td><td>2 (script, servo)</td></tr>
+<tr><td>依赖 IPC 的组件</td><td>7</td></tr>
+<tr><td>最大组件</td><td>script (280K LOC, DOM 实现)</td></tr>
+<tr><td>默认模式</td><td>单进程 (--multiprocess 启用多进程)</td></tr>
+<tr><td>IPC 单进程优化</td><td>自动降级为 Arc&lt;Mutex&lt;Queue&gt;&gt;</td></tr>
+<tr><td>libservo 版本</td><td>0.1.0 (LTS)</td></tr>
+<tr><td>许可证</td><td>MPL-2.0</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4 Bao 融合架构</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-bao-fusion" data-artifact-type="diagram">
+<h3>§4.1 Bun ↔ Servo 融合映射</h3>
+<pre>
+                    Bao 项目 Cargo Workspace
+┌────────────────────────────────────────────────────────┐
+│                                                         │
+│  ┌─ 复用 Bun (零修改) ──────────────────────────────┐  │
+│  │ L0-L10: ~85 个纯 Rust crate                       │  │
+│  │ HTTP 栈 · Resolver · FS · Bundler · Transpiler    │  │
+│  │ JS Parser/Printer · Collections · Syscall · Crypto│  │
+│  │ Install · Shell · SQL · Semver · Sourcemap        │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ 新建 (SpiderMonkey 适配) ───────────────────────┐  │
+│  │ bao_engine ← 替代 bun_jsc (mozjs crate 封装)      │  │
+│  │ bao_engine_ast ← 替代 bun_ast_jsc                 │  │
+│  │ bao_engine_http ← 替代 bun_http_jsc               │  │
+│  │ bao_engine_install ← 替代 bun_install_jsc          │  │
+│  │ bao_engine_js_parser ← 替代 bun_js_parser_jsc      │  │
+│  │ bao_engine_sql ← 替代 bun_sql_jsc                 │  │
+│  │ bao_engine_sys ← 替代 bun_sys_jsc                 │  │
+│  │ bao_engine_bundler ← 替代 bun_bundler_jsc          │  │
+│  │ bao_engine_css ← 替代 bun_css_jsc                 │  │
+│  │ bao_engine_semver ← 替代 bun_semver_jsc            │  │
+│  │ bao_engine_sourcemap ← 替代 bun_sourcemap_jsc      │  │
+│  │ bao_engine_patch ← 替代 bun_patch_jsc              │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ 新建 (运行时) ──────────────────────────────────┐  │
+│  │ bao_runtime ← 替代 bun_runtime                    │  │
+│  │  .classes.ts 定义复用 95%, 生成后端重写            │  │
+│  │  Event loop: SM JS::JobQueue → Bun uSockets       │  │
+│  │  Module loader: SM hooks → Bun resolver           │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ 新建 (浏览器模式) ──────────────────────────────┐  │
+│  │ bao_browser ← libservo crate 封装                  │  │
+│  │ bao_render ← Vello CPU + taffy 内存渲染            │  │
+│  │ bao_cdp ← CDP WebSocket Server                     │  │
+│  │ bao_stealth ← 反指纹模块                           │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+└────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<div id="int-engine-1" data-artifact-type="external-integration" data-integration="SpiderMonkey" data-integration-protocol="ffi" data-integration-auth="none">
+<h3>§4.2 引擎集成: SpiderMonkey via mozjs</h3>
+<script type="application/ld+json">
+{
+  "@type": "Integration",
+  "name": "SpiderMonkey",
+  "protocol": "ffi",
+  "auth": "none",
+  "source": "servo/mozjs crate",
+  "license": "MPL-2.0",
+  "apiCoverage": {
+    "jsContext": "complete",
+    "gc": "complete",
+    "value": "complete",
+    "typedArray": "complete",
+    "promise": "header-only",
+    "modules": "header-only",
+    "debugger": "not-bound",
+    "wasm": "header-only"
+  },
+  "missingBindings": ["Debugger API (js/debugger/*.h)", "JobQueue Rust wrapper", "Module loader callback"]
+}
+</script>
+</div>
+
+<div id="int-browser-1" data-artifact-type="external-integration" data-integration="libservo" data-integration-protocol="embed" data-integration-auth="none">
+<h3>§4.3 浏览器引擎集成: libservo</h3>
+<script type="application/ld+json">
+{
+  "@type": "Integration",
+  "name": "libservo",
+  "protocol": "embed",
+  "auth": "none",
+  "source": "servo crate v0.1.0",
+  "license": "MPL-2.0",
+  "provides": ["DOM (script 280K LOC)", "CSS/Stylo", "Layout", "HTML parsing (html5ever)", "Fetch (WHATWG compliant)"],
+  "ipcBehavior": "single-process default, auto-optimize to thread-safe queue",
+  "embeddingAPI": "Embedder trait + WindowMethods trait"
+}
+</script>
+</div>
+
+<div id="int-render-1" data-artifact-type="external-integration" data-integration="VelloCPU" data-integration-protocol="embed" data-integration-auth="none">
+<h3>§4.4 渲染集成: Vello CPU</h3>
+<script type="application/ld+json">
+{
+  "@type": "Integration",
+  "name": "VelloCPU",
+  "protocol": "embed",
+  "auth": "none",
+  "source": "linebender/vello crate",
+  "license": "Apache-2.0/MIT",
+  "provides": ["2D software rasterization", "Text rendering (glyph_run)", "Path rendering", "Gradient/Pattern"],
+  "outputFormat": "Vec<u8> RGBA pixmap",
+  "gpuRequired": false,
+  "alternatives": ["tiny-skia (no text)", "WebRender+SWGL (heavy)"]
+}
+</script>
+</div>
+
+<div id="int-cdp-1" data-artifact-type="external-integration" data-integration="CDPProtocol" data-integration-protocol="websocket" data-integration-auth="none">
+<h3>§4.5 CDP 协议集成</h3>
+<script type="application/ld+json">
+{
+  "@type": "Integration",
+  "name": "CDPProtocol",
+  "protocol": "websocket",
+  "auth": "none",
+  "source": "cdp-protocol crate",
+  "license": "MIT",
+  "domains": {
+    "jsEngine": ["Runtime", "Debugger", "Profiler", "HeapProfiler"],
+    "renderEngine": ["Page", "DOM", "CSS", "Overlay", "Input", "Emulation"],
+    "httpStack": ["Network", "Fetch"],
+    "standalone": ["Target", "IO"]
+  },
+  "referenceImplementation": "Firefox remote/cdp/ (MPL-2.0, deprecated but referenceable)"
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§5 外部依赖矩阵</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-dependency-matrix" data-artifact-type="table">
+<table>
+<tr><td>依赖</td><td>版本</td><td>许可证</td><td>用途</td><td>复用方式</td></tr>
+<tr><td>mozjs / mozjs-sys</td><td>0.15.14 / 140.10.1</td><td>MPL-2.0</td><td>SpiderMonkey FFI</td><td>git dep</td></tr>
+<tr><td>servo (libservo)</td><td>0.1.0</td><td>MPL-2.0</td><td>浏览器引擎</td><td>cargo dep</td></tr>
+<tr><td>taffy</td><td>0.10.1</td><td>MIT</td><td>CSS 布局</td><td>cargo dep</td></tr>
+<tr><td>vello_cpu</td><td>latest</td><td>Apache-2.0/MIT</td><td>内存渲染</td><td>cargo dep</td></tr>
+<tr><td>cdp-protocol</td><td>latest</td><td>MIT</td><td>CDP 类型</td><td>cargo dep</td></tr>
+<tr><td>html5ever</td><td>0.29</td><td>MIT/Apache</td><td>HTML 解析</td><td>cargo dep</td></tr>
+<tr><td>cssparser + selectors</td><td>latest</td><td>MPL-2.0</td><td>CSS 解析</td><td>cargo dep</td></tr>
+<tr><td>euclid + app_units</td><td>latest</td><td>MIT/MPL</td><td>几何/单位</td><td>cargo dep</td></tr>
+<tr><td>hyper + rustls</td><td>latest</td><td>MIT</td><td>HTTP + TLS</td><td>cargo dep</td></tr>
+<tr><td>crown</td><td>latest</td><td>MPL-2.0</td><td>GC 安全 lint</td><td>考虑 fork</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§6 错误处理策略</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-error-strategy" data-artifact-type="diagram">
+<h3>错误处理分层</h3>
+<pre>
+JS 层错误 → SpiderMonkey Exception → JS 可捕获
+Rust 层错误 → Result<T, E> → 上抛到 JS 层或日志
+C++ FFI 错误 → panic → Rust catch_unwind → JS Error
+网络错误 → 自定义 Error enum → 重试/降级/上报
+渲染错误 → Option<PixelBuffer> → 降级为空白截图
+CDP 错误 → JSON-RPC Error Response → 客户端处理
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§7 运行时状态图</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-runtime-state" data-artifact-type="diagram">
+<h3>运行时生命周期状态</h3>
+<pre>
+Uninitialized → Initializing → Ready → Running → ShuttingDown → Terminated
+
+Initializing:
+  1. SpiderMonkey JSContext 创建
+  2. Bun Event Loop 初始化
+  3. Module Loader hooks 注册
+  4. Bun.* / Bao.* 全局对象注入
+  5. (Browser模式) libservo 初始化
+  6. (Browser模式) CDP Server 启动
+  7. (Stealth模式) 反指纹模块加载
+
+Ready:
+  等待 JS 代码执行请求
+
+Running:
+  Event Loop 运行中
+  ├─ I/O 轮询 (epoll/kqueue)
+  ├─ Timer 检查
+  ├─ Microtask drain (SM JobQueue)
+  ├─ CDP 命令处理 (Browser模式)
+  └─ 渲染请求处理 (Browser模式)
+
+ShuttingDown:
+  1. 停止接受新请求
+  2. drain 所有 pending 任务
+  3. 关闭 CDP 连接
+  4. 销毁 libservo 实例
+  5. 销毁 JSContext
+  6. 释放所有资源
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§8 数据管道</h2>
+<!-- ============================================================ -->
+
+<div id="pipe-system-1" data-artifact-type="data-pipeline" data-pipeline="JSExecutionPipeline" data-pipeline-type="execution">
+<h3>PIPE-SYS-001: JS 执行管道 (概要)</h3>
+<script type="application/ld+json">
+{
+  "@type": "Pipeline",
+  "name": "JSExecutionPipeline",
+  "type": "execution",
+  "stages": [
+    {"name": "源码输入", "input": "文件路径", "output": "源码字符串"},
+    {"name": "转译", "input": "TS/JSX 源码", "output": "JS 源码"},
+    {"name": "模块解析", "input": "import 路径", "output": "绝对路径"},
+    {"name": "SM 编译", "input": "JS 源码", "output": "JSScript"},
+    {"name": "SM 执行", "input": "JSScript", "output": "JS Value"}
+  ],
+  "detail": "参见 03-PROCESS.html §1"
+}
+</script>
+</div>
+
+<div id="pipe-system-2" data-artifact-type="data-pipeline" data-pipeline="RenderPipelineSummary" data-pipeline-type="render">
+<h3>PIPE-SYS-002: 渲染管道 (概要)</h3>
+<script type="application/ld+json">
+{
+  "@type": "Pipeline",
+  "name": "RenderPipelineSummary",
+  "type": "render",
+  "stages": [
+    {"name": "HTML 解析", "input": "HTML", "output": "DOM 树"},
+    {"name": "样式计算", "input": "DOM + CSS", "output": "ComputedStyle"},
+    {"name": "布局", "input": "ComputedStyle", "output": "Layout Box"},
+    {"name": "光栅化", "input": "Display List", "output": "RGBA 像素"},
+    {"name": "编码", "input": "RGBA", "output": "PNG/JPEG/WebP"}
+  ],
+  "detail": "参见 03-PROCESS.html §2"
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§9 接口协议图</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-interface-protocol" data-artifact-type="diagram">
+<h3>内部接口协议</h3>
+<pre>
+┌─ bao_engine ─┐     FFI (C ABI)     ┌─ mozjs-sys ─┐
+│  Rust 封装    │ ←────────────────→ │ SpiderMonkey │
+│  host_fn      │   JS::Rooted       │  C++ 引擎    │
+│  GC 管理      │   JS::Handle       │              │
+└──────┬───────┘                     └──────────────┘
+       │ Rust trait
+       ▼
+┌─ bao_runtime ─┐
+│ JobQueue impl │ ← SM JS::JobQueue trait
+│ ModuleLoader  │ ← SM hook callbacks
+│ Bun API 绑定  │ ← .classes.ts 生成
+└──────┬────────┘
+       │ crossbeam channel
+       ▼
+┌─ bao_cdp ─────┐    WebSocket      ┌─ CDP Client ─┐
+│ Domain Router │ ←───────────────→ │ Playwright    │
+│ JSON-RPC 2.0  │   ws://host:port  │ Puppeteer     │
+└──────┬────────┘                   └───────────────┘
+       │ Rust trait / function call
+       ▼
+┌─ bao_browser ─┐   Embedder trait  ┌─ libservo ──┐
+│ BaoEmbedder   │ ←───────────────→ │ Servo API    │
+│ WindowMethods │                    │ EmbedderMethods│
+└──────┬────────┘                   └──────────────┘
+       │ Display List transfer
+       ▼
+┌─ bao_render ──┐
+│ Vello CPU     │ → Vec<u8> RGBA
+│ taffy Layout  │
+└───────────────┘
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§9 事件/消息目录</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-event-catalog" data-artifact-type="table">
+<h3>内部事件/消息类型</h3>
+<table>
+<tr><td>事件</td><td>方向</td><td>载体</td><td>触发条件</td></tr>
+<tr><td>SM Promise Microtask</td><td>SM → Event Loop</td><td>JS::JobQueue</td><td>Promise resolve/reject</td></tr>
+<tr><td>I/O 就绪</td><td>OS → Event Loop</td><td>epoll/kqueue</td><td>socket 可读/可写</td></tr>
+<tr><td>Timer 到期</td><td>Timer Heap → Event Loop</td><td>回调函数</td><td>setTimeout/setInterval</td></tr>
+<tr><td>CDP Command</td><td>CDP Thread → Main Thread</td><td>crossbeam channel</td><td>WebSocket 消息到达</td></tr>
+<tr><td>CDP Event</td><td>Main Thread → CDP Thread</td><td>crossbeam channel</td><td>DOM 变更/JS 异常/网络事件</td></tr>
+<tr><td>Render Request</td><td>Main Thread → Render Thread</td><td>Display List + Viewport</td><td>captureScreenshot / 页面变更</td></tr>
+<tr><td>Render Complete</td><td>Render Thread → Main Thread</td><td>PixelBuffer</td><td>光栅化完成</td></tr>
+<tr><td>Page Load</td><td>libservo → BaoEmbedder</td><td>Embedder callback</td><td>HTML 解析完成</td></tr>
+<tr><td>DOM Mutation</td><td>libservo → BaoEmbedder</td><td>Embedder callback</td><td>DOM 变更</td></tr>
+<tr><td>Network Request</td><td>Bun HTTP 栈 → bao_cdp</td><td>hook callback</td><td>HTTP 请求发起</td></tr>
+<tr><td>Network Response</td><td>Bun HTTP 栈 → bao_cdp</td><td>hook callback</td><td>HTTP 响应到达</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§10 非功能需求</h2>
+<!-- ============================================================ -->
+
+<div id="nfr-sys-perf" data-artifact-type="non-functional-requirements" data-nfr="StartupPerformance" data-nfr-category="performance">
+<h3>NFR-SYS-PERF-001: 启动性能</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "StartupPerformance",
+  "category": "performance",
+  "metrics": {
+    "cold_start_node": {"target": "≤ 100ms"},
+    "cold_start_browser": {"target": "≤ 500ms"},
+    "warm_start": {"target": "≤ 20ms"}
+  },
+  "detail": "完整 NFR 定义参见 10-REQUIREMENTS.html §6"
+}
+</script>
+</div>
+
+<div id="nfr-sys-compat" data-artifact-type="non-functional-requirements" data-nfr="BunAPICompatibility" data-nfr-category="compatibility">
+<h3>NFR-SYS-COMPAT-001: 兼容性</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "BunAPICompatibility",
+  "category": "compatibility",
+  "metrics": {
+    "bun_api": {"target": "≥ 95%"},
+    "node_api": {"target": "≥ 90%"},
+    "playwright": {"target": "≥ 95%"}
+  }
+}
+</script>
+</div>
+
+<div id="nfr-sys-sec" data-artifact-type="non-functional-requirements" data-nfr="SecurityRequirements" data-nfr-category="security">
+<h3>NFR-SYS-SEC-001: 安全</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "SecurityRequirements",
+  "category": "security",
+  "metrics": {
+    "cdp_binding": {"target": "localhost only"},
+    "js_sandbox": {"target": "zero escape"},
+    "stealth_detectability": {"target": "≤ 5%"}
+  }
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§11 SLA 矩阵</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-sla-matrix" data-artifact-type="sla">
+<h3>服务等级目标</h3>
+<table>
+<tr><td>指标</td><td>Node 模式</td><td>Browser 模式</td><td>Stealth 模式</td></tr>
+<tr><td>冷启动</td><td>≤ 100ms</td><td>≤ 500ms</td><td>≤ 600ms</td></tr>
+<tr><td>热启动</td><td>≤ 20ms</td><td>≤ 50ms</td><td>≤ 60ms</td></tr>
+<tr><td>JS 执行延迟</td><td>≤ 1ms</td><td>≤ 5ms</td><td>≤ 5ms</td></tr>
+<tr><td>CDP 命令响应</td><td>N/A</td><td>≤ 50ms (非截图)</td><td>≤ 50ms</td></tr>
+<tr><td>截图延迟 (1080p)</td><td>N/A</td><td>≤ 500ms</td><td>≤ 500ms</td></tr>
+<tr><td>内存开销 (基线)</td><td>≤ 30MB</td><td>≤ 80MB</td><td>≤ 100MB</td></tr>
+<tr><td>指纹检测率</td><td>N/A</td><td>N/A</td><td>≤ 5%</td></tr>
+<tr><td>Playwright 兼容</td><td>N/A</td><td>≥ 95% API</td><td>≥ 95% API</td></tr>
+</table>
+</div>
+
+</body>
+</html>

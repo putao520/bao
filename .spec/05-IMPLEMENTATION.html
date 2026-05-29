@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Bao - 实施路线图</title>
+</head>
+<body>
+<h1>Bao 实施路线图</h1>
+<p>基于 SPEC 测绘的 Bun (105 crate, 13层 DAG) 和 Servo (36 组件, 500K LOC) 架构分析结果，制定分阶段实施计划。</p>
+
+<!-- ============================================================ -->
+<h2>§1 总览</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-impl-overview" data-artifact-type="table">
+<h3>阶段总览</h3>
+<table>
+<tr><td>阶段</td><td>名称</td><td>核心 REQ</td><td>新建 Crate</td><td>修改范围</td></tr>
+<tr><td>Phase 1</td><td>SpiderMonkey 替换 JSC</td><td>REQ-ENG-001 ~ 007 · REQ-CLI-001</td><td>bao_engine + 12 桥接 crate + bao_runtime</td><td>L11-L13 (13 crate)</td></tr>
+<tr><td>Phase 2</td><td>浏览器模式接入</td><td>REQ-CLI-002 · REQ-BRW-001 · REQ-BRW-003</td><td>bao_browser</td><td>新增</td></tr>
+<tr><td>Phase 3</td><td>内存渲染</td><td>REQ-BRW-002</td><td>bao_render</td><td>新增</td></tr>
+<tr><td>Phase 4</td><td>CDP Server</td><td>REQ-CDP-001 ~ 008</td><td>bao_cdp</td><td>新增 + bun_http hook</td></tr>
+<tr><td>Phase 5</td><td>Stealth 反指纹</td><td>REQ-STL-001 ~ 007</td><td>bao_stealth</td><td>新增 + bao_engine/bao_render 注入点</td></tr>
+<tr><td>Phase 6</td><td>集成测试与发布</td><td>NFR</td><td>—</td><td>全局验证</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§2 Phase 1: SpiderMonkey 替换 JSC</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-IMPL-P1" data-req-status="draft" data-req-domain="IMPL">
+<h3>Phase 1 详细任务</h3>
+
+<h4>1.1 集成 mozjs crate</h4>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>mozjs git dep 配置</td><td>Cargo.toml 添加 mozjs = { git = "..." } 依赖</td><td>REQ-ENG-001</td></tr>
+<tr><td>JSContext 封装</td><td>bao_engine/context.rs: JSContext 生命周期管理、初始化、销毁</td><td>REQ-ENG-001</td></tr>
+<tr><td>GC Root 管理</td><td>bao_engine/gc.rs: RAII 封装 JS::Rooted/JS::Handle，crown lint 集成</td><td>REQ-ENG-001</td></tr>
+<tr><td>Value 类型桥接</td><td>JS::Value ↔ Rust 类型双向转换 (string/number/bool/object/array/null/undefined)</td><td>REQ-ENG-003</td></tr>
+</table>
+
+<h4>1.2 重写代码生成后端</h4>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>解析 .classes.ts 定义</td><td>复用 30 个 .classes.ts 文件 (95% IDL 定义不变)</td><td>REQ-ENG-002</td></tr>
+<tr><td>生成 SM C++ 绑定</td><td>生成 JSClass + JSFunctionSpec + JSPropertySpec 替代 JSC 模板</td><td>REQ-ENG-002</td></tr>
+<tr><td>生成 Rust 桥接</td><td>生成 Rust 侧的 bao_engine_* 桥接 crate 代码</td><td>REQ-ENG-002</td></tr>
+</table>
+
+<h4>1.3 host_fn 抽象层</h4>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>Safe FFI wrapper</td><td>bao_engine/host_fn.rs: JSNative callback 封装，自动类型转换</td><td>REQ-ENG-003</td></tr>
+<tr><td>异常桥接</td><td>SM JS Exception → Rust Result::Err 自动转换</td><td>REQ-ENG-003</td></tr>
+<tr><td>GC RAII</td><td>JS::Rooted 智能指针封装，编译时检查 rooting</td><td>REQ-ENG-003</td></tr>
+</table>
+
+<h4>1.4 Event Loop 桥接</h4>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>JobQueue 实现</td><td>实现 SM JS::JobQueue trait，每轮 tick drain 微任务</td><td>REQ-ENG-004</td></tr>
+<tr><td>Timer 桥接</td><td>setTimeout/setInterval 委托 Bun Timer (uSockets)</td><td>REQ-ENG-004</td></tr>
+<tr><td>I/O 回调桥接</td><td>epoll/kqueue 事件触发 SM 回调</td><td>REQ-ENG-004</td></tr>
+</table>
+
+<h4>1.5 Module Loader 桥接</h4>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>ESM resolve hook</td><td>SM resolve callback → Bun resolver 调用</td><td>REQ-ENG-005</td></tr>
+<tr><td>ESM load hook</td><td>SM load callback → Bun transpiler + FS read</td><td>REQ-ENG-005</td></tr>
+<tr><td>模块缓存</td><td>HashMap&lt;Url, ModuleSource&gt; 缓存已解析模块</td><td>REQ-ENG-005</td></tr>
+<tr><td>动态 import()</td><td>异步模块加载 → Bun resolver + event loop</td><td>REQ-ENG-005</td></tr>
+</table>
+
+<h4>1.6 Bun API 适配</h4>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>Bun 全局对象</td><td>在 SM 全局注册 Bun.* 对象 + Bao.* 别名</td><td>REQ-ENG-006</td></tr>
+<tr><td>Bun.serve()</td><td>HTTP 服务 JS API → bao_engine_http 桥接</td><td>REQ-ENG-006</td></tr>
+<tr><td>Bun.file()</td><td>文件操作 JS API → bao_engine_sys 桥接</td><td>REQ-ENG-006</td></tr>
+<tr><td>fetch()</td><td>Web Fetch API → bao_engine_http 桥接</td><td>REQ-ENG-006</td></tr>
+</table>
+
+<h4>1.7 Node.js 兼容层适配</h4>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>node:fs</td><td>文件系统 API 从 JSC 移植到 SM 绑定</td><td>REQ-ENG-007</td></tr>
+<tr><td>node:path</td><td>路径 API 移植</td><td>REQ-ENG-007</td></tr>
+<tr><td>node:http</td><td>HTTP 服务端 API 移植</td><td>REQ-ENG-007</td></tr>
+<tr><td>node:crypto</td><td>加密 API 移植</td><td>REQ-ENG-007</td></tr>
+<tr><td>Buffer / process</td><td>全局对象移植</td><td>REQ-ENG-007</td></tr>
+</table>
+
+<h4>1.8 品牌替换</h4>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>CLI 入口</td><td>bun → bao 二进制名和命令名替换</td><td>REQ-CLI-001</td></tr>
+<tr><td>环境变量别名</td><td>BAO_* 作为 BUN_* 的别名</td><td>REQ-CLI-001</td></tr>
+<tr><td>帮助文本</td><td>所有用户可见文本从 bun 改为 bao</td><td>REQ-CLI-001</td></tr>
+</table>
+
+<h4>Phase 1 验证点</h4>
+<ul>
+<li>bao run index.ts 正常执行 JS/TS 文件</li>
+<li>bao test 通过 Bun 现有测试套件 ≥ 90%</li>
+<li>bao build 正常打包</li>
+<li>bao install 正常安装依赖</li>
+<li>Bun.* 和 Bao.* JS API 等价</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§3 Phase 2: 浏览器模式接入</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-IMPL-P2" data-req-status="draft" data-req-domain="IMPL">
+<h3>Phase 2 详细任务</h3>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>cargo add servo</td><td>集成 servo (libservo) crate v0.1.0</td><td>REQ-BRW-001</td></tr>
+<tr><td>BaoEmbedder 实现</td><td>实现 EmbedderMethods + WindowMethods trait</td><td>REQ-BRW-001</td></tr>
+<tr><td>共享 JSContext 验证</td><td>确认 Bao SM JSContext 与 libservo script 组件可共享</td><td>REQ-BRW-003</td></tr>
+<tr><td>单进程模式确认</td><td>验证 IPC 自动降级为线程间通信</td><td>REQ-BRW-001</td></tr>
+<tr><td>bao browser 子命令</td><td>CLI 命令解析、libservo 启动、CDP 端口输出</td><td>REQ-CLI-002</td></tr>
+<tr><td>DOM 操作验证</td><td>查询/遍历/修改 DOM 节点正常</td><td>REQ-BRW-001</td></tr>
+<tr><td>CSS 样式计算验证</td><td>Stylo 样式计算结果正确</td><td>REQ-BRW-001</td></tr>
+</table>
+
+<h4>Phase 2 验证点</h4>
+<ul>
+<li>bao browser --url=https://example.com 启动正常</li>
+<li>DOM 树构建正确</li>
+<li>CSS 样式计算正确</li>
+<li>共享 JSContext 无冲突</li>
+<li>单进程模式无 IPC 开销</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4 Phase 3: 内存渲染</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-IMPL-P3" data-req-status="draft" data-req-domain="IMPL">
+<h3>Phase 3 详细任务</h3>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>集成 Vello CPU</td><td>cargo add vello，配置 CPU-only 后端</td><td>REQ-BRW-002</td></tr>
+<tr><td>集成 taffy</td><td>cargo add taffy，CSS 布局引擎 (Flexbox + Grid)</td><td>REQ-BRW-002</td></tr>
+<tr><td>布局 → Display List</td><td>libservo Layout Box → Vello 绘制指令转换</td><td>REQ-BRW-002</td></tr>
+<tr><td>Vello CPU 光栅化</td><td>Display List → Vec&lt;u8&gt; RGBA 像素缓冲</td><td>REQ-BRW-002</td></tr>
+<tr><td>文字渲染</td><td>Vello glyph_run 集成，确保文字正确渲染</td><td>REQ-BRW-002</td></tr>
+<tr><td>PNG 编码</td><td>RGBA → PNG 输出</td><td>REQ-BRW-002</td></tr>
+<tr><td>JPEG 编码</td><td>RGBA → JPEG 输出</td><td>REQ-BRW-002</td></tr>
+<tr><td>WebP 编码</td><td>RGBA → WebP 输出</td><td>REQ-BRW-002</td></tr>
+<tr><td>性能验证</td><td>1080p 截图 ≤ 500ms</td><td>NFR-PERF-002</td></tr>
+</table>
+
+<h4>Phase 3 验证点</h4>
+<ul>
+<li>HTML 页面 → PNG 截图正确</li>
+<li>Flexbox 布局正确</li>
+<li>Grid 布局正确</li>
+<li>文字渲染清晰</li>
+<li>无 GPU/GL 依赖</li>
+<li>截图延迟 ≤ 500ms (1080p)</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§5 Phase 4: CDP Server</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-IMPL-P4" data-req-status="draft" data-req-domain="IMPL">
+<h3>Phase 4 详细任务</h3>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>WebSocket Server</td><td>bao_cdp/server.rs: 监听端口、接受连接、JSON-RPC 2.0</td><td>REQ-CDP-001</td></tr>
+<tr><td>cdp-protocol 集成</td><td>CDP 类型定义引入</td><td>REQ-CDP-001</td></tr>
+<tr><td>Domain 路由框架</td><td>通用 Domain handler trait + 路由表</td><td>REQ-CDP-001</td></tr>
+<tr><td>Runtime Domain</td><td>SM Debugger API (JS层) → CDP Runtime 映射，参考 Firefox remote/cdp/</td><td>REQ-CDP-002</td></tr>
+<tr><td>Debugger Domain</td><td>SM Debugger.Script/Frame API → CDP Debugger 映射</td><td>REQ-CDP-003</td></tr>
+<tr><td>Page Domain</td><td>libservo 导航 + bao_render 截图 → CDP Page</td><td>REQ-CDP-004</td></tr>
+<tr><td>DOM Domain</td><td>libservo DOM 树查询 → CDP DOM</td><td>REQ-CDP-005</td></tr>
+<tr><td>Network Domain</td><td>Bun HTTP 栈 hook → CDP Network</td><td>REQ-CDP-006</td></tr>
+<tr><td>CSS/Input/Emulation/Overlay</td><td>辅助 Domain 实现</td><td>REQ-CDP-007</td></tr>
+<tr><td>Target Domain</td><td>Context/Target 发现与管理</td><td>REQ-CDP-008</td></tr>
+<tr><td>Playwright 兼容验证</td><td>Playwright 连接 CDP → 基本操作正常</td><td>NFR-COMPAT-001</td></tr>
+</table>
+
+<h4>Phase 4 验证点</h4>
+<ul>
+<li>Playwright 成功连接 CDP WebSocket</li>
+<li>Page.navigate 导航正常</li>
+<li>Runtime.evaluate 执行 JS 正常</li>
+<li>DOM.querySelector 查询正常</li>
+<li>Page.captureScreenshot 截图正常</li>
+<li>Network.requestWillBeSent 网络监控正常</li>
+<li>Debugger.setBreakpoint 断点调试正常</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§6 Phase 5: Stealth 反指纹</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-IMPL-P5" data-req-status="draft" data-req-domain="IMPL">
+<h3>Phase 5 详细任务</h3>
+<table>
+<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
+<tr><td>TLS 指纹模拟</td><td>rustls cipher suite + extension 顺序配置匹配 Firefox JA3/JA4</td><td>REQ-STL-001</td></tr>
+<tr><td>HTTP/2 指纹匹配</td><td>hyper SETTINGS/WINDOW_UPDATE/PRIORITY 配置匹配 Firefox</td><td>REQ-STL-002</td></tr>
+<tr><td>Canvas 噪声注入</td><td>Vello CPU 渲染层注入确定性随机噪声</td><td>REQ-STL-003</td></tr>
+<tr><td>Navigator 构造</td><td>SM 引擎层返回构造的 navigator 属性</td><td>REQ-STL-004</td></tr>
+<tr><td>Screen 构造</td><td>Servo DOM 层构造 screen 属性</td><td>REQ-STL-004</td></tr>
+<tr><td>WebGL 指纹</td><td>Servo WebGL 层配置 vendor/renderer</td><td>REQ-STL-005</td></tr>
+<tr><td>AudioContext 噪声</td><td>SM Audio API 层浮点运算噪声</td><td>REQ-STL-005</td></tr>
+<tr><td>WebDriver 隐藏</td><td>navigator.webdriver = false (引擎层)</td><td>REQ-STL-007</td></tr>
+<tr><td>CDP 隐蔽性</td><td>CDP 通道不暴露到页面 JS 环境</td><td>REQ-STL-007</td></tr>
+<tr><td>鼠标轨迹模拟</td><td>贝塞尔曲线随机偏移</td><td>REQ-STL-006</td></tr>
+<tr><td>打字节奏模拟</td><td>随机延迟 30-150ms per key</td><td>REQ-STL-006</td></tr>
+<tr><td>滚动模式模拟</td><td>加速-匀速-减速特征</td><td>REQ-STL-006</td></tr>
+</table>
+
+<h4>Phase 5 验证点</h4>
+<ul>
+<li>TLS JA3/JA4 哈希匹配 Firefox</li>
+<li>HTTP/2 指纹匹配 Firefox</li>
+<li>Canvas 噪声对人类不可见但每次不同</li>
+<li>navigator.webdriver === false</li>
+<li>指纹检测网站识别率 ≤ 5%</li>
+<li>行为模拟轨迹自然</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§7 Phase 6: 集成测试与发布</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-IMPL-P6" data-req-status="draft" data-req-domain="IMPL">
+<h3>Phase 6 详细任务</h3>
+<table>
+<tr><td>任务</td><td>描述</td></tr>
+<tr><td>全模块联调</td><td>Node 模式 + Browser 模式 + Stealth 模式联合测试</td></tr>
+<tr><td>Bun 测试套件迁移</td><td>Bun 现有测试套件在 Bao 上运行，目标 ≥ 90% 通过</td></tr>
+<tr><td>Playwright 兼容测试</td><td>Playwright 完整 API 兼容性测试</td></tr>
+<tr><td>性能基准测试</td><td>启动延迟、截图延迟、内存开销、JS 执行延迟</td></tr>
+<tr><td>指纹检测测试</td><td>多个指纹检测网站测试，目标识别率 ≤ 5%</td></tr>
+<tr><td>内存泄漏检测</td><td>长时间运行 (24h) 内存增长 &lt; 10%</td></tr>
+<tr><td>跨平台构建</td><td>Linux x64 / macOS x64+aarch64 / Windows x64</td></tr>
+<tr><td>CI/CD 配置</td><td>自动化构建、测试、发布流程</td></tr>
+<tr><td>文档编写</td><td>API 文档、使用指南、架构文档</td></tr>
+<tr><td>首个 Release</td><td>v0.1.0 发布</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§8 复用分析</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-reuse-analysis" data-artifact-type="table">
+<h3>组件复用矩阵</h3>
+<table>
+<tr><td>组件</td><td>来源</td><td>复用率</td><td>需要的适配工作</td></tr>
+<tr><td>~85 个纯 Rust crate</td><td>Bun (L0-L10)</td><td>100%</td><td>零修改</td></tr>
+<tr><td>.classes.ts 定义 (30 个)</td><td>Bun</td><td>95%</td><td>生成后端重写 (JSC → SM)</td></tr>
+<tr><td>Bun Resolver</td><td>Bun src/resolver/</td><td>100%</td><td>写 SM hook 桥接层</td></tr>
+<tr><td>Bun HTTP 栈</td><td>Bun 现有</td><td>100%</td><td>CDP hook 接入点</td></tr>
+<tr><td>Bun FS/Bundler/Test/Install</td><td>Bun 现有</td><td>100%</td><td>零修改</td></tr>
+<tr><td>SpiderMonkey FFI</td><td>mozjs crate</td><td>100%</td><td>直接使用</td></tr>
+<tr><td>浏览器引擎</td><td>servo libservo</td><td>100%</td><td>实现 Embedder trait</td></tr>
+<tr><td>CSS 布局</td><td>taffy</td><td>100%</td><td>直接使用</td></tr>
+<tr><td>2D 渲染</td><td>Vello CPU</td><td>100%</td><td>直接使用</td></tr>
+<tr><td>CDP 类型</td><td>cdp-protocol</td><td>100%</td><td>直接使用</td></tr>
+<tr><td>CDP Runtime/Debugger 映射</td><td>Firefox remote/cdp/ 参考</td><td>~60%</td><td>移植+适配</td></tr>
+<tr><td>代码生成后端</td><td>新建</td><td>0%</td><td>全部重写 (JSC C++ → SM C++)</td></tr>
+<tr><td>host_fn 抽象层</td><td>新建</td><td>0%</td><td>全部新建</td></tr>
+<tr><td>Event loop 桥接</td><td>参考 Bun</td><td>~15%</td><td>SM JobQueue → Bun uSockets</td></tr>
+<tr><td>Stealth 模块</td><td>新建</td><td>0%</td><td>全部新建</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§9 风险矩阵</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-risk-matrix" data-artifact-type="table">
+<h3>风险与缓解措施</h3>
+<table>
+<tr><td>风险</td><td>等级</td><td>缓解措施</td></tr>
+<tr><td>libservo 与 Bao SM 实例冲突</td><td>中</td><td>Phase 2 优先验证共享 JSContext 可行性；备选：libservo 独立 JSContext + postMessage</td></tr>
+<tr><td>Vello CPU 性能不足</td><td>低</td><td>截图场景不要求实时，10-500ms 可接受；备选：tiny-skia (无文字) 或 SWGL</td></tr>
+<tr><td>mozjs 缺少 Debugger API 绑定</td><td>低</td><td>Debugger API 是 JS 层的，不需要 Rust 绑定；直接在 SM 内执行 JS Debugger 代码</td></tr>
+<tr><td>Bun 上游合并冲突</td><td>低</td><td>内部保留 bun_* 命名，JSC 层独立维护，diff 最小化</td></tr>
+<tr><td>SpiderMonkey GC 模型差异</td><td>中</td><td>mozjs crown lint 编译时检查 rooting 正确性；RAII 封装自动管理</td></tr>
+<tr><td>libservo API 不稳定</td><td>中</td><td>锁定 servo 0.1.0 LTS 版本；Embedder trait 变化时最小化适配</td></tr>
+<tr><td>Playwright CDP 兼容性</td><td>中</td><td>优先实现 Playwright 核心流程所需的 Domain；参考 Firefox CDP 实现</td></tr>
+<tr><td>Canvas 噪声被检测</td><td>低</td><td>噪声在渲染层注入，JS 层无法检测；确定性种子保证一致性</td></tr>
+</table>
+</div>
+
+</body>
+</html>

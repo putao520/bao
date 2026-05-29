@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Bao - 功能需求</title>
+</head>
+<body>
+<h1>Bao 功能需求</h1>
+
+<!-- ============================================================ -->
+<h2>§1 引擎需求</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-ENG-001" data-req-status="draft" data-req-domain="ENG">
+<h3>REQ-ENG-001: SpiderMonkey 引擎集成</h3>
+<p>通过 mozjs crate (v0.15.14) 集成 SpiderMonkey JS 引擎，替代 Bun 原有的 JavaScriptCore。</p>
+<h4>验收标准</h4>
+<ul>
+<li>bao run 能执行 JS/TS 文件并输出结果</li>
+<li>SpiderMonkey JSContext 在 Main Thread 唯一实例化</li>
+<li>GC 通过 mozjs crown lint 编译时检查 rooting 正确性</li>
+<li>JS 异常正确传播到 Rust 层并输出 stack trace</li>
+<li>WebAssembly 执行正常</li>
+</ul>
+<h4>关联设计</h4>
+<p>参见 02-SYSTEM.html §4.2 (SpiderMonkey 集成) · 03-PROCESS.html §1 (JS 执行管线) · 03-PROCESS.html §5 (Event Loop 桥接)</p>
+</div>
+
+<div data-req="REQ-ENG-002" data-req-status="draft" data-req-domain="ENG">
+<h3>REQ-ENG-002: 代码生成后端重写</h3>
+<p>重写 Bun 的 .classes.ts 代码生成后端，将 JSC C++ 模板改为 SpiderMonkey 绑定生成。30 个 .classes.ts 定义文件复用 95%。</p>
+<h4>验收标准</h4>
+<ul>
+<li>所有 30 个 .classes.ts 文件的定义可被解析</li>
+<li>生成 SpiderMonkey C++ 绑定代码（JSClass + JSFunctionSpec + JSPropertySpec）</li>
+<li>生成的绑定通过编译</li>
+<li>Bun.* API 通过 Bao.* 别名可访问</li>
+</ul>
+</div>
+
+<div data-req="REQ-ENG-003" data-req-status="draft" data-req-domain="ENG">
+<h3>REQ-ENG-003: host_fn 抽象层</h3>
+<p>新建 mozjs safe FFI wrapper，替代 bun_jsc 的 host_fn 安全抽象。提供 JS 函数调用、类型转换、异常处理的 Rust 安全封装。</p>
+<h4>验收标准</h4>
+<ul>
+<li>提供 Rust 安全的 JS 函数调用接口</li>
+<li>支持 JS→Rust 和 Rust→JS 类型转换</li>
+<li>JS 异常自动转换为 Rust Result::Err</li>
+<li>GC root 管理通过 RAII 自动化</li>
+</ul>
+</div>
+
+<div data-req="REQ-ENG-004" data-req-status="draft" data-req-domain="ENG">
+<h3>REQ-ENG-004: Event Loop 桥接</h3>
+<p>实现 SpiderMonkey JS::JobQueue → Bun uSockets I/O 的事件循环桥接。</p>
+<h4>验收标准</h4>
+<ul>
+<li>Promise.then 回调在正确的 event loop tick 中执行</li>
+<li>setTimeout/setInterval 由 Bun Timer 管理</li>
+<li>微任务在每轮 tick 结尾 drain</li>
+<li>宏任务和微任务执行顺序正确</li>
+</ul>
+</div>
+
+<div data-req="REQ-ENG-005" data-req-status="draft" data-req-domain="ENG">
+<h3>REQ-ENG-005: Module Loader 桥接</h3>
+<p>实现 SpiderMonkey ESM hooks → Bun resolver 的模块加载桥接。</p>
+<h4>验收标准</h4>
+<ul>
+<li>import/export 语法正常工作</li>
+<li>node_modules 解析正常</li>
+<li>TS 文件自动转译后加载</li>
+<li>动态 import() 正常工作</li>
+<li>模块缓存生效，避免重复解析</li>
+</ul>
+</div>
+
+<div data-req="REQ-ENG-006" data-req-status="draft" data-req-domain="ENG">
+<h3>REQ-ENG-006: Bun API 适配</h3>
+<p>将 Bun.* JS API 从 JSC 绑定适配到 SpiderMonkey 绑定。</p>
+<h4>验收标准</h4>
+<ul>
+<li>Bun.serve() 正常启动 HTTP 服务</li>
+<li>Bun.file() 正常读取文件</li>
+<li>fetch() 正常发起 HTTP 请求</li>
+<li>Bun.write() 正常写入文件</li>
+<li>Bun.serve() 支持 WebSocket 升级</li>
+<li>Bao.* 是 Bun.* 的别名，指向同一对象</li>
+</ul>
+</div>
+
+<div data-req="REQ-ENG-007" data-req-status="draft" data-req-domain="ENG">
+<h3>REQ-ENG-007: Node.js 兼容层适配</h3>
+<p>将现有 Node.js 兼容 API (node:fs, node:path, node:http 等) 从 JSC 移植到 SpiderMonkey。</p>
+<h4>验收标准</h4>
+<ul>
+<li>node:fs 读写操作正常</li>
+<li>node:path 路径操作正常</li>
+<li>node:http 服务端正常</li>
+<li>node:crypto 加密操作正常</li>
+<li>Buffer 全局对象正常工作</li>
+<li>process 全局对象正常工作</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§2 CLI 需求</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-CLI-001" data-req-status="draft" data-req-domain="CLI">
+<h3>REQ-CLI-001: bao 品牌替换</h3>
+<p>用户可见的命令和输出从 bun 替换为 bao。</p>
+<h4>验收标准</h4>
+<ul>
+<li><code>bao run index.ts</code> 执行文件</li>
+<li><code>bao test</code> 运行测试</li>
+<li><code>bao build</code> 打包</li>
+<li><code>bao install</code> 安装依赖</li>
+<li><code>bao browser</code> 启动浏览器模式</li>
+<li>内部 crate 名保持 bun_* 不变</li>
+<li>BAO_* 环境变量作为 BUN_* 的别名</li>
+</ul>
+</div>
+
+<div data-req="REQ-CLI-002" data-req-status="draft" data-req-domain="CLI">
+<h3>REQ-CLI-002: bao browser 子命令</h3>
+<p>新增 bao browser 子命令，启动浏览器模式。</p>
+<h4>验收标准</h4>
+<ul>
+<li><code>bao browser --url=https://example.com</code> 启动浏览器并加载页面</li>
+<li><code>bao browser --cdp-port=9222</code> 指定 CDP 端口</li>
+<li><code>bao browser --headless</code> 无头模式（默认）</li>
+<li><code>bao browser --stealth</code> 启用反指纹模块</li>
+<li>启动时输出 CDP WebSocket URL 供 Playwright 连接</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§3 浏览器模式需求</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-BRW-001" data-req-status="draft" data-req-domain="BRW">
+<h3>REQ-BRW-001: libservo 集成</h3>
+<p>集成 servo (libservo) crate (v0.1.0) 作为浏览器引擎核心，实现 BaoEmbedder (EmbedderMethods trait)。</p>
+<h4>验收标准</h4>
+<ul>
+<li>libservo 以单进程模式运行</li>
+<li>BaoEmbedder trait 实现完整</li>
+<li>DOM 操作正常 (查询/遍历/修改)</li>
+<li>CSS 样式计算正常 (Stylo)</li>
+<li>HTML 页面导航正常</li>
+</ul>
+</div>
+
+<div data-req="REQ-BRW-002" data-req-status="draft" data-req-domain="BRW">
+<h3>REQ-BRW-002: 内存渲染</h3>
+<p>基于 Vello CPU + taffy 实现纯 CPU 软件光栅化内存渲染管线。</p>
+<h4>验收标准</h4>
+<ul>
+<li>HTML → CSS 布局 → Display List → RGBA 像素缓冲管线完整</li>
+<li>支持 Flexbox 布局</li>
+<li>支持 Grid 布局</li>
+<li>支持文字渲染</li>
+<li>输出 PNG 格式截图</li>
+<li>输出 JPEG 格式截图</li>
+<li>输出 WebP 格式截图</li>
+<li>无 GPU/GL/窗口依赖</li>
+<li>单次截图延迟 ≤ 500ms (视口 1920×1080)</li>
+</ul>
+</div>
+
+<div data-req="REQ-BRW-003" data-req-status="draft" data-req-domain="BRW">
+<h3>REQ-BRW-003: SpiderMonkey 共享 JSContext</h3>
+<p>Bao 运行时和 libservo 的 script 组件共享同一个 SpiderMonkey JSContext。</p>
+<h4>验收标准</h4>
+<ul>
+<li>只有一个 JSContext 实例</li>
+<li>页面 JS 代码和 Bao 用户 JS 代码在同一上下文执行</li>
+<li>GC 统一管理</li>
+<li>无 JSContext 冲突或初始化错误</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4 CDP 需求</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-CDP-001" data-req-status="draft" data-req-domain="CDP">
+<h3>REQ-CDP-001: CDP WebSocket Server</h3>
+<p>实现 CDP WebSocket 服务端，支持 Playwright/Puppeteer 连接。</p>
+<h4>验收标准</h4>
+<ul>
+<li>监听指定端口，接受 WebSocket 连接</li>
+<li>JSON-RPC 2.0 消息编解码正确</li>
+<li>Playwright 能成功连接并列出 targets</li>
+<li>支持多个并发 CDP session</li>
+<li>连接断开后资源正确释放</li>
+</ul>
+</div>
+
+<div data-req="REQ-CDP-002" data-req-status="draft" data-req-domain="CDP">
+<h3>REQ-CDP-002: Runtime Domain</h3>
+<p>实现 CDP Runtime domain，映射到 SpiderMonkey Debugger API (JS 层)。</p>
+<h4>验收标准</h4>
+<ul>
+<li>Runtime.evaluate 执行 JS 表达式并返回结果</li>
+<li>Runtime.callFunctionOn 调用 JS 函数</li>
+<li>Runtime.getProperties 获取对象属性</li>
+<li>Runtime.enable 发送执行上下文通知</li>
+<li>Runtime.exceptionThrown 发送异常通知</li>
+<li>console.log 输出通过 Runtime.consoleAPICalled 发送</li>
+</ul>
+</div>
+
+<div data-req="REQ-CDP-003" data-req-status="draft" data-req-domain="CDP">
+<h3>REQ-CDP-003: Debugger Domain</h3>
+<p>实现 CDP Debugger domain，映射到 SpiderMonkey JS 层 Debugger API。</p>
+<h4>验收标准</h4>
+<ul>
+<li>Debugger.enable 启用断点</li>
+<li>Debugger.setBreakpointByUrl 设置行断点</li>
+<li>Debugger.pause / Debugger.resume 暂停/继续</li>
+<li>Debugger.stepOver / stepInto / stepOut 单步执行</li>
+<li>Debugger.paused 发送断点命中通知</li>
+<li>Debugger.scriptParsed 发送脚本解析通知</li>
+</ul>
+</div>
+
+<div data-req="REQ-CDP-004" data-req-status="draft" data-req-domain="CDP">
+<h3>REQ-CDP-004: Page Domain</h3>
+<p>实现 CDP Page domain，映射到 libservo + bao_render。</p>
+<h4>验收标准</h4>
+<ul>
+<li>Page.navigate 导航到指定 URL</li>
+<li>Page.captureScreenshot 截图并返回 base64</li>
+<li>Page.reload 重新加载页面</li>
+<li>Page.setContent 设置页面 HTML</li>
+<li>Page.getFrameTree 返回帧树</li>
+<li>Page.loadEventFired 发送加载完成通知</li>
+</ul>
+</div>
+
+<div data-req="REQ-CDP-005" data-req-status="draft" data-req-domain="CDP">
+<h3>REQ-CDP-005: DOM Domain</h3>
+<p>实现 CDP DOM domain，映射到 libservo DOM 树查询。</p>
+<h4>验收标准</h4>
+<ul>
+<li>DOM.getDocument 获取 DOM 树根</li>
+<li>DOM.querySelector 查询节点</li>
+<li>DOM.querySelectorAll 查询所有匹配节点</li>
+<li>DOM.getBoxModel 获取节点布局信息</li>
+<li>DOM.setAttributeValue 修改节点属性</li>
+<li>DOM.describeNode 获取节点描述</li>
+</ul>
+</div>
+
+<div data-req="REQ-CDP-006" data-req-status="draft" data-req-domain="CDP">
+<h3>REQ-CDP-006: Network Domain</h3>
+<p>实现 CDP Network domain，映射到 Bun HTTP 栈 hook。</p>
+<h4>验收标准</h4>
+<ul>
+<li>Network.enable 启用网络监控</li>
+<li>Network.requestWillBeSent 发送请求通知</li>
+<li>Network.responseReceived 发送响应通知</li>
+<li>Network.loadingFinished 发送加载完成通知</li>
+<li>Network.getResponseBody 获取响应体</li>
+<li>Network.requestIntercepted 支持请求拦截</li>
+</ul>
+</div>
+
+<div data-req="REQ-CDP-007" data-req-status="draft" data-req-domain="CDP">
+<h3>REQ-CDP-007: CSS/Input/Emulation/Overlay Domain</h3>
+<p>实现辅助 CDP domain。</p>
+<h4>验收标准</h4>
+<ul>
+<li>CSS.getMatchedStylesForNode 返回匹配样式</li>
+<li>CSS.getComputedStyleForNode 返回计算样式</li>
+<li>Input.dispatchMouseEvent 注入鼠标事件</li>
+<li>Input.dispatchKeyEvent 注入键盘事件</li>
+<li>Emulation.setDeviceMetricsOverride 设置视口/设备参数</li>
+<li>Overlay.highlightNode 高亮节点（截图标注）</li>
+</ul>
+</div>
+
+<div data-req="REQ-CDP-008" data-req-status="draft" data-req-domain="CDP">
+<h3>REQ-CDP-008: Target Domain</h3>
+<p>实现 CDP Target domain，支持 Context/Target 发现。</p>
+<h4>验收标准</h4>
+<ul>
+<li>Target.getTargets 列出所有可用 target</li>
+<li>Target.attachToTarget 附加到指定 target</li>
+<li>Target.setAutoAttach 自动附加新 target</li>
+<li>Target.createdTarget / destroyedTarget 通知</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§5 Stealth 需求</h2>
+<!-- ============================================================ -->
+
+<div data-req="REQ-STL-001" data-req-status="draft" data-req-domain="STL">
+<h3>REQ-STL-001: TLS 指纹模拟</h3>
+<p>通过 rustls cipher suite + extension 顺序配置模拟 Firefox 的 JA3/JA4 TLS 指纹。</p>
+<h4>验收标准</h4>
+<ul>
+<li>TLS ClientHello 的 JA3 哈希匹配目标 Firefox 版本</li>
+<li>TLS ClientHello 的 JA4 哈希匹配目标 Firefox 版本</li>
+<li>密码套件顺序与 Firefox 一致</li>
+<li>扩展顺序与 Firefox 一致</li>
+<li>TLS 握手成功建立连接</li>
+</ul>
+</div>
+
+<div data-req="REQ-STL-002" data-req-status="draft" data-req-domain="STL">
+<h3>REQ-STL-002: HTTP/2 指纹匹配</h3>
+<p>通过 hyper 配置调优，使 HTTP/2 SETTINGS 帧参数匹配 Firefox。</p>
+<h4>验收标准</h4>
+<ul>
+<li>HTTP/2 SETTINGS 帧参数与 Firefox 一致</li>
+<li>HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致</li>
+<li>HTTP/2 PRIORITY 帧模式与 Firefox 一致</li>
+<li>HTTP/2 伪头部顺序与 Firefox 一致</li>
+</ul>
+</div>
+
+<div data-req="REQ-STL-003" data-req-status="draft" data-req-domain="STL">
+<h3>REQ-STL-003: Canvas 指纹防护</h3>
+<p>在 Vello CPU 渲染层注入确定性随机噪声，使 Canvas toDataURL/toBlob 输出包含不可检测的微小差异。</p>
+<h4>验收标准</h4>
+<ul>
+<li>Canvas toDataURL 输出包含确定性噪声</li>
+<li>噪声对人类视觉不可见</li>
+<li>同一 StealthProfile 的噪声一致</li>
+<li>不同 StealthProfile 的噪声不同</li>
+<li>JS 层无法检测噪声注入</li>
+</ul>
+</div>
+
+<div data-req="REQ-STL-004" data-req-status="draft" data-req-domain="STL">
+<h3>REQ-STL-004: Navigator/Screen 构造</h3>
+<p>在 SpiderMonkey 引擎层构造 Navigator 和 Screen 属性，使 JS 层读取的值与目标浏览器一致且不可篡改检测。</p>
+<h4>验收标准</h4>
+<ul>
+<li>navigator.userAgent 匹配目标浏览器</li>
+<li>navigator.platform 匹配目标平台</li>
+<li>navigator.language 匹配目标语言</li>
+<li>navigator.hardwareConcurrency 匹配目标值</li>
+<li>navigator.webdriver 始终为 false</li>
+<li>screen.width/height 匹配目标分辨率</li>
+<li>window.devicePixelRatio 匹配目标值</li>
+<li>所有属性从引擎层返回，JS 层无法篡改检测</li>
+</ul>
+</div>
+
+<div data-req="REQ-STL-005" data-req-status="draft" data-req-domain="STL">
+<h3>REQ-STL-005: WebGL/Audio 指纹防护</h3>
+<p>WebGL vendor/renderer 信息和 AudioContext 浮点运算噪声注入。</p>
+<h4>验收标准</h4>
+<ul>
+<li>WebGL RENDERER 匹配目标值</li>
+<li>WebGL VENDOR 匹配目标值</li>
+<li>WebGL 支持的扩展列表匹配目标</li>
+<li>AudioContext 输出包含确定性噪声</li>
+</ul>
+</div>
+
+<div data-req="REQ-STL-006" data-req-status="draft" data-req-domain="STL">
+<h3>REQ-STL-006: 行为模拟</h3>
+<p>模拟人类鼠标轨迹、打字节奏和滚动模式。</p>
+<h4>验收标准</h4>
+<ul>
+<li>鼠标移动轨迹包含贝塞尔曲线随机偏移</li>
+<li>打字节奏包含随机延迟 (30-150ms per key)</li>
+<li>滚动模式包含加速-匀速-减速特征</li>
+<li>所有随机行为使用 StealthProfile 种子确定性生成</li>
+</ul>
+</div>
+
+<div data-req="REQ-STL-007" data-req-status="draft" data-req-domain="STL">
+<h3>REQ-STL-007: CDP 隐蔽性</h3>
+<p>CDP 通道不暴露到页面 JS 环境，页面无法检测自动化。</p>
+<h4>验收标准</h4>
+<ul>
+<li>页面 JS 中无 CDP 相关全局变量</li>
+<li>页面 JS 中 navigator.webdriver === false</li>
+<li>chrome.runtime 不存在</li>
+<li>window.cdc_adoQpoasnfa76pfcZLmcfl_* 不存在</li>
+<li>所有指纹检测网站无法识别为自动化工具</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§6 非功能需求</h2>
+<!-- ============================================================ -->
+
+<div id="nfr-perf-1" data-nfr="NFR-PERF-001" data-nfr-category="performance">
+<h3>NFR-PERF-001: 启动性能</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "StartupPerformance",
+  "category": "performance",
+  "metrics": {
+    "cold_start_node_mode": {"target": "≤ 100ms", "measurement": "bao run --eval '1+1' 首次执行"},
+    "cold_start_browser_mode": {"target": "≤ 500ms", "measurement": "bao browser 启动到 CDP 可连接"},
+    "warm_start": {"target": "≤ 20ms", "measurement": "已缓存后再次执行"}
+  }
+}
+</script>
+</div>
+
+<div id="nfr-perf-2" data-nfr="NFR-PERF-002" data-nfr-category="performance">
+<h3>NFR-PERF-002: 截图性能</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "ScreenshotPerformance",
+  "category": "performance",
+  "metrics": {
+    "1920x1080_png": {"target": "≤ 500ms", "measurement": "Page.captureScreenshot 完整流程"},
+    "1280x720_png": {"target": "≤ 200ms", "measurement": "Page.captureScreenshot 完整流程"},
+    "memory_overhead": {"target": "≤ 50MB", "measurement": "浏览器模式额外内存占用"}
+  }
+}
+</script>
+</div>
+
+<div id="nfr-compat-1" data-nfr="NFR-COMPAT-001" data-nfr-category="compatibility">
+<h3>NFR-COMPAT-001: Bun API 兼容性</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "BunAPICompatibility",
+  "category": "compatibility",
+  "metrics": {
+    "bun_api_coverage": {"target": "≥ 95%", "measurement": "Bun.* API 通过率"},
+    "node_api_coverage": {"target": "≥ 90%", "measurement": "Node.js 兼容 API 通过率"},
+    "bun_test_suite": {"target": "≥ 90%", "measurement": "Bun 现有测试套件通过率"}
+  }
+}
+</script>
+</div>
+
+<div id="nfr-sec-1" data-nfr="NFR-SEC-001" data-nfr-category="security">
+<h3>NFR-SEC-001: 安全要求</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "SecurityRequirements",
+  "category": "security",
+  "metrics": {
+    "cdp_binding": {"target": "localhost only", "measurement": "CDP 服务仅绑定本地地址"},
+    "js_sandbox": {"target": "zero escape", "measurement": "页面 JS 无法逃逸沙箱"},
+    "stealth_detectability": {"target": "≤ 5%", "measurement": "指纹检测网站识别率"}
+  }
+}
+</script>
+</div>
+
+<div id="nfr-arch-1" data-nfr="NFR-ARCH-001" data-nfr-category="architecture">
+<h3>NFR-ARCH-001: 架构约束</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "ArchitectureConstraints",
+  "category": "architecture",
+  "constraints": [
+    "单进程多线程架构，禁止多进程",
+    "JSContext 仅 Main Thread 访问",
+    "DOM 仅 Main Thread 访问",
+    "渲染在独立 Render Thread 执行",
+    "CDP 在独立 CDP Thread 处理 WebSocket",
+    "与 Bun 上游 diff 最小化 (内部保留 bun_* 命名)"
+  ]
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§7 需求追溯矩阵</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-req-traceability" data-artifact-type="table">
+<h3>REQ ↔ 架构模块映射</h3>
+<table>
+<tr><td>需求</td><td>架构模块</td><td>影响 Crate</td><td>Phase</td></tr>
+<tr><td>REQ-ENG-001</td><td>SpiderMonkey 集成</td><td>bao_engine</td><td>Phase 1</td></tr>
+<tr><td>REQ-ENG-002</td><td>代码生成后端</td><td>bao_engine (codegen)</td><td>Phase 1</td></tr>
+<tr><td>REQ-ENG-003</td><td>host_fn 抽象层</td><td>bao_engine/host_fn</td><td>Phase 1</td></tr>
+<tr><td>REQ-ENG-004</td><td>Event Loop 桥接</td><td>bao_engine + bun_event_loop</td><td>Phase 1</td></tr>
+<tr><td>REQ-ENG-005</td><td>Module Loader 桥接</td><td>bao_engine + bun_resolver</td><td>Phase 1</td></tr>
+<tr><td>REQ-ENG-006</td><td>Bun API 适配</td><td>bao_engine_* + bao_runtime</td><td>Phase 1</td></tr>
+<tr><td>REQ-ENG-007</td><td>Node.js 兼容层</td><td>bao_runtime/node</td><td>Phase 1</td></tr>
+<tr><td>REQ-CLI-001</td><td>品牌替换</td><td>bun_bin + bun_cli</td><td>Phase 1</td></tr>
+<tr><td>REQ-CLI-002</td><td>bao browser 命令</td><td>bun_bin + bao_browser</td><td>Phase 2</td></tr>
+<tr><td>REQ-BRW-001</td><td>libservo 集成</td><td>bao_browser</td><td>Phase 2</td></tr>
+<tr><td>REQ-BRW-002</td><td>内存渲染</td><td>bao_render</td><td>Phase 3</td></tr>
+<tr><td>REQ-BRW-003</td><td>共享 JSContext</td><td>bao_engine + bao_browser</td><td>Phase 2</td></tr>
+<tr><td>REQ-CDP-001</td><td>CDP Server</td><td>bao_cdp</td><td>Phase 4</td></tr>
+<tr><td>REQ-CDP-002</td><td>Runtime Domain</td><td>bao_cdp/domains/runtime</td><td>Phase 4</td></tr>
+<tr><td>REQ-CDP-003</td><td>Debugger Domain</td><td>bao_cdp/domains/debugger</td><td>Phase 4</td></tr>
+<tr><td>REQ-CDP-004</td><td>Page Domain</td><td>bao_cdp/domains/page + bao_render</td><td>Phase 4</td></tr>
+<tr><td>REQ-CDP-005</td><td>DOM Domain</td><td>bao_cdp/domains/dom + bao_browser</td><td>Phase 4</td></tr>
+<tr><td>REQ-CDP-006</td><td>Network Domain</td><td>bao_cdp/domains/network + bun_http</td><td>Phase 4</td></tr>
+<tr><td>REQ-CDP-007</td><td>辅助 Domain</td><td>bao_cdp/domains/*</td><td>Phase 4</td></tr>
+<tr><td>REQ-CDP-008</td><td>Target Domain</td><td>bao_cdp/domains/target</td><td>Phase 4</td></tr>
+<tr><td>REQ-STL-001</td><td>TLS 指纹</td><td>bao_stealth/tls</td><td>Phase 5</td></tr>
+<tr><td>REQ-STL-002</td><td>HTTP/2 指纹</td><td>bao_stealth/http2</td><td>Phase 5</td></tr>
+<tr><td>REQ-STL-003</td><td>Canvas 指纹</td><td>bao_stealth/canvas + bao_render</td><td>Phase 5</td></tr>
+<tr><td>REQ-STL-004</td><td>Navigator 构造</td><td>bao_stealth/navigator + bao_engine</td><td>Phase 5</td></tr>
+<tr><td>REQ-STL-005</td><td>WebGL/Audio</td><td>bao_stealth/webgl + bao_stealth/audio</td><td>Phase 5</td></tr>
+<tr><td>REQ-STL-006</td><td>行为模拟</td><td>bao_stealth/behavior</td><td>Phase 5</td></tr>
+<tr><td>REQ-STL-007</td><td>CDP 隐蔽性</td><td>bao_cdp + bao_stealth</td><td>Phase 5</td></tr>
+</table>
+</div>
+
+</body>
+</html>
