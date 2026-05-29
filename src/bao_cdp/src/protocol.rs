@@ -55,6 +55,7 @@ pub fn handle_command(msg: CDPMessage, target_id: &str, params: &Option<Value>) 
         "Overlay" => handle_overlay(command),
         "Debugger" => handle_debugger(command),
         "Log" => handle_log(command),
+        "Fetch" => handle_fetch(command, params),
         _ => Err(CDPError {
             code: -32601,
             message: format!("'{}' wasn't found", msg.method),
@@ -346,6 +347,121 @@ fn handle_log(command: &str) -> HandlerResult {
         _ => Err(CDPError {
             code: -32601,
             message: format!("'Log.{}' wasn't found", command),
+        }),
+    }
+}
+
+fn handle_fetch(command: &str, params: &Option<Value>) -> HandlerResult {
+    match command {
+        "enable" => {
+            let patterns = params.as_ref()
+                .and_then(|p| p.get("patterns"))
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.len())
+                .unwrap_or(0);
+            let handle_auth = params.as_ref()
+                .and_then(|p| p.get("handleAuthRequests"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Ok(serde_json::json!({
+                "enabled": true,
+                "patternCount": patterns,
+                "handleAuthRequests": handle_auth
+            }))
+        }
+        "disable" => Ok(serde_json::json!({})),
+        "continueRequest" => {
+            let request_id = params.as_ref()
+                .and_then(|p| p.get("requestId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Ok(serde_json::json!({
+                "requestId": request_id,
+                "continued": true
+            }))
+        }
+        "continueWithResponse" => {
+            let request_id = params.as_ref()
+                .and_then(|p| p.get("requestId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Ok(serde_json::json!({
+                "requestId": request_id,
+                "continued": true
+            }))
+        }
+        "failRequest" => {
+            let request_id = params.as_ref()
+                .and_then(|p| p.get("requestId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let reason = params.as_ref()
+                .and_then(|p| p.get("reason"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Failed");
+            Ok(serde_json::json!({
+                "requestId": request_id,
+                "failed": true,
+                "reason": reason
+            }))
+        }
+        "fulfillRequest" => {
+            let request_id = params.as_ref()
+                .and_then(|p| p.get("requestId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let status_code = params.as_ref()
+                .and_then(|p| p.get("responseCode"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200);
+            let body = params.as_ref()
+                .and_then(|p| p.get("body"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Ok(serde_json::json!({
+                "requestId": request_id,
+                "fulfilled": true,
+                "responseCode": status_code,
+                "bodyLength": body.len()
+            }))
+        }
+        "getRequestPostData" => {
+            let request_id = params.as_ref()
+                .and_then(|p| p.get("requestId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Ok(serde_json::json!({
+                "requestId": request_id,
+                "postData": ""
+            }))
+        }
+        "continueWithAuth" => {
+            let request_id = params.as_ref()
+                .and_then(|p| p.get("requestId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let response = params.as_ref()
+                .and_then(|p| p.get("authChallengeResponse"))
+                .and_then(|v| v.get("response"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("Default");
+            Ok(serde_json::json!({
+                "requestId": request_id,
+                "authResponse": response
+            }))
+        }
+        "takeResponseBodyAsStream" => {
+            let request_id = params.as_ref()
+                .and_then(|p| p.get("requestId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            Ok(serde_json::json!({
+                "stream": format!("stream-{}", request_id)
+            }))
+        }
+        _ => Err(CDPError {
+            code: -32601,
+            message: format!("'Fetch.{}' wasn't found", command),
         }),
     }
 }
