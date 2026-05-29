@@ -140,7 +140,7 @@ pub unsafe fn jsval_to_jsvalue(cx: *mut JSContext, val: JSVal) -> JsValue {
         let raw_handle = mozjs::rust::HandleValue::from_marked_location(&val);
         let s = mozjs::rust::ToString(cx, raw_handle);
         if !s.is_null() {
-            let rust_str = jsstr_to_string(cx, NonNull::new(s).unwrap());
+            let rust_str = jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"));
             JsValue::String(rust_str)
         } else {
             JsValue::String(::std::string::String::new())

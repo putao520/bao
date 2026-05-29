@@ -987,9 +987,9 @@ unsafe extern "C" fn bun_serve(
 
                         // Build and send upgrade response
                         let mut response = tiny_http::Response::new_empty(tiny_http::StatusCode(101));
-                        response.add_header(tiny_http::Header::from_bytes(&b"Upgrade"[..], &b"websocket"[..]).unwrap());
-                        response.add_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"Upgrade"[..]).unwrap());
-                        response.add_header(tiny_http::Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept_key.as_bytes()).unwrap());
+                        response.add_header(tiny_http::Header::from_bytes(&b"Upgrade"[..], &b"websocket"[..]).expect("static header bytes"));
+                        response.add_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"Upgrade"[..]).expect("static header bytes"));
+                        response.add_header(tiny_http::Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept_key.as_bytes()).expect("valid accept key"));
                         let _ = req.respond(response);
                     } else {
                         // Regular HTTP response
@@ -1291,7 +1291,7 @@ unsafe extern "C" fn bun_build(
             let cfg = cfg_val.to_object();
             let cfg_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &cfg };
 
-            let ep_name = ::std::ffi::CString::new("entrypoints").unwrap();
+            let ep_name = ::std::ffi::CString::new("entrypoints").expect("static ASCII");
             let mut has_ep: bool = false;
             JS_HasProperty(cx, cfg_h, ep_name.as_ptr(), &mut has_ep);
             if has_ep {
@@ -1302,7 +1302,7 @@ unsafe extern "C" fn bun_build(
                     let ep_obj = ep_val.to_object();
                     let mut len_val = UndefinedValue();
                     let len_rv = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val };
-                    let len_name = ::std::ffi::CString::new("length").unwrap();
+                    let len_name = ::std::ffi::CString::new("length").expect("static ASCII");
                     let ep_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ep_obj };
                     JS_GetProperty(cx, ep_obj_h, len_name.as_ptr(), len_rv);
                     if len_val.is_number() {
@@ -1320,7 +1320,7 @@ unsafe extern "C" fn bun_build(
                 }
             }
 
-            let od_name = ::std::ffi::CString::new("outdir").unwrap();
+            let od_name = ::std::ffi::CString::new("outdir").expect("static ASCII");
             let mut has_od: bool = false;
             JS_HasProperty(cx, cfg_h, od_name.as_ptr(), &mut has_od);
             if has_od {
@@ -1332,7 +1332,7 @@ unsafe extern "C" fn bun_build(
                 }
             }
 
-            let nm_name = ::std::ffi::CString::new("naming").unwrap();
+            let nm_name = ::std::ffi::CString::new("naming").expect("static ASCII");
             let mut has_nm: bool = false;
             JS_HasProperty(cx, cfg_h, nm_name.as_ptr(), &mut has_nm);
             if has_nm {

@@ -378,7 +378,7 @@ fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
         match seg {
             "" | "." => {}
             ".." => {
-                if !segments.is_empty() && *segments.last().unwrap() != ".." {
+                if !segments.is_empty() && *segments.last().expect("non-empty segments") != ".." {
                     segments.pop();
                 } else if !has_root {
                     segments.push("..");

@@ -36,7 +36,7 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
         let assert_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &assert_obj };
         let strict_h = strict_obj.handle();
 
-        for (name, n_args) in &[
+        for (name, _n_args) in &[
             ("ok", 1), ("equal", 2), ("notEqual", 2),
             ("deepEqual", 2), ("notDeepEqual", 2),
             ("strictEqual", 2), ("notStrictEqual", 2),

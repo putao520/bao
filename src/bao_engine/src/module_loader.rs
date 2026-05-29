@@ -138,7 +138,7 @@ unsafe extern "C" fn host_resolve_imported_module(
 
     let specifier_str = mozjs::conversions::jsstr_to_string(
         raw_cx,
-        NonNull::new(specifier).unwrap(),
+        NonNull::new(specifier).expect("null-checked specifier"),
     );
 
     let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
@@ -190,7 +190,7 @@ unsafe extern "C" fn host_populate_import_meta(
         let url_str = if private_value.is_string() {
             let specifier = mozjs::conversions::jsstr_to_string(
                 raw_cx,
-                NonNull::new(private_value.to_string()).unwrap(),
+                NonNull::new(private_value.to_string()).expect("valid private value"),
             );
             let resolved = if specifier.starts_with("file://") {
                 specifier
@@ -231,7 +231,7 @@ unsafe extern "C" fn host_dynamic_import(
     }
     let specifier_str = mozjs::conversions::jsstr_to_string(
         raw_cx,
-        NonNull::new(specifier).unwrap(),
+        NonNull::new(specifier).expect("null-checked specifier"),
     );
 
     let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
