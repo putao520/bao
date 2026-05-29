@@ -65,6 +65,14 @@ impl JsContext {
         self.post_eval_hook = Some(hook);
     }
 
+    pub fn global_setup(&self) -> Option<GlobalSetupFn> {
+        self.global_setup
+    }
+
+    pub fn post_eval_hook(&self) -> Option<PostEvalHook> {
+        self.post_eval_hook
+    }
+
     pub fn eval(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {
         let cx = self.runtime.cx();
         let options = RealmOptions::default();

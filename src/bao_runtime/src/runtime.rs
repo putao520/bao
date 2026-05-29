@@ -23,7 +23,9 @@ impl BaoRuntime {
     }
 
     pub fn eval_module(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {
-        ModuleLoader::eval_module(self.ctx.cx_mut(), source, filename)
+        let setup = self.ctx.global_setup();
+        let hook = self.ctx.post_eval_hook();
+        ModuleLoader::eval_module(self.ctx.cx_mut(), source, filename, setup, hook)
     }
 
     pub fn run_file(&mut self, path: &str) -> ::std::result::Result<JsValue, JsError> {

@@ -16,6 +16,7 @@ use mozjs::rust::{
     SIMPLE_GLOBAL_CLASS,
 };
 
+use crate::context::{GlobalSetupFn, PostEvalHook};
 use crate::error::JsError;
 use crate::job_queue::JobQueue;
 use crate::value::{JsValue, jsval_to_jsvalue};
@@ -39,6 +40,8 @@ impl ModuleLoader {
         cx: &mut mozjs::context::JSContext,
         source: &str,
         filename: &str,
+        global_setup: Option<GlobalSetupFn>,
+        post_eval_hook: Option<PostEvalHook>,
     ) -> ::std::result::Result<JsValue, JsError> {
         let options = RealmOptions::default();
 
@@ -54,6 +57,11 @@ impl ModuleLoader {
 
         let mut realm = AutoRealm::new_from_handle(cx, global.handle());
         let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+        crate::host_fn::install_console(realm_cx, global.handle());
+        if let Some(setup) = global_setup {
+            unsafe { setup(realm_cx, global.handle()) };
+        }
 
         let c_filename = CString::new(filename)
             .unwrap_or_else(|_| CString::new("<module>").unwrap());
@@ -86,6 +94,17 @@ impl ModuleLoader {
         }
 
         JobQueue::drain(realm_cx);
+
+        if let Some(hook) = post_eval_hook {
+            for _ in 0..1000 {
+                if !hook(realm_cx) {
+                    break;
+                }
+                ::std::thread::sleep(::std::time::Duration::from_millis(1));
+                hook(realm_cx);
+                JobQueue::drain(realm_cx);
+            }
+        }
 
         ::std::result::Result::Ok(unsafe {
             jsval_to_jsvalue(realm_cx.raw_cx_no_gc(), rval.get())
