@@ -114,6 +114,24 @@ pub fn install_timer_globals(
             1,
             JSPROP_ENUMERATE as u32,
         );
+
+        JS_DefineFunction(
+            cx,
+            global,
+            c"setImmediate".as_ptr(),
+            ::std::option::Option::Some(set_immediate),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+
+        JS_DefineFunction(
+            cx,
+            global,
+            c"clearImmediate".as_ptr(),
+            ::std::option::Option::Some(clear_timeout),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
     }
 }
 
@@ -277,6 +295,32 @@ unsafe extern "C" fn clear_interval(
     vp: *mut JSVal,
 ) -> bool {
     clear_timeout(cx, argc, vp)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn set_immediate(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_object() {
+        args.rval().set(mozjs::jsval::Int32Value(0));
+        return true;
+    }
+    let cb = (*args.get(0).ptr).to_object();
+    let cb_args = if argc > 1 {
+        let mut a = Vec::new();
+        for i in 1..argc {
+            a.push(*args.get(i).ptr);
+        }
+        a
+    } else {
+        Vec::new()
+    };
+    let id = schedule_raw(cb, 0, false, &cb_args);
+    args.rval().set(mozjs::jsval::Int32Value(id as i32));
+    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

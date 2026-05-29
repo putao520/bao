@@ -61,6 +61,12 @@ impl BaoRuntime {
             require::set_require_dir(dir.to_path_buf());
         }
 
+        let filename_str = abs_path.to_string_lossy().into_owned();
+        let dirname_str = abs_path.parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        globals::install_file_globals(&mut self.ctx, &filename_str, &dirname_str);
+
         if path.ends_with(".mjs") {
             self.eval_module(&source, path)
         } else {

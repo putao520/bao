@@ -405,6 +405,29 @@ pub fn install_process_global(
         // process.chdir()
         JS_DefineFunction(cx, proc_obj.handle(), c"chdir".as_ptr(), ::std::option::Option::Some(process_chdir), 1, JSPROP_ENUMERATE as u32);
 
+        // process.memoryUsage()
+        JS_DefineFunction(cx, proc_obj.handle(), c"memoryUsage".as_ptr(), ::std::option::Option::Some(process_memory_usage), 0, JSPROP_ENUMERATE as u32);
+
+        // process.kill()
+        JS_DefineFunction(cx, proc_obj.handle(), c"kill".as_ptr(), ::std::option::Option::Some(process_kill), 2, JSPROP_ENUMERATE as u32);
+
+        // process.umask()
+        JS_DefineFunction(cx, proc_obj.handle(), c"umask".as_ptr(), ::std::option::Option::Some(process_umask), 0, JSPROP_ENUMERATE as u32);
+
+        // process.config
+        {
+            rooted!(&in(cx) let config_obj = JS_NewPlainObject(cx));
+            if !config_obj.get().is_null() {
+                let v_obj = JS_NewPlainObject(cx);
+                if !v_obj.is_null() {
+                    let v_val = ObjectValue(v_obj);
+                    rooted!(&in(cx) let v_r = v_val);
+                    JS_DefineProperty(cx.raw_cx(), config_obj.handle().into(), c"variables".as_ptr(), v_r.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+                JS_DefineProperty3(cx, proc_obj.handle(), c"config".as_ptr(), config_obj.handle(), JSPROP_ENUMERATE as u32);
+            }
+        }
+
         // process.argv0
         {
             let args: Vec<::std::string::String> = ::std::env::args().collect();
@@ -1959,6 +1982,88 @@ unsafe extern "C" fn process_uptime(
         None => 0.0,
     };
     args.rval().set(mozjs::jsval::DoubleValue(uptime_secs));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_memory_usage(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let rss = ::std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &::std::process::id().to_string()])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok())
+        .unwrap_or(0.0)
+        * 1024.0;
+    let rss_val = mozjs::jsval::DoubleValue(rss);
+    let rss_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &rss_val };
+    JS_DefineProperty(cx, obj_h, c"rss".as_ptr(), rss_h, JSPROP_ENUMERATE as u32);
+    let heap_total_val = mozjs::jsval::DoubleValue(0.0);
+    let heap_total_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &heap_total_val };
+    JS_DefineProperty(cx, obj_h, c"heapTotal".as_ptr(), heap_total_h, JSPROP_ENUMERATE as u32);
+    let heap_used_val = mozjs::jsval::DoubleValue(0.0);
+    let heap_used_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &heap_used_val };
+    JS_DefineProperty(cx, obj_h, c"heapUsed".as_ptr(), heap_used_h, JSPROP_ENUMERATE as u32);
+    let external_val = mozjs::jsval::DoubleValue(0.0);
+    let external_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &external_val };
+    JS_DefineProperty(cx, obj_h, c"external".as_ptr(), external_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(obj));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_kill(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    if _argc < 1 {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let pid_val = args.get(0);
+    let pid = if pid_val.is_int32() {
+        pid_val.to_int32() as i32
+    } else {
+        args.rval().set(BooleanValue(false));
+        return true;
+    };
+    let sig_num = if _argc >= 2 {
+        let sig_val = args.get(1);
+        if sig_val.is_int32() {
+            sig_val.to_int32()
+        } else {
+            15
+        }
+    } else {
+        15
+    };
+    let _ = libc::kill(pid, sig_num);
+    args.rval().set(BooleanValue(true));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_umask(
+    _cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let old = unsafe { libc::umask(0o022) };
+    unsafe { libc::umask(old) };
+    args.rval().set(Int32Value(old as i32));
     true
 }
 
