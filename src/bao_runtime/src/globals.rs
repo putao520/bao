@@ -23,6 +23,7 @@ pub unsafe fn install_all(
     crate::fetch_api::install_response_constructor(cx, global);
     crate::fetch_api::install_headers_constructor(cx, global);
     crate::require::install_require(cx, global);
+    install_module_global(cx, global);
     crate::timers::install_timer_globals(cx, global);
     crate::web_api::install_performance(cx, global);
     crate::web_api::install_websocket_constructor(cx, global);
@@ -53,6 +54,36 @@ pub unsafe fn install_all(
     crate::node_timers_module::install(cx);
     crate::node_readline::install(cx);
     install_assert_strict(cx);
+}
+
+pub fn install_module_global(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        let raw = cx.raw_cx();
+        rooted!(&in(cx) let mod_obj = mozjs_sys::jsapi::JS_NewPlainObject(raw));
+        if mod_obj.get().is_null() {
+            return;
+        }
+        let exports_obj = mozjs_sys::jsapi::JS_NewPlainObject(raw);
+        if !exports_obj.is_null() {
+            let ev = mozjs::jsval::ObjectValue(exports_obj);
+            rooted!(&in(cx) let ev_r = ev);
+            let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_obj.get() };
+            let ev_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ev_r.get() };
+            JS_DefineProperty(raw, mod_h, c"exports".as_ptr(), ev_h, JSPROP_ENUMERATE as u32);
+        }
+        let dot_str = JS_NewStringCopyZ(raw, c".".as_ptr());
+        if !dot_str.is_null() {
+            let id_val = mozjs::jsval::StringValue(&*dot_str);
+            rooted!(&in(cx) let id_r = id_val);
+            let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_obj.get() };
+            let id_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &id_r.get() };
+            JS_DefineProperty(raw, mod_h, c"id".as_ptr(), id_h, (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+        }
+        JS_DefineProperty3(cx, global, c"module".as_ptr(), mod_obj.handle(), JSPROP_ENUMERATE as u32);
+    }
 }
 
 pub fn install_buffer_global(

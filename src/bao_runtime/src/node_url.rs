@@ -337,6 +337,11 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
                 unsafe { JS_DefineProperty(cx.raw_cx(), mod_h, c"URLSearchParams".as_ptr(), val_h, JSPROP_ENUMERATE as u32); }
             }
         }
+        unsafe {
+            JS_DefineFunction(cx.raw_cx(), mod_h, c"parse".as_ptr(), Some(url_parse_fn), 2, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx.raw_cx(), mod_h, c"format".as_ptr(), Some(url_format_fn), 1, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx.raw_cx(), mod_h, c"resolve".as_ptr(), Some(url_resolve_fn), 2, JSPROP_ENUMERATE as u32);
+        }
         cache_builtin("url", url_mod.get());
     }
 }
@@ -575,6 +580,118 @@ unsafe extern "C" fn sp_entries(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 unsafe extern "C" fn sp_for_each(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(mozjs::jsval::NullValue());
+        return true;
+    }
+    let input = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let _parse_slashes = if argc > 1 && (*args.get(1).ptr).is_boolean() {
+        (*args.get(1).ptr).to_boolean()
+    } else {
+        false
+    };
+
+    let state = match parse_url(&input, None) {
+        Some(s) => s,
+        None => {
+            args.rval().set(mozjs::jsval::NullValue());
+            return true;
+        }
+    };
+
+    let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if obj.is_null() {
+        args.rval().set(mozjs::jsval::NullValue());
+        return true;
+    }
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    for (name, value) in [
+        ("href", state.href.as_str()),
+        ("protocol", state.protocol.as_str()),
+        ("host", state.host.as_str()),
+        ("hostname", state.hostname.as_str()),
+        ("port", state.port.as_str()),
+        ("pathname", state.pathname.as_str()),
+        ("search", state.search.as_str()),
+        ("hash", state.hash.as_str()),
+        ("path", format!("{}{}", state.pathname, state.search).as_str()),
+    ] {
+        let Ok(c_name) = CString::new(name) else { continue };
+        let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const ::std::os::raw::c_char, value.len());
+        if !js_str.is_null() {
+            let val = StringValue(&*js_str);
+            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+            JS_DefineProperty(cx, obj_h, c_name.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+        }
+    }
+
+    args.rval().set(ObjectValue(obj));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        let empty = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+        args.rval().set(if empty.is_null() { UndefinedValue() } else { StringValue(&*empty) });
+        return true;
+    }
+    let input = *args.get(0).ptr;
+    if input.is_string() {
+        args.rval().set(input);
+        return true;
+    }
+    if input.is_object() {
+        let obj = input.to_object();
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        let mut href_val = UndefinedValue();
+        JS_GetProperty(cx, obj_h, c"href".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut href_val });
+        if href_val.is_string() {
+            args.rval().set(href_val);
+            return true;
+        }
+        let mut proto_val = UndefinedValue();
+        let mut host_val = UndefinedValue();
+        let mut path_val = UndefinedValue();
+        JS_GetProperty(cx, obj_h, c"protocol".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val });
+        JS_GetProperty(cx, obj_h, c"host".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut host_val });
+        JS_GetProperty(cx, obj_h, c"path".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut path_val });
+        let proto = if proto_val.is_string() { crate::js_to_rust_string(cx, proto_val) } else { "http:".to_string() };
+        let host = if host_val.is_string() { crate::js_to_rust_string(cx, host_val) } else { "localhost".to_string() };
+        let path = if path_val.is_string() { crate::js_to_rust_string(cx, path_val) } else { "/".to_string() };
+        let formatted = format!("{}//{}{}", proto, host, path);
+        let Ok(c_str) = CString::new(formatted) else { args.rval().set(UndefinedValue()); return true; };
+        let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+        args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+        return true;
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn url_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 || !(*args.get(0).ptr).is_string() || !(*args.get(1).ptr).is_string() {
+        args.rval().set(*args.get(0).ptr);
+        return true;
+    }
+    let base = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let relative = crate::js_to_rust_string(cx, *args.get(1).ptr);
+    let resolved = match parse_url(&relative, Some(&base)) {
+        Some(s) => s.href,
+        None => relative,
+    };
+    let Ok(c_str) = CString::new(resolved) else { args.rval().set(UndefinedValue()); return true; };
+    let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+    args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
     true
 }
 
