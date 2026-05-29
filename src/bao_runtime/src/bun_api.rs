@@ -1847,19 +1847,49 @@ unsafe extern "C" fn process_next_tick(
         return false;
     }
 
-    let cb_val_obj = mozjs::jsval::ObjectValue(cb_val.to_object());
-    let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val_obj };
+    let cb_obj = cb_val.to_object();
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    let global_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
 
-    let empty_args = HandleValueArray::empty();
-    let mut rval = UndefinedValue();
-    let rval_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-    JS_CallFunctionValue(cx, global_handle, cb_h, &empty_args, rval_handle);
+    // Get queueMicrotask from global and call it with the callback
+    // This defers execution to the next microtask tick
+    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+    let mut qmt_val = UndefinedValue();
+    let qmt_rv = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut qmt_val };
+    let qmt_name = ::std::ffi::CString::new("queueMicrotask").unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+    JS_GetProperty(cx, global_h, qmt_name.as_ptr(), qmt_rv);
+
+    if qmt_val.is_object() {
+        // Store callback in a thread-local so the eval can pick it up
+        // Simpler approach: use JS::Call to invoke queueMicrotask(cb)
+        let _qmt_obj = qmt_val.to_object();
+        let cb_val_obj = mozjs::jsval::ObjectValue(cb_obj);
+
+        // Use JS_CallFunctionName-like pattern via direct property + call
+        // Safest: eval a minimal expression that calls queueMicrotask with the callback
+        // We pass the callback as a rooted value on the argument stack
+        let _empty_args = HandleValueArray::empty();
+
+        // Store cb in a global temporary, eval queueMicrotask to pick it up
+        let cb_name = ::std::ffi::CString::new("__nextTickCb").unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+        let cb_h_val = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val_obj };
+        JS_SetProperty(cx, global_h, cb_name.as_ptr(), cb_h_val);
+
+        let eval_src = "queueMicrotask(__nextTickCb); delete globalThis.__nextTickCb;";
+        let _c_src = ::std::ffi::CString::new(eval_src).unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+        let c_filename = ::std::ffi::CString::new("<nextTick>").unwrap_or_else(|_| ::std::ffi::CString::new("<eval>").unwrap());
+        let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
+        if !opts.is_null() {
+            let mut src = mozjs::rust::transform_str_to_source_text(eval_src);
+            let mut eval_rval = UndefinedValue();
+            let eval_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
+            mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, eval_rval_h);
+            libc::free(opts as *mut _);
+        }
+    }
 
     args.rval().set(UndefinedValue());
     true

@@ -272,7 +272,7 @@ unsafe extern "C" fn host_dynamic_import(
 
         // Last resort: create a namespace-like wrapper by calling require() via JS eval
         let eval_src = format!("require('{}')", stripped);
-        let c_src = CString::new(eval_src.clone()).unwrap_or_else(|_| CString::new("undefined").unwrap());
+        let _c_src = CString::new(eval_src.clone()).unwrap_or_else(|_| CString::new("undefined").unwrap());
         let c_filename = CString::new("<dynamic-import>").unwrap_or_else(|_| CString::new("<eval>").unwrap());
         let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
         if !opts.is_null() {
