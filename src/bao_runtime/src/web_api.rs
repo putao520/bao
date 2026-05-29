@@ -562,12 +562,20 @@ unsafe extern "C" fn queue_microtask_fn(cx: *mut JSContext, argc: u32, vp: *mut 
         return true;
     }
     let cb_val = ObjectValue(callback);
-    let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
     let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-    let empty_args = HandleValueArray::empty();
-    let mut rval = UndefinedValue();
-    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-    JS_CallFunctionValue(cx, global_h, cb_h, &empty_args, rval_h);
+    let cb_name = ::std::ffi::CString::new("__microtaskCb").expect("static ASCII");
+    let cb_h_val = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
+    JS_SetProperty(cx, global_h, cb_name.as_ptr(), cb_h_val);
+    let eval_src = "Promise.resolve().then(globalThis.__microtaskCb); delete globalThis.__microtaskCb;";
+    let c_filename = ::std::ffi::CString::new("<queueMicrotask>").unwrap_or_else(|_| ::std::ffi::CString::new("<eval>").unwrap());
+    let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
+    if !opts.is_null() {
+        let mut src = mozjs::rust::transform_str_to_source_text(eval_src);
+        let mut eval_rval = UndefinedValue();
+        let eval_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
+        mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, eval_rval_h);
+        libc::free(opts as *mut _);
+    }
     args.rval().set(UndefinedValue());
     true
 }
