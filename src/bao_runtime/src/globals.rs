@@ -2125,7 +2125,7 @@ unsafe extern "C" fn websocket_constructor(
 
     // Attempt connection
     match tungstenite::client::connect(url.as_str()) {
-        Ok((mut socket, _response)) => {
+        Ok((socket, _response)) => {
             // Update readyState to OPEN
             JS_SetProperty(cx, obj_h, c"readyState".as_ptr(), Handle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &Int32Value(1),
@@ -2839,7 +2839,7 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         return true;
     }
     let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()));
-    match base64::decode(&s) {
+    match base64::engine::general_purpose::STANDARD.decode(&s) {
         Ok(bytes) => {
             let decoded = String::from_utf8_lossy(&bytes);
             let c_str = ::std::ffi::CString::new(decoded.into_owned()).unwrap_or_default();
@@ -2863,7 +2863,7 @@ unsafe extern "C" fn btoa_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         return true;
     }
     let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()));
-    let encoded = base64::encode(s.as_bytes());
+    let encoded = base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
     let c_str = ::std::ffi::CString::new(encoded).unwrap_or_default();
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
     if js_str.is_null() { args.rval().set(UndefinedValue()); }

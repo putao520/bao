@@ -45,7 +45,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, http_obj.handle(), c"get".as_ptr(), Some(http_get), 2, JSPROP_ENUMERATE as u32);
 
         {
-            let server_src = CString::new(r#"
+            let _server_src = CString::new(r#"
               function Server(opts, cb) { if (typeof opts === "function") { cb = opts; } if (cb) this.on("request", cb); }
               Server.prototype.listen = function() { return this; };
               Server.prototype.close = function() { return this; };

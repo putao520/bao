@@ -1,6 +1,5 @@
 use ::std::ffi::CString;
 use ::std::fs;
-use ::std::io::{Read as IoRead, Write as IoWrite};
 use ::std::path::Path;
 
 use mozjs::glue::NewCompileOptions;

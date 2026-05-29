@@ -248,7 +248,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let cx_raw = cx.raw_cx();
 
         let mod_ptr = mod_obj.get();
-        let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr };
+        let _mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr };
 
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflateSync".as_ptr(), Some(zlib_deflate_sync), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"inflateSync".as_ptr(), Some(zlib_inflate_sync), 1, JSPROP_ENUMERATE as u32);

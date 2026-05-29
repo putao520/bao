@@ -71,7 +71,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"ifError".as_ptr(), Some(assert_if_error), 1, 0);
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"deepStrictEqual".as_ptr(), Some(assert_deep_equal), 2, 0);
 
-        let err_src = ::std::ffi::CString::new(r#"
+        let _err_src = ::std::ffi::CString::new(r#"
           function AssertionError(options) {
             this.message = (options && options.message) || "Assertion failed";
             this.actual = options && options.actual;
