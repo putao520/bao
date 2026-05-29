@@ -233,6 +233,40 @@ var fatalDec = new TextDecoder("utf-8", { fatal: true });
 assert(fatalDec !== undefined, "TextDecoder with fatal option");
 
 // ============================================================
+// process enhancements
+// ============================================================
+assertEq(typeof process.cwd(), "string", "process.cwd returns string");
+assertEq(typeof process.chdir, "function", "process.chdir is function");
+assertEq(typeof process.argv0, "string", "process.argv0 is string");
+assertEq(typeof process.execPath, "string", "process.execPath is string");
+assertEq(typeof process.hrtime, "function", "process.hrtime is function");
+assertEq(typeof process.uptime, "function", "process.uptime is function");
+assert(typeof process.hrtime() === "object", "process.hrtime returns array");
+assert(typeof process.uptime() === "number", "process.uptime returns number");
+
+// ============================================================
+// performance.now()
+// ============================================================
+assertEq(typeof performance, "object", "performance global exists");
+assertEq(typeof performance.now, "function", "performance.now is function");
+var t1 = performance.now();
+assert(typeof t1 === "number", "performance.now returns number");
+assert(t1 > 0, "performance.now > 0");
+
+// ============================================================
+// URL / URLSearchParams as globals
+// ============================================================
+assertEq(typeof URL, "function", "URL global constructor exists");
+assertEq(typeof URLSearchParams, "function", "URLSearchParams global constructor exists");
+var url = new URL("https://example.com/path?foo=bar");
+assertEq(url.hostname, "example.com", "URL.hostname");
+assertEq(url.pathname, "/path", "URL.pathname");
+assertEq(url.search, "?foo=bar", "URL.search");
+var params = new URLSearchParams("x=1&y=2");
+assertEq(params.get("x"), "1", "URLSearchParams.get");
+assertEq(params.has("y"), true, "URLSearchParams.has");
+
+// ============================================================
 // Results
 // ============================================================
 console.log("\n========== Phase 1 Integration Test ==========");

@@ -329,6 +329,35 @@ pub fn install_process_global(
         // process.uptime() — process uptime in seconds
         JS_DefineFunction(cx, proc_obj.handle(), c"uptime".as_ptr(), ::std::option::Option::Some(process_uptime), 0, JSPROP_ENUMERATE as u32);
 
+        // process.chdir() — change working directory
+        JS_DefineFunction(cx, proc_obj.handle(), c"chdir".as_ptr(), ::std::option::Option::Some(process_chdir), 1, JSPROP_ENUMERATE as u32);
+
+        // process.argv0 — first argument (binary path)
+        {
+            let args: Vec<::std::string::String> = ::std::env::args().collect();
+            if !args.is_empty() {
+                if let Ok(c_arg) = ::std::ffi::CString::new(args[0].as_str()) {
+                    let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_arg.as_ptr());
+                    if !js_str.is_null() {
+                        rooted!(&in(cx) let v = StringValue(&*js_str));
+                        JS_DefineProperty(cx.raw_cx(), proc_obj.handle().into(), c"argv0".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+                    }
+                }
+            }
+        }
+
+        // process.execPath — path to the bao binary
+        {
+            let exec_path = ::std::env::current_exe().unwrap_or_default();
+            if let Ok(c_path) = ::std::ffi::CString::new(exec_path.to_string_lossy().into_owned()) {
+                let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_path.as_ptr());
+                if !js_str.is_null() {
+                    rooted!(&in(cx) let v = StringValue(&*js_str));
+                    JS_DefineProperty(cx.raw_cx(), proc_obj.handle().into(), c"execPath".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+            }
+        }
+
         JS_DefineProperty3(cx, global, c"process".as_ptr(), proc_obj.handle(), JSPROP_ENUMERATE as u32);
     }
 }
@@ -1300,6 +1329,33 @@ unsafe extern "C" fn process_exit(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_chdir(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, b"process.chdir requires a directory path\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let dir_val = *args.get(0).ptr;
+    if !dir_val.is_string() {
+        JS_ReportErrorUTF8(cx, b"process.chdir requires a string\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let dir = jsstr_to_string(cx, NonNull::new_unchecked(dir_val.to_string()));
+    if let Err(e) = ::std::env::set_current_dir(&dir) {
+        let msg = format!("process.chdir failed: {}", e);
+        let c_msg = CString::new(msg).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn process_stdout_write(
     cx: *mut JSContext,
     argc: u32,
@@ -1831,6 +1887,31 @@ unsafe extern "C" fn buffer_copy(
     true
 }
 
+pub fn install_performance(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        rooted!(&in(cx) let perf_obj = JS_NewPlainObject(cx));
+        if perf_obj.get().is_null() {
+            return;
+        }
+        JS_DefineFunction(cx, perf_obj.handle(), c"now".as_ptr(), Some(performance_now), 0, JSPROP_ENUMERATE as u32);
+        JS_DefineProperty3(cx, global, c"performance".as_ptr(), perf_obj.handle(), JSPROP_ENUMERATE as u32);
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn performance_now(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let now = ::std::time::SystemTime::now()
+        .duration_since(::std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let ms = now.as_secs_f64() * 1000.0;
+    args.rval().set(mozjs::jsval::DoubleValue(ms));
+    true
+}
+
 pub unsafe fn install_all(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
@@ -1843,6 +1924,7 @@ pub unsafe fn install_all(
     install_headers_constructor(cx, global);
     crate::require::install_require(cx, global);
     crate::timers::install_timer_globals(cx, global);
+    install_performance(cx, global);
     crate::node_events::install(cx);
     crate::node_path::install(cx);
     crate::node_fs::install(cx);
