@@ -267,7 +267,7 @@ unsafe fn return_string_content(cx: *mut JSContext, args: &CallArgs, data: &[u8]
             if js_str.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::StringValue(&*js_str)); }
         }
         Some("base64") => {
-            let encoded = base64_encode(data);
+            let encoded = base64::encode(data);
             let c_str = CString::new(encoded).unwrap_or_default();
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
             if js_str.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::StringValue(&*js_str)); }
@@ -812,7 +812,7 @@ unsafe fn string_or_buffer(cx: *mut JSContext, data: &[u8], encoding: ::std::opt
             if js_str.is_null() { UndefinedValue() } else { mozjs::jsval::StringValue(&*js_str) }
         }
         Some("base64") => {
-            let encoded = base64_encode(data);
+            let encoded = base64::encode(data);
             let c_str = CString::new(encoded).unwrap_or_default();
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
             if js_str.is_null() { UndefinedValue() } else { mozjs::jsval::StringValue(&*js_str) }
@@ -850,10 +850,15 @@ unsafe fn create_stats_object(cx: *mut JSContext, meta: &fs::Metadata) -> *mut J
         define_num_prop(cx, stats_h, "ctimeMs", meta.ctime() as f64 * 1000.0);
     }
 
-    // Boolean properties
-    define_bool_prop(cx, stats_h, "isFile", is_file);
-    define_bool_prop(cx, stats_h, "isDirectory", is_dir);
-    define_bool_prop(cx, stats_h, "isSymbolicLink", is_symlink);
+    // Store boolean values as hidden properties for method callbacks
+    define_bool_prop(cx, stats_h, "_isFile", is_file);
+    define_bool_prop(cx, stats_h, "_isDirectory", is_dir);
+    define_bool_prop(cx, stats_h, "_isSymbolicLink", is_symlink);
+
+    // Node.js Stats methods
+    JS_DefineFunction(cx, stats_h, c"isFile".as_ptr(), Some(stats_is_file), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, stats_h, c"isDirectory".as_ptr(), Some(stats_is_directory), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, stats_h, c"isSymbolicLink".as_ptr(), Some(stats_is_symlink), 0, JSPROP_ENUMERATE as u32);
 
     stats
 }
@@ -922,31 +927,36 @@ unsafe fn define_bool_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name:
     JS_DefineProperty(cx, obj, c_name.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
 }
 
-fn base64_encode(data: &[u8]) -> ::std::string::String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = ::std::string::String::with_capacity((data.len() + 2) / 3 * 4);
-    let mut i = 0;
-    while i + 2 < data.len() {
-        let n = (data[i] as u32) << 16 | (data[i + 1] as u32) << 8 | data[i + 2] as u32;
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
-        out.push(TABLE[(n & 0x3F) as usize] as char);
-        i += 3;
-    }
-    let remaining = data.len() - i;
-    if remaining == 1 {
-        let n = data[i] as u32;
-        out.push(TABLE[((n >> 2) & 0x3F) as usize] as char);
-        out.push(TABLE[((n << 4) & 0x30) as usize] as char);
-        out.push('=');
-        out.push('=');
-    } else if remaining == 2 {
-        let n = (data[i] as u32) << 8 | data[i + 1] as u32;
-        out.push(TABLE[((n >> 10) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 4) & 0x3F) as usize] as char);
-        out.push(TABLE[((n << 2) & 0x3C) as usize] as char);
-        out.push('=');
-    }
-    out
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_hidden_bool(cx: *mut JSContext, obj: *mut JSObject, prop: &str) -> bool {
+    let c_name = CString::new(prop).unwrap_or_default();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut val = UndefinedValue();
+    let val_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
+    JS_GetProperty(cx, obj_h, c_name.as_ptr(), val_h);
+    val.to_boolean()
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stats_is_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv().to_object();
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this, "_isFile")));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stats_is_directory(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv().to_object();
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this, "_isDirectory")));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stats_is_symlink(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv().to_object();
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this, "_isSymbolicLink")));
+    true
 }
