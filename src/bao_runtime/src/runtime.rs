@@ -12,10 +12,22 @@ pub struct BaoRuntime {
 
 impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
+        Self::init_env_aliases();
         let mut ctx = JsContext::new()?;
         ctx.set_global_setup(globals::install_all);
         ctx.set_post_eval_hook(timers::drain_and_check);
         ::std::result::Result::Ok(BaoRuntime { ctx })
+    }
+
+    fn init_env_aliases() {
+        for (key, value) in ::std::env::vars() {
+            if let Some(suffix) = key.strip_prefix("BAO_") {
+                let bun_key = format!("BUN_{}", suffix);
+                if ::std::env::var(&bun_key).is_err() {
+                    unsafe { ::std::env::set_var(&bun_key, &value); }
+                }
+            }
+        }
     }
 
     pub fn eval(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {

@@ -10,3 +10,4 @@ bao_engine = { path = "../bao_engine" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
 log = "0.4"
+minreq = { version = "2", features = ["https"] }

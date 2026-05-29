@@ -23,6 +23,7 @@ use crate::value::{JsValue, jsval_to_jsvalue};
 
 thread_local! {
     static MODULE_CACHE: RefCell<HashMap<::std::string::String, *mut JSObject>> = RefCell::new(HashMap::new());
+    static CURRENT_DIR: RefCell<::std::option::Option<::std::path::PathBuf>> = RefCell::new(None);
 }
 
 pub struct ModuleLoader;
@@ -43,6 +44,16 @@ impl ModuleLoader {
         global_setup: Option<GlobalSetupFn>,
         post_eval_hook: Option<PostEvalHook>,
     ) -> ::std::result::Result<JsValue, JsError> {
+        let abs_filename = if Path::new(filename).is_absolute() {
+            PathBuf::from(filename)
+        } else {
+            ::std::env::current_dir().unwrap_or_default().join(filename)
+        };
+        let base_dir = abs_filename.parent().map(|p| p.to_path_buf())
+            .or_else(|| ::std::env::current_dir().ok());
+
+        CURRENT_DIR.with(|d| *d.borrow_mut() = base_dir.clone());
+
         let options = RealmOptions::default();
 
         rooted!(&in(cx) let global = unsafe {
@@ -128,10 +139,22 @@ unsafe extern "C" fn host_resolve_imported_module(
         NonNull::new(specifier).unwrap(),
     );
 
-    let resolved = resolve_specifier(&specifier_str);
+    let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
+    let resolved = resolve_specifier(&specifier_str, base_dir.as_deref());
+
     let ::std::option::Option::Some(path) = resolved else {
         return ::std::ptr::null_mut();
     };
+
+    let canonical = path.canonicalize().unwrap_or(path.clone());
+    let cache_key = canonical.to_string_lossy().into_owned();
+
+    let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
+    if let Some(existing) = cached {
+        if !existing.is_null() {
+            return existing;
+        }
+    }
 
     let content = match fs::read_to_string(&path) {
         ::std::result::Result::Ok(c) => c,
@@ -139,7 +162,7 @@ unsafe extern "C" fn host_resolve_imported_module(
     };
 
     unsafe {
-        let c_filename = CString::new(path.to_string_lossy().into_owned())
+        let c_filename = CString::new(canonical.to_string_lossy().into_owned())
             .unwrap_or_else(|_| CString::new("<module>").unwrap());
         let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
         if opts.is_null() {
@@ -148,6 +171,9 @@ unsafe extern "C" fn host_resolve_imported_module(
         let mut src = transform_str_to_source_text(&content);
         let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
         libc::free(opts as *mut _);
+        if !module.is_null() {
+            MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, module));
+        }
         module
     }
 }
@@ -177,20 +203,127 @@ unsafe extern "C" fn host_populate_import_meta(
     }
 }
 
-fn resolve_specifier(specifier: &str) -> ::std::option::Option<PathBuf> {
+fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
     let path = Path::new(specifier);
-    if path.is_absolute() && path.exists() {
-        return ::std::option::Option::Some(path.to_path_buf());
+
+    // Absolute path
+    if path.is_absolute() {
+        if let Some(resolved) = try_extensions(path) {
+            return Some(resolved);
+        }
+        if let Some(resolved) = try_index(path) {
+            return Some(resolved);
+        }
+        if path.exists() {
+            return Some(path.to_path_buf());
+        }
+        return None;
     }
 
-    for ext in ["", ".js", ".mjs"] {
-        let candidate = PathBuf::from(format!("{}{}", specifier, ext));
+    // Relative path (./ or ../) — resolve against base_dir
+    if specifier.starts_with("./") || specifier.starts_with("../") {
+        let base = base_dir.unwrap_or_else(|| Path::new("."));
+        let full_path = base.join(specifier);
+        if let Some(resolved) = try_extensions(&full_path) {
+            return Some(resolved);
+        }
+        if let Some(resolved) = try_index(&full_path) {
+            return Some(resolved);
+        }
+        if full_path.exists() {
+            return Some(full_path);
+        }
+        return None;
+    }
+
+    // Bare specifier → node_modules lookup from base_dir or CWD
+    resolve_node_modules(specifier, base_dir)
+}
+
+fn try_extensions(path: &Path) -> ::std::option::Option<PathBuf> {
+    for ext in [".js", ".mjs", ".ts", ".tsx", ".jsx"] {
+        let candidate = PathBuf::from(format!("{}{}", path.display(), ext));
         if candidate.exists() {
-            return ::std::option::Option::Some(candidate);
+            return Some(candidate);
         }
     }
+    None
+}
 
-    ::std::option::Option::None
+fn try_index(dir: &Path) -> ::std::option::Option<PathBuf> {
+    if !dir.is_dir() {
+        return None;
+    }
+    for name in ["index.js", "index.mjs", "index.ts", "index.tsx"] {
+        let candidate = dir.join(name);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn resolve_node_modules(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
+    let start = match base_dir {
+        Some(d) => d.to_path_buf(),
+        None => ::std::env::current_dir().ok()?,
+    };
+    let mut dir = start.as_path();
+
+    loop {
+        let nm_dir = dir.join("node_modules");
+        if nm_dir.is_dir() {
+            let target = nm_dir.join(specifier);
+            if let Some(resolved) = try_extensions(&target) {
+                return Some(resolved);
+            }
+            if let Some(resolved) = try_index(&target) {
+                return Some(resolved);
+            }
+            // Check package.json "main" field
+            if let Some(resolved) = resolve_package_main(&target) {
+                return Some(resolved);
+            }
+        }
+
+        dir = dir.parent()?;
+    }
+}
+
+fn resolve_package_main(pkg_dir: &Path) -> ::std::option::Option<PathBuf> {
+    let pkg_json_path = pkg_dir.join("package.json");
+    if !pkg_json_path.exists() {
+        return None;
+    }
+
+    let content = ::std::fs::read_to_string(&pkg_json_path).ok()?;
+    let main_field = extract_json_string_field(&content, "main")
+        .or_else(|| extract_json_string_field(&content, "module"))
+        .unwrap_or_else(|| "index.js".to_string());
+
+    let main_path = pkg_dir.join(&main_field);
+    if let Some(resolved) = try_extensions(&main_path) {
+        return Some(resolved);
+    }
+    if main_path.exists() {
+        return Some(main_path);
+    }
+    None
+}
+
+fn extract_json_string_field(json: &str, field: &str) -> ::std::option::Option<String> {
+    let pattern = format!("\"{}\"", field);
+    let start = json.find(&pattern)?;
+    let after = &json[start + pattern.len()..];
+    let colon_pos = after.find(':')?;
+    let after_colon = &after[colon_pos + 1..];
+    let trimmed = after_colon.trim_start();
+    if !trimmed.starts_with('"') {
+        return None;
+    }
+    let value_start = &trimmed[1..];
+    let end = value_start.find('"')?;
+    Some(value_start[..end].to_string())
 }
 
 fn extract_module_error(cx: &mut mozjs::context::JSContext) -> JsError {

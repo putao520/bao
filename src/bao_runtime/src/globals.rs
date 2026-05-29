@@ -360,11 +360,382 @@ unsafe extern "C" fn process_exit(
     ::std::process::exit(code);
 }
 
+pub fn install_buffer_global(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        rooted!(&in(cx) let buf_obj = JS_NewPlainObject(cx));
+        if buf_obj.get().is_null() {
+            return;
+        }
+
+        JS_DefineFunction(
+            cx, buf_obj.handle(), c"from".as_ptr(),
+            ::std::option::Option::Some(buffer_from), 1, JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineFunction(
+            cx, buf_obj.handle(), c"alloc".as_ptr(),
+            ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineFunction(
+            cx, buf_obj.handle(), c"isBuffer".as_ptr(),
+            ::std::option::Option::Some(buffer_is_buffer), 1, JSPROP_ENUMERATE as u32,
+        );
+
+        JS_DefineProperty3(cx, global, c"Buffer".as_ptr(), buf_obj.handle(), JSPROP_ENUMERATE as u32);
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_from(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let input = *args.get(0).ptr;
+    if input.is_string() {
+        let js_str = ::std::ptr::NonNull::new(input.to_string()).unwrap();
+        let s = mozjs::conversions::jsstr_to_string(cx, js_str);
+        let bytes = s.as_bytes();
+        create_buffer_from_bytes(cx, &args, bytes)
+    } else if input.is_object() {
+        let obj = input.to_object();
+        let obj_handle = Handle::<*mut JSObject> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &obj,
+        };
+        let mut length_val = UndefinedValue();
+        let length_handle = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut length_val,
+        };
+        JS_GetProperty(cx, obj_handle, c"length".as_ptr(), length_handle);
+        let len = if length_val.is_int32() { length_val.to_int32() as usize } else { 0 };
+
+        let mut bytes = Vec::with_capacity(len);
+        for i in 0..len {
+            let mut elem = UndefinedValue();
+            let elem_handle = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            };
+            JS_GetElement(cx, obj_handle, i as u32, elem_handle);
+            bytes.push(if elem.is_int32() { elem.to_int32() as u8 } else { 0 });
+        }
+        create_buffer_from_bytes(cx, &args, &bytes)
+    } else {
+        args.rval().set(UndefinedValue());
+        true
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn create_buffer_from_bytes(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    bytes: &[u8],
+) -> bool {
+    let buf_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if buf_obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &buf_obj };
+
+    let length_val = Int32Value(bytes.len() as i32);
+    let length_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &length_val };
+    JS_DefineProperty(cx, obj_handle, c"length".as_ptr(), length_handle, JSPROP_ENUMERATE as u32);
+
+    let marker_val = Int32Value(1);
+    let marker_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &marker_val };
+    JS_DefineProperty(cx, obj_handle, c"_isBuffer".as_ptr(), marker_handle, 0);
+
+    for (i, &byte) in bytes.iter().enumerate() {
+        let val = Int32Value(byte as i32);
+        let val_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+        JS_DefineElement(cx, obj_handle, i as u32, val_handle, JSPROP_ENUMERATE as u32);
+    }
+
+    let to_string_fn = JS_NewFunction(cx, Some(buffer_to_string), 0, 0, c"toString".as_ptr());
+    if !to_string_fn.is_null() {
+        let fn_ptr = JS_GetFunctionObject(to_string_fn);
+        let fn_val = mozjs::jsval::ObjectValue(fn_ptr);
+        let fn_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
+        JS_DefineProperty(cx, obj_handle, c"toString".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
+    }
+
+    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_to_string(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let obj = this.to_object();
+    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+
+    let mut length_val = UndefinedValue();
+    let length_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut length_val };
+    JS_GetProperty(cx, obj_handle, c"length".as_ptr(), length_handle);
+
+    let len = if length_val.is_int32() { length_val.to_int32() as usize } else { 0 };
+    let mut bytes = Vec::with_capacity(len);
+    for i in 0..len {
+        let mut elem = UndefinedValue();
+        let elem_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem };
+        JS_GetElement(cx, obj_handle, i as u32, elem_handle);
+        bytes.push(if elem.is_int32() { elem.to_int32() as u8 } else { 0 });
+    }
+
+    let s = String::from_utf8_lossy(&bytes).into_owned();
+    let Ok(c_s) = ::std::ffi::CString::new(s) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+    let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
+    if !js_str.is_null() {
+        args.rval().set(StringValue(&*js_str));
+    } else {
+        args.rval().set(UndefinedValue());
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_alloc(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let size = if argc > 0 {
+        let v = *args.get(0).ptr;
+        if v.is_int32() { v.to_int32().max(0) as usize } else { 0 }
+    } else { 0 };
+
+    create_buffer_from_bytes(cx, &args, &vec![0u8; size])
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_is_buffer(
+    _cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(mozjs::jsval::BooleanValue(false));
+        return true;
+    }
+    let v = *args.get(0).ptr;
+    if !v.is_object() {
+        args.rval().set(mozjs::jsval::BooleanValue(false));
+        return true;
+    }
+    let obj = v.to_object();
+    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut marker = UndefinedValue();
+    let marker_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut marker };
+    JS_GetProperty(_cx, obj_handle, c"_isBuffer".as_ptr(), marker_handle);
+    args.rval().set(mozjs::jsval::BooleanValue(marker.is_int32() && marker.to_int32() == 1));
+    true
+}
+
 pub unsafe fn install_all(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     install_bun_global(cx, global);
     install_process_global(cx, global);
+    install_buffer_global(cx, global);
+    install_fetch_global(cx, global);
     crate::timers::install_timer_globals(cx, global);
+}
+
+pub fn install_fetch_global(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        JS_DefineFunction(
+            cx, global, c"fetch".as_ptr(),
+            ::std::option::Option::Some(fetch_fn), 1, JSPROP_ENUMERATE as u32,
+        );
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fetch_fn(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, b"fetch requires a URL argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+
+    let url_val = *args.get(0).ptr;
+    if !url_val.is_string() {
+        JS_ReportErrorUTF8(cx, b"fetch requires a string URL\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+
+    let url = mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(url_val.to_string()).unwrap());
+
+    let method = if argc > 1 {
+        let opts = *args.get(1).ptr;
+        if opts.is_object() {
+            let obj = opts.to_object();
+            let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+            let mut m_val = UndefinedValue();
+            let m_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut m_val };
+            JS_GetProperty(cx, obj_handle, c"method".as_ptr(), m_handle);
+            if m_val.is_string() {
+                mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(m_val.to_string()).unwrap()).to_uppercase()
+            } else {
+                "GET".to_string()
+            }
+        } else {
+            "GET".to_string()
+        }
+    } else {
+        "GET".to_string()
+    };
+
+    let body = if argc > 1 {
+        let opts = *args.get(1).ptr;
+        if opts.is_object() {
+            let obj = opts.to_object();
+            let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+            let mut b_val = UndefinedValue();
+            let b_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut b_val };
+            JS_GetProperty(cx, obj_handle, c"body".as_ptr(), b_handle);
+            if b_val.is_string() {
+                Some(mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(b_val.to_string()).unwrap()))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let response = match do_fetch(&url, &method, body.as_deref()) {
+        Ok(resp) => resp,
+        Err(e) => {
+            let msg = format!("fetch failed: {}", e);
+            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            return false;
+        }
+    };
+
+    let resp_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if resp_obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &resp_obj };
+
+    let status_val = Int32Value(response.status_code as i32);
+    let s_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &status_val };
+    JS_DefineProperty(cx, obj_handle, c"status".as_ptr(), s_handle, JSPROP_ENUMERATE as u32);
+
+    let ok_val = mozjs::jsval::BooleanValue(response.status_code >= 200 && response.status_code < 300);
+    let ok_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ok_val };
+    JS_DefineProperty(cx, obj_handle, c"ok".as_ptr(), ok_handle, JSPROP_ENUMERATE as u32);
+
+    let Ok(c_body) = ::std::ffi::CString::new(response.body.clone()) else {
+        args.rval().set(mozjs::jsval::ObjectValue(resp_obj));
+        return true;
+    };
+    let body_str = JS_NewStringCopyZ(cx, c_body.as_ptr());
+    if !body_str.is_null() {
+        let body_val = StringValue(&*body_str);
+        let bt_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &body_val };
+        JS_DefineProperty(cx, obj_handle, c"_bodyText".as_ptr(), bt_handle, 0);
+    }
+
+    let text_fn = JS_NewFunction(cx, Some(response_text), 0, 0, c"text".as_ptr());
+    if !text_fn.is_null() {
+        let fn_ptr = JS_GetFunctionObject(text_fn);
+        let text_val = mozjs::jsval::ObjectValue(fn_ptr);
+        let t_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &text_val };
+        JS_DefineProperty(cx, obj_handle, c"text".as_ptr(), t_handle, JSPROP_ENUMERATE as u32);
+    }
+
+    args.rval().set(mozjs::jsval::ObjectValue(resp_obj));
+    true
+}
+
+struct FetchResponse {
+    status_code: u16,
+    body: String,
+}
+
+fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Result<FetchResponse, String> {
+    let req = match method {
+        "POST" => minreq::post(url),
+        "PUT" => minreq::put(url),
+        "DELETE" => minreq::delete(url),
+        "PATCH" => minreq::patch(url),
+        "HEAD" => minreq::head(url),
+        _ => minreq::get(url),
+    };
+
+    let req = if let Some(b) = body {
+        req.with_body(b)
+    } else {
+        req
+    };
+
+    let resp = req.send().map_err(|e| format!("{}", e))?;
+    ::std::result::Result::Ok(FetchResponse {
+        status_code: resp.status_code as u16,
+        body: resp.as_str().unwrap_or("").to_string(),
+    })
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn response_text(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let obj = this.to_object();
+    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut body_val = UndefinedValue();
+    let b_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
+    JS_GetProperty(cx, obj_handle, c"_bodyText".as_ptr(), b_handle);
+    args.rval().set(body_val);
+    true
 }
