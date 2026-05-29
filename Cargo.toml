@@ -6,6 +6,8 @@ members = [
     "src/bao_runtime",
     "src/bao_browser",
     "src/bao_bin",
+    "src/bao_cdp",
+    "src/bao_stealth",
     "src/opaque",
     "src/bun_alloc",
     "src/bun_core",
@@ -347,4 +349,9 @@ only_used_in_recursion = "allow"
 unnecessary_cast = "allow"
 new_ret_no_self = "allow"
 map_identity = "allow"
+
+# ─── Patch: unify mozjs across Bao + servo ─────────────────────────────────
+[patch.crates-io]
+mozjs = { path = "../mozjs/mozjs" }
+mozjs_sys = { path = "../mozjs/mozjs-sys" }
 

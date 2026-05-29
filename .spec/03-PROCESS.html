@@ -54,12 +54,12 @@
   "stages": [
     {"name": "HTML解析", "input": "HTML字符串", "output": "DOM树", "engine": "html5ever (libservo内部)"},
     {"name": "样式计算", "input": "DOM树 + CSS", "output": "ComputedStyle", "engine": "Stylo (libservo内部)"},
-    {"name": "布局计算", "input": "ComputedStyle", "output": "Layout Box树", "engine": "libservo layout / taffy"},
-    {"name": "Display List", "input": "Layout Box树", "output": "绘制指令列表", "engine": "libservo paint"},
-    {"name": "光栅化", "input": "Display List", "output": "Vec<u8> RGBA", "engine": "Vello CPU"},
-    {"name": "编码输出", "input": "RGBA像素缓冲", "output": "PNG/JPEG/WebP", "engine": "图像编码库"}
+    {"name": "布局计算", "input": "ComputedStyle", "output": "Layout Box树", "engine": "servo LayoutThread"},
+    {"name": "Display List", "input": "Layout Box树", "output": "绘制指令列表", "engine": "servo paint"},
+    {"name": "光栅化", "input": "Display List", "output": "RgbaImage", "engine": "servo webrender"},
+    {"name": "编码输出", "input": "RgbaImage", "output": "PNG/JPEG/WebP", "engine": "image crate"}
   ],
-  "constraints": ["无GPU", "无GL", "无窗口", "无WebRender", "纯内存", "零外部依赖", "可确定复现"]
+  "constraints": ["servo 内置完整渲染管线", "尊重 servo 原有设计", "无头场景使用 SoftwareRenderingContext"]
 }
 </script>
 </div>
@@ -87,13 +87,13 @@ CDP: Page.navigate(url)
   ├─ libservo layout: 布局 (script layout)
   │   └─ ComputedStyle → Layout Box 树
   │
-  ├─ bao_render: 软件光栅化
+  ├─ servo webrender: 光栅化
   │   ├─ Layout Box → Display List
-  │   ├─ Vello CPU 光栅化 Display List
-  │   └─ 输出 Vec<u8> RGBA 像素缓冲
+  │   ├─ servo webrender 光栅化
+  │   └─ 输出 RgbaImage 像素缓冲
   │
-  ├─ bao_render: 编码
-  │   └─ RGBA → PNG (或 JPEG/WebP)
+  ├─ bao_browser: 编码
+  │   └─ RgbaImage → PNG (或 JPEG/WebP) via image crate
   │
   └─ CDP: 返回 base64 编码截图
 </pre>
@@ -143,10 +143,10 @@ WebSocket Client (Playwright)
       │   ├─ Debugger.setBreakpoint → SM Debugger.Script setBreakpoint
       │   └─ Debugger.stepOver/stepInto/stepOut → SM 单步控制
       │
-      ├─ Page.* → libservo + bao_render
-      │   ├─ Page.navigate          → libservo 导航
-      │   ├─ Page.captureScreenshot → bao_render 截图
-      │   ├─ Page.reload            → libservo 重载
+      ├─ Page.* → servo WebView
+      │   ├─ Page.navigate          → WebView::load
+      │   ├─ Page.captureScreenshot → WebView::take_screenshot
+      │   ├─ Page.reload            → WebView::reload
       │   └─ Page.setContent        → libservo 设置 HTML
       │
       ├─ DOM.* → libservo DOM
@@ -181,11 +181,11 @@ WebSocket Client (Playwright)
 </div>
 
 <!-- ============================================================ -->
-<h2>§4 浏览器模式状态机</h2>
+<h2>§4 servo WebView 状态机</h2>
 <!-- ============================================================ -->
 
-<div id="sm-browser-mode" data-state-machine="BrowserMode">
-<h3>浏览器模式状态机</h3>
+<div id="sm-browser-mode" data-state-machine="WebViewLifecycle">
+<h3>servo WebView 生命周期状态机</h3>
 <script type="application/ld+json">
 {
   "@type": "StateMachine",
@@ -299,7 +299,7 @@ WebSocket Client (Playwright)
   "domains": {
     "Runtime.evaluate": {"target": 50, "reason": "JS执行, 无I/O"},
     "DOM.querySelector": {"target": 10, "reason": "内存DOM遍历"},
-    "Page.captureScreenshot": {"target": 500, "reason": "Vello CPU光栅化 + PNG编码"},
+    "Page.captureScreenshot": {"target": 500, "reason": "servo webrender 渲染 + PNG编码"},
     "Page.navigate": {"target": 3000, "reason": "网络请求 + DOM构建 + 样式计算"},
     "Network.enable": {"target": 10, "reason": "注册hook"},
     "Debugger.setBreakpoint": {"target": 20, "reason": "SM Debugger API"}
@@ -344,9 +344,9 @@ Main Thread (事件循环 + JSContext + DOM)
   │     ├─ JSON-RPC 解析/编码
   │     └─→ Main Thread: 命令通过 channel 发送
   │
-  ├─→ Render Thread (Vello CPU)
+  ├─→ Render Thread (servo webrender)
   │     ├─ 接收 Display List
-  │     ├─ 软件光栅化
+  │     ├─ webrender 光栅化
   │     └─→ Main Thread: 返回像素缓冲
   │
   ├─→ Network Thread Pool (HTTP 请求)
@@ -367,7 +367,110 @@ Main Thread (事件循环 + JSContext + DOM)
 </div>
 
 <!-- ============================================================ -->
-<h2>§9 异常流程</h2>
+<h2>§9 多页面管理流程</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-page-creation-flow" data-artifact-type="diagram">
+<h3>Page 创建流程时序图</h3>
+<pre>
+调用方: runtime.createPage(config)
+  │
+  ├─ PagePool: 检查 max_total 硬上限
+  │   └─ 超出 → 返回 Err(PageLimitExceeded)
+  │
+  ├─ 创建 SoftwareRenderingContext (独立渲染缓冲)
+  │   └─ PhysicalSize::new(config.viewport_width, config.viewport_height)
+  │
+  ├─ 创建 BaoWebViewDelegate (独立状态回调)
+  │   └─ Rc::new(BaoWebViewDelegate::new(state, viewport))
+  │
+  ├─ WebViewBuilder::new(&servo, rendering_context)
+  │   ├─ .delegate(delegate)
+  │   ├─ .url(url) (如果配置了初始 URL)
+  │   └─ .build()
+  │
+  ├─ 构造 PageHandle
+  │   ├─ id: WebViewId (自动生成)
+  │   ├─ webview: WebView
+  │   ├─ rendering_context
+  │   ├─ delegate
+  │   ├─ state: Created
+  │   ├─ permission: config.permission
+  │   ├─ stealth_profile: config.stealth_profile
+  │   ├─ last_active_at: now()
+  │   └─ created_at: now()
+  │
+  ├─ PagePool: 插入 active_pages HashMap
+  │
+  ├─ 如果 config.stealth_profile 存在:
+  │   └─ StealthEngine::inject_navigator_js() → webview.evaluate_javascript()
+  │
+  └─ 返回 Ok(Rc&lt;PageHandle&gt;)
+</pre>
+</div>
+
+<div id="artifact-cdp-routing-flow" data-artifact-type="diagram">
+<h3>CDP 路由分发流程时序图</h3>
+<pre>
+调用方: cdp.send('Domain.method', params)
+  │
+  ├─ CdpRouter: 解析 method → Domain + MethodName
+  │
+  ├─ 检查后端类型
+  │   │
+  │   ├─ [Internal] CdpBackendInternal
+  │   │   ├─ 查找 Domain Handler
+  │   │   ├─ 定位目标 PageHandle (通过 session → target_id)
+  │   │   ├─ 直接调用 bao_browser API
+  │   │   │   ├─ Page.navigate → webview.load(url)
+  │   │   │   ├─ Page.captureScreenshot → webview.paint() + take_screenshot()
+  │   │   │   ├─ Runtime.evaluate → webview.evaluate_javascript()
+  │   │   │   ├─ DOM.querySelector → webview.evaluate_javascript(dom_query_js)
+  │   │   │   └─ Network.* → Bun HTTP 栈 hook
+  │   │   └─ 返回结果（零序列化，直接 Rust 值）
+  │   │
+  │   └─ [External] CdpBackendExternal
+  │       ├─ 序列化为 JSON-RPC 2.0
+  │       ├─ 通过 WebSocket 发送到外部端点
+  │       ├─ 等待响应（超时 10s）
+  │       └─ 反序列化并返回
+  │
+  └─ 返回 CdpResponse / CdpError
+</pre>
+</div>
+
+<div id="artifact-pagepool-reclaim-flow" data-artifact-type="diagram">
+<h3>PagePool 空闲回收流程时序图</h3>
+<pre>
+事件循环每轮 tick:
+  │
+  ├─ PagePool::check_idle_pages()
+  │   │
+  │   ├─ 遍历 idle_pages HashMap
+  │   │   │
+  │   │   └─ 对每个 (page_id, (page, idle_since)):
+  │   │       ├─ now - idle_since &gt; idle_ttl?
+  │   │       │   ├─ 否 → 跳过
+  │   │       │   └─ 是 → 执行回收:
+  │   │       │       ├─ page.state = Closing
+  │   │       │       ├─ WebView::drop (触发 servo CloseWebView)
+  │   │       │       ├─ RenderingContext 释放
+  │   │       │       ├─ SM Realm GC 回收 (JSContext 统一 GC)
+  │   │       │       ├─ PixelBuffer 释放
+  │   │       │       ├─ 从 idle_pages 移除
+  │   │       │       ├─ stats.total_destroyed += 1
+  │   │       │       └─ page.state = Closed
+  │   │       │
+  │   │       └─ 继续检查下一个
+  │   │
+  │   └─ 返回 (回收的页面数)
+  │
+  └─ 继续事件循环其他 tick 任务
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§10 异常流程</h2>
 <!-- ============================================================ -->
 
 <div id="artifact-error-flows" data-artifact-type="diagram">
@@ -391,7 +494,7 @@ DOM 解析异常:
     → JS fetch: 返回 rejected Promise
 
 渲染异常:
-  Vello CPU 光栅化失败
+  servo webrender 渲染失败
     → 返回空像素缓冲 (全白/全透明)
     → CDP Page.captureScreenshot: 返回空白截图
     → 日志记录错误

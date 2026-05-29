@@ -13,12 +13,13 @@
 
 <div id="artifact-positioning" data-artifact-type="description">
 <h3>产品定义</h3>
-<p>Bao 是 Bun 的 SpiderMonkey 引擎分支，同时支持 Node.js 运行时模式和内嵌浏览器模式。核心差异化：</p>
+<p>Bao 是统一的 Cargo 库，融合 SpiderMonkey JS 引擎 + servo 浏览器引擎 + Node.js 生态，所有能力始终可用、零模式切换。核心差异化：</p>
 <ol>
-<li>SpiderMonkey 引擎（替代 JavaScriptCore）</li>
-<li>内嵌浏览器能力（DOM + CSS + 布局 + 内存渲染 + CDP）</li>
+<li>SpiderMonkey 引擎（替代 JavaScriptCore，与 servo 共享同一 JSContext）</li>
+<li>全功能浏览器能力始终在线（DOM + CSS + 布局 + webrender 内存渲染 + CDP）</li>
+<li>Node.js/Bun API 始终在线（require/fs/path/crypto/http/Buffer/process）</li>
 <li>内置反指纹/反检测模块（Stealth）</li>
-<li>单进程多线程架构</li>
+<li>单进程多线程架构（尊重 servo 和 Bun 原有设计）</li>
 </ol>
 </div>
 
@@ -62,40 +63,41 @@
 <div id="artifact-use-case-diagram" data-artifact-type="diagram">
 <h3>用例图</h3>
 <pre>
-                    ┌──────────────────────┐
-                    │      Bao Runtime      │
-                    └──────────┬───────────┘
-                               │
-            ┌──────────────────┼──────────────────┐
-            │                  │                  │
-    ┌───────┴───────┐  ┌──────┴───────┐  ┌───────┴───────┐
-    │  Node Mode    │  │ Browser Mode │  │ Stealth Mode  │
-    └───────┬───────┘  └──────┬───────┘  └───────┬───────┘
-            │                  │                  │
-   ┌────────┴────────┐  ┌─────┴──────┐   ┌──────┴──────┐
-   │ Web 开发者      │  │ 爬虫开发者  │   │ 自动化测试  │
-   │ 全栈工程师      │  │ RPA 工程师  │   │ QA 工程师   │
-   │ DevOps          │  │ 数据分析师  │   │ 安全研究员  │
-   └─────────────────┘  └────────────┘   └─────────────┘
+                    ┌──────────────────────────────┐
+                    │      Bao Runtime (统一库)      │
+                    │  SpiderMonkey + servo + Node  │
+                    └──────────────┬───────────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              │                    │                    │
+     ┌────────┴────────┐  ┌───────┴───────┐  ┌────────┴────────┐
+     │ 脚本执行        │  │ 浏览器能力     │  │ 反指纹          │
+     │ require/fs/path │  │ DOM/CSS/Layout │  │ TLS/HTTP/Canvas │
+     │ crypto/http     │  │ webrender+CDP  │  │ Navigator/行为  │
+     └────────┬────────┘  └───────┬───────┘  └────────┬────────┘
+              │                   │                    │
+   ┌──────────┴───────────────────┴────────────────────┴──────┐
+   │ Web 开发者 · 爬虫开发者 · RPA 工程师 · 安全研究员 · DevOps │
+   └──────────────────────────────────────────────────────────┘
 </pre>
 </div>
 
 <div id="artifact-use-cases" data-artifact-type="table">
 <h3>用例清单</h3>
 <table>
-<tr><td>用例</td><td>模式</td><td>用户角色</td><td>核心需求</td></tr>
-<tr><td>运行 JS/TS 文件</td><td>Node</td><td>Web 开发者</td><td>快速执行脚本</td></tr>
-<tr><td>运行测试</td><td>Node</td><td>Web 开发者</td><td>Jest 兼容测试</td></tr>
-<tr><td>打包前端应用</td><td>Node</td><td>全栈工程师</td><td>bundler 打包</td></tr>
-<tr><td>安装依赖</td><td>Node</td><td>Web 开发者</td><td>包管理器</td></tr>
-<tr><td>启动 HTTP 服务</td><td>Node</td><td>全栈工程师</td><td>Bun.serve()</td></tr>
-<tr><td>浏览器截图</td><td>Browser</td><td>爬虫开发者</td><td>HTML→PNG 内存渲染</td></tr>
-<tr><td>DOM 查询/操作</td><td>Browser</td><td>RPA 工程师</td><td>CDP DOM domain</td></tr>
-<tr><td>页面导航</td><td>Browser</td><td>自动化测试</td><td>CDP Page domain</td></tr>
-<tr><td>网络请求监控</td><td>Browser</td><td>安全研究员</td><td>CDP Network domain</td></tr>
-<tr><td>反指纹浏览</td><td>Stealth</td><td>爬虫开发者</td><td>TLS/Canvas/Navigator 指纹模拟</td></tr>
-<tr><td>自动化脚本执行</td><td>Stealth</td><td>RPA 工程师</td><td>Playwright CDP 连接</td></tr>
-<tr><td>行为模拟</td><td>Stealth</td><td>安全研究员</td><td>鼠标轨迹/打字节奏</td></tr>
+<tr><td>用例</td><td>用户角色</td><td>核心需求</td></tr>
+<tr><td>运行 JS/TS 文件</td><td>Web 开发者</td><td>快速执行脚本</td></tr>
+<tr><td>运行测试</td><td>Web 开发者</td><td>Jest 兼容测试</td></tr>
+<tr><td>打包前端应用</td><td>全栈工程师</td><td>bundler 打包</td></tr>
+<tr><td>安装依赖</td><td>Web 开发者</td><td>包管理器</td></tr>
+<tr><td>启动 HTTP 服务</td><td>全栈工程师</td><td>Bun.serve()</td></tr>
+<tr><td>浏览器截图</td><td>爬虫开发者</td><td>HTML→PNG 渲染</td></tr>
+<tr><td>DOM 查询/操作</td><td>RPA 工程师</td><td>CDP DOM domain</td></tr>
+<tr><td>页面导航</td><td>自动化测试</td><td>CDP Page domain</td></tr>
+<tr><td>网络请求监控</td><td>安全研究员</td><td>CDP Network domain</td></tr>
+<tr><td>反指纹浏览</td><td>爬虫开发者</td><td>TLS/Canvas/Navigator 指纹模拟</td></tr>
+<tr><td>自动化脚本执行</td><td>RPA 工程师</td><td>Playwright CDP 连接</td></tr>
+<tr><td>行为模拟</td><td>安全研究员</td><td>鼠标轨迹/打字节奏</td></tr>
 </table>
 </div>
 
@@ -106,31 +108,32 @@
 <div id="artifact-function-module-tree" data-artifact-type="diagram">
 <h3>功能模块树</h3>
 <pre>
-Bao Runtime
+Bao Runtime (统一库，所有能力始终可用)
 ├── CLI Layer
 │   ├── bao run          (执行 JS/TS 文件)
 │   ├── bao test         (运行测试)
 │   ├── bao build        (打包)
 │   ├── bao install      (安装依赖)
-│   └── bao browser      (启动浏览器模式 + CDP)
+│   └── bao browser      (启动 servo + CDP，便捷入口)
 │
-├── Node Mode (类 Bun)
+├── JS API (始终可用)
 │   ├── Bun.* API        (Bun 全部 JS API)
 │   ├── Node.js 兼容层    (node:fs, node:path, node:http...)
+│   ├── Web API          (DOM, CSS, Fetch, Canvas — servo 提供)
 │   ├── Bundler          (打包器)
 │   ├── Test Runner      (测试运行器)
 │   ├── Package Manager  (包管理器)
 │   └── Transpiler       (JS/TS 转译)
 │
-├── Browser Mode (内嵌浏览器)
+├── Browser Engine (servo，始终可用)
 │   ├── CDP Server       (WebSocket CDP 协议服务)
-│   ├── DOM Engine       (libservo DOM 树)
+│   ├── DOM Engine       (servo DOM 树)
 │   ├── CSS Engine       (Stylo 样式计算)
 │   ├── Layout Engine    (Flexbox + Grid + Block)
-│   ├── Memory Renderer  (Vello CPU 软件光栅化)
+│   ├── Renderer         (servo webrender 渲染)
 │   └── Screenshot       (HTML → PNG/JPEG/WebP)
 │
-├── Stealth Module (反指纹)
+├── Stealth Module (反指纹，按需启用)
 │   ├── TLS Stealth      (JA3/JA4 指纹模拟 Firefox)
 │   ├── HTTP/2 Stealth   (SETTINGS 帧参数匹配)
 │   ├── Canvas Stealth   (toDataURL 噪声注入)
@@ -140,7 +143,7 @@ Bao Runtime
 │   ├── WebDriver Stealth(navigator.webdriver = false)
 │   └── Behavior Stealth (鼠标轨迹/打字节奏/滚动)
 │
-├── JS Engine (SpiderMonkey)
+├── JS Engine (SpiderMonkey，与 servo 共享 JSContext)
 │   ├── Context          (JSContext 管理)
 │   ├── GC               (GC Root 管理)
 │   ├── Debugger         (JS 层 Debugger API)
@@ -167,10 +170,10 @@ Bao Runtime
 <h3>指标维度表</h3>
 <table>
 <tr><td>维度</td><td>指标</td><td>目标值</td><td>测量方法</td></tr>
-<tr><td>启动性能</td><td>冷启动时间</td><td>Node ≤ 100ms / Browser ≤ 500ms</td><td>time bao run/browser</td></tr>
+<tr><td>启动性能</td><td>冷启动时间</td><td>纯脚本 ≤ 100ms / 含 servo ≤ 500ms</td><td>time bao run/browser</td></tr>
 <tr><td>执行性能</td><td>JS 执行延迟</td><td>≤ 1ms (简单表达式)</td><td>performance.now()</td></tr>
 <tr><td>渲染性能</td><td>截图延迟</td><td>≤ 500ms (1080p)</td><td>CDP Page.captureScreenshot 耗时</td></tr>
-<tr><td>内存</td><td>基线内存</td><td>Node ≤ 30MB / Browser ≤ 80MB</td><td>/proc/self/status VmRSS</td></tr>
+<tr><td>内存</td><td>基线内存</td><td>≤ 80MB</td><td>/proc/self/status VmRSS</td></tr>
 <tr><td>兼容性</td><td>Bun API 通过率</td><td>≥ 95%</td><td>Bun 现有测试套件</td></tr>
 <tr><td>兼容性</td><td>Playwright API 覆盖</td><td>≥ 95%</td><td>Playwright 兼容测试</td></tr>
 <tr><td>隐蔽性</td><td>指纹检测率</td><td>≤ 5%</td><td>指纹检测网站测试</td></tr>
@@ -190,10 +193,7 @@ Bao Runtime
 <tr><td>SpiderMonkey</td><td>MPL-2.0</td><td>是（文件级 copyleft）</td></tr>
 <tr><td>mozjs / mozjs-sys</td><td>MPL-2.0</td><td>是</td></tr>
 <tr><td>Servo / libservo</td><td>MPL-2.0</td><td>是</td></tr>
-<tr><td>WebRender</td><td>MPL-2.0</td><td>是（本项目不使用）</td></tr>
-<tr><td>Vello CPU</td><td>Apache-2.0 / MIT</td><td>是</td></tr>
-<tr><td>taffy</td><td>MIT</td><td>是</td></tr>
-<tr><td>tiny-skia</td><td>BSD-3-Clause</td><td>是</td></tr>
+<tr><td>WebRender (servo 内置)</td><td>MPL-2.0</td><td>是</td></tr>
 <tr><td>cdp-protocol</td><td>MIT</td><td>是</td></tr>
 <tr><td>html5ever</td><td>MIT / Apache-2.0</td><td>是</td></tr>
 <tr><td>cssparser / selectors</td><td>MPL-2.0</td><td>是</td></tr>
@@ -242,29 +242,29 @@ Bao Runtime
 <!-- ============================================================ -->
 
 <div id="artifact-activity-bao-browser" data-artifact-type="diagram">
-<h3>活动图: bao browser 模式</h3>
+<h3>活动图: bao browser（servo + CDP 便捷入口）</h3>
 <pre>
 开发者 → bao browser --url=https://example.com
   │
-  ├─ 启动 SpiderMonkey JSContext
+  ├─ Bao 初始化（SpiderMonkey + servo + Node.js API 全部就绪）
   ├─ 启动 CDP WebSocket Server (port 9222)
-  ├─ 启动 libservo 浏览器引擎
+  ├─ servo WebView 加载 URL
   │
   ├─ CDP 客户端 (Playwright) 连接
   │   ├─ Page.navigate → HTML 加载
-  │   ├─ DOM 树构建 (libservo script 组件)
+  │   ├─ DOM 树构建 (servo script 组件)
   │   ├─ CSS 样式计算 (Stylo)
-  │   ├─ 布局计算 (taffy)
-  │   ├─ 软件光栅化 (Vello CPU)
+  │   ├─ 布局计算 (servo LayoutThread)
+  │   ├─ 渲染 (servo webrender)
   │   └─ 返回像素缓冲 → CDP Page.captureScreenshot
   │
   ├─ CDP 命令处理
-  │   ├─ Runtime.evaluate → SpiderMonkey 执行 JS
+  │   ├─ Runtime.evaluate → SpiderMonkey 执行 JS（Web API + Node.js API 共存）
   │   ├─ DOM.querySelector → 查询 DOM 节点
   │   ├─ Network.requestIntercepted → 请求拦截
   │   └─ Input.dispatchMouseEvent → 事件注入
   │
-  └─ Stealth 模块注入
+  └─ Stealth 模块注入（按需启用）
       ├─ TLS 指纹模拟 Firefox
       ├─ Canvas 噪声注入
       ├─ Navigator 构造
@@ -273,12 +273,11 @@ Bao Runtime
 </div>
 
 <div id="artifact-activity-bao-run" data-artifact-type="diagram">
-<h3>活动图: bao run 模式</h3>
+<h3>活动图: bao run</h3>
 <pre>
 开发者 → bao run index.ts
   │
-  ├─ CLI 参数解析
-  ├─ SpiderMonkey JSContext 初始化
+  ├─ Bao 初始化（SpiderMonkey + servo + Node.js API 全部就绪）
   ├─ Event loop 桥接 (SM JobQueue → Bun uSockets)
   ├─ Module loader 桥接 (SM hooks → Bun resolver)
   │
@@ -286,10 +285,12 @@ Bao Runtime
   ├─ 模块解析 (bun_resolver, 100% 复用)
   ├─ JS 执行 (SpiderMonkey)
   │
-  ├─ Bun.* API 调用
+  ├─ API 调用（全部始终可用）
   │   ├─ Bun.serve() → Bun HTTP 栈 (100% 复用)
   │   ├─ Bun.file() → Bun FS (100% 复用)
   │   ├─ fetch() → Bun HTTP (100% 复用)
+  │   ├─ require('node:fs') → Node.js 兼容层
+  │   ├─ document.querySelector() → servo DOM（需要时可用）
   │   └─ ...
   │
   └─ 事件循环运行 → 直到所有任务完成

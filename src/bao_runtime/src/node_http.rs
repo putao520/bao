@@ -327,7 +327,7 @@ unsafe extern "C" fn res_write(
     if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_string() {
-            let data = jsstr_to_string(cx, NonNull::new(v.to_string()).unwrap());
+            let data = crate::js_to_rust_string(cx, v);
             let this = args.thisv();
             let obj = this.to_object();
             let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
@@ -335,7 +335,7 @@ unsafe extern "C" fn res_write(
             let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
             JS_GetProperty(cx, obj_h, c"_body".as_ptr(), body_mh);
             let existing = if body_val.is_string() {
-                jsstr_to_string(cx, NonNull::new(body_val.to_string()).unwrap())
+                crate::js_to_rust_string(cx, body_val)
             } else {
                 String::new()
             };
@@ -368,7 +368,7 @@ unsafe extern "C" fn res_end(
     if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_string() {
-            let data = jsstr_to_string(cx, NonNull::new(v.to_string()).unwrap());
+            let data = crate::js_to_rust_string(cx, v);
             let this = args.thisv();
             let obj = this.to_object();
             let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
@@ -376,7 +376,7 @@ unsafe extern "C" fn res_end(
             let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
             JS_GetProperty(cx, obj_h, c"_body".as_ptr(), body_mh);
             let existing = if body_val.is_string() {
-                jsstr_to_string(cx, NonNull::new(body_val.to_string()).unwrap())
+                crate::js_to_rust_string(cx, body_val)
             } else { String::new() };
             let combined = format!("{}{}", existing, data);
             let Ok(c_combined) = CString::new(combined) else {
@@ -406,7 +406,7 @@ unsafe extern "C" fn res_end(
     let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
     JS_GetProperty(cx, obj_h, c"_body".as_ptr(), body_mh);
     let body = if body_val.is_string() {
-        jsstr_to_string(cx, NonNull::new(body_val.to_string()).unwrap())
+        crate::js_to_rust_string(cx, body_val)
     } else { String::new() };
 
     let mut fd_val = Int32Value(-1);
@@ -488,7 +488,7 @@ unsafe extern "C" fn server_listen(
     let host = if argc > 1 {
         let v = *args.get(1).ptr;
         if v.is_string() {
-            let s = jsstr_to_string(cx, NonNull::new(v.to_string()).unwrap());
+            let s = crate::js_to_rust_string(cx, v);
             if !s.is_empty() { s } else { "0.0.0.0".to_string() }
         } else { "0.0.0.0".to_string() }
     } else { "0.0.0.0".to_string() };
@@ -645,14 +645,14 @@ unsafe extern "C" fn http_request(
     let url_str = if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_string() {
-            jsstr_to_string(cx, NonNull::new(v.to_string()).unwrap())
+            crate::js_to_rust_string(cx, v)
         } else { String::new() }
     } else { String::new() };
 
     let method = if argc > 1 {
         let v = *args.get(1).ptr;
         if v.is_string() {
-            jsstr_to_string(cx, NonNull::new(v.to_string()).unwrap())
+            crate::js_to_rust_string(cx, v)
         } else { "GET".to_string() }
     } else { "GET".to_string() };
 

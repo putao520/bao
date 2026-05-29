@@ -249,7 +249,7 @@ unsafe fn get_event_name(cx: *mut JSContext, args: &CallArgs) -> Option<String> 
     if val.is_string() {
         let s = val.to_string();
         if !s.is_null() {
-            return Some(jsstr_to_string(cx, NonNull::new(s).unwrap()));
+            return Some(crate::jsstr_to_rust_string(cx, s));
         }
     }
     if val.is_int32() {

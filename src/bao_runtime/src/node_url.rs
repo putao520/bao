@@ -354,12 +354,12 @@ unsafe extern "C" fn url_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSV
         JS_ReportErrorUTF8(cx, b"URL first argument must be a string\0".as_ptr() as *const ::std::os::raw::c_char);
         return false;
     }
-    let input = jsstr_to_string(cx, NonNull::new(input_val.to_string()).unwrap());
+    let input = crate::js_to_rust_string(cx, input_val);
 
     let base = if argc > 1 {
         let base_val = *args.get(1).ptr;
         if base_val.is_string() {
-            Some(jsstr_to_string(cx, NonNull::new(base_val.to_string()).unwrap()))
+            Some(crate::js_to_rust_string(cx, base_val))
         } else {
             None
         }
@@ -415,7 +415,7 @@ unsafe extern "C" fn url_search_params_constructor(cx: *mut JSContext, argc: u32
     if argc > 0 {
         let init_val = *args.get(0).ptr;
         if init_val.is_string() {
-            let init_str = jsstr_to_string(cx, NonNull::new(init_val.to_string()).unwrap());
+            let init_str = crate::js_to_rust_string(cx, init_val);
             let search = init_str.strip_prefix('?').unwrap_or(&init_str);
             for pair in search.split('&') {
                 if pair.is_empty() { continue; }
@@ -451,7 +451,7 @@ unsafe extern "C" fn sp_get(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     if argc == 0 { args.rval().set(UndefinedValue()); return true; }
     let key_val = *args.get(0).ptr;
     if !key_val.is_string() { args.rval().set(UndefinedValue()); return true; }
-    let key = jsstr_to_string(cx, NonNull::new(key_val.to_string()).unwrap());
+    let key = crate::js_to_rust_string(cx, key_val);
     let Ok(c_key) = CString::new(key) else { args.rval().set(UndefinedValue()); return true; };
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
     let mut result = UndefinedValue();
@@ -469,8 +469,8 @@ unsafe extern "C" fn sp_set(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     let key_val = *args.get(0).ptr;
     let val_val = *args.get(1).ptr;
     if !key_val.is_string() { args.rval().set(UndefinedValue()); return true; }
-    let key = jsstr_to_string(cx, NonNull::new(key_val.to_string()).unwrap());
-    let value = if val_val.is_string() { jsstr_to_string(cx, NonNull::new(val_val.to_string()).unwrap()) } else { String::new() };
+    let key = crate::js_to_rust_string(cx, key_val);
+    let value = if val_val.is_string() { crate::js_to_rust_string(cx, val_val) } else { String::new() };
     set_sp_property(cx, this.to_object(), &key, &value);
     args.rval().set(UndefinedValue());
     true
@@ -484,7 +484,7 @@ unsafe extern "C" fn sp_has(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
     let key_val = *args.get(0).ptr;
     if !key_val.is_string() { args.rval().set(BooleanValue(false)); return true; }
-    let key = jsstr_to_string(cx, NonNull::new(key_val.to_string()).unwrap());
+    let key = crate::js_to_rust_string(cx, key_val);
     let Ok(c_key) = CString::new(key) else { args.rval().set(BooleanValue(false)); return true; };
     let obj = this.to_object();
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
@@ -502,7 +502,7 @@ unsafe extern "C" fn sp_delete(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
     let key_val = *args.get(0).ptr;
     if !key_val.is_string() { args.rval().set(BooleanValue(false)); return true; }
-    let key = jsstr_to_string(cx, NonNull::new(key_val.to_string()).unwrap());
+    let key = crate::js_to_rust_string(cx, key_val);
     let Ok(c_key) = CString::new(key) else { args.rval().set(BooleanValue(false)); return true; };
     let obj = this.to_object();
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
@@ -520,8 +520,8 @@ unsafe extern "C" fn sp_append(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let key_val = *args.get(0).ptr;
     let val_val = *args.get(1).ptr;
     if !key_val.is_string() { args.rval().set(UndefinedValue()); return true; }
-    let key = jsstr_to_string(cx, NonNull::new(key_val.to_string()).unwrap());
-    let value = if val_val.is_string() { jsstr_to_string(cx, NonNull::new(val_val.to_string()).unwrap()) } else { String::new() };
+    let key = crate::js_to_rust_string(cx, key_val);
+    let value = if val_val.is_string() { crate::js_to_rust_string(cx, val_val) } else { String::new() };
     set_sp_property(cx, this.to_object(), &key, &value);
     args.rval().set(UndefinedValue());
     true

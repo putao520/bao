@@ -216,7 +216,7 @@ unsafe fn get_path_arg(cx: *mut JSContext, args: &CallArgs, index: u32) -> ::std
     if val.is_string() {
         let s = val.to_string();
         if !s.is_null() {
-            return ::std::result::Result::Ok(mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(s).unwrap()));
+            return ::std::result::Result::Ok(crate::jsstr_to_rust_string(cx, s));
         }
     }
     JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
@@ -232,7 +232,7 @@ unsafe fn get_encoding_opt(cx: *mut JSContext, args: &CallArgs, index: u32) -> :
     if val.is_string() {
         let s = val.to_string();
         if !s.is_null() {
-            return ::std::option::Option::Some(mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(s).unwrap()));
+            return ::std::option::Option::Some(crate::jsstr_to_rust_string(cx, s));
         }
     }
     if val.is_object() {
@@ -244,7 +244,7 @@ unsafe fn get_encoding_opt(cx: *mut JSContext, args: &CallArgs, index: u32) -> :
         if enc_val.is_string() {
             let s = enc_val.to_string();
             if !s.is_null() {
-                return ::std::option::Option::Some(mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(s).unwrap()));
+                return ::std::option::Option::Some(crate::jsstr_to_rust_string(cx, s));
             }
         }
     }
@@ -326,7 +326,7 @@ unsafe extern "C" fn fs_write_file_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     let result = if data_val.is_string() {
         let s = data_val.to_string();
         if !s.is_null() {
-            let rust_str = mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(s).unwrap());
+            let rust_str = crate::jsstr_to_rust_string(cx, s);
             fs::write(&path, rust_str.as_bytes())
         } else {
             fs::write(&path, &[] as &[u8])
@@ -349,7 +349,7 @@ unsafe extern "C" fn fs_append_file_sync(cx: *mut JSContext, argc: u32, vp: *mut
     let data = if data_val.is_string() {
         let s = data_val.to_string();
         if !s.is_null() {
-            mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(s).unwrap()).into_bytes()
+            crate::jsstr_to_rust_string(cx, s).into_bytes()
         } else { Vec::new() }
     } else { Vec::new() };
 
@@ -611,7 +611,7 @@ unsafe extern "C" fn fs_write_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let data_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
     let bytes = if data_val.is_string() {
         let s = data_val.to_string();
-        if !s.is_null() { mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(s).unwrap()).into_bytes() } else { Vec::new() }
+        if !s.is_null() { crate::jsstr_to_rust_string(cx, s).into_bytes() } else { Vec::new() }
     } else { Vec::new() };
 
     match fs::write(&path, &bytes) {
@@ -709,7 +709,7 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
     let data_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
     let bytes = if data_val.is_string() {
         let s = data_val.to_string();
-        if !s.is_null() { mozjs::conversions::jsstr_to_string(cx, ::std::ptr::NonNull::new(s).unwrap()).into_bytes() } else { Vec::new() }
+        if !s.is_null() { crate::jsstr_to_rust_string(cx, s).into_bytes() } else { Vec::new() }
     } else { Vec::new() };
     let null_obj = ::std::ptr::null_mut::<JSObject>();
     let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj });

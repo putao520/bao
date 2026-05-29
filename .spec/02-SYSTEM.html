@@ -17,32 +17,215 @@
 <pre>
 ┌──────────────────────────────────────────────────────────┐
 │                       Bao Runtime                         │
-│                   单进程 · 多线程 · Rust                    │
+│              统一库 · 单进程 · 多线程 · Rust                │
 ├──────────────────────────────────────────────────────────┤
 │  CLI Layer: bao run | bao test | bao build | bao browser  │
 ├──────────────────────────────────────────────────────────┤
-│  Mode Switch                                              │
-│  ┌─ Node Mode ────┐  ┌─ Browser Mode ──┐  ┌─ Stealth ─┐│
-│  │ Bun.* API      │  │ CDP Server       │  │ Module     ││
-│  │ Node.js compat │  │ libservo (DOM/   │  │ TLS/HTTP   ││
-│  │ Bundler/Test/  │  │  CSS/Layout)     │  │ Canvas     ││
-│  │ Install        │  │ Vello CPU 截图   │  │ Navigator  ││
-│  │ Bun Resolver   │  │                  │  │ Behavior   ││
-│  └───────┬────────┘  └────────┬─────────┘  └─────┬─────┘│
-│          │                    │                   │       │
-│  ┌───────┴────────────────────┴───────────────────┴─────┐│
-│  │        SpiderMonkey (统一 JS 引擎)                     ││
-│  │        mozjs crate · JS::JobQueue · ESM hooks         ││
-│  │        Debugger API (JS层) · WebAssembly · Promise     ││
-│  └───────────────────────────────────────────────────────┘│
-│          │                    │                            │
-│  ┌───────┴────────────────────┴─────────────────────────┐│
-│  │  Bun Infrastructure (100% 复用, 零修改)                ││
-│  │  HTTP栈 · Resolver · FS · Bundler · uSockets · Timer  ││
-│  └───────────────────────────────────────────────────────┘│
+│  Capability Layer (所有能力始终可用)                         │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ Bun.* API + Node.js compat (require/fs/path/...)   │  │
+│  │ Bundler · Test Runner · Package Manager · Transpiler│  │
+│  └────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ servo 浏览器引擎 (DOM/CSS/Layout/webrender 渲染)    │  │
+│  │ CDP Server · 截图 · DOM 查询 · 页面导航              │  │
+│  └────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ Stealth 反指纹 (TLS/HTTP/Canvas/Navigator/行为)     │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  SpiderMonkey (统一 JS 引擎，与 servo 共享 JSContext) │  │
+│  │  mozjs crate · JS::JobQueue · ESM hooks             │  │
+│  │  Debugger API (JS层) · WebAssembly · Promise         │  │
+│  └────────────────────────────────────────────────────┘  │
+│                          │                                │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  Bun Infrastructure (100% 复用, 零修改)              │  │
+│  │  HTTP栈 · Resolver · FS · Bundler · uSockets · Timer│  │
+│  └────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
 </pre>
 </div>
+
+<!-- ============================================================ -->
+<h2>§1.1 BaoRuntime 公共 API</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-bao-runtime-api" data-api="GET /api/bao-runtime" data-artifact-type="api">
+<h3>Rust 公共 API 接口</h3>
+<pre>
+// ── BaoRuntime 初始化 ──────────────────────────────────────
+
+impl BaoRuntime {
+    /// 创建 BaoRuntime 实例（单例模式）
+    /// 内部初始化: SpiderMonkey JSContext + Servo + Event Loop
+    pub fn new(config: BaoConfig) -> Result&lt;Self, BaoError&gt;
+
+    /// 获取 PagePool 引用
+    pub fn page_pool(&self) -> &PagePool
+
+    /// 获取 CdpRouter 引用
+    pub fn cdp_router(&self) -> &CdpRouter
+}
+
+// ── BaoConfig ──────────────────────────────────────────────
+
+pub struct BaoConfig {
+    pub cdp_port: Option&lt;u16&gt;,           // CDP 服务端口 (None = 不启动)
+    pub max_pages: usize,                  // PagePool max_total (默认 50)
+    pub idle_ttl_seconds: u64,             // 空闲页面回收超时 (默认 60)
+    pub default_viewport: (u32, u32),      // 默认视口尺寸 (1920, 1080)
+}
+
+// ── PagePool ───────────────────────────────────────────────
+
+impl PagePool {
+    /// 创建新 Page
+    pub fn create_page(&self, config: PageConfig) -> Result&lt;PageHandle, BaoError&gt;
+
+    /// 获取指定 Page
+    pub fn get_page(&self, id: WebViewId) -> Option&lt;PageHandle&gt;
+
+    /// 关闭指定 Page (显式释放)
+    pub fn close_page(&self, id: WebViewId) -> Result&lt;(), BaoError&gt;
+
+    /// 获取统计信息
+    pub fn stats(&self) -> PoolStats
+}
+
+pub struct PageConfig {
+    pub url: Option&lt;String&gt;,               // 初始 URL
+    pub viewport_width: Option&lt;u32&gt;,       // 视口宽度 (默认取 BaoConfig)
+    pub viewport_height: Option&lt;u32&gt;,      // 视口高度
+    pub permission: Option&lt;Permission&gt;,    // 可选权限配置
+    pub stealth_profile: Option&lt;StealthProfile&gt;, // 可选反指纹
+}
+
+// ── PageHandle (Rc&lt;Page&gt;) ─────────────────────────────────
+
+impl Page {
+    /// 高性能 API: 导航到 URL
+    pub async fn goto(&self, url: &str) -> Result&lt;(), BaoError&gt;
+
+    /// 高性能 API: 执行 JS 表达式
+    pub async fn evaluate(&self, script: &str) -> Result&lt;JsValue, BaoError&gt;
+
+    /// 高性能 API: 截图
+    pub async fn screenshot(&self, format: ScreenshotFormat) -> Result&lt;Vec&lt;u8&gt;, BaoError&gt;
+
+    /// 高性能 API: 获取页面标题
+    pub fn title(&self) -> Option&lt;String&gt;
+
+    /// 高性能 API: 获取当前 URL
+    pub fn url(&self) -> Option&lt;String&gt;
+
+    /// CDP 兼容层: 创建 CDP Session
+    pub fn create_cdp_session(&self) -> CdpSession
+
+    /// 显式关闭页面
+    pub fn close(&self) -> Result&lt;(), BaoError&gt;
+
+    /// 页面 ID
+    pub fn id(&self) -> WebViewId
+
+    /// 页面状态
+    pub fn state(&self) -> PageState
+}
+
+// ── CdpRouter ──────────────────────────────────────────────
+
+impl CdpRouter {
+    /// 创建 CDP Session (内部后端)
+    pub fn create_internal_session(&self, page: &PageHandle) -> CdpSession
+
+    /// 连接外部 CDP 端点
+    pub async fn connect_external(&self, endpoint: &str) -> Result&lt;ExternalBrowser, BaoError&gt;
+}
+
+// ── CdpSession (CDP 兼容层) ────────────────────────────────
+
+impl CdpSession {
+    /// 发送 CDP 命令
+    pub async fn send(&self, method: &str, params: Value) -> Result&lt;Value, CdpError&gt;
+
+    /// 监听 CDP 事件
+    pub fn on(&self, event: &str, callback: impl Fn(Value))
+
+    /// 断开 CDP Session
+    pub fn detach(&self)
+}
+
+// ── Permission ─────────────────────────────────────────────
+
+pub struct Permission {
+    pub read: Option&lt;Vec&lt;String&gt;&gt;,    // None = 允许全部
+    pub write: Option&lt;Vec&lt;String&gt;&gt;,   // None = 允许全部
+    pub net: Option&lt;Vec&lt;String&gt;&gt;,     // None = 允许全部
+    pub env: Option&lt;bool&gt;,            // None = 允许
+    pub run: Option&lt;bool&gt;,            // None = 允许
+}
+</pre>
+
+<p data-xref-type="api" data-xref-id="GET /api/bao-runtime">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-001">REQ-ENG-001</span>
+<span data-xref-type="req" data-xref-id="REQ-ENG-006">REQ-ENG-006</span>, <span data-xref-type="req" data-xref-id="REQ-CLI-002">REQ-CLI-002</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span></p></div>
+
+<div id="artifact-bao-runtime-js-api" data-api="GET /api/bao-runtime-js" data-artifact-type="api">
+<h3>JS 公共 API 接口</h3>
+<pre>
+// ── Bao 全局对象 ──────────────────────────────────────────
+
+// 初始化 Runtime
+const runtime = new Bao.Runtime({
+  cdpPort: 9222,           // optional
+  maxPages: 50,            // optional
+  idleTtl: 60,             // seconds, optional
+});
+
+// ── Page 操作 ─────────────────────────────────────────────
+
+const page = runtime.createPage({
+  url: 'https://example.com',    // optional
+  viewport: [1920, 1080],       // optional
+  permission: { read: ['/tmp'] }, // optional
+  stealth: 'firefox',           // optional
+});
+
+await page.goto('https://example.com');
+const result = await page.evaluate('document.title');
+const png = await page.screenshot({ format: 'png' });
+console.log(page.title());
+console.log(page.url());
+await page.close();
+
+// ── CDP 兼容层 ────────────────────────────────────────────
+
+const cdp = page.createCDPSession();
+const { result } = await cdp.send('Runtime.evaluate', {
+  expression: '1 + 1'
+});
+cdp.on('Page.loadEventFired', () => console.log('loaded'));
+cdp.detach();
+
+// ── 外部连接 ──────────────────────────────────────────────
+
+const browser = await Bao.connect('ws://127.0.0.1:9222');
+const extPage = await browser.newPage();
+await extPage.goto('https://example.com');
+
+// ── Permission ─────────────────────────────────────────────
+
+const perm = new Bao.Permission({
+  read: ['/tmp/data'],
+  net: ['api.example.com'],
+  env: false,
+  run: false,
+});
+const restrictedPage = runtime.createPage({ permission: perm });
+</pre>
+
+<p data-xref-type="api" data-xref-id="GET /api/bao-runtime-js">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-006">REQ-ENG-006</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§2 Bun 源项目 Crate 架构</h2>
@@ -247,9 +430,8 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 │  │  Module loader: SM hooks → Bun resolver           │  │
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
-│  ┌─ 新建 (浏览器模式) ──────────────────────────────┐  │
-│  │ bao_browser ← libservo crate 封装                  │  │
-│  │ bao_render ← Vello CPU + taffy 内存渲染            │  │
+│  ┌─ 新建 (浏览器能力) ──────────────────────────────┐  │
+│  │ bao_browser ← servo crate 封装                     │  │
 │  │ bao_cdp ← CDP WebSocket Server                     │  │
 │  │ bao_stealth ← 反指纹模块                           │  │
 │  └───────────────────────────────────────────────────┘  │
@@ -300,20 +482,19 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div id="int-render-1" data-artifact-type="external-integration" data-integration="VelloCPU" data-integration-protocol="embed" data-integration-auth="none">
-<h3>§4.4 渲染集成: Vello CPU</h3>
+<div id="int-render-1" data-artifact-type="external-integration" data-integration="servo_webrender" data-integration-protocol="embed" data-integration-auth="none">
+<h3>§4.4 渲染集成: servo webrender</h3>
 <script type="application/ld+json">
 {
   "@type": "Integration",
-  "name": "VelloCPU",
+  "name": "servo_webrender",
   "protocol": "embed",
   "auth": "none",
-  "source": "linebender/vello crate",
-  "license": "Apache-2.0/MIT",
-  "provides": ["2D software rasterization", "Text rendering (glyph_run)", "Path rendering", "Gradient/Pattern"],
-  "outputFormat": "Vec<u8> RGBA pixmap",
-  "gpuRequired": false,
-  "alternatives": ["tiny-skia (no text)", "WebRender+SWGL (heavy)"]
+  "source": "servo crate (内置)",
+  "license": "MPL-2.0",
+  "provides": ["Stylo CSS 计算", "LayoutThread 布局引擎", "webrender 光栅化", "SoftwareRenderingContext 无头渲染", "WindowRenderingContext GPU 渲染"],
+  "outputFormat": "RgbaImage (image crate)",
+  "note": "servo 内置完整渲染管线，尊重 servo 原有设计，有 GPU 用 GPU，无头场景用 SoftwareRenderingContext"
 }
 </script>
 </div>
@@ -339,6 +520,133 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
+<div id="artifact-cdp-abstraction" data-artifact-type="diagram">
+<h3>§4.6 CDP 双层抽象架构</h3>
+<pre>
+双层 API 设计:
+
+  第一层：高性能 Rust/JS API（内部优先）
+  ┌──────────────────────────────────────────────┐
+  │  const page = runtime.createPage();          │
+  │  await page.goto('https://example.com');     │
+  │  const png = await page.screenshot();        │
+  │  const title = await page.title();           │
+  │  await page.evaluate('1+1');                 │
+  │  await page.close();                         │
+  └──────────────────────────────────────────────┘
+         │ 直接调用 bao_browser Rust API
+         │ 零序列化开销
+         ↓
+  ┌─ bao_browser ────────────────────────────┐
+  │  WebView.evaluate_javascript()            │
+  │  WebView.take_screenshot()                │
+  │  WebView.load(url)                        │
+  └──────────────────────────────────────────┘
+
+  第二层：CDP 兼容层（Playwright/Puppeteer 连接用）
+  ┌──────────────────────────────────────────────┐
+  │  // 从现有 Page 创建 CDP Session             │
+  │  const cdp = page.createCDPSession();        │
+  │  cdp.send('Page.navigate', {url: '...'});   │
+  │  cdp.on('Page.loadEventFired', callback);    │
+  │                                               │
+  │  // 外部 CDP 端点连接                         │
+  │  const browser = Bao.connect('ws://host:9222');│
+  └──────────────────────────────────────────────┘
+         │ CdpRouter 分发
+         ├────────────────────┐
+         ↓                    ↓
+  CdpBackend(Internal)  CdpBackend(External)
+  CDP 消息 → Rust API   CDP 消息 → WebSocket
+  映射 (零网络开销)       → 外部 Chrome/Edge
+
+  CdpRouter 选择逻辑:
+    backend: "internal"  → 内部模式 (默认)
+    endpoint: "ws://..." → 外部模式 (自动推断)
+    无参数              → 内部模式
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4.5 多页面管理架构</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-multi-page-architecture" data-artifact-type="diagram">
+<h3>多页面管理架构</h3>
+<pre>
+┌─ BaoRuntime (顶层协调器) ──────────────────────────────────────┐
+│                                                                │
+│  Servo (单实例)                                                 │
+│  └── WebViewCollection (servo 原生多 WebView 管理)              │
+│      ├── Page #1 → WebView + RenderingContext + Realm #1       │
+│      ├── Page #2 → WebView + RenderingContext + Realm #2       │
+│      └── Page #N → WebView + RenderingContext + Realm #N       │
+│                                                                │
+│  PagePool (资源管理器)                                           │
+│  ├── create_page(config) → PageHandle (Rc&lt;Page&gt;)               │
+│  ├── close_page(id) → WebView::drop → Realm 释放               │
+│  ├── 活跃 Page: 引用计数 &gt; 0，无上限                            │
+│  ├── 空闲 Page: 引用计数 = 0，idle_ttl (默认 60s) 后回收        │
+│  └── max_total: 硬上限 (默认 50)，超出拒绝创建                   │
+│                                                                │
+│  CdpRouter (CDP 抽象层)                                         │
+│  PermissionManager (可选沙箱)                                    │
+└────────────────────────────────────────────────────────────────┘
+
+隔离模型: 每个 Page = 一个 servo WebView (自带 SM Realm 隔离)
+  - 独立全局对象 (window / document / navigator)
+  - 独立模块缓存 (import 不跨 Page 污染)
+  - 独立异常处理
+  - GC 在同一 JSContext 内统一管理
+</pre>
+</div>
+
+<div id="artifact-page-lifecycle" data-state-machine="PageLifecycle" data-artifact-type="diagram">
+<h3>Page 生命周期状态机</h3>
+<script type="application/ld+json">
+{
+  "@type": "StateMachine",
+  "name": "PageLifecycle",
+  "states": ["Created", "Navigating", "Interactive", "Idle", "Closing", "Closed"],
+  "initialState": "Created",
+  "transitions": [
+    {"from": "Created", "to": "Navigating", "on": "navigate"},
+    {"from": "Navigating", "to": "Interactive", "on": "load_complete"},
+    {"from": "Navigating", "to": "Closing", "on": "close_during_load"},
+    {"from": "Interactive", "to": "Navigating", "on": "navigate"},
+    {"from": "Interactive", "to": "Idle", "on": "handle_dropped"},
+    {"from": "Idle", "to": "Interactive", "on": "handle_reacquired"},
+    {"from": "Idle", "to": "Closing", "on": "idle_ttl_expired"},
+    {"from": "Interactive", "to": "Closing", "on": "close"},
+    {"from": "Closing", "to": "Closed", "on": "cleanup_complete"}
+  ]
+}
+</script>
+<pre>
+Created ──navigate──→ Navigating ──load_complete──→ Interactive
+                       │                               │
+                       │ close_during_load             │ navigate (重新导航)
+                       ↓                               ↓
+                     Closing ←──close─── Interactive ←──┘
+                                        ↑  │
+                       handle_reacquired   │ handle_dropped
+                                        ↑  ↓
+                                      Idle ──idle_ttl_expired──→ Closing
+                                                                  │
+                                                          cleanup_complete
+                                                                  ↓
+                                                                Closed
+
+资源回收:
+  Closing → Closed:
+    1. WebView::drop → servo CloseWebView 消息
+    2. RenderingContext 释放
+    3. SM Realm GC 回收
+    4. PixelBuffer 释放
+    5. 从 PagePool 移除
+</pre>
+</div>
+
 <!-- ============================================================ -->
 <h2>§5 外部依赖矩阵</h2>
 <!-- ============================================================ -->
@@ -347,9 +655,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <table>
 <tr><td>依赖</td><td>版本</td><td>许可证</td><td>用途</td><td>复用方式</td></tr>
 <tr><td>mozjs / mozjs-sys</td><td>0.15.14 / 140.10.1</td><td>MPL-2.0</td><td>SpiderMonkey FFI</td><td>git dep</td></tr>
-<tr><td>servo (libservo)</td><td>0.1.0</td><td>MPL-2.0</td><td>浏览器引擎</td><td>cargo dep</td></tr>
-<tr><td>taffy</td><td>0.10.1</td><td>MIT</td><td>CSS 布局</td><td>cargo dep</td></tr>
-<tr><td>vello_cpu</td><td>latest</td><td>Apache-2.0/MIT</td><td>内存渲染</td><td>cargo dep</td></tr>
+<tr><td>servo (libservo)</td><td>0.1.0</td><td>MPL-2.0</td><td>浏览器引擎 (含渲染)</td><td>path dep</td></tr>
 <tr><td>cdp-protocol</td><td>latest</td><td>MIT</td><td>CDP 类型</td><td>cargo dep</td></tr>
 <tr><td>html5ever</td><td>0.29</td><td>MIT/Apache</td><td>HTML 解析</td><td>cargo dep</td></tr>
 <tr><td>cssparser + selectors</td><td>latest</td><td>MPL-2.0</td><td>CSS 解析</td><td>cargo dep</td></tr>
@@ -389,9 +695,10 @@ Initializing:
   2. Bun Event Loop 初始化
   3. Module Loader hooks 注册
   4. Bun.* / Bao.* 全局对象注入
-  5. (Browser模式) libservo 初始化
-  6. (Browser模式) CDP Server 启动
-  7. (Stealth模式) 反指纹模块加载
+  5. servo 初始化（ServoBuilder + WebView 创建）
+  6. Node.js host functions 注册到 servo JSContext
+  7. CDP Server 启动（按需）
+  8. Stealth 模块加载（按需）
 
 Ready:
   等待 JS 代码执行请求
@@ -401,8 +708,11 @@ Running:
   ├─ I/O 轮询 (epoll/kqueue)
   ├─ Timer 检查
   ├─ Microtask drain (SM JobQueue)
-  ├─ CDP 命令处理 (Browser模式)
-  └─ 渲染请求处理 (Browser模式)
+  ├─ servo 事件循环 (spin_event_loop)
+  ├─ PagePool 空闲回收检查 (每次 tick)
+  │   └─ 遍历 idle_pages，idle_ttl 到期 → Closing → Closed
+  ├─ CDP 命令处理
+  └─ 渲染请求处理
 
 ShuttingDown:
   1. 停止接受新请求
@@ -483,16 +793,11 @@ ShuttingDown:
 └──────┬────────┘                   └───────────────┘
        │ Rust trait / function call
        ▼
-┌─ bao_browser ─┐   Embedder trait  ┌─ libservo ──┐
-│ BaoEmbedder   │ ←───────────────→ │ Servo API    │
-│ WindowMethods │                    │ EmbedderMethods│
-└──────┬────────┘                   └──────────────┘
-       │ Display List transfer
-       ▼
-┌─ bao_render ──┐
-│ Vello CPU     │ → Vec<u8> RGBA
-│ taffy Layout  │
-└───────────────┘
+┌─ bao_browser ─┐   ServoDelegate    ┌─ servo crate ─┐
+│ BaoServo      │ ←───────────────→ │ Servo API      │
+│ WebView       │   WebViewDelegate │ WebViewBuilder │
+│ Delegate      │                    │ RenderingCtx   │
+└───────────────┘                    └────────────────┘
 </pre>
 </div>
 
@@ -515,7 +820,52 @@ ShuttingDown:
 <tr><td>DOM Mutation</td><td>libservo → BaoEmbedder</td><td>Embedder callback</td><td>DOM 变更</td></tr>
 <tr><td>Network Request</td><td>Bun HTTP 栈 → bao_cdp</td><td>hook callback</td><td>HTTP 请求发起</td></tr>
 <tr><td>Network Response</td><td>Bun HTTP 栈 → bao_cdp</td><td>hook callback</td><td>HTTP 响应到达</td></tr>
+<tr><td>Page Created</td><td>PagePool → CdpRouter</td><td>WebViewId</td><td>create_page() 成功</td></tr>
+<tr><td>Page Idle TTL Expired</td><td>Event Loop Tick → PagePool</td><td>WebViewId</td><td>空闲页面超时</td></tr>
+<tr><td>Page Closed</td><td>PagePool → Servo</td><td>CloseWebView 消息</td><td>页面资源回收</td></tr>
+<tr><td>Page Total Limit</td><td>PagePool → 调用方</td><td>Error</td><td>超过 max_total 硬上限</td></tr>
 </table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4.7 Permission 沙箱架构</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-permission-sandbox" data-artifact-type="diagram">
+<h3>Permission 沙箱 — host_fn 层拦截</h3>
+<pre>
+实现层级: 复用 REQ-ENG-003 host_fn 抽象层
+作用域: per-Page / per-Bun-Script
+默认: 无 Permission 配置 → 跳过检查 → 零开销
+启用: 传入 Permission 配置 → 白名单模式
+
+Permission 配置:
+  {
+    read: ["/tmp/data"],       // 允许读取的路径
+    write: ["/tmp/output"],    // 允许写入的路径
+    net: ["api.example.com"],  // 允许网络访问的域名
+    env: false,                // 环境变量访问
+    run: false                 // 子进程执行
+  }
+
+拦截流程:
+  JS 调用 host function (如 Bun.file('/etc/passwd'))
+    → bao_engine host_fn 入口
+      → 检查 Page/Script 关联的 Permission
+        → 无配置: 直接执行 (短路, 零开销)
+        → 有配置: 检查对应权限类别 (read)
+          → 允许: 执行
+          → 拒绝: 抛出 PermissionDenied Error
+
+复用策略:
+  - 复用 bao_engine host_fn 抽象层 (REQ-ENG-003) 作为统一拦截点
+  - Permission 是一个 Rc&lt;Option&lt;PermissionConfig&gt;&gt;
+    None → 无限制 (零分支)
+    Some(config) → 白名单检查
+  - 浏览器页面和 Bun 脚本共享同一 Permission trait
+  - 不修改现有 bao_runtime 的任何 host function 实现
+    只在 host_fn 入口统一检查
+</pre>
 </div>
 
 <!-- ============================================================ -->
@@ -578,16 +928,27 @@ ShuttingDown:
 <div id="artifact-sla-matrix" data-artifact-type="sla">
 <h3>服务等级目标</h3>
 <table>
-<tr><td>指标</td><td>Node 模式</td><td>Browser 模式</td><td>Stealth 模式</td></tr>
-<tr><td>冷启动</td><td>≤ 100ms</td><td>≤ 500ms</td><td>≤ 600ms</td></tr>
-<tr><td>热启动</td><td>≤ 20ms</td><td>≤ 50ms</td><td>≤ 60ms</td></tr>
-<tr><td>JS 执行延迟</td><td>≤ 1ms</td><td>≤ 5ms</td><td>≤ 5ms</td></tr>
-<tr><td>CDP 命令响应</td><td>N/A</td><td>≤ 50ms (非截图)</td><td>≤ 50ms</td></tr>
-<tr><td>截图延迟 (1080p)</td><td>N/A</td><td>≤ 500ms</td><td>≤ 500ms</td></tr>
-<tr><td>内存开销 (基线)</td><td>≤ 30MB</td><td>≤ 80MB</td><td>≤ 100MB</td></tr>
-<tr><td>指纹检测率</td><td>N/A</td><td>N/A</td><td>≤ 5%</td></tr>
-<tr><td>Playwright 兼容</td><td>N/A</td><td>≥ 95% API</td><td>≥ 95% API</td></tr>
+<tr><td>指标</td><td>目标值</td></tr>
+<tr><td>冷启动（纯脚本）</td><td>≤ 100ms</td></tr>
+<tr><td>冷启动（含 servo）</td><td>≤ 500ms</td></tr>
+<tr><td>热启动</td><td>≤ 20ms</td></tr>
+<tr><td>JS 执行延迟</td><td>≤ 1ms</td></tr>
+<tr><td>CDP 命令响应（非截图）</td><td>≤ 50ms</td></tr>
+<tr><td>截图延迟 (1080p)</td><td>≤ 500ms</td></tr>
+<tr><td>内存开销（基线）</td><td>≤ 80MB</td></tr>
+<tr><td>指纹检测率（启用 Stealth 时）</td><td>≤ 5%</td></tr>
+<tr><td>Playwright API 兼容</td><td>≥ 95%</td></tr>
 </table>
+</div>
+
+<div data-artifact-type="mock-strategy">
+<h3>Mock 策略</h3>
+<p>运行时引擎项目，无外部服务依赖。所有测试直接使用真实模块，无需 Mock。</p>
+<ul>
+<li>Node API 模块：直接调用真实实现</li>
+<li>Servo 引擎：本地嵌入，无远程依赖</li>
+<li>CDP 协议：本地 WebSocket 连接</li>
+</ul>
 </div>
 
 </body>

@@ -112,7 +112,7 @@ unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {
     if val.is_int32() { return val.to_int32().to_string(); }
     if val.is_double() { return val.to_double().to_string(); }
     if val.is_string() {
-        return jsstr_to_string(cx, NonNull::new(val.to_string()).unwrap());
+        return crate::js_to_rust_string(cx, val);
     }
     if val.is_object() {
         let obj = val.to_object();
@@ -128,7 +128,7 @@ unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {
             let mut name_val = UndefinedValue();
             JS_GetProperty(cx, ctor_h, c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
             if name_val.is_string() {
-                let name = jsstr_to_string(cx, NonNull::new(name_val.to_string()).unwrap());
+                let name = crate::js_to_rust_string(cx, name_val);
                 return format!("[{}]", name);
             }
         }
@@ -212,7 +212,7 @@ unsafe fn has_class_name(cx: *mut JSContext, val: &JSVal, name: &str) -> bool { 
         let mut name_val = UndefinedValue();
         JS_GetProperty(cx, ctor_h, c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
         if name_val.is_string() {
-            let n = jsstr_to_string(cx, NonNull::new(name_val.to_string()).unwrap());
+            let n = crate::js_to_rust_string(cx, name_val);
             return n == name;
         }
     }
@@ -257,7 +257,7 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     let first = *args.get(0).ptr;
     if first.is_string() {
-        let fmt = jsstr_to_string(cx, NonNull::new(first.to_string()).unwrap());
+        let fmt = crate::js_to_rust_string(cx, first);
         if fmt.contains('%') && argc > 1 {
             let mut arg_idx = 1;
             let mut result = String::new();
@@ -372,7 +372,20 @@ unsafe extern "C" fn assert_ok(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         return false;
     }
     let val = *args.get(0).ptr;
-    if !val.to_boolean() {
+    let is_truthy = if val.is_boolean() {
+        val.to_boolean()
+    } else if val.is_int32() {
+        val.to_int32() != 0
+    } else if val.is_double() {
+        val.to_double() != 0.0
+    } else if val.is_string() {
+        true
+    } else if val.is_null() || val.is_undefined() {
+        false
+    } else {
+        true
+    };
+    if !is_truthy {
         let msg = if argc > 1 { jsval_to_display(cx, *args.get(1).ptr) } else { "The expression evaluated to a falsy value".to_string() };
         let c_msg = CString::new(msg).unwrap_or_default();
         JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());

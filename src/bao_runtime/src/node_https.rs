@@ -312,7 +312,9 @@ fn serde_json_like_parse(json: &str) -> ::std::result::Result<Vec<(String, Strin
         } else if depth == 0 && ch == ',' {
             if let Some(ref _key) = current_key {
                 let val_str = inner[token_start..i].trim().trim_matches('"').to_string();
-                result.push((current_key.take().unwrap(), val_str));
+                if let Some(key) = current_key.take() {
+                    result.push((key, val_str));
+                }
             }
             token_start = i + 1;
             current_key = None;

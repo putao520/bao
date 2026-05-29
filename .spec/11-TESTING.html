@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Bao - 测试用例</title>
+</head>
+<body>
+<h1>Bao 测试用例</h1>
+
+<!-- ============================================================ -->
+<h2>§1 多页面库测试 (REQ-LIB-001 ~ REQ-LIB-004)</h2>
+<!-- ============================================================ -->
+
+<div data-test="TEST-LIB-001" data-req-ref="REQ-LIB-001" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-LIB-001: 多页面创建与隔离</h3>
+<p><strong>关联需求</strong>: REQ-LIB-001</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p><strong>E2E测试粒度</strong>: 业务流程</p>
+<h4>测试步骤</h4>
+<ol>
+<li>创建 BaoRuntime 实例</li>
+<li>create_page() 创建 Page #1，导航到 URL-A</li>
+<li>create_page() 创建 Page #2，导航到 URL-B</li>
+<li>在 Page #1 evaluate('window.testVar = 1')</li>
+<li>在 Page #2 evaluate('window.testVar') 应返回 undefined</li>
+<li>在 Page #2 evaluate('window.testVar = 2')</li>
+<li>在 Page #1 evaluate('window.testVar') 应返回 1（未受 Page #2 影响）</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>Page #1 和 Page #2 的 JS 全局对象完全隔离</li>
+<li>模块缓存不跨 Page 污染</li>
+<li>两个 Page 的截图互不影响</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-002" data-req-ref="REQ-LIB-001" data-test-categories="unit,positive,negative,integration" data-test-level="integration">
+<h3>TEST-LIB-002: Page 显式关闭与资源释放</h3>
+<p><strong>关联需求</strong>: REQ-LIB-001</p>
+<p><strong>测试类型</strong>: 正向 + 负向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>创建 Page，导航并执行 JS</li>
+<li>调用 page.close()</li>
+<li>验证 page.evaluate() 抛出 PageClosed Error</li>
+<li>创建新 Page，验证 PagePool stats.total_destroyed 递增</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>close 后 WebView 已销毁，servo CloseWebView 已发送</li>
+<li>后续操作返回明确的错误（非 panic）</li>
+<li>资源统计正确更新</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-003" data-req-ref="REQ-LIB-002" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-LIB-003: PagePool 空闲 TTL 回收</h3>
+<p><strong>关联需求</strong>: REQ-LIB-002</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>配置 PagePool idle_ttl = 2s, max_total = 5</li>
+<li>创建 Page #1，获取 PageHandle</li>
+<li>drop PageHandle（Page 进入空闲池）</li>
+<li>等待 3s（超过 idle_ttl）</li>
+<li>触发事件循环 tick</li>
+<li>验证 Page #1 已被回收，stats.total_destroyed = 1</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>空闲 Page 在 idle_ttl 后被自动回收</li>
+<li>回收后 WebView 和 Realm 资源释放</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-004" data-req-ref="REQ-LIB-002" data-test-categories="unit,boundary,negative,integration" data-test-level="integration">
+<h3>TEST-LIB-004: PagePool max_total 硬上限</h3>
+<p><strong>关联需求</strong>: REQ-LIB-002</p>
+<p><strong>测试类型</strong>: 边界 + 负向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>配置 max_total = 3</li>
+<li>创建 Page #1, #2, #3（全部成功）</li>
+<li>创建 Page #4（应返回错误）</li>
+<li>关闭 Page #1</li>
+<li>创建 Page #4（现在应成功）</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>第 4 个 Page 创建时返回 PageLimitExceeded Error</li>
+<li>关闭一个 Page 后新创建成功</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-005" data-req-ref="REQ-LIB-003" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-LIB-005: 高性能 Rust/JS API (内部后端)</h3>
+<p><strong>关联需求</strong>: REQ-LIB-003</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>创建 Page</li>
+<li>page.goto('data:text/html,&lt;h1&gt;Hello&lt;/h1&gt;')</li>
+<li>page.evaluate('document.querySelector("h1").textContent') 应返回 "Hello"</li>
+<li>page.screenshot({ format: 'png' }) 应返回非空 Buffer</li>
+<li>page.title() 应返回页面标题</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>所有 API 直接调用 Rust，无 JSON-RPC 序列化</li>
+<li>响应延迟 &lt; 10ms（非截图操作）</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-006" data-req-ref="REQ-LIB-003" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-LIB-006: CDP 兼容层 (内部模式)</h3>
+<p><strong>关联需求</strong>: REQ-LIB-003</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>创建 Page</li>
+<li>const cdp = page.createCDPSession()</li>
+<li>cdp.send('Page.navigate', { url: 'data:text/html,&lt;h2&gt;CDP&lt;/h2&gt;' })</li>
+<li>cdp.send('Runtime.evaluate', { expression: '1+1' }) 应返回 { result: { value: 2 } }</li>
+<li>cdp.on('Page.loadEventFired', callback) 事件监听</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>CDP 消息格式正确</li>
+<li>内部模式 CDP 消息映射到 bao_browser API</li>
+<li>事件通知正常触发</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-007" data-req-ref="REQ-LIB-003" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-LIB-007: 外部 CDP 端点连接</h3>
+<p><strong>关联需求</strong>: REQ-LIB-003</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>启动外部 Chrome 实例，开启 CDP 端口 9222</li>
+<li>const browser = Bao.connect('ws://127.0.0.1:9222')</li>
+<li>const page = browser.newPage()</li>
+<li>page.goto('https://example.com')</li>
+<li>page.title() 应返回非空字符串</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>WebSocket 连接成功</li>
+<li>CDP JSON-RPC 消息与外部浏览器正常通信</li>
+<li>页面操作结果正确</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-008" data-req-ref="REQ-LIB-004" data-test-categories="unit,positive,negative,integration" data-test-level="integration">
+<h3>TEST-LIB-008: Permission 白名单拦截</h3>
+<p><strong>关联需求</strong>: REQ-LIB-004</p>
+<p><strong>测试类型</strong>: 正向 + 负向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>创建 Permission { read: ['/tmp/allowed'], net: ['api.example.com'] }</li>
+<li>创建 Page 并绑定 Permission</li>
+<li>page.evaluate('Bun.file("/tmp/allowed/data.txt")') 应成功</li>
+<li>page.evaluate('Bun.file("/etc/passwd")') 应抛出 PermissionDenied</li>
+<li>page.evaluate('fetch("http://api.example.com/data")') 应成功</li>
+<li>page.evaluate('fetch("http://evil.com/data")') 应抛出 PermissionDenied</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>白名单内的操作正常执行</li>
+<li>白名单外的操作抛出 PermissionDenied Error</li>
+<li>无 Permission 配置时所有操作不受限</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-009" data-req-ref="REQ-LIB-004" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-LIB-009: Permission 零开销验证</h3>
+<p><strong>关联需求</strong>: REQ-LIB-004</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>创建 Page（无 Permission 配置）</li>
+<li>执行 1000 次 Bun.file() 调用，测量耗时</li>
+<li>与有 Permission 配置的 Page 对比</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>无配置时的耗时差异 &lt; 1%（短路路径几乎零开销）</li>
+</ul>
+</div>
+
+<div data-test="TEST-LIB-010" data-req-ref="REQ-LIB-001" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-LIB-010: 多页面 + Stealth 集成</h3>
+<p><strong>关联需求</strong>: REQ-LIB-001, REQ-LIB-003</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>创建 Page #1，配置 stealth: firefox</li>
+<li>创建 Page #2，配置 stealth: chrome</li>
+<li>Page #1 evaluate('navigator.userAgent') 应包含 "Firefox"</li>
+<li>Page #2 evaluate('navigator.userAgent') 应包含 "Chrome"</li>
+<li>两页面指纹独立，互不影响</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>不同 Page 可以使用不同的 StealthProfile</li>
+<li>指纹注入在 Page 级别隔离</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§2 Engine Tests (REQ-ENG-001~007)</h2>
+<!-- ============================================================ -->
+
+<div data-test="TEST-ENG-001" data-req-ref="REQ-ENG-001" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-ENG-001: SpiderMonkey 引擎初始化与 JS 执行</h3>
+<p><strong>关联需求</strong>: REQ-ENG-001</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 SpiderMonkey JSContext 创建、脚本执行、异常捕获。覆盖于 phase1_integration.js。</p>
+</div>
+
+<div data-test="TEST-ENG-002" data-req-ref="REQ-ENG-002" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-ENG-002: 代码生成后端验证</h3>
+<p><strong>关联需求</strong>: REQ-ENG-002</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 .classes.ts 代码生成后端从 JSC 迁移到 SM 后功能正常。覆盖于 phase1_integration.js。</p>
+</div>
+
+<div data-test="TEST-ENG-003" data-req-ref="REQ-ENG-003" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-ENG-003: host_fn 安全 FFI 层</h3>
+<p><strong>关联需求</strong>: REQ-ENG-003</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Rust-JS 类型转换、console.log、异常处理。覆盖于 phase1_integration.js。</p>
+</div>
+
+<div data-test="TEST-ENG-004" data-req-ref="REQ-ENG-004" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-ENG-004: 事件循环桥接</h3>
+<p><strong>关联需求</strong>: REQ-ENG-004</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Promise/async/await 和 JobQueue 桥接。覆盖于 phase1_integration.js。</p>
+</div>
+
+<div data-test="TEST-ENG-005" data-req-ref="REQ-ENG-005" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-ENG-005: 模块加载器桥接</h3>
+<p><strong>关联需求</strong>: REQ-ENG-005</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 require() 和 ESM import 功能。覆盖于 phase1_integration.js。</p>
+</div>
+
+<div data-test="TEST-ENG-006" data-req-ref="REQ-ENG-006" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-ENG-006: Bun API 适配</h3>
+<p><strong>关联需求</strong>: REQ-ENG-006</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Bun.file/Bun.write/Bun.env 等 API。覆盖于 phase1_integration.js。</p>
+</div>
+
+<div data-test="TEST-ENG-007" data-req-ref="REQ-ENG-007" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-ENG-007: Node.js 兼容层</h3>
+<p><strong>关联需求</strong>: REQ-ENG-007</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 node:fs/path/crypto/http/buffer 等模块。覆盖于 phase1_integration.js。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>§3 CLI Tests (REQ-CLI-001~002)</h2>
+<!-- ============================================================ -->
+
+<div data-test="TEST-CLI-001" data-req-ref="REQ-CLI-001" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CLI-001: bao 命令品牌替换</h3>
+<p><strong>关联需求</strong>: REQ-CLI-001</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 bao run/bao test/bao build 命令可执行，输出包含 'bao' 而非 'bun'。覆盖于 phase1_integration.js。</p>
+</div>
+
+<div data-test="TEST-CLI-002" data-req-ref="REQ-CLI-002" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CLI-002: bao browser 子命令</h3>
+<p><strong>关联需求</strong>: REQ-CLI-002</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 bao browser 子命令启动 servo + CDP 模式。覆盖于 phase5_multipage.js。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4 Browser Tests (REQ-BRW-001~003)</h2>
+<!-- ============================================================ -->
+
+<div data-test="TEST-BRW-001" data-req-ref="REQ-BRW-001" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-BRW-001: libservo 集成</h3>
+<p><strong>关联需求</strong>: REQ-BRW-001</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 ServoDelegate + WebViewDelegate 创建和事件循环。覆盖于 phase5_multipage.js。</p>
+</div>
+
+<div data-test="TEST-BRW-002" data-req-ref="REQ-BRW-002" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-BRW-002: 内存渲染与截图</h3>
+<p><strong>关联需求</strong>: REQ-BRW-002</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 SoftwareRenderingContext 创建和 screenshot 编码。覆盖于 phase5_multipage.js。</p>
+</div>
+
+<div data-test="TEST-BRW-003" data-req-ref="REQ-BRW-003" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-BRW-003: JSContext 融合</h3>
+<p><strong>关联需求</strong>: REQ-BRW-003</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 servo WebView 与 Bao SpiderMonkey 共享 JSContext。覆盖于 phase5_multipage.js。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>§5 CDP Tests (REQ-CDP-001~008)</h2>
+<!-- ============================================================ -->
+
+<div data-test="TEST-CDP-001" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CDP-001: CDP WebSocket 服务</h3>
+<p><strong>关联需求</strong>: REQ-CDP-001</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 WebSocket 握手、消息帧解析、JSON 端点。覆盖于 phase5_cdp.js。</p>
+</div>
+
+<div data-test="TEST-CDP-002" data-req-ref="REQ-CDP-002" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CDP-002: Runtime Domain</h3>
+<p><strong>关联需求</strong>: REQ-CDP-002</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Runtime.evaluate/enable/disable。覆盖于 phase5_cdp.js。</p>
+</div>
+
+<div data-test="TEST-CDP-003" data-req-ref="REQ-CDP-003" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CDP-003: Debugger Domain</h3>
+<p><strong>关联需求</strong>: REQ-CDP-003</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Debugger enable/setBreakpoint/resume。覆盖于 phase5_cdp.js。</p>
+</div>
+
+<div data-test="TEST-CDP-004" data-req-ref="REQ-CDP-004" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CDP-004: Page Domain</h3>
+<p><strong>关联需求</strong>: REQ-CDP-004</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Page.navigate/enable/captureScreenshot。覆盖于 phase5_cdp.js。</p>
+</div>
+
+<div data-test="TEST-CDP-005" data-req-ref="REQ-CDP-005" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CDP-005: DOM Domain</h3>
+<p><strong>关联需求</strong>: REQ-CDP-005</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 DOM.getDocument/querySelector/getBoxModel。覆盖于 phase5_cdp.js。</p>
+</div>
+
+<div data-test="TEST-CDP-006" data-req-ref="REQ-CDP-006" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CDP-006: Network Domain</h3>
+<p><strong>关联需求</strong>: REQ-CDP-006</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Network.enable/getCookies/setCookie。覆盖于 phase5_cdp.js。</p>
+</div>
+
+<div data-test="TEST-CDP-007" data-req-ref="REQ-CDP-007" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CDP-007: CSS/Input/Emulation/Overlay Domains</h3>
+<p><strong>关联需求</strong>: REQ-CDP-007</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 11 个辅助 CDP domain 全部响应。覆盖于 phase5_cdp.js。</p>
+</div>
+
+<div data-test="TEST-CDP-008" data-req-ref="REQ-CDP-008" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-CDP-008: Target Domain</h3>
+<p><strong>关联需求</strong>: REQ-CDP-008</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Target.getTargets/createTarget/closeTarget。覆盖于 phase5_cdp.js。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>§6 Stealth Tests (REQ-STL-001~007)</h2>
+<!-- ============================================================ -->
+
+<div data-test="TEST-STL-001" data-req-ref="REQ-STL-001" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-STL-001: TLS 指纹模拟</h3>
+<p><strong>关联需求</strong>: REQ-STL-001</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Firefox/Chrome JA3 cipher suite/extension/signature 配置。覆盖于 phase4_stealth.js。</p>
+</div>
+
+<div data-test="TEST-STL-002" data-req-ref="REQ-STL-002" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-STL-002: HTTP/2 指纹匹配</h3>
+<p><strong>关联需求</strong>: REQ-STL-002</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 HTTP/2 SETTINGS 参数和 Akamai 指纹。覆盖于 phase4_stealth.js。</p>
+</div>
+
+<div data-test="TEST-STL-003" data-req-ref="REQ-STL-003" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-STL-003: Canvas 指纹保护</h3>
+<p><strong>关联需求</strong>: REQ-STL-003</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证确定性像素噪声生成。覆盖于 phase4_stealth.js。</p>
+</div>
+
+<div data-test="TEST-STL-004" data-req-ref="REQ-STL-004" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-STL-004: Navigator/Screen 属性构造</h3>
+<p><strong>关联需求</strong>: REQ-STL-004</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 Navigator/Screen profile 数据正确性。覆盖于 phase4_stealth.js。</p>
+</div>
+
+<div data-test="TEST-STL-005" data-req-ref="REQ-STL-005" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-STL-005: WebGL/Audio 指纹保护</h3>
+<p><strong>关联需求</strong>: REQ-STL-005</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 WebGL vendor/renderer 和 Audio 噪声。覆盖于 phase4_stealth.js。</p>
+</div>
+
+<div data-test="TEST-STL-006" data-req-ref="REQ-STL-006" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-STL-006: 行为模拟</h3>
+<p><strong>关联需求</strong>: REQ-STL-006</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证鼠标轨迹和打字延迟生成。覆盖于 phase4_stealth.js。</p>
+</div>
+
+<div data-test="TEST-STL-007" data-req-ref="REQ-STL-007" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-STL-007: CDP 隐身</h3>
+<p><strong>关联需求</strong>: REQ-STL-007</p>
+<p><strong>测试类型</strong>: 正向测试</p>
+<p>验证 navigator.webdriver=false 和 CDC 标记删除。覆盖于 phase4_stealth.js。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>§6 实施阶段集成测试 (REQ-IMPL-01 ~ REQ-IMPL-05)</h2>
+<!-- ============================================================ -->
+
+<div data-test="TEST-IMPL-01" data-req-ref="REQ-IMPL-01" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-IMPL-01: Phase 1 SpiderMonkey 引擎集成验证</h3>
+<p><strong>关联需求</strong>: REQ-IMPL-01</p>
+<p><strong>测试类型</strong>: 集成测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>验证 bao_engine 编译通过 (cargo build --package bao_engine)</li>
+<li>验证 JSContext 创建/销毁生命周期</li>
+<li>验证 ESM/CJS 模块加载器工作</li>
+<li>验证 host function 注册和回调</li>
+<li>验证 Value 类型转换正确</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>cargo build 成功，零编译错误</li>
+<li>所有 Phase 1 测试 (phase1_integration.js) 通过</li>
+</ul>
+</div>
+
+<div data-test="TEST-IMPL-02" data-req-ref="REQ-IMPL-02" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-IMPL-02: Phase 2 servo 引擎集成验证</h3>
+<p><strong>关联需求</strong>: REQ-IMPL-02</p>
+<p><strong>测试类型</strong>: 集成测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>验证 bao_browser 编译通过 (cargo build --package bao_bin)</li>
+<li>验证 ServoDelegate 和 WebViewDelegate 实现</li>
+<li>验证 Page 创建、导航、截图功能</li>
+<li>验证 PagePool 多页面管理</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>cargo build 成功</li>
+<li>所有 Phase 5 多页面测试 (phase5_multipage.js) 通过</li>
+</ul>
+</div>
+
+<div data-test="TEST-IMPL-03" data-req-ref="REQ-IMPL-03" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-IMPL-03: Phase 3 CDP Server 验证</h3>
+<p><strong>关联需求</strong>: REQ-IMPL-03</p>
+<p><strong>测试类型</strong>: 集成测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>验证 bao_cdp 编译通过</li>
+<li>验证 CDP protocol 11 domain dispatch</li>
+<li>验证 CdpRouter session 管理</li>
+<li>验证 Internal/External backend 双层路由</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>cargo build 成功</li>
+<li>所有 Phase 5 CDP 测试 (phase5_cdp.js) 通过</li>
+</ul>
+</div>
+
+<div data-test="TEST-IMPL-04" data-req-ref="REQ-IMPL-04" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-IMPL-04: Phase 4 Stealth 反指纹验证</h3>
+<p><strong>关联需求</strong>: REQ-IMPL-04</p>
+<p><strong>测试类型</strong>: 集成测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>验证 bao_stealth 编译通过</li>
+<li>验证 TLS/HTTP/Canvas/Navigator/WebGL/Audio/Behavior 7 大模块</li>
+<li>验证 StealthEngine 集成</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>cargo build 成功</li>
+<li>所有 Phase 4 stealth 测试 (phase4_stealth.js) 通过</li>
+</ul>
+</div>
+
+<div data-test="TEST-IMPL-05" data-req-ref="REQ-IMPL-05" data-test-categories="unit,positive,integration,system" data-test-level="integration">
+<h3>TEST-IMPL-05: Phase 5 全栈集成验证</h3>
+<p><strong>关联需求</strong>: REQ-IMPL-05</p>
+<p><strong>测试类型</strong>: 集成测试</p>
+<h4>测试步骤</h4>
+<ol>
+<li>运行全量测试套件 (phase1 + phase4 + phase5)</li>
+<li>验证 Permission 沙箱测试通过</li>
+<li>验证 SPEC 成熟度审计通过</li>
+<li>验证 Z3 状态机完备性</li>
+</ol>
+<h4>期望结果</h4>
+<ul>
+<li>216+ assertions 全部通过</li>
+<li>SPEC 成熟度 ≥ 80%</li>
+<li>状态机 SOUND</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>§7 Mock 策略</h2>
+<!-- ============================================================ -->
+<div data-artifact-type="mock-strategy">
+<p>本项目为运行时引擎，无外部 HTTP/gRPC 依赖需要 Mock。所有测试直接使用真实模块。</p>
+<ul>
+<li>Node API 模块（fs/path/crypto/http）：直接调用，无需 Mock</li>
+<li>Servo 浏览器引擎：本地嵌入，无需 Mock</li>
+<li>CDP 协议：本地 WebSocket 连接，无需 Mock</li>
+</ul>
+</div>
+
+</body>
+</html>

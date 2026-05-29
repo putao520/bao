@@ -54,7 +54,7 @@ unsafe extern "C" fn require_fn(
         return false;
     }
 
-    let specifier = jsstr_to_string(cx, ptr::NonNull::new(spec_val.to_string()).unwrap());
+    let specifier = crate::js_to_rust_string(cx, spec_val);
 
     // Check built-in modules first (node:fs, node:path, fs, path, etc.)
     let builtin_key = specifier.strip_prefix("node:").unwrap_or(&specifier);

@@ -381,6 +381,54 @@ assertEq(btoa("hello"), "aGVsbG8=", "btoa('hello') encodes");
 assertEq(atob("aGVsbG8="), "hello", "atob('aGVsbG8=') decodes");
 
 // ============================================================
+// WebAssembly (REQ-ENG-001)
+// ============================================================
+assertEq(typeof WebAssembly, "object", "WebAssembly global exists");
+assertEq(typeof WebAssembly.Module, "function", "WebAssembly.Module is function");
+assertEq(typeof WebAssembly.Instance, "function", "WebAssembly.Instance is function");
+assertEq(typeof WebAssembly.compile, "function", "WebAssembly.compile is function");
+assertEq(typeof WebAssembly.instantiate, "function", "WebAssembly.instantiate is function");
+
+// Simple WASM module: returns 42
+// (module (func (export "answer") (result i32) i32.const 42))
+var wasmBytes = new Uint8Array([
+  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+  0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
+  0x03, 0x02, 0x01, 0x00,
+  0x07, 0x0a, 0x01, 0x06, 0x61, 0x6e, 0x73, 0x77, 0x65, 0x72, 0x00, 0x00,
+  0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b
+]);
+var wasmModule = new WebAssembly.Module(wasmBytes);
+var wasmInstance = new WebAssembly.Instance(wasmModule);
+assertEq(wasmInstance.exports.answer(), 42, "WebAssembly module returns 42");
+
+// ============================================================
+// Bun.build / Bun.test JS API
+// ============================================================
+assertEq(typeof Bun.build, "function", "Bun.build is function");
+var buildResult = Bun.build({entrypoints: ["tests/phase1_integration.js"]});
+assertEq(typeof buildResult, "object", "Bun.build returns object");
+assertEq(buildResult.success, true, "Bun.build result has success=true");
+assertEq(typeof buildResult.outputs, "object", "Bun.build result has outputs");
+
+assertEq(typeof Bun.test, "function", "Bun.test is function");
+assertEq(typeof Bun.testRun, "function", "Bun.testRun is function");
+Bun.test("inline test", function() {});
+var testRunResult = Bun.testRun();
+assertEq(testRunResult.total >= 1, true, "Bun.testRun reports collected tests");
+
+// ============================================================
+// Bun.build / Bun.test (CLI-level)
+// ============================================================
+var cp = require("child_process");
+var buildResult = cp.execSync("./target/debug/bao build --help").toString();
+assert(buildResult.indexOf("build") >= 0, "bao build --help works");
+var testResult = cp.execSync("./target/debug/bao test --help").toString();
+assert(testResult.indexOf("test") >= 0, "bao test --help works");
+var installResult = cp.execSync("./target/debug/bao install --help").toString();
+assert(installResult.indexOf("install") >= 0, "bao install --help works");
+
+// ============================================================
 // Results
 // ============================================================
 console.log("\n========== Phase 1 Integration Test ==========");

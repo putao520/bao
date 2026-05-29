@@ -37,7 +37,7 @@ unsafe fn js_str_prop(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, name: *c
     let mut val = UndefinedValue();
     JS_GetProperty(cx, obj_h, name, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
     if val.is_string() {
-        Some(jsstr_to_string(cx, NonNull::new(val.to_string()).unwrap()))
+        Some(crate::js_to_rust_string(cx, val))
     } else {
         None
     }
@@ -59,7 +59,7 @@ unsafe fn js_str_array_prop(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, na
         let mut elem = UndefinedValue();
         JS_GetElement(cx, arr_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
         if elem.is_string() {
-            result.push(jsstr_to_string(cx, NonNull::new(elem.to_string()).unwrap()));
+            result.push(crate::js_to_rust_string(cx, elem));
         }
     }
     result
@@ -140,7 +140,7 @@ unsafe extern "C" fn cp_spawn(
     let (cmd_str, opts_obj) = if argc > 0 {
         let first = *args.get(0).ptr;
         if first.is_string() {
-            (Some(jsstr_to_string(cx, NonNull::new(first.to_string()).unwrap())), None)
+            (Some(crate::js_to_rust_string(cx, first)), None)
         } else if first.is_object() {
             (None, Some(first.to_object()))
         } else {
@@ -263,7 +263,7 @@ unsafe extern "C" fn cp_exec(
         None
     };
 
-    let cmd = jsstr_to_string(cx, NonNull::new(cmd_val.to_string()).unwrap());
+    let cmd = crate::js_to_rust_string(cx, cmd_val);
     let shell = if cfg!(target_family = "unix") { "/bin/sh" } else { "cmd.exe" };
     let shell_flag = if cfg!(target_family = "unix") { "-c" } else { "/C" };
 
@@ -387,7 +387,7 @@ unsafe extern "C" fn cp_exec_sync(
         return false;
     }
 
-    let cmd = jsstr_to_string(cx, NonNull::new(cmd_val.to_string()).unwrap());
+    let cmd = crate::js_to_rust_string(cx, cmd_val);
     let shell = if cfg!(target_family = "unix") { "/bin/sh" } else { "cmd.exe" };
     let shell_flag = if cfg!(target_family = "unix") { "-c" } else { "/C" };
 
@@ -438,7 +438,7 @@ unsafe extern "C" fn cp_fork(
         return false;
     }
 
-    let module = jsstr_to_string(cx, NonNull::new(module_val.to_string()).unwrap());
+    let module = crate::js_to_rust_string(cx, module_val);
     let executable = ::std::env::current_exe().unwrap_or_else(|_| ::std::path::PathBuf::from("bao"));
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));

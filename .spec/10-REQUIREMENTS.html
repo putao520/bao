@@ -11,383 +11,521 @@
 <h2>§1 引擎需求</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-ENG-001" data-req-status="draft" data-req-domain="ENG">
+<div id="req-REQ-ENG-001" data-req="REQ-ENG-001" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-001: SpiderMonkey 引擎集成</h3>
 <p>通过 mozjs crate (v0.15.14) 集成 SpiderMonkey JS 引擎，替代 Bun 原有的 JavaScriptCore。</p>
 <h4>验收标准</h4>
 <ul>
-<li>bao run 能执行 JS/TS 文件并输出结果</li>
-<li>SpiderMonkey JSContext 在 Main Thread 唯一实例化</li>
-<li>GC 通过 mozjs crown lint 编译时检查 rooting 正确性</li>
-<li>JS 异常正确传播到 Rust 层并输出 stack trace</li>
-<li>WebAssembly 执行正常</li>
+<li data-criterion data-criterion-id="REQ-ENG-001-C1">bao run 能执行 JS/TS 文件并输出结果</li>
+<li data-criterion data-criterion-id="REQ-ENG-001-C2">SpiderMonkey JSContext 在 Main Thread 唯一实例化</li>
+<li data-criterion data-criterion-id="REQ-ENG-001-C3">GC 通过 mozjs crown lint 编译时检查 rooting 正确性</li>
+<li data-criterion data-criterion-id="REQ-ENG-001-C4">JS 异常正确传播到 Rust 层并输出 stack trace</li>
+<li data-criterion data-criterion-id="REQ-ENG-001-C5">WebAssembly 执行正常</li>
 </ul>
 <h4>关联设计</h4>
 <p>参见 02-SYSTEM.html §4.2 (SpiderMonkey 集成) · 03-PROCESS.html §1 (JS 执行管线) · 03-PROCESS.html §5 (Event Loop 桥接)</p>
-</div>
 
-<div data-req="REQ-ENG-002" data-req-status="draft" data-req-domain="ENG">
+<p data-xref-type="req" data-xref-id="REQ-ENG-001">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
+<span data-xref-type="entity" data-xref-id="ModuleSource">ModuleSource</span>, <span data-xref-type="entity" data-xref-id="JsCallback">JsCallback</span></p></div>
+
+<div id="req-REQ-ENG-002" data-req="REQ-ENG-002" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-002: 代码生成后端重写</h3>
 <p>重写 Bun 的 .classes.ts 代码生成后端，将 JSC C++ 模板改为 SpiderMonkey 绑定生成。30 个 .classes.ts 定义文件复用 95%。</p>
 <h4>验收标准</h4>
 <ul>
-<li>所有 30 个 .classes.ts 文件的定义可被解析</li>
-<li>生成 SpiderMonkey C++ 绑定代码（JSClass + JSFunctionSpec + JSPropertySpec）</li>
-<li>生成的绑定通过编译</li>
-<li>Bun.* API 通过 Bao.* 别名可访问</li>
+<li data-criterion data-criterion-id="REQ-ENG-002-C1">所有 30 个 .classes.ts 文件的定义可被解析</li>
+<li data-criterion data-criterion-id="REQ-ENG-002-C2">生成 SpiderMonkey C++ 绑定代码（JSClass + JSFunctionSpec + JSPropertySpec）</li>
+<li data-criterion data-criterion-id="REQ-ENG-002-C3">生成的绑定通过编译</li>
+<li data-criterion data-criterion-id="REQ-ENG-002-C4">Bun.* API 通过 Bao.* 别名可访问</li>
 </ul>
-</div>
 
-<div data-req="REQ-ENG-003" data-req-status="draft" data-req-domain="ENG">
+<p data-xref-type="req" data-xref-id="REQ-ENG-002">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+
+<div id="req-REQ-ENG-003" data-req="REQ-ENG-003" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-003: host_fn 抽象层</h3>
 <p>新建 mozjs safe FFI wrapper，替代 bun_jsc 的 host_fn 安全抽象。提供 JS 函数调用、类型转换、异常处理的 Rust 安全封装。</p>
 <h4>验收标准</h4>
 <ul>
-<li>提供 Rust 安全的 JS 函数调用接口</li>
-<li>支持 JS→Rust 和 Rust→JS 类型转换</li>
-<li>JS 异常自动转换为 Rust Result::Err</li>
-<li>GC root 管理通过 RAII 自动化</li>
+<li data-criterion data-criterion-id="REQ-ENG-003-C1">提供 Rust 安全的 JS 函数调用接口</li>
+<li data-criterion data-criterion-id="REQ-ENG-003-C2">支持 JS→Rust 和 Rust→JS 类型转换</li>
+<li data-criterion data-criterion-id="REQ-ENG-003-C3">JS 异常自动转换为 Rust Result::Err</li>
+<li data-criterion data-criterion-id="REQ-ENG-003-C4">GC root 管理通过 RAII 自动化</li>
 </ul>
-</div>
 
-<div data-req="REQ-ENG-004" data-req-status="draft" data-req-domain="ENG">
+<p data-xref-type="req" data-xref-id="REQ-ENG-003">关联实体: <span data-xref-type="entity" data-xref-id="JsCallback">JsCallback</span>
+<span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+
+<div id="req-REQ-ENG-004" data-req="REQ-ENG-004" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-004: Event Loop 桥接</h3>
 <p>实现 SpiderMonkey JS::JobQueue → Bun uSockets I/O 的事件循环桥接。</p>
 <h4>验收标准</h4>
 <ul>
-<li>Promise.then 回调在正确的 event loop tick 中执行</li>
-<li>setTimeout/setInterval 由 Bun Timer 管理</li>
-<li>微任务在每轮 tick 结尾 drain</li>
-<li>宏任务和微任务执行顺序正确</li>
+<li data-criterion data-criterion-id="REQ-ENG-004-C1">Promise.then 回调在正确的 event loop tick 中执行</li>
+<li data-criterion data-criterion-id="REQ-ENG-004-C2">setTimeout/setInterval 由 Bun Timer 管理</li>
+<li data-criterion data-criterion-id="REQ-ENG-004-C3">微任务在每轮 tick 结尾 drain</li>
+<li data-criterion data-criterion-id="REQ-ENG-004-C4">宏任务和微任务执行顺序正确</li>
 </ul>
-</div>
 
-<div data-req="REQ-ENG-005" data-req-status="draft" data-req-domain="ENG">
+<p data-xref-type="req" data-xref-id="REQ-ENG-004">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+
+<div id="req-REQ-ENG-005" data-req="REQ-ENG-005" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-005: Module Loader 桥接</h3>
 <p>实现 SpiderMonkey ESM hooks → Bun resolver 的模块加载桥接。</p>
 <h4>验收标准</h4>
 <ul>
-<li>import/export 语法正常工作</li>
-<li>node_modules 解析正常</li>
-<li>TS 文件自动转译后加载</li>
-<li>动态 import() 正常工作</li>
-<li>模块缓存生效，避免重复解析</li>
+<li data-criterion data-criterion-id="REQ-ENG-005-C1">import/export 语法正常工作</li>
+<li data-criterion data-criterion-id="REQ-ENG-005-C2">node_modules 解析正常</li>
+<li data-criterion data-criterion-id="REQ-ENG-005-C3">TS 文件自动转译后加载</li>
+<li data-criterion data-criterion-id="REQ-ENG-005-C4">动态 import() 正常工作</li>
+<li data-criterion data-criterion-id="REQ-ENG-005-C5">模块缓存生效，避免重复解析</li>
 </ul>
-</div>
 
-<div data-req="REQ-ENG-006" data-req-status="draft" data-req-domain="ENG">
+<p data-xref-type="req" data-xref-id="REQ-ENG-005">关联实体: <span data-xref-type="entity" data-xref-id="ModuleSource">ModuleSource</span></p></div>
+
+<div id="req-REQ-ENG-006" data-req="REQ-ENG-006" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-006: Bun API 适配</h3>
 <p>将 Bun.* JS API 从 JSC 绑定适配到 SpiderMonkey 绑定。</p>
 <h4>验收标准</h4>
 <ul>
-<li>Bun.serve() 正常启动 HTTP 服务</li>
-<li>Bun.file() 正常读取文件</li>
-<li>fetch() 正常发起 HTTP 请求</li>
-<li>Bun.write() 正常写入文件</li>
-<li>Bun.serve() 支持 WebSocket 升级</li>
-<li>Bao.* 是 Bun.* 的别名，指向同一对象</li>
+<li data-criterion data-criterion-id="REQ-ENG-006-C1">Bun.serve() 正常启动 HTTP 服务</li>
+<li data-criterion data-criterion-id="REQ-ENG-006-C2">Bun.file() 正常读取文件</li>
+<li data-criterion data-criterion-id="REQ-ENG-006-C3">fetch() 正常发起 HTTP 请求</li>
+<li data-criterion data-criterion-id="REQ-ENG-006-C4">Bun.write() 正常写入文件</li>
+<li data-criterion data-criterion-id="REQ-ENG-006-C5">Bun.serve() 支持 WebSocket 升级</li>
+<li data-criterion data-criterion-id="REQ-ENG-006-C6">Bao.* 是 Bun.* 的别名，指向同一对象</li>
 </ul>
-</div>
 
-<div data-req="REQ-ENG-007" data-req-status="draft" data-req-domain="ENG">
+<p data-xref-type="req" data-xref-id="REQ-ENG-006">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+
+<div id="req-REQ-ENG-007" data-req="REQ-ENG-007" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-007: Node.js 兼容层适配</h3>
 <p>将现有 Node.js 兼容 API (node:fs, node:path, node:http 等) 从 JSC 移植到 SpiderMonkey。</p>
 <h4>验收标准</h4>
 <ul>
-<li>node:fs 读写操作正常</li>
-<li>node:path 路径操作正常</li>
-<li>node:http 服务端正常</li>
-<li>node:crypto 加密操作正常</li>
-<li>Buffer 全局对象正常工作</li>
-<li>process 全局对象正常工作</li>
+<li data-criterion data-criterion-id="REQ-ENG-007-C1">node:fs 读写操作正常</li>
+<li data-criterion data-criterion-id="REQ-ENG-007-C2">node:path 路径操作正常</li>
+<li data-criterion data-criterion-id="REQ-ENG-007-C3">node:http 服务端正常</li>
+<li data-criterion data-criterion-id="REQ-ENG-007-C4">node:crypto 加密操作正常</li>
+<li data-criterion data-criterion-id="REQ-ENG-007-C5">Buffer 全局对象正常工作</li>
+<li data-criterion data-criterion-id="REQ-ENG-007-C6">process 全局对象正常工作</li>
 </ul>
-</div>
+
+<p data-xref-type="req" data-xref-id="REQ-ENG-007">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§2 CLI 需求</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-CLI-001" data-req-status="draft" data-req-domain="CLI">
+<div id="req-REQ-CLI-001" data-req="REQ-CLI-001" data-req-status="implemented" data-req-domain="CLI">
 <h3>REQ-CLI-001: bao 品牌替换</h3>
 <p>用户可见的命令和输出从 bun 替换为 bao。</p>
 <h4>验收标准</h4>
 <ul>
-<li><code>bao run index.ts</code> 执行文件</li>
-<li><code>bao test</code> 运行测试</li>
-<li><code>bao build</code> 打包</li>
-<li><code>bao install</code> 安装依赖</li>
-<li><code>bao browser</code> 启动浏览器模式</li>
-<li>内部 crate 名保持 bun_* 不变</li>
-<li>BAO_* 环境变量作为 BUN_* 的别名</li>
+<li data-criterion data-criterion-id="REQ-CLI-001-C1"><code>bao run index.ts</code> 执行文件</li>
+<li data-criterion data-criterion-id="REQ-CLI-001-C2"><code>bao test</code> 运行测试</li>
+<li data-criterion data-criterion-id="REQ-CLI-001-C3"><code>bao build</code> 打包</li>
+<li data-criterion data-criterion-id="REQ-CLI-001-C4"><code>bao install</code> 安装依赖</li>
+<li data-criterion data-criterion-id="REQ-CLI-001-C5"><code>bao browser</code> 启动 servo + CDP</li>
+<li data-criterion data-criterion-id="REQ-CLI-001-C6">内部 crate 名保持 bun_* 不变</li>
+<li data-criterion data-criterion-id="REQ-CLI-001-C7">BAO_* 环境变量作为 BUN_* 的别名</li>
 </ul>
-</div>
 
-<div data-req="REQ-CLI-002" data-req-status="draft" data-req-domain="CLI">
+<p data-xref-type="req" data-xref-id="REQ-CLI-001">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+
+<div id="req-REQ-CLI-002" data-req="REQ-CLI-002" data-req-status="implemented" data-req-domain="CLI">
 <h3>REQ-CLI-002: bao browser 子命令</h3>
-<p>新增 bao browser 子命令，启动浏览器模式。</p>
+<p>新增 bao browser 子命令，便捷启动 servo + CDP。</p>
 <h4>验收标准</h4>
 <ul>
-<li><code>bao browser --url=https://example.com</code> 启动浏览器并加载页面</li>
-<li><code>bao browser --cdp-port=9222</code> 指定 CDP 端口</li>
-<li><code>bao browser --headless</code> 无头模式（默认）</li>
-<li><code>bao browser --stealth</code> 启用反指纹模块</li>
-<li>启动时输出 CDP WebSocket URL 供 Playwright 连接</li>
+<li data-criterion data-criterion-id="REQ-CLI-002-C1"><code>bao browser --url=https://example.com</code> 启动浏览器并加载页面</li>
+<li data-criterion data-criterion-id="REQ-CLI-002-C2"><code>bao browser --cdp-port=9222</code> 指定 CDP 端口</li>
+<li data-criterion data-criterion-id="REQ-CLI-002-C3"><code>bao browser --headless</code> 无头模式（默认）</li>
+<li data-criterion data-criterion-id="REQ-CLI-002-C4"><code>bao browser --stealth</code> 启用反指纹模块</li>
+<li data-criterion data-criterion-id="REQ-CLI-002-C5">启动时输出 CDP WebSocket URL 供 Playwright 连接</li>
 </ul>
-</div>
+
+<p data-xref-type="req" data-xref-id="REQ-CLI-002">关联实体: <span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>
+<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>, <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span></p></div>
 
 <!-- ============================================================ -->
-<h2>§3 浏览器模式需求</h2>
+<h2>§3 浏览器能力需求</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-BRW-001" data-req-status="draft" data-req-domain="BRW">
+<div id="req-REQ-BRW-001" data-req="REQ-BRW-001" data-req-status="implemented" data-req-domain="BRW">
 <h3>REQ-BRW-001: libservo 集成</h3>
-<p>集成 servo (libservo) crate (v0.1.0) 作为浏览器引擎核心，实现 BaoEmbedder (EmbedderMethods trait)。</p>
+<p>集成 servo crate 作为浏览器引擎核心，实现 ServoDelegate + WebViewDelegate trait，使用 SoftwareRenderingContext CPU 无头渲染。</p>
 <h4>验收标准</h4>
 <ul>
-<li>libservo 以单进程模式运行</li>
-<li>BaoEmbedder trait 实现完整</li>
-<li>DOM 操作正常 (查询/遍历/修改)</li>
-<li>CSS 样式计算正常 (Stylo)</li>
-<li>HTML 页面导航正常</li>
+<li data-criterion data-criterion-id="REQ-BRW-001-C1">libservo 以单进程模式运行（ServoBuilder + opts.multiprocess=false）</li>
+<li data-criterion data-criterion-id="REQ-BRW-001-C2">ServoDelegate trait 实现完整（notify_error / show_console_message / load_web_resource）</li>
+<li data-criterion data-criterion-id="REQ-BRW-001-C3">WebViewDelegate trait 实现完整（screen_geometry / notify_url_changed / notify_load_status_changed / notify_new_frame_ready）</li>
+<li data-criterion data-criterion-id="REQ-BRW-001-C4">DOM 操作正常（查询/遍历/修改）</li>
+<li data-criterion data-criterion-id="REQ-BRW-001-C5">CSS 样式计算正常（servo Stylo 内置）</li>
+<li data-criterion data-criterion-id="REQ-BRW-001-C6">HTML 页面导航正常（WebView::load）</li>
+<li data-criterion data-criterion-id="REQ-BRW-001-C7">无头截图正常（SoftwareRenderingContext + WebView::take_screenshot → RgbaImage）</li>
+<li data-criterion data-criterion-id="REQ-BRW-001-C8">JS 在 webview 上下文执行正常（WebView::evaluate_javascript）</li>
 </ul>
-</div>
+<h4>关联设计</h4>
+<p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
 
-<div data-req="REQ-BRW-002" data-req-status="draft" data-req-domain="BRW">
+<p data-xref-type="req" data-xref-id="REQ-BRW-001">关联实体: <span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>
+<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>, <span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span></p></div>
+
+<div id="req-REQ-BRW-002" data-req="REQ-BRW-002" data-req-status="implemented" data-req-domain="BRW">
 <h3>REQ-BRW-002: 内存渲染</h3>
-<p>基于 Vello CPU + taffy 实现纯 CPU 软件光栅化内存渲染管线。</p>
+<p>基于 servo 内置 webrender 渲染管线，支持 SoftwareRenderingContext（无头场景）和 servo 原有渲染后端（尊重 servo 原有设计）。通过 take_screenshot() 获取 RgbaImage 后编码输出。</p>
 <h4>验收标准</h4>
 <ul>
-<li>HTML → CSS 布局 → Display List → RGBA 像素缓冲管线完整</li>
-<li>支持 Flexbox 布局</li>
-<li>支持 Grid 布局</li>
-<li>支持文字渲染</li>
-<li>输出 PNG 格式截图</li>
-<li>输出 JPEG 格式截图</li>
-<li>输出 WebP 格式截图</li>
-<li>无 GPU/GL/窗口依赖</li>
-<li>单次截图延迟 ≤ 500ms (视口 1920×1080)</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C1">HTML → CSS 布局 (Stylo) → Display List → webrender 光栅化 → RGBA 像素缓冲管线完整</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C2">支持 Flexbox 布局（servo Stylo + LayoutThread 内置）</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C3">支持 Grid 布局（servo Stylo + LayoutThread 内置）</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C4">支持文字渲染（servo webrender 内置）</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C5">输出 PNG 格式截图（RgbaImage → image crate PNG 编码）</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C6">输出 JPEG 格式截图（RgbaImage → image crate JPEG 编码）</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C7">输出 WebP 格式截图（RgbaImage → image crate WebP 编码）</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C8">无头场景支持 SoftwareRenderingContext（纯软件渲染，无需窗口系统）</li>
+<li data-criterion data-criterion-id="REQ-BRW-002-C9">单次截图延迟 ≤ 500ms (视口 1920×1080)</li>
 </ul>
-</div>
+<h4>技术说明</h4>
+<p>servo 内置完整渲染管线（Stylo CSS + LayoutThread + webrender 光栅化），尊重 servo 原有设计。
+bao_browser 复用 servo 渲染能力：创建 RenderingContext → WebView::paint() →
+WebView::take_screenshot() → image crate 编码输出。
+无头场景使用 SoftwareRenderingContext，有 GPU 时使用 servo 原有 GL 后端。</p>
 
-<div data-req="REQ-BRW-003" data-req-status="draft" data-req-domain="BRW">
-<h3>REQ-BRW-003: SpiderMonkey 共享 JSContext</h3>
-<p>Bao 运行时和 libservo 的 script 组件共享同一个 SpiderMonkey JSContext。</p>
+<p data-xref-type="req" data-xref-id="REQ-BRW-002">关联实体: <span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>
+<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span></p></div>
+
+<div id="req-REQ-BRW-003" data-req="REQ-BRW-003" data-req-status="implemented" data-req-domain="BRW">
+<h3>REQ-BRW-003: SpiderMonkey JSContext 融合</h3>
+<p>servo 拥有唯一 JSContext，Bao 的 Node.js/Bun host functions 直接注册到 servo 的 JSContext 中。选择 SpiderMonkey 的目的就是与 servo 共享同一引擎，实现真正融合。</p>
+<h4>架构原则</h4>
+<p>Bao 是统一库，servo 和 Node.js API 始终共存于同一 JSContext。
+servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
+（console/require/fs/path/crypto/http 等）注册为该 JSContext 的全局对象。
+同一个 JSContext 内同时存在 Web API 和 Node.js API，无任何转换层。</p>
 <h4>验收标准</h4>
 <ul>
-<li>只有一个 JSContext 实例</li>
-<li>页面 JS 代码和 Bao 用户 JS 代码在同一上下文执行</li>
-<li>GC 统一管理</li>
-<li>无 JSContext 冲突或初始化错误</li>
+<li data-criterion data-criterion-id="REQ-BRW-003-C1">整个 Bao 只有一个 JSContext（servo ScriptThread 创建）</li>
+<li data-criterion data-criterion-id="REQ-BRW-003-C2">Bao 的 console/require/fs/path 等全局对象在 servo JSContext 中可用</li>
+<li data-criterion data-criterion-id="REQ-BRW-003-C3">页面 JS 和 Bao JS 在同一上下文执行，可直接互操作</li>
+<li data-criterion data-criterion-id="REQ-BRW-003-C4">GC 由 servo spin_event_loop() 统一管理</li>
+<li data-criterion data-criterion-id="REQ-BRW-003-C5">无 JSEngine 重复初始化</li>
 </ul>
-</div>
+<h4>关联设计</h4>
+<p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
+
+<p data-xref-type="req" data-xref-id="REQ-BRW-003">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§4 CDP 需求</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-CDP-001" data-req-status="draft" data-req-domain="CDP">
+<div id="req-REQ-CDP-001" data-req="REQ-CDP-001" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-001: CDP WebSocket Server</h3>
 <p>实现 CDP WebSocket 服务端，支持 Playwright/Puppeteer 连接。</p>
 <h4>验收标准</h4>
 <ul>
-<li>监听指定端口，接受 WebSocket 连接</li>
-<li>JSON-RPC 2.0 消息编解码正确</li>
-<li>Playwright 能成功连接并列出 targets</li>
-<li>支持多个并发 CDP session</li>
-<li>连接断开后资源正确释放</li>
+<li data-criterion data-criterion-id="REQ-CDP-001-C1">监听指定端口，接受 WebSocket 连接</li>
+<li data-criterion data-criterion-id="REQ-CDP-001-C2">JSON-RPC 2.0 消息编解码正确</li>
+<li data-criterion data-criterion-id="REQ-CDP-001-C3">Playwright 能成功连接并列出 targets</li>
+<li data-criterion data-criterion-id="REQ-CDP-001-C4">支持多个并发 CDP session</li>
+<li data-criterion data-criterion-id="REQ-CDP-001-C5">连接断开后资源正确释放</li>
 </ul>
-</div>
 
-<div data-req="REQ-CDP-002" data-req-status="draft" data-req-domain="CDP">
+<p data-xref-type="req" data-xref-id="REQ-CDP-001">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p></div>
+
+<div id="req-REQ-CDP-002" data-req="REQ-CDP-002" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-002: Runtime Domain</h3>
 <p>实现 CDP Runtime domain，映射到 SpiderMonkey Debugger API (JS 层)。</p>
 <h4>验收标准</h4>
 <ul>
-<li>Runtime.evaluate 执行 JS 表达式并返回结果</li>
-<li>Runtime.callFunctionOn 调用 JS 函数</li>
-<li>Runtime.getProperties 获取对象属性</li>
-<li>Runtime.enable 发送执行上下文通知</li>
-<li>Runtime.exceptionThrown 发送异常通知</li>
-<li>console.log 输出通过 Runtime.consoleAPICalled 发送</li>
+<li data-criterion data-criterion-id="REQ-CDP-002-C1">Runtime.evaluate 执行 JS 表达式并返回结果</li>
+<li data-criterion data-criterion-id="REQ-CDP-002-C2">Runtime.callFunctionOn 调用 JS 函数</li>
+<li data-criterion data-criterion-id="REQ-CDP-002-C3">Runtime.getProperties 获取对象属性</li>
+<li data-criterion data-criterion-id="REQ-CDP-002-C4">Runtime.enable 发送执行上下文通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-002-C5">Runtime.exceptionThrown 发送异常通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-002-C6">console.log 输出通过 Runtime.consoleAPICalled 发送</li>
 </ul>
-</div>
 
-<div data-req="REQ-CDP-003" data-req-status="draft" data-req-domain="CDP">
+<p data-xref-type="req" data-xref-id="REQ-CDP-002">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>, <span data-xref-type="entity" data-xref-id="CdpResponse">CdpResponse</span></p></div>
+
+<div id="req-REQ-CDP-003" data-req="REQ-CDP-003" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-003: Debugger Domain</h3>
 <p>实现 CDP Debugger domain，映射到 SpiderMonkey JS 层 Debugger API。</p>
 <h4>验收标准</h4>
 <ul>
-<li>Debugger.enable 启用断点</li>
-<li>Debugger.setBreakpointByUrl 设置行断点</li>
-<li>Debugger.pause / Debugger.resume 暂停/继续</li>
-<li>Debugger.stepOver / stepInto / stepOut 单步执行</li>
-<li>Debugger.paused 发送断点命中通知</li>
-<li>Debugger.scriptParsed 发送脚本解析通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-003-C1">Debugger.enable 启用断点</li>
+<li data-criterion data-criterion-id="REQ-CDP-003-C2">Debugger.setBreakpointByUrl 设置行断点</li>
+<li data-criterion data-criterion-id="REQ-CDP-003-C3">Debugger.pause / Debugger.resume 暂停/继续</li>
+<li data-criterion data-criterion-id="REQ-CDP-003-C4">Debugger.stepOver / stepInto / stepOut 单步执行</li>
+<li data-criterion data-criterion-id="REQ-CDP-003-C5">Debugger.paused 发送断点命中通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-003-C6">Debugger.scriptParsed 发送脚本解析通知</li>
 </ul>
-</div>
 
-<div data-req="REQ-CDP-004" data-req-status="draft" data-req-domain="CDP">
+<p data-xref-type="req" data-xref-id="REQ-CDP-003">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p></div>
+
+<div id="req-REQ-CDP-004" data-req="REQ-CDP-004" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-004: Page Domain</h3>
-<p>实现 CDP Page domain，映射到 libservo + bao_render。</p>
+<p>实现 CDP Page domain，映射到 servo WebView（导航 + 截图）。</p>
 <h4>验收标准</h4>
 <ul>
-<li>Page.navigate 导航到指定 URL</li>
-<li>Page.captureScreenshot 截图并返回 base64</li>
-<li>Page.reload 重新加载页面</li>
-<li>Page.setContent 设置页面 HTML</li>
-<li>Page.getFrameTree 返回帧树</li>
-<li>Page.loadEventFired 发送加载完成通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-004-C1">Page.navigate 导航到指定 URL</li>
+<li data-criterion data-criterion-id="REQ-CDP-004-C2">Page.captureScreenshot 截图并返回 base64</li>
+<li data-criterion data-criterion-id="REQ-CDP-004-C3">Page.reload 重新加载页面</li>
+<li data-criterion data-criterion-id="REQ-CDP-004-C4">Page.setContent 设置页面 HTML</li>
+<li data-criterion data-criterion-id="REQ-CDP-004-C5">Page.getFrameTree 返回帧树</li>
+<li data-criterion data-criterion-id="REQ-CDP-004-C6">Page.loadEventFired 发送加载完成通知</li>
 </ul>
-</div>
 
-<div data-req="REQ-CDP-005" data-req-status="draft" data-req-domain="CDP">
+<p data-xref-type="req" data-xref-id="REQ-CDP-004">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>, <span data-xref-type="entity" data-xref-id="Viewport">Viewport</span></p></div>
+
+<div id="req-REQ-CDP-005" data-req="REQ-CDP-005" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-005: DOM Domain</h3>
 <p>实现 CDP DOM domain，映射到 libservo DOM 树查询。</p>
 <h4>验收标准</h4>
 <ul>
-<li>DOM.getDocument 获取 DOM 树根</li>
-<li>DOM.querySelector 查询节点</li>
-<li>DOM.querySelectorAll 查询所有匹配节点</li>
-<li>DOM.getBoxModel 获取节点布局信息</li>
-<li>DOM.setAttributeValue 修改节点属性</li>
-<li>DOM.describeNode 获取节点描述</li>
+<li data-criterion data-criterion-id="REQ-CDP-005-C1">DOM.getDocument 获取 DOM 树根</li>
+<li data-criterion data-criterion-id="REQ-CDP-005-C2">DOM.querySelector 查询节点</li>
+<li data-criterion data-criterion-id="REQ-CDP-005-C3">DOM.querySelectorAll 查询所有匹配节点</li>
+<li data-criterion data-criterion-id="REQ-CDP-005-C4">DOM.getBoxModel 获取节点布局信息</li>
+<li data-criterion data-criterion-id="REQ-CDP-005-C5">DOM.setAttributeValue 修改节点属性</li>
+<li data-criterion data-criterion-id="REQ-CDP-005-C6">DOM.describeNode 获取节点描述</li>
 </ul>
-</div>
 
-<div data-req="REQ-CDP-006" data-req-status="draft" data-req-domain="CDP">
+<p data-xref-type="req" data-xref-id="REQ-CDP-005">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p></div>
+
+<div id="req-REQ-CDP-006" data-req="REQ-CDP-006" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-006: Network Domain</h3>
 <p>实现 CDP Network domain，映射到 Bun HTTP 栈 hook。</p>
 <h4>验收标准</h4>
 <ul>
-<li>Network.enable 启用网络监控</li>
-<li>Network.requestWillBeSent 发送请求通知</li>
-<li>Network.responseReceived 发送响应通知</li>
-<li>Network.loadingFinished 发送加载完成通知</li>
-<li>Network.getResponseBody 获取响应体</li>
-<li>Network.requestIntercepted 支持请求拦截</li>
+<li data-criterion data-criterion-id="REQ-CDP-006-C1">Network.enable 启用网络监控</li>
+<li data-criterion data-criterion-id="REQ-CDP-006-C2">Network.requestWillBeSent 发送请求通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-006-C3">Network.responseReceived 发送响应通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-006-C4">Network.loadingFinished 发送加载完成通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-006-C5">Network.getResponseBody 获取响应体</li>
+<li data-criterion data-criterion-id="REQ-CDP-006-C6">Network.requestIntercepted 支持请求拦截</li>
 </ul>
-</div>
 
-<div data-req="REQ-CDP-007" data-req-status="draft" data-req-domain="CDP">
+<p data-xref-type="req" data-xref-id="REQ-CDP-006">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p></div>
+
+<div id="req-REQ-CDP-007" data-req="REQ-CDP-007" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-007: CSS/Input/Emulation/Overlay Domain</h3>
 <p>实现辅助 CDP domain。</p>
 <h4>验收标准</h4>
 <ul>
-<li>CSS.getMatchedStylesForNode 返回匹配样式</li>
-<li>CSS.getComputedStyleForNode 返回计算样式</li>
-<li>Input.dispatchMouseEvent 注入鼠标事件</li>
-<li>Input.dispatchKeyEvent 注入键盘事件</li>
-<li>Emulation.setDeviceMetricsOverride 设置视口/设备参数</li>
-<li>Overlay.highlightNode 高亮节点（截图标注）</li>
+<li data-criterion data-criterion-id="REQ-CDP-007-C1">CSS.getMatchedStylesForNode 返回匹配样式</li>
+<li data-criterion data-criterion-id="REQ-CDP-007-C2">CSS.getComputedStyleForNode 返回计算样式</li>
+<li data-criterion data-criterion-id="REQ-CDP-007-C3">Input.dispatchMouseEvent 注入鼠标事件</li>
+<li data-criterion data-criterion-id="REQ-CDP-007-C4">Input.dispatchKeyEvent 注入键盘事件</li>
+<li data-criterion data-criterion-id="REQ-CDP-007-C5">Emulation.setDeviceMetricsOverride 设置视口/设备参数</li>
+<li data-criterion data-criterion-id="REQ-CDP-007-C6">Overlay.highlightNode 高亮节点（截图标注）</li>
 </ul>
-</div>
 
-<div data-req="REQ-CDP-008" data-req-status="draft" data-req-domain="CDP">
+<p data-xref-type="req" data-xref-id="REQ-CDP-007">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p></div>
+
+<div id="req-REQ-CDP-008" data-req="REQ-CDP-008" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-008: Target Domain</h3>
 <p>实现 CDP Target domain，支持 Context/Target 发现。</p>
 <h4>验收标准</h4>
 <ul>
-<li>Target.getTargets 列出所有可用 target</li>
-<li>Target.attachToTarget 附加到指定 target</li>
-<li>Target.setAutoAttach 自动附加新 target</li>
-<li>Target.createdTarget / destroyedTarget 通知</li>
+<li data-criterion data-criterion-id="REQ-CDP-008-C1">Target.getTargets 列出所有可用 target</li>
+<li data-criterion data-criterion-id="REQ-CDP-008-C2">Target.attachToTarget 附加到指定 target</li>
+<li data-criterion data-criterion-id="REQ-CDP-008-C3">Target.setAutoAttach 自动附加新 target</li>
+<li data-criterion data-criterion-id="REQ-CDP-008-C4">Target.createdTarget / destroyedTarget 通知</li>
 </ul>
-</div>
+
+<p data-xref-type="req" data-xref-id="REQ-CDP-008">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§5 Stealth 需求</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-STL-001" data-req-status="draft" data-req-domain="STL">
+<div id="req-REQ-STL-001" data-req="REQ-STL-001" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-001: TLS 指纹模拟</h3>
 <p>通过 rustls cipher suite + extension 顺序配置模拟 Firefox 的 JA3/JA4 TLS 指纹。</p>
 <h4>验收标准</h4>
 <ul>
-<li>TLS ClientHello 的 JA3 哈希匹配目标 Firefox 版本</li>
-<li>TLS ClientHello 的 JA4 哈希匹配目标 Firefox 版本</li>
-<li>密码套件顺序与 Firefox 一致</li>
-<li>扩展顺序与 Firefox 一致</li>
-<li>TLS 握手成功建立连接</li>
+<li data-criterion data-criterion-id="REQ-STL-001-C1">TLS ClientHello 的 JA3 哈希匹配目标 Firefox 版本</li>
+<li data-criterion data-criterion-id="REQ-STL-001-C2">TLS ClientHello 的 JA4 哈希匹配目标 Firefox 版本</li>
+<li data-criterion data-criterion-id="REQ-STL-001-C3">密码套件顺序与 Firefox 一致</li>
+<li data-criterion data-criterion-id="REQ-STL-001-C4">扩展顺序与 Firefox 一致</li>
+<li data-criterion data-criterion-id="REQ-STL-001-C5">TLS 握手成功建立连接</li>
 </ul>
-</div>
 
-<div data-req="REQ-STL-002" data-req-status="draft" data-req-domain="STL">
+<p data-xref-type="req" data-xref-id="REQ-STL-001">关联实体: <span data-xref-type="entity" data-xref-id="TlsProfile">TlsProfile</span>
+<span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+
+<div id="req-REQ-STL-002" data-req="REQ-STL-002" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-002: HTTP/2 指纹匹配</h3>
 <p>通过 hyper 配置调优，使 HTTP/2 SETTINGS 帧参数匹配 Firefox。</p>
 <h4>验收标准</h4>
 <ul>
-<li>HTTP/2 SETTINGS 帧参数与 Firefox 一致</li>
-<li>HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致</li>
-<li>HTTP/2 PRIORITY 帧模式与 Firefox 一致</li>
-<li>HTTP/2 伪头部顺序与 Firefox 一致</li>
+<li data-criterion data-criterion-id="REQ-STL-002-C1">HTTP/2 SETTINGS 帧参数与 Firefox 一致</li>
+<li data-criterion data-criterion-id="REQ-STL-002-C2">HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致</li>
+<li data-criterion data-criterion-id="REQ-STL-002-C3">HTTP/2 PRIORITY 帧模式与 Firefox 一致</li>
+<li data-criterion data-criterion-id="REQ-STL-002-C4">HTTP/2 伪头部顺序与 Firefox 一致</li>
 </ul>
-</div>
 
-<div data-req="REQ-STL-003" data-req-status="draft" data-req-domain="STL">
+<p data-xref-type="req" data-xref-id="REQ-STL-002">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+
+<div id="req-REQ-STL-003" data-req="REQ-STL-003" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-003: Canvas 指纹防护</h3>
-<p>在 Vello CPU 渲染层注入确定性随机噪声，使 Canvas toDataURL/toBlob 输出包含不可检测的微小差异。</p>
+<p>在 servo webrender 渲染层注入确定性随机噪声，使 Canvas toDataURL/toBlob 输出包含不可检测的微小差异。</p>
 <h4>验收标准</h4>
 <ul>
-<li>Canvas toDataURL 输出包含确定性噪声</li>
-<li>噪声对人类视觉不可见</li>
-<li>同一 StealthProfile 的噪声一致</li>
-<li>不同 StealthProfile 的噪声不同</li>
-<li>JS 层无法检测噪声注入</li>
+<li data-criterion data-criterion-id="REQ-STL-003-C1">Canvas toDataURL 输出包含确定性噪声</li>
+<li data-criterion data-criterion-id="REQ-STL-003-C2">噪声对人类视觉不可见</li>
+<li data-criterion data-criterion-id="REQ-STL-003-C3">同一 StealthProfile 的噪声一致</li>
+<li data-criterion data-criterion-id="REQ-STL-003-C4">不同 StealthProfile 的噪声不同</li>
+<li data-criterion data-criterion-id="REQ-STL-003-C5">JS 层无法检测噪声注入</li>
 </ul>
-</div>
 
-<div data-req="REQ-STL-004" data-req-status="draft" data-req-domain="STL">
+<p data-xref-type="req" data-xref-id="REQ-STL-003">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
+<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span></p></div>
+
+<div id="req-REQ-STL-004" data-req="REQ-STL-004" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-004: Navigator/Screen 构造</h3>
 <p>在 SpiderMonkey 引擎层构造 Navigator 和 Screen 属性，使 JS 层读取的值与目标浏览器一致且不可篡改检测。</p>
 <h4>验收标准</h4>
 <ul>
-<li>navigator.userAgent 匹配目标浏览器</li>
-<li>navigator.platform 匹配目标平台</li>
-<li>navigator.language 匹配目标语言</li>
-<li>navigator.hardwareConcurrency 匹配目标值</li>
-<li>navigator.webdriver 始终为 false</li>
-<li>screen.width/height 匹配目标分辨率</li>
-<li>window.devicePixelRatio 匹配目标值</li>
-<li>所有属性从引擎层返回，JS 层无法篡改检测</li>
+<li data-criterion data-criterion-id="REQ-STL-004-C1">navigator.userAgent 匹配目标浏览器</li>
+<li data-criterion data-criterion-id="REQ-STL-004-C2">navigator.platform 匹配目标平台</li>
+<li data-criterion data-criterion-id="REQ-STL-004-C3">navigator.language 匹配目标语言</li>
+<li data-criterion data-criterion-id="REQ-STL-004-C4">navigator.hardwareConcurrency 匹配目标值</li>
+<li data-criterion data-criterion-id="REQ-STL-004-C5">navigator.webdriver 始终为 false</li>
+<li data-criterion data-criterion-id="REQ-STL-004-C6">screen.width/height 匹配目标分辨率</li>
+<li data-criterion data-criterion-id="REQ-STL-004-C7">window.devicePixelRatio 匹配目标值</li>
+<li data-criterion data-criterion-id="REQ-STL-004-C8">所有属性从引擎层返回，JS 层无法篡改检测</li>
 </ul>
-</div>
 
-<div data-req="REQ-STL-005" data-req-status="draft" data-req-domain="STL">
+<p data-xref-type="req" data-xref-id="REQ-STL-004">关联实体: <span data-xref-type="entity" data-xref-id="NavigatorProfile">NavigatorProfile</span>
+<span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+
+<div id="req-REQ-STL-005" data-req="REQ-STL-005" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-005: WebGL/Audio 指纹防护</h3>
 <p>WebGL vendor/renderer 信息和 AudioContext 浮点运算噪声注入。</p>
 <h4>验收标准</h4>
 <ul>
-<li>WebGL RENDERER 匹配目标值</li>
-<li>WebGL VENDOR 匹配目标值</li>
-<li>WebGL 支持的扩展列表匹配目标</li>
-<li>AudioContext 输出包含确定性噪声</li>
+<li data-criterion data-criterion-id="REQ-STL-005-C1">WebGL RENDERER 匹配目标值</li>
+<li data-criterion data-criterion-id="REQ-STL-005-C2">WebGL VENDOR 匹配目标值</li>
+<li data-criterion data-criterion-id="REQ-STL-005-C3">WebGL 支持的扩展列表匹配目标</li>
+<li data-criterion data-criterion-id="REQ-STL-005-C4">AudioContext 输出包含确定性噪声</li>
 </ul>
-</div>
 
-<div data-req="REQ-STL-006" data-req-status="draft" data-req-domain="STL">
+<p data-xref-type="req" data-xref-id="REQ-STL-005">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+
+<div id="req-REQ-STL-006" data-req="REQ-STL-006" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-006: 行为模拟</h3>
 <p>模拟人类鼠标轨迹、打字节奏和滚动模式。</p>
 <h4>验收标准</h4>
 <ul>
-<li>鼠标移动轨迹包含贝塞尔曲线随机偏移</li>
-<li>打字节奏包含随机延迟 (30-150ms per key)</li>
-<li>滚动模式包含加速-匀速-减速特征</li>
-<li>所有随机行为使用 StealthProfile 种子确定性生成</li>
+<li data-criterion data-criterion-id="REQ-STL-006-C1">鼠标移动轨迹包含贝塞尔曲线随机偏移</li>
+<li data-criterion data-criterion-id="REQ-STL-006-C2">打字节奏包含随机延迟 (30-150ms per key)</li>
+<li data-criterion data-criterion-id="REQ-STL-006-C3">滚动模式包含加速-匀速-减速特征</li>
+<li data-criterion data-criterion-id="REQ-STL-006-C4">所有随机行为使用 StealthProfile 种子确定性生成</li>
 </ul>
-</div>
 
-<div data-req="REQ-STL-007" data-req-status="draft" data-req-domain="STL">
+<p data-xref-type="req" data-xref-id="REQ-STL-006">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+
+<div id="req-REQ-STL-007" data-req="REQ-STL-007" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-007: CDP 隐蔽性</h3>
 <p>CDP 通道不暴露到页面 JS 环境，页面无法检测自动化。</p>
 <h4>验收标准</h4>
 <ul>
-<li>页面 JS 中无 CDP 相关全局变量</li>
-<li>页面 JS 中 navigator.webdriver === false</li>
-<li>chrome.runtime 不存在</li>
-<li>window.cdc_adoQpoasnfa76pfcZLmcfl_* 不存在</li>
-<li>所有指纹检测网站无法识别为自动化工具</li>
+<li data-criterion data-criterion-id="REQ-STL-007-C1">页面 JS 中无 CDP 相关全局变量</li>
+<li data-criterion data-criterion-id="REQ-STL-007-C2">页面 JS 中 navigator.webdriver === false</li>
+<li data-criterion data-criterion-id="REQ-STL-007-C3">chrome.runtime 不存在</li>
+<li data-criterion data-criterion-id="REQ-STL-007-C4">window.cdc_adoQpoasnfa76pfcZLmcfl_* 不存在</li>
+<li data-criterion data-criterion-id="REQ-STL-007-C5">所有指纹检测网站无法识别为自动化工具</li>
 </ul>
-</div>
+
+<p data-xref-type="req" data-xref-id="REQ-STL-007">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+
+<!-- ============================================================ -->
+<h2>§5.5 多页面库需求</h2>
+<!-- ============================================================ -->
+
+<div id="req-REQ-LIB-001" data-req="REQ-LIB-001" data-req-status="implemented" data-req-domain="LIB">
+<h3>REQ-LIB-001: 多页面管理</h3>
+<p>支持在单个 BaoRuntime 中创建、管理和销毁多个隔离的 Page。每个 Page 对应一个 servo WebView，拥有独立的 SM Realm（JS 全局对象隔离）。</p>
+<h4>验收标准</h4>
+<ul>
+<li data-criterion data-criterion-id="REQ-LIB-001-C1">create_page(config) 创建新 Page，返回 PageHandle (Rc&lt;Page&gt;)</li>
+<li data-criterion data-criterion-id="REQ-LIB-001-C2">每个 Page 拥有独立的 WebView + RenderingContext + BaoWebViewDelegate</li>
+<li data-criterion data-criterion-id="REQ-LIB-001-C3">Page 之间 SM Realm 完全隔离（独立全局对象、独立模块缓存）</li>
+<li data-criterion data-criterion-id="REQ-LIB-001-C4">close_page(id) 显式关闭 Page，释放 WebView + Realm</li>
+<li data-criterion data-criterion-id="REQ-LIB-001-C5">Page.drop 后 WebView 自动触发 servo CloseWebView 清理</li>
+<li data-criterion data-criterion-id="REQ-LIB-001-C6">所有 Page 共享同一 Servo 实例和 JSContext</li>
+</ul>
+<h4>关联设计</h4>
+<p>参见 02-SYSTEM.html §4.5 (多页面管理架构) · 04-DATA-MODEL.html (PageHandle, PagePool 实体)</p>
+
+<p data-xref-type="req" data-xref-id="REQ-LIB-001">关联实体: <span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span>
+<span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>, <span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span></p></div>
+
+<div id="req-REQ-LIB-002" data-req="REQ-LIB-002" data-req-status="implemented" data-req-domain="LIB">
+<h3>REQ-LIB-002: PagePool 资源管理</h3>
+<p>实现分层资源管理策略，防止爬虫等长期运行场景下的内存泄漏。</p>
+<h4>验收标准</h4>
+<ul>
+<li data-criterion data-criterion-id="REQ-LIB-002-C1">活跃 Page（引用计数 &gt; 0）无数量上限</li>
+<li data-criterion data-criterion-id="REQ-LIB-002-C2">空闲 Page（引用计数 = 0）进入 idle_ttl 倒计时（默认 60s）</li>
+<li data-criterion data-criterion-id="REQ-LIB-002-C3">idle_ttl 到期自动回收：WebView::drop → Realm 释放 → PixelBuffer 释放</li>
+<li data-criterion data-criterion-id="REQ-LIB-002-C4">总 Page 数 max_total 硬上限（默认 50），超出返回错误</li>
+<li data-criterion data-criterion-id="REQ-LIB-002-C5">空闲回收集成到事件循环 tick 中（每次 spin_event_loop 检查）</li>
+<li data-criterion data-criterion-id="REQ-LIB-002-C6">累计统计：active / total_created / total_destroyed 可查询</li>
+</ul>
+<h4>关联设计</h4>
+<p>参见 02-SYSTEM.html §4.5 (Page 生命周期状态机) · 04-DATA-MODEL.html (PagePool 实体)</p>
+
+<p data-xref-type="req" data-xref-id="REQ-LIB-002">关联实体: <span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>
+<span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span></p></div>
+
+<div id="req-REQ-LIB-003" data-req="REQ-LIB-003" data-req-status="implemented" data-req-domain="LIB">
+<h3>REQ-LIB-003: CDP 双层抽象 API</h3>
+<p>提供高性能 Rust/JS API（内部直调）和 CDP 兼容层（Playwright/Puppeteer 连接），支持内部 servo 和外部 CDP 端点。</p>
+<h4>验收标准</h4>
+<ul>
+<li data-criterion data-criterion-id="REQ-LIB-003-C1">高性能 API：page.goto() / page.screenshot() / page.evaluate() 直接调用 Rust，零序列化</li>
+<li data-criterion data-criterion-id="REQ-LIB-003-C2">CDP 兼容层：page.createCDPSession() 返回 CDPSession，支持 send/on 消息</li>
+<li data-criterion data-criterion-id="REQ-LIB-003-C3">内部后端：CdpBackendInternal 映射 CDP 域到 bao_browser API</li>
+<li data-criterion data-criterion-id="REQ-LIB-003-C4">外部后端：Bao.connect('ws://host:port') 连接外部 Chrome/Edge</li>
+<li data-criterion data-criterion-id="REQ-LIB-003-C5">CdpRouter 根据参数自动选择后端（backend: 'internal' 或 endpoint: 'ws://...'）</li>
+<li data-criterion data-criterion-id="REQ-LIB-003-C6">Playwright 能通过 CDP 兼容层连接并控制 Page</li>
+</ul>
+<h4>关联设计</h4>
+<p>参见 02-SYSTEM.html §4.6 (CDP 双层抽象架构) · 04-DATA-MODEL.html (CdpRouter, CdpBackend 实体)</p>
+
+<p data-xref-type="req" data-xref-id="REQ-LIB-003">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
+<span data-xref-type="entity" data-xref-id="CdpBackendInternal">CdpBackendInternal</span>, <span data-xref-type="entity" data-xref-id="CdpBackendExternal">CdpBackendExternal</span>
+<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p></div>
+
+<div id="req-REQ-LIB-004" data-req="REQ-LIB-004" data-req-status="implemented" data-req-domain="LIB">
+<h3>REQ-LIB-004: Permission 可选沙箱</h3>
+<p>基于 host_fn 层拦截的可选权限系统，浏览器页面和 Bun 脚本都可复用。默认不启用（零开销），启用后为白名单模式。</p>
+<h4>验收标准</h4>
+<ul>
+<li data-criterion data-criterion-id="REQ-LIB-004-C1">无 Permission 配置时所有 API 正常工作，零额外分支开销</li>
+<li data-criterion data-criterion-id="REQ-LIB-004-C2">配置 Permission 后，未授权的 host function 调用抛出 PermissionDenied Error</li>
+<li data-criterion data-criterion-id="REQ-LIB-004-C3">权限类别：read / write / net / env / run / sys</li>
+<li data-criterion data-criterion-id="REQ-LIB-004-C4">per-Page 粒度：不同 Page 可以有不同的 Permission 配置</li>
+<li data-criterion data-criterion-id="REQ-LIB-004-C5">per-Script 粒度：Bao.run('script.js', { permission }) 支持脚本级沙箱</li>
+<li data-criterion data-criterion-id="REQ-LIB-004-C6">浏览器页面和 Bun 脚本共享同一 Permission 检查逻辑</li>
+</ul>
+<h4>关联设计</h4>
+<p>参见 02-SYSTEM.html §4.7 (Permission 沙箱架构) · 04-DATA-MODEL.html (Permission 实体)</p>
+
+<p data-xref-type="req" data-xref-id="REQ-LIB-004">关联实体: <span data-xref-type="entity" data-xref-id="Permission">Permission</span>
+<span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§6 非功能需求</h2>
@@ -401,8 +539,8 @@
   "name": "StartupPerformance",
   "category": "performance",
   "metrics": {
-    "cold_start_node_mode": {"target": "≤ 100ms", "measurement": "bao run --eval '1+1' 首次执行"},
-    "cold_start_browser_mode": {"target": "≤ 500ms", "measurement": "bao browser 启动到 CDP 可连接"},
+    "cold_start_script": {"target": "≤ 100ms", "measurement": "bao run --eval '1+1' 首次执行"},
+    "cold_start_with_servo": {"target": "≤ 500ms", "measurement": "bao browser 启动到 CDP 可连接"},
     "warm_start": {"target": "≤ 20ms", "measurement": "已缓存后再次执行"}
   }
 }
@@ -419,7 +557,7 @@
   "metrics": {
     "1920x1080_png": {"target": "≤ 500ms", "measurement": "Page.captureScreenshot 完整流程"},
     "1280x720_png": {"target": "≤ 200ms", "measurement": "Page.captureScreenshot 完整流程"},
-    "memory_overhead": {"target": "≤ 50MB", "measurement": "浏览器模式额外内存占用"}
+    "memory_overhead": {"target": "≤ 50MB", "measurement": "servo 额外内存占用"}
   }
 }
 </script>
@@ -494,23 +632,27 @@
 <tr><td>REQ-CLI-001</td><td>品牌替换</td><td>bun_bin + bun_cli</td><td>Phase 1</td></tr>
 <tr><td>REQ-CLI-002</td><td>bao browser 命令</td><td>bun_bin + bao_browser</td><td>Phase 2</td></tr>
 <tr><td>REQ-BRW-001</td><td>libservo 集成</td><td>bao_browser</td><td>Phase 2</td></tr>
-<tr><td>REQ-BRW-002</td><td>内存渲染</td><td>bao_render</td><td>Phase 3</td></tr>
+<tr><td>REQ-BRW-002</td><td>内存渲染</td><td>bao_browser (servo webrender)</td><td>Phase 2</td></tr>
 <tr><td>REQ-BRW-003</td><td>共享 JSContext</td><td>bao_engine + bao_browser</td><td>Phase 2</td></tr>
-<tr><td>REQ-CDP-001</td><td>CDP Server</td><td>bao_cdp</td><td>Phase 4</td></tr>
-<tr><td>REQ-CDP-002</td><td>Runtime Domain</td><td>bao_cdp/domains/runtime</td><td>Phase 4</td></tr>
-<tr><td>REQ-CDP-003</td><td>Debugger Domain</td><td>bao_cdp/domains/debugger</td><td>Phase 4</td></tr>
-<tr><td>REQ-CDP-004</td><td>Page Domain</td><td>bao_cdp/domains/page + bao_render</td><td>Phase 4</td></tr>
-<tr><td>REQ-CDP-005</td><td>DOM Domain</td><td>bao_cdp/domains/dom + bao_browser</td><td>Phase 4</td></tr>
-<tr><td>REQ-CDP-006</td><td>Network Domain</td><td>bao_cdp/domains/network + bun_http</td><td>Phase 4</td></tr>
-<tr><td>REQ-CDP-007</td><td>辅助 Domain</td><td>bao_cdp/domains/*</td><td>Phase 4</td></tr>
-<tr><td>REQ-CDP-008</td><td>Target Domain</td><td>bao_cdp/domains/target</td><td>Phase 4</td></tr>
-<tr><td>REQ-STL-001</td><td>TLS 指纹</td><td>bao_stealth/tls</td><td>Phase 5</td></tr>
-<tr><td>REQ-STL-002</td><td>HTTP/2 指纹</td><td>bao_stealth/http2</td><td>Phase 5</td></tr>
-<tr><td>REQ-STL-003</td><td>Canvas 指纹</td><td>bao_stealth/canvas + bao_render</td><td>Phase 5</td></tr>
-<tr><td>REQ-STL-004</td><td>Navigator 构造</td><td>bao_stealth/navigator + bao_engine</td><td>Phase 5</td></tr>
-<tr><td>REQ-STL-005</td><td>WebGL/Audio</td><td>bao_stealth/webgl + bao_stealth/audio</td><td>Phase 5</td></tr>
-<tr><td>REQ-STL-006</td><td>行为模拟</td><td>bao_stealth/behavior</td><td>Phase 5</td></tr>
-<tr><td>REQ-STL-007</td><td>CDP 隐蔽性</td><td>bao_cdp + bao_stealth</td><td>Phase 5</td></tr>
+<tr><td>REQ-CDP-001</td><td>CDP Server</td><td>bao_cdp</td><td>Phase 3</td></tr>
+<tr><td>REQ-CDP-002</td><td>Runtime Domain</td><td>bao_cdp/domains/runtime</td><td>Phase 3</td></tr>
+<tr><td>REQ-CDP-003</td><td>Debugger Domain</td><td>bao_cdp/domains/debugger</td><td>Phase 3</td></tr>
+<tr><td>REQ-CDP-004</td><td>Page Domain</td><td>bao_cdp/domains/page + bao_browser (servo)</td><td>Phase 3</td></tr>
+<tr><td>REQ-CDP-005</td><td>DOM Domain</td><td>bao_cdp/domains/dom + bao_browser</td><td>Phase 3</td></tr>
+<tr><td>REQ-CDP-006</td><td>Network Domain</td><td>bao_cdp/domains/network + bun_http</td><td>Phase 3</td></tr>
+<tr><td>REQ-CDP-007</td><td>辅助 Domain</td><td>bao_cdp/domains/*</td><td>Phase 3</td></tr>
+<tr><td>REQ-CDP-008</td><td>Target Domain</td><td>bao_cdp/domains/target</td><td>Phase 3</td></tr>
+<tr><td>REQ-STL-001</td><td>TLS 指纹</td><td>bao_stealth/tls</td><td>Phase 4</td></tr>
+<tr><td>REQ-STL-002</td><td>HTTP/2 指纹</td><td>bao_stealth/http2</td><td>Phase 4</td></tr>
+<tr><td>REQ-STL-003</td><td>Canvas 指纹</td><td>bao_stealth/canvas + bao_browser (servo webrender)</td><td>Phase 4</td></tr>
+<tr><td>REQ-STL-004</td><td>Navigator 构造</td><td>bao_stealth/navigator + bao_engine</td><td>Phase 4</td></tr>
+<tr><td>REQ-STL-005</td><td>WebGL/Audio</td><td>bao_stealth/webgl + bao_stealth/audio</td><td>Phase 4</td></tr>
+<tr><td>REQ-STL-006</td><td>行为模拟</td><td>bao_stealth/behavior</td><td>Phase 4</td></tr>
+<tr><td>REQ-STL-007</td><td>CDP 隐蔽性</td><td>bao_cdp + bao_stealth</td><td>Phase 4</td></tr>
+<tr><td>REQ-LIB-001</td><td>多页面管理</td><td>bao_browser (PagePool + WebViewCollection)</td><td>Phase 5</td></tr>
+<tr><td>REQ-LIB-002</td><td>PagePool 资源管理</td><td>bao_browser (PagePool)</td><td>Phase 5</td></tr>
+<tr><td>REQ-LIB-003</td><td>CDP 双层抽象 API</td><td>bao_cdp (CdpRouter + CdpBackend)</td><td>Phase 5</td></tr>
+<tr><td>REQ-LIB-004</td><td>Permission 可选沙箱</td><td>bao_engine (host_fn 拦截) + bao_browser</td><td>Phase 5</td></tr>
 </table>
 </div>
 

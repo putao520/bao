@@ -77,7 +77,7 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> Option<String> {
     if s.is_null() {
         return None;
     }
-    Some(jsstr_to_string(cx, NonNull::new(s).unwrap()))
+    Some(crate::jsstr_to_rust_string(cx, s))
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -141,7 +141,7 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let this = args.thisv();
     let input = *args.get(0).ptr;
     let data = if input.is_string() {
-        jsstr_to_string(cx, NonNull::new(input.to_string()).unwrap()).into_bytes()
+        crate::js_to_rust_string(cx, input).into_bytes()
     } else {
         return throw_type_error(cx, "hash.update() data must be a string");
     };
@@ -239,7 +239,7 @@ unsafe extern "C" fn hmac_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let this = args.thisv();
     let input = *args.get(0).ptr;
     let data = if input.is_string() {
-        jsstr_to_string(cx, NonNull::new(input.to_string()).unwrap()).into_bytes()
+        crate::js_to_rust_string(cx, input).into_bytes()
     } else {
         return throw_type_error(cx, "hmac.update() data must be a string");
     };
@@ -544,7 +544,7 @@ unsafe extern "C" fn cipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     if argc == 0 { return throw_type_error(cx, "cipher.update() requires data"); }
     let input = *args.get(0).ptr;
     let data = if input.is_string() {
-        jsstr_to_string(cx, NonNull::new(input.to_string()).unwrap()).into_bytes()
+        crate::js_to_rust_string(cx, input).into_bytes()
     } else if input.is_object() {
         extract_buffer_bytes(cx, input)
     } else {
@@ -568,7 +568,7 @@ unsafe extern "C" fn decipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSV
     if argc == 0 { return throw_type_error(cx, "decipher.update() requires data"); }
     let input = *args.get(0).ptr;
     let hex_data = if input.is_string() {
-        jsstr_to_string(cx, NonNull::new(input.to_string()).unwrap())
+        crate::js_to_rust_string(cx, input)
     } else { String::new() };
     let data = hex::decode(&hex_data).unwrap_or_default();
     let key = CIPHER_KEY.with(|k| k.borrow().clone());
