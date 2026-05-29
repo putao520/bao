@@ -311,6 +311,11 @@ unsafe fn throw_fs_error(cx: *mut JSContext, op: &str, path: &str, err: &::std::
 unsafe extern "C" fn fs_read_file_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_read(&path) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     let encoding = get_encoding_opt(cx, &args, 1);
     match fs::read(&path) {
         ::std::result::Result::Ok(data) => return_string_content(cx, &args, &data, encoding.as_deref()),
@@ -322,6 +327,11 @@ unsafe extern "C" fn fs_read_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
 unsafe extern "C" fn fs_write_file_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     let data_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
 
     let result = if data_val.is_string() {
@@ -346,6 +356,11 @@ unsafe extern "C" fn fs_write_file_sync(cx: *mut JSContext, argc: u32, vp: *mut 
 unsafe extern "C" fn fs_append_file_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     let data_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
     let data = if data_val.is_string() {
         let s = data_val.to_string();
@@ -378,6 +393,11 @@ unsafe extern "C" fn fs_exists_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 unsafe extern "C" fn fs_mkdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     let recursive = get_bool_option(cx, &args, 1, "recursive");
     let result = if recursive { fs::create_dir_all(&path) } else { fs::create_dir(&path) };
     match result {
@@ -462,6 +482,11 @@ unsafe extern "C" fn fs_lstat_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn fs_unlink_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     match fs::remove_file(&path) {
         ::std::result::Result::Ok(()) => { args.rval().set(UndefinedValue()); true }
         ::std::result::Result::Err(e) => throw_fs_error(cx, "unlinkSync", &path, &e),
@@ -472,6 +497,11 @@ unsafe extern "C" fn fs_unlink_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 unsafe extern "C" fn fs_rmdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     match fs::remove_dir(&path) {
         ::std::result::Result::Ok(()) => { args.rval().set(UndefinedValue()); true }
         ::std::result::Result::Err(e) => throw_fs_error(cx, "rmdirSync", &path, &e),
@@ -482,6 +512,11 @@ unsafe extern "C" fn fs_rmdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn fs_rm_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     let recursive = get_bool_option(cx, &args, 1, "recursive");
     let result = if recursive { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
     match result {
@@ -495,6 +530,16 @@ unsafe extern "C" fn fs_rename_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let args = CallArgs::from_vp(vp, argc);
     let from = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     let to = match get_path_arg(cx, &args, 1) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_read(&from) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&to) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     match fs::rename(&from, &to) {
         ::std::result::Result::Ok(()) => { args.rval().set(UndefinedValue()); true }
         ::std::result::Result::Err(e) => throw_fs_error(cx, "renameSync", &from, &e),
@@ -506,6 +551,16 @@ unsafe extern "C" fn fs_copy_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
     let args = CallArgs::from_vp(vp, argc);
     let from = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     let to = match get_path_arg(cx, &args, 1) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_read(&from) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&to) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     match fs::copy(&from, &to) {
         ::std::result::Result::Ok(_) => { args.rval().set(UndefinedValue()); true }
         ::std::result::Result::Err(e) => throw_fs_error(cx, "copyFileSync", &from, &e),

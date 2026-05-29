@@ -40,6 +40,16 @@ unsafe extern "C" fn fetch_fn(
 
     let url = crate::js_to_rust_string(cx, url_val);
 
+    if let ::std::option::Option::Some(pos) = url.find("://") {
+        let host_part = &url[pos + 3..];
+        let host = host_part.split('/').next().unwrap_or(host_part).split(':').next().unwrap_or(host_part);
+        if let ::std::result::Result::Err(e) = crate::permission_bridge::check_net(host) {
+            let c_msg = ::std::ffi::CString::new(e).unwrap_or_default();
+            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            return false;
+        }
+    }
+
     let method = if argc > 1 {
         let opts = *args.get(1).ptr;
         if opts.is_object() {

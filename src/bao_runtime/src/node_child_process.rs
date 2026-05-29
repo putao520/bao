@@ -136,6 +136,12 @@ unsafe extern "C" fn cp_spawn(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+
     // First arg can be string (command) or object (options)
     let (cmd_str, opts_obj) = if argc > 0 {
         let first = *args.get(0).ptr;
@@ -247,6 +253,12 @@ unsafe extern "C" fn cp_exec(
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         JS_ReportErrorUTF8(cx, b"child_process.exec requires a command string\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
         return false;
     }
 
@@ -388,6 +400,13 @@ unsafe extern "C" fn cp_exec_sync(
     }
 
     let cmd = crate::js_to_rust_string(cx, cmd_val);
+
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+
     let shell = if cfg!(target_family = "unix") { "/bin/sh" } else { "cmd.exe" };
     let shell_flag = if cfg!(target_family = "unix") { "-c" } else { "/C" };
 
@@ -439,6 +458,13 @@ unsafe extern "C" fn cp_fork(
     }
 
     let module = crate::js_to_rust_string(cx, module_val);
+
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+
     let executable = ::std::env::current_exe().unwrap_or_else(|_| ::std::path::PathBuf::from("bao"));
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
