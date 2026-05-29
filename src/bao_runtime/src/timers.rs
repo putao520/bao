@@ -205,6 +205,35 @@ pub fn has_pending_timers() -> bool {
     TIMERS.with(|t| !t.borrow().is_empty())
 }
 
+pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _args: &[JSVal]) -> u32 {
+    let id = NEXT_ID.with(|n| {
+        let val = *n.borrow();
+        *n.borrow_mut() += 1;
+        val
+    });
+
+    let interval = if repeating {
+        Some(Duration::from_millis(delay_ms.max(1)))
+    } else {
+        None
+    };
+
+    let entry = TimerEntry {
+        id,
+        deadline: Instant::now() + Duration::from_millis(if delay_ms == 0 && repeating { 1 } else { delay_ms }),
+        interval,
+        callback,
+        args: _args.to_vec(),
+    };
+
+    TIMERS.with(|t| t.borrow_mut().insert(entry));
+    id
+}
+
+pub fn cancel_raw(id: u32) {
+    TIMERS.with(|t| t.borrow_mut().remove(id));
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn set_timeout(
     cx: *mut JSContext,

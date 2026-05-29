@@ -20,6 +20,54 @@ pub fn cache_builtin(name: &str, obj: *mut JSObject) {
     MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, obj));
 }
 
+pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
+    use mozjs::jsval::{ObjectValue, UndefinedValue};
+    use mozjs::rooted;
+    use mozjs::rust::wrappers2 as w2;
+
+    let assert_obj = MODULE_CACHE.with(|c| c.borrow().get("builtin:assert").copied());
+    let Some(assert_obj) = assert_obj else { return };
+    if assert_obj.is_null() { return; }
+
+    rooted!(&in(cx) let strict_obj = unsafe { w2::JS_NewPlainObject(cx) });
+    if strict_obj.get().is_null() { return; }
+
+    unsafe {
+        let assert_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &assert_obj };
+        let strict_h = strict_obj.handle();
+
+        for (name, n_args) in &[
+            ("ok", 1), ("equal", 2), ("notEqual", 2),
+            ("deepEqual", 2), ("notDeepEqual", 2),
+            ("strictEqual", 2), ("notStrictEqual", 2),
+            ("deepStrictEqual", 2), ("throws", 1),
+            ("rejects", 1), ("doesNotThrow", 1),
+            ("fail", 0), ("ifError", 1),
+        ] {
+            let mut fn_val = UndefinedValue();
+            let c_name = CString::new(*name).unwrap_or_default();
+            JS_GetProperty(cx.raw_cx(), assert_h, c_name.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val });
+            if fn_val.is_object() {
+                let fn_obj = fn_val.to_object();
+                let fn_obj_val = ObjectValue(fn_obj);
+                let fn_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_obj_val };
+                JS_DefineProperty(cx.raw_cx(), strict_h.into(), c_name.as_ptr(), fn_h, JSPROP_ENUMERATE as u32);
+            }
+        }
+
+        let mut ae_val = UndefinedValue();
+        JS_GetProperty(cx.raw_cx(), assert_h, c"AssertionError".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ae_val });
+        if ae_val.is_object() {
+            let ae_obj = ae_val.to_object();
+            let ae_val2 = ObjectValue(ae_obj);
+            let ae_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ae_val2 };
+            JS_DefineProperty(cx.raw_cx(), strict_h.into(), c"AssertionError".as_ptr(), ae_h, JSPROP_ENUMERATE as u32);
+        }
+    }
+
+    cache_builtin("assert/strict", strict_obj.get());
+}
+
 pub fn install_require(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,

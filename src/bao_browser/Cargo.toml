@@ -1,0 +1,13 @@
+[package]
+name = "bao_browser"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+servo = { path = "../../../servo/components/servo", default-features = false, features = ["baked-in-resources"] }
+servo-url = { path = "../../../servo/components/url" }
+dpi = "0.1"
+url = "2"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+bao_cdp = { path = "../bao_cdp" }
+bao_stealth = { path = "../bao_stealth" }

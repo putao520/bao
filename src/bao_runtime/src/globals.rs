@@ -48,6 +48,11 @@ pub unsafe fn install_all(
     crate::web_api::install_web_encodings(cx, global);
     crate::web_api::install_atob_btoa(cx, global);
     crate::web_api::install_queue_microtask(cx, global);
+    install_structured_clone(cx, global);
+    crate::node_perf_hooks::install(cx);
+    crate::node_timers_module::install(cx);
+    crate::node_readline::install(cx);
+    install_assert_strict(cx);
 }
 
 pub fn install_buffer_global(
@@ -698,4 +703,129 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
     }
     args.rval().set(mozjs::jsval::ObjectValue(arr_obj));
     true
+}
+
+pub fn install_structured_clone(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        JS_DefineFunction(
+            cx, global, c"structuredClone".as_ptr(),
+            ::std::option::Option::Some(structured_clone_fn), 1, JSPROP_ENUMERATE as u32,
+        );
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn structured_clone_fn(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let val = *args.get(0).ptr;
+
+    if val.is_undefined() || val.is_null() || val.is_boolean() || val.is_int32() || val.is_double() || val.is_string() {
+        args.rval().set(val);
+        return true;
+    }
+
+    if val.is_object() {
+        let obj = val.to_object();
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+
+        let mut ctor_name = UndefinedValue();
+        JS_GetProperty(cx, obj_h, c"constructor".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctor_name });
+        if ctor_name.is_object() {
+            let ctor = ctor_name.to_object();
+            let ctor_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ctor };
+            let mut name_val = UndefinedValue();
+            JS_GetProperty(cx, ctor_h, c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
+            if name_val.is_string() {
+                let name = crate::js_to_rust_string(cx, name_val);
+                match name.as_str() {
+                    "Date" => {
+                        let mut time_val = UndefinedValue();
+                        JS_GetProperty(cx, obj_h, c"getTime".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut time_val });
+                        if time_val.is_object() {
+                            let get_time_fn = time_val.to_object();
+                            let gt_val = ObjectValue(get_time_fn);
+                            let gt_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &gt_val };
+                            let global = CurrentGlobalOrNull(cx);
+                            if !global.is_null() {
+                                let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+                                let mut ms_rval = UndefinedValue();
+                                JS_CallFunctionValue(cx, obj_h, gt_h, &HandleValueArray::empty(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ms_rval });
+                                let ms = if ms_rval.is_double() { ms_rval.to_double() } else if ms_rval.is_int32() { ms_rval.to_int32() as f64 } else { 0.0 };
+                                let src = format!("new Date({})", ms);
+                                let mut eval_rval = UndefinedValue();
+                                let eval_opts = mozjs::glue::NewCompileOptions(cx, b"clone\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+                                if !eval_opts.is_null() {
+                                    let mut src_text = mozjs::rust::transform_str_to_source_text(&src);
+                                    JS::Evaluate2(cx, eval_opts, &mut src_text, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval });
+                                    libc::free(eval_opts as *mut _);
+                                }
+                                args.rval().set(eval_rval);
+                                return true;
+                            }
+                        }
+                    }
+                    "RegExp" => {
+                        let mut source_val = UndefinedValue();
+                        JS_GetProperty(cx, obj_h, c"source".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut source_val });
+                        let mut flags_val = UndefinedValue();
+                        JS_GetProperty(cx, obj_h, c"flags".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut flags_val });
+                        let source = if source_val.is_string() { crate::js_to_rust_string(cx, source_val) } else { "".to_string() };
+                        let flags = if flags_val.is_string() { crate::js_to_rust_string(cx, flags_val) } else { "".to_string() };
+                        let src = format!("new RegExp(\"{}\", \"{}\")", source.replace('\\', "\\\\").replace('"', "\\\""), flags);
+                        let mut eval_rval = UndefinedValue();
+                        let eval_opts = mozjs::glue::NewCompileOptions(cx, b"clone\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+                        if !eval_opts.is_null() {
+                            let mut src_text = mozjs::rust::transform_str_to_source_text(&src);
+                            JS::Evaluate2(cx, eval_opts, &mut src_text, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval });
+                            libc::free(eval_opts as *mut _);
+                        }
+                        args.rval().set(eval_rval);
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut json_rval = UndefinedValue();
+        let json_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut json_rval };
+        let json_src = mozjs::rust::transform_str_to_source_text("(function(o){try{return JSON.parse(JSON.stringify(o))}catch(e){return o}})");
+        let json_opts = mozjs::glue::NewCompileOptions(cx, b"json_clone\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+        if !json_opts.is_null() {
+            let mut json_fn_val = UndefinedValue();
+            JS::Evaluate2(cx, json_opts, &mut ::std::mem::MaybeUninit::new(json_src).assume_init(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut json_fn_val });
+            libc::free(json_opts as *mut _);
+            if json_fn_val.is_object() {
+                let global = CurrentGlobalOrNull(cx);
+                if !global.is_null() {
+                    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+                    let fn_val = ObjectValue(json_fn_val.to_object());
+                    let fn_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
+                    let obj_val = ObjectValue(obj);
+                    let obj_arg = HandleValueArray { length_: 1, elements_: &obj_val };
+                    JS_CallFunctionValue(cx, global_h, fn_h, &obj_arg, json_rval_h);
+                    args.rval().set(json_rval);
+                    return true;
+                }
+            }
+        }
+    }
+
+    args.rval().set(val);
+    true
+}
+
+pub fn install_assert_strict(cx: &mut mozjs::context::JSContext) {
+    crate::require::cache_assert_strict(cx);
 }
