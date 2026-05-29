@@ -34,6 +34,8 @@ pub struct BaoRuntime {
 
 impl BaoRuntime {
     pub fn new(config: BaoConfig) -> Result<Self, BrowserError> {
+        config.validate().map_err(BrowserError::Init)?;
+
         let servo: Rc<Servo> = Rc::new(
             ServoBuilder::default()
                 .opts(Opts::default())
