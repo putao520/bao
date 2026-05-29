@@ -416,6 +416,7 @@ unsafe extern "C" fn url_search_params_constructor(cx: *mut JSContext, argc: u32
     w2::JS_DefineFunction(cx_ref, obj_r.handle(), c"values".as_ptr(), Some(sp_values), 0, 0);
     w2::JS_DefineFunction(cx_ref, obj_r.handle(), c"entries".as_ptr(), Some(sp_entries), 0, 0);
     w2::JS_DefineFunction(cx_ref, obj_r.handle(), c"forEach".as_ptr(), Some(sp_for_each), 1, 0);
+    w2::JS_DefineFunction(cx_ref, obj_r.handle(), c"getAll".as_ptr(), Some(sp_get_all), 1, 0);
 
     if argc > 0 {
         let init_val = *args.get(0).ptr;
@@ -580,6 +581,54 @@ unsafe extern "C" fn sp_entries(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 unsafe extern "C" fn sp_for_each(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        let arr = mozjs::jsapi::NewArrayObject(cx, ::std::ptr::null());
+        if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let this = args.thisv();
+    if !this.is_object() {
+        let arr = mozjs::jsapi::NewArrayObject(cx, ::std::ptr::null());
+        if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
+        return true;
+    }
+    let obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    // Read the property directly
+    let Ok(c_key) = CString::new(key) else {
+        let arr = mozjs::jsapi::NewArrayObject(cx, ::std::ptr::null());
+        if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
+        return true;
+    };
+    let mut val = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
+    if val.is_undefined() {
+        let arr = mozjs::jsapi::NewArrayObject(cx, ::std::ptr::null());
+        if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
+    } else {
+        let v_str = crate::js_to_rust_string(cx, val);
+        let escaped = v_str.replace('\\', "\\\\").replace('"', "\\\"");
+        let eval_src = format!("[\"{}\"]", escaped);
+        let c_filename = CString::new("<getAll>").unwrap_or_default();
+        let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
+        if !opts.is_null() {
+            let mut src = mozjs::rust::transform_str_to_source_text(&eval_src);
+            let mut rval = UndefinedValue();
+            let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+            mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h);
+            libc::free(opts as *mut _);
+            args.rval().set(rval);
+        } else {
+            args.rval().set(UndefinedValue());
+        }
+    }
     true
 }
 

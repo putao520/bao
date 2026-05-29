@@ -227,6 +227,39 @@ pub fn install_buffer_global(
     }
     return -1;
   };
+
+  _bp.toJSON = function() {
+    return { type: 'Buffer', data: Array.prototype.slice.call(this, 0, this.length) };
+  };
+
+  _bp.subarray = function(start, end) {
+    start = start || 0; end = end || this.length;
+    var result = Buffer.alloc(end - start);
+    for (var i = start; i < end; i++) { result[i - start] = this[i]; }
+    return result;
+  };
+
+  _bp.reverse = function() {
+    for (var i = 0, j = this.length - 1; i < j; i++, j--) {
+      var tmp = this[i]; this[i] = this[j]; this[j] = tmp;
+    }
+    return this;
+  };
+
+  _bp.entries = function() {
+    var buf = this; var idx = 0;
+    return { next: function() { return idx < buf.length ? { value: [idx, buf[idx++]], done: false } : { done: true }; }, [Symbol.iterator]: function() { return this; } };
+  };
+
+  _bp.keys = function() {
+    var buf = this; var idx = 0;
+    return { next: function() { return idx < buf.length ? { value: idx++, done: false } : { done: true }; }, [Symbol.iterator]: function() { return this; } };
+  };
+
+  _bp.values = function() {
+    var buf = this; var idx = 0;
+    return { next: function() { return idx < buf.length ? { value: buf[idx++], done: false } : { done: true }; }, [Symbol.iterator]: function() { return this; } };
+  };
 })();
 "#;
     unsafe {
@@ -258,8 +291,27 @@ unsafe extern "C" fn buffer_from(
     let input = *args.get(0).ptr;
     if input.is_string() {
         let s = crate::js_to_rust_string(cx, input);
-        let bytes = s.as_bytes();
-        create_buffer_from_bytes(cx, &args, bytes)
+        let encoding = if argc >= 2 {
+            let enc_val = *args.get(1).ptr;
+            if enc_val.is_string() {
+                jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(enc_val.to_string()))
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        let bytes = if encoding == "hex" {
+            (0..s.len()).step_by(2).filter_map(|i| {
+                u8::from_str_radix(&s[i..i+2], 16).ok()
+            }).collect::<Vec<u8>>()
+        } else if encoding == "base64" {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.decode(&s).unwrap_or_default()
+        } else {
+            s.as_bytes().to_vec()
+        };
+        create_buffer_from_bytes(cx, &args, &bytes)
     } else if input.is_object() {
         let obj = input.to_object();
         let obj_handle = Handle::<*mut JSObject> {
@@ -418,7 +470,14 @@ unsafe extern "C" fn buffer_alloc(
         if v.is_int32() { v.to_int32().max(0) as usize } else { 0 }
     } else { 0 };
 
-    create_buffer_from_bytes(cx, &args, &vec![0u8; size])
+    let fill_byte = if argc >= 2 {
+        let fill_val = *args.get(1).ptr;
+        if fill_val.is_int32() { fill_val.to_int32() as u8 }
+        else if fill_val.is_string() { jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(fill_val.to_string())).chars().next().unwrap_or('\0') as u8 }
+        else { 0 }
+    } else { 0 };
+
+    create_buffer_from_bytes(cx, &args, &vec![fill_byte; size])
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

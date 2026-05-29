@@ -59,6 +59,27 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
+    // os.constants
+    unsafe {
+        rooted!(&in(cx) let constants_obj = w2::JS_NewPlainObject(cx));
+        if !constants_obj.get().is_null() {
+            rooted!(&in(cx) let sig_obj = w2::JS_NewPlainObject(cx));
+            if !sig_obj.get().is_null() {
+                let raw = cx.raw_cx();
+                let signals = [("SIGHUP", 1), ("SIGINT", 2), ("SIGQUIT", 3), ("SIGILL", 4), ("SIGTRAP", 5), ("SIGABRT", 6), ("SIGBUS", 7), ("SIGFPE", 8), ("SIGKILL", 9), ("SIGUSR1", 10), ("SIGSEGV", 11), ("SIGUSR2", 12), ("SIGPIPE", 13), ("SIGALRM", 14), ("SIGTERM", 15)];
+                for (name, val) in &signals {
+                    let v = Int32Value(*val);
+                    rooted!(&in(cx) let rv = v);
+                    let sig_ptr = sig_obj.get();
+                    let sig_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sig_ptr };
+                    JS_DefineProperty(raw, sig_h, CString::new(*name).unwrap_or_default().as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+                w2::JS_DefineProperty3(cx, constants_obj.handle(), c"signals".as_ptr(), sig_obj.handle(), JSPROP_ENUMERATE as u32);
+            }
+            w2::JS_DefineProperty3(cx, os_obj.handle(), c"constants".as_ptr(), constants_obj.handle(), JSPROP_ENUMERATE as u32);
+        }
+    }
+
     cache_builtin("os", os_obj.get());
 }
 

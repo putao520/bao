@@ -42,6 +42,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
+    // path.posix / path.win32 — self-references to the path module
+    unsafe {
+        w2::JS_DefineProperty3(cx, path_obj.handle(), c"posix".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
+        w2::JS_DefineProperty3(cx, path_obj.handle(), c"win32".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
+    }
+
     cache_builtin("path", path_obj.get());
 }
 
