@@ -156,7 +156,7 @@ assertEq(readBack, testContent, "Bun.write + Bun.readFile roundtrip");
 try { require("fs").unlinkSync(testPath); } catch(e) {}
 
 // ============================================================
-// REQ-ENG-007: Node.js Compatibility — Buffer + process
+// TEST-ENG-007: Node.js Compatibility — Buffer + process
 // ============================================================
 assertEq(typeof Buffer, "object", "Buffer global exists (object with from/toString)");
 var buf = Buffer.from("hello");
@@ -170,7 +170,7 @@ assertEq(typeof process.argv, "object", "process.argv exists");
 assertEq(typeof process.env, "object", "process.env exists");
 
 // ============================================================
-// REQ-ENG-007: node:fs operations
+// TEST-ENG-007: node:fs operations
 // ============================================================
 var fs = require("fs");
 var tmpFile = "/tmp/bao_fs_test_" + Date.now() + ".txt";
@@ -182,7 +182,7 @@ fs.unlinkSync(tmpFile);
 assert(!fs.existsSync(tmpFile), "fs.unlinkSync");
 
 // ============================================================
-// REQ-CLI-001: Brand replacement
+// TEST-CLI-001: Brand replacement
 // ============================================================
 assertEq(typeof Bun, "object", "Bun brand exists");
 assertEq(typeof Bao, "object", "Bao alias exists");
