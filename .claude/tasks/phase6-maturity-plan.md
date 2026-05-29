@@ -3,7 +3,7 @@
 ## Current State (2026-05-30 Round 10 — FINAL)
 - **成熟度**: 100.0% (Design 100% | Code 100% | Test 100%)
 - **总代码**: ~20K LOC across 6 crates
-- **测试**: 18 suites, 557 assertions, ALL PASS
+- **测试**: 19 suites, 571 assertions, ALL PASS
 - **36/36 REQ implemented** in SPEC
 - **172 SPEC 验收标准** 全部有测试覆盖（含 62 条 gap 补全）
 - **零 stub/placeholder/TODO/FIXME** across all bao crates
@@ -87,7 +87,8 @@
 | test_bun_build.js | 5 |
 | test_stdin.js | 4 |
 | test_bun_test.js | 3 |
-| **Total** | **557** |
+| test_dynamic_import.js | 14 |
+| **Total** | **571** |
 
 ## Commits (This Session)
 | Commit | Description |
@@ -100,6 +101,7 @@
 | `5b315ec` | 62 SPEC criteria gap coverage tests |
 | `f1ac80b` | Replace all unwrap() with expect(), zero warnings |
 | `f64fd4e` | Add 158 xrefs, fix SPEC quality |
+| `5be6049` | Fix dynamic import() for built-in modules (REQ-ENG-005-C4) |
 
 ## Code Quality (Round 10)
 - 零 TODO/FIXME/stub/placeholder
