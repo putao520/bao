@@ -9,6 +9,8 @@ use mozjs::rust::{JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
 
 use crate::error::JsError;
 use crate::host_fn;
+use crate::job_queue::JobQueue;
+use crate::module_loader::ModuleLoader;
 use crate::value::{JsValue, jsval_to_jsvalue};
 
 pub struct JsContext {
@@ -26,8 +28,28 @@ impl JsContext {
             stack: None,
         })?;
 
-        let runtime = Runtime::new(engine.handle());
+        let mut runtime = Runtime::new(engine.handle());
+
+        {
+            let cx = runtime.cx();
+            if !JobQueue::init(cx) {
+                return ::std::result::Result::Err(JsError {
+                    message: "Failed to initialize internal job queue".into(),
+                    filename: "<engine>".into(),
+                    line: 0,
+                    column: 0,
+                    stack: None,
+                });
+            }
+        }
+
+        ModuleLoader::init(&runtime);
+
         ::std::result::Result::Ok(JsContext { runtime, _engine: engine })
+    }
+
+    pub fn cx_mut(&mut self) -> &mut mozjs::context::JSContext {
+        self.runtime.cx()
     }
 
     pub fn eval(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {
@@ -65,6 +87,8 @@ impl JsContext {
             let realm_cx: &mut mozjs::context::JSContext = &mut realm;
             return ::std::result::Result::Err(extract_exception(realm_cx));
         }
+
+        JobQueue::drain(cx);
 
         ::std::result::Result::Ok(unsafe { jsval_to_jsvalue(cx.raw_cx_no_gc(), rval.get()) })
     }

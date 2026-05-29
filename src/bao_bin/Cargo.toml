@@ -11,4 +11,5 @@ path = "src/main.rs"
 
 [dependencies]
 bao_engine = { path = "../bao_engine" }
+bao_runtime = { path = "../bao_runtime" }
 clap = { version = "4", features = ["derive"] }

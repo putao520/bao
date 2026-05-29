@@ -90,6 +90,7 @@ name = "bao_bin"
 version = "0.1.0"
 dependencies = [
  "bao_engine",
+ "bao_runtime",
  "clap",
 ]
 
@@ -97,7 +98,27 @@ dependencies = [
 name = "bao_engine"
 version = "0.1.0"
 dependencies = [
+ "bao_engine_macros",
  "libc",
+ "log",
+ "mozjs",
+ "mozjs_sys",
+]
+
+[[package]]
+name = "bao_engine_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "bao_runtime"
+version = "0.1.0"
+dependencies = [
+ "bao_engine",
  "log",
  "mozjs",
  "mozjs_sys",

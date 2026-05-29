@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "src/bao_engine",
+    "src/bao_engine_macros",
+    "src/bao_runtime",
     "src/bao_bin",
     "src/opaque",
     "src/bun_alloc",

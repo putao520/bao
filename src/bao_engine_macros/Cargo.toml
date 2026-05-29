@@ -1,0 +1,14 @@
+[package]
+name = "bao_engine_macros"
+version = "0.1.0"
+description = "Proc-macros for bao_engine host function registration"
+edition.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing"] }

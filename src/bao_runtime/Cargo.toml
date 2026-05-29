@@ -1,13 +1,12 @@
 [package]
-name = "bao_engine"
+name = "bao_runtime"
 version = "0.1.0"
-description = "SpiderMonkey engine wrapper for Bao runtime"
+description = "Bao runtime integration — JS engine + Bun API + event loop"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bao_engine = { path = "../bao_engine" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
-bao_engine_macros = { path = "../bao_engine_macros" }
-libc = "0.2"
 log = "0.4"
