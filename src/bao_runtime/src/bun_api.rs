@@ -122,6 +122,15 @@ pub fn install_bun_global(
         JS_DefineFunction(
             cx,
             bun_obj.handle(),
+            c"cwd".as_ptr(),
+            ::std::option::Option::Some(bun_cwd),
+            0,
+            JSPROP_ENUMERATE as u32,
+        );
+
+        JS_DefineFunction(
+            cx,
+            bun_obj.handle(),
             c"gc".as_ptr(),
             ::std::option::Option::Some(bun_gc),
             0,
@@ -1710,6 +1719,15 @@ unsafe extern "C" fn process_cwd(
         Err(_) => { args.rval().set(UndefinedValue()); }
     }
     true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_cwd(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    process_cwd(cx, argc, vp)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
