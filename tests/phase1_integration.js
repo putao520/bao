@@ -308,7 +308,7 @@ assertEq(typeof util.inspect, "function", "util.inspect is function");
 assertEq(typeof util.format, "function", "util.format is function");
 assertEq(typeof util.promisify, "function", "util.promisify is function");
 assertEq(typeof util.callbackify, "function", "util.callbackify is function");
-assertEq(typeof util.types, "function", "util.types is function");
+assertEq(typeof util.types, "object", "util.types is object");
 assertEq(typeof util.inherits, "function", "util.inherits is function");
 assertEq(typeof util.isDeepStrictEqual, "function", "util.isDeepStrictEqual is function");
 assertEq(util.format("hello %s", "world"), "hello world", "util.format with %s");

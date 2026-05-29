@@ -38,6 +38,26 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, util_obj.handle(), c"types".as_ptr(), Some(util_types), 0, 0);
         w2::JS_DefineFunction(cx, util_obj.handle(), c"inherits".as_ptr(), Some(util_inherits), 2, 0);
         w2::JS_DefineFunction(cx, util_obj.handle(), c"isDeepStrictEqual".as_ptr(), Some(util_is_deep_strict_equal), 2, 0);
+
+        // util.types
+        {
+            rooted!(&in(cx) let types_obj = unsafe { w2::JS_NewPlainObject(cx) });
+            if !types_obj.get().is_null() {
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isBoolean".as_ptr(), Some(util_is_boolean), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isNumber".as_ptr(), Some(util_is_number), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isString".as_ptr(), Some(util_is_string), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isSymbol".as_ptr(), Some(util_is_symbol), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isUndefined".as_ptr(), Some(util_is_undefined), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isNull".as_ptr(), Some(util_is_null), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isObject".as_ptr(), Some(util_is_object), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isFunction".as_ptr(), Some(util_is_function), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isArray".as_ptr(), Some(util_is_array), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isDate".as_ptr(), Some(util_is_date), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isRegExp".as_ptr(), Some(util_is_regexp), 1, 0);
+                w2::JS_DefineFunction(cx, types_obj.handle(), c"isError".as_ptr(), Some(util_is_error), 1, 0);
+                w2::JS_DefineProperty3(cx, util_obj.handle(), c"types".as_ptr(), types_obj.handle(), JSPROP_ENUMERATE as u32);
+            }
+        }
     }
 
     cache_builtin("util", util_obj.get());

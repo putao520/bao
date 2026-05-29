@@ -73,6 +73,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 cx.raw_cx(), events_obj.handle().into(), c"EventEmitter".as_ptr(),
                 cv.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
             );
+            w2::JS_DefineFunction(cx, ctor.handle().into(), c"listenerCount".as_ptr(), Some(events_static_listener_count), 2, JSPROP_ENUMERATE as u32);
         }
 
         let default_max = Int32Value(10);
