@@ -2191,13 +2191,19 @@ pub unsafe fn install_all(
     crate::node_fs::install(cx);
     crate::node_crypto::install(cx);
     crate::node_http::install(cx);
+    crate::node_https::install(cx);
     crate::node_os::install(cx);
     crate::node_url::install(cx, global);
     crate::node_util::install_util(cx);
     crate::node_util::install_assert(cx);
     crate::node_child_process::install(cx);
     crate::node_stream::install(cx);
+    crate::node_zlib::install(cx);
     crate::node_net::install(cx);
+    crate::node_dns::install(cx);
+    crate::node_buffer::install(cx);
+    crate::node_string_decoder::install(cx);
+    crate::node_querystring::install(cx);
     install_web_encodings(cx, global);
     install_queue_microtask(cx, global);
 }

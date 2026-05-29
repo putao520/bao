@@ -138,6 +138,7 @@ dependencies = [
  "bao_engine",
  "base64",
  "digest",
+ "flate2",
  "hex",
  "hmac",
  "libc",
