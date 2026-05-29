@@ -16,6 +16,16 @@ enum Commands {
         r#module: bool,
         file: Option<String>,
     },
+    Browser {
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long, default_value = "9222")]
+        cdp_port: u16,
+        #[arg(long, default_value_t = true)]
+        headless: bool,
+        #[arg(long)]
+        stealth: bool,
+    },
 }
 
 fn main() {
@@ -34,6 +44,9 @@ fn main() {
                 eprintln!("bao run: no input file");
                 Err(1)
             }
+        }
+        Commands::Browser { url, cdp_port, headless, stealth } => {
+            run_browser(url, cdp_port, headless, stealth)
         }
     };
     if let Err(code) = result {
@@ -89,5 +102,25 @@ fn run_module_eval(code: &str) -> ::std::result::Result<(), i32> {
             eprintln!("Error: {}", e);
             Err(1)
         }
+    }
+}
+
+fn run_browser(
+    url: ::std::option::Option<String>,
+    cdp_port: u16,
+    headless: bool,
+    stealth: bool,
+) -> ::std::result::Result<(), i32> {
+    let config = bao_browser::BrowserConfig {
+        url,
+        cdp_port,
+        headless,
+        stealth,
+    };
+    if let Err(e) = bao_browser::run_browser(config) {
+        eprintln!("Error: {}", e);
+        Err(1)
+    } else {
+        Ok(())
     }
 }

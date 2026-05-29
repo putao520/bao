@@ -9,6 +9,7 @@ use mozjs::rust::wrappers2::{
     JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1,
 };
 use mozjs::conversions::jsstr_to_string;
+use digest::Digest;
 
 pub fn install_bun_global(
     cx: &mut mozjs::context::JSContext,
@@ -1887,6 +1888,264 @@ unsafe extern "C" fn buffer_copy(
     true
 }
 
+pub fn install_crypto_global(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        rooted!(&in(cx) let crypto_obj = JS_NewPlainObject(cx));
+        if crypto_obj.get().is_null() {
+            return;
+        }
+
+        // crypto.randomUUID()
+        JS_DefineFunction(cx, crypto_obj.handle(), c"randomUUID".as_ptr(), Some(crypto_random_uuid), 0, JSPROP_ENUMERATE as u32);
+
+        // crypto.getRandomValues()
+        JS_DefineFunction(cx, crypto_obj.handle(), c"getRandomValues".as_ptr(), Some(crypto_get_random_values), 1, JSPROP_ENUMERATE as u32);
+
+        // crypto.subtle — Web Crypto API subset
+        {
+            rooted!(&in(cx) let subtle_obj = JS_NewPlainObject(cx));
+            if !subtle_obj.get().is_null() {
+                JS_DefineFunction(cx, subtle_obj.handle(), c"digest".as_ptr(), Some(crypto_subtle_digest), 2, JSPROP_ENUMERATE as u32);
+                JS_DefineProperty3(cx, crypto_obj.handle(), c"subtle".as_ptr(), subtle_obj.handle(), JSPROP_ENUMERATE as u32);
+            }
+        }
+
+        JS_DefineProperty3(cx, global, c"crypto".as_ptr(), crypto_obj.handle(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_random_uuid(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let uuid = format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        rand::random::<u32>(),
+        rand::random::<u16>(),
+        (rand::random::<u16>() & 0x0fff) | 0x4000,
+        (rand::random::<u16>() & 0x3fff) | 0x8000,
+        rand::random::<u64>() & 0xffffffffffff);
+    let Ok(c_uuid) = CString::new(uuid) else {
+        args.rval().set(UndefinedValue());
+        return true;
+    };
+    let js_str = JS_NewStringCopyZ(_cx, c_uuid.as_ptr());
+    if !js_str.is_null() {
+        args.rval().set(StringValue(&*js_str));
+    } else {
+        args.rval().set(UndefinedValue());
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let arr_val = *args.get(0).ptr;
+    if !arr_val.is_object() {
+        args.rval().set(arr_val);
+        return true;
+    }
+    let arr = arr_val.to_object();
+    let arr_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr };
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(cx, arr_h, c"length".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
+    });
+    let len = if len_val.is_int32() { len_val.to_int32().max(0) as usize } else { 0 };
+
+    let mut buf = vec![0u8; len];
+    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut buf);
+    for (i, &byte) in buf.iter().enumerate() {
+        let v = Int32Value(byte as i32);
+        let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+        JS_SetElement(cx, arr_h, i as u32, v_h);
+    }
+    args.rval().set(arr_val);
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 {
+        JS_ReportErrorUTF8(cx, b"crypto.subtle.digest requires algorithm and data\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+
+    let algo_val = *args.get(0).ptr;
+    let algo = if algo_val.is_string() {
+        jsstr_to_string(cx, NonNull::new_unchecked(algo_val.to_string())).to_lowercase()
+    } else {
+        "sha-256".to_string()
+    };
+
+    let data_val = *args.get(1).ptr;
+    let bytes = if data_val.is_object() {
+        let obj = data_val.to_object();
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
+        });
+        let len = if len_val.is_int32() { len_val.to_int32().max(0) as usize } else { 0 };
+        let mut v = Vec::with_capacity(len);
+        for i in 0..len {
+            let mut elem = UndefinedValue();
+            JS_GetElement(cx, obj_h, i as u32, MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
+            });
+            v.push(if elem.is_int32() { elem.to_int32() as u8 } else { 0 });
+        }
+        v
+    } else if data_val.is_string() {
+        jsstr_to_string(cx, NonNull::new_unchecked(data_val.to_string())).into_bytes()
+    } else {
+        Vec::new()
+    };
+
+    let hash = match algo.as_str() {
+        "sha-1" | "sha1" => sha1::Sha1::digest(&bytes).to_vec(),
+        "sha-256" | "sha256" => sha2::Sha256::digest(&bytes).to_vec(),
+        "sha-384" | "sha384" => sha2::Sha384::digest(&bytes).to_vec(),
+        "sha-512" | "sha512" => sha2::Sha512::digest(&bytes).to_vec(),
+        _ => {
+            let msg = format!("Unsupported algorithm: {}", algo);
+            let c_msg = CString::new(msg).unwrap_or_default();
+            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            return false;
+        }
+    };
+
+    let arr_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if arr_obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let arr_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr_obj };
+    let lv = Int32Value(hash.len() as i32);
+    let lv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &lv };
+    JS_DefineProperty(cx, arr_h, c"length".as_ptr(), lv_h, JSPROP_ENUMERATE as u32);
+    for (i, &byte) in hash.iter().enumerate() {
+        let v = Int32Value(byte as i32);
+        let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+        JS_DefineElement(cx, arr_h, i as u32, v_h, JSPROP_ENUMERATE as u32);
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(arr_obj));
+    true
+}
+
+pub fn install_websocket_constructor(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        let ws_fun = JS_NewFunction(cx.raw_cx(), Some(websocket_constructor), 1, JSFUN_CONSTRUCTOR as u32, c"WebSocket".as_ptr());
+        if !ws_fun.is_null() {
+            let ctor_obj = JS_GetFunctionObject(ws_fun);
+            if !ctor_obj.is_null() {
+                let val = mozjs::jsval::ObjectValue(ctor_obj);
+                rooted!(&in(cx) let v = val);
+                JS_DefineProperty(cx.raw_cx(), global.into(), c"WebSocket".as_ptr(), v.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+
+                // WebSocket.CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3
+                let ctor_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ctor_obj };
+                for (name, value) in &[("CONNECTING", 0i32), ("OPEN", 1), ("CLOSING", 2), ("CLOSED", 3)] {
+                    let c_name = CString::new(*name).unwrap_or_default();
+                    let v = Int32Value(*value);
+                    let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+                    JS_DefineProperty(cx.raw_cx(), ctor_h, c_name.as_ptr(), v_h, (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+                }
+            }
+        }
+    }
+}
+
+thread_local! {
+    static WS_CONNECTIONS: RefCell<Vec<*mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<::std::net::TcpStream>>>> = RefCell::new(Vec::new());
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn websocket_constructor(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, b"WebSocket requires a URL argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let url_val = *args.get(0).ptr;
+    if !url_val.is_string() {
+        JS_ReportErrorUTF8(cx, b"WebSocket URL must be a string\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let url = jsstr_to_string(cx, NonNull::new_unchecked(url_val.to_string()));
+
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let ws_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+    if ws_obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // Set url property
+    if let Ok(c_url) = CString::new(url.as_str()) {
+        let js_str = JS_NewStringCopyZ(cx, c_url.as_ptr());
+        if !js_str.is_null() {
+            let v = StringValue(&*js_str);
+            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ws_obj.get() };
+            JS_DefineProperty(cx, obj_h, c"url".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+        }
+    }
+
+    // readyState = CONNECTING initially
+    let state_val = Int32Value(0);
+    let state_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &state_val };
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ws_obj.get() };
+    JS_DefineProperty(cx, obj_h, c"readyState".as_ptr(), state_h, JSPROP_ENUMERATE as u32);
+    let ba_val = Int32Value(0);
+    let ba_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ba_val };
+    JS_DefineProperty(cx, obj_h, c"bufferedAmount".as_ptr(), ba_h, JSPROP_ENUMERATE as u32);
+
+    // onopen, onmessage, onerror, onclose — placeholder properties
+    for name in &["onopen", "onmessage", "onerror", "onclose"] {
+        let c_name = CString::new(*name).unwrap_or_default();
+        let ud = UndefinedValue();
+        let ud_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ud };
+        JS_DefineProperty(cx, obj_h, c_name.as_ptr(), ud_h, JSPROP_ENUMERATE as u32);
+    }
+
+    // Attempt connection
+    match tungstenite::client::connect(url.as_str()) {
+        Ok((mut socket, _response)) => {
+            // Update readyState to OPEN
+            JS_SetProperty(cx, obj_h, c"readyState".as_ptr(), Handle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &Int32Value(1),
+            });
+
+            WS_CONNECTIONS.with(|c| c.borrow_mut().push(Box::into_raw(Box::new(socket))));
+            let _ = obj_h;
+        }
+        Err(e) => {
+            let msg = format!("WebSocket connection failed: {}", e);
+            let c_msg = CString::new(msg).unwrap_or_default();
+            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            return false;
+        }
+    }
+
+    args.rval().set(mozjs::jsval::ObjectValue(ws_obj.get()));
+    true
+}
+
 pub fn install_performance(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
@@ -1925,6 +2184,8 @@ pub unsafe fn install_all(
     crate::require::install_require(cx, global);
     crate::timers::install_timer_globals(cx, global);
     install_performance(cx, global);
+    install_websocket_constructor(cx, global);
+    install_crypto_global(cx, global);
     crate::node_events::install(cx);
     crate::node_path::install(cx);
     crate::node_fs::install(cx);

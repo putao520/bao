@@ -118,13 +118,12 @@ impl JsContext {
             mozjs::jsapi::js::RunJobs(raw_cx);
 
             if let Some(hook) = self.post_eval_hook {
-                for _ in 0..1000 {
+                loop {
+                    mozjs::jsapi::js::RunJobs(raw_cx);
                     if !hook(cx) {
                         break;
                     }
                     ::std::thread::sleep(::std::time::Duration::from_millis(1));
-                    hook(cx);
-                    mozjs::jsapi::js::RunJobs(raw_cx);
                 }
             }
 
