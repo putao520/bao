@@ -194,7 +194,7 @@ unsafe extern "C" fn host_populate_import_meta(
         }
 
         let val = mozjs::jsval::StringValue(&*url_str);
-        let mut handle_val = Handle::<Value> {
+        let handle_val = Handle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
             ptr: &val,
         };

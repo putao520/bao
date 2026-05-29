@@ -119,6 +119,7 @@ name = "bao_runtime"
 version = "0.1.0"
 dependencies = [
  "bao_engine",
+ "libc",
  "log",
  "minreq",
  "mozjs",

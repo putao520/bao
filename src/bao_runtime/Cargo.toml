@@ -11,3 +11,4 @@ mozjs.workspace = true
 mozjs_sys.workspace = true
 log = "0.4"
 minreq = { version = "2", features = ["https"] }
+libc = "0.2"

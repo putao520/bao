@@ -4,6 +4,7 @@ use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
 
 use crate::globals;
+use crate::require;
 use crate::timers;
 
 pub struct BaoRuntime {
@@ -48,6 +49,15 @@ impl BaoRuntime {
             column: 0,
             stack: None,
         })?;
+
+        let abs_path = if ::std::path::Path::new(path).is_absolute() {
+            ::std::path::PathBuf::from(path)
+        } else {
+            ::std::env::current_dir().unwrap_or_default().join(path)
+        };
+        if let Some(dir) = abs_path.parent() {
+            require::set_require_dir(dir.to_path_buf());
+        }
 
         if path.ends_with(".mjs") {
             self.eval_module(&source, path)

@@ -43,6 +43,10 @@ pub fn install_console(
 }
 
 pub trait HostObject: Sized {
+    /// # Safety
+    /// `thisv` must be a JS value containing a JSObject with a valid host pointer
+    /// stored in reserved slot 0.
+    #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn from_private(_cx: *mut JSContext, thisv: JSVal) -> *mut Self {
         if !thisv.is_object() {
             return ::std::ptr::null_mut();
@@ -58,12 +62,18 @@ pub trait HostObject: Sized {
         }
     }
 
+    /// # Safety
+    /// `obj` must be a valid JSObject pointer with at least 1 reserved slot.
+    #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn to_private(&self, obj: *mut JSObject) {
         let val = mozjs::jsval::PrivateValue(self as *const Self as *const ::std::os::raw::c_void);
         JS_SetReservedSlot(obj, HOST_OBJECT_SLOT, &val);
     }
 }
 
+/// # Safety
+/// `cx` must be a valid JSContext pointer. `args` must be valid CallArgs from a JS callback.
+#[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn extract_setter_value(cx: *mut JSContext, args: &CallArgs) -> JsValue {
     if args.argc_ > 0 {
         crate::value::jsval_to_jsvalue(cx, *args.get(0).ptr)
@@ -83,24 +93,11 @@ impl JsError {
 }
 
 impl JsValue {
-    pub fn set_as_rval(self, args: &mut CallArgs) {
-        args.rval().set(self.to_jsval());
-    }
-
-    pub fn to_jsval(&self) -> JSVal {
-        match self {
-            JsValue::Undefined => UndefinedValue(),
-            JsValue::Null => mozjs::jsval::NullValue(),
-            JsValue::Bool(b) => mozjs::jsval::BooleanValue(*b),
-            JsValue::Number(n) => {
-                if *n == (*n as i32) as f64 && n.abs() < i32::MAX as f64 {
-                    mozjs::jsval::Int32Value(*n as i32)
-                } else {
-                    mozjs::jsval::DoubleValue(*n)
-                }
-            }
-            JsValue::String(_) | JsValue::Object(_) => UndefinedValue(),
-        }
+    /// # Safety
+    /// `cx` must be a valid JSContext pointer.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn set_as_rval(self, cx: *mut JSContext, args: &mut CallArgs) {
+        args.rval().set(self.to_jsval(cx));
     }
 }
 

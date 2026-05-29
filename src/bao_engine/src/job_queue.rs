@@ -99,7 +99,7 @@ unsafe extern "C" fn run_jobs(
             ptr: &fval,
         };
         let empty_args = HandleValueArray::empty();
-        let mut rval_handle = MutableHandle::<Value> {
+        let rval_handle = MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
             ptr: &mut rval,
         };
@@ -115,7 +115,7 @@ unsafe extern "C" fn run_jobs(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn get_host_defined_data(
     _queue: *const c_void,
-    cx: *mut JSContext,
+    _cx: *mut JSContext,
     data: MutableHandle<*mut JSObject>,
 ) -> bool {
     data.set(ptr::null_mut());
