@@ -70,6 +70,7 @@ impl JsContext {
     }
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
 fn extract_exception(cx: &mut mozjs::context::JSContext) -> JsError {
     rooted!(&in(cx) let mut exn = UndefinedValue());
     if let ::std::option::Option::Some(info) = unsafe {

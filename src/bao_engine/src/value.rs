@@ -57,6 +57,7 @@ fn format_number(n: f64) -> ::std::string::String {
     }
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn jsval_to_jsvalue(cx: *mut JSContext, val: JSVal) -> JsValue {
     if val.is_undefined() {
         JsValue::Undefined

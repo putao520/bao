@@ -34,6 +34,7 @@ pub fn install_console(
     }
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn console_log(
     cx: *mut JSContext,
     argc: u32,
@@ -53,6 +54,7 @@ unsafe extern "C" fn console_log(
     true
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn print_value(cx: *mut JSContext, val: JSVal) {
     if val.is_undefined() {
         print!("undefined");
