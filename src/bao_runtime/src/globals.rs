@@ -648,12 +648,38 @@ unsafe extern "C" fn fetch_fn(
     let response = match do_fetch(&url, &method, body.as_deref()) {
         Ok(resp) => resp,
         Err(e) => {
-            let msg = format!("fetch failed: {}", e);
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
-            return false;
+            let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() });
+            if !promise.is_null() {
+                let msg = format!("fetch failed: {}", e);
+                let Ok(c_msg) = ::std::ffi::CString::new(msg) else {
+                    args.rval().set(mozjs::jsval::ObjectValue(promise));
+                    return true;
+                };
+                let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+                if !err_obj.is_null() {
+                    let err_msg = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+                    if !err_msg.is_null() {
+                        let msg_val = StringValue(&*err_msg);
+                        let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
+                        let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
+                        JS_SetProperty(cx, err_h, c"message".as_ptr(), msg_h);
+                    }
+                }
+                let err_val = mozjs::jsval::ObjectValue(err_obj);
+                let err_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
+                let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &promise };
+                mozjs_sys::jsapi::JS::RejectPromise(cx, promise_h, err_handle);
+            }
+            args.rval().set(mozjs::jsval::ObjectValue(promise));
+            return true;
         }
     };
+
+    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() });
+    if promise.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
 
     let resp_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
     if resp_obj.is_null() {
@@ -734,7 +760,12 @@ unsafe extern "C" fn fetch_fn(
         JS_DefineProperty(cx, obj_handle, c"json".as_ptr(), j_handle, JSPROP_ENUMERATE as u32);
     }
 
-    args.rval().set(mozjs::jsval::ObjectValue(resp_obj));
+    let resp_val = mozjs::jsval::ObjectValue(resp_obj);
+    let resp_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &resp_val };
+    let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &promise };
+    mozjs_sys::jsapi::JS::ResolvePromise(cx, promise_h, resp_handle);
+
+    args.rval().set(mozjs::jsval::ObjectValue(promise));
     true
 }
 
