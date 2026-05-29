@@ -1,0 +1,269 @@
+#![allow(dead_code, unused_imports, unreachable_patterns, unreachable_pub)]
+// REQ-CDP-003: CDP module public API and domain registry
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::mpsc::{channel, Receiver, Sender};
+
+mod ws;
+mod protocol;
+mod backend;
+mod router;
+
+pub use protocol::{CDPMessage, CDPResponse, CDPEvent};
+pub use router::{CdpRouter, CdpSession, ExternalBrowser};
+
+pub struct CDPServer {
+    port: u16,
+    target_id: String,
+    sessions: HashMap<String, CDPSession>,
+    cmd_tx: Sender<CDPCommand>,
+    cmd_rx: Receiver<CDPCommand>,
+}
+
+pub enum CDPCommand {
+    SendEvent(CDPEvent),
+    Shutdown,
+}
+
+pub struct CDPSession {
+    id: String,
+    target_id: String,
+    ws_stream: TcpStream,
+}
+
+impl CDPServer {
+    pub fn new(port: u16) -> Self {
+        let (cmd_tx, cmd_rx) = channel();
+        CDPServer {
+            port,
+            target_id: format!("{:016x}", rand_id()),
+            sessions: HashMap::new(),
+            cmd_tx,
+            cmd_rx,
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn target_id(&self) -> &str {
+        &self.target_id
+    }
+
+    pub fn ws_url(&self) -> String {
+        format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, self.target_id)
+    }
+
+    pub fn json_url(&self) -> String {
+        format!("http://127.0.0.1:{}/json", self.port)
+    }
+
+    pub fn event_sender(&self) -> Sender<CDPCommand> {
+        self.cmd_tx.clone()
+    }
+
+    pub fn send_event(&self, method: &str, params: serde_json::Value) {
+        let ev = CDPEvent {
+            method: method.to_string(),
+            params: Some(params),
+        };
+        let _ = self.cmd_tx.send(CDPCommand::SendEvent(ev));
+    }
+
+    pub fn shutdown(&self) {
+        let _ = self.cmd_tx.send(CDPCommand::Shutdown);
+    }
+
+    pub fn run(&mut self) -> Result<(), CDPServerError> {
+        let listener = TcpListener::bind(("127.0.0.1", self.port))
+            .map_err(|e| CDPServerError::Bind(e.to_string()))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| CDPServerError::Io(e.to_string()))?;
+
+        eprintln!("CDP listening on ws://127.0.0.1:{}", self.port);
+        eprintln!("DevTools: {}", self.ws_url());
+
+        loop {
+            while let Ok(CDPCommand::SendEvent(ev)) = self.cmd_rx.try_recv() {
+                self.broadcast_event(&ev);
+            }
+            if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() {
+                break;
+            }
+
+            match listener.accept() {
+                Ok((stream, _addr)) => {
+                    if let Some(session) = self.handle_connection(stream) {
+                        self.sessions.insert(session.id.clone(), session);
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => {
+                    eprintln!("CDP accept error: {}", e);
+                }
+            }
+
+            let mut to_remove = Vec::new();
+            for (id, session) in &mut self.sessions {
+                if session.process().is_err() {
+                    to_remove.push(id.clone());
+                }
+            }
+            for id in to_remove {
+                self.sessions.remove(&id);
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        Ok(())
+    }
+
+    fn handle_connection(&self, mut stream: TcpStream) -> Option<CDPSession> {
+        let mut buf = [0u8; 8192];
+        let n = stream.read(&mut buf).ok()?;
+        let request = std::str::from_utf8(&buf[..n]).ok()?;
+
+        if request.starts_with("GET /json") {
+            let body = self.json_list();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            return None;
+        }
+
+        if request.starts_with("GET /json/version") {
+            let body = serde_json::json!({
+                "Browser": "Bao/0.1.0",
+                "Protocol-Version": "1.3",
+                "User-Agent": "Bao/0.1.0",
+                "V8-Version": "SpiderMonkey",
+                "WebKit-Version": "Servo",
+                "webSocketDebuggerUrl": self.ws_url()
+            }).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+            return None;
+        }
+
+        if request.starts_with("GET /devtools/page/") {
+            let ws_key = extract_header(request, "Sec-WebSocket-Key");
+            if let Some(key) = ws_key {
+                let accept = ws::compute_accept_key(&key);
+                let response = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\n\
+                     Upgrade: websocket\r\n\
+                     Connection: Upgrade\r\n\
+                     Sec-WebSocket-Accept: {}\r\n\r\n",
+                    accept
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let session_id = format!("{:016x}", rand_id());
+                return Some(CDPSession {
+                    id: session_id,
+                    target_id: self.target_id.clone(),
+                    ws_stream: stream,
+                });
+            }
+        }
+
+        let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+        let _ = stream.write_all(response.as_bytes());
+        None
+    }
+
+    fn json_list(&self) -> String {
+        let entry = serde_json::json!({
+            "id": self.target_id,
+            "type": "page",
+            "title": "Bao",
+            "url": "about:blank",
+            "webSocketDebuggerUrl": format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, self.target_id)
+        });
+        format!("[{}]", entry)
+    }
+
+    fn broadcast_event(&mut self, ev: &CDPEvent) {
+        for (_, session) in &mut self.sessions {
+            let _ = session.send_event(ev);
+        }
+    }
+}
+
+impl CDPSession {
+    pub fn process(&mut self) -> Result<(), ()> {
+        let msg = match ws::read_message(&mut self.ws_stream) {
+            Ok(Some(msg)) => msg,
+            Ok(None) => return Ok(()),
+            Err(_) => return Err(()),
+        };
+
+        let cdp_msg: CDPMessage = match protocol::parse_message(&msg) {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+
+        let response = protocol::handle_command(cdp_msg.clone(), &self.target_id, &cdp_msg.params);
+        let response_json = protocol::serialize_response(&response);
+        let _ = ws::write_message(&mut self.ws_stream, &response_json);
+
+        Ok(())
+    }
+
+    pub fn send_event(&mut self, ev: &CDPEvent) -> Result<(), ()> {
+        let json = protocol::serialize_event(ev);
+        ws::write_message(&mut self.ws_stream, &json)
+    }
+}
+
+fn extract_header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+    for line in request.lines() {
+        if let Some(pos) = line.find(": ") {
+            let key = &line[..pos];
+            if key.eq_ignore_ascii_case(name) {
+                return Some(line[pos + 2..].trim());
+            }
+        }
+    }
+    None
+}
+
+fn rand_id() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    d.as_nanos() as u64 ^ (d.as_nanos() as u64).wrapping_shr(17)
+}
+
+#[derive(Debug)]
+pub enum CDPServerError {
+    Bind(String),
+    Io(String),
+    WebSocket(String),
+    Protocol(String),
+}
+
+impl std::fmt::Display for CDPServerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            CDPServerError::Bind(msg) => write!(f, "Bind error: {}", msg),
+            CDPServerError::Io(msg) => write!(f, "IO error: {}", msg),
+            CDPServerError::WebSocket(msg) => write!(f, "WebSocket error: {}", msg),
+            CDPServerError::Protocol(msg) => write!(f, "Protocol error: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CDPServerError {}
