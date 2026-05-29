@@ -242,7 +242,7 @@ fn try_resolve(path: &Path) -> ::std::option::Option<PathBuf> {
     None
 }
 
-fn resolve_node_modules(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
+pub fn resolve_node_modules(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
     let start = match base_dir {
         Some(d) => d.to_path_buf(),
         None => ::std::env::current_dir().ok()?,

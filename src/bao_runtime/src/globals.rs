@@ -131,6 +131,16 @@ pub fn install_bun_global(
             JSPROP_ENUMERATE as u32,
         );
 
+        // Bun.resolve() — resolve module specifier to absolute path
+        JS_DefineFunction(
+            cx,
+            bun_obj.handle(),
+            c"resolve".as_ptr(),
+            ::std::option::Option::Some(bun_resolve),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+
         JS_DefineProperty3(
             cx,
             global,
@@ -925,6 +935,69 @@ unsafe extern "C" fn bun_sleep(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_resolve(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, b"Bun.resolve requires a specifier\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let spec_val = *args.get(0).ptr;
+    if !spec_val.is_string() {
+        JS_ReportErrorUTF8(cx, b"Bun.resolve requires a string\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let specifier = mozjs::conversions::jsstr_to_string(cx, NonNull::new_unchecked(spec_val.to_string()));
+
+    let from = if argc > 1 && (*args.get(1).ptr).is_string() {
+        let from_str = mozjs::conversions::jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()));
+        Some(::std::path::PathBuf::from(from_str))
+    } else {
+        ::std::env::current_dir().ok()
+    };
+
+    let spec_path = ::std::path::Path::new(&specifier);
+    let resolved = if spec_path.is_absolute() {
+        spec_path.to_path_buf()
+    } else if specifier.starts_with("./") || specifier.starts_with("../") {
+        let base = from.as_deref().unwrap_or(::std::path::Path::new("."));
+        base.join(&specifier)
+    } else {
+        match crate::require::resolve_node_modules(&specifier, from.as_deref()) {
+            Some(p) => {
+                let s = p.to_string_lossy().into_owned();
+                let js_str = JS_NewStringCopyZ(cx, s.as_ptr() as *const ::std::os::raw::c_char);
+                if !js_str.is_null() {
+                    args.rval().set(mozjs::jsval::StringValue(&*js_str));
+                } else {
+                    args.rval().set(UndefinedValue());
+                }
+                return true;
+            }
+            None => {
+                let msg = format!("Cannot resolve '{}'", specifier);
+                let c_msg = CString::new(msg).unwrap_or_default();
+                JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+                return false;
+            }
+        }
+    };
+
+    let canonical = resolved.canonicalize().unwrap_or(resolved);
+    let s = canonical.to_string_lossy().into_owned();
+    let js_str = JS_NewStringCopyZ(cx, s.as_ptr() as *const ::std::os::raw::c_char);
+    if !js_str.is_null() {
+        args.rval().set(mozjs::jsval::StringValue(&*js_str));
+    } else {
+        args.rval().set(UndefinedValue());
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn bun_which(
     cx: *mut JSContext,
     argc: u32,
@@ -1415,6 +1488,14 @@ pub fn install_buffer_global(
             cx, buf_obj.handle(), c"isBuffer".as_ptr(),
             ::std::option::Option::Some(buffer_is_buffer), 1, JSPROP_ENUMERATE as u32,
         );
+        JS_DefineFunction(
+            cx, buf_obj.handle(), c"concat".as_ptr(),
+            ::std::option::Option::Some(buffer_concat), 1, JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineFunction(
+            cx, buf_obj.handle(), c"allocUnsafe".as_ptr(),
+            ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
+        );
 
         JS_DefineProperty3(cx, global, c"Buffer".as_ptr(), buf_obj.handle(), JSPROP_ENUMERATE as u32);
     }
@@ -1505,6 +1586,22 @@ unsafe fn create_buffer_from_bytes(
         JS_DefineProperty(cx, obj_handle, c"toString".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
     }
 
+    let slice_fn = JS_NewFunction(cx, Some(buffer_slice), 2, 0, c"slice".as_ptr());
+    if !slice_fn.is_null() {
+        let fn_ptr = JS_GetFunctionObject(slice_fn);
+        let fn_val = mozjs::jsval::ObjectValue(fn_ptr);
+        let fn_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
+        JS_DefineProperty(cx, obj_handle, c"slice".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
+    }
+
+    let copy_fn = JS_NewFunction(cx, Some(buffer_copy), 1, 0, c"copy".as_ptr());
+    if !copy_fn.is_null() {
+        let fn_ptr = JS_GetFunctionObject(copy_fn);
+        let fn_val = mozjs::jsval::ObjectValue(fn_ptr);
+        let fn_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
+        JS_DefineProperty(cx, obj_handle, c"copy".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
+    }
+
     args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
     true
 }
@@ -1592,6 +1689,148 @@ unsafe extern "C" fn buffer_is_buffer(
     true
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_concat(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        create_buffer_from_bytes(cx, &args, &[])
+    } else {
+        let list_val = *args.get(0).ptr;
+        if !list_val.is_object() {
+            create_buffer_from_bytes(cx, &args, &[])
+        } else {
+            let list_obj = list_val.to_object();
+            let list_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &list_obj };
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(cx, list_h, c"length".as_ptr(), MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
+            });
+            let list_len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+
+            let mut all_bytes = Vec::new();
+            for i in 0..list_len {
+                let mut elem = UndefinedValue();
+                JS_GetElement(cx, list_h, i as u32, MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
+                });
+                if elem.is_object() {
+                    let buf_obj = elem.to_object();
+                    let buf_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &buf_obj };
+                    let mut blen = UndefinedValue();
+                    JS_GetProperty(cx, buf_h, c"length".as_ptr(), MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData, ptr: &mut blen,
+                    });
+                    let b_len = if blen.is_int32() { blen.to_int32() as usize } else { 0 };
+                    for j in 0..b_len {
+                        let mut byte_val = UndefinedValue();
+                        JS_GetElement(cx, buf_h, j as u32, MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
+                        });
+                        all_bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
+                    }
+                }
+            }
+            create_buffer_from_bytes(cx, &args, &all_bytes)
+        }
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_slice(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
+    });
+    let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+
+    let start = if argc > 0 && (*args.get(0).ptr).is_int32() {
+        let s = (*args.get(0).ptr).to_int32();
+        if s < 0 { (len as i32 + s).max(0) as usize } else { s.min(len as i32) as usize }
+    } else { 0 };
+
+    let end = if argc > 1 && (*args.get(1).ptr).is_int32() {
+        let e = (*args.get(1).ptr).to_int32();
+        if e < 0 { (len as i32 + e).max(0) as usize } else { e.min(len as i32) as usize }
+    } else { len };
+
+    let mut bytes = Vec::new();
+    for i in start..end.min(len) {
+        let mut byte_val = UndefinedValue();
+        JS_GetElement(cx, obj_h, i as u32, MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
+        });
+        bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
+    }
+    create_buffer_from_bytes(cx, &args, &bytes)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_copy(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() || argc == 0 {
+        args.rval().set(Int32Value(0));
+        return true;
+    }
+
+    let src_obj = this.to_object();
+    let src_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &src_obj };
+    let mut src_len_val = UndefinedValue();
+    JS_GetProperty(cx, src_h, c"length".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut src_len_val,
+    });
+    let src_len = if src_len_val.is_int32() { src_len_val.to_int32() as usize } else { 0 };
+
+    let target_val = *args.get(0).ptr;
+    if !target_val.is_object() {
+        args.rval().set(Int32Value(0));
+        return true;
+    }
+    let tgt_obj = target_val.to_object();
+    let tgt_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &tgt_obj };
+
+    let tgt_start = if argc > 1 && (*args.get(1).ptr).is_int32() {
+        (*args.get(1).ptr).to_int32().max(0) as usize
+    } else { 0 };
+
+    let mut copied = 0usize;
+    for i in tgt_start..src_len {
+        let mut byte_val = UndefinedValue();
+        JS_GetElement(cx, src_h, i as u32, MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
+        });
+        let b = if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 };
+        let b_val = Int32Value(b as i32);
+        let b_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &b_val };
+        JS_SetElement(cx, tgt_h, i as u32, b_handle);
+        copied += 1;
+    }
+    args.rval().set(Int32Value(copied as i32));
+    true
+}
+
 pub unsafe fn install_all(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
@@ -1615,6 +1854,7 @@ pub unsafe fn install_all(
     crate::node_util::install_assert(cx);
     crate::node_child_process::install(cx);
     crate::node_stream::install(cx);
+    crate::node_net::install(cx);
     install_web_encodings(cx, global);
     install_queue_microtask(cx, global);
 }

@@ -179,6 +179,60 @@ var p = new Promise(function(resolve) { resolve(42); });
 assert(p !== undefined, "Promise constructor works");
 
 // ============================================================
+// Bun.resolve()
+// ============================================================
+assertEq(typeof Bun.resolve, "function", "Bun.resolve exists");
+var resolved = Bun.resolve("./tests/phase1_integration.js");
+assert(resolved.indexOf("phase1_integration") >= 0, "Bun.resolve returns valid path");
+
+// ============================================================
+// node:net
+// ============================================================
+var net = require("net");
+assert(net !== undefined, "require('net') returns value");
+assertEq(typeof net.Server, "function", "net.Server is function");
+assertEq(typeof net.Socket, "function", "net.Socket is function");
+assertEq(typeof net.createServer, "function", "net.createServer is function");
+assertEq(typeof net.connect, "function", "net.connect is function");
+assertEq(net.isIP("127.0.0.1"), 4, "net.isIP('127.0.0.1') === 4");
+assertEq(net.isIPv4("192.168.1.1"), true, "net.isIPv4 works");
+assertEq(net.isIPv6("::1"), false, "net.isIPv6 returns false");
+
+// ============================================================
+// Buffer enhancements
+// ============================================================
+var b1 = Buffer.from("hello");
+var b2 = Buffer.from(" world");
+var b3 = Buffer.concat([b1, b2]);
+assertEq(b3.toString(), "hello world", "Buffer.concat works");
+assertEq(b3.length, 11, "Buffer.concat length");
+
+var b4 = Buffer.from("hello world");
+var b5 = b4.slice(0, 5);
+assertEq(b5.toString(), "hello", "Buffer.slice works");
+
+var b6 = Buffer.alloc(5);
+b4.copy(b6);
+assertEq(b6.toString(), "hello", "Buffer.copy works");
+
+assertEq(Buffer.isBuffer(b1), true, "Buffer.isBuffer returns true");
+assertEq(typeof Buffer.allocUnsafe, "function", "Buffer.allocUnsafe exists");
+
+// ============================================================
+// TextEncoder / TextDecoder
+// ============================================================
+var encoder = new TextEncoder();
+var decoder = new TextDecoder();
+var encoded = encoder.encode("test");
+assertEq(encoded.length, 4, "TextEncoder.encode length");
+assertEq(encoded[0], 116, "TextEncoder.encode first byte");
+var decoded = decoder.decode(encoded);
+assertEq(decoded, "test", "TextDecoder.decode roundtrip");
+
+var fatalDec = new TextDecoder("utf-8", { fatal: true });
+assert(fatalDec !== undefined, "TextDecoder with fatal option");
+
+// ============================================================
 // Results
 // ============================================================
 console.log("\n========== Phase 1 Integration Test ==========");
