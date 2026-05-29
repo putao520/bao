@@ -1,3 +1,4 @@
+// REQ-ENG-001: SpiderMonkey JSContext lifecycle management
 use ::std::ptr;
 
 use mozjs::jsapi::{JSObject, OnNewGlobalHookOption};

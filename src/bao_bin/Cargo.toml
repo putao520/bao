@@ -13,4 +13,5 @@ path = "src/main.rs"
 bao_engine = { path = "../bao_engine" }
 bao_runtime = { path = "../bao_runtime" }
 bao_browser = { path = "../bao_browser" }
+bao_cdp = { path = "../bao_cdp" }
 clap = { version = "4", features = ["derive"] }

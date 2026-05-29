@@ -1,3 +1,4 @@
+// REQ-ENG-004: SM Value ↔ Rust type conversion
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;

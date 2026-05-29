@@ -1,3 +1,4 @@
+// REQ-ENG-005: Host function registration and callback
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;

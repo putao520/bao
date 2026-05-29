@@ -4,6 +4,7 @@ use ::std::ffi::CString;
 use ::std::fs;
 use ::std::io::Read;
 use ::std::path;
+use base64::Engine;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -933,7 +934,48 @@ unsafe extern "C" fn bun_serve(
             if bg_stop_clone.load(::std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
-            server.recv_timeout(::std::time::Duration::from_millis(100)).ok();
+            match server.recv_timeout(::std::time::Duration::from_millis(100)) {
+                Ok(Some(req)) => {
+                    let method = req.method().to_string().to_uppercase();
+                    let url_path = req.url().to_string();
+
+                    // Check for WebSocket upgrade
+                    let is_ws_upgrade = req.headers().iter().any(|h| {
+                        h.field.equiv("Upgrade") && h.value.as_str() == "websocket"
+                    });
+
+                    if is_ws_upgrade {
+                        // Accept WebSocket upgrade using tungstenite
+                        let ws_key = req.headers().iter().find_map(|h| {
+                            if h.field.equiv("Sec-WebSocket-Key") {
+                                Some(h.value.as_str().to_string())
+                            } else { None }
+                        }).unwrap_or_default();
+
+                        let accept_key = {
+                            use sha1::{Digest, Sha1};
+                            let mut hasher = Sha1::new();
+                            hasher.update(format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", ws_key));
+                            let result = hasher.finalize();
+                            base64::engine::general_purpose::STANDARD.encode(result)
+                        };
+
+                        // Build and send upgrade response
+                        let mut response = tiny_http::Response::new_empty(tiny_http::StatusCode(101));
+                        response.add_header(tiny_http::Header::from_bytes(&b"Upgrade"[..], &b"websocket"[..]).unwrap());
+                        response.add_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"Upgrade"[..]).unwrap());
+                        response.add_header(tiny_http::Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept_key.as_bytes()).unwrap());
+                        let _ = req.respond(response);
+                    } else {
+                        // Regular HTTP response
+                        let body = format!("{{\"method\":\"{}\",\"url\":\"{}\"}}", method, url_path);
+                        let response = tiny_http::Response::from_string(body);
+                        let _ = req.respond(response);
+                    }
+                }
+                Ok(None) => {}
+                Err(_) => {}
+            }
         }
         eprint!("Bun.serve() stopped on {}:{}\n", bg_hostname, bg_port);
     });

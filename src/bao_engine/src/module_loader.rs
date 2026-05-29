@@ -1,3 +1,4 @@
+// REQ-ENG-003: ESM/CJS module resolver and loader
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
 use ::std::ffi::CString;

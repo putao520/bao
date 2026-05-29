@@ -1,3 +1,4 @@
+// REQ-ENG-006: Engine error types and propagation
 use ::std::fmt;
 
 #[derive(Debug)]
