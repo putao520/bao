@@ -26,7 +26,9 @@
 <p>参见 02-SYSTEM.html §4.2 (SpiderMonkey 集成) · 03-PROCESS.html §1 (JS 执行管线) · 03-PROCESS.html §5 (Event Loop 桥接)</p>
 
 <p data-xref-type="req" data-xref-id="REQ-ENG-001">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>
-<span data-xref-type="entity" data-xref-id="ModuleSource">ModuleSource</span>, <span data-xref-type="entity" data-xref-id="JsCallback">JsCallback</span></p></div>
+<span data-xref-type="entity" data-xref-id="ModuleSource">ModuleSource</span>,<span data-xref-type="entity" data-xref-id="JsCallback">JsCallback</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-001"></span></p>
+</div>
 
 <div id="req-REQ-ENG-002" data-req="REQ-ENG-002" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-002: 代码生成后端重写</h3>
@@ -39,7 +41,9 @@
 <li data-criterion data-criterion-id="REQ-ENG-002-C4">Bun.* API 通过 Bao.* 别名可访问</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-ENG-002">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-ENG-002">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-002"></span></p>
+</div>
 
 <div id="req-REQ-ENG-003" data-req="REQ-ENG-003" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-003: host_fn 抽象层</h3>
@@ -53,7 +57,7 @@
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-ENG-003">关联实体: <span data-xref-type="entity" data-xref-id="JsCallback">JsCallback</span>
-<span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+<span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-003"></span></p></div>
 
 <div id="req-REQ-ENG-004" data-req="REQ-ENG-004" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-004: Event Loop 桥接</h3>
@@ -66,7 +70,9 @@
 <li data-criterion data-criterion-id="REQ-ENG-004-C4">宏任务和微任务执行顺序正确</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-ENG-004">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-ENG-004">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-004"></span></p>
+</div>
 
 <div id="req-REQ-ENG-005" data-req="REQ-ENG-005" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-005: Module Loader 桥接</h3>
@@ -80,7 +86,9 @@
 <li data-criterion data-criterion-id="REQ-ENG-005-C5">模块缓存生效，避免重复解析</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-ENG-005">关联实体: <span data-xref-type="entity" data-xref-id="ModuleSource">ModuleSource</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-ENG-005">关联实体: <span data-xref-type="entity" data-xref-id="ModuleSource">ModuleSource</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-005"></span></p>
+</div>
 
 <div id="req-REQ-ENG-006" data-req="REQ-ENG-006" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-006: Bun API 适配</h3>
@@ -95,7 +103,9 @@
 <li data-criterion data-criterion-id="REQ-ENG-006-C6">Bao.* 是 Bun.* 的别名，指向同一对象</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-ENG-006">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-ENG-006">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-006"></span></p>
+</div>
 
 <div id="req-REQ-ENG-007" data-req="REQ-ENG-007" data-req-status="implemented" data-req-domain="ENG">
 <h3>REQ-ENG-007: Node.js 兼容层适配</h3>
@@ -110,7 +120,9 @@
 <li data-criterion data-criterion-id="REQ-ENG-007-C6">process 全局对象正常工作</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-ENG-007">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-ENG-007">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-ENG-007"></span></p>
+</div>
 
 <!-- ============================================================ -->
 <h2>§2 CLI 需求</h2>
@@ -130,7 +142,9 @@
 <li data-criterion data-criterion-id="REQ-CLI-001-C7">BAO_* 环境变量作为 BUN_* 的别名</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-CLI-001">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-CLI-001">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CLI-001"></span></p>
+</div>
 
 <div id="req-REQ-CLI-002" data-req="REQ-CLI-002" data-req-status="implemented" data-req-domain="CLI">
 <h3>REQ-CLI-002: bao browser 子命令</h3>
@@ -145,7 +159,9 @@
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CLI-002">关联实体: <span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>
-<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>, <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span></p></div>
+<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>,<span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CLI-002"></span></p>
+</div>
 
 <!-- ============================================================ -->
 <h2>§3 浏览器能力需求</h2>
@@ -169,7 +185,9 @@
 <p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
 
 <p data-xref-type="req" data-xref-id="REQ-BRW-001">关联实体: <span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>
-<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>, <span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span></p></div>
+<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>,<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-001"></span></p>
+</div>
 
 <div id="req-REQ-BRW-002" data-req="REQ-BRW-002" data-req-status="implemented" data-req-domain="BRW">
 <h3>REQ-BRW-002: 内存渲染</h3>
@@ -193,7 +211,7 @@ WebView::take_screenshot() → image crate 编码输出。
 无头场景使用 SoftwareRenderingContext，有 GPU 时使用 servo 原有 GL 后端。</p>
 
 <p data-xref-type="req" data-xref-id="REQ-BRW-002">关联实体: <span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>
-<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span></p></div>
+<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-002"></span></p></div>
 
 <div id="req-REQ-BRW-003" data-req="REQ-BRW-003" data-req-status="implemented" data-req-domain="BRW">
 <h3>REQ-BRW-003: SpiderMonkey JSContext 融合</h3>
@@ -214,7 +232,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <h4>关联设计</h4>
 <p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
 
-<p data-xref-type="req" data-xref-id="REQ-BRW-003">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-BRW-003">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-003"></span></p>
+</div>
 
 <!-- ============================================================ -->
 <h2>§4 CDP 需求</h2>
@@ -233,7 +253,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CDP-001">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p></div>
+<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-001"></span></p></div>
 
 <div id="req-REQ-CDP-002" data-req="REQ-CDP-002" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-002: Runtime Domain</h3>
@@ -249,7 +269,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CDP-002">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>, <span data-xref-type="entity" data-xref-id="CdpResponse">CdpResponse</span></p></div>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>,<span data-xref-type="entity" data-xref-id="CdpResponse">CdpResponse</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-002"></span></p>
+</div>
 
 <div id="req-REQ-CDP-003" data-req="REQ-CDP-003" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-003: Debugger Domain</h3>
@@ -265,7 +287,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CDP-003">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p></div>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-003"></span></p></div>
 
 <div id="req-REQ-CDP-004" data-req="REQ-CDP-004" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-004: Page Domain</h3>
@@ -281,7 +303,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CDP-004">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>, <span data-xref-type="entity" data-xref-id="Viewport">Viewport</span></p></div>
+<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>,<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-004"></span></p>
+</div>
 
 <div id="req-REQ-CDP-005" data-req="REQ-CDP-005" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-005: DOM Domain</h3>
@@ -297,7 +321,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CDP-005">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p></div>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-005"></span></p></div>
 
 <div id="req-REQ-CDP-006" data-req="REQ-CDP-006" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-006: Network Domain</h3>
@@ -313,7 +337,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CDP-006">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p></div>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-006"></span></p></div>
 
 <div id="req-REQ-CDP-007" data-req="REQ-CDP-007" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-007: CSS/Input/Emulation/Overlay Domain</h3>
@@ -329,7 +353,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CDP-007">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p></div>
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-007"></span></p></div>
 
 <div id="req-REQ-CDP-008" data-req="REQ-CDP-008" data-req-status="implemented" data-req-domain="CDP">
 <h3>REQ-CDP-008: Target Domain</h3>
@@ -343,7 +367,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-CDP-008">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
-<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p></div>
+<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-008"></span></p></div>
 
 <!-- ============================================================ -->
 <h2>§5 Stealth 需求</h2>
@@ -362,7 +386,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-STL-001">关联实体: <span data-xref-type="entity" data-xref-id="TlsProfile">TlsProfile</span>
-<span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+<span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-001"></span></p></div>
 
 <div id="req-REQ-STL-002" data-req="REQ-STL-002" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-002: HTTP/2 指纹匹配</h3>
@@ -375,7 +399,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <li data-criterion data-criterion-id="REQ-STL-002-C4">HTTP/2 伪头部顺序与 Firefox 一致</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-STL-002">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-STL-002">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-002"></span></p>
+</div>
 
 <div id="req-REQ-STL-003" data-req="REQ-STL-003" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-003: Canvas 指纹防护</h3>
@@ -390,7 +416,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-STL-003">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span>
-<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span></p></div>
+<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-003"></span></p></div>
 
 <div id="req-REQ-STL-004" data-req="REQ-STL-004" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-004: Navigator/Screen 构造</h3>
@@ -408,7 +434,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </ul>
 
 <p data-xref-type="req" data-xref-id="REQ-STL-004">关联实体: <span data-xref-type="entity" data-xref-id="NavigatorProfile">NavigatorProfile</span>
-<span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+<span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-004"></span></p></div>
 
 <div id="req-REQ-STL-005" data-req="REQ-STL-005" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-005: WebGL/Audio 指纹防护</h3>
@@ -421,7 +447,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <li data-criterion data-criterion-id="REQ-STL-005-C4">AudioContext 输出包含确定性噪声</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-STL-005">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-STL-005">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-005"></span></p>
+</div>
 
 <div id="req-REQ-STL-006" data-req="REQ-STL-006" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-006: 行为模拟</h3>
@@ -434,7 +462,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <li data-criterion data-criterion-id="REQ-STL-006-C4">所有随机行为使用 StealthProfile 种子确定性生成</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-STL-006">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-STL-006">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-006"></span></p>
+</div>
 
 <div id="req-REQ-STL-007" data-req="REQ-STL-007" data-req-status="implemented" data-req-domain="STL">
 <h3>REQ-STL-007: CDP 隐蔽性</h3>
@@ -448,7 +478,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <li data-criterion data-criterion-id="REQ-STL-007-C5">所有指纹检测网站无法识别为自动化工具</li>
 </ul>
 
-<p data-xref-type="req" data-xref-id="REQ-STL-007">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p></div>
+<p data-xref-type="req" data-xref-id="REQ-STL-007">关联实体: <span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-STL-007"></span></p>
+</div>
 
 <!-- ============================================================ -->
 <h2>§5.5 多页面库需求</h2>
@@ -470,7 +502,10 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>参见 02-SYSTEM.html §4.5 (多页面管理架构) · 04-DATA-MODEL.html (PageHandle, PagePool 实体)</p>
 
 <p data-xref-type="req" data-xref-id="REQ-LIB-001">关联实体: <span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span>
-<span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>, <span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span></p></div>
+<span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>,<span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span></p>
+<p>关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-001"></span> <span data-xref-type="test" data-xref-id="TEST-LIB-002"></span>
+ <span data-xref-type="test" data-xref-id="TEST-LIB-010"></span>
+</p></div>
 
 <div id="req-REQ-LIB-002" data-req="REQ-LIB-002" data-req-status="implemented" data-req-domain="LIB">
 <h3>REQ-LIB-002: PagePool 资源管理</h3>
@@ -488,7 +523,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>参见 02-SYSTEM.html §4.5 (Page 生命周期状态机) · 04-DATA-MODEL.html (PagePool 实体)</p>
 
 <p data-xref-type="req" data-xref-id="REQ-LIB-002">关联实体: <span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>
-<span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span></p></div>
+<span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-003"></span>
+ <span data-xref-type="test" data-xref-id="TEST-LIB-004"></span>
+</p></div>
 
 <div id="req-REQ-LIB-003" data-req="REQ-LIB-003" data-req-status="implemented" data-req-domain="LIB">
 <h3>REQ-LIB-003: CDP 双层抽象 API</h3>
@@ -507,7 +544,10 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 
 <p data-xref-type="req" data-xref-id="REQ-LIB-003">关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>
 <span data-xref-type="entity" data-xref-id="CdpBackendInternal">CdpBackendInternal</span>, <span data-xref-type="entity" data-xref-id="CdpBackendExternal">CdpBackendExternal</span>
-<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p></div>
+<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-005"></span>
+ <span data-xref-type="test" data-xref-id="TEST-LIB-006"></span>
+ <span data-xref-type="test" data-xref-id="TEST-LIB-007"></span>
+</p></div>
 
 <div id="req-REQ-LIB-004" data-req="REQ-LIB-004" data-req-status="implemented" data-req-domain="LIB">
 <h3>REQ-LIB-004: Permission 可选沙箱</h3>
@@ -525,7 +565,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>参见 02-SYSTEM.html §4.7 (Permission 沙箱架构) · 04-DATA-MODEL.html (Permission 实体)</p>
 
 <p data-xref-type="req" data-xref-id="REQ-LIB-004">关联实体: <span data-xref-type="entity" data-xref-id="Permission">Permission</span>
-<span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span></p></div>
+<span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span></p><p>关联测试: <span data-xref-type="test" data-xref-id="TEST-LIB-008"></span>
+ <span data-xref-type="test" data-xref-id="TEST-LIB-009"></span>
+</p></div>
 
 <!-- ============================================================ -->
 <h2>§6 非功能需求</h2>
