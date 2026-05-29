@@ -40,14 +40,39 @@ pub fn install_bun_global(
             );
         }
 
-        JS_DefineFunction(
-            cx,
-            bun_obj.handle(),
-            c"env".as_ptr(),
-            ::std::option::Option::Some(bun_env),
-            0,
-            JSPROP_ENUMERATE as u32,
-        );
+        // Bun.env → copy of process.env (same data source)
+        {
+            rooted!(&in(cx) let env_obj = JS_NewPlainObject(cx));
+            if !env_obj.get().is_null() {
+                for (key, value) in ::std::env::vars() {
+                    let Ok(c_key) = ::std::ffi::CString::new(key) else { continue };
+                    let Ok(c_val) = ::std::ffi::CString::new(value) else { continue };
+                    let val_str = JS_NewStringCopyZ(cx.raw_cx(), c_val.as_ptr());
+                    if !val_str.is_null() {
+                        rooted!(&in(cx) let v = StringValue(&*val_str));
+                        JS_DefineProperty(cx.raw_cx(), env_obj.handle().into(), c_key.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+                    }
+                }
+                JS_DefineProperty3(cx, bun_obj.handle(), c"env".as_ptr(), env_obj.handle(), JSPROP_ENUMERATE as u32);
+            }
+        }
+
+        // Bun.argv → process.argv (same data source)
+        {
+            let args: Vec<::std::string::String> = ::std::env::args().collect();
+            rooted!(&in(cx) let argv_arr = NewArrayObject1(cx, args.len()));
+            if !argv_arr.get().is_null() {
+                for (i, arg) in args.iter().enumerate() {
+                    let Ok(c_arg) = ::std::ffi::CString::new(arg.as_str()) else { continue };
+                    let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_arg.as_ptr());
+                    if !js_str.is_null() {
+                        rooted!(&in(cx) let v = StringValue(&*js_str));
+                        JS_DefineElement(cx.raw_cx(), argv_arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+                    }
+                }
+                JS_DefineProperty3(cx, bun_obj.handle(), c"argv".as_ptr(), argv_arr.handle(), JSPROP_ENUMERATE as u32);
+            }
+        }
 
         JS_DefineFunction(
             cx,
@@ -1536,33 +1561,6 @@ unsafe extern "C" fn test_run(
     }
 
     args.rval().set(ObjectValue(result_obj));
-    true
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn bun_env(
-    cx: *mut JSContext,
-    argc: u32,
-    vp: *mut JSVal,
-) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    let env_obj = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(cx) };
-    if env_obj.is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
-    for (key, value) in ::std::env::vars() {
-        let Ok(c_key) = ::std::ffi::CString::new(key) else { continue };
-        let Ok(c_val) = ::std::ffi::CString::new(value) else { continue };
-        let val_str = JS_NewStringCopyZ(cx, c_val.as_ptr());
-        if !val_str.is_null() {
-            let val = StringValue(&*val_str);
-            let val_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-            let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &env_obj };
-            JS_DefineProperty(cx, obj_handle, c_key.as_ptr(), val_handle, JSPROP_ENUMERATE as u32);
-        }
-    }
-    args.rval().set(mozjs::jsval::ObjectValue(env_obj));
     true
 }
 
