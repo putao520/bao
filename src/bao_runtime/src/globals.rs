@@ -180,6 +180,67 @@ pub fn install_buffer_global(
 
         JS_DefineProperty3(cx, global, c"Buffer".as_ptr(), buf_obj.handle(), JSPROP_ENUMERATE as u32);
     }
+
+    // Inject Buffer prototype methods via JS eval
+    let proto_src = r#"
+(function() {
+  var _bp = null;
+  function getProto(b) { if (!_bp && b) { _bp = Object.getPrototypeOf(b); } return _bp; }
+  var sample = Buffer.alloc(1);
+  getProto(sample);
+  if (!_bp) return;
+
+  _bp.write = function(str, offset, encoding) {
+    offset = offset || 0;
+    var bytes = (encoding === 'hex') ? str.match(/.{2}/g).map(function(h) { return parseInt(h, 16); }) : [];
+    if (encoding !== 'hex') { for (var i = 0; i < str.length && (offset + i) < this.length; i++) { this[offset + i] = str.charCodeAt(i); } }
+    else { for (var i = 0; i < bytes.length && (offset + i) < this.length; i++) { this[offset + i] = bytes[i]; } }
+    return encoding === 'hex' ? bytes.length : Math.min(str.length, this.length - offset);
+  };
+
+  _bp.readUInt8 = function(offset) { return this[offset || 0]; };
+  _bp.writeUInt8 = function(val, offset) { this[offset || 0] = val & 0xFF; return offset || 0; };
+
+  _bp.fill = function(val, start, end) {
+    start = start || 0; end = end || this.length;
+    var b = (typeof val === 'number') ? val & 0xFF : (typeof val === 'string') ? val.charCodeAt(0) : 0;
+    for (var i = start; i < end; i++) { this[i] = b; }
+    return this;
+  };
+
+  _bp.includes = function(val, byteOffset) {
+    return this.indexOf(val, byteOffset) !== -1;
+  };
+
+  _bp.lastIndexOf = function(val, byteOffset) {
+    byteOffset = byteOffset !== undefined ? byteOffset : this.length - 1;
+    if (typeof val === 'number') {
+      for (var i = byteOffset; i >= 0; i--) { if (this[i] === val) return i; }
+    } else if (typeof val === 'string') {
+      for (var i = byteOffset; i >= 0; i--) {
+        var match = true;
+        for (var j = 0; j < val.length && (i + j) < this.length; j++) {
+          if (this[i + j] !== val.charCodeAt(j)) { match = false; break; }
+        }
+        if (match) return i;
+      }
+    }
+    return -1;
+  };
+})();
+"#;
+    unsafe {
+        let raw = cx.raw_cx();
+        let c_filename = ::std::ffi::CString::new("<buffer-proto>").unwrap_or_default();
+        let opts = mozjs::glue::NewCompileOptions(raw, c_filename.as_ptr(), 1);
+        if !opts.is_null() {
+            let mut src = mozjs::rust::transform_str_to_source_text(proto_src);
+            let mut rval = UndefinedValue();
+            let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+            mozjs_sys::jsapi::JS::Evaluate2(raw, opts, &mut src, rval_h);
+            libc::free(opts as *mut _);
+        }
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
