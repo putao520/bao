@@ -1,6 +1,6 @@
 use ::std::ptr;
 
-use mozjs::jsapi::OnNewGlobalHookOption;
+use mozjs::jsapi::{JSObject, OnNewGlobalHookOption};
 use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
@@ -13,9 +13,12 @@ use crate::job_queue::JobQueue;
 use crate::module_loader::ModuleLoader;
 use crate::value::{JsValue, jsval_to_jsvalue};
 
+pub type GlobalSetupFn = unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
+
 pub struct JsContext {
     runtime: Runtime,
     _engine: JSEngine,
+    global_setup: Option<GlobalSetupFn>,
 }
 
 impl JsContext {
@@ -45,11 +48,15 @@ impl JsContext {
 
         ModuleLoader::init(&runtime);
 
-        ::std::result::Result::Ok(JsContext { runtime, _engine: engine })
+        ::std::result::Result::Ok(JsContext { runtime, _engine: engine, global_setup: None })
     }
 
     pub fn cx_mut(&mut self) -> &mut mozjs::context::JSContext {
         self.runtime.cx()
+    }
+
+    pub fn set_global_setup(&mut self, setup: GlobalSetupFn) {
+        self.global_setup = Some(setup);
     }
 
     pub fn eval(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {
@@ -66,6 +73,9 @@ impl JsContext {
             let mut realm = AutoRealm::new_from_handle(cx, global.handle());
             let realm_cx: &mut mozjs::context::JSContext = &mut realm;
             host_fn::install_console(realm_cx, global.handle());
+            if let Some(setup) = self.global_setup {
+                unsafe { setup(realm_cx, global.handle()) };
+            }
         }
 
         let c_filename = ::std::ffi::CString::new(filename)
@@ -88,7 +98,12 @@ impl JsContext {
             return ::std::result::Result::Err(extract_exception(realm_cx));
         }
 
-        JobQueue::drain(cx);
+        unsafe {
+            let raw_cx = cx.raw_cx();
+            let old_realm = mozjs::jsapi::JS::EnterRealm(raw_cx, global.get());
+            mozjs::jsapi::js::RunJobs(raw_cx);
+            mozjs::jsapi::JS::LeaveRealm(raw_cx, old_realm);
+        }
 
         ::std::result::Result::Ok(unsafe { jsval_to_jsvalue(cx.raw_cx_no_gc(), rval.get()) })
     }

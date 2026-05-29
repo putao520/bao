@@ -11,7 +11,8 @@ pub struct BaoRuntime {
 
 impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
-        let ctx = JsContext::new()?;
+        let mut ctx = JsContext::new()?;
+        ctx.set_global_setup(globals::install_all);
         ::std::result::Result::Ok(BaoRuntime { ctx })
     }
 
