@@ -417,7 +417,7 @@
 </div>
 
 <!-- ============================================================ -->
-<h2>§6 实施阶段集成测试 (REQ-IMPL-01 ~ REQ-IMPL-05)</h2>
+<h2>§6.5 实施阶段集成测试 (REQ-IMPL-01 ~ REQ-IMPL-05)</h2>
 <!-- ============================================================ -->
 
 <div data-test="TEST-IMPL-01" data-req-ref="REQ-IMPL-01" data-test-categories="unit,positive,integration,system,acceptance" data-test-level="integration">
@@ -512,7 +512,120 @@
 </div>
 
 <!-- ============================================================ -->
-<h2>§7 Mock 策略</h2>
+<h2>§7 Acceptance Tests (验收测试)</h2>
+<!-- ============================================================ -->
+
+<div data-test="TEST-ACCEPT-01" data-req-ref="REQ-ENG-001" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-ENG-001 acceptance — test_acceptance.js + phase1_integration.js</p>
+</div>
+<div data-test="TEST-ACCEPT-02" data-req-ref="REQ-ENG-002" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-ENG-002 acceptance — test_acceptance.js</p>
+</div>
+<div data-test="TEST-ACCEPT-03" data-req-ref="REQ-ENG-003" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-ENG-003 acceptance — test_acceptance.js</p>
+</div>
+<div data-test="TEST-ACCEPT-04" data-req-ref="REQ-ENG-004" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-ENG-004 acceptance — test_nfr_benchmarks.js (timer/loop)</p>
+</div>
+<div data-test="TEST-ACCEPT-05" data-req-ref="REQ-ENG-005" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-ENG-005 acceptance — test_dynamic_import.js (14 assertions)</p>
+</div>
+<div data-test="TEST-ACCEPT-06" data-req-ref="REQ-ENG-006" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-ENG-006 acceptance — test_acceptance.js (Bun.* API)</p>
+</div>
+<div data-test="TEST-ACCEPT-07" data-req-ref="REQ-ENG-007" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-ENG-007 acceptance — test_node_modules.js (34 assertions)</p>
+</div>
+<div data-test="TEST-ACCEPT-08" data-req-ref="REQ-CLI-001" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CLI-001 acceptance — phase1_integration.js (CLI commands)</p>
+</div>
+<div data-test="TEST-ACCEPT-09" data-req-ref="REQ-CLI-002" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CLI-002 acceptance — phase2_browser.js (12 assertions)</p>
+</div>
+<div data-test="TEST-ACCEPT-10" data-req-ref="REQ-BRW-001" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-BRW-001 acceptance — phase2_browser.js</p>
+</div>
+<div data-test="TEST-ACCEPT-11" data-req-ref="REQ-BRW-002" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-BRW-002 acceptance — phase2_browser.js (screenshot/render)</p>
+</div>
+<div data-test="TEST-ACCEPT-12" data-req-ref="REQ-BRW-003" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-BRW-003 acceptance — phase5_multipage.js (10 assertions)</p>
+</div>
+<div data-test="TEST-ACCEPT-13" data-req-ref="REQ-CDP-001" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CDP-001 acceptance — phase3_cdp.js (WebSocket server)</p>
+</div>
+<div data-test="TEST-ACCEPT-14" data-req-ref="REQ-CDP-002" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CDP-002 acceptance — phase3_cdp.js (Runtime domain)</p>
+</div>
+<div data-test="TEST-ACCEPT-15" data-req-ref="REQ-CDP-003" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CDP-003 acceptance — phase3_cdp.js (Debugger domain)</p>
+</div>
+<div data-test="TEST-ACCEPT-16" data-req-ref="REQ-CDP-004" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CDP-004 acceptance — phase3_cdp.js (Page domain)</p>
+</div>
+<div data-test="TEST-ACCEPT-17" data-req-ref="REQ-CDP-005" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CDP-005 acceptance — phase3_cdp.js (DOM domain)</p>
+</div>
+<div data-test="TEST-ACCEPT-18" data-req-ref="REQ-CDP-006" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CDP-006 acceptance — phase3_cdp.js (Network domain)</p>
+</div>
+<div data-test="TEST-ACCEPT-19" data-req-ref="REQ-CDP-007" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CDP-007 acceptance — phase3_cdp.js (CSS/Input/Emulation)</p>
+</div>
+<div data-test="TEST-ACCEPT-20" data-req-ref="REQ-CDP-008" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-CDP-008 acceptance — phase5_cdp.js (Target domain)</p>
+</div>
+<div data-test="TEST-ACCEPT-21" data-req-ref="REQ-STL-001" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-STL-001 acceptance — phase4_stealth.js (TLS)</p>
+</div>
+<div data-test="TEST-ACCEPT-22" data-req-ref="REQ-STL-002" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-STL-002 acceptance — phase4_stealth.js (HTTP/2)</p>
+</div>
+<div data-test="TEST-ACCEPT-23" data-req-ref="REQ-STL-003" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-STL-003 acceptance — phase4_stealth.js (Canvas)</p>
+</div>
+<div data-test="TEST-ACCEPT-24" data-req-ref="REQ-STL-004" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-STL-004 acceptance — phase4_stealth.js (Navigator)</p>
+</div>
+<div data-test="TEST-ACCEPT-25" data-req-ref="REQ-STL-005" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-STL-005 acceptance — phase4_stealth.js (WebGL/Audio)</p>
+</div>
+<div data-test="TEST-ACCEPT-26" data-req-ref="REQ-STL-006" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-STL-006 acceptance — phase4_stealth.js (Behavior)</p>
+</div>
+<div data-test="TEST-ACCEPT-27" data-req-ref="REQ-STL-007" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-STL-007 acceptance — phase4_stealth.js (CDP stealth)</p>
+</div>
+<div data-test="TEST-ACCEPT-28" data-req-ref="REQ-LIB-001" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-LIB-001 acceptance — phase5_multipage.js</p>
+</div>
+<div data-test="TEST-ACCEPT-29" data-req-ref="REQ-LIB-002" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-LIB-002 acceptance — phase5_multipage.js (PagePool)</p>
+</div>
+<div data-test="TEST-ACCEPT-30" data-req-ref="REQ-LIB-003" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-LIB-003 acceptance — phase5_cdp.js (CDP abstraction)</p>
+</div>
+<div data-test="TEST-ACCEPT-31" data-req-ref="REQ-LIB-004" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-LIB-004 acceptance — phase5_permission.js (10 assertions)</p>
+</div>
+<div data-test="TEST-ACCEPT-32" data-req-ref="REQ-IMPL-01" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-IMPL-01 acceptance — phase6_impl.js</p>
+</div>
+<div data-test="TEST-ACCEPT-33" data-req-ref="REQ-IMPL-02" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-IMPL-02 acceptance — phase6_impl.js</p>
+</div>
+<div data-test="TEST-ACCEPT-34" data-req-ref="REQ-IMPL-03" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-IMPL-03 acceptance — phase6_impl.js</p>
+</div>
+<div data-test="TEST-ACCEPT-35" data-req-ref="REQ-IMPL-04" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-IMPL-04 acceptance — phase6_impl.js</p>
+</div>
+<div data-test="TEST-ACCEPT-36" data-req-ref="REQ-IMPL-05" data-test-categories="acceptance,positive" data-test-level="acceptance">
+<p>REQ-IMPL-05 acceptance — phase6_impl.js + test_criteria_gap.js</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>§8 Mock 策略</h2>
 <!-- ============================================================ -->
 <div data-artifact-type="mock-strategy">
 <p>本项目为运行时引擎，无外部 HTTP/gRPC 依赖需要 Mock。所有测试直接使用真实模块。</p>

@@ -1,23 +1,90 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-spec-root>
 <head>
-<meta charset="UTF-8">
-<title>Bao - SPEC 索引</title>
+  <meta charset="utf-8">
+  <meta name="spec-file" content="00-INDEX">
+  <meta name="spec-category" content="index">
+  <title>SPEC 设计文档目录</title>
+  <script type="application/ld+json">
+  { "@context":"https://spec.gsc.local/v1", "@type":"SpecIndex",
+    "generated":"2026-05-29",
+    "stats":{"reqs":36,"entities":19,"apis":2,"tests":78},
+    "documents":[
+      {"id":"00-INDEX","category":"index","title":"SPEC 目录索引"},
+      {"id":"01-BUSINESS","category":"4+1-scenario","title":"场景视图：业务架构"},
+      {"id":"02-SYSTEM","category":"4+1-logic","title":"逻辑视图：系统架构","apis":2},
+      {"id":"03-PROCESS","category":"4+1-process","title":"过程视图：核心流程"},
+      {"id":"04-DATA-MODEL","category":"4+1-develop","title":"开发视图：数据模型","entities":19},
+      {"id":"05-IMPLEMENTATION","category":"other","title":"05-IMPLEMENTATION","reqs":5},
+      {"id":"10-REQUIREMENTS","category":"requirements","title":"需求索引","reqs":31},
+      {"id":"11-TESTING","category":"testing","title":"测试策略","tests":78}
+    ]
+  }
+  </script>
 </head>
 <body>
-<h1>Bao SPEC 索引</h1>
-<p>Bao = Bun Runtime + SpiderMonkey Engine + Servo Browser Engine + CDP Server + Stealth Module</p>
-
-<table>
-<tr><td>文件</td><td>内容</td><td>核心设计产物</td><td>状态</td></tr>
-<tr><td><a href="01-BUSINESS.html">01-BUSINESS.html</a></td><td>业务架构</td><td>功能模块树 · 用例图 · 上下文图 · 活动图 · 指标维度表</td><td>完成</td></tr>
-<tr><td><a href="02-SYSTEM.html">02-SYSTEM.html</a></td><td>系统架构</td><td>Bun Crate DAG · Servo 组件 · 融合映射 · 管道(PIPE) · 集成(INT) · NFR · SLA · 接口协议图 · 事件目录 · 运行时状态图</td><td>完成</td></tr>
-<tr><td><a href="03-PROCESS.html">03-PROCESS.html</a></td><td>核心流程</td><td>JS 执行管线 · 渲染管线 · CDP 路由 · 状态机 · 时序约束(TMG) · Event Loop 桥接 · Module Loader 桥接 · 线程模型 · 异常流程</td><td>完成</td></tr>
-<tr><td><a href="04-DATA-MODEL.html">04-DATA-MODEL.html</a></td><td>数据模型</td><td>19 Entity · 模型树 · 缓存策略 · Crate 数据流</td><td>完成</td></tr>
-<tr><td><a href="05-IMPLEMENTATION.html">05-IMPLEMENTATION.html</a></td><td>实施路线图</td><td>6 阶段任务分解 · 复用矩阵 · 风险矩阵 · 验证点</td><td>完成</td></tr>
-<tr><td><a href="10-REQUIREMENTS.html">10-REQUIREMENTS.html</a></td><td>功能需求</td><td>36 REQ · 7 域 (ENG/CLI/BRW/CDP/STL/LIB/IMPL) · 5 NFR · 追溯矩阵</td><td>完成</td></tr>
-<tr><td><a href="11-TESTING.html">11-TESTING.html</a></td><td>测试用例</td><td>42 TEST · Mock 策略 · 多页面管理 · CDP 抽象层 · Permission 沙箱</td><td>完成</td></tr>
-</table>
-
+  <header data-spec-header>
+    <h1>SPEC 设计文档目录</h1>
+    <p>共 8 个主文件、0 个子文件 | REQ: 36 | Entity: 19 | API: 2 | TEST: 78</p>
+  </header>
+  <main data-spec-content>
+    <section id="s1">
+      <h2>4+1 架构视图</h2>
+      <table data-index-table="4+1">
+        <tr><th>文件</th><th>视图</th><th>设计产物</th><th>子文件</th></tr>
+        <tr>
+  <td><a href="./01-BUSINESS.html" data-xref-type="spec-file">01-BUSINESS</a></td>
+  <td>场景视图</td>
+  <td>—</td>
+  <td>—</td>
+</tr>
+        <tr>
+  <td><a href="./02-SYSTEM.html" data-xref-type="spec-file">02-SYSTEM</a></td>
+  <td>逻辑视图</td>
+  <td>API ×2、SM ×1</td>
+  <td>—</td>
+</tr>
+        <tr>
+  <td><a href="./03-PROCESS.html" data-xref-type="spec-file">03-PROCESS</a></td>
+  <td>过程视图</td>
+  <td>SM ×1</td>
+  <td>—</td>
+</tr>
+        <tr>
+  <td><a href="./04-DATA-MODEL.html" data-xref-type="spec-file">04-DATA-MODEL</a></td>
+  <td>开发视图</td>
+  <td>Entity ×19</td>
+  <td>—</td>
+</tr>
+      </table>
+    </section>
+    <section id="s2">
+      <h2>关联文档</h2>
+      <table data-index-table="support">
+        <tr><th>文件</th><th>类别</th><th>设计产物</th><th>子文件</th></tr>
+        <tr>
+  <td><a href="./05-IMPLEMENTATION.html" data-xref-type="spec-file">05-IMPLEMENTATION</a></td>
+  <td>other</td>
+  <td>REQ ×5</td>
+  <td>—</td>
+</tr>
+        <tr>
+  <td><a href="./10-REQUIREMENTS.html" data-xref-type="spec-file">10-REQUIREMENTS</a></td>
+  <td>需求列表</td>
+  <td>REQ ×31</td>
+  <td>—</td>
+</tr>
+        <tr>
+  <td><a href="./11-TESTING.html" data-xref-type="spec-file">11-TESTING</a></td>
+  <td>测试策略</td>
+  <td>TEST ×78</td>
+  <td>—</td>
+</tr>
+      </table>
+    </section>
+  </main>
+  <footer data-spec-footer>
+    <p>自动生成于 2026-05-29</p>
+  </footer>
 </body>
 </html>
