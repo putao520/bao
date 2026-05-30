@@ -291,3 +291,8 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 		  - full_chain_tests: 23 测试 (11 domain enable/disable + 命令路由 + 全生命周期 + 错误处理)
 		  - bao_cdp 测试总计: 214 (191 旧 + 23 新)
 		  - 测试覆盖: 全部 11 domain handler 命令路由验证
+		- [x] Wave 20: stealth 深度测试 + cdp-server 并发安全测试
+		  - stealth_deep_tests: 24 tests (TLS chrome_120/latest variants, canvas boundary, navigator fields, audio multi-sample, behavior edge cases, engine JS injection)
+		  - concurrency_tests: 9 tests (8-thread concurrent dispatch, compute verification, mixed commands, collecting sender thread safety)
+		  - bao_stealth 测试总计: 100 (76 + 24 新)
+		  - cdp-server 测试总计: 83 (74 + 9 新)
