@@ -1,13 +1,16 @@
-use ::std::cell::RefCell;
+use ::std::cell::{Cell, RefCell};
+use ::std::os::unix::io::RawFd;
 use ::std::time::{Duration, Instant};
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, Int32Value};
+use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, ObjectValue};
 use mozjs::rust::wrappers2::JS_DefineFunction;
 
 thread_local! {
     static TIMERS: RefCell<TimerHeap> = RefCell::new(TimerHeap::new());
-    static NEXT_ID: RefCell<u32> = RefCell::new(1);
+    static NEXT_ID: Cell<u32> = Cell::new(1);
+    static EPOLL_FD: Cell<RawFd> = Cell::new(-1);
+    static REGISTERED_FDS: RefCell<Vec<RawFd>> = RefCell::new(Vec::new());
 }
 
 struct TimerEntry {
@@ -74,77 +77,118 @@ impl TimerHeap {
 
 unsafe impl Send for TimerHeap {}
 
+fn ensure_epoll_fd() -> RawFd {
+    EPOLL_FD.with(|cell| {
+        let fd = cell.get();
+        if fd >= 0 {
+            return fd;
+        }
+        let fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        debug_assert!(fd >= 0, "epoll_create1 failed: {}", fd);
+        cell.set(fd);
+        fd
+    })
+}
+
+fn sync_http_listeners() {
+    let epfd = ensure_epoll_fd();
+    let current_fds: Vec<RawFd> = crate::node_http::listener_fds();
+    let registered: Vec<RawFd> = REGISTERED_FDS.with(|r| r.borrow().clone());
+
+    for fd in &current_fds {
+        if !registered.contains(fd) {
+            let mut ev = libc::epoll_event {
+                events: libc::EPOLLIN as u32,
+                u64: *fd as u64,
+            };
+            unsafe {
+                libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, *fd, &mut ev);
+            }
+        }
+    }
+
+    for fd in &registered {
+        if !current_fds.contains(fd) {
+            unsafe {
+                libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, *fd, ::std::ptr::null_mut());
+            }
+        }
+    }
+
+    REGISTERED_FDS.with(|r| *r.borrow_mut() = current_fds);
+}
+
+pub fn init() {
+    ensure_epoll_fd();
+}
+
 pub fn install_timer_globals(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
+    init();
     unsafe {
         JS_DefineFunction(
-            cx,
-            global,
-            c"setTimeout".as_ptr(),
-            ::std::option::Option::Some(set_timeout),
-            2,
-            JSPROP_ENUMERATE as u32,
+            cx, global, c"setTimeout".as_ptr(),
+            ::std::option::Option::Some(set_timeout), 2, JSPROP_ENUMERATE as u32,
         );
-
         JS_DefineFunction(
-            cx,
-            global,
-            c"clearTimeout".as_ptr(),
-            ::std::option::Option::Some(clear_timeout),
-            1,
-            JSPROP_ENUMERATE as u32,
+            cx, global, c"clearTimeout".as_ptr(),
+            ::std::option::Option::Some(clear_timeout), 1, JSPROP_ENUMERATE as u32,
         );
-
         JS_DefineFunction(
-            cx,
-            global,
-            c"setInterval".as_ptr(),
-            ::std::option::Option::Some(set_interval),
-            2,
-            JSPROP_ENUMERATE as u32,
+            cx, global, c"setInterval".as_ptr(),
+            ::std::option::Option::Some(set_interval), 2, JSPROP_ENUMERATE as u32,
         );
-
         JS_DefineFunction(
-            cx,
-            global,
-            c"clearInterval".as_ptr(),
-            ::std::option::Option::Some(clear_interval),
-            1,
-            JSPROP_ENUMERATE as u32,
+            cx, global, c"clearInterval".as_ptr(),
+            ::std::option::Option::Some(clear_interval), 1, JSPROP_ENUMERATE as u32,
         );
-
         JS_DefineFunction(
-            cx,
-            global,
-            c"setImmediate".as_ptr(),
-            ::std::option::Option::Some(set_immediate),
-            1,
-            JSPROP_ENUMERATE as u32,
+            cx, global, c"setImmediate".as_ptr(),
+            ::std::option::Option::Some(set_immediate), 1, JSPROP_ENUMERATE as u32,
         );
-
         JS_DefineFunction(
-            cx,
-            global,
-            c"clearImmediate".as_ptr(),
-            ::std::option::Option::Some(clear_timeout),
-            1,
-            JSPROP_ENUMERATE as u32,
+            cx, global, c"clearImmediate".as_ptr(),
+            ::std::option::Option::Some(clear_timeout), 1, JSPROP_ENUMERATE as u32,
         );
     }
 }
 
 pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
+    let epfd = ensure_epoll_fd();
+    sync_http_listeners();
+
     crate::node_http::accept_connections();
+
+    let has_http = crate::node_http::has_active_servers();
+    let deadline = next_deadline();
+
+    let timeout_ms: i32 = if let Some(d) = deadline {
+        let now = Instant::now();
+        if d > now {
+            ((d - now).as_millis() as i32).min(100)
+        } else {
+            0
+        }
+    } else if has_http {
+        100
+    } else {
+        drain_timers(cx);
+        bao_engine::job_queue::JobQueue::drain(cx);
+        return false;
+    };
+
+    let mut events: [libc::epoll_event; 32] = unsafe { ::std::mem::zeroed() };
+    unsafe {
+        libc::epoll_wait(epfd, events.as_mut_ptr(), 32, timeout_ms);
+    }
+
     crate::node_http::poll_http_requests(cx);
     drain_timers(cx);
-    if has_pending_timers() {
-        wait_for_next_timer();
-        true
-    } else {
-        crate::node_http::has_active_servers()
-    }
+    bao_engine::job_queue::JobQueue::drain(cx);
+
+    has_pending_timers() || has_http
 }
 
 pub fn next_deadline() -> ::std::option::Option<Instant> {
@@ -153,21 +197,8 @@ pub fn next_deadline() -> ::std::option::Option<Instant> {
         if heap.is_empty() {
             return None;
         }
-        let earliest = heap.timers.iter().map(|e| e.deadline).min();
-        earliest
+        heap.timers.iter().map(|e| e.deadline).min()
     })
-}
-
-pub fn wait_for_next_timer() {
-    let deadline = next_deadline();
-    let Some(deadline) = deadline else { return };
-    let now = Instant::now();
-    if deadline > now {
-        let wait = deadline - now;
-        if wait > Duration::from_millis(1) {
-            ::std::thread::sleep(wait.min(Duration::from_millis(100)));
-        }
-    }
 }
 
 pub fn drain_timers(cx: &mut mozjs::context::JSContext) -> bool {
@@ -190,7 +221,7 @@ pub fn drain_timers(cx: &mut mozjs::context::JSContext) -> bool {
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &global,
             };
-            let fval = mozjs::jsval::ObjectValue(entry.callback);
+            let fval = ObjectValue(entry.callback);
             let fval_handle = Handle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &fval,
@@ -225,8 +256,8 @@ pub fn has_pending_timers() -> bool {
 
 pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _args: &[JSVal]) -> u32 {
     let id = NEXT_ID.with(|n| {
-        let val = *n.borrow();
-        *n.borrow_mut() += 1;
+        let val = n.get();
+        n.set(val + 1);
         val
     });
 
@@ -305,21 +336,17 @@ unsafe extern "C" fn set_immediate(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_object() {
-        args.rval().set(mozjs::jsval::Int32Value(0));
+        args.rval().set(Int32Value(0));
         return true;
     }
     let cb = (*args.get(0).ptr).to_object();
     let cb_args = if argc > 1 {
-        let mut a = Vec::new();
-        for i in 1..argc {
-            a.push(*args.get(i).ptr);
-        }
-        a
+        (1..argc).map(|i| *args.get(i).ptr).collect()
     } else {
         Vec::new()
     };
     let id = schedule_raw(cb, 0, false, &cb_args);
-    args.rval().set(mozjs::jsval::Int32Value(id as i32));
+    args.rval().set(Int32Value(id as i32));
     true
 }
 
@@ -365,8 +392,8 @@ unsafe fn register_timer(
     };
 
     let id = NEXT_ID.with(|n| {
-        let val = *n.borrow();
-        *n.borrow_mut() += 1;
+        let val = n.get();
+        n.set(val + 1);
         val
     });
 

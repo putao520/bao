@@ -33,6 +33,12 @@ pub fn has_active_servers() -> bool {
     ACTIVE_SERVERS.with(|s| !s.borrow().is_empty())
 }
 
+pub fn listener_fds() -> Vec<i32> {
+    SERVER_LISTENERS.with(|l| {
+        l.borrow().iter().map(|ln| ln.as_raw_fd()).collect()
+    })
+}
+
 pub fn install(cx: &mut mozjs::context::JSContext) {
     rooted!(&in(cx) let http_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if http_obj.get().is_null() {
@@ -104,7 +110,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    cache_builtin("http", http_obj.get());
+    cache_builtin(cx, "http", http_obj.get());
 }
 
 /// Poll for pending HTTP requests and invoke JS callbacks.
