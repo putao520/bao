@@ -14,7 +14,8 @@ mod router;
 pub mod servo_bridge;
 pub mod domains;
 
-pub use protocol::{CDPMessage, CDPResponse, CDPEvent};
+pub use protocol::{CDPMessage, CDPResponse, CDPError, CDPEvent};
+pub use protocol::{parse_message, handle_command, serialize_response, serialize_event};
 pub use router::{CdpRouter, CdpSession, ExternalBrowser, BackendKind};
 pub use servo_bridge::{BridgeSender, BridgeReceiver, BridgeCommand, BridgeResponse, bridge_channel};
 
