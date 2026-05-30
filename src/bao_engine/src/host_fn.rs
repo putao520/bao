@@ -42,6 +42,8 @@ pub fn install_console(
         w2::JS_DefineFunction(cx, console_obj.handle(), c"assert".as_ptr(), Some(console_assert), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, console_obj.handle(), c"clear".as_ptr(), Some(console_clear), 0, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, console_obj.handle(), c"count".as_ptr(), Some(console_count), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, console_obj.handle(), c"countReset".as_ptr(), Some(console_count_reset), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, console_obj.handle(), c"table".as_ptr(), Some(console_table), 1, JSPROP_ENUMERATE as u32);
 
         w2::JS_DefineProperty3(cx, global, c"console".as_ptr(), console_obj.handle(), JSPROP_ENUMERATE as u32);
     }
@@ -501,6 +503,22 @@ unsafe extern "C" fn console_count(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     println!("{}: {}", label, count);
     args.rval().set(UndefinedValue());
     true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn console_count_reset(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let label = extract_label(cx, argc, &args);
+    CONSOLE_COUNTERS.with(|c| {
+        c.borrow_mut().insert(label.clone(), 0);
+    });
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn console_table(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    console_log(cx, argc, vp)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

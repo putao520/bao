@@ -140,45 +140,50 @@ pub fn install_buffer_global(
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     unsafe {
-        rooted!(&in(cx) let buf_obj = JS_NewPlainObject(cx));
-        if buf_obj.get().is_null() {
+        let buf_fn = JS_NewFunction(cx.raw_cx(), Some(buffer_constructor), 1, 0, c"Buffer".as_ptr());
+        if buf_fn.is_null() {
             return;
         }
+        let buf_obj = JS_GetFunctionObject(buf_fn);
+        if buf_obj.is_null() {
+            return;
+        }
+        rooted!(&in(cx) let buf_root = buf_obj);
 
         JS_DefineFunction(
-            cx, buf_obj.handle(), c"from".as_ptr(),
+            cx, buf_root.handle(), c"from".as_ptr(),
             ::std::option::Option::Some(buffer_from), 1, JSPROP_ENUMERATE as u32,
         );
         JS_DefineFunction(
-            cx, buf_obj.handle(), c"alloc".as_ptr(),
+            cx, buf_root.handle(), c"alloc".as_ptr(),
             ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
         );
         JS_DefineFunction(
-            cx, buf_obj.handle(), c"isBuffer".as_ptr(),
+            cx, buf_root.handle(), c"isBuffer".as_ptr(),
             ::std::option::Option::Some(buffer_is_buffer), 1, JSPROP_ENUMERATE as u32,
         );
         JS_DefineFunction(
-            cx, buf_obj.handle(), c"concat".as_ptr(),
+            cx, buf_root.handle(), c"concat".as_ptr(),
             ::std::option::Option::Some(buffer_concat), 1, JSPROP_ENUMERATE as u32,
         );
         JS_DefineFunction(
-            cx, buf_obj.handle(), c"allocUnsafe".as_ptr(),
+            cx, buf_root.handle(), c"allocUnsafe".as_ptr(),
             ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
         );
         JS_DefineFunction(
-            cx, buf_obj.handle(), c"byteLength".as_ptr(),
+            cx, buf_root.handle(), c"byteLength".as_ptr(),
             ::std::option::Option::Some(buffer_byte_length), 1, JSPROP_ENUMERATE as u32,
         );
         JS_DefineFunction(
-            cx, buf_obj.handle(), c"compare".as_ptr(),
+            cx, buf_root.handle(), c"compare".as_ptr(),
             ::std::option::Option::Some(buffer_compare), 2, JSPROP_ENUMERATE as u32,
         );
         JS_DefineFunction(
-            cx, buf_obj.handle(), c"isEncoding".as_ptr(),
+            cx, buf_root.handle(), c"isEncoding".as_ptr(),
             ::std::option::Option::Some(buffer_is_encoding), 1, JSPROP_ENUMERATE as u32,
         );
 
-        JS_DefineProperty3(cx, global, c"Buffer".as_ptr(), buf_obj.handle(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty3(cx, global, c"Buffer".as_ptr(), buf_root.handle(), JSPROP_ENUMERATE as u32);
     }
 
     // Inject Buffer prototype methods via JS eval
@@ -274,6 +279,76 @@ pub fn install_buffer_global(
             libc::free(opts as *mut _);
         }
     }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_constructor(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+        if !obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(obj)); }
+        return true;
+    }
+    let first = *args.get(0).ptr;
+    if first.is_string() {
+        let s = first.to_string();
+        if !s.is_null() {
+            let rust_str = crate::jsstr_to_rust_string(cx, s);
+            let bytes = rust_str.as_bytes();
+            let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+            if obj.is_null() { args.rval().set(UndefinedValue()); return true; }
+            for (i, &byte) in bytes.iter().enumerate() {
+                let val = mozjs::jsval::Int32Value(byte as i32);
+                rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let v = val);
+                JS_DefineElement(cx,
+                    Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
+                    i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let len = mozjs::jsval::Int32Value(bytes.len() as i32));
+            JS_DefineProperty(cx,
+                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
+                c"length".as_ptr() as *const ::std::os::raw::c_char,
+                len.handle().into(), JSPROP_ENUMERATE as u32);
+            let buf_val = mozjs::jsval::BooleanValue(true);
+            rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let bv = buf_val);
+            JS_DefineProperty(cx,
+                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
+                c"_isBuffer".as_ptr() as *const ::std::os::raw::c_char,
+                bv.handle().into(), 0u32);
+            args.rval().set(mozjs::jsval::ObjectValue(obj));
+            return true;
+        }
+    }
+    if first.is_int32() {
+        let size = first.to_int32().max(0) as usize;
+        let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+        if obj.is_null() { args.rval().set(UndefinedValue()); return true; }
+        for i in 0..size {
+            rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let v = mozjs::jsval::Int32Value(0));
+            JS_DefineElement(cx,
+                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
+                i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let len = mozjs::jsval::Int32Value(size as i32));
+        JS_DefineProperty(cx,
+            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
+            c"length".as_ptr() as *const ::std::os::raw::c_char,
+            len.handle().into(), JSPROP_ENUMERATE as u32);
+        let buf_val = mozjs::jsval::BooleanValue(true);
+        rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let bv = buf_val);
+        JS_DefineProperty(cx,
+            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
+            c"_isBuffer".as_ptr() as *const ::std::os::raw::c_char,
+            bv.handle().into(), 0u32);
+        args.rval().set(mozjs::jsval::ObjectValue(obj));
+        return true;
+    }
+    args.rval().set(UndefinedValue());
+    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

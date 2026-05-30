@@ -40,6 +40,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let prom_val = ObjectValue(promises_obj.get());
             let prom_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &prom_val };
             JS_DefineProperty(cx.raw_cx(), timers_mod.handle().into(), c"promises".as_ptr(), prom_h, JSPROP_ENUMERATE as u32);
+
+            cache_builtin("timers/promises", promises_obj.get());
         }
     }
 

@@ -27,18 +27,20 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, path_obj.handle(), c"format".as_ptr(), Some(path_format), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, path_obj.handle(), c"toNamespacedPath".as_ptr(), Some(path_to_namespaced), 1, JSPROP_ENUMERATE as u32);
 
-        let sep = if MAIN_SEPARATOR == '/' { "/" } else { "\\" };
-        let sep_str = JS_NewStringCopyZ(cx.raw_cx(), sep.as_ptr() as *const ::std::os::raw::c_char);
+        let sep_cstr = CString::new(if MAIN_SEPARATOR == '/' { "/" } else { "\\" }).unwrap_or_default();
+        let sep_str = JS_NewStringCopyZ(cx.raw_cx(), sep_cstr.as_ptr());
         if !sep_str.is_null() {
-            rooted!(&in(cx) let sep_root = sep_str);
-            w2::JS_DefineProperty4(cx, path_obj.handle(), c"sep".as_ptr(), sep_root.handle(), (JSPROP_ENUMERATE) as u32);
+            let sep_val = mozjs::jsval::StringValue(&*sep_str);
+            rooted!(&in(cx) let sep_root = sep_val);
+            JS_DefineProperty(cx.raw_cx(), path_obj.handle().into(), c"sep".as_ptr(), sep_root.handle().into(), JSPROP_ENUMERATE as u32);
         }
 
-        let delim = if cfg!(windows) { ";" } else { ":" };
-        let delim_str = JS_NewStringCopyZ(cx.raw_cx(), delim.as_ptr() as *const ::std::os::raw::c_char);
+        let delim_cstr = CString::new(if cfg!(windows) { ";" } else { ":" }).unwrap_or_default();
+        let delim_str = JS_NewStringCopyZ(cx.raw_cx(), delim_cstr.as_ptr());
         if !delim_str.is_null() {
-            rooted!(&in(cx) let delim_root = delim_str);
-            w2::JS_DefineProperty4(cx, path_obj.handle(), c"delimiter".as_ptr(), delim_root.handle(), (JSPROP_ENUMERATE) as u32);
+            let delim_val = mozjs::jsval::StringValue(&*delim_str);
+            rooted!(&in(cx) let delim_root = delim_val);
+            JS_DefineProperty(cx.raw_cx(), path_obj.handle().into(), c"delimiter".as_ptr(), delim_root.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
 

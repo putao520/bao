@@ -158,7 +158,7 @@ try { require("fs").unlinkSync(testPath); } catch(e) {}
 // ============================================================
 // TEST-ENG-007: Node.js Compatibility — Buffer + process
 // ============================================================
-assertEq(typeof Buffer, "object", "Buffer global exists (object with from/toString)");
+assertEq(typeof Buffer, "function", "Buffer global exists (constructor with static methods)");
 var buf = Buffer.from("hello");
 assertEq(buf.toString(), "hello", "Buffer.from + toString");
 assertEq(buf.length, 5, "Buffer.length");
