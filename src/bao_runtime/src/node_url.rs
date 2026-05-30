@@ -95,10 +95,11 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
         (scheme_rest, String::new())
     };
 
-    let (scheme, authority_path) = if let Some(pos) = scheme_rest.find("://") {
-        (&scheme_rest[..pos], &scheme_rest[pos + 3..])
-    } else if scheme_rest.starts_with("//") {
-        ("", &scheme_rest[2..])
+    #[allow(clippy::question_mark)]
+    let (scheme, authority_path) = if let Some((s, rest)) = scheme_rest.split_once("://") {
+        (s, rest)
+    } else if let Some(rest) = scheme_rest.strip_prefix("//") {
+        ("", rest)
     } else {
         return None;
     };
@@ -172,7 +173,7 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
 
 const SLOT_URL: u32 = 0;
 const URL_CLASS: JSClass = JSClass {
-    name: b"URL\0".as_ptr() as *const ::std::os::raw::c_char,
+    name: c"URL".as_ptr(),
     flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
     cOps: ::std::ptr::null(),
     spec: ::std::ptr::null(),
@@ -181,7 +182,7 @@ const URL_CLASS: JSClass = JSClass {
 };
 
 const URL_SEARCH_PARAMS_CLASS: JSClass = JSClass {
-    name: b"URLSearchParams\0".as_ptr() as *const ::std::os::raw::c_char,
+    name: c"URLSearchParams".as_ptr(),
     flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
     cOps: ::std::ptr::null(),
     spec: ::std::ptr::null(),
@@ -650,13 +651,13 @@ unsafe extern "C" fn url_can_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn url_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"URL requires at least 1 argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"URL requires at least 1 argument".as_ptr());
         return false;
     }
 
     let input_val = *args.get(0).ptr;
     if !input_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"URL first argument must be a string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"URL first argument must be a string".as_ptr());
         return false;
     }
     let input = crate::js_to_rust_string(cx, input_val);
@@ -677,7 +678,7 @@ unsafe extern "C" fn url_constructor(cx: *mut JSContext, argc: u32, vp: *mut JSV
         None => {
             let msg = format!("Invalid URL: {}", input);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     };
@@ -938,7 +939,7 @@ unsafe extern "C" fn sp_to_string(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() {
-        let empty = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+        let empty = JS_NewStringCopyZ(cx, c"".as_ptr());
         args.rval().set(if empty.is_null() { UndefinedValue() } else { StringValue(&*empty) });
         return true;
     }
@@ -1355,7 +1356,7 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        let empty = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+        let empty = JS_NewStringCopyZ(cx, c"".as_ptr());
         args.rval().set(if empty.is_null() { UndefinedValue() } else { StringValue(&*empty) });
         return true;
     }

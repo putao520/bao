@@ -29,13 +29,13 @@ unsafe extern "C" fn fetch_fn(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"fetch requires a URL argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"fetch requires a URL argument".as_ptr());
         return false;
     }
 
     let url_val = *args.get(0).ptr;
     if !url_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"fetch requires a string URL\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"fetch requires a string URL".as_ptr());
         return false;
     }
 
@@ -46,7 +46,7 @@ unsafe extern "C" fn fetch_fn(
         let host = host_part.split('/').next().unwrap_or(host_part).split(':').next().unwrap_or(host_part);
         if let ::std::result::Result::Err(e) = crate::permission_bridge::check_net(host) {
             let c_msg = ::std::ffi::CString::new(e).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -287,7 +287,7 @@ unsafe extern "C" fn response_json(
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() {
-        JS_ReportErrorUTF8(cx, b"response.json(): invalid this\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"response.json(): invalid this".as_ptr());
         return false;
     }
     let obj = this.to_object();
@@ -297,7 +297,7 @@ unsafe extern "C" fn response_json(
     JS_GetProperty(cx, obj_handle, c"_bodyText".as_ptr(), b_handle);
 
     if !body_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"response.json(): body is not a string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"response.json(): body is not a string".as_ptr());
         return false;
     }
 
@@ -309,7 +309,7 @@ unsafe extern "C" fn response_json(
 
     if !ok {
         JS_ClearPendingException(cx);
-        JS_ReportErrorUTF8(cx, b"response.json(): invalid JSON\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"response.json(): invalid JSON".as_ptr());
         return false;
     }
     args.rval().set(rval);
@@ -354,14 +354,14 @@ unsafe extern "C" fn response_constructor(
     let ok_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ok_val };
     JS_DefineProperty(cx, obj_handle, c"ok".as_ptr(), ok_handle, JSPROP_ENUMERATE as u32);
 
-    let url_js_str = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+    let url_js_str = JS_NewStringCopyZ(cx, c"".as_ptr());
     if !url_js_str.is_null() {
         let url_val = StringValue(&*url_js_str);
         let u_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &url_val };
         JS_DefineProperty(cx, obj_handle, c"url".as_ptr(), u_handle, JSPROP_ENUMERATE as u32);
     }
 
-    let st_js_str = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+    let st_js_str = JS_NewStringCopyZ(cx, c"".as_ptr());
     if !st_js_str.is_null() {
         let st_val = StringValue(&*st_js_str);
         let st_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &st_val };
@@ -534,13 +534,13 @@ unsafe extern "C" fn headers_set(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 {
-        JS_ReportErrorUTF8(cx, b"Headers.set requires name and value\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Headers.set requires name and value".as_ptr());
         return false;
     }
     let name_val = *args.get(0).ptr;
     let value_val = *args.get(1).ptr;
     if !name_val.is_string() || !value_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"Headers.set requires string arguments\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Headers.set requires string arguments".as_ptr());
         return false;
     }
     let name_js = name_val.to_string();

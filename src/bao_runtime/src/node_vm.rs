@@ -66,7 +66,7 @@ unsafe extern "C" fn vm_script_ctor(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
-        JS_ReportErrorUTF8(cx, b"Script requires a code string argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Script requires a code string argument".as_ptr());
         return false;
     }
 
@@ -162,7 +162,7 @@ unsafe extern "C" fn vm_run_in_this_context(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
-        JS_ReportErrorUTF8(cx, b"runInThisContext requires a code string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"runInThisContext requires a code string".as_ptr());
         return false;
     }
 
@@ -202,7 +202,7 @@ unsafe extern "C" fn vm_run_in_new_context(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
-        JS_ReportErrorUTF8(cx, b"runInNewContext requires a code string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"runInNewContext requires a code string".as_ptr());
         return false;
     }
 
@@ -315,7 +315,7 @@ unsafe extern "C" fn vm_compile_function(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 || !(*args.get(0).ptr).is_string() {
-        JS_ReportErrorUTF8(cx, b"compileFunction requires a code string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"compileFunction requires a code string".as_ptr());
         return false;
     }
 

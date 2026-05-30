@@ -97,13 +97,13 @@ unsafe extern "C" fn require_fn(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"require() requires a module specifier\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"require() requires a module specifier".as_ptr());
         return false;
     }
 
     let spec_val = *args.get(0).ptr;
     if !spec_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"require() requires a string argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"require() requires a string argument".as_ptr());
         return false;
     }
 
@@ -147,7 +147,7 @@ unsafe extern "C" fn require_fn(
         None => {
             let msg = format!("Cannot find module '{}'", specifier);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     };
@@ -171,7 +171,7 @@ unsafe extern "C" fn require_fn(
         Err(e) => {
             let msg = format!("Cannot read module '{}': {}", specifier, e);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     };
@@ -185,7 +185,7 @@ unsafe extern "C" fn require_fn(
     if exports_obj.is_null() {
         let msg = format!("Failed to load module '{}'", specifier);
         let c_msg = CString::new(msg).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
 
@@ -210,7 +210,7 @@ unsafe fn load_json_module(cx: *mut JSContext, content: &str, specifier: &str) -
     JS_ClearPendingException(cx);
     let msg = format!("Invalid JSON in module '{}'", specifier);
     let c_msg = CString::new(msg).unwrap_or_default();
-    JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
     ptr::null_mut()
 }
 

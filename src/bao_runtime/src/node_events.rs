@@ -26,7 +26,7 @@ const STATE_PROP: &[u8] = b"\x00__ee_state\0";
 const SLOT_STATE: u32 = 0;
 
 static EMITTER_CLASS: JSClass = JSClass {
-    name: b"EventEmitter\0".as_ptr() as *const ::std::os::raw::c_char,
+    name: c"EventEmitter".as_ptr(),
     flags: (1 << JSCLASS_RESERVED_SLOTS_SHIFT) as u32,
     cOps: ::std::ptr::null(),
     spec: ::std::ptr::null(),
@@ -100,119 +100,119 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
 const METHODS: &[JSFunctionSpec] = &[
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"on\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"on".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_on), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"addListener\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"addListener".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_on), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"addEventListener\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"addEventListener".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_on), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"off\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"off".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_off), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"removeListener\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"removeListener".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_off), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"removeEventListener\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"removeEventListener".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_off), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"emit\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"emit".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_emit), info: ::std::ptr::null_mut() },
         nargs: 1,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"once\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"once".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_once), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"prependListener\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"prependListener".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_prepend), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"prependOnceListener\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"prependOnceListener".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_prepend_once), info: ::std::ptr::null_mut() },
         nargs: 2,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"removeAllListeners\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"removeAllListeners".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_remove_all), info: ::std::ptr::null_mut() },
         nargs: 0,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"listeners\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"listeners".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_listeners), info: ::std::ptr::null_mut() },
         nargs: 1,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"listenerCount\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"listenerCount".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_listener_count), info: ::std::ptr::null_mut() },
         nargs: 1,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"setMaxListeners\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"setMaxListeners".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_set_max), info: ::std::ptr::null_mut() },
         nargs: 1,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"getMaxListeners\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"getMaxListeners".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_get_max), info: ::std::ptr::null_mut() },
         nargs: 0,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"rawListeners\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"rawListeners".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_listeners), info: ::std::ptr::null_mut() },
         nargs: 1,
         flags: JSPROP_ENUMERATE as u16,
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
-        name: JSPropertySpec_Name { string_: b"eventNames\0".as_ptr() as *const ::std::os::raw::c_char },
+        name: JSPropertySpec_Name { string_: c"eventNames".as_ptr() },
         call: JSNativeWrapper { op: Some(ee_event_names), info: ::std::ptr::null_mut() },
         nargs: 0,
         flags: JSPROP_ENUMERATE as u16,
@@ -367,15 +367,15 @@ unsafe extern "C" fn event_emitter_constructor(
         let this_obj = this_val.to_object();
         // Only initialize if not already an EventEmitter
         let existing = get_state(cx, this_obj);
-        if existing.is_none() {
+        if let Some(state) = existing {
+            set_state(cx, this_obj, state);
+        } else {
             let state = Box::new(EmitterState {
                 listeners: HashMap::new(),
                 once_flags: HashMap::new(),
                 max_listeners: 10,
             });
             set_state(cx, this_obj, state);
-        } else {
-            set_state(cx, this_obj, existing.unwrap());
         }
         args.rval().set(ObjectValue(this_obj));
         return true;

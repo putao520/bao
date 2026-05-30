@@ -129,7 +129,7 @@ impl Drop for BaoRuntime {
 }
 
 pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
-    let stealth = config.stealth_profile.is_some();
+    let _stealth = config.stealth_profile.is_some();
     let url = config.url.clone();
     let bao_config: BaoConfig = config.into();
     let cdp_port = bao_config.cdp_port;

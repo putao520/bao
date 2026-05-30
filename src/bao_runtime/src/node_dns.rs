@@ -127,7 +127,7 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     if argc == 0 {
         JS_ReportErrorUTF8(
             cx,
-            b"dns.lookup requires a hostname argument\0".as_ptr() as *const ::std::os::raw::c_char,
+            c"dns.lookup requires a hostname argument".as_ptr(),
         );
         return false;
     }
@@ -136,7 +136,7 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     if !hostname_val.is_string() {
         JS_ReportErrorUTF8(
             cx,
-            b"dns.lookup hostname must be a string\0".as_ptr() as *const ::std::os::raw::c_char,
+            c"dns.lookup hostname must be a string".as_ptr(),
         );
         return false;
     }
@@ -205,7 +205,7 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn define_empty_lookup_result(cx: *mut JSContext, result_h: Handle<*mut JSObject>) {
-    let js_str = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+    let js_str = JS_NewStringCopyZ(cx, c"".as_ptr());
     if !js_str.is_null() {
         let ip_val = StringValue(&*js_str);
         let ip_h = Handle::<Value> {
@@ -228,7 +228,7 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     if argc == 0 {
         JS_ReportErrorUTF8(
             cx,
-            b"dns.resolve requires a hostname argument\0".as_ptr() as *const ::std::os::raw::c_char,
+            c"dns.resolve requires a hostname argument".as_ptr(),
         );
         return false;
     }
@@ -237,7 +237,7 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     if !hostname_val.is_string() {
         JS_ReportErrorUTF8(
             cx,
-            b"dns.resolve hostname must be a string\0".as_ptr() as *const ::std::os::raw::c_char,
+            c"dns.resolve hostname must be a string".as_ptr(),
         );
         return false;
     }
@@ -322,7 +322,7 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     if argc == 0 {
         JS_ReportErrorUTF8(
             cx,
-            b"dns.reverse requires an ip argument\0".as_ptr() as *const ::std::os::raw::c_char,
+            c"dns.reverse requires an ip argument".as_ptr(),
         );
         return false;
     }
@@ -331,7 +331,7 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     if !ip_val.is_string() {
         JS_ReportErrorUTF8(
             cx,
-            b"dns.reverse ip must be a string\0".as_ptr() as *const ::std::os::raw::c_char,
+            c"dns.reverse ip must be a string".as_ptr(),
         );
         return false;
     }

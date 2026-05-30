@@ -15,11 +15,13 @@ pub enum BackendKind {
     External,
 }
 
+type EventHandler = Box<dyn Fn(Value)>;
+
 struct SessionInner {
     target_id: String,
     backend: BackendKind,
     enabled_domains: RefCell<std::collections::HashSet<String>>,
-    event_handlers: RefCell<HashMap<String, Box<dyn Fn(Value)>>>,
+    event_handlers: RefCell<HashMap<String, EventHandler>>,
 }
 
 pub struct CdpRouter {
@@ -28,13 +30,19 @@ pub struct CdpRouter {
     sessions: RefCell<HashMap<String, Rc<SessionInner>>>,
 }
 
-impl CdpRouter {
-    pub fn new() -> Self {
+impl Default for CdpRouter {
+    fn default() -> Self {
         CdpRouter {
             internal: InternalBackend::new(),
             external: RefCell::new(None),
             sessions: RefCell::new(HashMap::new()),
         }
+    }
+}
+
+impl CdpRouter {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn create_internal_session(&self, target_id: &str) -> CdpSession {

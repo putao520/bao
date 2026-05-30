@@ -142,7 +142,7 @@ unsafe extern "C" fn cp_spawn(
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
 
@@ -201,12 +201,12 @@ unsafe extern "C" fn cp_spawn(
         match build_command_from_opts(cx, obj_h) {
             Some(c) => c,
             None => {
-                JS_ReportErrorUTF8(cx, b"child_process.spawn: missing command\0".as_ptr() as *const ::std::os::raw::c_char);
+                JS_ReportErrorUTF8(cx, c"child_process.spawn: missing command".as_ptr());
                 return false;
             }
         }
     } else {
-        JS_ReportErrorUTF8(cx, b"child_process.spawn requires arguments\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.spawn requires arguments".as_ptr());
         return false;
     };
 
@@ -241,7 +241,7 @@ unsafe extern "C" fn cp_spawn(
         Err(e) => {
             let msg = format!("spawn failed: {}", e);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -256,19 +256,19 @@ unsafe extern "C" fn cp_exec(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"child_process.exec requires a command string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.exec requires a command string".as_ptr());
         return false;
     }
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
 
     let cmd_val = *args.get(0).ptr;
     if !cmd_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"child_process.exec requires a string command\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.exec requires a string command".as_ptr());
         return false;
     }
 
@@ -377,7 +377,7 @@ unsafe extern "C" fn cp_exec(
         Err(e) => {
             let msg = format!("exec failed: {}", e);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -392,13 +392,13 @@ unsafe extern "C" fn cp_exec_sync(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"child_process.execSync requires a command string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.execSync requires a command string".as_ptr());
         return false;
     }
 
     let cmd_val = *args.get(0).ptr;
     if !cmd_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"child_process.execSync requires a string command\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.execSync requires a string command".as_ptr());
         return false;
     }
 
@@ -406,7 +406,7 @@ unsafe extern "C" fn cp_exec_sync(
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
 
@@ -434,7 +434,7 @@ unsafe extern "C" fn cp_exec_sync(
         Err(e) => {
             let msg = format!("execSync failed: {}", e);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -450,12 +450,12 @@ unsafe extern "C" fn cp_exec_file(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"child_process.execFile requires a file path\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.execFile requires a file path".as_ptr());
         return false;
     }
     let file_val = *args.get(0).ptr;
     if !file_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"child_process.execFile requires a string file path\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.execFile requires a string file path".as_ptr());
         return false;
     }
 
@@ -463,7 +463,7 @@ unsafe extern "C" fn cp_exec_file(
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
 
@@ -510,7 +510,7 @@ unsafe extern "C" fn cp_exec_file(
         Err(e) => {
             let msg = format!("execFile failed: {}", e);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -525,19 +525,19 @@ unsafe extern "C" fn cp_exec_file_sync(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"child_process.execFileSync requires a file path\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.execFileSync requires a file path".as_ptr());
         return false;
     }
     let file_val = *args.get(0).ptr;
     if !file_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"child_process.execFileSync requires a string file path\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.execFileSync requires a string file path".as_ptr());
         return false;
     }
     let file_path = crate::js_to_rust_string(cx, file_val);
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
 
@@ -579,7 +579,7 @@ unsafe extern "C" fn cp_exec_file_sync(
                 let stderr_str = String::from_utf8_lossy(&out.stderr).into_owned();
                 let msg = format!("execFileSync failed with status {}: {}", out.status.code().unwrap_or(-1), stderr_str);
                 let c_msg = CString::new(msg).unwrap_or_default();
-                JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                 return false;
             }
             if let Ok(c_out) = CString::new(stdout_str.as_str()) {
@@ -594,7 +594,7 @@ unsafe extern "C" fn cp_exec_file_sync(
         Err(e) => {
             let msg = format!("execFileSync failed: {}", e);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -615,19 +615,19 @@ unsafe extern "C" fn cp_spawn_sync(
     let cx_ref = &mut wrapped_cx;
 
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"child_process.spawnSync requires a command\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.spawnSync requires a command".as_ptr());
         return false;
     }
     let cmd_val = *args.get(0).ptr;
     if !cmd_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"child_process.spawnSync requires a string command\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.spawnSync requires a string command".as_ptr());
         return false;
     }
     let command = crate::js_to_rust_string(cx, cmd_val);
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
 
@@ -734,13 +734,13 @@ unsafe extern "C" fn cp_fork(
     let args = CallArgs::from_vp(vp, argc);
     // fork() spawns a new Node/Bao process with the given module
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"child_process.fork requires a module path\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.fork requires a module path".as_ptr());
         return false;
     }
 
     let module_val = *args.get(0).ptr;
     if !module_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"child_process.fork requires a string module path\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"child_process.fork requires a string module path".as_ptr());
         return false;
     }
 
@@ -748,7 +748,7 @@ unsafe extern "C" fn cp_fork(
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
 
@@ -792,7 +792,7 @@ unsafe extern "C" fn cp_fork(
         Err(e) => {
             let msg = format!("fork failed: {}", e);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }

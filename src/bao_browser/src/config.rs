@@ -43,25 +43,13 @@ impl BaoConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PageConfig {
     pub url: Option<String>,
     pub viewport_width: Option<u32>,
     pub viewport_height: Option<u32>,
     pub stealth_profile: Option<StealthProfile>,
     pub permission: Option<Permission>,
-}
-
-impl Default for PageConfig {
-    fn default() -> Self {
-        PageConfig {
-            url: None,
-            viewport_width: None,
-            viewport_height: None,
-            stealth_profile: None,
-            permission: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

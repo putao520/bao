@@ -230,13 +230,14 @@ impl CDPServer {
     }
 
     fn broadcast_event(&mut self, ev: &CDPEvent) {
-        for (_, session) in &mut self.sessions {
+        for session in self.sessions.values_mut() {
             let _ = session.send_event(ev);
         }
     }
 }
 
 impl CDPSession {
+    #[allow(clippy::result_unit_err)]
     pub fn process(&mut self) -> Result<(), ()> {
         let msg = match ws::read_message(&mut self.ws) {
             Ok(Some(msg)) => msg,
@@ -258,6 +259,7 @@ impl CDPSession {
         Ok(())
     }
 
+    #[allow(clippy::result_unit_err)]
     pub fn send_event(&mut self, ev: &CDPEvent) -> Result<(), ()> {
         let json = protocol::serialize_event(ev);
         ws::write_message(&mut self.ws, &json)

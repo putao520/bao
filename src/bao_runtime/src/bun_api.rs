@@ -29,7 +29,7 @@ pub fn install_bun_global(
 
         let version_str = JS_NewStringCopyZ(
             cx.raw_cx(),
-            b"0.1.0\0".as_ptr() as *const ::std::os::raw::c_char,
+            c"0.1.0".as_ptr(),
         );
         if !version_str.is_null() {
             rooted!(&in(cx) let ver_val = StringValue(&*version_str));
@@ -205,7 +205,6 @@ pub fn install_bun_global(
         // Bun.read — alias for readFile (same JS object via JS_DefineProperty)
         {
             rooted!(&in(cx) let mut read_val = UndefinedValue());
-            unsafe {
                 let _ok = JS_GetProperty(
                     cx.raw_cx(),
                     bun_obj.handle().into(),
@@ -219,7 +218,6 @@ pub fn install_bun_global(
                     read_val.handle().into(),
                     JSPROP_ENUMERATE as u32,
                 );
-            }
         }
 
         // Bun.exit
@@ -244,7 +242,7 @@ pub fn install_bun_global(
 
         // Bun.revision — version string property
         {
-            let rev_str = JS_NewStringCopyZ(cx.raw_cx(), b"0.1.0\0".as_ptr() as *const ::std::os::raw::c_char);
+            let rev_str = JS_NewStringCopyZ(cx.raw_cx(), c"0.1.0".as_ptr());
             if !rev_str.is_null() {
                 rooted!(&in(cx) let rv = StringValue(&*rev_str));
                 JS_DefineProperty(cx.raw_cx(), bun_obj.handle().into(), c"revision".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
@@ -368,7 +366,7 @@ pub fn install_process_global(
                     getOwnPropertyDescriptor(t,k){return k in t?{configurable:true,enumerable:true,value:t[k]}:undefined}
                 })"#;
                 let mut src = mozjs::rust::transform_str_to_source_text(proxy_src);
-                let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), b"<env>\0".as_ptr() as *const _, 1);
+                let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<env>".as_ptr(), 1);
                 if !opts.is_null() {
                     let mut rval = UndefinedValue();
                     let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
@@ -400,7 +398,7 @@ pub fn install_process_global(
 
         // process.version
         {
-            let ver_str = JS_NewStringCopyZ(cx.raw_cx(), b"v18.0.0\0".as_ptr() as *const ::std::os::raw::c_char);
+            let ver_str = JS_NewStringCopyZ(cx.raw_cx(), c"v18.0.0".as_ptr());
             if !ver_str.is_null() {
                 rooted!(&in(cx) let v = StringValue(&*ver_str));
                 JS_DefineProperty(cx.raw_cx(), proc_obj.handle().into(), c"version".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
@@ -411,32 +409,32 @@ pub fn install_process_global(
         {
             rooted!(&in(cx) let ver_obj = JS_NewPlainObject(cx));
             if !ver_obj.get().is_null() {
-                let node_ver = JS_NewStringCopyZ(cx.raw_cx(), b"18.0.0\0".as_ptr() as *const ::std::os::raw::c_char);
+                let node_ver = JS_NewStringCopyZ(cx.raw_cx(), c"18.0.0".as_ptr());
                 if !node_ver.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*node_ver));
                     JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"node".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
                 }
-                let bao_ver = JS_NewStringCopyZ(cx.raw_cx(), b"0.1.0\0".as_ptr() as *const ::std::os::raw::c_char);
+                let bao_ver = JS_NewStringCopyZ(cx.raw_cx(), c"0.1.0".as_ptr());
                 if !bao_ver.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*bao_ver));
                     JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"bao".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
                 }
-                let sm_ver = JS_NewStringCopyZ(cx.raw_cx(), b"115.0\0".as_ptr() as *const ::std::os::raw::c_char);
+                let sm_ver = JS_NewStringCopyZ(cx.raw_cx(), c"115.0".as_ptr());
                 if !sm_ver.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*sm_ver));
                     JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"spidermonkey".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
                 }
-                let rust_ver = JS_NewStringCopyZ(cx.raw_cx(), b"1.80.0\0".as_ptr() as *const ::std::os::raw::c_char);
+                let rust_ver = JS_NewStringCopyZ(cx.raw_cx(), c"1.80.0".as_ptr());
                 if !rust_ver.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*rust_ver));
                     JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"rust".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
                 }
-                let bun_alias = JS_NewStringCopyZ(cx.raw_cx(), b"0.1.0\0".as_ptr() as *const ::std::os::raw::c_char);
+                let bun_alias = JS_NewStringCopyZ(cx.raw_cx(), c"0.1.0".as_ptr());
                 if !bun_alias.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*bun_alias));
                     JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"bun".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
                 }
-                let openssl_ver = JS_NewStringCopyZ(cx.raw_cx(), b"3.0.0\0".as_ptr() as *const ::std::os::raw::c_char);
+                let openssl_ver = JS_NewStringCopyZ(cx.raw_cx(), c"3.0.0".as_ptr());
                 if !openssl_ver.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*openssl_ver));
                     JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"openssl".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
@@ -521,7 +519,7 @@ pub fn install_process_global(
 
         // process.title
         {
-            let title_str = JS_NewStringCopyZ(cx.raw_cx(), b"bao\0".as_ptr() as *const ::std::os::raw::c_char);
+            let title_str = JS_NewStringCopyZ(cx.raw_cx(), c"bao".as_ptr());
             if !title_str.is_null() {
                 rooted!(&in(cx) let v = StringValue(&*title_str));
                 JS_DefineProperty(cx.raw_cx(), proc_obj.handle().into(), c"title".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
@@ -657,13 +655,13 @@ unsafe extern "C" fn bun_spawn(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"Bun.spawn() requires an options object\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Bun.spawn() requires an options object".as_ptr());
         return false;
     }
 
     let opts_val = *args.get(0).ptr;
     if !opts_val.is_object() {
-        JS_ReportErrorUTF8(cx, b"Bun.spawn() requires an options object\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Bun.spawn() requires an options object".as_ptr());
         return false;
     }
 
@@ -761,7 +759,7 @@ unsafe extern "C" fn bun_spawn(
         Err(e) => {
             let msg = format!("Bun.spawn() failed: {}", e);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             false
         }
     }
@@ -826,7 +824,7 @@ unsafe extern "C" fn subproc_wait(
         Err(e) => {
             let msg = format!("wait() failed: {}", e);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -1127,7 +1125,7 @@ unsafe extern "C" fn bun_serve(
         Err(e) => {
             let msg = format!("Bun.serve() failed to bind: {}", e);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     };
@@ -1333,12 +1331,12 @@ unsafe extern "C" fn bun_resolve(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"Bun.resolve requires a specifier\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Bun.resolve requires a specifier".as_ptr());
         return false;
     }
     let spec_val = *args.get(0).ptr;
     if !spec_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"Bun.resolve requires a string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Bun.resolve requires a string".as_ptr());
         return false;
     }
     let specifier = mozjs::conversions::jsstr_to_string(cx, NonNull::new_unchecked(spec_val.to_string()));
@@ -1371,7 +1369,7 @@ unsafe extern "C" fn bun_resolve(
             None => {
                 let msg = format!("Cannot resolve '{}'", specifier);
                 let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-                JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                 return false;
             }
         }
@@ -1455,7 +1453,7 @@ unsafe extern "C" fn bun_inspect(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        let js_str = JS_NewStringCopyZ(cx, b"undefined\0".as_ptr() as *const ::std::os::raw::c_char);
+        let js_str = JS_NewStringCopyZ(cx, c"undefined".as_ptr());
         if !js_str.is_null() {
             args.rval().set(StringValue(&*js_str));
         } else {
@@ -1808,7 +1806,7 @@ unsafe extern "C" fn bun_file(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let _path_str = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+    let _path_str = JS_NewStringCopyZ(cx, c"".as_ptr());
     let s = crate::js_to_rust_string(cx, path_val);
     let file_obj = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(cx) };
     if file_obj.is_null() {
@@ -1848,13 +1846,13 @@ unsafe extern "C" fn bun_write(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 {
-        JS_ReportErrorUTF8(cx, b"Bun.write requires 2 arguments\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Bun.write requires 2 arguments".as_ptr());
         return false;
     }
     let path_val = *args.get(0).ptr;
     let content_val = *args.get(1).ptr;
     if !path_val.is_string() || !content_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"Bun.write requires string arguments\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Bun.write requires string arguments".as_ptr());
         return false;
     }
     let fpath = crate::js_to_rust_string(cx, path_val);
@@ -1868,7 +1866,7 @@ unsafe extern "C" fn bun_write(
         Err(e) => {
             let msg = format!("Bun.write failed: {}", e);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             false
         }
     }
@@ -1882,12 +1880,12 @@ unsafe extern "C" fn bun_read_file(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"Bun.readFile requires a path argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Bun.readFile requires a path argument".as_ptr());
         return false;
     }
     let path_val = *args.get(0).ptr;
     if !path_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"Bun.readFile requires a string path\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Bun.readFile requires a string path".as_ptr());
         return false;
     }
     let fpath = crate::js_to_rust_string(cx, path_val);
@@ -1908,7 +1906,7 @@ unsafe extern "C" fn bun_read_file(
         Err(e) => {
             let msg = format!("Bun.readFile failed: {}", e);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             false
         }
     }
@@ -1973,19 +1971,19 @@ unsafe extern "C" fn process_chdir(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"process.chdir requires a directory path\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"process.chdir requires a directory path".as_ptr());
         return false;
     }
     let dir_val = *args.get(0).ptr;
     if !dir_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"process.chdir requires a string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"process.chdir requires a string".as_ptr());
         return false;
     }
     let dir = jsstr_to_string(cx, NonNull::new_unchecked(dir_val.to_string()));
     if let Err(e) = ::std::env::set_current_dir(&dir) {
         let msg = format!("process.chdir failed: {}", e);
         let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     args.rval().set(UndefinedValue());
@@ -2082,12 +2080,12 @@ unsafe extern "C" fn process_next_tick(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"process.nextTick() requires a callback\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"process.nextTick() requires a callback".as_ptr());
         return false;
     }
     let cb_val = *args.get(0).ptr;
     if !cb_val.is_object() {
-        JS_ReportErrorUTF8(cx, b"process.nextTick() callback must be a function\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"process.nextTick() callback must be a function".as_ptr());
         return false;
     }
 
@@ -2192,7 +2190,7 @@ unsafe extern "C" fn hrtime_bigint(
     let total_ns = (now.as_secs() as i64) * 1_000_000_000i64 + (now.subsec_nanos() as i64);
     let src = format!("BigInt(\"{}\")", total_ns);
     let mut rval = UndefinedValue();
-    let opts = mozjs::glue::NewCompileOptions(cx, b"hrtime_bigint\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+    let opts = mozjs::glue::NewCompileOptions(cx, c"hrtime_bigint".as_ptr(), 1);
     if !opts.is_null() {
         let mut eval_src = mozjs::rust::transform_str_to_source_text(&src);
         mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut eval_src, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });

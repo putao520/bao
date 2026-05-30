@@ -7,7 +7,6 @@ use ::std::os::unix::io::{AsRawFd, FromRawFd};
 use ::std::ptr::NonNull;
 use ::std::sync::Mutex;
 
-use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{UndefinedValue, Int32Value, StringValue, ObjectValue};
 use mozjs::rooted;
@@ -52,7 +51,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, http_obj.handle(), c"get".as_ptr(), Some(http_get), 2, JSPROP_ENUMERATE as u32);
 
         {
-            let _server_src = CString::new(r#"
+            let _ = CString::new(r#"
               function Server(opts, cb) { if (typeof opts === "function") { cb = opts; } if (cb) this.on("request", cb); }
               Server.prototype.listen = function() { return this; };
               Server.prototype.close = function() { return this; };
@@ -60,7 +59,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
               Server.prototype.emit = function(e) { var a = Array.prototype.slice.call(arguments, 1); var ls = this._events && this._events[e]; if (ls) for (var i = 0; i < ls.length; i++) ls[i].apply(this, a); return this; };
               Server;
             "#).unwrap_or_default();
-            let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), b"node:http\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+            let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"node:http".as_ptr(), 1);
             if !opts.is_null() {
                 let mut src_text = mozjs::rust::transform_str_to_source_text("function Server(opts, cb) { if (typeof opts === 'function') { cb = opts; } if (cb) this.on('request', cb); } Server.prototype.listen = function() { return this; }; Server.prototype.close = function() { return this; }; Server.prototype.on = function(e, fn) { if (!this._events) this._events = {}; (this._events[e] || (this._events[e] = [])).push(fn); return this; }; Server.prototype.emit = function(e) { var a = Array.prototype.slice.call(arguments, 1); var ls = this._events && this._events[e]; if (ls) for (var i = 0; i < ls.length; i++) ls[i].apply(this, a); return this; }; Server");
                 let mut rval = UndefinedValue();
@@ -345,7 +344,8 @@ unsafe extern "C" fn res_write(
             } else {
                 String::new()
             };
-            let combined = format!("{}{}", existing, data);
+            let mut combined = existing;
+            combined.push_str(&data);
             let Ok(c_combined) = CString::new(combined) else {
                 args.rval().set(ObjectValue(obj));
                 return true;
@@ -384,7 +384,8 @@ unsafe extern "C" fn res_end(
             let existing = if body_val.is_string() {
                 crate::js_to_rust_string(cx, body_val)
             } else { String::new() };
-            let combined = format!("{}{}", existing, data);
+            let mut combined = existing;
+            combined.push_str(&data);
             let Ok(c_combined) = CString::new(combined) else {
                 args.rval().set(ObjectValue(obj));
                 return true;
@@ -513,7 +514,7 @@ unsafe extern "C" fn server_listen(
         Err(e) => {
             let msg = format!("Failed to bind {}: {}", bind_addr, e);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     };

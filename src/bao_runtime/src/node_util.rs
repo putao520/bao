@@ -159,7 +159,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
           AssertionError;
         "#).unwrap_or_default();
         let mut err_rval = UndefinedValue();
-        let err_opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), b"assert\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+        let err_opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"assert".as_ptr(), 1);
         if !err_opts.is_null() {
             let mut err_src_text = mozjs::rust::transform_str_to_source_text("function AssertionError(options) { this.message = (options && options.message) || 'Assertion failed'; this.actual = options && options.actual; this.expected = options && options.expected; this.operator = options && options.operator; Error.captureStackTrace && Error.captureStackTrace(this, AssertionError); } AssertionError.prototype = Object.create(Error.prototype); AssertionError.prototype.constructor = AssertionError; AssertionError.prototype.name = 'AssertionError'; AssertionError");
             JS::Evaluate2(cx.raw_cx(), err_opts, &mut err_src_text, MutableHandle::<Value> {
@@ -230,7 +230,7 @@ unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {
 unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        let s = JS_NewStringCopyZ(cx, b"undefined\0".as_ptr() as *const ::std::os::raw::c_char);
+        let s = JS_NewStringCopyZ(cx, c"undefined".as_ptr());
         args.rval().set(if s.is_null() { UndefinedValue() } else { StringValue(&*s) });
         return true;
     }
@@ -339,7 +339,7 @@ unsafe extern "C" fn util_is_error(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        let s = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+        let s = JS_NewStringCopyZ(cx, c"".as_ptr());
         args.rval().set(if s.is_null() { UndefinedValue() } else { StringValue(&*s) });
         return true;
     }
@@ -390,7 +390,7 @@ unsafe extern "C" fn util_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     if _argc == 0 || !(*args.get(0).ptr).is_object() {
-        JS_ReportErrorUTF8(cx, b"promisify requires a function\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"promisify requires a function".as_ptr());
         return false;
     }
     let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -476,7 +476,7 @@ unsafe extern "C" fn assert_ok(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         let msg = CString::new("No value argument passed to assert.ok()").unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
         return false;
     }
     let val = *args.get(0).ptr;
@@ -492,7 +492,7 @@ unsafe extern "C" fn assert_ok(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     if !is_truthy {
         let msg = if argc > 1 { jsval_to_display(cx, *args.get(1).ptr) } else { "The expression evaluated to a falsy value".to_string() };
         let c_msg = CString::new(msg).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     args.rval().set(UndefinedValue());
@@ -508,7 +508,7 @@ unsafe extern "C" fn assert_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         if a != b {
             let msg = format!("{} == {}", a, b);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -525,7 +525,7 @@ unsafe extern "C" fn assert_not_equal(cx: *mut JSContext, argc: u32, vp: *mut JS
         if a == b {
             let msg = format!("{} != {}", a, b);
             let c_msg = CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -541,7 +541,7 @@ unsafe extern "C" fn assert_deep_equal(cx: *mut JSContext, argc: u32, vp: *mut J
         let b = jsval_to_display(cx, *args.get(1).ptr);
         if a != b {
             let c_msg = CString::new("Expected values to be deeply equal".to_string()).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -580,7 +580,7 @@ unsafe extern "C" fn assert_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut
             let a = jsval_to_display(cx, *args.get(0).ptr);
             let b = jsval_to_display(cx, *args.get(1).ptr);
             let c_msg = CString::new(format!("Expected {} to strictly equal {}", a, b)).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     args.rval().set(UndefinedValue());
@@ -593,7 +593,7 @@ unsafe extern "C" fn assert_not_strict_equal(cx: *mut JSContext, argc: u32, vp: 
     if argc >= 2
         && values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
             let c_msg = CString::new("Expected values to be strictly unequal".to_string()).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     args.rval().set(UndefinedValue());
@@ -624,7 +624,7 @@ unsafe extern "C" fn assert_does_not_throw(_cx: *mut JSContext, _argc: u32, vp: 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn assert_fail(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    JS_ReportErrorUTF8(cx, b"AssertionError: fail\0".as_ptr() as *const ::std::os::raw::c_char);
+    JS_ReportErrorUTF8(cx, c"AssertionError: fail".as_ptr());
     args.rval().set(UndefinedValue());
     false
 }
@@ -635,7 +635,7 @@ unsafe extern "C" fn assert_if_error(cx: *mut JSContext, argc: u32, vp: *mut JSV
     if argc > 0 {
         let val = *args.get(0).ptr;
         if !val.is_null() && !val.is_undefined() {
-            JS_ReportErrorUTF8(cx, b"ifError got unwanted exception\0".as_ptr() as *const ::std::os::raw::c_char);
+            JS_ReportErrorUTF8(cx, c"ifError got unwanted exception".as_ptr());
             return false;
         }
     }

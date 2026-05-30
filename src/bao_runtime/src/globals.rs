@@ -23,6 +23,10 @@ pub fn set_file_globals(filename: Option<String>, dirname: Option<String>) {
     FILE_GLOBALS.with(|f| *f.borrow_mut() = (filename, dirname));
 }
 
+/// # Safety
+///
+/// Caller must ensure `cx` is a valid JSContext pointer and `global` is a valid
+/// handle to the global object in that context.
 pub unsafe fn install_all(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
@@ -1063,13 +1067,13 @@ unsafe extern "C" fn buffer_index_of(
             return true;
         }
         'outer: for i in byte_offset..=(buf_len - needle.len()) {
-            for j in 0..needle.len() {
+            for (j, &nbyte) in needle.iter().enumerate() {
                 let mut elem = UndefinedValue();
                 JS_GetElement(cx, obj_h, (i + j) as u32, MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
                 });
                 let b = if elem.is_int32() { elem.to_int32() as u8 } else { 0 };
-                if b != needle[j] { continue 'outer; }
+                if b != nbyte { continue 'outer; }
             }
             args.rval().set(Int32Value(i as i32));
             return true;
@@ -1247,7 +1251,7 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
 unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 {
-        JS_ReportErrorUTF8(cx, b"crypto.subtle.digest requires algorithm and data\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"crypto.subtle.digest requires algorithm and data".as_ptr());
         return false;
     }
 
@@ -1290,7 +1294,7 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
         _ => {
             let msg = format!("Unsupported algorithm: {}", algo);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     };
@@ -1372,7 +1376,7 @@ unsafe extern "C" fn structured_clone_fn(
                                 let ms = if ms_rval.is_double() { ms_rval.to_double() } else if ms_rval.is_int32() { ms_rval.to_int32() as f64 } else { 0.0 };
                                 let src = format!("new Date({})", ms);
                                 let mut eval_rval = UndefinedValue();
-                                let eval_opts = mozjs::glue::NewCompileOptions(cx, b"clone\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+                                let eval_opts = mozjs::glue::NewCompileOptions(cx, c"clone".as_ptr(), 1);
                                 if !eval_opts.is_null() {
                                     let mut src_text = mozjs::rust::transform_str_to_source_text(&src);
                                     JS::Evaluate2(cx, eval_opts, &mut src_text, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval });
@@ -1392,7 +1396,7 @@ unsafe extern "C" fn structured_clone_fn(
                         let flags = if flags_val.is_string() { crate::js_to_rust_string(cx, flags_val) } else { "".to_string() };
                         let src = format!("new RegExp(\"{}\", \"{}\")", source.replace('\\', "\\\\").replace('"', "\\\""), flags);
                         let mut eval_rval = UndefinedValue();
-                        let eval_opts = mozjs::glue::NewCompileOptions(cx, b"clone\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+                        let eval_opts = mozjs::glue::NewCompileOptions(cx, c"clone".as_ptr(), 1);
                         if !eval_opts.is_null() {
                             let mut src_text = mozjs::rust::transform_str_to_source_text(&src);
                             JS::Evaluate2(cx, eval_opts, &mut src_text, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval });
@@ -1409,7 +1413,7 @@ unsafe extern "C" fn structured_clone_fn(
         let mut json_rval = UndefinedValue();
         let json_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut json_rval };
         let json_src = mozjs::rust::transform_str_to_source_text("(function(o){try{return JSON.parse(JSON.stringify(o))}catch(e){return o}})");
-        let json_opts = mozjs::glue::NewCompileOptions(cx, b"json_clone\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+        let json_opts = mozjs::glue::NewCompileOptions(cx, c"json_clone".as_ptr(), 1);
         if !json_opts.is_null() {
             let mut json_fn_val = UndefinedValue();
             JS::Evaluate2(cx, json_opts, &mut ::std::mem::MaybeUninit::new(json_src).assume_init(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut json_fn_val });
@@ -1571,7 +1575,7 @@ if (typeof _g.FormData === 'undefined') {
         let mut rval = UndefinedValue();
         let opts = mozjs::glue::NewCompileOptions(
             raw,
-            b"web_api_constructors\0".as_ptr() as *const ::std::os::raw::c_char,
+            c"web_api_constructors".as_ptr(),
             1,
         );
         if !opts.is_null() {

@@ -162,7 +162,7 @@ unsafe extern "C" fn timers_promises_set_timeout(
         delay
     );
     let mut rval = UndefinedValue();
-    let opts = mozjs::glue::NewCompileOptions(cx, b"timers_promises\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+    let opts = mozjs::glue::NewCompileOptions(cx, c"timers_promises".as_ptr(), 1);
     if !opts.is_null() {
         let mut src = mozjs::rust::transform_str_to_source_text(&resolve_src);
         JS::Evaluate2(cx, opts, &mut src, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
@@ -180,7 +180,7 @@ unsafe extern "C" fn timers_promises_set_immediate(
 ) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let mut rval = UndefinedValue();
-    let opts = mozjs::glue::NewCompileOptions(cx, b"timers_promises\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+    let opts = mozjs::glue::NewCompileOptions(cx, c"timers_promises".as_ptr(), 1);
     if !opts.is_null() {
         let mut src = mozjs::rust::transform_str_to_source_text("new Promise(function(resolve) { setImmediate(resolve) })");
         JS::Evaluate2(cx, opts, &mut src, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
@@ -207,7 +207,7 @@ unsafe extern "C" fn timers_promises_set_interval(
         delay
     );
     let mut rval = UndefinedValue();
-    let opts = mozjs::glue::NewCompileOptions(cx, b"timers_promises\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+    let opts = mozjs::glue::NewCompileOptions(cx, c"timers_promises".as_ptr(), 1);
     if !opts.is_null() {
         let mut src = mozjs::rust::transform_str_to_source_text(&resolve_src);
         JS::Evaluate2(cx, opts, &mut src, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });

@@ -218,13 +218,13 @@ unsafe extern "C" fn tty_set_raw_mode(
     };
 
     if fd < 0 {
-        JS_ReportErrorUTF8(cx, b"setRawMode: invalid fd\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"setRawMode: invalid fd".as_ptr());
         return false;
     }
 
     let mut term: libc::termios = ::std::mem::zeroed();
     if libc::tcgetattr(fd, &mut term) != 0 {
-        JS_ReportErrorUTF8(cx, b"setRawMode: tcgetattr failed\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"setRawMode: tcgetattr failed".as_ptr());
         return false;
     }
 
@@ -238,7 +238,7 @@ unsafe extern "C" fn tty_set_raw_mode(
     }
 
     if libc::tcsetattr(fd, libc::TCSANOW, &term) != 0 {
-        JS_ReportErrorUTF8(cx, b"setRawMode: tcsetattr failed\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"setRawMode: tcsetattr failed".as_ptr());
         return false;
     }
 

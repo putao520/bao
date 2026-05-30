@@ -246,7 +246,7 @@ unsafe fn ws_trigger_event(cx: *mut JSContext, ws_obj: *mut JSObject, event_name
 unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"WebSocket.send() requires a message argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"WebSocket.send() requires a message argument".as_ptr());
         return false;
     }
     let msg_val = *args.get(0).ptr;
@@ -270,7 +270,7 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     if let Err(e) = send_result {
         let msg = format!("WebSocket send failed: {}", e);
         let c_msg = CString::new(msg).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     args.rval().set(UndefinedValue());
@@ -308,12 +308,12 @@ unsafe extern "C" fn websocket_constructor(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"WebSocket requires a URL argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"WebSocket requires a URL argument".as_ptr());
         return false;
     }
     let url_val = *args.get(0).ptr;
     if !url_val.is_string() {
-        JS_ReportErrorUTF8(cx, b"WebSocket URL must be a string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"WebSocket URL must be a string".as_ptr());
         return false;
     }
     let url = jsstr_to_string(cx, NonNull::new_unchecked(url_val.to_string()));
@@ -404,7 +404,7 @@ unsafe extern "C" fn websocket_constructor(
         Err(e) => {
             let msg = format!("WebSocket connection failed: {}", e);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     }
@@ -505,7 +505,7 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             else { args.rval().set(StringValue(&*js_str)); }
         }
         Err(_) => {
-            JS_ReportErrorUTF8(cx, b"Failed to decode base64\0".as_ptr() as *const ::std::os::raw::c_char);
+            JS_ReportErrorUTF8(cx, c"Failed to decode base64".as_ptr());
             return false;
         }
     }
@@ -545,7 +545,7 @@ unsafe extern "C" fn text_encoder_constructor(cx: *mut JSContext, argc: u32, vp:
         args.rval().set(UndefinedValue());
         return true;
     }
-    let encoding_str = JS_NewStringCopyZ(cx, b"utf-8\0".as_ptr() as *const ::std::os::raw::c_char);
+    let encoding_str = JS_NewStringCopyZ(cx, c"utf-8".as_ptr());
     if !encoding_str.is_null() {
         let val = StringValue(&*encoding_str);
         let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
@@ -654,7 +654,7 @@ unsafe extern "C" fn text_decoder_constructor(cx: *mut JSContext, argc: u32, vp:
 unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        let empty = JS_NewStringCopyZ(cx, b"\0".as_ptr() as *const ::std::os::raw::c_char);
+        let empty = JS_NewStringCopyZ(cx, c"".as_ptr());
         args.rval().set(if empty.is_null() { UndefinedValue() } else { StringValue(&*empty) });
         return true;
     }
@@ -683,7 +683,7 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
     let decoded = match String::from_utf8(bytes) {
         Ok(s) => s,
         Err(_) => {
-            JS_ReportErrorUTF8(cx, b"The encoded data was not valid\0".as_ptr() as *const ::std::os::raw::c_char);
+            JS_ReportErrorUTF8(cx, c"The encoded data was not valid".as_ptr());
             return false;
         }
     };

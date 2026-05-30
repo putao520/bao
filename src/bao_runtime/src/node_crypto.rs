@@ -103,7 +103,7 @@ unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn throw_type_error(cx: *mut JSContext, msg: &str) -> bool {
     let c_msg = CString::new(msg).unwrap_or_default();
-    JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+    JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
     false
 }
 

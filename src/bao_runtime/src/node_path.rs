@@ -89,7 +89,7 @@ unsafe extern "C" fn path_join(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         match arg_to_string(cx, val) {
             Some(s) => parts.push(s),
             None => {
-                JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+                JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
                 return false;
             }
         }
@@ -116,7 +116,7 @@ unsafe extern "C" fn path_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
                 }
             }
             None => {
-                JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+                JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
                 return false;
             }
         }
@@ -130,14 +130,14 @@ unsafe extern "C" fn path_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 unsafe extern "C" fn path_dirname(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
         return false;
     }
     let val = *args.get(0).ptr;
     let s = match arg_to_string(cx, val) {
         Some(s) => s,
         None => {
-            JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
             return false;
         }
     };
@@ -154,14 +154,14 @@ unsafe extern "C" fn path_dirname(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 unsafe extern "C" fn path_basename(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
         return false;
     }
     let val = *args.get(0).ptr;
     let s = match arg_to_string(cx, val) {
         Some(s) => s,
         None => {
-            JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
             return false;
         }
     };
@@ -183,14 +183,14 @@ unsafe extern "C" fn path_basename(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn path_extname(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
         return false;
     }
     let val = *args.get(0).ptr;
     let s = match arg_to_string(cx, val) {
         Some(s) => s,
         None => {
-            JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
             return false;
         }
     };
@@ -204,19 +204,19 @@ unsafe extern "C" fn path_extname(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 unsafe extern "C" fn path_normalize(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
         return false;
     }
     let val = *args.get(0).ptr;
     let s = match arg_to_string(cx, val) {
         Some(s) => s,
         None => {
-            JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
             return false;
         }
     };
     let p = Path::new(&s);
-    let normalized = normalize_path(&p.to_path_buf());
+    let normalized = normalize_path(p);
     return_string(cx, &args, &normalized.to_string_lossy())
 }
 
@@ -243,7 +243,7 @@ unsafe extern "C" fn path_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JS
 unsafe extern "C" fn path_relative(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 {
-        JS_ReportErrorUTF8(cx, b"The \"from\" and \"to\" arguments must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"The \"from\" and \"to\" arguments must be of type string".as_ptr());
         return false;
     }
     let from_val = *args.get(0).ptr;
@@ -268,14 +268,14 @@ unsafe extern "C" fn path_relative(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
         return false;
     }
     let val = *args.get(0).ptr;
     let s = match arg_to_string(cx, val) {
         Some(s) => s,
         None => {
-            JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
             return false;
         }
     };
@@ -312,12 +312,12 @@ unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 unsafe extern "C" fn path_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        JS_ReportErrorUTF8(cx, b"The \"pathObject\" argument must be of type object\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"The \"pathObject\" argument must be of type object".as_ptr());
         return false;
     }
     let val = *args.get(0).ptr;
     if !val.is_object() {
-        JS_ReportErrorUTF8(cx, b"The \"pathObject\" argument must be of type object\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"The \"pathObject\" argument must be of type object".as_ptr());
         return false;
     }
     let obj = val.to_object();

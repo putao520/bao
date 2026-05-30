@@ -31,11 +31,17 @@ pub struct BaoServoDelegate {
     last_error: RefCell<Option<String>>,
 }
 
-impl BaoServoDelegate {
-    pub fn new() -> Self {
+impl Default for BaoServoDelegate {
+    fn default() -> Self {
         BaoServoDelegate {
             last_error: RefCell::new(None),
         }
+    }
+}
+
+impl BaoServoDelegate {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn last_error(&self) -> Option<String> {

@@ -212,7 +212,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn get_path_arg(cx: *mut JSContext, args: &CallArgs, index: u32) -> ::std::result::Result<::std::string::String, bool> {
     if args.argc_ <= index {
-        JS_ReportErrorUTF8(cx, b"Missing path argument\0".as_ptr() as *const ::std::os::raw::c_char);
+        JS_ReportErrorUTF8(cx, c"Missing path argument".as_ptr());
         return ::std::result::Result::Err(false);
     }
     let val = *args.get(index).ptr;
@@ -222,7 +222,7 @@ unsafe fn get_path_arg(cx: *mut JSContext, args: &CallArgs, index: u32) -> ::std
             return ::std::result::Result::Ok(crate::jsstr_to_rust_string(cx, s));
         }
     }
-    JS_ReportErrorUTF8(cx, b"The \"path\" argument must be of type string\0".as_ptr() as *const ::std::os::raw::c_char);
+    JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
     ::std::result::Result::Err(false)
 }
 
@@ -305,7 +305,7 @@ unsafe fn throw_fs_error(cx: *mut JSContext, op: &str, path: &str, err: &::std::
     let c_msg = CString::new(msg).unwrap_or_default();
     let code_str = JS_NewStringCopyZ(cx, CString::new(code).unwrap_or_default().as_ptr());
     if !code_str.is_null() {
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         if JS_IsExceptionPending(cx) {
             rooted!(in(cx) let mut exn = UndefinedValue());
             JS_GetPendingException(cx, exn.handle_mut().into());
@@ -327,7 +327,7 @@ unsafe fn throw_fs_error(cx: *mut JSContext, op: &str, path: &str, err: &::std::
             }
         }
     } else {
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
     }
     false
 }
@@ -340,7 +340,7 @@ unsafe extern "C" fn fs_read_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_read(&path) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     let encoding = get_encoding_opt(cx, &args, 1);
@@ -356,7 +356,7 @@ unsafe extern "C" fn fs_write_file_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     let data_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
@@ -385,7 +385,7 @@ unsafe extern "C" fn fs_append_file_sync(cx: *mut JSContext, argc: u32, vp: *mut
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     let data_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
@@ -422,7 +422,7 @@ unsafe extern "C" fn fs_mkdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     let recursive = get_bool_option(cx, &args, 1, "recursive");
@@ -511,7 +511,7 @@ unsafe extern "C" fn fs_unlink_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     match fs::remove_file(&path) {
@@ -526,7 +526,7 @@ unsafe extern "C" fn fs_rmdir_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     match fs::remove_dir(&path) {
@@ -541,7 +541,7 @@ unsafe extern "C" fn fs_rm_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     let recursive = get_bool_option(cx, &args, 1, "recursive");
@@ -559,12 +559,12 @@ unsafe extern "C" fn fs_rename_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let to = match get_path_arg(cx, &args, 1) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_read(&from) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&to) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     match fs::rename(&from, &to) {
@@ -580,12 +580,12 @@ unsafe extern "C" fn fs_copy_file_sync(cx: *mut JSContext, argc: u32, vp: *mut J
     let to = match get_path_arg(cx, &args, 1) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_read(&from) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&to) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     match fs::copy(&from, &to) {
@@ -709,7 +709,7 @@ unsafe extern "C" fn fs_mkdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
         let c_msg = CString::new(e).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     let recursive = get_bool_option(cx, &args, 1, "recursive");
@@ -749,16 +749,16 @@ unsafe extern "C" fn fs_mkdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                         let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
                         JS_DefineProperty(cx,
                             Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj },
-                            c"message".as_ptr() as *const ::std::os::raw::c_char,
+                            c"message".as_ptr(),
                             msg_h, JSPROP_ENUMERATE as u32);
                     }
-                    let code_str = JS_NewStringCopyZ(cx, b"EACCES\0".as_ptr() as *const ::std::os::raw::c_char);
+                    let code_str = JS_NewStringCopyZ(cx, c"EACCES".as_ptr());
                     if !code_str.is_null() {
                         let code_val = mozjs::jsval::StringValue(&*code_str);
                         let code_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &code_val };
                         JS_DefineProperty(cx,
                             Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj },
-                            c"code".as_ptr() as *const ::std::os::raw::c_char,
+                            c"code".as_ptr(),
                             code_h, JSPROP_ENUMERATE as u32);
                     }
                     let err_val = mozjs::jsval::ObjectValue(err_obj);
