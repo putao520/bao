@@ -392,7 +392,51 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
         JS_ReportErrorUTF8(cx, b"promisify requires a function\0".as_ptr() as *const ::std::os::raw::c_char);
         return false;
     }
-    args.rval().set(*args.get(0).ptr);
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let fn_val = *args.get(0).ptr);
+
+    let promisify_src = r#"(function(orig) {
+  return function promisified() {
+    var args = Array.prototype.slice.call(arguments);
+    return new Promise(function(resolve, reject) {
+      args.push(function(err, value) {
+        if (err) reject(err);
+        else resolve(value);
+      });
+      orig.apply(this, args);
+    });
+  };
+})"#;
+    let mut src = mozjs::rust::transform_str_to_source_text(promisify_src);
+    let mut factory_val = UndefinedValue();
+    let factory_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut factory_val };
+    let opts = mozjs::glue::NewCompileOptions(cx, c"<promisify>".as_ptr(), 1);
+    if opts.is_null() {
+        args.rval().set(*args.get(0).ptr);
+        return true;
+    }
+    if !JS::Evaluate2(cx, opts, &mut src, factory_h) || !factory_val.is_object() {
+        libc::free(opts as *mut _);
+        args.rval().set(*args.get(0).ptr);
+        return true;
+    }
+    libc::free(opts as *mut _);
+
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        args.rval().set(*args.get(0).ptr);
+        return true;
+    }
+    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+    let fn_obj = fn_val.get().to_object();
+    let fn_obj_val = ObjectValue(fn_obj);
+    let args_arr = HandleValueArray { length_: 1, elements_: &fn_obj_val };
+    let mut call_rval = UndefinedValue();
+    let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
+    let factory_obj = factory_val.to_object();
+    let factory_obj_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ObjectValue(factory_obj) };
+    JS_CallFunctionValue(cx, global_h, factory_obj_h, &args_arr, call_rval_h);
+    args.rval().set(call_rval);
     true
 }
 
