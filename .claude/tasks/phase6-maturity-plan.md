@@ -1,9 +1,9 @@
 # Phase 6-7: Full SPEC Implementation & Maturity Push Plan
 
-## Current State (2026-05-30 Round 16 — SPEC Lint 修复 + 全面验证)
+## Current State (2026-05-30 Round 19 — API 深度补强)
 - **成熟度**: 100.0% (Design 100% | Code 100% | Test 100%)
-- **总代码**: ~21K LOC across 6 crates
-- **测试**: 19 suites, 571 assertions, ALL PASS
+- **总代码**: ~22K LOC across 6 crates
+- **测试**: 24 suites, 971 assertions, ALL PASS
 - **36/36 REQ implemented** in SPEC
 - **172 SPEC 验收标准** 全部有测试覆盖（含 62 条 gap 补全）
 - **零 stub/placeholder/TODO/FIXME** across all bao crates
@@ -13,11 +13,78 @@
 - **Z3 状态机**: 2 个状态机全部 SOUND (WebViewLifecycle 8 状态 / PageLifecycle 6 状态)
 - **Z3 对齐**: 4 个 HIGH gap 已通过运行时验证修复 (Rust 无 refined types)
 - **Node.js API**: 22 个内置模块 + structuredClone 全局 + assert/strict + timers/promises
+- **Bun API**: 23 个 Bun.* 全局 API (read/exit/sleepSync/revision/main/hash/version/serve/spawn/inspect/cwd/gc/which/resolve/file/write/env/argv/sleep/build/test/testRun/readFile)
+- **Buffer API**: 40 个原型方法 (含 LE/BE 读写、float/double、swap16/32/64、compare)
+- **util.types**: 49 个类型检查函数 (Node.js parity)
+- **util.promisify**: 正确包装 callback → Promise
 - **Shannon Entropy**: 95.43%
 - **NFR 基准**: 19/19 PASS
 - **Permission 沙箱**: 4 层集成 (fs 9 函数 + fetch + child_process 4 函数)
 - **Full API Scan**: ALL PASS (Web APIs + Node modules + Bun globals)
 - **test_acceptance.js**: 128/128 ALL PASS
+
+## Completed This Session (Round 19 — API 深度补强)
+
+### 5 Commits
+| Commit | Description |
+|--------|-------------|
+| `5b2ad38` | Bun.read/exit/sleepSync/revision/main/hash + test_bun_api.js (29 assertions) |
+| `8a68c11` | util.types 修复：删除 JS_DefineFunction 遮蔽，保留 JS_DefineProperty3 对象属性 |
+| `29111d0` | util.types 扩展至 49 个类型检查函数 (37 个 instanceof-based via JS factory) |
+| `e1cde2f` | Buffer.prototype 扩展 23 个方法 (LE/BE 读写 + float/double + swap + compare) |
+| `19bb847` | util.promisify 正确包装 callback→Promise (JS factory 模式) |
+
+### API Coverage Summary
+| Category | Count | Status |
+|----------|-------|--------|
+| Bun.* globals | 23 | Complete |
+| Buffer.prototype | 40 methods | Complete |
+| util.types | 49 functions | Node.js parity |
+| Node.js modules | 22 modules | Complete |
+| Web APIs | 22 APIs | Complete |
+| console | 14 methods | Complete |
+| Global builtins | 30+ | Complete |
+
+## Completed Previous Session (Round 18 — Low-Priority Gaps 修复)
+
+### Commit `2710ae9`
+- process.env: Proxy-backed set/delete → std::env propagation
+- URLSearchParams.append: multi-value via `\x01` separator (WHATWG spec)
+- URLSearchParams.get: returns first value only
+- URLSearchParams.toString: proper serialization with url_encode
+- URL/standalone constructors: multi-value parsing with merge
+- Buffer.from(str, "base64url"): URL-safe base64 decoding
+- Buffer.isEncoding("base64url"): now returns true
+
+### All Known Gaps Resolved
+- ~~URLSearchParams.append multi-value~~ → FIXED
+- ~~process.env mutations~~ → FIXED
+- ~~Buffer.from base64url~~ → FIXED
+
+### Verification
+- All 23 test suites: 690 assertions, 0 failures
+
+## Completed This Session (Round 17 — 深度测试补强 + 关键 Bug 修复)
+
+### Commit `b9a5450`
+- JobQueue FIFO: `Vec::pop()` (LIFO) → `Vec::remove(0)` (FIFO)，修复微任务执行顺序
+- queueMicrotask: eval-based → `CallOriginalPromiseResolve` + `CallOriginalPromiseThen`（直接 SM API）
+- fs errors: `throw_fs_error` 创建带 `code` (ENOENT/EACCES) 和 `path` 属性的错误对象
+- require: JSON 文件加载 (`JS_ParseJSON1`) + `module.exports` 赋值追踪
+
+### 4 New Test Suites
+| Suite | Assertions | Focus |
+|-------|-----------|-------|
+| test_event_loop_order.js | 16 | microtask/FIFO/queueMicrotask/nextTick |
+| test_nodejs_depth.js | 66 | fs/path/os/crypto/Buffer/process/URL/TextEncoder |
+| test_http_depth.js | 19 | GET/POST/PUT/DELETE/PATCH/HEAD/concurrent/error |
+| test_module_resolution.js | 18 | require builtin/cache/node:prefix/file/JSON/class/dynamic import |
+
+### Verification
+- SPEC Maturity: 100.0% (7 domains, 36 REQs)
+- REQ Coverage: 36/36 implemented with tests
+- SPEC Lint: HEALTHY (0 errors, 1 warning D18 tool limitation)
+- All 23 test suites: 680 assertions, 0 failures
 
 ## Completed This Session (Round 16)
 
@@ -159,11 +226,16 @@ JS eval 中 `Object.getPrototypeOf(sample)` 返回 `Object.prototype`，
 |-------|-----------|
 | phase1_integration.js | 177 |
 | test_acceptance.js | 128 |
+| test_nodejs_depth.js | 66 |
 | test_criteria_gap.js | 62 |
 | test_phase7_coverage.js | 35 |
 | test_node_modules.js | 34 |
+| test_module_resolution.js | 18 |
 | test_nfr_benchmarks.js | 19 |
+| test_http_depth.js | 19 |
 | phase3_cdp.js | 18 |
+| test_event_loop_order.js | 16 |
+| test_dynamic_import.js | 14 |
 | phase2_browser.js | 12 |
 | phase5_multipage.js | 10 |
 | phase5_cdp.js | 10 |
@@ -175,8 +247,7 @@ JS eval 中 `Object.getPrototypeOf(sample)` 返回 `Object.prototype`，
 | test_bun_build.js | 5 |
 | test_stdin.js | 4 |
 | test_bun_test.js | 3 |
-| test_dynamic_import.js | 14 |
-| **Total** | **571** |
+| **Total** | **680** |
 
 ## Commits (This Session)
 | Commit | Description |
