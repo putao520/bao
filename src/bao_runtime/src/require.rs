@@ -152,7 +152,11 @@ unsafe extern "C" fn require_fn(
         }
     };
 
-    let exports_obj = load_cjs_module(cx, &content, &resolved, base_dir.as_deref());
+    let exports_obj = if resolved.extension().map_or(false, |e| e == "json") {
+        load_json_module(cx, &content, &specifier)
+    } else {
+        load_cjs_module(cx, &content, &resolved, base_dir.as_deref())
+    };
 
     if exports_obj.is_null() {
         let msg = format!("Failed to load module '{}'", specifier);
@@ -164,6 +168,26 @@ unsafe extern "C" fn require_fn(
     MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, exports_obj));
     args.rval().set(mozjs::jsval::ObjectValue(exports_obj));
     true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn load_json_module(cx: *mut JSContext, content: &str, specifier: &str) -> *mut JSObject {
+    let js_str = JS_NewStringCopyZ(cx, CString::new(content.as_bytes()).unwrap_or_default().as_ptr());
+    if js_str.is_null() {
+        return ptr::null_mut();
+    }
+    let str_handle = Handle::<*mut JSString> { _phantom_0: ::std::marker::PhantomData, ptr: &js_str };
+    let mut rval = mozjs::jsval::UndefinedValue();
+    let rval_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+    let ok = mozjs_sys::jsapi::JS_ParseJSON1(cx, str_handle, rval_handle);
+    if ok && rval.is_object() {
+        return rval.to_object();
+    }
+    JS_ClearPendingException(cx);
+    let msg = format!("Invalid JSON in module '{}'", specifier);
+    let c_msg = CString::new(msg).unwrap_or_default();
+    JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+    ptr::null_mut()
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -250,6 +274,17 @@ unsafe fn load_cjs_module(
 
     mozjs_sys::jsapi::js::RunJobs(cx);
     REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
+
+    // Read module.exports in case the module reassigned it
+    let mut final_exports = UndefinedValue();
+    let final_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut final_exports };
+    if !module_obj.is_null() {
+        let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module_obj };
+        JS_GetProperty(cx, module_h, c"exports".as_ptr(), final_h);
+        if final_exports.is_object() {
+            return final_exports.to_object();
+        }
+    }
     exports_obj
 }
 

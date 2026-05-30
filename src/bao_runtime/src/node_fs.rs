@@ -5,7 +5,7 @@ use base64::Engine;
 
 use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::jsval::{JSVal, UndefinedValue, StringValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -300,9 +300,34 @@ unsafe fn throw_fs_error(cx: *mut JSContext, op: &str, path: &str, err: &::std::
         ::std::io::ErrorKind::NotADirectory => "ENOTDIR",
         _ => "ERR",
     };
-    let msg = format!("{} '{}': {} (code={})", op, path, err, code);
+    let msg = format!("{} '{}': {}", op, path, err);
     let c_msg = CString::new(msg).unwrap_or_default();
-    JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+    let code_str = JS_NewStringCopyZ(cx, CString::new(code).unwrap_or_default().as_ptr());
+    if !code_str.is_null() {
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        if JS_IsExceptionPending(cx) {
+            rooted!(in(cx) let mut exn = UndefinedValue());
+            JS_GetPendingException(cx, exn.handle_mut().into());
+            let exn_val = exn.get();
+            if !exn_val.is_undefined() && exn_val.is_object() {
+                let exn_obj = exn_val.to_object();
+                let code_val = StringValue(&*code_str);
+                let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &exn_obj };
+                let code_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &code_val };
+                JS_DefineProperty(cx, obj_h, c"code".as_ptr(), code_h, JSPROP_ENUMERATE as u32);
+                let path_val = CString::new(path.as_bytes()).unwrap_or_default();
+                let path_str = JS_NewStringCopyZ(cx, path_val.as_ptr());
+                if !path_str.is_null() {
+                    let path_v = StringValue(&*path_str);
+                    let path_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &path_v };
+                    JS_DefineProperty(cx, obj_h, c"path".as_ptr(), path_h, JSPROP_ENUMERATE as u32);
+                }
+                JS_SetPendingException(cx, exn.handle().into(), ExceptionStackBehavior::DoNotCapture);
+            }
+        }
+    } else {
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+    }
     false
 }
 

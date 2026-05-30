@@ -78,7 +78,13 @@ unsafe extern "C" fn run_jobs(
     cx: *mut JSContext,
 ) {
     loop {
-        let job = JOB_QUEUE.with(|q| q.borrow_mut().pop());
+        let job = JOB_QUEUE.with(|q| {
+            if q.borrow().is_empty() {
+                None
+            } else {
+                Some(q.borrow_mut().remove(0))
+            }
+        });
         let Some(job) = job else {
             break;
         };

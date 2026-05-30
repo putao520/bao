@@ -6,7 +6,7 @@ use ::std::ptr::NonNull;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, ObjectValue, BooleanValue};
 use mozjs::rooted;
-use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1};
+use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1, CallOriginalPromiseResolve, CallOriginalPromiseThen};
 use mozjs::conversions::jsstr_to_string;
 
 use base64::Engine;
@@ -557,25 +557,19 @@ unsafe extern "C" fn queue_microtask_fn(cx: *mut JSContext, argc: u32, vp: *mut 
         return true;
     }
     let callback = (*args.get(0).ptr).to_object();
-    let global = CurrentGlobalOrNull(cx);
-    if global.is_null() {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx = &mut wrapped_cx;
+
+    rooted!(&in(cx) let undef_val = UndefinedValue());
+    let resolved = CallOriginalPromiseResolve(cx, undef_val.handle());
+    if resolved.is_null() {
+        args.rval().set(UndefinedValue());
         return true;
     }
-    let cb_val = ObjectValue(callback);
-    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-    let cb_name = ::std::ffi::CString::new("__microtaskCb").expect("static ASCII");
-    let cb_h_val = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
-    JS_SetProperty(cx, global_h, cb_name.as_ptr(), cb_h_val);
-    let eval_src = "Promise.resolve().then(globalThis.__microtaskCb); delete globalThis.__microtaskCb;";
-    let c_filename = ::std::ffi::CString::new("<queueMicrotask>").unwrap_or_else(|_| ::std::ffi::CString::new("<eval>").unwrap());
-    let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
-    if !opts.is_null() {
-        let mut src = mozjs::rust::transform_str_to_source_text(eval_src);
-        let mut eval_rval = UndefinedValue();
-        let eval_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
-        mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, eval_rval_h);
-        libc::free(opts as *mut _);
-    }
+    rooted!(&in(cx) let promise = resolved);
+    rooted!(&in(cx) let on_fulfilled = callback);
+    rooted!(&in(cx) let null_reject = ::std::ptr::null_mut::<JSObject>());
+    CallOriginalPromiseThen(cx, promise.handle(), on_fulfilled.handle(), null_reject.handle());
     args.rval().set(UndefinedValue());
     true
 }
