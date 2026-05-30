@@ -465,7 +465,7 @@ pub fn install_process_global(
 
         JS_DefineProperty3(cx, global, c"process".as_ptr(), proc_obj.handle(), JSPROP_ENUMERATE as u32);
 
-        // process EventEmitter stubs — on/once/addListener use existing process_on
+        // process EventEmitter — on/once/addListener delegate to process_on
         // emit/off/removeListener/removeAllListeners use process_noop (accept and ignore)
         JS_DefineFunction(cx, proc_obj.handle(), c"on".as_ptr(), Some(process_on), 2, JSPROP_ENUMERATE as u32);
         JS_DefineFunction(cx, proc_obj.handle(), c"once".as_ptr(), Some(process_on), 2, JSPROP_ENUMERATE as u32);
