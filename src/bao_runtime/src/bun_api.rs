@@ -1989,7 +1989,39 @@ unsafe extern "C" fn process_hrtime(
     rooted!(&in(cx_ref) let nsec_val = Int32Value(nsec));
     unsafe { JS_DefineElement(cx, arr.handle().into(), 1, nsec_val.handle().into(), JSPROP_ENUMERATE as u32); }
 
+    // hrtime.bigint — function returning nanoseconds as BigInt
+    let bigint_fn = unsafe { JS_NewFunction(cx, Some(hrtime_bigint), 0, 0, c"bigint".as_ptr()) };
+    if !bigint_fn.is_null() {
+        let fn_obj = unsafe { JS_GetFunctionObject(bigint_fn) };
+        let fn_val = mozjs::jsval::ObjectValue(fn_obj);
+        let fn_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
+        unsafe { JS_DefineProperty(cx, arr.handle().into(), c"bigint".as_ptr(), fn_h, JSPROP_ENUMERATE as u32); }
+    }
+
     args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn hrtime_bigint(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let now = ::std::time::SystemTime::now()
+        .duration_since(::std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let total_ns = (now.as_secs() as i64) * 1_000_000_000i64 + (now.subsec_nanos() as i64);
+    let src = format!("BigInt(\"{}\")", total_ns);
+    let mut rval = UndefinedValue();
+    let opts = mozjs::glue::NewCompileOptions(cx, b"hrtime_bigint\0".as_ptr() as *const ::std::os::raw::c_char, 1);
+    if !opts.is_null() {
+        let mut eval_src = mozjs::rust::transform_str_to_source_text(&src);
+        mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut eval_src, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+        libc::free(opts as *mut _);
+    }
+    args.rval().set(rval);
     true
 }
 

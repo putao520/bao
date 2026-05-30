@@ -693,27 +693,17 @@ unsafe extern "C" fn events_static_listener_count(cx: *mut JSContext, argc: u32,
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 || !(*args.get(0).ptr).is_object() { args.rval().set(Int32Value(0)); return true; }
     let emitter = (*args.get(0).ptr).to_object();
-    let emitter_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &emitter };
-    let count_name = CString::new("listenerCount").unwrap_or_default();
-    let mut count_fn = UndefinedValue();
-    JS_GetProperty(cx, emitter_h, count_name.as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut count_fn,
-    });
-    if count_fn.is_object() {
-        let evt_val = *args.get(1).ptr;
-        let call_args = HandleValueArray { length_: 1, elements_: &evt_val as *const JSVal };
-        let global = CurrentGlobalOrNull(cx);
-        if !global.is_null() {
-            let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-            let count_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &count_fn };
-            let mut rval = UndefinedValue();
-            JS_CallFunctionValue(cx, global_h, count_h, &call_args, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
-            });
-            args.rval().set(rval);
-            return true;
-        }
-    }
-    args.rval().set(Int32Value(0));
+
+    let event_name = if (*args.get(1).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(1).ptr)
+    } else {
+        args.rval().set(Int32Value(0));
+        return true;
+    };
+
+    let state = ensure_state(emitter);
+    let count = state.listeners.get(&event_name).map(|l| l.len()).unwrap_or(0) as i32;
+    set_state(emitter, state);
+    args.rval().set(Int32Value(count));
     true
 }
