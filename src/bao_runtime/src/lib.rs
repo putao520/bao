@@ -1,11 +1,11 @@
-// @trace REQ-ENG-006
+// @trace REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_imports)]
-// REQ-IMPL-01: Phase 1 SpiderMonkey engine replacement (completed)
-// REQ-IMPL-02: Phase 2 servo engine integration + rendering (completed)
-// REQ-IMPL-03: Phase 3 CDP Server implementation (completed)
-// REQ-IMPL-04: Phase 4 Stealth anti-fingerprinting (completed)
-// REQ-IMPL-05: Phase 5 Integration testing and release (completed)
+// @trace REQ-IMPL-01: Phase 1 SpiderMonkey engine replacement (completed)
+// @trace REQ-IMPL-02: Phase 2 servo engine integration + rendering (completed)
+// @trace REQ-IMPL-03: Phase 3 CDP Server implementation (completed)
+// @trace REQ-IMPL-04: Phase 4 Stealth anti-fingerprinting (completed)
+// @trace REQ-IMPL-05: Phase 5 Integration testing and release (completed)
 pub mod bun_api;
 pub mod bun_test;
 pub mod fetch_api;

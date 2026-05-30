@@ -1,5 +1,5 @@
-// @trace REQ-ENG-006
-// REQ-CLI-001: bao CLI entry point and runtime initialization
+// @trace REQ-ENG-006 REQ-CLI-001 [entity:BaoRuntime]
+// @trace REQ-CLI-001: bao CLI entry point and runtime initialization
 use bao_engine::context::JsContext;
 use bao_engine::error::JsError;
 use bao_engine::module_loader::ModuleLoader;

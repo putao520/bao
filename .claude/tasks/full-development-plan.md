@@ -235,3 +235,23 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
   - node_events_tests: 14 个 EventEmitter 测试 (on/emit/off/once/prepend/instanceof)
   - Bun.read 别名修复 (JS_DefineProperty 指向 readFile 同一 JSObject)
   - 151 测试通过 (3 个 flaky bridge channel 竞态，单独运行全通过)
+- [x] Wave 9: Clippy 修复 + 扩展模块集成测试
+  - bao_engine: 零 error 零 warning (thread_local const, if-collapse, unsafe blocks, c"" literals, # Safety docs)
+  - bao_runtime: 零 error (dead_code allow, identical blocks merge, &Path, strip_prefix)
+  - bao_stealth: RangeInclusive::contains, format! in format!, default→default_engine
+  - 上游修复: bun_http #[expect]→#[allow], bun_resolver truncate(0)→clear()
+  - node_dns_net_tests: 21 断言 (dns lookup/resolve/Resolver, net isIP/isIPv4/createServer/Socket)
+  - node_misc_tests: 34 断言 (child_process, tty, vm, module, perf_hooks, readline, string_decoder, zlib gzip roundtrip, tls)
+  - 11 个集成测试文件, ~300+ JS API 断言, 270+ cargo test 全通过
+- [x] Wave 10: bao_engine 单元测试 + http/timers 集成测试
+  - engine_core_tests: 40+ 断言 (context/string/number/bool/error/JSON/array/Map/Set/Promise/RegExp/Date)
+  - node_timers_tests: 18 断言 (setTimeout/setInterval/setImmediate + timers.promises)
+  - node_http_tests: 21 断言 (http/https createServer/request/get/STATUS_CODES/Agent)
+- [x] Wave 11: SPEC 审计 + @trace 补充 + stealth 测试修复
+  - SPEC 成熟度 60% (Code 层 0% — 审计工具不支持 Rust 文件扫描，@trace 注释实际完整)
+  - 补充 @trace: REQ-CLI-001 → runtime.rs, REQ-IMPL-01~05 → lib.rs, REQ-LIB-001 → page_pool.rs
+  - 修复 StealthEngine::default() → default_engine() (stealth_tests + profile_integration_tests)
+- [x] Wave 12: bao_browser 配置/权限测试 + Web API 集成测试
+  - browser_config_tests: 21 单元测试 (BaoConfig/BrowserConfig/PageConfig 验证 + Permission 白名单 + PermissionGuard 沙箱 + BrowserError Display)
+  - web_api_tests: 26 断言 (TextEncoder/TextDecoder/atob/btoa/Performance/queueMicrotask/WebSocket/fetch/Response/Request/console/structuredClone)
+  - 测试总计: 375 测试通过 (bao_engine 1 + bao_runtime 29 + bao_cdp 191 + cdp-server 56 + bao_stealth 76 + bao_browser 22)
