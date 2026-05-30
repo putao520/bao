@@ -38,7 +38,7 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, util_obj.handle(), c"inherits".as_ptr(), Some(util_inherits), 2, 0);
         w2::JS_DefineFunction(cx, util_obj.handle(), c"isDeepStrictEqual".as_ptr(), Some(util_is_deep_strict_equal), 2, 0);
 
-        // util.types
+        // util.types — native type checkers (12 Rust-backed)
         {
             rooted!(&in(cx) let types_obj = w2::JS_NewPlainObject(cx));
             if !types_obj.get().is_null() {
@@ -55,6 +55,66 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
                 w2::JS_DefineFunction(cx, types_obj.handle(), c"isDate".as_ptr(), Some(util_is_date), 1, enumerate);
                 w2::JS_DefineFunction(cx, types_obj.handle(), c"isRegExp".as_ptr(), Some(util_is_regexp), 1, enumerate);
                 w2::JS_DefineFunction(cx, types_obj.handle(), c"isError".as_ptr(), Some(util_is_error), 1, enumerate);
+
+                // Extended types via JS eval — factory function pattern
+                let types_src = r#"(function(t){
+t.isPromise=function(v){return v instanceof Promise};
+t.isProxy=function(v){try{return v&&typeof v==='object'&&!v.constructor}catch(e){return false}};
+t.isMap=function(v){return v instanceof Map};
+t.isSet=function(v){return v instanceof Set};
+t.isWeakMap=function(v){return v instanceof WeakMap};
+t.isWeakSet=function(v){return v instanceof WeakSet};
+t.isMapIterator=function(v){return Object.prototype.toString.call(v)==='[object Map Iterator]'};
+t.isSetIterator=function(v){return Object.prototype.toString.call(v)==='[object Set Iterator]'};
+t.isArrayBuffer=function(v){return v instanceof ArrayBuffer};
+t.isSharedArrayBuffer=function(v){return typeof SharedArrayBuffer!=='undefined'&&v instanceof SharedArrayBuffer};
+t.isDataView=function(v){return v instanceof DataView};
+t.isTypedArray=function(v){return ArrayBuffer.isView(v)&&!(v instanceof DataView)};
+t.isInt8Array=function(v){return v instanceof Int8Array};
+t.isUint8Array=function(v){return v instanceof Uint8Array};
+t.isUint8ClampedArray=function(v){return v instanceof Uint8ClampedArray};
+t.isInt16Array=function(v){return v instanceof Int16Array};
+t.isUint16Array=function(v){return v instanceof Uint16Array};
+t.isInt32Array=function(v){return v instanceof Int32Array};
+t.isUint32Array=function(v){return v instanceof Uint32Array};
+t.isFloat32Array=function(v){return v instanceof Float32Array};
+t.isFloat64Array=function(v){return v instanceof Float64Array};
+t.isBigInt64Array=function(v){return typeof BigInt64Array!=='undefined'&&v instanceof BigInt64Array};
+t.isBigUint64Array=function(v){return typeof BigUint64Array!=='undefined'&&v instanceof BigUint64Array};
+t.isBooleanObject=function(v){return v instanceof Boolean};
+t.isNumberObject=function(v){return v instanceof Number};
+t.isStringObject=function(v){return v instanceof String};
+t.isSymbolObject=function(v){return v instanceof Symbol};
+t.isBoxedPrimitive=function(v){return t.isBooleanObject(v)||t.isNumberObject(v)||t.isStringObject(v)||t.isSymbolObject(v)};
+t.isNativeError=function(v){return v instanceof Error};
+t.isAsyncFunction=function(v){return Object.prototype.toString.call(v)==='[object AsyncFunction]'};
+t.isGeneratorFunction=function(v){return Object.prototype.toString.call(v)==='[object GeneratorFunction]'};
+t.isGeneratorObject=function(v){return v&&typeof v.next==='function'&&typeof v.throw==='function'};
+t.isModuleNamespaceObject=function(v){return Object.prototype.toString.call(v)==='[object Module]'};
+t.isArgumentsObject=function(v){return Object.prototype.toString.call(v)==='[object Arguments]'};
+t.isArrayBufferView=function(v){return ArrayBuffer.isView(v)};
+t.isAnyArrayBuffer=function(v){return t.isArrayBuffer(v)||t.isSharedArrayBuffer(v)};
+t.isExternal=function(){return false};
+})"#;
+                let mut src = mozjs::rust::transform_str_to_source_text(types_src);
+                let mut factory_val = UndefinedValue();
+                let factory_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut factory_val };
+                let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<types>".as_ptr(), 1);
+                if !opts.is_null() {
+                    let global = CurrentGlobalOrNull(cx.raw_cx());
+                    if !global.is_null() && JS::Evaluate2(cx.raw_cx(), opts, &mut src, factory_h) && factory_val.is_object() {
+                        let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+                        let types_val = ObjectValue(types_obj.get());
+                        let args_arr = HandleValueArray { length_: 1, elements_: &types_val };
+                        let mut call_rval = UndefinedValue();
+                        let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
+                        let factory_obj = factory_val.to_object();
+                        let factory_obj_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ObjectValue(factory_obj) };
+                        JS_CallFunctionValue(cx.raw_cx(), global_h, factory_obj_h, &args_arr, call_rval_h);
+                    }
+                    libc::free(opts as *mut _);
+                }
+
                 w2::JS_DefineProperty3(cx, util_obj.handle(), c"types".as_ptr(), types_obj.handle(), JSPROP_ENUMERATE as u32);
             }
         }
