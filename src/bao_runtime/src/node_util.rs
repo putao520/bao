@@ -122,7 +122,15 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         }
     }
 
+    // assert.strict — self-reference (all comparisons already strict)
+    unsafe {
+        let strict_val = ObjectValue(assert_obj.get());
+        let strict_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &strict_val };
+        JS_DefineProperty(cx.raw_cx(), assert_obj.handle().into(), c"strict".as_ptr(), strict_h, JSPROP_ENUMERATE as u32);
+    }
+
     cache_builtin("assert", assert_obj.get());
+    cache_builtin("assert/strict", assert_obj.get());
 }
 
 unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {
