@@ -287,3 +287,7 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 		  - 5 个嵌入式单元测试 (simple_class/accessor/empty_proto/generate_all/generate_bindings)
 		  - 修复多行属性块解析 bug (name 引号剥离 + block depth 收集)
 		  - bao_engine 测试总计: 6 (5 codegen + 1 engine_core)
+		- [x] Wave 19: CDP 全链路集成测试
+		  - full_chain_tests: 23 测试 (11 domain enable/disable + 命令路由 + 全生命周期 + 错误处理)
+		  - bao_cdp 测试总计: 214 (191 旧 + 23 新)
+		  - 测试覆盖: 全部 11 domain handler 命令路由验证
