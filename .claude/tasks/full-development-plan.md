@@ -360,3 +360,14 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 		  - runtime_bridge: inject_all_with_profile 使用 StealthEngine 动态注入
 		  - stealth_profile_config_tests: 17 tests (BaoConfig/BrowserConfig/PageConfig stealth 传递 + validate + clone + override)
 		  - Full regression: 360 tests, 0 failures
+		- [x] Wave 34: 跨 crate 集成测试 + 错误路径覆盖
+		  - cross_crate_integration_tests: 11 tests (BaoRuntime ↔ PagePool ↔ PermissionGuard ↔ CdpRouter ↔ CdpServer)
+		  - BrowserError Display/Debug/Error 全覆盖, Navigate 错误路径, PagePool 容量限制
+		  - Full regression: 381 tests, 0 failures
+		- [x] Wave 35: cdp-server 协议鲁棒性测试
+		  - protocol_robustness_tests: 33 tests (CdpMessage 解析边界, DomainRegistry dispatch 边界, CdpResponse/CdpEvent 序列化, Handler 错误传播, Session 生命周期)
+		  - Full regression: 全部通过
+		- [x] Wave 36: stealth 边界测试 + SPEC 质量验证
+		  - stealth_edge_case_tests: 28 tests (CanvasNoise/BehaviorSimulator/StealthProfile 边界值, Debug traits, 跨 profile 一致性)
+		  - 发现: default_engine() 用 Firefox (非 Chrome)
+		  - SPEC: 零 ERROR, 2 WARNING (path param), 成熟度 60% (工具限制)
