@@ -1,16 +1,26 @@
 // REQ-ENG-002: JobQueue event loop with SM microtask/async
 use ::std::cell::RefCell;
+use ::std::collections::VecDeque;
+use ::std::ffi::CString;
 use ::std::os::raw::c_void;
 use ::std::ptr;
+use ::std::sync::atomic::{AtomicUsize, Ordering};
 
 use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps};
 use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
 use mozjs::rust::wrappers2::{RunJobs, SetJobQueue};
 
+static JOB_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
 thread_local! {
-    static JOB_QUEUE: RefCell<Vec<*mut JSObject>> = RefCell::new(Vec::new());
+    // Track job IDs in order — the actual JSObject* is stored as a global property
+    static JOB_IDS: RefCell<VecDeque<usize>> = RefCell::new(VecDeque::new());
     static QUEUE_PTR: RefCell<*mut mozjs::jsapi::JobQueue> = RefCell::new(ptr::null_mut());
+}
+
+fn job_prop_name(id: usize) -> CString {
+    CString::new(format!("__job_{}", id)).unwrap_or_default()
 }
 
 pub struct JobQueue;
@@ -60,14 +70,42 @@ impl Drop for JobQueue {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn enqueue_job(
     _queue: *const c_void,
-    _cx: *mut JSContext,
+    cx: *mut JSContext,
     _promise: Handle<*mut JSObject>,
     job: Handle<*mut JSObject>,
     _allocation_site: Handle<*mut JSObject>,
     _host_defined_data: Handle<*mut JSObject>,
 ) -> bool {
-    JOB_QUEUE.with(|q| {
-        q.borrow_mut().push(*job.ptr);
+    let job_obj = *job.ptr;
+    if job_obj.is_null() {
+        return true;
+    }
+
+    let id = JOB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let global = unsafe { CurrentGlobalOrNull(cx) };
+    if global.is_null() {
+        return true;
+    }
+
+    // Store job as a property on the global object — GC-safe
+    let prop = job_prop_name(id);
+    let job_val = mozjs::jsval::ObjectValue(job_obj);
+    let job_h = Handle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &job_val,
+    };
+    unsafe {
+        JS_DefineProperty(
+            cx,
+            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+            prop.as_ptr(),
+            job_h,
+            0,
+        );
+    }
+
+    JOB_IDS.with(|q| {
+        q.borrow_mut().push_back(id);
     });
     true
 }
@@ -78,32 +116,40 @@ unsafe extern "C" fn run_jobs(
     cx: *mut JSContext,
 ) {
     loop {
-        let job = JOB_QUEUE.with(|q| {
-            if q.borrow().is_empty() {
-                None
-            } else {
-                Some(q.borrow_mut().remove(0))
-            }
-        });
-        let Some(job) = job else {
+        let job_id = JOB_IDS.with(|q| q.borrow_mut().pop_front());
+        let Some(id) = job_id else {
             break;
         };
-
-        let fval = mozjs::jsval::ObjectValue(job);
-        let mut rval = UndefinedValue();
 
         let global = unsafe { CurrentGlobalOrNull(cx) };
         if global.is_null() {
             break;
         }
 
+        // Retrieve the job object from the global property
+        let prop = job_prop_name(id);
+        let mut job_val = UndefinedValue();
+        unsafe {
+            JS_GetProperty(
+                cx,
+                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+                prop.as_ptr(),
+                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut job_val },
+            );
+        }
+
+        if !job_val.is_object() {
+            continue;
+        }
+
+        let mut rval = UndefinedValue();
         let obj_handle = Handle::<*mut JSObject> {
             _phantom_0: ::std::marker::PhantomData,
             ptr: &global,
         };
         let fval_handle = Handle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
-            ptr: &fval,
+            ptr: &job_val,
         };
         let empty_args = HandleValueArray::empty();
         let rval_handle = MutableHandle::<Value> {
@@ -112,10 +158,20 @@ unsafe extern "C" fn run_jobs(
         };
 
         unsafe {
-            JS_CallFunctionValue(cx, obj_handle, fval_handle, &empty_args, rval_handle);
+            let ok = JS_CallFunctionValue(cx, obj_handle, fval_handle, &empty_args, rval_handle);
+            if !ok {
+                JS_ClearPendingException(cx);
+            }
         }
 
-        JS_ClearPendingException(cx);
+        // Clean up the property after execution
+        unsafe {
+            JS_DeleteProperty1(
+                cx,
+                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+                prop.as_ptr(),
+            );
+        }
     }
 }
 
@@ -131,5 +187,5 @@ unsafe extern "C" fn get_host_defined_data(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn is_empty(_queue: *const c_void) -> bool {
-    JOB_QUEUE.with(|q| q.borrow().is_empty())
+    JOB_IDS.with(|q| q.borrow().is_empty())
 }

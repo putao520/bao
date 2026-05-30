@@ -1,5 +1,4 @@
 use ::std::cell::RefCell;
-use ::std::collections::HashMap;
 use ::std::ffi::CString;
 use ::std::fs;
 use ::std::path::{Path, PathBuf};
@@ -10,14 +9,15 @@ use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
 
+use crate::gc_store;
+
 thread_local! {
-    static MODULE_CACHE: RefCell<HashMap<::std::string::String, *mut JSObject>> = RefCell::new(HashMap::new());
     static REQUIRE_DIR: RefCell<Option<PathBuf>> = RefCell::new(None);
 }
 
-pub fn cache_builtin(name: &str, obj: *mut JSObject) {
+pub fn cache_builtin(cx: &mut mozjs::context::JSContext, name: &str, obj: *mut JSObject) {
     let cache_key = format!("builtin:{}", name);
-    MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, obj));
+    gc_store::gc_store_insert(unsafe { cx.raw_cx() }, &cache_key, obj);
 }
 
 pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
@@ -25,7 +25,7 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
     use mozjs::rooted;
     use mozjs::rust::wrappers2 as w2;
 
-    let assert_obj = MODULE_CACHE.with(|c| c.borrow().get("builtin:assert").copied());
+    let assert_obj = gc_store::gc_store_get(unsafe { cx.raw_cx() }, "builtin:assert");
     let Some(assert_obj) = assert_obj else { return };
     if assert_obj.is_null() { return; }
 
@@ -65,7 +65,7 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    cache_builtin("assert/strict", strict_obj.get());
+    cache_builtin(cx, "assert/strict", strict_obj.get());
 }
 
 pub fn install_require(
@@ -111,7 +111,7 @@ unsafe extern "C" fn require_fn(
     // Check built-in modules first (node:fs, node:path, fs, path, etc.)
     let builtin_key = specifier.strip_prefix("node:").unwrap_or(&specifier);
     let cache_key = format!("builtin:{}", builtin_key);
-    let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
+    let cached = gc_store::gc_store_get(cx, &cache_key);
     if let Some(existing) = cached {
         if !existing.is_null() {
             args.rval().set(mozjs::jsval::ObjectValue(existing));
@@ -137,7 +137,7 @@ unsafe extern "C" fn require_fn(
     };
     let cache_key = canonical.to_string_lossy().into_owned();
 
-    let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
+    let cached = gc_store::gc_store_get(cx, &cache_key);
     if let Some(existing) = cached {
         if !existing.is_null() {
             let exports_val = mozjs::jsval::ObjectValue(existing);
@@ -169,7 +169,7 @@ unsafe extern "C" fn require_fn(
         return false;
     }
 
-    MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, exports_obj));
+    gc_store::gc_store_insert(cx, &cache_key, exports_obj);
     args.rval().set(mozjs::jsval::ObjectValue(exports_obj));
     true
 }
