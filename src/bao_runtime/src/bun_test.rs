@@ -400,6 +400,8 @@ const HARNESS_SHIM: &str = r#"
 })();
 "#;
 
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext with an active request on the current thread.
 pub unsafe fn install_bun_test(cx: &mut mozjs::context::JSContext) {
     let raw = cx.raw_cx();
 
@@ -462,6 +464,9 @@ unsafe fn eval_shim_get_obj(raw: *mut JSContext, expr: &str) -> *mut JSObject {
 }
 
 /// Run registered bun:test suites and print results. Returns (passed, failed).
+///
+/// # Safety
+/// Caller must ensure `raw` is a valid JSContext pointer with an active request.
 pub unsafe fn run_bun_tests(raw: *mut JSContext) -> (u32, u32) {
     let result = eval_shim_get_obj(raw, "globalThis.__run_bun_tests()");
     if result.is_null() {

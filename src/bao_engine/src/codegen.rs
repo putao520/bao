@@ -199,6 +199,8 @@ pub struct GeneratedBindings {
     pub js_class_def: String,
     pub function_specs: Vec<String>,
     pub property_specs: Vec<String>,
+    pub static_function_specs: Vec<String>,
+    pub static_property_specs: Vec<String>,
 }
 
 /// Generate SpiderMonkey binding code from a parsed class definition.
@@ -216,10 +218,24 @@ pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
         class_name = class_name,
     );
 
+    let (function_specs, property_specs) = collect_specs(&class_def.proto);
+    let (static_function_specs, static_property_specs) = collect_specs(&class_def.static_props);
+
+    GeneratedBindings {
+        class_name: class_name.clone(),
+        js_class_def,
+        function_specs,
+        property_specs,
+        static_function_specs,
+        static_property_specs,
+    }
+}
+
+fn collect_specs(props: &[PropertyDef]) -> (Vec<String>, Vec<String>) {
     let mut function_specs = Vec::new();
     let mut property_specs = Vec::new();
 
-    for prop in &class_def.proto {
+    for prop in props {
         match &prop.kind {
             PropertyKind::Method { fn_name, length } => {
                 function_specs.push(format!(
@@ -289,12 +305,7 @@ pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
         }
     }
 
-    GeneratedBindings {
-        class_name: class_name.clone(),
-        js_class_def,
-        function_specs,
-        property_specs,
-    }
+    (function_specs, property_specs)
 }
 
 /// Batch generate bindings for all class definitions.
@@ -381,6 +392,8 @@ define({
         assert!(bindings.js_class_def.contains("MyClass"));
         assert_eq!(bindings.function_specs.len(), 1);
         assert_eq!(bindings.property_specs.len(), 1);
+        assert!(bindings.static_function_specs.is_empty());
+        assert!(bindings.static_property_specs.is_empty());
     }
 
     #[test]
@@ -541,6 +554,45 @@ define({
         assert_eq!(result.classes.len(), 2);
         assert_eq!(result.classes[0].name, "First");
         assert_eq!(result.classes[1].name, "Second");
+    }
+
+    #[test]
+    fn test_generate_bindings_with_static_props() {
+        let class = ClassDef {
+            name: "File".into(),
+            construct: true,
+            no_constructor: false,
+            finalize: true,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "size".into(),
+                kind: PropertyKind::Getter { fn_name: "getSize".into(), cache: true },
+            }],
+            static_props: vec![
+                PropertyDef {
+                    name: "open".into(),
+                    kind: PropertyKind::Method { fn_name: "fileOpen".into(), length: 2 },
+                },
+                PropertyDef {
+                    name: "defaultEncoding".into(),
+                    kind: PropertyKind::Accessor {
+                        getter: "getDefaultEncoding".into(),
+                        setter: "setDefaultEncoding".into(),
+                        cache: false,
+                    },
+                },
+            ],
+        };
+        let bindings = generate_bindings(&class);
+        assert_eq!(bindings.function_specs.len(), 0);
+        assert_eq!(bindings.property_specs.len(), 1);
+        assert!(bindings.property_specs[0].contains("getSize"));
+        assert_eq!(bindings.static_function_specs.len(), 1);
+        assert!(bindings.static_function_specs[0].contains("fileOpen"));
+        assert_eq!(bindings.static_property_specs.len(), 1);
+        assert!(bindings.static_property_specs[0].contains("getDefaultEncoding"));
+        assert!(bindings.static_property_specs[0].contains("setDefaultEncoding"));
     }
 
     #[test]

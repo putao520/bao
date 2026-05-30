@@ -44,7 +44,10 @@ pub mod stealth_http;
 
 pub use runtime::BaoRuntime;
 
-/// Safe JS string conversion: returns "" if JS string allocation fails
+/// Safe JS string conversion: returns "" if JS string allocation fails.
+///
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext pointer and `val` is rooted or otherwise protected from GC.
 pub unsafe fn js_to_rust_string(cx: *mut mozjs::jsapi::JSContext, val: mozjs::jsval::JSVal) -> String {
     let ptr = val.to_string();
     match ::std::ptr::NonNull::new(ptr) {
@@ -53,7 +56,10 @@ pub unsafe fn js_to_rust_string(cx: *mut mozjs::jsapi::JSContext, val: mozjs::js
     }
 }
 
-/// Safe JSString pointer conversion: returns "" if pointer is null  
+/// Safe JSString pointer conversion: returns "" if pointer is null.
+///
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext pointer and `s` is either null or a valid JSString pointer.
 pub unsafe fn jsstr_to_rust_string(cx: *mut mozjs::jsapi::JSContext, s: *mut mozjs::jsapi::JSString) -> String {
     match ::std::ptr::NonNull::new(s) {
         Some(nn) => mozjs::conversions::jsstr_to_string(cx, nn),
