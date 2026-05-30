@@ -1,3 +1,4 @@
+// @trace REQ-ENG-006
 // Bun.* namespace + process global + servers + test runner
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
@@ -201,15 +202,25 @@ pub fn install_bun_global(
             JSPROP_ENUMERATE as u32,
         );
 
-        // Bun.read — alias for readFile
-        JS_DefineFunction(
-            cx,
-            bun_obj.handle(),
-            c"read".as_ptr(),
-            ::std::option::Option::Some(bun_read_file),
-            1,
-            JSPROP_ENUMERATE as u32,
-        );
+        // Bun.read — alias for readFile (same JS object via JS_DefineProperty)
+        {
+            rooted!(&in(cx) let mut read_val = UndefinedValue());
+            unsafe {
+                let _ok = JS_GetProperty(
+                    cx.raw_cx(),
+                    bun_obj.handle().into(),
+                    c"readFile".as_ptr() as *const ::std::os::raw::c_char,
+                    read_val.handle_mut().into(),
+                );
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    bun_obj.handle().into(),
+                    c"read".as_ptr(),
+                    read_val.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
 
         // Bun.exit
         JS_DefineFunction(
@@ -1112,8 +1123,8 @@ unsafe extern "C" fn bun_serve(
     }
 
     let addr = format!("{}:{}", hostname, port);
-    let server = match tiny_http::Server::http(&addr) {
-        Ok(s) => s,
+    let listener = match ::std::net::TcpListener::bind(&addr) {
+        Ok(l) => l,
         Err(e) => {
             let msg = format!("Bun.serve() failed to bind: {}", e);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
@@ -1122,7 +1133,7 @@ unsafe extern "C" fn bun_serve(
         }
     };
 
-    let actual_port = server.server_addr().to_ip().map(|a| a.port()).unwrap_or(port);
+    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     eprint!("Bun.serve() listening on {}:{}\n", hostname, actual_port);
 
     let server_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
@@ -1145,38 +1156,48 @@ unsafe extern "C" fn bun_serve(
         }
     }
 
-    static SRV_STOP: ::std::sync::atomic::AtomicBool = ::std::sync::atomic::AtomicBool::new(false);
-    let stop_flag = &SRV_STOP;
-    stop_flag.store(false, ::std::sync::atomic::Ordering::Relaxed);
-
     let bg_stop = ::std::sync::Arc::new(::std::sync::atomic::AtomicBool::new(false));
     let bg_stop_clone = bg_stop.clone();
     let bg_port = actual_port;
     let bg_hostname = hostname.clone();
 
+    listener.set_nonblocking(true).ok();
     ::std::thread::spawn(move || {
+        use ::std::io::{Read, Write};
         loop {
             if bg_stop_clone.load(::std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
-            match server.recv_timeout(::std::time::Duration::from_millis(100)) {
-                Ok(Some(req)) => {
-                    let method = req.method().to_string().to_uppercase();
-                    let url_path = req.url().to_string();
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let mut buf = [0u8; 8192];
+                    let n = match stream.read(&mut buf) {
+                        Ok(n) if n > 0 => n,
+                        _ => continue,
+                    };
+                    let request = String::from_utf8_lossy(&buf[..n]);
 
-                    // Check for WebSocket upgrade
-                    let is_ws_upgrade = req.headers().iter().any(|h| {
-                        h.field.equiv("Upgrade") && h.value.as_str() == "websocket"
-                    });
+                    // Parse request line: METHOD PATH HTTP/1.x
+                    let first_line = request.lines().next().unwrap_or("");
+                    let mut parts = first_line.split_whitespace();
+                    let method = parts.next().unwrap_or("GET").to_uppercase();
+                    let url_path = parts.next().unwrap_or("/").to_string();
 
-                    if is_ws_upgrade {
-                        // Accept WebSocket upgrade using tungstenite
-                        let ws_key = req.headers().iter().find_map(|h| {
-                            if h.field.equiv("Sec-WebSocket-Key") {
-                                Some(h.value.as_str().to_string())
-                            } else { None }
-                        }).unwrap_or_default();
+                    // Parse headers
+                    let mut headers: HashMap<String, String> = HashMap::new();
+                    for line in request.lines().skip(1) {
+                        if line.is_empty() { break; }
+                        if let Some((k, v)) = line.split_once(':') {
+                            headers.insert(
+                                k.trim().to_ascii_lowercase(),
+                                v.trim().to_string(),
+                            );
+                        }
+                    }
 
+                    if headers.get("upgrade").map(|v| v.as_str()) == Some("websocket") {
+                        let ws_key = headers.get("sec-websocket-key")
+                            .cloned().unwrap_or_default();
                         let accept_key = {
                             use sha1::{Digest, Sha1};
                             let mut hasher = Sha1::new();
@@ -1184,21 +1205,29 @@ unsafe extern "C" fn bun_serve(
                             let result = hasher.finalize();
                             base64::engine::general_purpose::STANDARD.encode(&result)
                         };
-
-                        // Build and send upgrade response
-                        let mut response = tiny_http::Response::new_empty(tiny_http::StatusCode(101));
-                        response.add_header(tiny_http::Header::from_bytes(&b"Upgrade"[..], &b"websocket"[..]).expect("static header bytes"));
-                        response.add_header(tiny_http::Header::from_bytes(&b"Connection"[..], &b"Upgrade"[..]).expect("static header bytes"));
-                        response.add_header(tiny_http::Header::from_bytes(&b"Sec-WebSocket-Accept"[..], accept_key.as_bytes()).expect("valid accept key"));
-                        let _ = req.respond(response);
+                        let response = format!(
+                            "HTTP/1.1 101 Switching Protocols\r\n\
+                             Upgrade: websocket\r\n\
+                             Connection: Upgrade\r\n\
+                             Sec-WebSocket-Accept: {}\r\n\r\n",
+                            accept_key
+                        );
+                        let _ = stream.write_all(response.as_bytes());
                     } else {
-                        // Regular HTTP response
                         let body = format!("{{\"method\":\"{}\",\"url\":\"{}\"}}", method, url_path);
-                        let response = tiny_http::Response::from_string(body);
-                        let _ = req.respond(response);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\n\
+                             Content-Type: application/json\r\n\
+                             Content-Length: {}\r\n\
+                             Connection: close\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
                     }
                 }
-                Ok(None) => {}
+                Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
+                    ::std::thread::sleep(::std::time::Duration::from_millis(100));
+                }
                 Err(_) => {}
             }
         }

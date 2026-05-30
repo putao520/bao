@@ -1,4 +1,4 @@
-// REQ-ENG-001: SpiderMonkey JSContext lifecycle management
+// @trace REQ-ENG-001 [entity:JsContext]
 use ::std::ptr;
 
 use mozjs::jsapi::{JSObject, OnNewGlobalHookOption};
@@ -6,7 +6,7 @@ use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
 use mozjs::rust::wrappers2::JS_NewGlobalObject;
-use mozjs::rust::{JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
+use mozjs::rust::{JSEngine, JSEngineHandle, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
 
 use crate::error::JsError;
 use crate::host_fn;
@@ -17,16 +17,40 @@ use crate::value::{JsValue, jsval_to_jsvalue};
 pub type GlobalSetupFn = unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
 pub type PostEvalHook = fn(&mut mozjs::context::JSContext) -> bool;
 
+/// Per-thread engine handle. JSEngine can only be initialized once per process.
+/// We intentionally leak the JSEngine struct (std::mem::forget) to avoid drop-order
+/// issues with thread_local — mozjs asserts no outstanding handles on engine drop.
+thread_local! {
+    static ENGINE_HANDLE: ::std::cell::RefCell<Option<JSEngineHandle>> = ::std::cell::RefCell::new(None);
+}
+
 pub struct JsContext {
     runtime: Runtime,
-    _engine: JSEngine,
     global_setup: Option<GlobalSetupFn>,
     post_eval_hook: Option<PostEvalHook>,
 }
 
 impl JsContext {
     pub fn new() -> ::std::result::Result<Self, JsError> {
-        let engine = JSEngine::init().map_err(|_| JsError {
+        let handle: Option<JSEngineHandle> = ENGINE_HANDLE.with(|cell| {
+            let mut borrow = cell.borrow_mut();
+            if let Some(ref h) = *borrow {
+                Some(h.clone())
+            } else {
+                match JSEngine::init() {
+                    Ok(engine) => {
+                        let handle = engine.handle();
+                        // Intentionally leak the engine to avoid drop-order issues
+                        std::mem::forget(engine);
+                        *borrow = Some(handle.clone());
+                        Some(handle)
+                    }
+                    Err(_) => None,
+                }
+            }
+        });
+
+        let handle = handle.ok_or_else(|| JsError {
             message: "Failed to initialize SpiderMonkey engine".into(),
             filename: "<engine>".into(),
             line: 0,
@@ -34,7 +58,7 @@ impl JsContext {
             stack: None,
         })?;
 
-        let mut runtime = Runtime::new(engine.handle());
+        let mut runtime = Runtime::new(handle);
 
         {
             let cx = runtime.cx();
@@ -51,7 +75,7 @@ impl JsContext {
 
         ModuleLoader::init(&runtime);
 
-        ::std::result::Result::Ok(JsContext { runtime, _engine: engine, global_setup: None, post_eval_hook: None })
+        ::std::result::Result::Ok(JsContext { runtime, global_setup: None, post_eval_hook: None })
     }
 
     pub fn cx_mut(&mut self) -> &mut mozjs::context::JSContext {
@@ -84,52 +108,50 @@ impl JsContext {
                                &*options)
         });
 
-        {
-            let mut realm = AutoRealm::new_from_handle(cx, global.handle());
-            let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-            host_fn::install_console(realm_cx, global.handle());
-            if let Some(setup) = self.global_setup {
-                unsafe { setup(realm_cx, global.handle()) };
-            }
-        }
-
         let c_filename = ::std::ffi::CString::new(filename)
             .unwrap_or_else(|_| ::std::ffi::CString::new("<eval>").unwrap());
         let compile_opts = mozjs::rust::CompileOptionsWrapper::new(cx, c_filename, 1);
 
         rooted!(&in(cx) let mut rval = UndefinedValue());
 
-        let result = mozjs::rust::evaluate_script(
-            cx,
-            global.handle(),
-            source,
-            rval.handle_mut(),
-            compile_opts,
-        );
-
-        if result.is_err() {
+        // Enter realm for the entire eval scope — setup, script execution, and job draining
+        {
             let mut realm = AutoRealm::new_from_handle(cx, global.handle());
             let realm_cx: &mut mozjs::context::JSContext = &mut realm;
-            return ::std::result::Result::Err(extract_exception(realm_cx));
-        }
 
-        unsafe {
-            let raw_cx = cx.raw_cx();
-            let old_realm = mozjs::jsapi::JS::EnterRealm(raw_cx, global.get());
-            mozjs::jsapi::js::RunJobs(raw_cx);
-
-            if let Some(hook) = self.post_eval_hook {
-                loop {
-                    mozjs::jsapi::js::RunJobs(raw_cx);
-                    if !hook(cx) {
-                        break;
-                    }
-                    ::std::thread::sleep(::std::time::Duration::from_millis(1));
-                }
+            host_fn::install_console(realm_cx, global.handle());
+            if let Some(setup) = self.global_setup {
+                unsafe { setup(realm_cx, global.handle()) };
             }
 
-            mozjs::jsapi::JS::LeaveRealm(raw_cx, old_realm);
+            let result = mozjs::rust::evaluate_script(
+                realm_cx,
+                global.handle(),
+                source,
+                rval.handle_mut(),
+                compile_opts,
+            );
+
+            if result.is_err() {
+                return ::std::result::Result::Err(extract_exception(realm_cx));
+            }
+
+            unsafe {
+                let raw_cx = realm_cx.raw_cx();
+                mozjs::jsapi::js::RunJobs(raw_cx);
+
+                if let Some(hook) = self.post_eval_hook {
+                    loop {
+                        mozjs::jsapi::js::RunJobs(raw_cx);
+                        if !hook(realm_cx) {
+                            break;
+                        }
+                        ::std::thread::sleep(::std::time::Duration::from_millis(1));
+                    }
+                }
+            }
         }
+        // realm dropped here, cx no longer mutably borrowed
 
         ::std::result::Result::Ok(unsafe { jsval_to_jsvalue(cx.raw_cx_no_gc(), rval.get()) })
     }
