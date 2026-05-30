@@ -33,6 +33,7 @@ pub unsafe fn install_all(
     crate::fetch_api::install_fetch_global(cx, global);
     crate::fetch_api::install_response_constructor(cx, global);
     crate::fetch_api::install_headers_constructor(cx, global);
+    crate::fetch_api::install_request_constructor(cx, global);
     crate::require::install_require(cx, global);
     install_module_global(cx, global);
     crate::timers::install_timer_globals(cx, global);

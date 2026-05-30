@@ -593,3 +593,70 @@ unsafe extern "C" fn headers_has(
     args.rval().set(mozjs::jsval::BooleanValue(!val.is_undefined() && !val.is_null()));
     true
 }
+
+pub fn install_request_constructor(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        let ctor = JS_NewFunction(cx.raw_cx(), Some(request_constructor), 2, JSFUN_CONSTRUCTOR as u32, c"Request".as_ptr());
+        if !ctor.is_null() {
+            let ctor_obj = JS_GetFunctionObject(ctor);
+            if !ctor_obj.is_null() {
+                rooted!(&in(cx) let co = ctor_obj);
+                JS_DefineProperty3(cx, global, c"Request".as_ptr(), co.handle(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+            }
+        }
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn request_constructor(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let req_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    if req_obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &req_obj };
+
+    // url argument
+    let url_val = if argc > 0 {
+        let v = *args.get(0).ptr;
+        if v.is_string() { v } else { UndefinedValue() }
+    } else { UndefinedValue() };
+    let url_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &url_val };
+    JS_DefineProperty(cx, obj_handle, c"url".as_ptr(), url_h, JSPROP_ENUMERATE as u32);
+
+    // method from options or default GET
+    let method_str = if argc > 1 {
+        let opts = *args.get(1).ptr;
+        if opts.is_object() {
+            let opts_obj = opts.to_object();
+            let opts_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &opts_obj };
+            let mut m_val = UndefinedValue();
+            JS_GetProperty(cx, opts_h, c"method".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut m_val });
+            if m_val.is_string() {
+                crate::js_to_rust_string(cx, m_val)
+            } else { "GET".to_string() }
+        } else { "GET".to_string() }
+    } else { "GET".to_string() };
+    let method_cstr = CString::new(method_str).unwrap_or_default();
+    let method_jsstr = JS_NewStringCopyZ(cx, method_cstr.as_ptr());
+    let method_val = StringValue(&*method_jsstr);
+    let method_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &method_val };
+    JS_DefineProperty(cx, obj_handle, c"method".as_ptr(), method_h, JSPROP_ENUMERATE as u32);
+
+    // headers (empty Headers-like object)
+    let headers_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    let headers_val = mozjs::jsval::ObjectValue(headers_obj);
+    let headers_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &headers_val };
+    JS_DefineProperty(cx, obj_handle, c"headers".as_ptr(), headers_h, JSPROP_ENUMERATE as u32);
+
+    args.rval().set(mozjs::jsval::ObjectValue(req_obj));
+    true
+}
