@@ -68,6 +68,7 @@ pub unsafe fn install_all(
     install_assert_strict(cx);
     install_file_globals_from_cache(cx, global);
     install_web_api_constructors(cx, global);
+    crate::bun_test::install_bun_test(cx);
 }
 
 pub fn install_module_global(

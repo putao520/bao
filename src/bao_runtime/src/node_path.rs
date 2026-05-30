@@ -141,7 +141,10 @@ unsafe extern "C" fn path_dirname(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         }
     };
     let result = Path::new(&s).parent()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| {
+            let pstr = p.to_string_lossy().into_owned();
+            if pstr.is_empty() { ".".to_string() } else { pstr }
+        })
         .unwrap_or_else(|| ".".to_string());
     return_string(cx, &args, &result)
 }
@@ -367,40 +370,70 @@ fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
     if parts.is_empty() {
         return ".".to_string();
     }
-    let mut result = ::std::string::String::new();
+
+    // Node.js path.posix.join:
+    // 1. Filter empty parts
+    // 2. Join all parts with / (absolute components treated as regular — leading / stripped at join time)
+    // 3. If first non-empty part started with /, result is absolute
+    // 4. Normalize . and ..
+    // 5. Preserve trailing / from last non-empty part
+
+    // Step 1: Collect non-empty parts, strip leading / from each, track if first was absolute
+    let mut segments: Vec<&str> = Vec::new();
+    let mut has_root = false;
+    let mut first_seen = false;
+    let mut trailing_slash = false;
+
     for part in parts {
-        if part.starts_with('/') {
-            result.clear();
+        if part.is_empty() {
+            continue;
         }
-        if !result.is_empty() && !result.ends_with('/') {
-            result.push('/');
+        if !first_seen {
+            first_seen = true;
+            has_root = part.starts_with('/');
         }
-        result.push_str(part);
+        // Track trailing slash from last part
+        trailing_slash = part.ends_with('/');
+        // Split by / and collect non-empty segments
+        for seg in part.split('/') {
+            if !seg.is_empty() && seg != "." {
+                segments.push(seg);
+            }
+        }
     }
-    if result.is_empty() {
+
+    if !first_seen {
         return ".".to_string();
     }
-    let mut segments: Vec<&str> = Vec::new();
-    let has_root = result.starts_with('/');
-    for seg in result.split('/') {
-        match seg {
-            "" | "." => {}
-            ".." => {
-                if !segments.is_empty() && *segments.last().expect("non-empty segments") != ".." {
-                    segments.pop();
-                } else if !has_root {
-                    segments.push("..");
-                }
+
+    // Step 2: Normalize .. by popping
+    let mut normalized: Vec<&str> = Vec::new();
+    for seg in &segments {
+        if *seg == ".." {
+            if !normalized.is_empty() && *normalized.last().expect("segments") != ".." {
+                normalized.pop();
+            } else if !has_root {
+                normalized.push("..");
             }
-            _ => segments.push(seg),
+        } else {
+            normalized.push(seg);
         }
     }
-    let mut normalized = if has_root { "/".to_string() } else { String::new() };
-    normalized.push_str(&segments.join("/"));
-    if normalized.is_empty() {
+
+    let mut result = if has_root { "/".to_string() } else { String::new() };
+    result.push_str(&normalized.join("/"));
+
+    // Trailing slash: only when last non-empty part had trailing slash AND result is relative
+    // or when result is empty (only . and / segments)
+    if result.is_empty() && trailing_slash {
+        "./".to_string()
+    } else if !result.is_empty() && trailing_slash && !result.ends_with('/') {
+        result.push('/');
+        result
+    } else if result.is_empty() {
         ".".to_string()
     } else {
-        normalized
+        result
     }
 }
 

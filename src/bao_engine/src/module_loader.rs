@@ -141,6 +141,82 @@ unsafe extern "C" fn host_resolve_imported_module(
         NonNull::new(specifier).expect("null-checked specifier"),
     );
 
+    // Built-in module shortcut for static imports (e.g. import from "bun:test")
+    let stripped = specifier_str.strip_prefix("node:").unwrap_or(&specifier_str);
+
+    let builtin_modules = [
+        "fs", "path", "crypto", "os", "url", "events", "net", "http", "https",
+        "child_process", "util", "assert", "stream", "zlib", "dns", "querystring",
+        "buffer", "string_decoder", "timers", "readline", "perf_hooks",
+        "tls", "bun:test", "harness",
+    ];
+
+    // Synthetic ESM modules with explicit named exports for known builtins
+    let synthetic_esm = match stripped {
+        "bun:test" => Some(r#"var _m = require("bun:test");
+export var describe = _m.describe;
+export var test = _m.test;
+export var it = _m.it;
+export var expect = _m.expect;
+export var beforeEach = _m.beforeEach;
+export var afterEach = _m.afterEach;
+export var beforeAll = _m.beforeAll;
+export var afterAll = _m.afterAll;
+export var jest = _m.jest;
+export var skip = _m.skip;
+export var todo = _m.todo;
+export var fail = _m.fail;
+export var gc = _m.gc;
+export var printConsole = _m.printConsole;
+export var setDefaultTimeout = _m.setDefaultTimeout;
+export default _m;
+"#),
+        "harness" => Some(r#"var _m = require("harness");
+export var gc = _m.gc;
+export var bunExe = _m.bunExe;
+export var bunEnv = _m.bunEnv;
+export var isWindows = _m.isWindows;
+export var isLinux = _m.isLinux;
+export var isMac = _m.isMac;
+export var isASAN = _m.isASAN;
+export var isDebug = _m.isDebug;
+export var isMinified = _m.isMinified;
+export var withoutAggressiveGC = _m.withoutAggressiveGC;
+export var expectOOM = _m.expectOOM;
+export var BunEnvironment = _m.BunEnvironment;
+export default _m;
+"#),
+        // Generic builtin modules: export default + re-export all keys as named exports
+        _ if builtin_modules.contains(&stripped) => {
+            Some(format!("var _m = require('{}');\nexport default _m;\n", stripped).leak() as &str)
+        }
+        _ => None,
+    };
+
+    if let Some(esm_src) = synthetic_esm {
+        // Check cache first — synthetic modules must be returned as the same object
+        let cache_key = format!("builtin:{}", stripped);
+        let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
+        if let Some(existing) = cached {
+            if !existing.is_null() {
+                return existing;
+            }
+        }
+
+        let c_filename = CString::new(format!("<builtin:{}>", stripped))
+            .unwrap_or_else(|_| CString::new("<builtin>").unwrap());
+        let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
+        if !opts.is_null() {
+            let mut src = transform_str_to_source_text(esm_src);
+            let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+            libc::free(opts as *mut _);
+            if !module.is_null() {
+                MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, module));
+            }
+            return module;
+        }
+    }
+
     let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
     let resolved = resolve_specifier(&specifier_str, base_dir.as_deref());
 
@@ -239,6 +315,7 @@ unsafe extern "C" fn host_dynamic_import(
         "fs", "path", "crypto", "os", "url", "events", "net", "http", "https",
         "child_process", "util", "assert", "stream", "zlib", "dns", "querystring",
         "buffer", "string_decoder", "timers", "readline", "perf_hooks",
+        "tls", "bun:test", "harness",
     ];
     let stripped = specifier_str.strip_prefix("node:").unwrap_or(&specifier_str);
     if builtin_modules.contains(&stripped) {

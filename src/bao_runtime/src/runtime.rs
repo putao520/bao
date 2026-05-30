@@ -67,7 +67,19 @@ impl BaoRuntime {
             .unwrap_or_default();
         globals::install_file_globals(&mut self.ctx, &filename_str, &dirname_str);
 
-        if path.ends_with(".mjs") {
+        if path.ends_with(".mjs") || path.ends_with(".mts") {
+            self.eval_module(&source, path)
+        } else if path.ends_with(".ts") || path.ends_with(".tsx") || path.ends_with(".jsx") {
+            // TypeScript/JSX files: treat as ESM if they contain import/export
+            if source.contains("import ") || source.contains("export ") {
+                self.eval_module(&source, path)
+            } else {
+                self.eval(&source, path)
+            }
+        } else if source.contains("import ") && (source.contains(" from ") || source.contains(" from\"") || source.contains("from '")) && !source.contains("require(") {
+            // JS files with ESM imports (and no require): treat as ESM
+            self.eval_module(&source, path)
+        } else if source.trim_start().starts_with("import ") {
             self.eval_module(&source, path)
         } else {
             self.eval(&source, path)

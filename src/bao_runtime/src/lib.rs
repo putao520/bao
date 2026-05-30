@@ -6,6 +6,7 @@
 // REQ-IMPL-04: Phase 4 Stealth anti-fingerprinting (completed)
 // REQ-IMPL-05: Phase 5 Integration testing and release (completed)
 pub mod bun_api;
+pub mod bun_test;
 pub mod fetch_api;
 pub mod gc_store;
 pub mod globals;
