@@ -273,6 +273,93 @@ pub fn install_buffer_global(
     var buf = this; var idx = 0;
     return { next: function() { return idx < buf.length ? { value: buf[idx++], done: false } : { done: true }; }, [Symbol.iterator]: function() { return this; } };
   };
+
+  _bp.readInt8 = function(offset) { var v = this[offset || 0]; return v > 127 ? v - 256 : v; };
+  _bp.readUInt16LE = function(offset) { offset = offset || 0; return this[offset] | (this[offset + 1] << 8); };
+  _bp.writeUInt16LE = function(val, offset) { offset = offset || 0; this[offset] = val & 0xFF; this[offset + 1] = (val >> 8) & 0xFF; return offset; };
+  _bp.readUInt32LE = function(offset) { offset = offset || 0; return ((this[offset]) | (this[offset+1] << 8) | (this[offset+2] << 16) | (this[offset+3] << 24)) >>> 0; };
+  _bp.writeUInt32LE = function(val, offset) { offset = offset || 0; this[offset] = val & 0xFF; this[offset+1] = (val >> 8) & 0xFF; this[offset+2] = (val >> 16) & 0xFF; this[offset+3] = (val >> 24) & 0xFF; return offset; };
+  _bp.readInt16LE = function(offset) { var v = _bp.readUInt16LE.call(this, offset); return v > 32767 ? v - 65536 : v; };
+  _bp.writeInt16LE = function(val, offset) { return _bp.writeUInt16LE.call(this, val & 0xFFFF, offset); };
+  _bp.readInt32LE = function(offset) { return this[offset || 0] | (this[(offset||0)+1] << 8) | (this[(offset||0)+2] << 16) | (this[(offset||0)+3] << 24); };
+  _bp.writeInt32LE = function(val, offset) { return _bp.writeUInt32LE.call(this, val >>> 0, offset); };
+  _bp.readFloatLE = function(offset) {
+    offset = offset || 0;
+    var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
+    u8[0]=this[offset]; u8[1]=this[offset+1]; u8[2]=this[offset+2]; u8[3]=this[offset+3];
+    return f32[0];
+  };
+  _bp.writeFloatLE = function(val, offset) {
+    offset = offset || 0;
+    var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
+    f32[0] = val; this[offset]=u8[0]; this[offset+1]=u8[1]; this[offset+2]=u8[2]; this[offset+3]=u8[3];
+    return offset;
+  };
+  _bp.readDoubleLE = function(offset) {
+    offset = offset || 0;
+    var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
+    for (var i = 0; i < 8; i++) u8[i] = this[offset + i];
+    return f64[0];
+  };
+  _bp.writeDoubleLE = function(val, offset) {
+    offset = offset || 0;
+    var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
+    f64[0] = val; for (var i = 0; i < 8; i++) this[offset + i] = u8[i];
+    return offset;
+  };
+
+  _bp.swap16 = function() {
+    for (var i = 0; i < this.length - 1; i += 2) { var t = this[i]; this[i] = this[i+1]; this[i+1] = t; }
+    return this;
+  };
+  _bp.swap32 = function() {
+    for (var i = 0; i < this.length - 3; i += 4) {
+      var a=this[i], b=this[i+1], c=this[i+2], d=this[i+3];
+      this[i]=d; this[i+1]=c; this[i+2]=b; this[i+3]=a;
+    }
+    return this;
+  };
+  _bp.swap64 = function() {
+    for (var i = 0; i < this.length - 7; i += 8) {
+      var t;
+      t=this[i]; this[i]=this[i+7]; this[i+7]=t;
+      t=this[i+1]; this[i+1]=this[i+6]; this[i+6]=t;
+      t=this[i+2]; this[i+2]=this[i+5]; this[i+5]=t;
+      t=this[i+3]; this[i+3]=this[i+4]; this[i+4]=t;
+    }
+    return this;
+  };
+
+  _bp.compare = function(other) {
+    var len = Math.min(this.length, other.length);
+    for (var i = 0; i < len; i++) {
+      if (this[i] < other[i]) return -1;
+      if (this[i] > other[i]) return 1;
+    }
+    if (this.length < other.length) return -1;
+    if (this.length > other.length) return 1;
+    return 0;
+  };
+
+  _bp.readUInt16BE = function(offset) { offset = offset || 0; return (this[offset] << 8) | this[offset + 1]; };
+  _bp.writeUInt16BE = function(val, offset) { offset = offset || 0; this[offset] = (val >> 8) & 0xFF; this[offset + 1] = val & 0xFF; return offset; };
+  _bp.readUInt32BE = function(offset) { offset = offset || 0; return ((this[offset] << 24) | (this[offset+1] << 16) | (this[offset+2] << 8) | this[offset+3]) >>> 0; };
+  _bp.writeUInt32BE = function(val, offset) { offset = offset || 0; this[offset] = (val >> 24) & 0xFF; this[offset+1] = (val >> 16) & 0xFF; this[offset+2] = (val >> 8) & 0xFF; this[offset+3] = val & 0xFF; return offset; };
+  _bp.readInt16BE = function(offset) { var v = _bp.readUInt16BE.call(this, offset); return v > 32767 ? v - 65536 : v; };
+  _bp.readInt32BE = function(offset) { return (this[offset||0] << 24) | (this[(offset||0)+1] << 16) | (this[(offset||0)+2] << 8) | this[(offset||0)+3]; };
+  _bp.readFloatBE = function(offset) {
+    offset = offset || 0;
+    var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
+    u8[3]=this[offset]; u8[2]=this[offset+1]; u8[1]=this[offset+2]; u8[0]=this[offset+3];
+    return f32[0];
+  };
+  _bp.readDoubleBE = function(offset) {
+    offset = offset || 0;
+    var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
+    u8[7]=this[offset]; u8[6]=this[offset+1]; u8[5]=this[offset+2]; u8[4]=this[offset+3];
+    u8[3]=this[offset+4]; u8[2]=this[offset+5]; u8[1]=this[offset+6]; u8[0]=this[offset+7];
+    return f64[0];
+  };
 })();
 "#;
     unsafe {
