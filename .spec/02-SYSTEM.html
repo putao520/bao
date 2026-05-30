@@ -53,6 +53,13 @@
 <!-- ============================================================ -->
 
 <div id="artifact-bao-runtime-api" data-api="GET /api/bao-runtime" data-artifact-type="api">
+<p>关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>,
+<span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>,
+<span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>,
+<span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span>,
+<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span>,
+<span data-xref-type="entity" data-xref-id="Permission">Permission</span>,
+<span data-xref-type="entity" data-xref-id="StealthProfile">StealthProfile</span></p>
 <h3>Rust 公共 API 接口</h3>
 <pre>
 // ── BaoRuntime 初始化 ──────────────────────────────────────
@@ -565,6 +572,13 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
     endpoint: "ws://..." → 外部模式 (自动推断)
     无参数              → 内部模式
 </pre>
+<p>关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>,
+<span data-xref-type="entity" data-xref-id="CdpBackendInternal">CdpBackendInternal</span>,
+<span data-xref-type="entity" data-xref-id="CdpBackendExternal">CdpBackendExternal</span>,
+<span data-xref-type="entity" data-xref-id="CdpSession">CdpSession</span>,
+<span data-xref-type="entity" data-xref-id="CdpCommand">CdpCommand</span>,
+<span data-xref-type="entity" data-xref-id="CdpResponse">CdpResponse</span>,
+<span data-xref-type="entity" data-xref-id="CdpError">CdpError</span></p>
 </div>
 
 <!-- ============================================================ -->
@@ -599,6 +613,13 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
   - 独立异常处理
   - GC 在同一 JSContext 内统一管理
 </pre>
+<p>关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>,
+<span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>,
+<span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span>,
+<span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>,
+<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>,
+<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>,
+<span data-xref-type="entity" data-xref-id="Permission">Permission</span></p>
 </div>
 
 <div id="artifact-page-lifecycle" data-state-machine="PageLifecycle" data-artifact-type="diagram">
