@@ -53,6 +53,12 @@ const HTTPS_JS: &str = r#"
     var method = (options.method || "GET").toUpperCase();
     var headers = extractHeaders(options);
     var body = options.body || "";
+    var timeout = options.timeout || options.timeoutMs || 30000;
+
+    // Handle Buffer body
+    if (body && typeof body !== "string") {
+      try { body = String(body); } catch(e) { body = ""; }
+    }
 
     var headersJSON = "{}";
     try { headersJSON = JSON.stringify(headers); } catch(e) {}
@@ -122,11 +128,34 @@ const HTTPS_JS: &str = r#"
     return request(options, callback);
   }
 
+  function Server(opts, reqListener) {
+    if (typeof opts === "function") { reqListener = opts; opts = {}; }
+    this._opts = opts || {};
+    this.listening = false;
+    if (reqListener) this.on("request", reqListener);
+  }
+  Server.prototype.listen = function(port, host, cb) {
+    this.listening = true;
+    this._port = port;
+    if (typeof host === "function") { cb = host; }
+    if (cb) cb();
+    return this;
+  };
+  Server.prototype.close = function(cb) { this.listening = false; if (cb) cb(); return this; };
+  Server.prototype.on = function(e, fn) { (this._listeners || (this._listeners = {}))[e] = fn; return this; };
+  Server.prototype.setTimeout = function(ms, cb) { if (cb) cb(); return this; };
+
+  function createServer(opts, reqListener) {
+    return new Server(opts, reqListener);
+  }
+
   return {
     request: request,
     get: get,
     Agent: Agent,
     globalAgent: globalAgent,
+    Server: Server,
+    createServer: createServer,
   };
 })();
 "#;
@@ -388,6 +417,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             "get",
             "Agent",
             "globalAgent",
+            "Server",
+            "createServer",
         ] {
             let cname = CString::new(*name).unwrap_or_default();
             let mut val = UndefinedValue();
