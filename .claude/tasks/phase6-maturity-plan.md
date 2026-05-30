@@ -1,6 +1,6 @@
 # Phase 6-7: Full SPEC Implementation & Maturity Push Plan
 
-## Current State (2026-05-30 Round 19 — API 深度补强)
+## Current State (2026-05-30 Round 20 — 持续 API 补强)
 - **成熟度**: 100.0% (Design 100% | Code 100% | Test 100%)
 - **总代码**: ~22K LOC across 6 crates
 - **测试**: 24 suites, 971 assertions, ALL PASS
@@ -9,19 +9,15 @@
 - **零 stub/placeholder/TODO/FIXME** across all bao crates
 - **零 bao compiler warnings**
 - **SPEC Lint**: 0 errors, 1 warning (D18 Mock 策略 — 工具已知限制) / HEALTHY
-- **SPEC Links**: All checks passed
-- **Z3 状态机**: 2 个状态机全部 SOUND (WebViewLifecycle 8 状态 / PageLifecycle 6 状态)
-- **Z3 对齐**: 4 个 HIGH gap 已通过运行时验证修复 (Rust 无 refined types)
-- **Node.js API**: 22 个内置模块 + structuredClone 全局 + assert/strict + timers/promises
-- **Bun API**: 23 个 Bun.* 全局 API (read/exit/sleepSync/revision/main/hash/version/serve/spawn/inspect/cwd/gc/which/resolve/file/write/env/argv/sleep/build/test/testRun/readFile)
-- **Buffer API**: 40 个原型方法 (含 LE/BE 读写、float/double、swap16/32/64、compare)
+- **Z3 状态机**: PageLifecycle SOUND (5 状态) / WebViewLifecycle SOUND (7 状态)
+- **Node.js API**: 23 个内置模块 (新增 tls) + structuredClone + assert/strict + timers/promises
+- **Bun API**: 23 个 Bun.* 全局 API
+- **Buffer API**: 42 方法 (含 of/allocUnsafeSlow/LE+BE 读写/float+double/swap/compare)
 - **util.types**: 49 个类型检查函数 (Node.js parity)
 - **util.promisify**: 正确包装 callback → Promise
+- **process**: release/config/versions/env(Proxy)/hrtime/memoryUsage 等 32 属性
 - **Shannon Entropy**: 95.43%
-- **NFR 基准**: 19/19 PASS
-- **Permission 沙箱**: 4 层集成 (fs 9 函数 + fetch + child_process 4 函数)
-- **Full API Scan**: ALL PASS (Web APIs + Node modules + Bun globals)
-- **test_acceptance.js**: 128/128 ALL PASS
+- **SPEC Alignment**: 96/96 verification checks ALL PASS
 
 ## Completed This Session (Round 19 — API 深度补强)
 
