@@ -649,7 +649,32 @@ unsafe extern "C" fn assert_function(cx: *mut JSContext, argc: u32, vp: *mut JSV
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn util_inherits(_cx: *mut JSContext, _argc: u32, _vp: *mut JSVal) -> bool {
+unsafe extern "C" fn util_inherits(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let child_val = args.get(0);
+    let parent_val = args.get(1);
+    if !child_val.is_object() || !parent_val.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let child_obj = child_val.to_object();
+    let child_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &child_obj };
+
+    // Child.super_ = Parent
+    let super_val = *parent_val.ptr;
+    JS_SetProperty(
+        cx,
+        child_h,
+        c"super_".as_ptr(),
+        Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &super_val },
+    );
+
+    args.rval().set(UndefinedValue());
     true
 }
 

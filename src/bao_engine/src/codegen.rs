@@ -56,8 +56,8 @@ pub fn parse_classes(source: &str, file_name: &str) -> Result<ParseResult, Strin
                     finalize: source.contains("finalize: true"),
                     configurable: !source.contains("configurable: false"),
                     has_pending_activity: source.contains("hasPendingActivity: true"),
-                    proto: parse_proto_properties(source),
-                    static_props: Vec::new(),
+                    proto: parse_block_properties(source, "proto"),
+                    static_props: parse_block_properties(source, "klass"),
                 });
             }
         }
@@ -69,33 +69,35 @@ pub fn parse_classes(source: &str, file_name: &str) -> Result<ParseResult, Strin
     })
 }
 
-fn parse_proto_properties(source: &str) -> Vec<PropertyDef> {
+fn parse_block_properties(source: &str, block_name: &str) -> Vec<PropertyDef> {
     let mut props = Vec::new();
-    let mut in_proto = false;
+    let mut in_block = false;
+    let prefix_owned = format!("{}:", block_name);
+    let prefix_brace = format!("{} {{", block_name);
 
     let lines: Vec<&str> = source.lines().collect();
     let mut i = 0;
     while i < lines.len() {
         let trimmed = lines[i].trim();
 
-        if trimmed.starts_with("proto:") || trimmed.starts_with("proto {") {
-            in_proto = true;
+        if trimmed.starts_with(&prefix_owned) || trimmed.starts_with(&prefix_brace) {
+            in_block = true;
             i += 1;
             continue;
         }
-        if in_proto && (trimmed.starts_with("}") || trimmed.starts_with("klass:")) {
-            in_proto = false;
+        if in_block && (trimmed.starts_with("}") || trimmed.starts_with("klass:") || trimmed.starts_with("proto:")) {
+            in_block = false;
             i += 1;
             continue;
         }
-        if !in_proto {
+        if !in_block {
             i += 1;
             continue;
         }
 
         if let Some(colon_pos) = trimmed.find(':') {
             let name = trimmed[..colon_pos].trim().to_string();
-            if name.is_empty() || name == "proto" {
+            if name.is_empty() || name == block_name {
                 i += 1;
                 continue;
             }
@@ -240,6 +242,22 @@ pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
     getter: JSPropertySpec_AccessorOrValue {{
         accessors: JSPropertySpec_Accessor {{
             getter: Some({fn_name}),
+            ..Default::default()
+        }}
+    }},
+    ..Default::default()
+}}"#,
+                    name = prop.name,
+                    fn_name = fn_name,
+                ));
+            }
+            PropertyKind::Setter { fn_name } => {
+                property_specs.push(format!(
+                    r#"JSPropertySpec {{
+    name: c"{name}".as_ptr(),
+    setter: JSPropertySpec_AccessorOrValue {{
+        accessors: JSPropertySpec_Accessor {{
+            setter: Some({fn_name}),
             ..Default::default()
         }}
     }},
@@ -431,5 +449,119 @@ define({
 "#;
         let result = parse_classes(source, "empty.classes.ts").unwrap();
         assert_eq!(result.classes[0].proto.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_static_props() {
+        let source = r#"
+define({
+    name: "StaticTest",
+    proto: {
+        instance_method: {
+            fn: "doWork",
+            length: 1,
+        },
+    },
+    klass: {
+        create: {
+            fn: "createFrom",
+            length: 2,
+        },
+        version: {
+            getter: "getVersion",
+            cache: true,
+        },
+    },
+});
+"#;
+        let result = parse_classes(source, "static.classes.ts").unwrap();
+        let class = &result.classes[0];
+        assert_eq!(class.name, "StaticTest");
+
+        assert_eq!(class.proto.len(), 1);
+        match &class.proto[0].kind {
+            PropertyKind::Method { fn_name, length } => {
+                assert_eq!(fn_name, "doWork");
+                assert_eq!(*length, 1);
+            }
+            _ => panic!("expected method in proto"),
+        }
+
+        assert_eq!(class.static_props.len(), 2);
+        match &class.static_props[0].kind {
+            PropertyKind::Method { fn_name, length } => {
+                assert_eq!(fn_name, "createFrom");
+                assert_eq!(*length, 2);
+            }
+            _ => panic!("expected method in static_props"),
+        }
+        match &class.static_props[1].kind {
+            PropertyKind::Getter { fn_name, cache } => {
+                assert_eq!(fn_name, "getVersion");
+                assert!(cache);
+            }
+            _ => panic!("expected getter in static_props"),
+        }
+    }
+
+    #[test]
+    fn test_generate_bindings_setter() {
+        let class = ClassDef {
+            name: "SetterOnly".into(),
+            construct: false,
+            no_constructor: false,
+            finalize: false,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "data".into(),
+                kind: PropertyKind::Setter { fn_name: "setData".into() },
+            }],
+            static_props: vec![],
+        };
+        let bindings = generate_bindings(&class);
+        assert_eq!(bindings.class_name, "SetterOnly");
+        assert_eq!(bindings.property_specs.len(), 1);
+        assert!(bindings.property_specs[0].contains("setter: Some(setData)"));
+    }
+
+    #[test]
+    fn test_parse_multiple_classes() {
+        let source = r#"
+define({
+    name: "First",
+    proto: { run: { fn: "run", length: 0 } },
+});
+define({
+    name: "Second",
+    proto: { stop: { fn: "stop", length: 0 } },
+});
+"#;
+        let result = parse_classes(source, "multi.classes.ts").unwrap();
+        assert_eq!(result.classes.len(), 2);
+        assert_eq!(result.classes[0].name, "First");
+        assert_eq!(result.classes[1].name, "Second");
+    }
+
+    #[test]
+    fn test_parse_boolean_flags() {
+        let source = r#"
+define({
+    name: "FlagTest",
+    construct: true,
+    noConstructor: false,
+    finalize: true,
+    hasPendingActivity: true,
+    configurable: false,
+    proto: {},
+});
+"#;
+        let result = parse_classes(source, "flags.classes.ts").unwrap();
+        let class = &result.classes[0];
+        assert!(class.construct);
+        assert!(!class.no_constructor);
+        assert!(class.finalize);
+        assert!(class.has_pending_activity);
+        assert!(!class.configurable);
     }
 }
