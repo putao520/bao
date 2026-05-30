@@ -159,7 +159,8 @@ Phase 4: 质量收敛                         ← 最后
 
 | ID | 任务 | 依赖 | 复杂度 | 状态 |
 |----|------|------|--------|------|
-| E8 | StealthProfile 贯穿 | 无 | 低 | ✅ 已完成 |
+| E8 | StealthProfile 贯穿 | 无 | 低 | ✅ Wave 33 完成 |
+| Wave 34 | 多线程并发 + 架构韧性测试 | 无 | 中 | 待实现 |
 | E4 | servo 输入事件分发 | 无 | 中 | ✅ 已完成 |
 | E6 | TLS 指纹注入 | 被上游阻塞 | 中 | 🔶 stealth_http.rs 已创建 |
 | E7 | HTTP/2 指纹注入 | 被上游阻塞 | 中 | 🔶 stealth_http.rs 已创建 |
@@ -300,3 +301,62 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 		  - js_engine_boundary_tests: 32 assertions (globalThis, type coercion, NaN/null/undefined, number edge cases, String/Array/Object static methods, Date, Math, WeakRef/WeakMap, JSON edge)
 		  - bao_engine clippy: 修复 extract_string_value strip_prefix + collapsible_if allow
 		  - bao_cdp/bao_browser/bao_stealth/cdp-server: 零 clippy warning (上游除外)
+		- [x] Wave 22: engine value 边界 + process 深度测试
+		  - value_boundary_tests: 21 断言合并为单测试 (mozjs single-init)
+		  - process_deep_tests: 60+ 断言 (arch/platform/version/env/cwd/pid/ppid/stdio/hrtime/uptime/memoryUsage/umask/config/release)
+		  - 全量回归: 225 tests pass, 0 failed
+		- [x] Wave 23: child_process/vm/module/zlib 深度测试
+		  - child_process: spawn/exec/execSync/execFileSync/spawnSync + pid/wait/kill
+		  - vm: runInThisContext/runInNewContext/createContext/isContext/Script/compileFunction
+		  - module: createRequire/_resolveFilename/_nodeModulePaths/builtinModules/_extensions
+		  - zlib: deflate+inflate/gzip+gunzip/deflateRaw+inflateRaw roundtrip + unicode/large/empty
+		- [x] Wave 24: bao_browser 核心单元测试
+		  - screenshot: PNG/JPEG encode (1x1/gradient/large/1920x1080)
+		  - delegate: BaoServoDelegate construction
+		  - config: viewport boundary, cdp_port, max_pages, BrowserConfig→BaoConfig
+		  - permission: all-restricted/partial/exact path match
+		  - PageState: variant distinctness
+		  - 19 new tests, 0 failed
+		- [x] Wave 25: cdp-server 协议合规 + stealth JS 注入 + CDP domain 边界测试
+		  - protocol_conformance_tests: 26 tests (CdpMessage/CdpResponse/CdpEvent/CdpError/TargetInfo/ServerConfig/DomainRegistry + edge cases)
+		  - stealth_integration_tests: 27 tests (JS injection content, profile cross-consistency, fingerprint determinism, behavior/canvas/audio noise)
+		  - domain_boundary_tests: 34 tests (enable/disable lifecycle for 9 domains, unknown command -32601, bridge channel closed -32603, domain registration)
+		  - Full regression: 308 tests pass across 6 crates
+		- [x] Wave 26: SPEC-TEST 对齐验证 + 成熟度审计
+		  - SPEC 89 TEST IDs 全部有代码 @trace 覆盖
+		  - 39/45 REQ 有 @trace 注入 (审计工具不支持 Rust, grep 手动验证)
+		  - spec_lint: 零 error, 2 warning (path param 标记)
+		  - 成熟度 60% (Code 层 0% 系工具限制, 非真实 GAP)
+		  - SPEC-代码完全对齐, 无遗漏
+		- [x] Wave 27: bao_engine + bao_runtime 深度测试扩展
+		  - error_handling_tests: 40+ assertions (Error/TypeError/RangeError/SyntaxError/ReferenceError + try/catch/finally + re-throw + non-Error throws)
+		  - stream_buffer_assert_tests: 80+ assertions (stream Readable/Writable/Duplex + Buffer deep + assert full API + tty/string_decoder/readline/perf_hooks)
+		  - Full regression: 308 tests pass across 6 crates
+		- [x] Wave 28: ES 高级特性 + bridge channel 竞态根治 + 全量回归
+		  - es_advanced_features_tests: 70+ assertions (Proxy 7 traps, Reflect 8 methods, Symbol deep, Generator/yield*, WeakRef/FinalizationRegistry, TypedArray, Object.freeze/seal/assign/is, optional chaining, nullish coalescing)
+		  - Bridge channel 竞态根治: drain() 用 try_recv 非阻塞导致 responder 线程提前退出 → 改为 try_process 轮询 + keeper clone 保活
+		  - protocol_router_tests: 5/5 稳定通过 (之前 2/5)
+		  - domain_handler_tests: 5/5 稳定通过
+		  - Full regression: 310 tests pass, 0 failed
+		- [x] Wave 29: rendering pipeline tests + bridge race fix
+		  - rendering_pipeline_tests: 23 tests (PNG/JPEG magic bytes, gradient/checkerboard patterns, transparent/1080p images, viewport min/4K/square/ultra-wide, max_pages boundaries, cdp_port, PageState lifecycle, BrowserError Display/Debug)
+		  - ScreenshotFormat Debug trait 修复: 改用 matches! 宏验证变体区分
+		  - Full regression: 331 tests pass, 0 failed
+		- [x] Wave 30: clippy 全量收敛 + codegen static props 增强
+		  - bao_runtime: 4 个 unsafe 函数添加 # Safety 文档 (js_to_rust_string, jsstr_to_rust_string, install_bun_test, run_bun_tests)
+		  - bao_engine/codegen: 提取 collect_specs() 辅助函数，GeneratedBindings 新增 static_function_specs + static_property_specs
+		  - 新增 test_generate_bindings_with_static_props 测试
+		  - Bao 自身: 零 clippy warning (仅剩上游 mozjs transmute)
+		  - SPEC lint: 零 error, 2 warning (path param 标记)
+		  - Full regression: 332 tests pass, 0 failed
+		- [x] Wave 31: Promise/async/await deep tests
+		  - promise_async_tests: 40+ assertions (Promise construction, resolve/reject, then/catch/finally chaining, async functions/arrow/await, Promise.all/race/allSettled/any, thenables, queueMicrotask, Symbol.asyncIterator, async generators, unhandled rejection safety)
+		  - Full regression: 332 tests, 0 failures
+		- [x] Wave 32: permission boundary + stealth consistency tests
+		  - permission_boundary_tests: 21 tests (subdomain matching, prefix paths, env/run booleans, empty allow-list, cross-field independence, PermissionGuard modes, PermissionDenied Display/Error)
+		  - stealth_consistency_tests: 26 tests (Chrome vs Firefox diff, engine delegation, component determinism, behavior mouse/typing/scroll, JS injection, CanvasNoise pixel, Debug traits)
+		  - Full regression: 353 tests, 0 failures
+		- [x] Wave 33: StealthProfile 贯穿全链路 (REQ-STL-007)
+		  - runtime_bridge: inject_all_with_profile 使用 StealthEngine 动态注入
+		  - stealth_profile_config_tests: 17 tests (BaoConfig/BrowserConfig/PageConfig stealth 传递 + validate + clone + override)
+		  - Full regression: 360 tests, 0 failures
