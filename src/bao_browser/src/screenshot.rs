@@ -16,9 +16,11 @@ pub fn encode_image(image: &RgbaImage, format: ScreenshotFormat) -> Result<Vec<u
         ScreenshotFormat::Png => image
             .write_to(&mut buf, ImageFormat::Png)
             .map_err(|e| BrowserError::Rendering(format!("PNG encode failed: {e}")))?,
-        ScreenshotFormat::Jpeg => image
-            .write_to(&mut buf, ImageFormat::Jpeg)
-            .map_err(|e| BrowserError::Rendering(format!("JPEG encode failed: {e}")))?,
+        ScreenshotFormat::Jpeg => {
+            let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+            rgb.write_to(&mut buf, ImageFormat::Jpeg)
+                .map_err(|e| BrowserError::Rendering(format!("JPEG encode failed: {e}")))?;
+        }
     }
     Ok(buf.into_inner())
 }
