@@ -1,3 +1,4 @@
+// @trace REQ-ENG-006
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_imports)]
 // REQ-IMPL-01: Phase 1 SpiderMonkey engine replacement (completed)
@@ -39,6 +40,7 @@ pub mod node_zlib;
 pub mod require;
 pub mod runtime;
 pub mod timers;
+pub mod stealth_http;
 
 pub use runtime::BaoRuntime;
 

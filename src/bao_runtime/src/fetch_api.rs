@@ -1,3 +1,4 @@
+// @trace REQ-ENG-006
 // fetch + Response + Headers constructors
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
@@ -223,34 +224,37 @@ struct FetchResponse {
 }
 
 fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Result<FetchResponse, String> {
-    let req = match method {
-        "POST" => minreq::post(url),
-        "PUT" => minreq::put(url),
-        "DELETE" => minreq::delete(url),
-        "PATCH" => minreq::patch(url),
-        "HEAD" => minreq::head(url),
-        _ => minreq::get(url),
+    let agent = crate::stealth_http::create_stealth_agent(&None);
+
+    let result = match method {
+        "POST" => agent.post(url).send(body.map(|b| b.as_bytes()).unwrap_or_default()),
+        "PUT" => agent.put(url).send(body.map(|b| b.as_bytes()).unwrap_or_default()),
+        "DELETE" => agent.delete(url).call(),
+        "PATCH" => agent.patch(url).send(body.map(|b| b.as_bytes()).unwrap_or_default()),
+        "HEAD" => agent.head(url).call(),
+        _ => agent.get(url).call(),
     };
 
-    let req = if let Some(b) = body {
-        req.with_body(b)
-    } else {
-        req
-    };
+    match result {
+        Ok(mut resp) => {
+            let status_code = resp.status().as_u16();
+            let status_text = resp.status().canonical_reason().unwrap_or("").to_string();
+            let headers: Vec<(String, String)> = resp.headers()
+                .iter()
+                .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect();
+            let body_text = resp.body_mut().read_to_string().unwrap_or_default();
 
-    let resp = req.send().map_err(|e| format!("{}", e))?;
-    let headers: Vec<(String, String)> = resp.headers
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-
-    ::std::result::Result::Ok(FetchResponse {
-        status_code: resp.status_code as u16,
-        body: resp.as_str().unwrap_or("").to_string(),
-        headers,
-        url: url.to_string(),
-        status_text: String::new(),
-    })
+            ::std::result::Result::Ok(FetchResponse {
+                status_code,
+                body: body_text,
+                headers,
+                url: url.to_string(),
+                status_text,
+            })
+        }
+        Err(e) => ::std::result::Result::Err(format!("{}", e)),
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -317,7 +321,7 @@ pub fn install_response_constructor(
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     unsafe {
-        let ctor = JS_NewFunction(cx.raw_cx(), Some(response_constructor), 2, JSFUN_CONSTRUCTOR as u32, c"Response".as_ptr());
+        let ctor = JS_NewFunction(cx.raw_cx(), Some(response_constructor), 2, JSFUN_CONSTRUCTOR, c"Response".as_ptr());
         if !ctor.is_null() {
             let ctor_obj = JS_GetFunctionObject(ctor);
             if !ctor_obj.is_null() {
@@ -429,7 +433,7 @@ pub fn install_headers_constructor(
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     unsafe {
-        let ctor = JS_NewFunction(cx.raw_cx(), Some(headers_constructor), 1, JSFUN_CONSTRUCTOR as u32, c"Headers".as_ptr());
+        let ctor = JS_NewFunction(cx.raw_cx(), Some(headers_constructor), 1, JSFUN_CONSTRUCTOR, c"Headers".as_ptr());
         if !ctor.is_null() {
             let ctor_obj = JS_GetFunctionObject(ctor);
             if !ctor_obj.is_null() {
@@ -599,7 +603,7 @@ pub fn install_request_constructor(
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     unsafe {
-        let ctor = JS_NewFunction(cx.raw_cx(), Some(request_constructor), 2, JSFUN_CONSTRUCTOR as u32, c"Request".as_ptr());
+        let ctor = JS_NewFunction(cx.raw_cx(), Some(request_constructor), 2, JSFUN_CONSTRUCTOR, c"Request".as_ptr());
         if !ctor.is_null() {
             let ctor_obj = JS_GetFunctionObject(ctor);
             if !ctor_obj.is_null() {

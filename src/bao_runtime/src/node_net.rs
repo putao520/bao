@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::net::{TcpListener, TcpStream};
@@ -13,8 +14,8 @@ use mozjs::rust::wrappers2 as w2;
 use crate::require::cache_builtin;
 
 thread_local! {
-    static NET_SERVERS: RefCell<Vec<*mut TcpListener>> = RefCell::new(Vec::new());
-    static NET_SOCKETS: RefCell<Vec<*mut TcpStream>> = RefCell::new(Vec::new());
+    static NET_SERVERS: RefCell<Vec<*mut TcpListener>> = const { RefCell::new(Vec::new()) };
+    static NET_SOCKETS: RefCell<Vec<*mut TcpStream>> = const { RefCell::new(Vec::new()) };
 }
 
 pub struct NetCleanup;
@@ -182,7 +183,7 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         Ok(listener) => {
             let fd = listener.as_raw_fd();
             NET_SERVERS.with(|s| s.borrow_mut().push(Box::into_raw(Box::new(listener))));
-            args.rval().set(Int32Value(fd as i32));
+            args.rval().set(Int32Value(fd));
         }
         Err(_) => {
             args.rval().set(Int32Value(-1));
@@ -205,7 +206,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         Ok(stream) => {
             let fd = stream.as_raw_fd();
             NET_SOCKETS.with(|s| s.borrow_mut().push(Box::into_raw(Box::new(stream))));
-            args.rval().set(Int32Value(fd as i32));
+            args.rval().set(Int32Value(fd));
         }
         Err(_) => {
             args.rval().set(Int32Value(-1));

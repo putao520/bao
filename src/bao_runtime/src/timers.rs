@@ -1,3 +1,4 @@
+// @trace REQ-ENG-004
 use ::std::cell::{Cell, RefCell};
 use ::std::os::unix::io::RawFd;
 use ::std::time::{Duration, Instant};
@@ -8,9 +9,9 @@ use mozjs::rust::wrappers2::JS_DefineFunction;
 
 thread_local! {
     static TIMERS: RefCell<TimerHeap> = RefCell::new(TimerHeap::new());
-    static NEXT_ID: Cell<u32> = Cell::new(1);
-    static EPOLL_FD: Cell<RawFd> = Cell::new(-1);
-    static REGISTERED_FDS: RefCell<Vec<RawFd>> = RefCell::new(Vec::new());
+    static NEXT_ID: Cell<u32> = const { Cell::new(1) };
+    static EPOLL_FD: Cell<RawFd> = const { Cell::new(-1) };
+    static REGISTERED_FDS: RefCell<Vec<RawFd>> = const { RefCell::new(Vec::new()) };
 }
 
 struct TimerEntry {

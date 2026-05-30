@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -208,62 +209,57 @@ unsafe extern "C" fn https_request(
 }
 
 fn perform_https_request(url: &str, method: &str, headers_json: &str, body: &str) -> String {
-    let minreq_method = match method {
-        "GET" => minreq::Method::Get,
-        "POST" => minreq::Method::Post,
-        "PUT" => minreq::Method::Put,
-        "DELETE" => minreq::Method::Delete,
-        "PATCH" => minreq::Method::Patch,
-        "HEAD" => minreq::Method::Head,
-        "TRACE" => minreq::Method::Trace,
-        "OPTIONS" => minreq::Method::Options,
-        _ => minreq::Method::Get,
+    let agent = crate::stealth_http::create_stealth_agent(&None);
+
+    let headers_map: ::std::collections::HashMap<String, String> = if !headers_json.is_empty() {
+        serde_json::from_str(headers_json).unwrap_or_default()
+    } else {
+        ::std::collections::HashMap::new()
     };
 
-    let mut req = minreq::Request::new(minreq_method, url);
-
-    if !body.is_empty() {
-        req = req.with_body(body.as_bytes());
-    }
-
-    if !headers_json.is_empty() {
-        if let Ok(headers) = serde_json_like_parse(headers_json) {
-            for (key, value) in headers {
-                req = req.with_header(key.as_str(), value.as_str());
-            }
+    let result = match method {
+        "POST" => {
+            let mut r = agent.post(url);
+            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
+            r.send(body.as_bytes())
         }
-    }
+        "PUT" => {
+            let mut r = agent.put(url);
+            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
+            r.send(body.as_bytes())
+        }
+        "DELETE" => {
+            let mut r = agent.delete(url);
+            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
+            r.call()
+        }
+        "PATCH" => {
+            let mut r = agent.patch(url);
+            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
+            r.send(body.as_bytes())
+        }
+        "HEAD" => {
+            let mut r = agent.head(url);
+            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
+            r.call()
+        }
+        _ => {
+            let mut r = agent.get(url);
+            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
+            r.call()
+        }
+    };
 
-    req = req.with_timeout(30);
-
-    match req.send() {
-        Ok(response) => {
-            let status_code = response.status_code;
-            let reason = match status_code {
-                200 => "OK",
-                201 => "Created",
-                204 => "No Content",
-                301 => "Moved Permanently",
-                302 => "Found",
-                304 => "Not Modified",
-                400 => "Bad Request",
-                401 => "Unauthorized",
-                403 => "Forbidden",
-                404 => "Not Found",
-                405 => "Method Not Allowed",
-                500 => "Internal Server Error",
-                502 => "Bad Gateway",
-                503 => "Service Unavailable",
-                _ => "",
-            };
-
-            let mut headers_map = Vec::new();
-            for (key, value) in response.headers.iter() {
-                headers_map.push(format!("\"{}\":\"{}\"", escape_json(key), escape_json(value)));
-            }
+    match result {
+        Ok(mut response) => {
+            let status_code = response.status().as_u16();
+            let reason = response.status().canonical_reason().unwrap_or("");
+            let headers_map: Vec<String> = response.headers()
+                .iter()
+                .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k.as_str()), escape_json(v.to_str().unwrap_or(""))))
+                .collect();
             let headers_str = headers_map.join(",");
-
-            let response_body = String::from_utf8_lossy(response.as_bytes()).into_owned();
+            let response_body = response.body_mut().read_to_string().unwrap_or_default();
 
             format!(
                 "{{\"statusCode\":{},\"statusMessage\":\"{}\",\"httpVersion\":\"1.1\",\"headers\":{{{}}},\"body\":\"{}\"}}",
@@ -295,67 +291,6 @@ fn escape_json(s: &str) -> String {
         }
     }
     result
-}
-
-fn serde_json_like_parse(json: &str) -> ::std::result::Result<Vec<(String, String)>, ()> {
-    let mut result = Vec::new();
-    let trimmed = json.trim();
-    if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
-        return Err(());
-    }
-    let inner = &trimmed[1..trimmed.len() - 1];
-    if inner.trim().is_empty() {
-        return Ok(result);
-    }
-
-    let mut depth = 0i32;
-    let mut in_string = false;
-    let mut escape_next = false;
-    let mut token_start = 0;
-    let mut current_key: Option<String> = None;
-
-    for (i, ch) in inner.char_indices() {
-        if escape_next {
-            escape_next = false;
-            continue;
-        }
-        if ch == '\\' && in_string {
-            escape_next = true;
-            continue;
-        }
-        if ch == '"' {
-            in_string = !in_string;
-            continue;
-        }
-        if in_string {
-            continue;
-        }
-        if ch == '{' || ch == '[' {
-            depth += 1;
-        } else if ch == '}' || ch == ']' {
-            depth -= 1;
-        } else if depth == 0 && ch == ':' {
-            let key_str = inner[token_start..i].trim().trim_matches('"').to_string();
-            current_key = Some(key_str);
-            token_start = i + 1;
-        } else if depth == 0 && ch == ',' {
-            if let Some(ref _key) = current_key {
-                let val_str = inner[token_start..i].trim().trim_matches('"').to_string();
-                if let Some(key) = current_key.take() {
-                    result.push((key, val_str));
-                }
-            }
-            token_start = i + 1;
-            current_key = None;
-        }
-    }
-
-    if let Some(key) = current_key {
-        let val_str = inner[token_start..].trim().trim_matches('"').to_string();
-        result.push((key, val_str));
-    }
-
-    Ok(result)
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {

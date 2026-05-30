@@ -333,7 +333,7 @@ impl<T> Reflected<T> {
     /// `*const F` yields a valid (non-null, aligned) zero-length-slice base.
     const DANGLING: NonNull<u8> = NonNull::<T>::dangling().cast::<u8>();
 
-    /// `[FieldMeta; COUNT]` in declaration order.
+    /// `[FieldMeta; COUNT]` sorted by offset ascending.
     const META: [FieldMeta; MAX_FIELDS] = {
         let fields = fields_of::<T>();
         let n = fields.len();
@@ -341,20 +341,39 @@ impl<T> Reflected<T> {
             n <= MAX_FIELDS,
             "MultiArrayList: too many fields (raise MAX_FIELDS)",
         );
+        // Extract offsets into a sortable array (Field is not Copy)
+        let mut offsets: [usize; MAX_FIELDS] = [0; MAX_FIELDS];
+        let mut oi = 0;
+        while oi < n {
+            offsets[oi] = fields[oi].offset;
+            oi += 1;
+        }
+        // Insertion sort by offset (const fn, small N)
+        let mut i = 1;
+        while i < n {
+            let mut j = i;
+            while j > 0 && offsets[j] < offsets[j - 1] {
+                let tmp = offsets[j];
+                offsets[j] = offsets[j - 1];
+                offsets[j - 1] = tmp;
+                j -= 1;
+            }
+            i += 1;
+        }
         let mut out = [ZERO_META; MAX_FIELDS];
         let struct_align = core::mem::align_of::<T>();
         let mut i = 0;
         while i < n {
-            let f = &fields[i];
+            let off = offsets[i];
             let size = if i + 1 < n {
-                fields[i + 1].offset - f.offset
+                offsets[i + 1] - off
             } else {
-                core::mem::size_of::<T>() - f.offset
+                core::mem::size_of::<T>() - off
             };
             let align = align_sort_key(size, struct_align);
             out[i] = FieldMeta {
                 size,
-                offset: f.offset,
+                offset: off,
                 align,
             };
             i += 1;

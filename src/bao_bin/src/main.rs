@@ -269,15 +269,20 @@ fn run_browser(
     url: ::std::option::Option<String>,
     cdp_port: u16,
     headless: bool,
-    stealth: bool, // REQ-CLI-002
+    stealth: bool,
 ) -> ::std::result::Result<(), i32> {
+    let stealth_profile = if stealth {
+        Some(bao_stealth::StealthProfile::firefox_default())
+    } else {
+        None
+    };
     let config = bao_browser::BrowserConfig {
         url,
         cdp_port,
         viewport_width: 1920,
         viewport_height: 1080,
         headless,
-        stealth,
+        stealth_profile,
     };
     if let Err(e) = bao_browser::run_browser(config) {
         eprintln!("Error: {}", e);

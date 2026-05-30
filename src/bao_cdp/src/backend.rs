@@ -1,5 +1,8 @@
-// REQ-CDP-004: CDP backend abstraction (internal/external)
-use serde_json::Value;
+// REQ-CDP-004: CDP backend abstraction (internal/external)  @trace REQ-CDP-001
+use std::net::TcpStream;
+
+use tungstenite::client;
+use tungstenite::protocol::WebSocket;
 
 use crate::protocol::CDPError;
 
@@ -7,9 +10,9 @@ pub trait CdpBackend: Send + Sync {
     fn send_command(
         &self,
         method: &str,
-        params: &Option<Value>,
+        params: &Option<serde_json::Value>,
         target_id: &str,
-    ) -> Result<Value, CDPError>;
+    ) -> Result<serde_json::Value, CDPError>;
 }
 
 pub struct InternalBackend;
@@ -24,16 +27,16 @@ impl CdpBackend for InternalBackend {
     fn send_command(
         &self,
         method: &str,
-        params: &Option<Value>,
+        params: &Option<serde_json::Value>,
         target_id: &str,
-    ) -> Result<Value, CDPError> {
+    ) -> Result<serde_json::Value, CDPError> {
         let msg = crate::protocol::CDPMessage {
             id: 0,
             method: method.to_string(),
             params: params.clone(),
             session_id: None,
         };
-        let response = crate::protocol::handle_command(msg, target_id, params);
+        let response = crate::protocol::handle_command(msg, target_id, params, None);
         match (response.result, response.error) {
             (Some(result), _) => Ok(result),
             (None, Some(err)) => Err(err),
@@ -44,38 +47,39 @@ impl CdpBackend for InternalBackend {
 
 pub struct ExternalBackend {
     endpoint: String,
-    stream: std::sync::Mutex<Option<std::net::TcpStream>>,
+    ws: std::sync::Mutex<Option<WebSocket<TcpStream>>>,
 }
 
 impl ExternalBackend {
     pub fn new(endpoint: &str) -> Result<Self, CDPError> {
         Ok(ExternalBackend {
             endpoint: endpoint.to_string(),
-            stream: std::sync::Mutex::new(None),
+            ws: std::sync::Mutex::new(None),
         })
     }
 
-    pub fn endpoint(&self) -> &str {
-        &self.endpoint
-    }
-
     fn ensure_connected(&self) -> Result<(), CDPError> {
-        let mut guard = self.stream.lock().map_err(|_| CDPError {
+        let mut guard = self.ws.lock().map_err(|_| CDPError {
             code: -32603,
             message: "lock poisoned".into(),
         })?;
 
         if guard.is_none() {
-            let ws_url = self.endpoint.trim_start_matches("ws://");
-            let stream = std::net::TcpStream::connect(ws_url).map_err(|e| CDPError {
+            let tcp_url = self.endpoint.trim_start_matches("ws://");
+            let stream = TcpStream::connect(tcp_url).map_err(|e| CDPError {
                 code: -32603,
                 message: format!("connect failed: {e}"),
             })?;
-            stream.set_nonblocking(true).map_err(|e| CDPError {
+            stream.set_nonblocking(false).map_err(|e| CDPError {
                 code: -32603,
                 message: format!("nonblocking failed: {e}"),
             })?;
-            *guard = Some(stream);
+
+            let (websocket, _response) = client(&self.endpoint, stream).map_err(|e| CDPError {
+                code: -32603,
+                message: format!("websocket handshake failed: {e}"),
+            })?;
+            *guard = Some(websocket);
         }
         Ok(())
     }
@@ -85,17 +89,17 @@ impl CdpBackend for ExternalBackend {
     fn send_command(
         &self,
         method: &str,
-        params: &Option<Value>,
+        params: &Option<serde_json::Value>,
         _target_id: &str,
-    ) -> Result<Value, CDPError> {
+    ) -> Result<serde_json::Value, CDPError> {
         self.ensure_connected()?;
 
-        let mut guard = self.stream.lock().map_err(|_| CDPError {
+        let mut guard = self.ws.lock().map_err(|_| CDPError {
             code: -32603,
             message: "lock poisoned".into(),
         })?;
 
-        let stream = guard.as_mut().ok_or_else(|| CDPError {
+        let ws = guard.as_mut().ok_or_else(|| CDPError {
             code: -32603,
             message: "not connected".into(),
         })?;
@@ -120,15 +124,15 @@ impl CdpBackend for ExternalBackend {
             message: format!("serialize error: {e}"),
         })?;
 
-        crate::ws::write_message(stream, &msg_str).map_err(|_| CDPError {
+        crate::ws::write_message(ws, &msg_str).map_err(|_| CDPError {
             code: -32603,
             message: "websocket write failed".into(),
         })?;
 
         for _ in 0..100 {
-            match crate::ws::read_message(stream) {
+            match crate::ws::read_message(ws) {
                 Ok(Some(response_str)) => {
-                    let resp: Value =
+                    let resp: serde_json::Value =
                         serde_json::from_str(&response_str).map_err(|e| CDPError {
                             code: -32700,
                             message: format!("parse error: {e}"),

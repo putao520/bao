@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -173,7 +174,7 @@ unsafe extern "C" fn os_freemem(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
 unsafe extern "C" fn os_cpus(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let nproc = match ::std::thread::available_parallelism() {
-        Ok(n) => n.get() as usize,
+        Ok(n) => n.get(),
         Err(_) => 1,
     };
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -427,11 +428,10 @@ mod libc_binding {
     pub fn get_cpu_model() -> String {
         if let Ok(content) = ::std::fs::read_to_string("/proc/cpuinfo") {
             for line in content.lines() {
-                if line.starts_with("model name") {
-                    if let Some((_, val)) = line.split_once(':') {
+                if line.starts_with("model name")
+                    && let Some((_, val)) = line.split_once(':') {
                         return val.trim().to_string();
                     }
-                }
             }
         }
         "unknown".to_string()

@@ -1,4 +1,5 @@
-// REQ-STL-006: Behavior simulation (mouse/typing/scroll)
+// REQ-STL-006: Behavior simulation (mouse/typing/scroll)  @trace REQ-STL-006
+#[derive(Debug, Clone)]
 pub struct BehaviorSimulator {
     seed: u64,
 }

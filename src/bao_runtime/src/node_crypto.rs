@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
@@ -18,11 +19,11 @@ type HmacSha512 = Hmac<sha2::Sha512>;
 type HmacSha1 = Hmac<sha1::Sha1>;
 
 thread_local! {
-    static HASH_DATA: RefCell<Vec<u8>> = RefCell::new(Vec::new());
-    static HASH_ALGO: RefCell<String> = RefCell::new(String::new());
-    static HMAC_ALGO: RefCell<String> = RefCell::new(String::new());
-    static HMAC_KEY: RefCell<Vec<u8>> = RefCell::new(Vec::new());
-    static HMAC_DATA: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static HASH_DATA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static HASH_ALGO: RefCell<String> = const { RefCell::new(String::new()) };
+    static HMAC_ALGO: RefCell<String> = const { RefCell::new(String::new()) };
+    static HMAC_KEY: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static HMAC_DATA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
@@ -523,8 +524,8 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
 // --- createCipheriv / createDecipheriv ---
 
 thread_local! {
-    static CIPHER_KEY: RefCell<Vec<u8>> = RefCell::new(Vec::new());
-    static CIPHER_IV: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+    static CIPHER_KEY: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static CIPHER_IV: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -837,7 +838,7 @@ unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     };
     let sig_hex = match arg_to_string(cx, *args.get(1).ptr) {
         Some(s) => s,
-        None => hex::encode(&extract_buffer_bytes(cx, *args.get(1).ptr)),
+        None => hex::encode(extract_buffer_bytes(cx, *args.get(1).ptr)),
     };
     let expected = hex::decode(&sig_hex).unwrap_or_default();
     let algo = HASH_ALGO.with(|a| a.borrow().clone());

@@ -1,4 +1,5 @@
-// REQ-STL-001: TLS fingerprint simulation (JA3/JA4)
+// REQ-STL-001: TLS fingerprint simulation (JA3/JA4)  @trace REQ-STL-001
+#[derive(Debug, Clone)]
 pub struct TlsFingerprint {
     pub cipher_suites: Vec<u16>,
     pub extensions: Vec<u16>,
@@ -115,7 +116,7 @@ impl TlsFingerprint {
         let num_exts = self.extensions.len();
 
         // Count TLS 1.3 vs TLS 1.2 cipher suites
-        let tls13_count = self.cipher_suites.iter().filter(|&&c| c >= 0x1301 && c <= 0x1303).count();
+        let tls13_count = self.cipher_suites.iter().filter(|&&c| (0x1301..=0x1303).contains(&c)).count();
         let tls12_count = num_suites - tls13_count;
 
         // ALPN hash: sort ALPN strings, join, SHA256, first 12 hex chars
@@ -134,10 +135,10 @@ impl TlsFingerprint {
         };
 
         format!(
-            "t13d{}{}{}_{}",
-            format!("{:02x}", tls13_count.min(99)),
-            format!("{:02x}", tls12_count.min(99)),
-            format!("{:02x}", num_exts.min(99)),
+            "t13d{:02x}{:02x}{:02x}_{}",
+            tls13_count.min(99),
+            tls12_count.min(99),
+            num_exts.min(99),
             &alpn_hash[..12.min(alpn_hash.len())]
         )
     }

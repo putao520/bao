@@ -1,3 +1,4 @@
+// @trace REQ-IMPL-01
 // bun:test + harness compatibility shims for Bun upstream test compat
 use ::std::ffi::CString;
 use ::std::ptr;

@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -40,7 +41,7 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
             host: String::new(),
             hostname: String::new(),
             port: String::new(),
-            pathname: input.splitn(2, ':').nth(1).unwrap_or("").to_string(),
+            pathname: input.split_once(':').map(|x| x.1).unwrap_or("").to_string(),
             search: String::new(),
             hash: String::new(),
             origin: "null".to_string(),
@@ -53,7 +54,8 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
         };
 
         let has_scheme = input.contains("://") || input.starts_with("//");
-        let working = if has_scheme {
+        
+        if has_scheme {
             input.to_string()
         } else if input.starts_with("/") {
             if let Some(bp) = &base_parts {
@@ -78,11 +80,9 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
             } else {
                 return None;
             }
-        };
-        working
+        }
     };
 
-    let full_url = full_url;
     let (scheme_rest, hash) = if let Some(pos) = full_url.find('#') {
         (&full_url[..pos], full_url[pos..].to_string())
     } else {
@@ -210,6 +210,7 @@ fn set_url_state(obj: *mut JSObject, state: Box<UrlState>) {
 }
 
 /// Define a read-only string property on a JS object (for origin etc).
+#[allow(dead_code)]
 unsafe fn set_string_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str, value: &str) { unsafe {
     let Ok(c_name) = CString::new(name) else { return };
     let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const ::std::os::raw::c_char, value.len());
@@ -263,13 +264,8 @@ fn rebuild_href(state: &UrlState, field: &str, new_val: &str) -> String {
         format!("{}:{}@", username, password)
     };
 
-    if field == "protocol" {
-        format!("{}//{}{}{}{}{}", protocol, auth, host, pathname, search, hash)
-    } else if field == "hostname" || field == "port" || field == "username" || field == "password" {
-        format!("{}//{}{}{}{}{}", protocol, auth, host, pathname, search, hash)
-    } else {
-        format!("{}//{}{}{}{}{}", protocol, auth, host, pathname, search, hash)
-    }
+    let href = format!("{}//{}{}{}{}{}", protocol, auth, host, pathname, search, hash);
+    href
 }
 
 /// Generic URL property setter — modifies UrlState, re-parses, and syncs all properties.
@@ -423,7 +419,7 @@ url_prop_setters! {
 }
 
 
-unsafe fn url_to_js<'a>(cx: *mut JSContext, state: &UrlState) -> *mut JSObject { unsafe {
+unsafe fn url_to_js(cx: *mut JSContext, state: &UrlState) -> *mut JSObject { unsafe {
     let obj = JS_NewObject(cx, &URL_CLASS);
     if obj.is_null() {
         return obj;
@@ -579,7 +575,7 @@ unsafe extern "C" fn url_to_string(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
 pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*mut JSObject>) {
     unsafe {
-        let url_fun = JS_NewFunction(cx.raw_cx(), Some(url_constructor), 2, JSFUN_CONSTRUCTOR as u32, c"URL".as_ptr());
+        let url_fun = JS_NewFunction(cx.raw_cx(), Some(url_constructor), 2, JSFUN_CONSTRUCTOR, c"URL".as_ptr());
         if !url_fun.is_null() {
             let url_obj = JS_GetFunctionObject(url_fun);
             if !url_obj.is_null() {
@@ -591,7 +587,7 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
             }
         }
 
-        let sp_fun = JS_NewFunction(cx.raw_cx(), Some(url_search_params_constructor), 1, JSFUN_CONSTRUCTOR as u32, c"URLSearchParams".as_ptr());
+        let sp_fun = JS_NewFunction(cx.raw_cx(), Some(url_search_params_constructor), 1, JSFUN_CONSTRUCTOR, c"URLSearchParams".as_ptr());
         if !sp_fun.is_null() {
             let sp_obj = JS_GetFunctionObject(sp_fun);
             if !sp_obj.is_null() {
@@ -605,7 +601,7 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
     rooted!(&in(cx) let url_mod = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(cx.raw_cx()) });
     if !url_mod.get().is_null() {
         let mod_h = url_mod.handle().into();
-        let url_ctor = unsafe { JS_NewFunction(cx.raw_cx(), Some(url_constructor), 2, JSFUN_CONSTRUCTOR as u32, c"URL".as_ptr()) };
+        let url_ctor = unsafe { JS_NewFunction(cx.raw_cx(), Some(url_constructor), 2, JSFUN_CONSTRUCTOR, c"URL".as_ptr()) };
         if !url_ctor.is_null() {
             let ctor_obj = unsafe { JS_GetFunctionObject(url_ctor) };
             if !ctor_obj.is_null() {
@@ -614,7 +610,7 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
                 unsafe { JS_DefineProperty(cx.raw_cx(), mod_h, c"URL".as_ptr(), val_h, JSPROP_ENUMERATE as u32); }
             }
         }
-        let sp_ctor = unsafe { JS_NewFunction(cx.raw_cx(), Some(url_search_params_constructor), 1, JSFUN_CONSTRUCTOR as u32, c"URLSearchParams".as_ptr()) };
+        let sp_ctor = unsafe { JS_NewFunction(cx.raw_cx(), Some(url_search_params_constructor), 1, JSFUN_CONSTRUCTOR, c"URLSearchParams".as_ptr()) };
         if !sp_ctor.is_null() {
             let ctor_obj = unsafe { JS_GetFunctionObject(sp_ctor) };
             if !ctor_obj.is_null() {
@@ -759,7 +755,7 @@ unsafe extern "C" fn url_search_params_constructor(cx: *mut JSContext, argc: u32
             } else {
                 // Object form: {key: "val", key2: "val2"}
                 let mut ids = IdVector::new(cx);
-                let ok = GetPropertyKeys(cx, init_obj_h, JSITER_OWNONLY as u32, ids.handle_mut());
+                let ok = GetPropertyKeys(cx, init_obj_h, JSITER_OWNONLY, ids.handle_mut());
                 if ok {
                     for jsid in &*ids {
                         if !jsid.is_string() { continue; }
@@ -794,7 +790,7 @@ unsafe fn set_sp_property(cx: *mut JSContext, obj: *mut JSObject, key: &str, val
     if found {
         JS_SetProperty(cx, obj_h, c_key.as_ptr(), val_h)
     } else {
-        JS_DefineProperty(cx, obj_h, c_key.as_ptr(), val_h, (JSPROP_ENUMERATE as u32) | (JSPROP_RESOLVING as u32))
+        JS_DefineProperty(cx, obj_h, c_key.as_ptr(), val_h, (JSPROP_ENUMERATE as u32) | JSPROP_RESOLVING)
     }
 }}
 
@@ -951,7 +947,7 @@ unsafe extern "C" fn sp_to_string(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
 
     let mut parts: Vec<String> = Vec::new();
     let mut ids = IdVector::new(cx);
-    let ok = GetPropertyKeys(cx, obj_h, JSITER_OWNONLY as u32, ids.handle_mut());
+    let ok = GetPropertyKeys(cx, obj_h, JSITER_OWNONLY, ids.handle_mut());
     if ok {
         for jsid in &*ids {
             if !jsid.is_string() { continue; }
@@ -980,7 +976,7 @@ fn url_encode(s: &str) -> String {
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
-            b' ' => out.push_str("+"),
+            b' ' => out.push('+'),
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -1019,7 +1015,7 @@ unsafe fn sp_collect_entries(cx: *mut JSContext, obj: *mut JSObject) -> Vec<(Str
     let mut result: Vec<(String, String)> = Vec::new();
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
     let mut ids = IdVector::new(cx);
-    let ok = GetPropertyKeys(cx, obj_h, JSITER_OWNONLY as u32, ids.handle_mut());
+    let ok = GetPropertyKeys(cx, obj_h, JSITER_OWNONLY, ids.handle_mut());
     if !ok { return result; }
     for jsid in &*ids {
         if !jsid.is_string() { continue; }
@@ -1155,7 +1151,7 @@ unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let this_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
 
     let mut ids = IdVector::new(cx);
-    let ok = GetPropertyKeys(cx, this_obj_h, JSITER_OWNONLY as u32, ids.handle_mut());
+    let ok = GetPropertyKeys(cx, this_obj_h, JSITER_OWNONLY, ids.handle_mut());
     if !ok { args.rval().set(UndefinedValue()); return true; }
 
     for jsid in &*ids {
@@ -1189,7 +1185,7 @@ unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let mut rval = UndefinedValue();
             JS_CallFunctionValue(
                 cx,
-                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj }.into(),
+                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj },
                 Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ObjectValue(callback_obj) },
                 &handle_arr,
                 MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval },
@@ -1243,7 +1239,7 @@ unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     }
 
     let val_str = crate::js_to_rust_string(cx, val);
-    let parts: Vec<String> = val_str.split('\x01').map(|p| url_decode(p)).collect();
+    let parts: Vec<String> = val_str.split('\x01').map(url_decode).collect();
     let arr = mozjs::jsapi::NewArrayObject1(cx, parts.len());
     if arr.is_null() { args.rval().set(UndefinedValue()); return true; }
     for (i, part) in parts.iter().enumerate() {

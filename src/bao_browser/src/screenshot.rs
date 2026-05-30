@@ -1,4 +1,4 @@
-// REQ-CDP-007: Screenshot capture via servo rendering pipeline
+// @trace REQ-BRW-002  REQ-CDP-007: Screenshot capture via servo rendering pipeline
 use std::io::Cursor;
 
 use image::{ImageFormat, RgbaImage};

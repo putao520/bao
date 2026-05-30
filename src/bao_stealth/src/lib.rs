@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports)]
-// REQ-STL-007: Stealth engine integration and CDP stealth
+// REQ-STL-007: Stealth engine integration and CDP stealth  @trace REQ-STL-001
 mod profile;
 mod tls;
 mod http2;
@@ -26,7 +26,8 @@ impl StealthEngine {
         StealthEngine { profile }
     }
 
-    pub fn default() -> Self {
+    #[allow(clippy::new_ret_no_self)]
+    pub fn default_engine() -> Self {
         Self::new(StealthProfile::firefox_default())
     }
 

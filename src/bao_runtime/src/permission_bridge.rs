@@ -1,7 +1,8 @@
+// @trace REQ-LIB-004
 use ::std::cell::RefCell;
 
 thread_local! {
-    static PERMISSION_GUARD: RefCell<Option<PermissionCheck>> = RefCell::new(None);
+    static PERMISSION_GUARD: RefCell<Option<PermissionCheck>> = const { RefCell::new(None) };
 }
 
 #[derive(Debug, Clone)]

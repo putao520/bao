@@ -17,11 +17,11 @@ use crate::value::{JsValue, jsval_to_jsvalue};
 pub type GlobalSetupFn = unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
 pub type PostEvalHook = fn(&mut mozjs::context::JSContext) -> bool;
 
-/// Per-thread engine handle. JSEngine can only be initialized once per process.
-/// We intentionally leak the JSEngine struct (std::mem::forget) to avoid drop-order
-/// issues with thread_local — mozjs asserts no outstanding handles on engine drop.
+// Per-thread engine handle. JSEngine can only be initialized once per process.
+// We intentionally leak the JSEngine struct (std::mem::forget) to avoid drop-order
+// issues with thread_local — mozjs asserts no outstanding handles on engine drop.
 thread_local! {
-    static ENGINE_HANDLE: ::std::cell::RefCell<Option<JSEngineHandle>> = ::std::cell::RefCell::new(None);
+    static ENGINE_HANDLE: ::std::cell::RefCell<Option<JSEngineHandle>> = const { ::std::cell::RefCell::new(None) };
 }
 
 pub struct JsContext {

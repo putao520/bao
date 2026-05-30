@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -487,11 +488,7 @@ unsafe extern "C" fn assert_ok(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         val.to_double() != 0.0
     } else if val.is_string() {
         true
-    } else if val.is_null() || val.is_undefined() {
-        false
-    } else {
-        true
-    };
+    } else { !(val.is_null() || val.is_undefined()) };
     if !is_truthy {
         let msg = if argc > 1 { jsval_to_display(cx, *args.get(1).ptr) } else { "The expression evaluated to a falsy value".to_string() };
         let c_msg = CString::new(msg).unwrap_or_default();
@@ -543,7 +540,7 @@ unsafe extern "C" fn assert_deep_equal(cx: *mut JSContext, argc: u32, vp: *mut J
         let a = jsval_to_display(cx, *args.get(0).ptr);
         let b = jsval_to_display(cx, *args.get(1).ptr);
         if a != b {
-            let c_msg = CString::new(format!("Expected values to be deeply equal")).unwrap_or_default();
+            let c_msg = CString::new("Expected values to be deeply equal".to_string()).unwrap_or_default();
             JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
             return false;
         }
@@ -578,15 +575,14 @@ unsafe fn values_equal_strict(cx: *mut JSContext, a: JSVal, b: JSVal) -> bool { 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn assert_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc >= 2 {
-        if !values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
+    if argc >= 2
+        && !values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
             let a = jsval_to_display(cx, *args.get(0).ptr);
             let b = jsval_to_display(cx, *args.get(1).ptr);
             let c_msg = CString::new(format!("Expected {} to strictly equal {}", a, b)).unwrap_or_default();
             JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
             return false;
         }
-    }
     args.rval().set(UndefinedValue());
     true
 }
@@ -594,13 +590,12 @@ unsafe extern "C" fn assert_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn assert_not_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc >= 2 {
-        if values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
-            let c_msg = CString::new(format!("Expected values to be strictly unequal")).unwrap_or_default();
+    if argc >= 2
+        && values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
+            let c_msg = CString::new("Expected values to be strictly unequal".to_string()).unwrap_or_default();
             JS_ReportErrorUTF8(cx, b"AssertionError: %s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
             return false;
         }
-    }
     args.rval().set(UndefinedValue());
     true
 }

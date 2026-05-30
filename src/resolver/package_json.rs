@@ -499,7 +499,7 @@ impl PackageJSON {
             valid_count += 1;
         }
 
-        env.defaults.truncate(0);
+        env.defaults.clear();
         let _ = env.defaults.reserve(valid_count);
 
         for prop in json.properties.slice() {
@@ -614,7 +614,7 @@ impl PackageJSON {
                                 Self::load_define_defaults(env, obj, bump)?;
                             }
                             _ => {
-                                env.defaults.truncate(0);
+                                env.defaults.clear();
                             }
                         }
                     } else if str == b".env" {

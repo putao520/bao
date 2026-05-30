@@ -1,4 +1,5 @@
-// REQ-STL-002: HTTP/2 fingerprint matching (Akamai)
+// REQ-STL-002: HTTP/2 fingerprint matching (Akamai)  @trace REQ-STL-002
+#[derive(Debug, Clone)]
 pub struct Http2Fingerprint {
     pub header_table_size: u32,
     pub enable_push: bool,

@@ -1,4 +1,5 @@
-// REQ-STL-004: Navigator/Screen property construction
+// REQ-STL-004: Navigator/Screen property construction  @trace REQ-STL-004
+#[derive(Debug, Clone)]
 pub struct NavigatorProfile {
     pub user_agent: String,
     pub platform: String,
@@ -44,6 +45,7 @@ impl NavigatorProfile {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ScreenProfile {
     pub width: u32,
     pub height: u32,

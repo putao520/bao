@@ -1,3 +1,4 @@
+// @trace REQ-ENG-005
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::fs;
@@ -12,7 +13,7 @@ use mozjs::jsval::{JSVal, UndefinedValue};
 use crate::gc_store;
 
 thread_local! {
-    static REQUIRE_DIR: RefCell<Option<PathBuf>> = RefCell::new(None);
+    static REQUIRE_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 pub fn cache_builtin(cx: &mut mozjs::context::JSContext, name: &str, obj: *mut JSObject) {
@@ -112,12 +113,11 @@ unsafe extern "C" fn require_fn(
     let builtin_key = specifier.strip_prefix("node:").unwrap_or(&specifier);
     let cache_key = format!("builtin:{}", builtin_key);
     let cached = gc_store::gc_store_get(cx, &cache_key);
-    if let Some(existing) = cached {
-        if !existing.is_null() {
+    if let Some(existing) = cached
+        && !existing.is_null() {
             args.rval().set(mozjs::jsval::ObjectValue(existing));
             return true;
         }
-    }
 
     // process is a global — return it directly for require("process") / require("node:process")
     if builtin_key == "process" {
@@ -159,13 +159,12 @@ unsafe extern "C" fn require_fn(
     let cache_key = canonical.to_string_lossy().into_owned();
 
     let cached = gc_store::gc_store_get(cx, &cache_key);
-    if let Some(existing) = cached {
-        if !existing.is_null() {
+    if let Some(existing) = cached
+        && !existing.is_null() {
             let exports_val = mozjs::jsval::ObjectValue(existing);
             args.rval().set(exports_val);
             return true;
         }
-    }
 
     let content = match fs::read_to_string(&resolved) {
         Ok(c) => c,
@@ -177,7 +176,7 @@ unsafe extern "C" fn require_fn(
         }
     };
 
-    let exports_obj = if resolved.extension().map_or(false, |e| e == "json") {
+    let exports_obj = if resolved.extension().is_some_and(|e| e == "json") {
         load_json_module(cx, &content, &specifier)
     } else {
         load_cjs_module(cx, &content, &resolved, base_dir.as_deref())

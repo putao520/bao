@@ -1,17 +1,25 @@
-#![allow(dead_code, unused_imports, unreachable_patterns, unreachable_pub)]
-// REQ-CDP-003: CDP module public API and domain registry
+// REQ-CDP-003: CDP module public API and domain registry  @trace REQ-CDP-001 [entity:CdpServer]
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{Cursor, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
+
+use tungstenite::accept;
+use tungstenite::protocol::WebSocket;
 
 mod ws;
 mod protocol;
 mod backend;
 mod router;
+pub mod servo_bridge;
+pub mod domains;
 
 pub use protocol::{CDPMessage, CDPResponse, CDPEvent};
-pub use router::{CdpRouter, CdpSession, ExternalBrowser};
+pub use router::{CdpRouter, CdpSession, ExternalBrowser, BackendKind};
+pub use servo_bridge::{BridgeSender, BridgeReceiver, BridgeCommand, BridgeResponse, bridge_channel};
+
+// cdp-server integration — new domain-handler architecture
+pub use cdp_server::{CdpServer, ServerConfig, DomainRegistry, EventBroadcaster};
 
 pub struct CDPServer {
     port: u16,
@@ -19,6 +27,7 @@ pub struct CDPServer {
     sessions: HashMap<String, CDPSession>,
     cmd_tx: Sender<CDPCommand>,
     cmd_rx: Receiver<CDPCommand>,
+    bridge: Option<BridgeSender>,
 }
 
 pub enum CDPCommand {
@@ -29,7 +38,42 @@ pub enum CDPCommand {
 pub struct CDPSession {
     id: String,
     target_id: String,
-    ws_stream: TcpStream,
+    ws: WebSocket<ReplayStream>,
+    bridge: Option<BridgeSender>,
+}
+
+/// Wraps a TcpStream with pre-read bytes, replaying them on the first reads
+/// so tungstenite sees the full HTTP upgrade request.
+struct ReplayStream {
+    stream: TcpStream,
+    replay: Cursor<Vec<u8>>,
+}
+
+impl ReplayStream {
+    fn new(stream: TcpStream, peeked: Vec<u8>) -> Self {
+        ReplayStream {
+            stream,
+            replay: Cursor::new(peeked),
+        }
+    }
+}
+
+impl Read for ReplayStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.replay.position() < self.replay.get_ref().len() as u64 {
+            return self.replay.read(buf);
+        }
+        self.stream.read(buf)
+    }
+}
+
+impl Write for ReplayStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.stream.write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.stream.flush()
+    }
 }
 
 impl CDPServer {
@@ -41,16 +85,24 @@ impl CDPServer {
             sessions: HashMap::new(),
             cmd_tx,
             cmd_rx,
+            bridge: None,
         }
     }
 
-    pub fn port(&self) -> u16 {
-        self.port
+    pub fn with_bridge(port: u16, bridge: BridgeSender) -> Self {
+        let (cmd_tx, cmd_rx) = channel();
+        CDPServer {
+            port,
+            target_id: format!("{:016x}", rand_id()),
+            sessions: HashMap::new(),
+            cmd_tx,
+            cmd_rx,
+            bridge: Some(bridge),
+        }
     }
 
-    pub fn target_id(&self) -> &str {
-        &self.target_id
-    }
+    pub fn port(&self) -> u16 { self.port }
+    pub fn target_id(&self) -> &str { &self.target_id }
 
     pub fn ws_url(&self) -> String {
         format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, self.target_id)
@@ -101,9 +153,7 @@ impl CDPServer {
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => {
-                    eprintln!("CDP accept error: {}", e);
-                }
+                Err(e) => eprintln!("CDP accept error: {}", e),
             }
 
             let mut to_remove = Vec::new();
@@ -124,76 +174,59 @@ impl CDPServer {
 
     fn handle_connection(&self, mut stream: TcpStream) -> Option<CDPSession> {
         let mut buf = [0u8; 8192];
+        stream.set_nonblocking(false).ok()?;
         let n = stream.read(&mut buf).ok()?;
         let request = std::str::from_utf8(&buf[..n]).ok()?;
 
-        if request.starts_with("GET /json") {
-            let body = self.json_list();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
-            );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
-            return None;
-        }
-
+        // HTTP JSON discovery endpoints
         if request.starts_with("GET /json/version") {
-            let body = serde_json::json!({
-                "Browser": "Bao/0.1.0",
-                "Protocol-Version": "1.3",
-                "User-Agent": "Bao/0.1.0",
-                "V8-Version": "SpiderMonkey",
-                "WebKit-Version": "Servo",
-                "webSocketDebuggerUrl": self.ws_url()
-            }).to_string();
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                body.len(),
-                body
+            respond_json(
+                &mut stream,
+                &serde_json::json!({
+                    "Browser": "Bao/0.1.0",
+                    "Protocol-Version": "1.3",
+                    "User-Agent": "Bao/0.1.0",
+                    "V8-Version": "SpiderMonkey",
+                    "WebKit-Version": "Servo",
+                    "webSocketDebuggerUrl": self.ws_url()
+                }),
             );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
             return None;
         }
 
+        if request.starts_with("GET /json") {
+            let entry = serde_json::json!({
+                "id": self.target_id,
+                "type": "page",
+                "title": "Bao",
+                "url": "about:blank",
+                "webSocketDebuggerUrl": format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, self.target_id)
+            });
+            respond_json(&mut stream, &serde_json::json!([entry]));
+            return None;
+        }
+
+        // WebSocket upgrade — replay already-read bytes to tungstenite
         if request.starts_with("GET /devtools/page/") {
-            let ws_key = extract_header(request, "Sec-WebSocket-Key");
-            if let Some(key) = ws_key {
-                let accept = ws::compute_accept_key(&key);
-                let response = format!(
-                    "HTTP/1.1 101 Switching Protocols\r\n\
-                     Upgrade: websocket\r\n\
-                     Connection: Upgrade\r\n\
-                     Sec-WebSocket-Accept: {}\r\n\r\n",
-                    accept
-                );
-                let _ = stream.write_all(response.as_bytes());
-                let _ = stream.flush();
-                let session_id = format!("{:016x}", rand_id());
-                return Some(CDPSession {
-                    id: session_id,
-                    target_id: self.target_id.clone(),
-                    ws_stream: stream,
-                });
+            let replay = ReplayStream::new(stream, buf[..n].to_vec());
+            match accept(replay) {
+                Ok(ws) => {
+                    return Some(CDPSession {
+                        id: format!("{:016x}", rand_id()),
+                        target_id: self.target_id.clone(),
+                        ws,
+                        bridge: self.bridge.clone(),
+                    });
+                }
+                Err(e) => {
+                    eprintln!("CDP WebSocket accept error: {}", e);
+                    return None;
+                }
             }
         }
 
-        let response = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
-        let _ = stream.write_all(response.as_bytes());
+        respond_raw(&mut stream, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
         None
-    }
-
-    fn json_list(&self) -> String {
-        let entry = serde_json::json!({
-            "id": self.target_id,
-            "type": "page",
-            "title": "Bao",
-            "url": "about:blank",
-            "webSocketDebuggerUrl": format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, self.target_id)
-        });
-        format!("[{}]", entry)
     }
 
     fn broadcast_event(&mut self, ev: &CDPEvent) {
@@ -205,7 +238,7 @@ impl CDPServer {
 
 impl CDPSession {
     pub fn process(&mut self) -> Result<(), ()> {
-        let msg = match ws::read_message(&mut self.ws_stream) {
+        let msg = match ws::read_message(&mut self.ws) {
             Ok(Some(msg)) => msg,
             Ok(None) => return Ok(()),
             Err(_) => return Err(()),
@@ -216,29 +249,36 @@ impl CDPSession {
             None => return Ok(()),
         };
 
-        let response = protocol::handle_command(cdp_msg.clone(), &self.target_id, &cdp_msg.params);
+        let response = protocol::handle_command(
+            cdp_msg.clone(), &self.target_id, &cdp_msg.params, self.bridge.as_ref(),
+        );
         let response_json = protocol::serialize_response(&response);
-        let _ = ws::write_message(&mut self.ws_stream, &response_json);
+        let _ = ws::write_message(&mut self.ws, &response_json);
 
         Ok(())
     }
 
     pub fn send_event(&mut self, ev: &CDPEvent) -> Result<(), ()> {
         let json = protocol::serialize_event(ev);
-        ws::write_message(&mut self.ws_stream, &json)
+        ws::write_message(&mut self.ws, &json)
     }
 }
 
-fn extract_header<'a>(request: &'a str, name: &str) -> Option<&'a str> {
-    for line in request.lines() {
-        if let Some(pos) = line.find(": ") {
-            let key = &line[..pos];
-            if key.eq_ignore_ascii_case(name) {
-                return Some(line[pos + 2..].trim());
-            }
-        }
-    }
-    None
+fn respond_json(stream: &mut TcpStream, value: &serde_json::Value) {
+    let body = value.to_string();
+    respond_raw(
+        stream,
+        &format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        ),
+    );
+}
+
+fn respond_raw(stream: &mut TcpStream, response: &str) {
+    let _ = stream.write_all(response.as_bytes());
+    let _ = stream.flush();
 }
 
 fn rand_id() -> u64 {

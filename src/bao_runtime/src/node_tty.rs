@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -23,7 +24,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             cx.raw_cx(),
             Some(tty_read_stream_ctor),
             1,
-            JSFUN_CONSTRUCTOR as u32,
+            JSFUN_CONSTRUCTOR,
             c"ReadStream".as_ptr(),
         );
         if !rs_fn.is_null() {
@@ -43,7 +44,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             cx.raw_cx(),
             Some(tty_write_stream_ctor),
             1,
-            JSFUN_CONSTRUCTOR as u32,
+            JSFUN_CONSTRUCTOR,
             c"WriteStream".as_ptr(),
         );
         if !ws_fn.is_null() {
@@ -67,7 +68,7 @@ unsafe extern "C" fn tty_isatty(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, argc);
     let fd = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() { v.to_int32() as i32 } else { -1 }
+        if v.is_int32() { v.to_int32() } else { -1 }
     } else {
         -1
     };
@@ -85,7 +86,7 @@ unsafe extern "C" fn tty_read_stream_ctor(
     let args = CallArgs::from_vp(vp, argc);
     let fd = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() { v.to_int32() as i32 } else { 0 }
+        if v.is_int32() { v.to_int32() } else { 0 }
     } else {
         0
     };
@@ -137,7 +138,7 @@ unsafe extern "C" fn tty_write_stream_ctor(
     let args = CallArgs::from_vp(vp, argc);
     let fd = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() { v.to_int32() as i32 } else { 1 }
+        if v.is_int32() { v.to_int32() } else { 1 }
     } else {
         1
     };

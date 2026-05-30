@@ -1,4 +1,4 @@
-// REQ-ENG-005: Host function registration and callback
+// @trace REQ-ENG-003
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
@@ -312,12 +312,13 @@ pub unsafe fn get_int_property(
 
 impl JsError {
     /// Throw this error on the given JSContext.
-    pub fn throw_on(&self, cx: *mut JSContext) {
+    ///
+    /// # Safety
+    /// `cx` must be a valid JSContext pointer.
+    pub unsafe fn throw_on(&self, cx: *mut JSContext) {
         let msg = ::std::ffi::CString::new(self.message.as_str())
             .unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
-        unsafe {
-            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, msg.as_ptr());
-        }
+        unsafe { JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr()); }
     }
 }
 
@@ -533,4 +534,255 @@ unsafe fn extract_label(cx: *mut JSContext, argc: u32, args: &CallArgs) -> Strin
     } else {
         "default".into()
     }
+}
+
+// ---------------------------------------------------------------------------
+// ArgReader — typed argument extraction from CallArgs
+// ---------------------------------------------------------------------------
+
+/// Typed argument reader wrapping SpiderMonkey CallArgs.
+///
+/// Provides safe extraction of typed arguments from JS function calls.
+pub struct ArgReader<'a> {
+    cx: *mut JSContext,
+    args: &'a CallArgs,
+}
+
+impl<'a> ArgReader<'a> {
+    /// Create an ArgReader from a JSContext and CallArgs.
+    ///
+    /// # Safety
+    /// `cx` must be a valid JSContext. `args` must be valid CallArgs for the current call.
+    pub unsafe fn new(cx: *mut JSContext, args: &'a CallArgs) -> Self {
+        ArgReader { cx, args }
+    }
+
+    /// Number of arguments passed.
+    pub fn argc(&self) -> u32 {
+        self.args.argc_
+    }
+
+    /// Check if argument at `index` exists.
+    pub fn has(&self, index: u32) -> bool {
+        index < self.args.argc_
+    }
+
+    /// Get raw JSVal at index, or UndefinedValue if out of bounds.
+    ///
+    /// # Safety
+    /// `cx` must be a valid JSContext. `index` must be in bounds or handled gracefully.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn get_raw(&self, index: u32) -> JSVal {
+        if index < self.args.argc_ {
+            *self.args.get(index).ptr
+        } else {
+            UndefinedValue()
+        }
+    }
+
+    /// Extract a string argument. Returns default if missing or not a string.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn get_string(&self, index: u32) -> ::std::string::String {
+        let val = self.get_raw(index);
+        if val.is_string() {
+            let s = val.to_string();
+            if !s.is_null() {
+                jsstr_to_string(self.cx, NonNull::new(s).expect("null-checked"))
+            } else {
+                ::std::string::String::new()
+            }
+        } else {
+            ::std::string::String::new()
+        }
+    }
+
+    /// Extract an optional string argument.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    pub unsafe fn get_optional_string(&self, index: u32) -> ::std::option::Option<::std::string::String> {
+        if !self.has(index) { return None; }
+        let s = unsafe { self.get_string(index) };
+        if s.is_empty() { None } else { Some(s) }
+    }
+
+    /// Extract an i32 argument. Returns default if missing or not a number.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn get_int(&self, index: u32) -> i32 {
+        let val = self.get_raw(index);
+        if val.is_int32() {
+            val.to_int32()
+        } else if val.is_double() {
+            val.to_double() as i32
+        } else {
+            0
+        }
+    }
+
+    /// Extract an f64 argument. Returns default if missing or not a number.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn get_f64(&self, index: u32) -> f64 {
+        let val = self.get_raw(index);
+        if val.is_int32() {
+            val.to_int32() as f64
+        } else if val.is_double() {
+            val.to_double()
+        } else {
+            0.0
+        }
+    }
+
+    /// Extract a bool argument. Returns false if missing or not a boolean.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn get_bool(&self, index: u32) -> bool {
+        let val = self.get_raw(index);
+        if val.is_boolean() {
+            val.to_boolean()
+        } else {
+            false
+        }
+    }
+
+    /// Extract a JSObject pointer argument. Returns null if missing or not an object.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn get_object(&self, index: u32) -> *mut JSObject {
+        let val = self.get_raw(index);
+        if val.is_object() {
+            val.to_object()
+        } else {
+            ::std::ptr::null_mut()
+        }
+    }
+
+    /// Extract a JsValue at index.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    pub unsafe fn get_value(&self, index: u32) -> JsValue {
+        unsafe { value::jsval_to_jsvalue(self.cx, self.get_raw(index)) }
+    }
+
+    /// Set the return value to undefined.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn return_undefined(&self) {
+        self.args.rval().set(UndefinedValue());
+    }
+
+    /// Set the return value to a JsValue.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn return_value(&self, val: JsValue) {
+        self.args.rval().set(val.to_jsval(self.cx));
+    }
+
+    /// Set the return value to a bool.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn return_bool(&self, v: bool) {
+        self.args.rval().set(mozjs::jsval::BooleanValue(v));
+    }
+
+    /// Set the return value to an i32.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn return_int(&self, v: i32) {
+        self.args.rval().set(mozjs::jsval::Int32Value(v));
+    }
+
+    /// Set the return value to an f64.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn return_f64(&self, v: f64) {
+        self.args.rval().set(mozjs::jsval::DoubleValue(v));
+    }
+
+    /// Set the return value to a Rust string (creates a JSString).
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    #[allow(unsafe_op_in_unsafe_fn)]
+    pub unsafe fn return_string(&self, s: &str) {
+        let c_str = ::std::ffi::CString::new(s).unwrap_or_default();
+        let js_str = JS_NewStringCopyZ(self.cx, c_str.as_ptr());
+        if !js_str.is_null() {
+            self.args.rval().set(mozjs::jsval::StringValue(&*js_str));
+        } else {
+            self.return_undefined();
+        }
+    }
+
+    /// Throw an error message on the JSContext and return false.
+    ///
+    /// # Safety
+    /// Must be called within a valid JSContext scope.
+    pub unsafe fn throw(&self, msg: &str) -> bool {
+        let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("error").unwrap());
+        unsafe { JS_ReportErrorUTF8(self.cx, c"%s".as_ptr(), c_msg.as_ptr()); }
+        false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// define_host_fn! — macro for registering typed host functions
+// ---------------------------------------------------------------------------
+
+/// Register a host function on a JS object.
+///
+/// Generates a `JSNative` trampoline that wraps a safe Rust handler receiving
+/// `(&mut JSContext, &ArgReader) -> bool`.
+///
+/// # Example
+/// ```ignore
+/// define_host_fn!(cx, obj, "myFunc", 2, |cx, args| {
+///     let name = args.get_string(0);
+///     let count = args.get_int(1);
+///     args.return_string(&format!("{}: {}", name, count));
+///     true
+/// });
+/// ```
+#[macro_export]
+macro_rules! define_host_fn {
+    ($cx:expr, $obj:expr, $name:expr, $nargs:expr, $handler:expr) => {
+        unsafe {
+            static mut __HANDLER: ::std::option::Option<for<'a> fn(*mut mozjs::jsapi::JSContext, &'a $crate::host_fn::ArgReader<'a>) -> bool> = None;
+            ::std::ptr::write_volatile(&mut __HANDLER, Some($handler));
+            unsafe extern "C" fn __trampoline(cx: *mut mozjs::jsapi::JSContext, argc: u32, vp: *mut mozjs::jsval::JSVal) -> bool {
+                let args = mozjs::jsapi::CallArgs::from_vp(vp, argc);
+                let reader = $crate::host_fn::ArgReader::new(cx, &args);
+                match ::std::ptr::read_volatile(&__HANDLER) {
+                    Some(h) => h(cx, &reader),
+                    None => { args.rval().set(mozjs::jsval::UndefinedValue()); true }
+                }
+            }
+            mozjs::rust::wrappers2::JS_DefineFunction(
+                $cx, $obj, $name.as_ptr(), Some(__trampoline), $nargs, mozjs::jsapi::JSPROP_ENUMERATE as u32,
+            );
+        }
+    };
 }

@@ -1,4 +1,4 @@
-// REQ-ENG-002: JobQueue event loop with SM microtask/async
+// @trace REQ-ENG-004
 use ::std::cell::RefCell;
 use ::std::collections::VecDeque;
 use ::std::ffi::CString;
@@ -15,8 +15,8 @@ static JOB_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     // Track job IDs in order — the actual JSObject* is stored as a global property
-    static JOB_IDS: RefCell<VecDeque<usize>> = RefCell::new(VecDeque::new());
-    static QUEUE_PTR: RefCell<*mut mozjs::jsapi::JobQueue> = RefCell::new(ptr::null_mut());
+    static JOB_IDS: RefCell<VecDeque<usize>> = const { RefCell::new(VecDeque::new()) };
+    static QUEUE_PTR: RefCell<*mut mozjs::jsapi::JobQueue> = const { RefCell::new(ptr::null_mut()) };
 }
 
 fn job_prop_name(id: usize) -> CString {

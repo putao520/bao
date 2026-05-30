@@ -1,5 +1,7 @@
-// REQ-CDP-008: CDP and browser configuration structs
+// @trace REQ-BRW-001  REQ-CDP-008: CDP and browser configuration structs
 use std::time::Duration;
+
+use bao_stealth::StealthProfile;
 
 use crate::permission::Permission;
 
@@ -10,6 +12,7 @@ pub struct BaoConfig {
     pub idle_ttl: Duration,
     pub default_viewport_width: u32,
     pub default_viewport_height: u32,
+    pub stealth_profile: Option<StealthProfile>,
 }
 
 impl Default for BaoConfig {
@@ -20,6 +23,7 @@ impl Default for BaoConfig {
             idle_ttl: Duration::from_secs(60),
             default_viewport_width: 1920,
             default_viewport_height: 1080,
+            stealth_profile: None,
         }
     }
 }
@@ -44,7 +48,7 @@ pub struct PageConfig {
     pub url: Option<String>,
     pub viewport_width: Option<u32>,
     pub viewport_height: Option<u32>,
-    pub stealth: bool,
+    pub stealth_profile: Option<StealthProfile>,
     pub permission: Option<Permission>,
 }
 
@@ -54,20 +58,33 @@ impl Default for PageConfig {
             url: None,
             viewport_width: None,
             viewport_height: None,
-            stealth: false,
+            stealth_profile: None,
             permission: None,
         }
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct BrowserConfig {
     pub url: Option<String>,
     pub cdp_port: u16,
     pub viewport_width: u32,
     pub viewport_height: u32,
     pub headless: bool,
-    pub stealth: bool,
+    pub stealth_profile: Option<StealthProfile>,
+}
+
+impl Default for BrowserConfig {
+    fn default() -> Self {
+        BrowserConfig {
+            url: None,
+            cdp_port: 9222,
+            viewport_width: 1920,
+            viewport_height: 1080,
+            headless: true,
+            stealth_profile: None,
+        }
+    }
 }
 
 impl From<BrowserConfig> for BaoConfig {
@@ -78,6 +95,7 @@ impl From<BrowserConfig> for BaoConfig {
             idle_ttl: Duration::from_secs(60),
             default_viewport_width: bc.viewport_width,
             default_viewport_height: bc.viewport_height,
+            stealth_profile: bc.stealth_profile,
         }
     }
 }

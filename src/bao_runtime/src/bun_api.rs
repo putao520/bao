@@ -209,7 +209,7 @@ pub fn install_bun_global(
                 let _ok = JS_GetProperty(
                     cx.raw_cx(),
                     bun_obj.handle().into(),
-                    c"readFile".as_ptr() as *const ::std::os::raw::c_char,
+                    c"readFile".as_ptr(),
                     read_val.handle_mut().into(),
                 );
                 JS_DefineProperty(
@@ -594,15 +594,14 @@ pub fn install_process_global(
         // process.argv0
         {
             let args: Vec<::std::string::String> = ::std::env::args().collect();
-            if !args.is_empty() {
-                if let Ok(c_arg) = ::std::ffi::CString::new(args[0].as_str()) {
+            if !args.is_empty()
+                && let Ok(c_arg) = ::std::ffi::CString::new(args[0].as_str()) {
                     let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_arg.as_ptr());
                     if !js_str.is_null() {
                         rooted!(&in(cx) let v = StringValue(&*js_str));
                         JS_DefineProperty(cx.raw_cx(), proc_obj.handle().into(), c"argv0".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
                     }
                 }
-            }
         }
 
         // process.execPath
@@ -638,7 +637,7 @@ pub fn install_process_global(
 }
 
 thread_local! {
-    static SPAWNED_PROCS: RefCell<Vec<*mut ::std::process::Child>> = RefCell::new(Vec::new());
+    static SPAWNED_PROCS: RefCell<Vec<*mut ::std::process::Child>> = const { RefCell::new(Vec::new()) };
 }
 
 struct TestCase {
@@ -647,7 +646,7 @@ struct TestCase {
 }
 
 thread_local! {
-    static TEST_REGISTRY: RefCell<Vec<TestCase>> = RefCell::new(Vec::new());
+    static TEST_REGISTRY: RefCell<Vec<TestCase>> = const { RefCell::new(Vec::new()) };
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1026,7 +1025,7 @@ unsafe extern "C" fn stdin_read(
 }
 
 thread_local! {
-    static STDIN_LISTENERS: RefCell<Vec<*mut JSObject>> = RefCell::new(Vec::new());
+    static STDIN_LISTENERS: RefCell<Vec<*mut JSObject>> = const { RefCell::new(Vec::new()) };
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1134,7 +1133,7 @@ unsafe extern "C" fn bun_serve(
     };
 
     let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
-    eprint!("Bun.serve() listening on {}:{}\n", hostname, actual_port);
+    eprintln!("Bun.serve() listening on {}:{}", hostname, actual_port);
 
     let server_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
     if server_obj.is_null() {
@@ -1203,7 +1202,7 @@ unsafe extern "C" fn bun_serve(
                             let mut hasher = Sha1::new();
                             hasher.update(format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", ws_key));
                             let result = hasher.finalize();
-                            base64::engine::general_purpose::STANDARD.encode(&result)
+                            base64::engine::general_purpose::STANDARD.encode(result)
                         };
                         let response = format!(
                             "HTTP/1.1 101 Switching Protocols\r\n\
@@ -1231,11 +1230,11 @@ unsafe extern "C" fn bun_serve(
                 Err(_) => {}
             }
         }
-        eprint!("Bun.serve() stopped on {}:{}\n", bg_hostname, bg_port);
+        eprintln!("Bun.serve() stopped on {}:{}", bg_hostname, bg_port);
     });
 
     thread_local! {
-        static SRV_STOP_HANDLES: RefCell<Vec<::std::sync::Arc<::std::sync::atomic::AtomicBool>>> = RefCell::new(Vec::new());
+        static SRV_STOP_HANDLES: RefCell<Vec<::std::sync::Arc<::std::sync::atomic::AtomicBool>>> = const { RefCell::new(Vec::new()) };
     }
     let stop_idx = SRV_STOP_HANDLES.with(|h| {
         let mut handles = h.borrow_mut();
@@ -1427,7 +1426,7 @@ unsafe extern "C" fn bun_which(
         }
         #[cfg(target_family = "unix")]
         {
-            let candidate = ::std::path::Path::new(dir).join(format!("{}", name));
+            let candidate = ::std::path::Path::new(dir).join(&name);
             if candidate.exists() {
                 let result = candidate.to_string_lossy().into_owned();
                 let Ok(c_result) = ::std::ffi::CString::new(result.as_str()) else {
@@ -2043,7 +2042,7 @@ unsafe extern "C" fn process_noop(_cx: *mut JSContext, _argc: u32, vp: *mut JSVa
 }
 
 thread_local! {
-    static EXIT_HANDLERS: RefCell<Vec<*mut JSObject>> = RefCell::new(Vec::new());
+    static EXIT_HANDLERS: RefCell<Vec<*mut JSObject>> = const { RefCell::new(Vec::new()) };
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -2210,7 +2209,7 @@ unsafe extern "C" fn process_uptime(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let uptime_secs = match PROCESS_START.with(|s| s.borrow().clone()) {
+    let uptime_secs = match PROCESS_START.with(|s| *s.borrow()) {
         Some(start) => {
             let now = ::std::time::Instant::now();
             now.duration_since(start).as_secs_f64()
@@ -2270,7 +2269,7 @@ unsafe extern "C" fn process_kill(
     }
     let pid_val = args.get(0);
     let pid = if pid_val.is_int32() {
-        pid_val.to_int32() as i32
+        pid_val.to_int32()
     } else {
         args.rval().set(BooleanValue(false));
         return true;
@@ -2304,7 +2303,7 @@ unsafe extern "C" fn process_umask(
 }
 
 thread_local! {
-    static PROCESS_START: RefCell<Option<::std::time::Instant>> = RefCell::new(None);
+    static PROCESS_START: RefCell<Option<::std::time::Instant>> = const { RefCell::new(None) };
 }
 
 pub fn init_process_start() {

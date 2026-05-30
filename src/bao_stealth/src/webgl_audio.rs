@@ -1,4 +1,5 @@
-// REQ-STL-005: WebGL/Audio fingerprint protection
+// REQ-STL-005: WebGL/Audio fingerprint protection  @trace REQ-STL-005
+#[derive(Debug, Clone)]
 pub struct WebGLProfile {
     pub vendor: String,
     pub renderer: String,
@@ -76,6 +77,7 @@ impl WebGLProfile {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct AudioProfile {
     seed: u64,
     noise_amplitude: f64,

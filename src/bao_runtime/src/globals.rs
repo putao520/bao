@@ -1,3 +1,4 @@
+// @trace REQ-ENG-006
 // Global object installation entry point + Buffer + Crypto
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
@@ -13,7 +14,7 @@ use mozjs::conversions::jsstr_to_string;
 use digest::Digest;
 
 thread_local! {
-    static FILE_GLOBALS: RefCell<(Option<String>, Option<String>)> = RefCell::new((None, None));
+    static FILE_GLOBALS: RefCell<(Option<String>, Option<String>)> = const { RefCell::new((None, None)) };
 }
 
 use ::std::cell::RefCell;
@@ -119,8 +120,8 @@ fn install_file_globals_from_cache(
     let (filename, dirname) = FILE_GLOBALS.with(|f| f.borrow().clone());
     unsafe {
         let raw = cx.raw_cx();
-        if let Some(fn_str) = filename {
-            if let Ok(c_fn) = ::std::ffi::CString::new(fn_str) {
+        if let Some(fn_str) = filename
+            && let Ok(c_fn) = ::std::ffi::CString::new(fn_str) {
                 let js_str = JS_NewStringCopyZ(raw, c_fn.as_ptr());
                 if !js_str.is_null() {
                     let v = StringValue(&*js_str);
@@ -128,9 +129,8 @@ fn install_file_globals_from_cache(
                     JS_DefineProperty(raw, global.into(), c"__filename".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
                 }
             }
-        }
-        if let Some(dir_str) = dirname {
-            if let Ok(c_dir) = ::std::ffi::CString::new(dir_str) {
+        if let Some(dir_str) = dirname
+            && let Ok(c_dir) = ::std::ffi::CString::new(dir_str) {
                 let js_str = JS_NewStringCopyZ(raw, c_dir.as_ptr());
                 if !js_str.is_null() {
                     let v = StringValue(&*js_str);
@@ -138,7 +138,6 @@ fn install_file_globals_from_cache(
                     JS_DefineProperty(raw, global.into(), c"__dirname".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
                 }
             }
-        }
     }
 }
 
@@ -1117,7 +1116,7 @@ unsafe extern "C" fn buffer_byte_length(
     let input = *args.get(0).ptr;
     if input.is_string() {
         let s = crate::js_to_rust_string(cx, input);
-        args.rval().set(Int32Value(s.as_bytes().len() as i32));
+        args.rval().set(Int32Value(s.len() as i32));
     } else {
         args.rval().set(Int32Value(0));
     }
@@ -1441,7 +1440,7 @@ pub fn install_assert_strict(cx: &mut mozjs::context::JSContext) {
 
 pub fn install_web_api_constructors(
     cx: &mut mozjs::context::JSContext,
-    global: mozjs::rust::Handle<*mut JSObject>,
+    _global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     let src = r#"
 var _g = globalThis;

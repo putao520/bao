@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
@@ -13,7 +14,7 @@ use mozjs::conversions::jsstr_to_string;
 use crate::require::cache_builtin;
 
 thread_local! {
-    static CHILD_PROCS: RefCell<Vec<*mut ::std::process::Child>> = RefCell::new(Vec::new());
+    static CHILD_PROCS: RefCell<Vec<*mut ::std::process::Child>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
@@ -332,8 +333,8 @@ unsafe extern "C" fn cp_exec(
 
                 let err_obj = if exit_code != 0 {
                     let e = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-                    if !e.is_null() {
-                        if let Ok(c_msg) = CString::new(format!("Command failed with exit code {}", exit_code)) {
+                    if !e.is_null()
+                        && let Ok(c_msg) = CString::new(format!("Command failed with exit code {}", exit_code)) {
                             let msg_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
                             if !msg_str.is_null() {
                                 let mv = StringValue(&*msg_str);
@@ -342,7 +343,6 @@ unsafe extern "C" fn cp_exec(
                                 JS_SetProperty(cx, e_h, c"message".as_ptr(), mv_h);
                             }
                         }
-                    }
                     e
                 } else {
                     ::std::ptr::null_mut()

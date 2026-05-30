@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -22,7 +23,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             raw,
             Some(tls_socket_ctor),
             2,
-            JSFUN_CONSTRUCTOR as u32,
+            JSFUN_CONSTRUCTOR,
             c"TLSSocket".as_ptr(),
         );
         if !ctor_fn.is_null() {
@@ -70,7 +71,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"getCiphers".as_ptr(), Some(tls_get_ciphers), 0, JSPROP_ENUMERATE as u32);
 
         // Constants
-        let ciphers_str = "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256";
+        let _ciphers_str = "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256";
         let cs = JS_NewStringCopyZ(raw, c"TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256".as_ptr());
         if !cs.is_null() {
             rooted!(&in(cx) let csv = mozjs::jsval::StringValue(&*cs));
@@ -173,43 +174,37 @@ unsafe extern "C" fn tls_connect(
         return true;
     };
 
-    let cb: Option<*mut JSObject> = None;
+    let _cb: Option<*mut JSObject> = None;
 
-    // Attempt real TLS connection
-    match ::std::net::TcpStream::connect((&*host, port)) {
-        Ok(tcp_stream) => {
-            let connector = native_tls::TlsConnector::new();
-            match connector {
-                Ok(conn) => {
-                    match conn.connect(&host, tcp_stream) {
-                        Ok(_tls_stream) => {
-                            // Create TLSSocket object
-                            rooted!(&in(cx_ref) let tls_obj = w2::JS_NewPlainObject(cx_ref));
-                            if !tls_obj.get().is_null() {
-                                rooted!(&in(cx_ref) let auth = mozjs::jsval::BooleanValue(true));
-                                JS_DefineProperty(cx, tls_obj.handle().into(), c"authorized".as_ptr(), auth.handle().into(), JSPROP_ENUMERATE as u32);
-                                rooted!(&in(cx_ref) let enc = mozjs::jsval::BooleanValue(true));
-                                JS_DefineProperty(cx, tls_obj.handle().into(), c"encrypted".as_ptr(), enc.handle().into(), JSPROP_ENUMERATE as u32);
+    // Attempt TLS connection via ureq (verifies handshake, socket I/O is stubbed)
+    if let Ok(_tcp_stream) = ::std::net::TcpStream::connect((&*host, port)) {
+        // TCP reachable — verify TLS handshake via ureq HEAD request
+        let test_url = format!("https://{}:{}", host, port);
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(::std::time::Duration::from_secs(5)))
+            .build()
+            .into();
+        let tls_ok = agent.head(&test_url).call().is_ok();
 
-                                let host_str = JS_NewStringCopyN(cx, host.as_ptr() as *const ::std::os::raw::c_char, host.len());
-                                if !host_str.is_null() {
-                                    rooted!(&in(cx_ref) let hv = mozjs::jsval::StringValue(&*host_str));
-                                    JS_DefineProperty(cx, tls_obj.handle().into(), c"servername".as_ptr(), hv.handle().into(), JSPROP_ENUMERATE as u32);
-                                }
+        if tls_ok {
+            rooted!(&in(cx_ref) let tls_obj = w2::JS_NewPlainObject(cx_ref));
+            if !tls_obj.get().is_null() {
+                rooted!(&in(cx_ref) let auth = mozjs::jsval::BooleanValue(true));
+                JS_DefineProperty(cx, tls_obj.handle().into(), c"authorized".as_ptr(), auth.handle().into(), JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx_ref) let enc = mozjs::jsval::BooleanValue(true));
+                JS_DefineProperty(cx, tls_obj.handle().into(), c"encrypted".as_ptr(), enc.handle().into(), JSPROP_ENUMERATE as u32);
 
-                                args.rval().set(ObjectValue(tls_obj.get()));
-                                return true;
-                            }
-                        }
-                        Err(_) => {
-                            // TLS handshake failed — return error via callback or throw
-                        }
-                    }
+                let host_str = JS_NewStringCopyN(cx, host.as_ptr() as *const ::std::os::raw::c_char, host.len());
+                if !host_str.is_null() {
+                    rooted!(&in(cx_ref) let hv = mozjs::jsval::StringValue(&*host_str));
+                    JS_DefineProperty(cx, tls_obj.handle().into(), c"servername".as_ptr(), hv.handle().into(), JSPROP_ENUMERATE as u32);
                 }
-                Err(_) => {}
+
+                args.rval().set(ObjectValue(tls_obj.get()));
+                return true;
             }
         }
-        Err(_) => {}
     }
 
     args.rval().set(UndefinedValue());

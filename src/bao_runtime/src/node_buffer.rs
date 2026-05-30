@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use mozjs::jsapi::*;
 use mozjs::jsval::{UndefinedValue, Int32Value, ObjectValue};
 use mozjs::rooted;

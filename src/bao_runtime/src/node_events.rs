@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
 use ::std::ffi::CString;
@@ -34,7 +35,7 @@ static EMITTER_CLASS: JSClass = JSClass {
 };
 
 thread_local! {
-    static EMITTER_PROTO: RefCell<*mut JSObject> = RefCell::new(::std::ptr::null_mut());
+    static EMITTER_PROTO: RefCell<*mut JSObject> = const { RefCell::new(::std::ptr::null_mut()) };
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
@@ -77,8 +78,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 cx.raw_cx(), events_obj.handle().into(), c"EventEmitter".as_ptr(),
                 cv.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
             );
-            w2::JS_DefineFunction(cx, ctor.handle().into(), c"listenerCount".as_ptr(), Some(events_static_listener_count), 2, JSPROP_ENUMERATE as u32);
-            w2::JS_DefineFunction(cx, ctor.handle().into(), c"getEventListeners".as_ptr(), Some(events_static_get_event_listeners), 2, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, ctor.handle(), c"listenerCount".as_ptr(), Some(events_static_listener_count), 2, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, ctor.handle(), c"getEventListeners".as_ptr(), Some(events_static_get_event_listeners), 2, JSPROP_ENUMERATE as u32);
         }
 
         let default_max = Int32Value(10);

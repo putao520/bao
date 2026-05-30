@@ -1,4 +1,4 @@
-// REQ-BRW-003: Multi-page pool with idle eviction
+// @trace REQ-LIB-004 [entity:PagePool]  REQ-BRW-003: Multi-page pool with idle eviction
 // REQ-LIB-001: Headless multi-page management API
 use std::cell::RefCell;
 use std::collections::HashMap;

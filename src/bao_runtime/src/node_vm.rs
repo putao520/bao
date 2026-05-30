@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -26,7 +27,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             cx.raw_cx(),
             Some(vm_script_ctor),
             2,
-            JSFUN_CONSTRUCTOR as u32,
+            JSFUN_CONSTRUCTOR,
             c"Script".as_ptr(),
         );
         if !script_fn.is_null() {

@@ -1,4 +1,4 @@
-// REQ-ENG-003: ESM/CJS module resolver and loader
+// @trace REQ-ENG-005
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
 use ::std::ffi::CString;
@@ -24,7 +24,7 @@ use crate::value::{JsValue, jsval_to_jsvalue};
 
 thread_local! {
     static MODULE_CACHE: RefCell<HashMap<::std::string::String, *mut JSObject>> = RefCell::new(HashMap::new());
-    static CURRENT_DIR: RefCell<::std::option::Option<::std::path::PathBuf>> = RefCell::new(None);
+    static CURRENT_DIR: RefCell<::std::option::Option<::std::path::PathBuf>> = const { RefCell::new(None) };
 }
 
 pub struct ModuleLoader;
@@ -197,10 +197,8 @@ export default _m;
         // Check cache first — synthetic modules must be returned as the same object
         let cache_key = format!("builtin:{}", stripped);
         let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
-        if let Some(existing) = cached {
-            if !existing.is_null() {
-                return existing;
-            }
+        if let Some(existing) = cached && !existing.is_null() {
+            return existing;
         }
 
         let c_filename = CString::new(format!("<builtin:{}>", stripped))
@@ -228,10 +226,8 @@ export default _m;
     let cache_key = canonical.to_string_lossy().into_owned();
 
     let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
-    if let Some(existing) = cached {
-        if !existing.is_null() {
-            return existing;
-        }
+    if let Some(existing) = cached && !existing.is_null() {
+        return existing;
     }
 
     let content = match fs::read_to_string(&path) {
@@ -283,7 +279,7 @@ unsafe extern "C" fn host_populate_import_meta(
             };
             JS_NewStringCopyZ(raw_cx, c_url.as_ptr())
         } else {
-            JS_NewStringCopyZ(raw_cx, b"file://\0".as_ptr() as *const ::std::os::raw::c_char)
+            JS_NewStringCopyZ(raw_cx, c"file://".as_ptr())
         };
         if url_str.is_null() {
             return false;
@@ -322,14 +318,12 @@ unsafe extern "C" fn host_dynamic_import(
         // Look up the module in the require() cache by its canonical name
         let cache_key = stripped;
         let cached = MODULE_CACHE.with(|c| c.borrow().get(cache_key).copied());
-        if let Some(existing) = cached {
-            if !existing.is_null() {
-                let module_val = mozjs::jsval::ObjectValue(existing);
-                let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
-                let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-                mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
-                return true;
-            }
+        if let Some(existing) = cached && !existing.is_null() {
+            let module_val = mozjs::jsval::ObjectValue(existing);
+            let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
+            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
+            mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
+            return true;
         }
 
         // Not in cache — create a synthetic module namespace from the global require
@@ -337,14 +331,12 @@ unsafe extern "C" fn host_dynamic_import(
         // Try with the "node:" prefix too
         let node_key = format!("node:{}", stripped);
         let node_cached = MODULE_CACHE.with(|c| c.borrow().get(&node_key).copied());
-        if let Some(existing) = node_cached {
-            if !existing.is_null() {
-                let module_val = mozjs::jsval::ObjectValue(existing);
-                let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
-                let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-                mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
-                return true;
-            }
+        if let Some(existing) = node_cached && !existing.is_null() {
+            let module_val = mozjs::jsval::ObjectValue(existing);
+            let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
+            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
+            mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
+            return true;
         }
 
         // Last resort: create a namespace-like wrapper by calling require() via JS eval
@@ -413,14 +405,12 @@ unsafe extern "C" fn host_dynamic_import(
     let cache_key = canonical.to_string_lossy().into_owned();
 
     let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
-    if let Some(existing) = cached {
-        if !existing.is_null() {
-            let module_val = mozjs::jsval::ObjectValue(existing);
-            let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
-            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-            mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
-            return true;
-        }
+    if let Some(existing) = cached && !existing.is_null() {
+        let module_val = mozjs::jsval::ObjectValue(existing);
+        let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
+        let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
+        mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
+        return true;
     }
 
     let content = match fs::read_to_string(&path) {

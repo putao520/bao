@@ -1,7 +1,11 @@
+// @trace REQ-ENG-006
 // WebSocket + Performance + TextEncoder/TextDecoder + atob/btoa + queueMicrotask
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
+use ::std::io::{Read, Write};
+use ::std::net::TcpStream;
 use ::std::ptr::NonNull;
+use ::std::time::Duration;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, ObjectValue, BooleanValue};
@@ -10,12 +14,185 @@ use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainO
 use mozjs::conversions::jsstr_to_string;
 
 use base64::Engine;
+
+// ── Minimal WebSocket client (RFC 6455) ──
+
+#[derive(Debug)]
+#[allow(dead_code)]
+enum WsMessage {
+    Text(String),
+    Binary(Vec<u8>),
+    Close,
+}
+
+struct WsClient {
+    stream: TcpStream,
+}
+
+impl WsClient {
+    fn connect(url_str: &str) -> ::std::result::Result<Self, String> {
+        let (host, port, path) = parse_ws_url(url_str)?;
+        let addr = format!("{}:{}", host, port);
+        let mut stream = TcpStream::connect_timeout(
+            &addr.parse().map_err(|e| format!("invalid address: {}", e))?,
+            Duration::from_secs(10),
+        ).map_err(|e| format!("connect failed: {}", e))?;
+        stream.set_nonblocking(false).ok();
+
+        let key_base: [u8; 16] = rand::random();
+        let key = base64::engine::general_purpose::STANDARD.encode(key_base);
+
+        let request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            path, host, key
+        );
+        stream.write_all(request.as_bytes()).map_err(|e| format!("write failed: {}", e))?;
+
+        let mut response = vec![0u8; 4096];
+        let n = stream.read(&mut response).map_err(|e| format!("read failed: {}", e))?;
+        let response_str = String::from_utf8_lossy(&response[..n]);
+        if !response_str.starts_with("HTTP/1.1 101") && !response_str.starts_with("HTTP/1.0 101") {
+            return Err(format!("upgrade failed: {}", response_str.lines().next().unwrap_or("")));
+        }
+
+        Ok(Self { stream })
+    }
+
+    fn send_text(&mut self, text: &str) -> ::std::result::Result<(), String> {
+        let payload = text.as_bytes();
+        let mut frame = Vec::with_capacity(payload.len() + 10);
+        frame.push(0x81); // FIN + text opcode
+        write_masked_payload(&mut frame, payload);
+        self.stream.write_all(&frame).map_err(|e| format!("send failed: {}", e))
+    }
+
+    #[allow(dead_code)]
+    fn send_binary(&mut self, data: &[u8]) -> ::std::result::Result<(), String> {
+        let mut frame = Vec::with_capacity(data.len() + 10);
+        frame.push(0x82); // FIN + binary opcode
+        write_masked_payload(&mut frame, data);
+        self.stream.write_all(&frame).map_err(|e| format!("send failed: {}", e))
+    }
+
+    fn read_message(&mut self) -> ::std::result::Result<WsMessage, String> {
+        let mut header = [0u8; 2];
+        self.stream.read_exact(&mut header).map_err(|e| format!("read header: {}", e))?;
+
+        let opcode = header[0] & 0x0F;
+        let masked = (header[1] & 0x80) != 0;
+        let mut payload_len = (header[1] & 0x7F) as u64;
+
+        if payload_len == 126 {
+            let mut ext = [0u8; 2];
+            self.stream.read_exact(&mut ext).map_err(|e| format!("read len: {}", e))?;
+            payload_len = u16::from_be_bytes(ext) as u64;
+        } else if payload_len == 127 {
+            let mut ext = [0u8; 8];
+            self.stream.read_exact(&mut ext).map_err(|e| format!("read len: {}", e))?;
+            payload_len = u64::from_be_bytes(ext);
+        }
+
+        let mask_key = if masked {
+            let mut key = [0u8; 4];
+            self.stream.read_exact(&mut key).map_err(|e| format!("read mask: {}", e))?;
+            Some(key)
+        } else {
+            None
+        };
+
+        let mut payload = vec![0u8; payload_len as usize];
+        if payload_len > 0 {
+            self.stream.read_exact(&mut payload).map_err(|e| format!("read payload: {}", e))?;
+        }
+
+        if let Some(key) = mask_key {
+            for (i, byte) in payload.iter_mut().enumerate() {
+                *byte ^= key[i % 4];
+            }
+        }
+
+        match opcode {
+            0x1 => Ok(WsMessage::Text(String::from_utf8_lossy(&payload).into_owned())),
+            0x2 => Ok(WsMessage::Binary(payload)),
+            0x8 => Ok(WsMessage::Close),
+            0x9 => {
+                self.send_pong(&payload)?;
+                self.read_message()
+            }
+            _ => Err(format!("unsupported opcode: {}", opcode)),
+        }
+    }
+
+    fn send_pong(&mut self, data: &[u8]) -> ::std::result::Result<(), String> {
+        let mut frame = vec![0x8A]; // FIN + pong opcode
+        write_masked_payload(&mut frame, data);
+        self.stream.write_all(&frame).map_err(|e| format!("pong failed: {}", e))
+    }
+
+    fn close(&mut self) -> ::std::result::Result<(), String> {
+        let frame = [0x88, 0x80, 0x00, 0x00, 0x00, 0x00]; // FIN + close + empty masked
+        self.stream.write_all(&frame).map_err(|e| format!("close failed: {}", e))
+    }
+}
+
+fn parse_ws_url(url: &str) -> ::std::result::Result<(String, u16, String), String> {
+    let rest = if let Some(r) = url.strip_prefix("ws://") {
+        r
+    } else if url.starts_with("wss://") {
+        return Err("wss:// not yet supported; use ws:// for plain WebSocket".to_string());
+    } else {
+        url
+    };
+
+    let (host_port, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], rest[i..].to_string()),
+        None => (rest, "/".to_string()),
+    };
+
+    let (host, port) = match host_port.rfind(':') {
+        Some(i) => (host_port[..i].to_string(), host_port[i + 1..].parse::<u16>().unwrap_or(80)),
+        None => (host_port.to_string(), 80),
+    };
+
+    Ok((host, port, path))
+}
+
+fn write_masked_payload(frame: &mut Vec<u8>, payload: &[u8]) {
+    let mask_key: [u8; 4] = rand::random();
+    let len = payload.len();
+    if len < 126 {
+        frame.push(0x80 | len as u8);
+    } else if len < 65536 {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&(len as u16).to_be_bytes());
+    } else {
+        frame.push(0x80 | 127);
+        frame.extend_from_slice(&(len as u64).to_be_bytes());
+    }
+    frame.extend_from_slice(&mask_key);
+    for (i, byte) in payload.iter().enumerate() {
+        frame.push(byte ^ mask_key[i % 4]);
+    }
+}
+
+// ── JS bridge ──
+
+#[allow(dead_code)]
+struct WsEntry {
+    client: WsClient,
+    js_obj: *mut JSObject,
+}
+
+thread_local! {
+    static WS_CONNECTIONS: RefCell<Vec<WsEntry>> = const { RefCell::new(Vec::new()) };
+}
+
 pub fn install_websocket_constructor(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     unsafe {
-        let ws_fun = JS_NewFunction(cx.raw_cx(), Some(websocket_constructor), 1, JSFUN_CONSTRUCTOR as u32, c"WebSocket".as_ptr());
+        let ws_fun = JS_NewFunction(cx.raw_cx(), Some(websocket_constructor), 1, JSFUN_CONSTRUCTOR, c"WebSocket".as_ptr());
         if !ws_fun.is_null() {
             let ctor_obj = JS_GetFunctionObject(ws_fun);
             if !ctor_obj.is_null() {
@@ -33,16 +210,6 @@ pub fn install_websocket_constructor(
             }
         }
     }
-}
-
-#[allow(dead_code)]
-struct WsEntry {
-    socket: tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<::std::net::TcpStream>>,
-    js_obj: *mut JSObject,
-}
-
-thread_local! {
-    static WS_CONNECTIONS: RefCell<Vec<WsEntry>> = RefCell::new(Vec::new());
 }
 
 unsafe fn ws_trigger_event(cx: *mut JSContext, ws_obj: *mut JSObject, event_name: &str, data_val: Option<JSVal>) {
@@ -83,36 +250,6 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         return false;
     }
     let msg_val = *args.get(0).ptr;
-    let msg = if msg_val.is_string() {
-        let s = jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
-        tungstenite::Message::Text(s.into())
-    } else if msg_val.is_object() {
-        let obj = msg_val.to_object();
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-        let mut is_buf: bool = false;
-        JS_HasProperty(cx, obj_h, c"_isBuffer".as_ptr(), &mut is_buf);
-        if is_buf {
-            let mut len_val = Int32Value(0);
-            JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
-            let len = len_val.to_int32().max(0) as usize;
-            let mut bytes = Vec::with_capacity(len);
-            for i in 0..len {
-                let mut byte_val = Int32Value(0);
-                let idx_val = Int32Value(i as i32);
-                let idx_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &idx_val };
-                JS_SetProperty(cx, obj_h, c"__idx__".as_ptr(), idx_h);
-                JS_GetProperty(cx, obj_h, c"__idx__".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val });
-                bytes.push(byte_val.to_int32().clamp(0, 255) as u8);
-            }
-            tungstenite::Message::Binary(bytes.into())
-        } else {
-            let s = jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
-            tungstenite::Message::Text(s.into())
-        }
-    } else {
-        let s = jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
-        tungstenite::Message::Text(s.into())
-    };
 
     let this_obj = args.thisv().to_object();
     let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
@@ -120,18 +257,28 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     JS_GetProperty(cx, this_h, c"_wsIdx".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut idx_val });
     let idx = idx_val.to_int32() as usize;
 
-    WS_CONNECTIONS.with(|c| {
+    let send_result = WS_CONNECTIONS.with(|c| {
         let mut conns = c.borrow_mut();
         if idx < conns.len() {
-            let _ = conns[idx].socket.send(msg);
+            let s = jsstr_to_string(cx, NonNull::new_unchecked(msg_val.to_string()));
+            conns[idx].client.send_text(&s)
+        } else {
+            Err("invalid WebSocket index".to_string())
         }
     });
+
+    if let Err(e) = send_result {
+        let msg = format!("WebSocket send failed: {}", e);
+        let c_msg = CString::new(msg).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
     args.rval().set(UndefinedValue());
     true
 }
 
-unsafe extern "C" fn ws_close_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
+unsafe extern "C" fn ws_close_fn(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
     let this_obj = args.thisv().to_object();
     let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
 
@@ -142,7 +289,7 @@ unsafe extern "C" fn ws_close_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     WS_CONNECTIONS.with(|c| {
         let mut conns = c.borrow_mut();
         if idx < conns.len() {
-            let _ = conns[idx].socket.close(None);
+            let _ = conns[idx].client.close();
         }
     });
 
@@ -211,16 +358,18 @@ unsafe extern "C" fn websocket_constructor(
         cx, obj_h, c"close".as_ptr(), Some(ws_close_fn), 0, JSPROP_ENUMERATE as u32,
     );
 
-    match tungstenite::client::connect(url.as_str()) {
-        Ok((mut socket, _response)) => {
+    match WsClient::connect(&url) {
+        Ok(mut client) => {
             let open_val = Int32Value(1);
             let open_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &open_val };
             JS_SetProperty(cx, obj_h, c"readyState".as_ptr(), open_h);
 
+            // Set non-blocking to drain available messages
+            let _ = client.stream.set_nonblocking(true);
             loop {
-                match socket.read() {
-                    Ok(tungstenite::Message::Text(text)) => {
-                        if let Ok(c_text) = ::std::ffi::CString::new(text.as_ref() as &str) {
+                match client.read_message() {
+                    Ok(WsMessage::Text(text)) => {
+                        if let Ok(c_text) = ::std::ffi::CString::new(text.as_str()) {
                             let js_str = JS_NewStringCopyZ(cx, c_text.as_ptr());
                             if !js_str.is_null() {
                                 let dv = StringValue(&*js_str);
@@ -228,26 +377,22 @@ unsafe extern "C" fn websocket_constructor(
                             }
                         }
                     }
-                    Ok(tungstenite::Message::Binary(_)) => {}
-                    Ok(tungstenite::Message::Close(_)) => {
+                    Ok(WsMessage::Binary(_)) => {}
+                    Ok(WsMessage::Close) => {
                         let closed_val = Int32Value(3);
                         let closed_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &closed_val };
                         JS_SetProperty(cx, obj_h, c"readyState".as_ptr(), closed_h);
                         ws_trigger_event(cx, ws_obj.get(), "onclose", None);
                         break;
                     }
-                    Err(tungstenite::Error::Io(ref e)) if e.kind() == ::std::io::ErrorKind::WouldBlock => break,
-                    Err(_) => {
-                        ws_trigger_event(cx, ws_obj.get(), "onerror", None);
-                        break;
-                    }
-                    _ => break,
+                    Err(_) => break, // WouldBlock or other error
                 }
             }
+            let _ = client.stream.set_nonblocking(false);
 
             let ws_idx = WS_CONNECTIONS.with(|c| {
                 let mut conns = c.borrow_mut();
-                conns.push(WsEntry { socket, js_obj: ws_obj.get() });
+                conns.push(WsEntry { client, js_obj: ws_obj.get() });
                 conns.len() - 1
             });
             let idx_val = Int32Value(ws_idx as i32);
@@ -267,6 +412,8 @@ unsafe extern "C" fn websocket_constructor(
     args.rval().set(mozjs::jsval::ObjectValue(ws_obj.get()));
     true
 }
+
+// ── Performance ──
 
 pub fn install_performance(
     cx: &mut mozjs::context::JSContext,
@@ -293,12 +440,14 @@ unsafe extern "C" fn performance_now(_cx: *mut JSContext, _argc: u32, vp: *mut J
     true
 }
 
+// ── TextEncoder / TextDecoder ──
+
 pub fn install_web_encodings(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     unsafe {
-        let te_fun = JS_NewFunction(cx.raw_cx(), Some(text_encoder_constructor), 0, JSFUN_CONSTRUCTOR as u32, c"TextEncoder".as_ptr());
+        let te_fun = JS_NewFunction(cx.raw_cx(), Some(text_encoder_constructor), 0, JSFUN_CONSTRUCTOR, c"TextEncoder".as_ptr());
         if !te_fun.is_null() {
             let te_obj = JS_GetFunctionObject(te_fun);
             if !te_obj.is_null() {
@@ -313,7 +462,7 @@ pub fn install_web_encodings(
             }
         }
 
-        let td_fun = JS_NewFunction(cx.raw_cx(), Some(text_decoder_constructor), 1, JSFUN_CONSTRUCTOR as u32, c"TextDecoder".as_ptr());
+        let td_fun = JS_NewFunction(cx.raw_cx(), Some(text_decoder_constructor), 1, JSFUN_CONSTRUCTOR, c"TextDecoder".as_ptr());
         if !td_fun.is_null() {
             let td_obj = JS_GetFunctionObject(td_fun);
             if !td_obj.is_null() {
@@ -418,11 +567,7 @@ unsafe extern "C" fn text_encoder_encode(cx: *mut JSContext, argc: u32, vp: *mut
     let args = CallArgs::from_vp(vp, argc);
     let input = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_string() {
-            crate::js_to_rust_string(cx, v)
-        } else {
-            String::new()
-        }
+        if v.is_string() { crate::js_to_rust_string(cx, v) } else { String::new() }
     } else {
         String::new()
     };

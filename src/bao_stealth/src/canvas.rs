@@ -1,4 +1,5 @@
-// REQ-STL-003: Canvas fingerprint protection (pixel noise)
+// REQ-STL-003: Canvas fingerprint protection (pixel noise)  @trace REQ-STL-003
+#[derive(Debug, Clone)]
 pub struct CanvasNoise {
     seed: u64,
     noise_amplitude: f64,

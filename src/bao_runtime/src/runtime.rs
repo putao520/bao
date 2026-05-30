@@ -1,3 +1,4 @@
+// @trace REQ-ENG-006
 // REQ-CLI-001: bao CLI entry point and runtime initialization
 use bao_engine::context::JsContext;
 use bao_engine::error::JsError;

@@ -1,3 +1,4 @@
+// @trace REQ-STL-007
 use crate::tls::TlsFingerprint;
 use crate::http2::Http2Fingerprint;
 use crate::canvas::CanvasNoise;
@@ -5,6 +6,7 @@ use crate::navigator::{NavigatorProfile, ScreenProfile};
 use crate::webgl_audio::{WebGLProfile, AudioProfile};
 use crate::behavior::BehaviorSimulator;
 
+#[derive(Debug, Clone)]
 pub struct StealthProfile {
     pub tls: TlsFingerprint,
     pub http2: Http2Fingerprint,

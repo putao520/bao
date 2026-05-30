@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::ffi::CString;
 use ::std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
@@ -170,11 +171,10 @@ unsafe extern "C" fn path_basename(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
     if argc >= 2 {
         let ext_val = *args.get(1).ptr;
-        if let Some(ext) = arg_to_string(cx, ext_val) {
-            if base.ends_with(&ext) && !ext.is_empty() {
+        if let Some(ext) = arg_to_string(cx, ext_val)
+            && base.ends_with(&ext) && !ext.is_empty() {
                 base.truncate(base.len() - ext.len());
             }
-        }
     }
     return_string(cx, &args, &base)
 }
@@ -328,7 +328,7 @@ unsafe extern "C" fn path_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let ext = get_string_prop(cx, obj_h, "ext");
 
     let result = if let Some(b) = base {
-        if dir.as_ref().map_or(false, |d| !d.is_empty()) {
+        if dir.as_ref().is_some_and(|d| !d.is_empty()) {
             format!("{}/{}", dir.unwrap_or_default(), b)
         } else {
             b
@@ -437,19 +437,18 @@ fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
     }
 }
 
-fn normalize_path(path: &PathBuf) -> PathBuf {
+fn normalize_path(path: &::std::path::Path) -> PathBuf {
     let mut components = Vec::new();
     let has_root = path.is_absolute();
     for comp in path.components() {
         match comp {
             ::std::path::Component::CurDir => {}
             ::std::path::Component::ParentDir => {
-                if let Some(last) = components.last() {
-                    if last != &".." {
+                if let Some(last) = components.last()
+                    && last != &".." {
                         components.pop();
                         continue;
                     }
-                }
                 components.push("..");
             }
             ::std::path::Component::Normal(s) => {

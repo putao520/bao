@@ -1,4 +1,4 @@
-// REQ-BRW-002: Page lifecycle management (navigate, evaluate, screenshot)
+// @trace REQ-BRW-001 [entity:PageHandle]  REQ-BRW-002: Page lifecycle management (navigate, evaluate, screenshot)
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -33,7 +33,7 @@ pub struct PageInner {
     pub state: Rc<RefCell<PageState>>,
     pub webview_state: Rc<RefCell<BaoWebViewState>>,
     pub viewport: PhysicalSize<u32>,
-    pub stealth: bool,
+    pub stealth_profile: Option<bao_stealth::StealthProfile>,
     pub permission: PermissionGuard,
     pub last_active_at: RefCell<Instant>,
     pub created_at: Instant,
@@ -170,7 +170,7 @@ impl PageHandle {
             state,
             webview_state,
             viewport,
-            stealth: config.stealth,
+            stealth_profile: config.stealth_profile.clone(),
             permission: match &config.permission {
                 Some(perm) => PermissionGuard::new(perm.clone()),
                 None => PermissionGuard::none(),

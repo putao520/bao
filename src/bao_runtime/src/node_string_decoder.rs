@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
 use mozjs::rooted;
@@ -92,7 +93,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let mod_ptr = mod_obj.get();
         let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr };
 
-        for name in &["StringDecoder"] {
+        {
+            let name = &"StringDecoder";
             let cname = ::std::ffi::CString::new(*name).unwrap_or_default();
             let mut val = UndefinedValue();
             JS_GetProperty(cx_raw, exports_h, cname.as_ptr(), MutableHandle::<Value> {

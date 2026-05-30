@@ -1,3 +1,4 @@
+// @trace REQ-ENG-007
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::io::{BufRead, BufReader, Read as StdRead, Write as StdWrite};
@@ -25,8 +26,8 @@ struct PendingRequest {
 static PENDING_HTTP: Mutex<Vec<PendingRequest>> = Mutex::new(Vec::new());
 
 thread_local! {
-    static ACTIVE_SERVERS: RefCell<Vec<SocketAddr>> = RefCell::new(Vec::new());
-    static SERVER_LISTENERS: RefCell<Vec<TcpListener>> = RefCell::new(Vec::new());
+    static ACTIVE_SERVERS: RefCell<Vec<SocketAddr>> = const { RefCell::new(Vec::new()) };
+    static SERVER_LISTENERS: RefCell<Vec<TcpListener>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn has_active_servers() -> bool {
@@ -143,11 +144,10 @@ pub fn accept_connections() {
                 match listener.accept() {
                     Ok((stream, _addr)) => {
                         stream.set_nonblocking(true).ok();
-                        if let Ok(req) = parse_http_request(stream) {
-                            if let Ok(mut guard) = PENDING_HTTP.lock() {
+                        if let Ok(req) = parse_http_request(stream)
+                            && let Ok(mut guard) = PENDING_HTTP.lock() {
                                 guard.push(req);
                             }
-                        }
                     }
                     Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => break,
                     Err(_) => break,
@@ -168,7 +168,7 @@ fn parse_http_request(stream: TcpStream) -> ::std::result::Result<PendingRequest
     let request_line = request_line.trim_end();
 
     let parts: Vec<&str> = request_line.splitn(3, ' ').collect();
-    let method = parts.get(0).unwrap_or(&"GET").to_string();
+    let method = parts.first().unwrap_or(&"GET").to_string();
     let url = parts.get(1).unwrap_or(&"/").to_string();
 
     let mut headers = Vec::new();
@@ -221,7 +221,7 @@ unsafe fn handle_request(cx: &mut mozjs::context::JSContext, req: PendingRequest
 
     let mut on_req_val = UndefinedValue();
     let on_req_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut on_req_val };
-    JS_GetProperty(raw_cx, global_h.into(), c"_httpRequestHandler".as_ptr(), on_req_mh);
+    JS_GetProperty(raw_cx, global_h, c"_httpRequestHandler".as_ptr(), on_req_mh);
     if !on_req_val.is_object() { return; }
 
     rooted!(&in(cx) let req_obj = w2::JS_NewPlainObject(cx));
@@ -603,7 +603,7 @@ unsafe extern "C" fn server_address(
 
     let mut port_val = UndefinedValue();
     let port_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut port_val };
-    JS_GetProperty(cx, server_h.into(), c"_listeningPort".as_ptr(), port_mh);
+    JS_GetProperty(cx, server_h, c"_listeningPort".as_ptr(), port_mh);
 
     if port_val.is_int32() {
         let p = port_val.to_int32();

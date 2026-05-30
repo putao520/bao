@@ -1,3 +1,4 @@
+// @trace REQ-ENG-005
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -21,7 +22,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             cx.raw_cx(),
             Some(module_ctor),
             1,
-            JSFUN_CONSTRUCTOR as u32,
+            JSFUN_CONSTRUCTOR,
             c"Module".as_ptr(),
         );
         if !module_fn.is_null() {
@@ -207,7 +208,7 @@ unsafe extern "C" fn module_create_require(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn module_resolve_filename(
-    cx: *mut JSContext,
+    _cx: *mut JSContext,
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
@@ -237,7 +238,7 @@ unsafe extern "C" fn module_node_module_paths(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn module_wrap_safe(
-    cx: *mut JSContext,
+    _cx: *mut JSContext,
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
