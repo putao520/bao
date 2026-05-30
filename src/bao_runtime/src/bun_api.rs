@@ -539,6 +539,26 @@ pub fn install_process_global(
             }
         }
 
+        // process.release
+        {
+            rooted!(&in(cx) let release_obj = JS_NewPlainObject(cx));
+            if !release_obj.get().is_null() {
+                if let Ok(s) = ::std::ffi::CString::new("bao") {
+                    let js_str = JS_NewStringCopyZ(cx.raw_cx(), s.as_ptr());
+                    if !js_str.is_null() {
+                        rooted!(&in(cx) let rv = StringValue(&*js_str));
+                        JS_DefineProperty(cx.raw_cx(), release_obj.handle().into(), c"name".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+                    }
+                }
+                let su_str = JS_NewStringCopyZ(cx.raw_cx(), c"https://github.com/nickelpack/bao".as_ptr());
+                if !su_str.is_null() {
+                    rooted!(&in(cx) let su_val = StringValue(&*su_str));
+                    JS_DefineProperty(cx.raw_cx(), release_obj.handle().into(), c"sourceUrl".as_ptr(), su_val.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+                JS_DefineProperty3(cx, proc_obj.handle(), c"release".as_ptr(), release_obj.handle(), JSPROP_ENUMERATE as u32);
+            }
+        }
+
         // process.argv0
         {
             let args: Vec<::std::string::String> = ::std::env::args().collect();

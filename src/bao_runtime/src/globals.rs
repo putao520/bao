@@ -174,6 +174,10 @@ pub fn install_buffer_global(
             ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
         );
         JS_DefineFunction(
+            cx, buf_root.handle(), c"allocUnsafeSlow".as_ptr(),
+            ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
+        );
+        JS_DefineFunction(
             cx, buf_root.handle(), c"byteLength".as_ptr(),
             ::std::option::Option::Some(buffer_byte_length), 1, JSPROP_ENUMERATE as u32,
         );
@@ -201,6 +205,14 @@ pub fn install_buffer_global(
     // Inject Buffer prototype methods via JS eval
     let proto_src = r#"
 (function() {
+  if (!Buffer.of) {
+    Buffer.of = function() {
+      var len = arguments.length;
+      var buf = Buffer.alloc(len);
+      for (var i = 0; i < len; i++) { buf[i] = arguments[i] & 0xFF; }
+      return buf;
+    };
+  }
   var _bp = Buffer.prototype;
   if (!_bp) return;
 
