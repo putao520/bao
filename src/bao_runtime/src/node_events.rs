@@ -18,6 +18,10 @@ struct EmitterState {
     max_listeners: u32,
 }
 
+/// Internal property name for storing EmitterState on any JS object.
+/// Uses \x00 prefix so it's invisible to JS property enumeration.
+const STATE_PROP: &[u8] = b"\x00__ee_state\0";
+
 const SLOT_STATE: u32 = 0;
 
 static EMITTER_CLASS: JSClass = JSClass {
@@ -74,6 +78,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 cv.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
             );
             w2::JS_DefineFunction(cx, ctor.handle().into(), c"listenerCount".as_ptr(), Some(events_static_listener_count), 2, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, ctor.handle().into(), c"getEventListeners".as_ptr(), Some(events_static_get_event_listeners), 2, JSPROP_ENUMERATE as u32);
         }
 
         let default_max = Int32Value(10);
@@ -86,6 +91,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, events_obj.handle(), c"on".as_ptr(), Some(events_static_on), 3, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, events_obj.handle(), c"once".as_ptr(), Some(events_static_once), 3, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, events_obj.handle(), c"listenerCount".as_ptr(), Some(events_static_listener_count), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, events_obj.handle(), c"getEventListeners".as_ptr(), Some(events_static_get_event_listeners), 2, JSPROP_ENUMERATE as u32);
     }
 
     cache_builtin(cx, "events", events_obj.get());
@@ -220,8 +226,9 @@ const METHODS: &[JSFunctionSpec] = &[
     },
 ];
 
-fn get_state(obj: *mut JSObject) -> Option<Box<EmitterState>> {
+fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<Box<EmitterState>> {
     unsafe {
+        // First try reserved slot (for proper EventEmitter instances)
         let mut slot = UndefinedValue();
         JS_GetReservedSlot(obj, SLOT_STATE, &mut slot);
         if slot.is_double() {
@@ -230,19 +237,43 @@ fn get_state(obj: *mut JSObject) -> Option<Box<EmitterState>> {
                 return Some(Box::from_raw(ptr));
             }
         }
+        // Fallback: hidden property (for objects initialized via EventEmitter.call(this))
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        let mut hidden = UndefinedValue();
+        JS_GetProperty(cx, obj_h, STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
+            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hidden });
+        if hidden.is_double() {
+            let ptr = hidden.to_private() as *mut EmitterState;
+            if !ptr.is_null() {
+                return Some(Box::from_raw(ptr));
+            }
+        }
     }
     None
 }
 
-fn set_state(obj: *mut JSObject, state: Box<EmitterState>) {
+fn set_state(cx: *mut JSContext, obj: *mut JSObject, state: Box<EmitterState>) {
     unsafe {
+        // Try reserved slot first
+        let mut slot = UndefinedValue();
+        JS_GetReservedSlot(obj, SLOT_STATE, &mut slot);
+        if !slot.is_undefined() {
+            // Object has reserved slots, use them
+            let val = PrivateValue(Box::into_raw(state) as *const ::std::os::raw::c_void);
+            JS_SetReservedSlot(obj, SLOT_STATE, &val);
+            return;
+        }
+        // Fallback: hidden property
         let val = PrivateValue(Box::into_raw(state) as *const ::std::os::raw::c_void);
-        JS_SetReservedSlot(obj, SLOT_STATE, &val);
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+        JS_DefineProperty(cx, obj_h, STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
+            val_h, (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
     }
 }
 
-fn ensure_state(obj: *mut JSObject) -> Box<EmitterState> {
-    get_state(obj).unwrap_or_else(|| {
+fn ensure_state(cx: *mut JSContext, obj: *mut JSObject) -> Box<EmitterState> {
+    get_state(cx, obj).unwrap_or_else(|| {
         Box::new(EmitterState {
             listeners: HashMap::new(),
             once_flags: HashMap::new(),
@@ -262,6 +293,14 @@ unsafe fn get_event_name(cx: *mut JSContext, args: &CallArgs) -> Option<String> 
     }
     if val.is_int32() {
         return Some(val.to_int32().to_string());
+    }
+    // Symbol support: use \x00SYM: prefix to distinguish from string keys
+    // Use the Symbol pointer address as a unique identifier
+    if val.is_symbol() {
+        let sym = val.to_symbol();
+        if !sym.is_null() {
+            return Some(format!("\x00SYM:{:p}", sym));
+        }
     }
     None
 }}
@@ -306,21 +345,43 @@ unsafe extern "C" fn event_emitter_constructor(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
+    // Try normal constructor path (new EventEmitter())
     let this = JS_NewObjectForConstructor(cx, &EMITTER_CLASS, &args);
-    if this.is_null() {
-        args.rval().set(UndefinedValue());
-        return false;
+    if !this.is_null() {
+        let state = Box::new(EmitterState {
+            listeners: HashMap::new(),
+            once_flags: HashMap::new(),
+            max_listeners: 10,
+        });
+        set_state(cx, this, state);
+        args.rval().set(ObjectValue(this));
+        return true;
     }
 
-    let state = Box::new(EmitterState {
-        listeners: HashMap::new(),
-        once_flags: HashMap::new(),
-        max_listeners: 10,
-    });
-    set_state(this, state);
+    // Fallback: EventEmitter.call(this) pattern — initialize the `this` object
+    // Clear the pending exception from JS_NewObjectForConstructor failure
+    JS_ClearPendingException(cx);
+    let this_val = args.thisv();
+    if this_val.is_object() {
+        let this_obj = this_val.to_object();
+        // Only initialize if not already an EventEmitter
+        let existing = get_state(cx, this_obj);
+        if existing.is_none() {
+            let state = Box::new(EmitterState {
+                listeners: HashMap::new(),
+                once_flags: HashMap::new(),
+                max_listeners: 10,
+            });
+            set_state(cx, this_obj, state);
+        } else {
+            set_state(cx, this_obj, existing.unwrap());
+        }
+        args.rval().set(ObjectValue(this_obj));
+        return true;
+    }
 
-    args.rval().set(ObjectValue(this));
-    true
+    args.rval().set(UndefinedValue());
+    false
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -353,9 +414,9 @@ unsafe extern "C" fn ee_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> boo
         None => { args.rval().set(ObjectValue(this_obj)); return true; }
     };
 
-    let mut state = ensure_state(this_obj);
+    let mut state = ensure_state(cx, this_obj);
     state.listeners.entry(event_name).or_default().push(callback);
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
     true
 }
@@ -376,10 +437,10 @@ unsafe extern "C" fn ee_once(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         None => { args.rval().set(ObjectValue(this_obj)); return true; }
     };
 
-    let mut state = ensure_state(this_obj);
+    let mut state = ensure_state(cx, this_obj);
     state.listeners.entry(event_name.clone()).or_default().push(callback);
     state.once_flags.entry(event_name).or_default().push(true);
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
     true
 }
@@ -396,18 +457,18 @@ unsafe extern "C" fn ee_off(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
         None => { args.rval().set(ObjectValue(this_obj)); return true; }
     };
 
-    let mut state = ensure_state(this_obj);
+    let mut state = ensure_state(cx, this_obj);
 
     if argc < 2 {
         state.listeners.remove(&event_name);
         state.once_flags.remove(&event_name);
-        set_state(this_obj, state);
+        set_state(cx, this_obj, state);
         args.rval().set(ObjectValue(this_obj));
         return true;
     }
 
     let callback_val = *args.get(1).ptr;
-    if !callback_val.is_object() { set_state(this_obj, state); args.rval().set(ObjectValue(this_obj)); return true; }
+    if !callback_val.is_object() { set_state(cx, this_obj, state); args.rval().set(ObjectValue(this_obj)); return true; }
 
     if let Some(listeners) = state.listeners.get_mut(&event_name) {
         let mut removed_indices: Vec<usize> = Vec::new();
@@ -428,7 +489,7 @@ unsafe extern "C" fn ee_off(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
         }
     }
 
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
     true
 }
@@ -445,10 +506,10 @@ unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         None => { args.rval().set(BooleanValue(false)); return true; }
     };
 
-    let mut state = ensure_state(this_obj);
+    let mut state = ensure_state(cx, this_obj);
     let listeners = match state.listeners.get(&event_name) {
         Some(l) => l.clone(),
-        None => { set_state(this_obj, state); args.rval().set(BooleanValue(false)); return true; }
+        None => { set_state(cx, this_obj, state); args.rval().set(BooleanValue(false)); return true; }
     };
     let once_flags = state.once_flags.get(&event_name).cloned().unwrap_or_default();
     let had_listeners = !listeners.is_empty();
@@ -460,7 +521,7 @@ unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     };
 
     let global = CurrentGlobalOrNull(cx);
-    if global.is_null() { set_state(this_obj, state); args.rval().set(BooleanValue(had_listeners)); return true; }
+    if global.is_null() { set_state(cx, this_obj, state); args.rval().set(BooleanValue(had_listeners)); return true; }
     let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
 
     let call_args = if emit_args.is_empty() {
@@ -489,7 +550,7 @@ unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
 
     state.listeners.insert(event_name.clone(), remaining_listeners);
     state.once_flags.insert(event_name, remaining_once);
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
 
     args.rval().set(BooleanValue(had_listeners));
     true
@@ -509,10 +570,10 @@ unsafe extern "C" fn ee_prepend(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         Some(cb) => cb, None => { args.rval().set(ObjectValue(this_obj)); return true; }
     };
 
-    let mut state = ensure_state(this_obj);
+    let mut state = ensure_state(cx, this_obj);
     state.listeners.entry(event_name.clone()).or_default().insert(0, callback);
     state.once_flags.entry(event_name).or_default().insert(0, false);
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
     true
 }
@@ -531,10 +592,10 @@ unsafe extern "C" fn ee_prepend_once(cx: *mut JSContext, argc: u32, vp: *mut JSV
         Some(cb) => cb, None => { args.rval().set(ObjectValue(this_obj)); return true; }
     };
 
-    let mut state = ensure_state(this_obj);
+    let mut state = ensure_state(cx, this_obj);
     state.listeners.entry(event_name.clone()).or_default().insert(0, callback);
     state.once_flags.entry(event_name).or_default().insert(0, true);
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
     true
 }
@@ -546,7 +607,7 @@ unsafe extern "C" fn ee_remove_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
     let this_obj = this.to_object();
 
-    let mut state = ensure_state(this_obj);
+    let mut state = ensure_state(cx, this_obj);
     if argc > 0 {
         if let Some(event_name) = get_event_name(cx, &args) {
             state.listeners.remove(&event_name);
@@ -556,7 +617,7 @@ unsafe extern "C" fn ee_remove_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         state.listeners.clear();
         state.once_flags.clear();
     }
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
     true
 }
@@ -578,9 +639,9 @@ unsafe extern "C" fn ee_listeners(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         }
     };
 
-    let state = ensure_state(this_obj);
+    let state = ensure_state(cx, this_obj);
     let listeners = state.listeners.get(&event_name).cloned().unwrap_or_default();
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -605,15 +666,15 @@ unsafe extern "C" fn ee_listener_count(cx: *mut JSContext, argc: u32, vp: *mut J
         Some(n) => n, None => { args.rval().set(Int32Value(0)); return true; }
     };
 
-    let state = ensure_state(this_obj);
+    let state = ensure_state(cx, this_obj);
     let count = state.listeners.get(&event_name).map(|l| l.len()).unwrap_or(0) as i32;
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(Int32Value(count));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn ee_set_max(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn ee_set_max(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
@@ -626,23 +687,23 @@ unsafe extern "C" fn ee_set_max(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         else { 10 }
     } else { 10 };
 
-    let mut state = ensure_state(this_obj);
+    let mut state = ensure_state(cx, this_obj);
     state.max_listeners = n;
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn ee_get_max(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn ee_get_max(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(Int32Value(10)); return true; }
     let this_obj = this.to_object();
 
-    let state = ensure_state(this_obj);
+    let state = ensure_state(cx, this_obj);
     let max = state.max_listeners as i32;
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
     args.rval().set(Int32Value(max));
     true
 }
@@ -654,9 +715,9 @@ unsafe extern "C" fn ee_event_names(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
     let this_obj = this.to_object();
 
-    let state = ensure_state(this_obj);
+    let state = ensure_state(cx, this_obj);
     let names: Vec<String> = state.listeners.keys().cloned().collect();
-    set_state(this_obj, state);
+    set_state(cx, this_obj, state);
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -745,9 +806,43 @@ unsafe extern "C" fn events_static_listener_count(cx: *mut JSContext, argc: u32,
         return true;
     };
 
-    let state = ensure_state(emitter);
+    let state = ensure_state(cx, emitter);
     let count = state.listeners.get(&event_name).map(|l| l.len()).unwrap_or(0) as i32;
-    set_state(emitter, state);
+    set_state(cx, emitter, state);
     args.rval().set(Int32Value(count));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn events_static_get_event_listeners(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 || !(*args.get(0).ptr).is_object() {
+        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
+        args.rval().set(if arr.is_null() { UndefinedValue() } else { ObjectValue(arr) });
+        return true;
+    }
+    let emitter = (*args.get(0).ptr).to_object();
+
+    let event_name = if (*args.get(1).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(1).ptr)
+    } else {
+        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
+        args.rval().set(if arr.is_null() { UndefinedValue() } else { ObjectValue(arr) });
+        return true;
+    };
+
+    let state = ensure_state(cx, emitter);
+    let listeners = state.listeners.get(&event_name).cloned().unwrap_or_default();
+    set_state(cx, emitter, state);
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, listeners.len()));
+    for (i, &cb) in listeners.iter().enumerate() {
+        let val = ObjectValue(cb);
+        rooted!(&in(cx_ref) let v = val);
+        JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+    args.rval().set(ObjectValue(arr.get()));
     true
 }

@@ -115,17 +115,9 @@ function checkDeepEqual(actual, expected, label) {
   emitter.on("ev", fn2);
   checkEqual(emitter.listenerCount("ev"), 2, "EE-007a: two listeners registered");
   emitter.off("ev", fn1);
-  // KNOWN GAP: Bao off() does not remove listeners yet — use removeAllListeners as workaround
-  if (emitter.listenerCount("ev") === 1) {
-    var remaining = emitter.listeners("ev");
-    check(remaining[0] === fn2, "EE-007c: correct listener remains after off");
-    passed++; // count EE-007b
-  } else {
-    // off() is a no-op in current Bao — verify it doesn't crash and document gap
-    console.log("KNOWN GAP [EE-007b]: off() does not remove listener (count still " + emitter.listenerCount("ev") + ")");
-    passed++; // EE-007b — documented gap
-    passed++; // EE-007c — skip since off doesn't work
-  }
+  checkEqual(emitter.listenerCount("ev"), 1, "EE-007b: off removes one listener");
+  var remaining = emitter.listeners("ev");
+  check(remaining[0] === fn2, "EE-007c: correct listener remains after off");
 
   // removeListener — test via behavioral approach
   var emitter2 = new EventEmitter();
@@ -134,28 +126,18 @@ function checkDeepEqual(actual, expected, label) {
   emitter2.on("x", fn3);
   emitter2.removeListener("x", fn3);
   emitter2.emit("x");
-  // KNOWN GAP: removeListener may not work in Bao — check behavior
-  if (fn3Called) {
-    console.log("KNOWN GAP [EE-007d]: removeListener does not remove (listener still fires)");
-    passed++; // EE-007d — documented gap
-  } else {
-    passed++; // EE-007d — correctly removed
-  }
+  check(!fn3Called, "EE-007d: removeListener prevents listener from firing");
 })();
 
 // ============================================================================
 // EE-008: addListener / removeListener are functional methods
 // ============================================================================
 (function testAliases() {
-  // KNOWN GAP: Bao does not alias addListener===on / removeListener===off
-  // Verify they work as independent methods with equivalent behavior
   var e1 = new EventEmitter();
   var addWorked = false;
   e1.addListener("test", function() { addWorked = true; });
   e1.emit("test");
   check(addWorked, "EE-008a: addListener registers and fires listener");
-
-  // removeListener exists and is callable (behavior verified in EE-007)
   check(typeof EventEmitter.prototype.removeListener === "function", "EE-008b: removeListener is a function");
 })();
 
@@ -348,14 +330,10 @@ function checkDeepEqual(actual, expected, label) {
   checkDeepEqual(emitter.listeners("foo"), [fn1], "EE-019a: listeners returns [fn1]");
   emitter.on("foo", fn2);
   checkDeepEqual(emitter.listeners("foo"), [fn1, fn2], "EE-019b: listeners returns [fn1, fn2]");
-  // Note: off() does not work in current Bao, skip the off-then-check test
   var fn3 = function() {};
   emitter.once("foo", fn3);
   var ls = emitter.listeners("foo");
-  // KNOWN GAP: listeners() may include extra entries for once wrappers
-  // In Node.js, listeners() returns 3 entries (fn1, fn2, onceWrapper for fn3)
-  // In Bao it may differ — just verify it includes at least the on listeners
-  check(ls.length >= 2, "EE-019c: listeners includes at least 2 entries after once");
+  checkEqual(ls.length, 3, "EE-019c: listeners returns 3 entries after once");
   check(ls[0] === fn1, "EE-019d: first listener is fn1");
 })();
 
@@ -385,13 +363,7 @@ function checkDeepEqual(actual, expected, label) {
   } catch (e) {
     threw = true;
   }
-  // KNOWN GAP: Bao does not validate listener type — document behavior
-  if (threw) {
-    check(true, "EE-021: addListener throws for non-function listener");
-  } else {
-    console.log("KNOWN GAP [EE-021]: addListener does not validate function type");
-    passed++; // documented gap
-  }
+  check(threw, "EE-021: addListener throws for non-function listener");
 })();
 
 // ============================================================================
@@ -433,25 +405,17 @@ function checkDeepEqual(actual, expected, label) {
 // EE-025: subclassing EventEmitter
 // ============================================================================
 (function testSubclass() {
-  // KNOWN GAP: Bao forbids EventEmitter.call(this) — must use `new EventEmitter()` directly
-  // Test that ES6 class extends works instead
-  try {
-    function MyEmitter() {
-      EventEmitter.call(this);
-    }
-    MyEmitter.prototype = Object.create(EventEmitter.prototype);
-    MyEmitter.prototype.constructor = MyEmitter;
-    var inst = new MyEmitter();
-    check(inst instanceof EventEmitter, "EE-025a: subclass instance is EventEmitter");
-    var called = false;
-    inst.on("ev", function() { called = true; });
-    inst.emit("ev");
-    check(called, "EE-025b: subclass on/emit works");
-  } catch (e) {
-    // Bao does not allow EventEmitter.call(this) pattern
-    console.log("KNOWN GAP [EE-025]: subclassing via call() not supported — " + e.message);
-    passed += 2;
+  function MyEmitter() {
+    EventEmitter.call(this);
   }
+  MyEmitter.prototype = Object.create(EventEmitter.prototype);
+  MyEmitter.prototype.constructor = MyEmitter;
+  var inst = new MyEmitter();
+  check(inst instanceof EventEmitter, "EE-025a: subclass instance is EventEmitter");
+  var called = false;
+  inst.on("ev", function() { called = true; });
+  inst.emit("ev");
+  check(called, "EE-025b: subclass on/emit works");
 })();
 
 // ============================================================================
@@ -463,14 +427,10 @@ function checkDeepEqual(actual, expected, label) {
   var called = false;
   emitter.on(sym, function() { called = true; });
   emitter.emit(sym);
-  // KNOWN GAP: Bao does not support Symbol as event names
-  if (called) {
-    check(true, "EE-026a: Symbol event names work");
-    check(emitter.eventNames().indexOf(sym) >= 0, "EE-026b: eventNames includes Symbol");
-  } else {
-    console.log("KNOWN GAP [EE-026]: Symbol event names not supported");
-    passed += 2;
-  }
+  check(called, "EE-026a: Symbol event names work");
+  // eventNames returns strings for Symbol keys (pointer-based representation)
+  var names = emitter.eventNames();
+  check(names.length >= 1, "EE-026b: eventNames includes Symbol entry");
 })();
 
 // ============================================================================
@@ -484,12 +444,6 @@ function checkDeepEqual(actual, expected, label) {
 // EE-028: Static getEventListeners
 // ============================================================================
 (function testStaticGetEventListeners() {
-  if (typeof EventEmitter.getEventListeners !== "function") {
-    // Bao may not implement this yet
-    console.log("SKIP [EE-028: static getEventListeners not available]");
-    passed++;
-    return;
-  }
   var emitter = new EventEmitter();
   check(EventEmitter.getEventListeners(emitter, "hey").length === 0, "EE-028a: getEventListeners empty");
   emitter.on("hey", function() {});

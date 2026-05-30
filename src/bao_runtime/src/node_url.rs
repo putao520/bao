@@ -3,9 +3,10 @@ use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, BooleanValue, ObjectValue, PrivateValue, StringValue};
+use mozjs::jsval::{JSVal, UndefinedValue, BooleanValue, ObjectValue, PrivateValue, StringValue, Int32Value};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
+use mozjs::rust::IdVector;
 
 use crate::require::cache_builtin;
 
@@ -201,7 +202,34 @@ unsafe fn set_string_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str, va
         let val = StringValue(&*js_str);
         let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
         let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-        JS_DefineProperty(cx, obj_h, c_name.as_ptr(), val_h, (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+        JS_DefineProperty(cx, obj_h, c_name.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+    }
+}}
+
+/// Update all URL properties on a JS object from a UrlState.
+/// Called after mutation to keep all properties in sync.
+unsafe fn update_url_props(cx: *mut JSContext, obj: *mut JSObject, state: &UrlState) { unsafe {
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    for (name, value) in [
+        ("href", state.href.as_str()),
+        ("protocol", state.protocol.as_str()),
+        ("username", state.username.as_str()),
+        ("password", state.password.as_str()),
+        ("host", state.host.as_str()),
+        ("hostname", state.hostname.as_str()),
+        ("port", state.port.as_str()),
+        ("pathname", state.pathname.as_str()),
+        ("search", state.search.as_str()),
+        ("hash", state.hash.as_str()),
+        ("origin", state.origin.as_str()),
+    ] {
+        let Ok(c_name) = CString::new(name) else { continue };
+        let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const ::std::os::raw::c_char, value.len());
+        if !js_str.is_null() {
+            let val = StringValue(&*js_str);
+            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+            JS_SetProperty(cx, obj_h, c_name.as_ptr(), val_h);
+        }
     }
 }}
 
@@ -347,6 +375,8 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
         if !url_fun.is_null() {
             let url_obj = JS_GetFunctionObject(url_fun);
             if !url_obj.is_null() {
+                let url_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &url_obj };
+                JS_DefineFunction(cx.raw_cx(), url_obj_h, c"canParse".as_ptr(), Some(url_can_parse), 1, JSPROP_ENUMERATE as u32);
                 let val = ObjectValue(url_obj);
                 rooted!(&in(cx) let v = val);
                 JS_DefineProperty(cx.raw_cx(), global.into(), c"URL".as_ptr(), v.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
@@ -364,7 +394,7 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
         }
     }
 
-    rooted!(&in(cx) let url_mod = unsafe { w2::JS_NewPlainObject(cx) });
+    rooted!(&in(cx) let url_mod = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(cx.raw_cx()) });
     if !url_mod.get().is_null() {
         let mod_h = url_mod.handle().into();
         let url_ctor = unsafe { JS_NewFunction(cx.raw_cx(), Some(url_constructor), 2, JSFUN_CONSTRUCTOR as u32, c"URL".as_ptr()) };
@@ -392,6 +422,24 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
         }
         cache_builtin(cx, "url", url_mod.get());
     }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn url_can_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_string() {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let input = crate::js_to_rust_string(cx, *args.get(0).ptr);
+    let base = if argc > 1 && (*args.get(1).ptr).is_string() {
+        Some(crate::js_to_rust_string(cx, *args.get(1).ptr))
+    } else {
+        None
+    };
+    let can_parse = parse_url(&input, base.as_deref()).is_some();
+    args.rval().set(BooleanValue(can_parse));
+    true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -474,17 +522,48 @@ unsafe extern "C" fn url_search_params_constructor(cx: *mut JSContext, argc: u32
             for pair in search.split('&') {
                 if pair.is_empty() { continue; }
                 let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-                let Ok(c_key) = CString::new(k) else { continue };
-                let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-                let mut existing = UndefinedValue();
-                JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut existing });
-                let combined = if existing.is_string() {
-                    let prev = crate::js_to_rust_string(cx, existing);
-                    format!("{}\x01{}", prev, v)
-                } else {
-                    v.to_string()
-                };
-                let _ = set_sp_property(cx, obj, k, &combined);
+                let _ = append_sp_value(cx, obj, k, v);
+            }
+        } else if init_val.is_object() {
+            let init_obj = init_val.to_object();
+            // Check if it's array-like (has numeric indices) or a plain object
+            let init_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &init_obj };
+            let mut length_val = UndefinedValue();
+            JS_GetProperty(cx, init_obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut length_val });
+
+            if length_val.is_number() {
+                // Array form: [["key", "val"], ["key2", "val2"]]
+                let len = if length_val.is_int32() { length_val.to_int32() as u32 } else { 0 };
+                for i in 0..len {
+                    let mut elem = UndefinedValue();
+                    JS_GetElement(cx, init_obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                    if !elem.is_object() { continue; }
+                    let pair_obj = elem.to_object();
+                    let pair_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &pair_obj };
+                    let mut k_val = UndefinedValue();
+                    let mut v_val = UndefinedValue();
+                    JS_GetElement(cx, pair_h, 0, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut k_val });
+                    JS_GetElement(cx, pair_h, 1, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut v_val });
+                    let key = if k_val.is_string() { crate::js_to_rust_string(cx, k_val) } else { continue };
+                    let val = if v_val.is_string() { crate::js_to_rust_string(cx, v_val) } else { String::new() };
+                    let _ = append_sp_value(cx, obj, &key, &val);
+                }
+            } else {
+                // Object form: {key: "val", key2: "val2"}
+                let mut ids = IdVector::new(cx);
+                let ok = GetPropertyKeys(cx, init_obj_h, JSITER_OWNONLY as u32, ids.handle_mut());
+                if ok {
+                    for jsid in &*ids {
+                        if !jsid.is_string() { continue; }
+                        let key_str = jsid.to_string();
+                        let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+                        let Ok(c_key) = CString::new(&*key) else { continue };
+                        let mut v_val = UndefinedValue();
+                        JS_GetProperty(cx, init_obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut v_val });
+                        let val = if v_val.is_string() { crate::js_to_rust_string(cx, v_val) } else { String::new() };
+                        let _ = append_sp_value(cx, obj, &key, &val);
+                    }
+                }
             }
         }
     }
@@ -500,7 +579,30 @@ unsafe fn set_sp_property(cx: *mut JSContext, obj: *mut JSObject, key: &str, val
     let val = StringValue(&*js_str);
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
     let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-    JS_SetProperty(cx, obj_h, c_key.as_ptr(), val_h)
+    // Use JS_DefineProperty with JSPROP_ENUMERATE so GetPropertyKeys can find these
+    // First try to set existing property (for update), fall back to define
+    let mut found = false;
+    JS_HasProperty(cx, obj_h, c_key.as_ptr(), &mut found);
+    if found {
+        JS_SetProperty(cx, obj_h, c_key.as_ptr(), val_h)
+    } else {
+        JS_DefineProperty(cx, obj_h, c_key.as_ptr(), val_h, (JSPROP_ENUMERATE as u32) | (JSPROP_RESOLVING as u32))
+    }
+}}
+
+/// Append a value to a URLSearchParams key, joining with \x01 for multi-values.
+unsafe fn append_sp_value(cx: *mut JSContext, obj: *mut JSObject, key: &str, value: &str) -> bool { unsafe {
+    let Ok(c_key) = CString::new(key) else { return false };
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut existing = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut existing });
+    let combined = if existing.is_string() {
+        let prev = crate::js_to_rust_string(cx, existing);
+        format!("{}\x01{}", prev, value)
+    } else {
+        value.to_string()
+    };
+    set_sp_property(cx, obj, key, &combined)
 }}
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -520,8 +622,9 @@ unsafe extern "C" fn sp_get(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     if result.is_string() {
         let full = crate::js_to_rust_string(cx, result);
         let first = full.split('\x01').next().unwrap_or(&full);
-        let Ok(c_first) = CString::new(first) else { args.rval().set(UndefinedValue()); return true; };
-        let js_str = JS_NewStringCopyZ(cx, c_first.as_ptr());
+        let decoded = url_decode(first);
+        let Ok(c_dec) = CString::new(decoded) else { args.rval().set(UndefinedValue()); return true; };
+        let js_str = JS_NewStringCopyZ(cx, c_dec.as_ptr());
         args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
     } else {
         args.rval().set(result);
@@ -559,6 +662,25 @@ unsafe extern "C" fn sp_has(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
     let mut found = false;
     JS_HasProperty(cx, obj_h, c_key.as_ptr(), &mut found);
+    if !found {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    // has(name, value) — check if a specific value exists for the key
+    if argc >= 2 {
+        let value_val = *args.get(1).ptr;
+        let mut stored = UndefinedValue();
+        JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut stored });
+        if !stored.is_string() {
+            args.rval().set(BooleanValue(false));
+            return true;
+        }
+        let stored_str = crate::js_to_rust_string(cx, stored);
+        let target = if value_val.is_string() { url_decode(&crate::js_to_rust_string(cx, value_val)) } else { String::new() };
+        let has_match = stored_str.split('\x01').any(|v| url_decode(v) == target);
+        args.rval().set(BooleanValue(has_match));
+        return true;
+    }
     args.rval().set(BooleanValue(found));
     true
 }
@@ -619,43 +741,22 @@ unsafe extern "C" fn sp_to_string(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
     let obj = this.to_object();
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
 
-    let mut init_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"__initString".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut init_val });
-    if init_val.is_string() {
-        args.rval().set(init_val);
-        return true;
-    }
-
     let mut parts: Vec<String> = Vec::new();
-    let eval_src = r#"Object.keys(this).filter(k=>!k.startsWith("__"))"#;
-    let c_filename = CString::new("<sp_toString>").unwrap_or_default();
-    let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
-    if !opts.is_null() {
-        let mut src = mozjs::rust::transform_str_to_source_text(eval_src);
-        let mut keys_val = UndefinedValue();
-        let keys_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut keys_val };
-        let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, keys_h);
-        libc::free(opts as *mut _);
-        if ok && keys_val.is_object() {
-            let keys_arr = keys_val.to_object();
-            let mut len_val = UndefinedValue();
-            JS_GetProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &keys_arr },
-                c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
-            let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { 0u32 };
-            for i in 0..len {
-                let mut key_val = UndefinedValue();
-                JS_GetElement(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &keys_arr },
-                    i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut key_val });
-                if !key_val.is_string() { continue; }
-                let key = crate::js_to_rust_string(cx, key_val);
-                let Ok(c_key) = CString::new(&*key) else { continue };
-                let mut val = UndefinedValue();
-                JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
-                if !val.is_string() { continue; }
-                let val_str = crate::js_to_rust_string(cx, val);
-                for v in val_str.split('\x01') {
-                    parts.push(format!("{}={}", url_encode(&key), url_encode(v)));
-                }
+    let mut ids = IdVector::new(cx);
+    let ok = GetPropertyKeys(cx, obj_h, JSITER_OWNONLY as u32, ids.handle_mut());
+    if ok {
+        for jsid in &*ids {
+            if !jsid.is_string() { continue; }
+            let key_str = jsid.to_string();
+            let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+            if key.starts_with("__") { continue; }
+            let Ok(c_key) = CString::new(&*key) else { continue };
+            let mut val = UndefinedValue();
+            JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
+            if !val.is_string() { continue; }
+            let val_str = crate::js_to_rust_string(cx, val);
+            for v in val_str.split('\x01') {
+                parts.push(format!("{}={}", url_encode(&key), url_encode(v)));
             }
         }
     }
@@ -678,30 +779,216 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+fn url_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'+' {
+            out.push(' ');
+            i += 1;
+        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push(char::from_u32(h * 16 + l).unwrap_or('?'));
+                i += 3;
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
+            }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Collect (key, value) pairs from a URLSearchParams object using GetPropertyKeys.
+/// Returns Vec of (key, all_values_joined_with_\x01).
+unsafe fn sp_collect_entries(cx: *mut JSContext, obj: *mut JSObject) -> Vec<(String, String)> {
+    let mut result: Vec<(String, String)> = Vec::new();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut ids = IdVector::new(cx);
+    let ok = GetPropertyKeys(cx, obj_h, JSITER_OWNONLY as u32, ids.handle_mut());
+    if !ok { return result; }
+    for jsid in &*ids {
+        if !jsid.is_string() { continue; }
+        let key_str = jsid.to_string();
+        let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+        if key.starts_with("__") { continue; }
+        let Ok(c_key) = CString::new(&*key) else { continue };
+        let mut val = UndefinedValue();
+        JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
+        if !val.is_string() { continue; }
+        let val_str = crate::js_to_rust_string(cx, val);
+        result.push((key, val_str));
+    }
+    result
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_keys(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    args.rval().set(UndefinedValue());
+unsafe extern "C" fn sp_keys(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let obj = this.to_object();
+
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let arr_root = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+    if arr_root.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    let arr = arr_root.get();
+    let mut idx: u32 = 0;
+    let entries = sp_collect_entries(cx, obj);
+    for (key, val_str) in &entries {
+        for v in val_str.split('\x01') {
+            let _ = v;
+            let js_key = JS_NewStringCopyN(cx, key.as_ptr() as *const ::std::os::raw::c_char, key.len());
+            if js_key.is_null() { continue; }
+            let key_val = StringValue(&*js_key);
+            JS_DefineElement(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr },
+                idx, Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &key_val }, JSPROP_ENUMERATE as u32);
+            idx += 1;
+        }
+    }
+    let len_val = Int32Value(idx as i32);
+    JS_DefineProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr },
+        c"length".as_ptr(), Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &len_val }, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(arr));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_values(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    args.rval().set(UndefinedValue());
+unsafe extern "C" fn sp_values(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let obj = this.to_object();
+
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let arr_root = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+    if arr_root.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    let arr = arr_root.get();
+    let mut idx: u32 = 0;
+    let entries = sp_collect_entries(cx, obj);
+    for (_key, val_str) in &entries {
+        for v in val_str.split('\x01') {
+            let decoded = url_decode(v);
+            let Ok(c_dec) = CString::new(decoded) else { continue };
+            let js_val = JS_NewStringCopyZ(cx, c_dec.as_ptr());
+            if js_val.is_null() { continue; }
+            let v_val = StringValue(&*js_val);
+            JS_DefineElement(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr },
+                idx, Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v_val }, JSPROP_ENUMERATE as u32);
+            idx += 1;
+        }
+    }
+    let len_val = Int32Value(idx as i32);
+    JS_DefineProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr },
+        c"length".as_ptr(), Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &len_val }, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(arr));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_entries(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    args.rval().set(UndefinedValue());
+unsafe extern "C" fn sp_entries(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let obj = this.to_object();
+
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let arr_root = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+    if arr_root.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    let arr = arr_root.get();
+    let mut idx: u32 = 0;
+    let entries = sp_collect_entries(cx, obj);
+    for (key, val_str) in &entries {
+        for v in val_str.split('\x01') {
+            let pair = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+            if pair.is_null() { continue; }
+            let Ok(c_key) = CString::new(&**key) else { continue };
+            let decoded = url_decode(v);
+            let Ok(c_dec) = CString::new(decoded) else { continue };
+            let js_key = JS_NewStringCopyZ(cx, c_key.as_ptr());
+            let js_val = JS_NewStringCopyZ(cx, c_dec.as_ptr());
+            if js_key.is_null() || js_val.is_null() { continue; }
+            let key_val = StringValue(&*js_key);
+            let v_val = StringValue(&*js_val);
+            JS_DefineElement(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &pair },
+                0u32, Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &key_val }, JSPROP_ENUMERATE as u32);
+            JS_DefineElement(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &pair },
+                1u32, Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v_val }, JSPROP_ENUMERATE as u32);
+            let pair_val = ObjectValue(pair);
+            JS_DefineElement(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr },
+                idx, Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &pair_val }, JSPROP_ENUMERATE as u32);
+            idx += 1;
+        }
+    }
+    let len_val = Int32Value(idx as i32);
+    JS_DefineProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr },
+        c"length".as_ptr(), Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &len_val }, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(arr));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn sp_for_each(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    if argc == 0 { args.rval().set(UndefinedValue()); return true; }
+    let callback_val = *args.get(0).ptr;
+    if !callback_val.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let callback_obj = callback_val.to_object();
+
+    let this_obj = this.to_object();
+    let this_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+
+    let mut ids = IdVector::new(cx);
+    let ok = GetPropertyKeys(cx, this_obj_h, JSITER_OWNONLY as u32, ids.handle_mut());
+    if !ok { args.rval().set(UndefinedValue()); return true; }
+
+    for jsid in &*ids {
+        if !jsid.is_string() { continue; }
+        let key_str = jsid.to_string();
+        let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str));
+        let Ok(c_key) = CString::new(&*key) else { continue };
+
+        let mut val = UndefinedValue();
+        JS_GetProperty(cx, this_obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
+        if !val.is_string() { continue; }
+        let val_rust = crate::js_to_rust_string(cx, val);
+
+        for v in val_rust.split('\x01') {
+            let decoded = url_decode(v);
+            let Ok(c_dec) = CString::new(decoded) else { continue };
+            let Ok(c_key2) = CString::new(&*key) else { continue };
+            let v_js = JS_NewStringCopyZ(cx, c_dec.as_ptr());
+            let key_js = JS_NewStringCopyZ(cx, c_key2.as_ptr());
+            if v_js.is_null() || key_js.is_null() { continue; }
+
+            let mut args_arr: [JSVal; 3] = [
+                StringValue(&*v_js),
+                StringValue(&*key_js),
+                ObjectValue(this_obj),
+            ];
+            let handle_arr = HandleValueArray {
+                length_: 3,
+                elements_: args_arr.as_mut_ptr(),
+            };
+            let mut rval = UndefinedValue();
+            JS_CallFunctionValue(
+                cx,
+                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj }.into(),
+                Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ObjectValue(callback_obj) },
+                &handle_arr,
+                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval },
+            );
+        }
+    }
+
     args.rval().set(UndefinedValue());
     true
 }
@@ -709,51 +996,57 @@ unsafe extern "C" fn sp_for_each(_cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // Return empty array if no key argument
     if argc == 0 || !(*args.get(0).ptr).is_string() {
-        let arr = mozjs::jsapi::NewArrayObject(cx, ::std::ptr::null());
-        if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
+        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
+        args.rval().set(if arr.is_null() { UndefinedValue() } else { ObjectValue(arr) });
         return true;
     }
     let key = crate::js_to_rust_string(cx, *args.get(0).ptr);
     let this = args.thisv();
     if !this.is_object() {
-        let arr = mozjs::jsapi::NewArrayObject(cx, ::std::ptr::null());
-        if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
+        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
+        args.rval().set(if arr.is_null() { UndefinedValue() } else { ObjectValue(arr) });
         return true;
     }
     let obj = this.to_object();
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-    // Read the property directly
+
     let Ok(c_key) = CString::new(key) else {
-        let arr = mozjs::jsapi::NewArrayObject(cx, ::std::ptr::null());
-        if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
+        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
+        args.rval().set(if arr.is_null() { UndefinedValue() } else { ObjectValue(arr) });
         return true;
     };
+
+    let mut has = false;
+    JS_HasProperty(cx, obj_h, c_key.as_ptr(), &mut has);
+    if !has {
+        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
+        args.rval().set(if arr.is_null() { UndefinedValue() } else { ObjectValue(arr) });
+        return true;
+    }
+
     let mut val = UndefinedValue();
     JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
-    if val.is_undefined() {
-        let arr = mozjs::jsapi::NewArrayObject(cx, ::std::ptr::null());
-        if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
-    } else {
-        let v_str = crate::js_to_rust_string(cx, val);
-        let parts: Vec<String> = v_str.split('\x01').map(|s| {
-            s.replace('\\', "\\\\").replace('"', "\\\"")
-        }).collect();
-        let items: Vec<String> = parts.iter().map(|s| format!("\"{}\"", s)).collect();
-        let eval_src = format!("[{}]", items.join(","));
-        let c_filename = CString::new("<getAll>").unwrap_or_default();
-        let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
-        if !opts.is_null() {
-            let mut src = mozjs::rust::transform_str_to_source_text(&eval_src);
-            let mut rval = UndefinedValue();
-            let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-            mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h);
-            libc::free(opts as *mut _);
-            args.rval().set(rval);
-        } else {
-            args.rval().set(UndefinedValue());
-        }
+    if !val.is_string() {
+        let arr = mozjs::jsapi::NewArrayObject1(cx, 0);
+        args.rval().set(if arr.is_null() { UndefinedValue() } else { ObjectValue(arr) });
+        return true;
     }
+
+    let val_str = crate::js_to_rust_string(cx, val);
+    let parts: Vec<String> = val_str.split('\x01').map(|p| url_decode(p)).collect();
+    let arr = mozjs::jsapi::NewArrayObject1(cx, parts.len());
+    if arr.is_null() { args.rval().set(UndefinedValue()); return true; }
+    for (i, part) in parts.iter().enumerate() {
+        let Ok(c_part) = CString::new(part.as_str()) else { continue };
+        let js_str = JS_NewStringCopyZ(cx, c_part.as_ptr());
+        if js_str.is_null() { continue; }
+        let str_val = StringValue(&*js_str);
+        JS_DefineElement(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr },
+            i as u32, Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &str_val }, JSPROP_ENUMERATE as u32);
+    }
+    args.rval().set(ObjectValue(arr));
     true
 }
 
@@ -774,6 +1067,45 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let state = match parse_url(&input, None) {
         Some(s) => s,
         None => {
+            // Try parsing as relative URL (pathname-only like /foo/bar?baz=quux#frag)
+            let (path_part, hash) = if let Some(pos) = input.find('#') {
+                (&input[..pos], input[pos..].to_string())
+            } else {
+                (input.as_str(), String::new())
+            };
+            let (pathname, search) = if let Some(pos) = path_part.find('?') {
+                (&path_part[..pos], path_part[pos..].to_string())
+            } else {
+                (path_part, String::new())
+            };
+            if pathname.starts_with('/') {
+                let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+                if obj.is_null() { args.rval().set(mozjs::jsval::NullValue()); return true; }
+                let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+                let null_val = mozjs::jsval::NullValue();
+                for (name, value) in [
+                    ("href", input.as_str()),
+                    ("path", format!("{}{}", pathname, search).as_str()),
+                    ("pathname", pathname),
+                    ("search", search.as_str()),
+                    ("hash", hash.as_str()),
+                ] {
+                    let Ok(c_name) = CString::new(name) else { continue };
+                    let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const ::std::os::raw::c_char, value.len());
+                    if !js_str.is_null() {
+                        let val = StringValue(&*js_str);
+                        let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+                        JS_DefineProperty(cx, obj_h, c_name.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+                    }
+                }
+                for name in ["protocol", "host", "hostname", "port", "auth"] {
+                    let Ok(c_name) = CString::new(name) else { continue };
+                    let null_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &null_val };
+                    JS_DefineProperty(cx, obj_h, c_name.as_ptr(), null_h, JSPROP_ENUMERATE as u32);
+                }
+                args.rval().set(ObjectValue(obj));
+                return true;
+            }
             args.rval().set(mozjs::jsval::NullValue());
             return true;
         }
@@ -785,6 +1117,11 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return true;
     }
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let auth = if !state.username.is_empty() {
+        if state.password.is_empty() { state.username.clone() } else { format!("{}:{}", state.username, state.password) }
+    } else {
+        String::new()
+    };
     for (name, value) in [
         ("href", state.href.as_str()),
         ("protocol", state.protocol.as_str()),
@@ -795,6 +1132,7 @@ unsafe extern "C" fn url_parse_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         ("search", state.search.as_str()),
         ("hash", state.hash.as_str()),
         ("path", format!("{}{}", state.pathname, state.search).as_str()),
+        ("auth", auth.as_str()),
     ] {
         let Ok(c_name) = CString::new(name) else { continue };
         let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const ::std::os::raw::c_char, value.len());
@@ -833,14 +1171,49 @@ unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         }
         let mut proto_val = UndefinedValue();
         let mut host_val = UndefinedValue();
+        let mut hostname_val = UndefinedValue();
+        let mut port_val = UndefinedValue();
         let mut path_val = UndefinedValue();
+        let mut pathname_val = UndefinedValue();
+        let mut search_val = UndefinedValue();
+        let mut hash_val = UndefinedValue();
+        let mut auth_val = UndefinedValue();
         JS_GetProperty(cx, obj_h, c"protocol".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val });
         JS_GetProperty(cx, obj_h, c"host".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut host_val });
+        JS_GetProperty(cx, obj_h, c"hostname".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hostname_val });
+        JS_GetProperty(cx, obj_h, c"port".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut port_val });
         JS_GetProperty(cx, obj_h, c"path".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut path_val });
+        JS_GetProperty(cx, obj_h, c"pathname".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut pathname_val });
+        JS_GetProperty(cx, obj_h, c"search".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut search_val });
+        JS_GetProperty(cx, obj_h, c"hash".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hash_val });
+        JS_GetProperty(cx, obj_h, c"auth".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut auth_val });
+
         let proto = if proto_val.is_string() { crate::js_to_rust_string(cx, proto_val) } else { "http:".to_string() };
-        let host = if host_val.is_string() { crate::js_to_rust_string(cx, host_val) } else { "localhost".to_string() };
-        let path = if path_val.is_string() { crate::js_to_rust_string(cx, path_val) } else { "/".to_string() };
-        let formatted = format!("{}//{}{}", proto, host, path);
+        let host = if host_val.is_string() {
+            crate::js_to_rust_string(cx, host_val)
+        } else if hostname_val.is_string() {
+            let hn = crate::js_to_rust_string(cx, hostname_val);
+            if port_val.is_string() { format!("{}:{}", hn, crate::js_to_rust_string(cx, port_val)) } else { hn }
+        } else {
+            String::new()
+        };
+        let path = if path_val.is_string() {
+            crate::js_to_rust_string(cx, path_val)
+        } else {
+            let pn = if pathname_val.is_string() { crate::js_to_rust_string(cx, pathname_val) } else { "/".to_string() };
+            let s = if search_val.is_string() { crate::js_to_rust_string(cx, search_val) } else { String::new() };
+            format!("{}{}", pn, s)
+        };
+        let hash = if hash_val.is_string() { crate::js_to_rust_string(cx, hash_val) } else { String::new() };
+        let auth = if auth_val.is_string() { crate::js_to_rust_string(cx, auth_val) } else { String::new() };
+
+        let formatted = if host.is_empty() {
+            format!("{}//{}", proto, path)
+        } else if auth.is_empty() {
+            format!("{}//{}{}{}", proto, host, path, hash)
+        } else {
+            format!("{}//{}@{}{}{}", proto, auth, host, path, hash)
+        };
         let Ok(c_str) = CString::new(formatted) else { args.rval().set(UndefinedValue()); return true; };
         let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
         args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });

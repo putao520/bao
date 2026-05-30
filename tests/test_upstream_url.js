@@ -133,9 +133,10 @@ checkEqual(all10.length, 3, "URL-010a: getAll returns 3 values");
 checkEqual(all10[0], "1", "URL-010b: getAll[0]");
 checkEqual(all10[1], "2", "URL-010c: getAll[1]");
 checkEqual(all10[2], "3", "URL-010d: getAll[2]");
-// BUG: getAll("nonexistent") causes segfault in Bao — skip this test
-console.log("KNOWN GAP [URL-010e/f]: getAll(missing) causes segfault — skipped");
-passed += 2;
+var all10e = sp10.getAll("nonexistent");
+checkEqual(all10e.length, 0, "URL-010e: getAll(missing) returns empty array");
+var all10f = sp10.getAll("nonexistent2");
+check(all10f !== null && all10f !== undefined, "URL-010f: getAll(missing) returns object");
 
 // ============================================================================
 // URL-011: URLSearchParams forEach
@@ -145,14 +146,8 @@ var pairs11 = [];
 sp11.forEach(function(val, key) {
   pairs11.push(key + "=" + val);
 });
-// KNOWN GAP: forEach may not invoke callback in Bao
-if (pairs11.length === 2) {
-  check(pairs11.indexOf("x=1") >= 0, "URL-011a: forEach includes x=1");
-  check(pairs11.indexOf("y=2") >= 0, "URL-011b: forEach includes y=2");
-} else {
-  console.log("KNOWN GAP [URL-011]: URLSearchParams.forEach does not invoke callback");
-  passed += 2;
-}
+check(pairs11.indexOf("x=1") >= 0, "URL-011a: forEach includes x=1");
+check(pairs11.indexOf("y=2") >= 0, "URL-011b: forEach includes y=2");
 
 // ============================================================================
 // URL-012: URLSearchParams has
@@ -160,54 +155,41 @@ if (pairs11.length === 2) {
 var sp12 = new URLSearchParams("a=1");
 check(sp12.has("a"), "URL-012a: has(a) true");
 check(!sp12.has("b"), "URL-012b: has(b) false");
-// has with value check (second argument) — may not be supported
-if (sp12.has("a", "1")) {
-  check(true, "URL-012c: has(a,1) true");
-} else {
-  console.log("KNOWN GAP [URL-012c]: URLSearchParams.has(name, value) not supported");
-  passed++;
-}
+// has with value check (second argument)
+check(sp12.has("a", "1"), "URL-012c: has(a,1) true");
+check(!sp12.has("a", "2"), "URL-012d: has(a,2) false");
 
 // ============================================================================
 // URL-013: URLSearchParams constructor from array
 // ============================================================================
-var sp13 = null;
-try {
-  sp13 = new URLSearchParams([["a", "1"], ["b", "2"]]);
-} catch (e) {
-  // ignore
-}
-if (sp13 && sp13.get("a") === "1") {
-  checkEqual(sp13.get("a"), "1", "URL-013a: from array get(a)");
-  checkEqual(sp13.get("b"), "2", "URL-013b: from array get(b)");
-} else {
-  console.log("KNOWN GAP [URL-013]: URLSearchParams from array not supported");
-  passed += 2;
-}
+var sp13 = new URLSearchParams([["a", "1"], ["b", "2"]]);
+checkEqual(sp13.get("a"), "1", "URL-013a: from array get(a)");
+checkEqual(sp13.get("b"), "2", "URL-013b: from array get(b)");
 
 // ============================================================================
 // URL-014: URLSearchParams constructor from object
 // ============================================================================
-var sp14 = null;
-try {
-  sp14 = new URLSearchParams({ a: "1", b: "2" });
-} catch (e) {
-  // ignore
-}
-if (sp14 && sp14.get("a") === "1") {
-  checkEqual(sp14.get("a"), "1", "URL-014a: from object get(a)");
-  checkEqual(sp14.get("b"), "2", "URL-014b: from object get(b)");
-} else {
-  console.log("KNOWN GAP [URL-014]: URLSearchParams from object not supported");
-  passed += 2;
-}
+var sp14 = new URLSearchParams({ a: "1", b: "2" });
+checkEqual(sp14.get("a"), "1", "URL-014a: from object get(a)");
+checkEqual(sp14.get("b"), "2", "URL-014b: from object get(b)");
 
 // ============================================================================
 // URL-015: URL mutation — pathname, search, hash
 // ============================================================================
-// KNOWN GAP: URL property mutation not working in Bao — skip runtime mutation tests
-console.log("KNOWN GAP [URL-015]: URL property mutation not working");
-passed += 5; // URL-015a through URL-015e
+var u15 = new URL("https://example.com/path?q=1#hash");
+u15.pathname = "/newpath";
+checkEqual(u15.pathname, "/newpath", "URL-015a: pathname mutation");
+u15.search = "?x=2";
+checkEqual(u15.search, "?x=2", "URL-015b: search mutation");
+u15.hash = "#newhash";
+checkEqual(u15.hash, "#newhash", "URL-015c: hash mutation");
+// href auto-update after mutation (known limitation: no auto-sync)
+var u15d = new URL("https://example.com/path");
+u15d.hostname = "other.com";
+checkEqual(u15d.hostname, "other.com", "URL-015d: hostname mutation");
+var u15e = new URL("https://example.com/path");
+u15e.port = "8080";
+checkEqual(u15e.port, "8080", "URL-015e: port mutation");
 
 // ============================================================================
 // URL-016: url.parse from node:url
@@ -224,13 +206,7 @@ checkEqual(parsed16.hash, "#hash", "URL-016e: parse hash");
 // ============================================================================
 var parsed17 = url.parse("http://user:pass@example.com:8000/foo/bar?baz=quux#frag");
 checkEqual(parsed17.protocol, "http:", "URL-017a: parse protocol");
-// KNOWN GAP: Bao url.parse does not return auth field
-if (parsed17.auth !== undefined) {
-  checkEqual(parsed17.auth, "user:pass", "URL-017b: parse auth");
-} else {
-  console.log("KNOWN GAP [URL-017b]: url.parse does not return auth field");
-  passed++;
-}
+checkEqual(parsed17.auth, "user:pass", "URL-017b: parse auth");
 checkEqual(parsed17.hostname, "example.com", "URL-017c: parse hostname");
 checkEqual(parsed17.port, "8000", "URL-017d: parse port");
 checkEqual(parsed17.pathname, "/foo/bar", "URL-017e: parse pathname");
@@ -250,13 +226,7 @@ var result18b = url.format({
   pathname: "/test",
 });
 check(typeof result18b === "string", "URL-018c: format(obj) returns string");
-// KNOWN GAP: url.format(obj) may default to localhost instead of using hostname
-if (result18b.indexOf("example.com") >= 0) {
-  check(true, "URL-018d: format(obj) includes hostname");
-} else {
-  console.log("KNOWN GAP [URL-018d]: url.format(obj) defaults to localhost — got '" + result18b + "'");
-  passed++;
-}
+checkIncludes(result18b, "example.com", "URL-018d: format(obj) includes hostname");
 
 // ============================================================================
 // URL-019: url.resolve
@@ -271,7 +241,7 @@ checkEqual(url.resolve("http://example.com/one/two/", "three"), "http://example.
 // ============================================================================
 var u20a = new URL("https://example.com/path?q=hello%20world&a=1%2B2");
 checkEqual(u20a.search, "?q=hello%20world&a=1%2B2", "URL-020a: encoded search preserved");
-checkEqual(u20a.searchParams.get("q"), "hello%20world", "URL-020b: searchParams decoded");
+checkEqual(u20a.searchParams.get("q"), "hello world", "URL-020b: searchParams decoded %20");
 
 var u20b = new URL("http://localhost:3000/api");
 checkEqual(u20b.port, "3000", "URL-020c: port");
@@ -293,16 +263,10 @@ checkEqual(u20e.pathname, "/etc/passwd", "URL-020h: file pathname");
 var p21a = url.parse("http://example.com");
 checkEqual(p21a.protocol, "http:", "URL-021a: parse simple URL");
 
-// KNOWN GAP: url.parse returns null for relative URLs in Bao
 var p21b = url.parse("/foo/bar?baz=quux#frag");
-if (p21b !== null) {
-  checkEqual(p21b.pathname, "/foo/bar", "URL-021b: parse pathname-only");
-  checkEqual(p21b.search, "?baz=quux", "URL-021c: parse search-only");
-  checkEqual(p21b.hash, "#frag", "URL-021d: parse hash-only");
-} else {
-  console.log("KNOWN GAP [URL-021b-d]: url.parse returns null for relative URLs");
-  passed += 3;
-}
+checkEqual(p21b.pathname, "/foo/bar", "URL-021b: parse pathname-only");
+checkEqual(p21b.search, "?baz=quux", "URL-021c: parse search-only");
+checkEqual(p21b.hash, "#frag", "URL-021d: parse hash-only");
 
 var p21c = url.parse("file:///etc/passwd");
 checkEqual(p21c.protocol, "file:", "URL-021e: parse file protocol");
@@ -316,12 +280,7 @@ checkEqual(p21d.hostname, "example.com", "URL-021g: parse empty port hostname");
 // ============================================================================
 var sp22 = new URLSearchParams("a=1&b=2");
 var str22 = sp22.toString();
-if (str22 === "a=1&b=2") {
-  checkEqual(str22, "a=1&b=2", "URL-022: toString returns correct string");
-} else {
-  console.log("KNOWN GAP [URL-022]: URLSearchParams.toString() returns '" + str22 + "' (expected 'a=1&b=2')");
-  passed++;
-}
+checkEqual(str22, "a=1&b=2", "URL-022: toString returns correct string");
 
 // ============================================================================
 // URL-023: URLSearchParams empty constructor + operations
@@ -338,15 +297,8 @@ check(sp23.get("x") === null || sp23.get("x") === undefined, "URL-023d: delete t
 // URL-024: URLSearchParams with special characters
 // ============================================================================
 var sp24 = new URLSearchParams("name=hello+world&enc=%40test");
-checkEqual(sp24.get("name"), "hello+world", "URL-024a: plus in value");
-// Bao may or may not decode percent-encoded chars in get()
-var enc24 = sp24.get("enc");
-if (enc24 === "@test") {
-  check(true, "URL-024b: percent-decoded value");
-} else {
-  console.log("KNOWN GAP [URL-024b]: percent-decoding in get() — got '" + enc24 + "'");
-  passed++;
-}
+checkEqual(sp24.get("name"), "hello world", "URL-024a: plus decoded to space");
+checkEqual(sp24.get("enc"), "@test", "URL-024b: percent-decoded value");
 
 // ============================================================================
 // URL-025: url.parse + url.format roundtrip
@@ -363,15 +315,10 @@ for (var i25 = 0; i25 < testUrls25.length; i25++) {
 }
 
 // ============================================================================
-// URL-026: URL.canParse (if available)
+// URL-026: URL.canParse
 // ============================================================================
-if (typeof URL.canParse === "function") {
-  check(URL.canParse("https://example.com"), "URL-026a: canParse valid URL");
-  check(!URL.canParse("not a url"), "URL-026b: canParse invalid URL");
-} else {
-  console.log("SKIP [URL-026]: URL.canParse not available");
-  passed += 2;
-}
+check(URL.canParse("https://example.com"), "URL-026a: canParse valid URL");
+check(!URL.canParse("not a url"), "URL-026b: canParse invalid URL");
 
 console.log("========== Bun Upstream: URL/URLSearchParams ==========");
 console.log("PASSED: " + passed);
