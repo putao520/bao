@@ -415,6 +415,6 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        cache_builtin("https", mod_obj.get());
+        cache_builtin(cx, "https", mod_obj.get());
     }
 }

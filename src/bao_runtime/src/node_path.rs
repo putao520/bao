@@ -50,7 +50,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineProperty3(cx, path_obj.handle(), c"win32".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
     }
 
-    cache_builtin("path", path_obj.get());
+    cache_builtin(cx, "path", path_obj.get());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

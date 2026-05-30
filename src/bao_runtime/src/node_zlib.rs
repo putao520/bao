@@ -273,7 +273,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         libc::free(opts as *mut _);
 
         if !ok || !rval.is_object() {
-            cache_builtin("zlib", mod_obj.get());
+            cache_builtin(cx, "zlib", mod_obj.get());
             return;
         }
 
@@ -300,6 +300,6 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        cache_builtin("zlib", mod_obj.get());
+        cache_builtin(cx, "zlib", mod_obj.get());
     }
 }

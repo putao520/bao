@@ -64,7 +64,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    cache_builtin("crypto", crypto_obj.get());
+    cache_builtin(cx, "crypto", crypto_obj.get());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

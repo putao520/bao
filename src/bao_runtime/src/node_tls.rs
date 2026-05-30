@@ -101,7 +101,7 @@ pub fn install_tls(cx: &mut mozjs::context::JSContext) {
             ptr: &mut js_val,
         };
         if JS::Evaluate2(raw, opts, &mut src, js_h) && js_val.is_object() {
-            cache_builtin("tls", js_val.to_object());
+            cache_builtin(cx, "tls", js_val.to_object());
         }
         libc::free(opts as *mut _);
     }

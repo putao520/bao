@@ -88,7 +88,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, events_obj.handle(), c"listenerCount".as_ptr(), Some(events_static_listener_count), 2, JSPROP_ENUMERATE as u32);
     }
 
-    cache_builtin("events", events_obj.get());
+    cache_builtin(cx, "events", events_obj.get());
 }
 
 const METHODS: &[JSFunctionSpec] = &[

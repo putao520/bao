@@ -24,3 +24,4 @@ base64 = "0.22"
 tiny_http = "0.12"
 tungstenite = { version = "0.26", features = ["native-tls"] }
 flate2 = "1"
+

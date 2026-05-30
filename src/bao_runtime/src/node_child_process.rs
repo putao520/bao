@@ -29,7 +29,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"fork".as_ptr(), Some(cp_fork), 1, JSPROP_ENUMERATE as u32);
 
         w2::JS_DefineProperty3(cx, mod_obj.handle(), c"ChildProcess".as_ptr(), mod_obj.handle(), JSPROP_ENUMERATE as u32);
-        cache_builtin("child_process", mod_obj.get());
+        cache_builtin(cx, "child_process", mod_obj.get());
     }
 }
 

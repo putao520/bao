@@ -80,7 +80,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    cache_builtin("os", os_obj.get());
+    cache_builtin(cx, "os", os_obj.get());
 }
 
 unsafe fn return_string(cx: *mut JSContext, s: &str, args: &CallArgs) { unsafe {

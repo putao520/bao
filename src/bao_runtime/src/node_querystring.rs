@@ -129,6 +129,6 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        cache_builtin("querystring", mod_obj.get());
+        cache_builtin(cx, "querystring", mod_obj.get());
     }
 }

@@ -120,7 +120,7 @@ t.isExternal=function(){return false};
         }
     }
 
-    cache_builtin("util", util_obj.get());
+    cache_builtin(cx, "util", util_obj.get());
 }
 
 pub fn install_assert(cx: &mut mozjs::context::JSContext) {
@@ -177,7 +177,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         if !assert_fn.is_null() {
             let fn_obj = JS_GetFunctionObject(assert_fn);
             if !fn_obj.is_null() {
-                cache_builtin("assert", fn_obj);
+                cache_builtin(cx, "assert", fn_obj);
             }
         }
     }
@@ -189,8 +189,8 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         JS_DefineProperty(cx.raw_cx(), assert_obj.handle().into(), c"strict".as_ptr(), strict_h, JSPROP_ENUMERATE as u32);
     }
 
-    cache_builtin("assert", assert_obj.get());
-    cache_builtin("assert/strict", assert_obj.get());
+    cache_builtin(cx, "assert", assert_obj.get());
+    cache_builtin(cx, "assert/strict", assert_obj.get());
 }
 
 unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {

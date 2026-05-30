@@ -44,7 +44,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         "#).unwrap_or_default();
     }
 
-    cache_builtin("perf_hooks", perf_mod.get());
+    cache_builtin(cx, "perf_hooks", perf_mod.get());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

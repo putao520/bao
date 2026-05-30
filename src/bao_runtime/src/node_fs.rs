@@ -203,7 +203,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    cache_builtin("fs", fs_obj.get());
+    cache_builtin(cx, "fs", fs_obj.get());
 }
 
 // --- Argument helpers ---

@@ -1155,7 +1155,7 @@ unsafe extern "C" fn bun_serve(
                             let mut hasher = Sha1::new();
                             hasher.update(format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", ws_key));
                             let result = hasher.finalize();
-                            base64::engine::general_purpose::STANDARD.encode(result)
+                            base64::engine::general_purpose::STANDARD.encode(&result)
                         };
 
                         // Build and send upgrade response

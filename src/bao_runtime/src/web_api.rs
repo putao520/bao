@@ -10,7 +10,6 @@ use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainO
 use mozjs::conversions::jsstr_to_string;
 
 use base64::Engine;
-
 pub fn install_websocket_constructor(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
@@ -348,7 +347,7 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         return true;
     }
     let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()));
-    match base64::engine::general_purpose::STANDARD.decode(&s) {
+    match base64::engine::general_purpose::STANDARD.decode(s.as_bytes()) {
         Ok(bytes) => {
             let decoded = String::from_utf8_lossy(&bytes);
             let c_str = ::std::ffi::CString::new(decoded.into_owned()).unwrap_or_default();

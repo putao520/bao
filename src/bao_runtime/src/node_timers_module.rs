@@ -41,11 +41,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let prom_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &prom_val };
             JS_DefineProperty(cx.raw_cx(), timers_mod.handle().into(), c"promises".as_ptr(), prom_h, JSPROP_ENUMERATE as u32);
 
-            cache_builtin("timers/promises", promises_obj.get());
+            cache_builtin(cx, "timers/promises", promises_obj.get());
         }
     }
 
-    cache_builtin("timers", timers_mod.get());
+    cache_builtin(cx, "timers", timers_mod.get());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

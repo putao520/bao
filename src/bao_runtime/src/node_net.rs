@@ -332,6 +332,6 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        cache_builtin("net", mod_obj.get());
+        cache_builtin(cx, "net", mod_obj.get());
     }
 }

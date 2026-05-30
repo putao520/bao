@@ -105,6 +105,6 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        cache_builtin("string_decoder", mod_obj.get());
+        cache_builtin(cx, "string_decoder", mod_obj.get());
     }
 }

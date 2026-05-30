@@ -7,6 +7,7 @@
 // REQ-IMPL-05: Phase 5 Integration testing and release (completed)
 pub mod bun_api;
 pub mod fetch_api;
+pub mod gc_store;
 pub mod globals;
 pub mod web_api;
 pub mod node_buffer;

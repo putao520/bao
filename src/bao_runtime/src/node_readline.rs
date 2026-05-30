@@ -35,7 +35,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         "#).unwrap_or_default();
     }
 
-    cache_builtin("readline", rl_mod.get());
+    cache_builtin(cx, "readline", rl_mod.get());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
