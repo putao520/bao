@@ -100,6 +100,13 @@ const METHODS: &[JSFunctionSpec] = &[
         selfHostedName: ::std::ptr::null_mut(),
     },
     JSFunctionSpec {
+        name: JSPropertySpec_Name { string_: b"addListener\0".as_ptr() as *const ::std::os::raw::c_char },
+        call: JSNativeWrapper { op: Some(ee_on), info: ::std::ptr::null_mut() },
+        nargs: 2,
+        flags: JSPROP_ENUMERATE as u16,
+        selfHostedName: ::std::ptr::null_mut(),
+    },
+    JSFunctionSpec {
         name: JSPropertySpec_Name { string_: b"addEventListener\0".as_ptr() as *const ::std::os::raw::c_char },
         call: JSNativeWrapper { op: Some(ee_on), info: ::std::ptr::null_mut() },
         nargs: 2,

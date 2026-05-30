@@ -121,6 +121,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // Async methods
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"readFile".as_ptr(), Some(fs_read_file), 2, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"writeFile".as_ptr(), Some(fs_write_file), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"mkdir".as_ptr(), Some(fs_mkdir), 2, JSPROP_ENUMERATE as u32);
 
         // Constants
         let constants: &[(&str, i32)] = &[
@@ -673,6 +674,86 @@ unsafe extern "C" fn fs_write_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     match fs::write(&path, &bytes) {
         ::std::result::Result::Ok(()) => { args.rval().set(UndefinedValue()); true }
         ::std::result::Result::Err(e) => throw_fs_error(cx, "writeFile", &path, &e),
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_mkdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_fs_write(&path) {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+    let recursive = get_bool_option(cx, &args, 1, "recursive");
+    let result = if recursive { fs::create_dir_all(&path) } else { fs::create_dir(&path) };
+    match result {
+        ::std::result::Result::Ok(()) => {
+            if argc > 1 && (*args.get(argc - 1).ptr).is_object() {
+                let cb = (*args.get(argc - 1).ptr).to_object();
+                let cb_val = mozjs::jsval::ObjectValue(cb);
+                let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
+                let null_args = HandleValueArray::empty();
+                let global = CurrentGlobalOrNull(cx);
+                if !global.is_null() {
+                    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+                    let mut rval = UndefinedValue();
+                    JS_CallFunctionValue(cx, global_h, cb_h, &null_args, MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
+                    });
+                    JS_ClearPendingException(cx);
+                }
+            }
+            args.rval().set(UndefinedValue());
+            true
+        }
+        ::std::result::Result::Err(e) => {
+            if argc > 1 && (*args.get(argc - 1).ptr).is_object() {
+                let cb = (*args.get(argc - 1).ptr).to_object();
+                let cb_val = mozjs::jsval::ObjectValue(cb);
+                let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
+                let err_msg = format!("EACCES: mkdir '{}': {}", path, e);
+                let c_err = CString::new(err_msg).unwrap_or_default();
+                let err_obj = JS_NewPlainObject(cx);
+                if !err_obj.is_null() {
+                    let msg_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
+                    if !msg_str.is_null() {
+                        let msg_val = mozjs::jsval::StringValue(&*msg_str);
+                        let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
+                        JS_DefineProperty(cx,
+                            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj },
+                            c"message".as_ptr() as *const ::std::os::raw::c_char,
+                            msg_h, JSPROP_ENUMERATE as u32);
+                    }
+                    let code_str = JS_NewStringCopyZ(cx, b"EACCES\0".as_ptr() as *const ::std::os::raw::c_char);
+                    if !code_str.is_null() {
+                        let code_val = mozjs::jsval::StringValue(&*code_str);
+                        let code_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &code_val };
+                        JS_DefineProperty(cx,
+                            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj },
+                            c"code".as_ptr() as *const ::std::os::raw::c_char,
+                            code_h, JSPROP_ENUMERATE as u32);
+                    }
+                    let err_val = mozjs::jsval::ObjectValue(err_obj);
+                    let err_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
+                    let err_args = HandleValueArray { length_: 1, elements_: &err_val as *const JSVal };
+                    let global = CurrentGlobalOrNull(cx);
+                    if !global.is_null() {
+                        let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+                        let mut rval = UndefinedValue();
+                        JS_CallFunctionValue(cx, global_h, cb_h, &err_args, MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
+                        });
+                        JS_ClearPendingException(cx);
+                    }
+                }
+                args.rval().set(UndefinedValue());
+                true
+            } else {
+                throw_fs_error(cx, "mkdir", &path, &e)
+            }
+        }
     }
 }
 
