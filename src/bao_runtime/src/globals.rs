@@ -67,6 +67,7 @@ pub unsafe fn install_all(
     crate::node_tls::install_tls(cx);
     install_assert_strict(cx);
     install_file_globals_from_cache(cx, global);
+    install_web_api_constructors(cx, global);
 }
 
 pub fn install_module_global(
@@ -1314,4 +1315,148 @@ unsafe extern "C" fn structured_clone_fn(
 
 pub fn install_assert_strict(cx: &mut mozjs::context::JSContext) {
     crate::require::cache_assert_strict(cx);
+}
+
+pub fn install_web_api_constructors(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    let src = r#"
+var _g = globalThis;
+
+// AbortController + AbortSignal
+if (typeof _g.AbortController === 'undefined') {
+  _g.AbortSignal = function AbortSignal() {
+    this.aborted = false;
+    this.reason = undefined;
+    this._listeners = [];
+  };
+  _g.AbortSignal.prototype.addEventListener = function(type, fn) {
+    if (type === 'abort') this._listeners.push(fn);
+  };
+  _g.AbortSignal.prototype.removeEventListener = function(type, fn) {
+    if (type === 'abort') {
+      var idx = this._listeners.indexOf(fn);
+      if (idx !== -1) this._listeners.splice(idx, 1);
+    }
+  };
+  _g.AbortController = function AbortController() {
+    var signal = new _g.AbortSignal();
+    this.signal = signal;
+    this.abort = function(reason) {
+      signal.aborted = true;
+      signal.reason = reason || new Error('The operation was aborted');
+      for (var i = 0; i < signal._listeners.length; i++) {
+        signal._listeners[i]({ type: 'abort', target: signal });
+      }
+    };
+  };
+}
+
+// Blob
+if (typeof _g.Blob === 'undefined') {
+  _g.Blob = function Blob(parts, options) {
+    this._parts = parts || [];
+    this.type = (options && options.type) || '';
+    this.size = 0;
+    for (var i = 0; i < this._parts.length; i++) {
+      var p = this._parts[i];
+      this.size += (typeof p === 'string') ? p.length : (p && p.length) ? p.length : 0;
+    }
+  };
+  _g.Blob.prototype.arrayBuffer = function() {
+    var total = this.size;
+    var buf = new ArrayBuffer(total);
+    var view = new Uint8Array(buf);
+    var offset = 0;
+    for (var i = 0; i < this._parts.length; i++) {
+      var p = this._parts[i];
+      if (typeof p === 'string') {
+        for (var j = 0; j < p.length; j++) view[offset++] = p.charCodeAt(j);
+      } else if (p instanceof ArrayBuffer) {
+        var arr = new Uint8Array(p);
+        for (var j = 0; j < arr.length; j++) view[offset++] = arr[j];
+      } else if (p && p.buffer instanceof ArrayBuffer) {
+        for (var j = 0; j < p.length; j++) view[offset++] = p[j];
+      }
+    }
+    return Promise.resolve(buf);
+  };
+  _g.Blob.prototype.text = function() {
+    return this.arrayBuffer().then(function(buf) {
+      var arr = new Uint8Array(buf);
+      var s = '';
+      for (var i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
+      return s;
+    });
+  };
+}
+
+// File extends Blob
+if (typeof _g.File === 'undefined') {
+  _g.File = function File(parts, name, options) {
+    _g.Blob.call(this, parts, options);
+    this.name = name || '';
+    this.lastModified = (options && options.lastModified) || Date.now();
+  };
+  _g.File.prototype = Object.create(_g.Blob.prototype);
+  _g.File.prototype.constructor = _g.File;
+}
+
+// FormData
+if (typeof _g.FormData === 'undefined') {
+  _g.FormData = function FormData() {
+    this._data = [];
+  };
+  _g.FormData.prototype.append = function(name, value, filename) {
+    this._data.push({ name: name, value: value, filename: filename });
+  };
+  _g.FormData.prototype.get = function(name) {
+    for (var i = 0; i < this._data.length; i++) {
+      if (this._data[i].name === name) return this._data[i].value;
+    }
+    return null;
+  };
+  _g.FormData.prototype.getAll = function(name) {
+    var result = [];
+    for (var i = 0; i < this._data.length; i++) {
+      if (this._data[i].name === name) result.push(this._data[i].value);
+    }
+    return result;
+  };
+  _g.FormData.prototype.has = function(name) {
+    for (var i = 0; i < this._data.length; i++) {
+      if (this._data[i].name === name) return true;
+    }
+    return false;
+  };
+  _g.FormData.prototype.delete = function(name) {
+    this._data = this._data.filter(function(entry) { return entry.name !== name; });
+  };
+  _g.FormData.prototype.set = function(name, value, filename) {
+    var found = false;
+    for (var i = 0; i < this._data.length; i++) {
+      if (this._data[i].name === name) {
+        if (!found) { this._data[i] = { name: name, value: value, filename: filename }; found = true; }
+        else { this._data.splice(i, 1); i--; }
+      }
+    }
+    if (!found) this._data.push({ name: name, value: value, filename: filename });
+  };
+}
+"#;
+    unsafe {
+        let raw = cx.raw_cx();
+        let mut rval = UndefinedValue();
+        let opts = mozjs::glue::NewCompileOptions(
+            raw,
+            b"web_api_constructors\0".as_ptr() as *const ::std::os::raw::c_char,
+            1,
+        );
+        if !opts.is_null() {
+            let mut src_text = mozjs::rust::transform_str_to_source_text(src);
+            mozjs_sys::jsapi::JS::Evaluate2(raw, opts, &mut src_text, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+            libc::free(opts as *mut _);
+        }
+    }
 }

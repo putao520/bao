@@ -36,6 +36,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createHmac".as_ptr(), Some(crypto_create_hmac), 2, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"randomBytes".as_ptr(), Some(crypto_random_bytes), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"pbkdf2Sync".as_ptr(), Some(crypto_pbkdf2_sync), 5, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"scryptSync".as_ptr(), Some(crypto_scrypt_sync), 5, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"randomUUID".as_ptr(), Some(crypto_random_uuid), 0, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"getRandomValues".as_ptr(), Some(crypto_get_random_values), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createCipheriv".as_ptr(), Some(crypto_create_cipher_iv), 3, JSPROP_ENUMERATE as u32);
@@ -400,6 +401,59 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     }
 
     for (i, &byte) in result.iter().enumerate() {
+        let val = mozjs::jsval::Int32Value(byte as i32);
+        rooted!(&in(cx_ref) let v = val);
+        unsafe { JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32); }
+    }
+
+    args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
+    true
+}
+
+// --- scryptSync ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_scrypt_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 3 {
+        return throw_type_error(cx, "scryptSync() requires (password, salt, keylen)");
+    }
+
+    let password = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s.into_bytes(),
+        None => return throw_type_error(cx, "scryptSync() password must be a string"),
+    };
+    let salt = match arg_to_string(cx, *args.get(1).ptr) {
+        Some(s) => s.into_bytes(),
+        None => return throw_type_error(cx, "scryptSync() salt must be a string"),
+    };
+    let key_len = {
+        let v = *args.get(2).ptr;
+        if v.is_int32() { v.to_int32() as usize } else { return throw_type_error(cx, "scryptSync() keylen must be a number"); }
+    };
+
+    let log_n: u8 = if argc > 3 {
+        let v = *args.get(3).ptr;
+        if v.is_int32() { (v.to_int32() as f64).log2() as u8 } else { 14 }
+    } else { 14 };
+    let params = scrypt::Params::new(log_n, 8, 1, key_len)
+        .unwrap_or_else(|_| scrypt::Params::new(14, 8, 1, key_len).expect("default scrypt params"));
+
+    let mut out = vec![0u8; key_len];
+    if let Err(e) = scrypt::scrypt(&password, &salt, &params, &mut out) {
+        return throw_type_error(cx, &format!("scryptSync() failed: {}", e));
+    }
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let arr = unsafe { w2::NewArrayObject1(cx_ref, out.len()) });
+    if arr.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    for (i, &byte) in out.iter().enumerate() {
         let val = mozjs::jsval::Int32Value(byte as i32);
         rooted!(&in(cx_ref) let v = val);
         unsafe { JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32); }
