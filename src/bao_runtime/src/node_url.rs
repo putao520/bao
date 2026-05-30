@@ -528,7 +528,18 @@ unsafe extern "C" fn sp_append(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     if !key_val.is_string() { args.rval().set(UndefinedValue()); return true; }
     let key = crate::js_to_rust_string(cx, key_val);
     let value = if val_val.is_string() { crate::js_to_rust_string(cx, val_val) } else { String::new() };
-    set_sp_property(cx, this.to_object(), &key, &value);
+    let obj = this.to_object();
+    let Ok(c_key) = CString::new(&*key) else { args.rval().set(UndefinedValue()); return true; };
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut existing = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut existing });
+    let combined = if existing.is_string() {
+        let prev = crate::jsstr_to_rust_string(cx, existing.to_string());
+        format!("{},{}", prev, value)
+    } else {
+        value
+    };
+    set_sp_property(cx, obj, &key, &combined);
     args.rval().set(UndefinedValue());
     true
 }
@@ -614,8 +625,11 @@ unsafe extern "C" fn sp_get_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         if !arr.is_null() { args.rval().set(ObjectValue(arr)); }
     } else {
         let v_str = crate::js_to_rust_string(cx, val);
-        let escaped = v_str.replace('\\', "\\\\").replace('"', "\\\"");
-        let eval_src = format!("[\"{}\"]", escaped);
+        let parts: Vec<String> = v_str.split(',').map(|s| {
+            s.replace('\\', "\\\\").replace('"', "\\\"")
+        }).collect();
+        let items: Vec<String> = parts.iter().map(|s| format!("\"{}\"", s)).collect();
+        let eval_src = format!("[{}]", items.join(","));
         let c_filename = CString::new("<getAll>").unwrap_or_default();
         let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
         if !opts.is_null() {
