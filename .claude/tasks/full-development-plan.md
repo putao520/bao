@@ -255,3 +255,35 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
   - browser_config_tests: 21 单元测试 (BaoConfig/BrowserConfig/PageConfig 验证 + Permission 白名单 + PermissionGuard 沙箱 + BrowserError Display)
   - web_api_tests: 26 断言 (TextEncoder/TextDecoder/atob/btoa/Performance/queueMicrotask/WebSocket/fetch/Response/Request/console/structuredClone)
   - 测试总计: 375 测试通过 (bao_engine 1 + bao_runtime 29 + bao_cdp 191 + cdp-server 56 + bao_stealth 76 + bao_browser 22)
+	- [x] Wave 13: Clippy 全量收敛 + 深度测试扩展
+	  - bao_runtime: 150+ b"...\0" → c"..." literal 替换 (17 文件)
+	  - bao_runtime: 修复 unnecessary to_path_buf, manual prefix stripping, needless_range_loop, question_mark
+	  - bao_cdp: Default impl, EventHandler type alias, for_kv_map, result_unit_err allow
+	  - bao_browser: derivable_impls, unused_variables, Default for BaoServoDelegate
+	  - bao_engine host_fn_tests: 40+ 断言 (console 全方法, Error/TypeError/SyntaxError/RangeError, ES6+ 特性)
+	  - cdp-server edge_case_tests: 18 测试 (CdpMessage 构造, DomainRegistry dispatch, ServerConfig builder, CdpError)
+	  - 所有 Bao crate: 零 clippy warning (剩余 warning 来自 mozjs_sys/servo 上游)
+	  - 测试总计: 394+ (bao_engine 3 + bao_cdp 191 + cdp-server 74 + bao_stealth 76 + bao_browser 22 + bao_runtime ~30)
+	- [x] Wave 14: fetch API + require/timers 集成测试
+	  - fetch_api_tests: 12 断言 (fetch/Response/Request/Headers 构造 + 方法验证)
+	  - require_timers_tests: 22 断言 (require() 18 模块 + 全局 timers API)
+	  - 总计: 382+ 测试函数, 360+ cargo test 通过
+	- [x] Wave 15: gc_store/stealth_http/timers/https/tls/buffer/module 集成测试
+	  - gc_stealth_unit_tests: 3 tests (stealth_http ja3_hash/akamai_fingerprint/ordered_headers + gc_store via require)
+	  - timers_https_tls_tests: 25 assertions (timers + HTTPS + TLS module APIs)
+	  - buffer_module_tests: 20 assertions (Buffer API + module system)
+	- [x] Wave 16: REQ 覆盖率 GAP 修复
+	  - event_loop_module_tests: 34 assertions (REQ-ENG-004 Event Loop + REQ-ENG-005 Module Loader)
+	  - cli_lib_tests: 21 assertions (REQ-CLI-001 process/Bun/Bao + REQ-LIB-003 CDP abstraction)
+	  - browser_runtime_tests: 9 unit tests (REQ-BRW-002/003 + REQ-LIB-001 stealth config/page pool)
+	  - 总计: 398 test functions, 35 test files, 6 crates
+	  - REQ 覆盖: ENG(001-007) + CLI(001) + BRW(001-003) + CDP(001-008) + CDS(001-008) + STL(001-007) + LIB(001-004) 全部有测试关联
+		- [x] Wave 17: REQ-ENG-002 代码生成后端 + 全量测试验证
+		  - bao_engine/src/codegen.rs: .classes.ts 解析器 + SpiderMonkey binding 生成器
+		  - ClassDef/PropertyDef/PropertyKind 类型定义 (Getter/Setter/Accessor/Method/Value)
+		  - parse_classes(): 解析 .classes.ts 格式，支持多行属性块
+		  - generate_bindings(): 生成 JSClass + JSFunctionSpec + JSPropertySpec 代码
+		  - generate_all(): 批量生成
+		  - 5 个嵌入式单元测试 (simple_class/accessor/empty_proto/generate_all/generate_bindings)
+		  - 修复多行属性块解析 bug (name 引号剥离 + block depth 收集)
+		  - bao_engine 测试总计: 6 (5 codegen + 1 engine_core)
