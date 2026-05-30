@@ -404,6 +404,9 @@ unsafe extern "C" fn buffer_from(
         } else if encoding == "base64" {
             use base64::Engine;
             base64::engine::general_purpose::STANDARD.decode(&s).unwrap_or_default()
+        } else if encoding == "base64url" {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&s).unwrap_or_default()
         } else {
             s.as_bytes().to_vec()
         };
@@ -876,7 +879,7 @@ unsafe extern "C" fn buffer_is_encoding(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let valid = ["utf8", "utf-8", "ascii", "latin1", "binary", "base64", "hex", "ucs2", "ucs-2", "utf16le", "utf-16le"];
+    let valid = ["utf8", "utf-8", "ascii", "latin1", "binary", "base64", "base64url", "hex", "ucs2", "ucs-2", "utf16le", "utf-16le"];
     if argc == 0 {
         args.rval().set(mozjs::jsval::BooleanValue(false));
         return true;

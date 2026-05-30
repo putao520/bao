@@ -268,20 +268,61 @@ pub fn install_process_global(
             }
         }
 
-        // process.env
+        // process.env — Proxy-backed for set/delete propagation to std::env
         {
-            rooted!(&in(cx) let env_obj = JS_NewPlainObject(cx));
-            if !env_obj.get().is_null() {
+            JS_DefineFunction(cx, global, c"__bao_setEnv".as_ptr(),
+                Some(set_env_fn), 2, 0);
+            JS_DefineFunction(cx, global, c"__bao_delEnv".as_ptr(),
+                Some(del_env_fn), 1, 0);
+
+            rooted!(&in(cx) let env_target = JS_NewPlainObject(cx));
+            if !env_target.get().is_null() {
                 for (key, value) in ::std::env::vars() {
                     let Ok(c_key) = ::std::ffi::CString::new(key) else { continue };
                     let Ok(c_val) = ::std::ffi::CString::new(value) else { continue };
                     let val_str = JS_NewStringCopyZ(cx.raw_cx(), c_val.as_ptr());
                     if !val_str.is_null() {
                         rooted!(&in(cx) let v = StringValue(&*val_str));
-                        JS_DefineProperty(cx.raw_cx(), env_obj.handle().into(), c_key.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+                        JS_DefineProperty(cx.raw_cx(), env_target.handle().into(), c_key.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
                     }
                 }
-                JS_DefineProperty3(cx, proc_obj.handle(), c"env".as_ptr(), env_obj.handle(), JSPROP_ENUMERATE as u32);
+
+                let proxy_src = r#"__bao_envTarget=>new Proxy(__bao_envTarget,{
+                    set(t,k,v){t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
+                    deleteProperty(t,k){delete t[k];try{__bao_delEnv(String(k))}catch(e){}return true},
+                    get(t,k){const v=t[k];return typeof v==='string'?v:undefined},
+                    has(t,k){return k in t},
+                    ownKeys(t){return Object.keys(t)},
+                    getOwnPropertyDescriptor(t,k){return k in t?{configurable:true,enumerable:true,value:t[k]}:undefined}
+                })"#;
+                let mut src = mozjs::rust::transform_str_to_source_text(proxy_src);
+                let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), b"<env>\0".as_ptr() as *const _, 1);
+                if !opts.is_null() {
+                    let mut rval = UndefinedValue();
+                    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+                    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut src, rval_h);
+                    libc::free(opts as *mut _);
+                    if ok && rval.is_object() {
+                        let handler_fn = rval.to_object();
+                        rooted!(&in(cx) let fn_val = ObjectValue(handler_fn));
+                        rooted!(&in(cx) let args_val = ObjectValue(env_target.get()));
+                        let mut ret = UndefinedValue();
+                        let ret_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ret };
+                        let args_arr = HandleValueArray { length_: 1, elements_: &args_val.get() };
+                        let null_obj = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut::<JSObject>() };
+                        let ok2 = JS_CallFunctionValue(cx.raw_cx(), null_obj, fn_val.handle().into(), &args_arr, ret_h);
+                        if ok2 && ret.is_object() {
+                            rooted!(&in(cx) let env_proxy = ret.to_object());
+                            JS_DefineProperty3(cx, proc_obj.handle(), c"env".as_ptr(), env_proxy.handle(), JSPROP_ENUMERATE as u32);
+                        } else {
+                            JS_DefineProperty3(cx, proc_obj.handle(), c"env".as_ptr(), env_target.handle(), JSPROP_ENUMERATE as u32);
+                        }
+                    } else {
+                        JS_DefineProperty3(cx, proc_obj.handle(), c"env".as_ptr(), env_target.handle(), JSPROP_ENUMERATE as u32);
+                    }
+                } else {
+                    JS_DefineProperty3(cx, proc_obj.handle(), c"env".as_ptr(), env_target.handle(), JSPROP_ENUMERATE as u32);
+                }
             }
         }
 
@@ -2131,4 +2172,40 @@ thread_local! {
 
 pub fn init_process_start() {
     PROCESS_START.with(|s| *s.borrow_mut() = Some(::std::time::Instant::now()));
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn set_env_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 { args.rval().set(UndefinedValue()); return true; }
+    let key_val = *args.get(0).ptr;
+    let val_val = *args.get(1).ptr;
+    if !key_val.is_string() || !val_val.is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, key_val);
+    let value = crate::js_to_rust_string(cx, val_val);
+    if !key.is_empty() && !key.contains('\0') && !value.contains('\0') {
+        ::std::env::set_var(&key, &value);
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn del_env_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 { args.rval().set(UndefinedValue()); return true; }
+    let key_val = *args.get(0).ptr;
+    if !key_val.is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let key = crate::js_to_rust_string(cx, key_val);
+    if !key.is_empty() && !key.contains('\0') {
+        ::std::env::remove_var(&key);
+    }
+    args.rval().set(UndefinedValue());
+    true
 }
