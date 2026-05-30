@@ -296,3 +296,7 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 		  - concurrency_tests: 9 tests (8-thread concurrent dispatch, compute verification, mixed commands, collecting sender thread safety)
 		  - bao_stealth 测试总计: 100 (76 + 24 新)
 		  - cdp-server 测试总计: 83 (74 + 9 新)
+		- [x] Wave 21: JS 引擎 API 边界测试 + clippy 收敛
+		  - js_engine_boundary_tests: 32 assertions (globalThis, type coercion, NaN/null/undefined, number edge cases, String/Array/Object static methods, Date, Math, WeakRef/WeakMap, JSON edge)
+		  - bao_engine clippy: 修复 extract_string_value strip_prefix + collapsible_if allow
+		  - bao_cdp/bao_browser/bao_stealth/cdp-server: 零 clippy warning (上游除外)
