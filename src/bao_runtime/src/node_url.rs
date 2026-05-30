@@ -2,6 +2,7 @@ use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
+use mozjs::glue::JS_GetReservedSlot;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, BooleanValue, ObjectValue, PrivateValue, StringValue, Int32Value};
 use mozjs::rooted;
@@ -188,6 +189,19 @@ const URL_SEARCH_PARAMS_CLASS: JSClass = JSClass {
     oOps: ::std::ptr::null(),
 };
 
+/// Get the UrlState from a URL object's reserved slot.
+unsafe fn get_url_state(obj: *mut JSObject) -> Option<Box<UrlState>> {
+    unsafe {
+        let mut slot = UndefinedValue();
+        JS_GetReservedSlot(obj, SLOT_URL, &mut slot);
+        if slot.is_double() {
+            let ptr = slot.to_private() as *mut UrlState;
+            if !ptr.is_null() { return Some(Box::from_raw(ptr)); }
+        }
+        None
+    }
+}
+
 fn set_url_state(obj: *mut JSObject, state: Box<UrlState>) {
     unsafe {
         let val = PrivateValue(Box::into_raw(state) as *const ::std::os::raw::c_void);
@@ -195,6 +209,7 @@ fn set_url_state(obj: *mut JSObject, state: Box<UrlState>) {
     }
 }
 
+/// Define a read-only string property on a JS object (for origin etc).
 unsafe fn set_string_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str, value: &str) { unsafe {
     let Ok(c_name) = CString::new(name) else { return };
     let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const ::std::os::raw::c_char, value.len());
@@ -206,22 +221,100 @@ unsafe fn set_string_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str, va
     }
 }}
 
-/// Update all URL properties on a JS object from a UrlState.
-/// Called after mutation to keep all properties in sync.
-unsafe fn update_url_props(cx: *mut JSContext, obj: *mut JSObject, state: &UrlState) { unsafe {
+/// Helper: read a string field from UrlState by name.
+fn url_state_get_field(state: &UrlState, field: &str) -> String {
+    match field {
+        "href" => state.href.clone(),
+        "protocol" => state.protocol.clone(),
+        "username" => state.username.clone(),
+        "password" => state.password.clone(),
+        "host" => state.host.clone(),
+        "hostname" => state.hostname.clone(),
+        "port" => state.port.clone(),
+        "pathname" => state.pathname.clone(),
+        "search" => state.search.clone(),
+        "hash" => state.hash.clone(),
+        "origin" => state.origin.clone(),
+        _ => String::new(),
+    }
+}
+
+/// Helper: build a new href by replacing one field in the UrlState.
+fn rebuild_href(state: &UrlState, field: &str, new_val: &str) -> String {
+    let protocol = if field == "protocol" { new_val } else { &state.protocol };
+    let username = if field == "username" { new_val } else { &state.username };
+    let password = if field == "password" { new_val } else { &state.password };
+    let hostname = if field == "hostname" { new_val } else { &state.hostname };
+    let port = if field == "port" { new_val } else { &state.port };
+    let pathname = if field == "pathname" { new_val } else { &state.pathname };
+    let search = if field == "search" { new_val } else { &state.search };
+    let hash = if field == "hash" { new_val } else { &state.hash };
+
+    if field == "href" {
+        return new_val.to_string();
+    }
+
+    let host = if port.is_empty() { hostname.to_string() } else { format!("{}:{}", hostname, port) };
+    let auth = if username.is_empty() {
+        String::new()
+    } else if password.is_empty() {
+        format!("{}@", username)
+    } else {
+        format!("{}:{}@", username, password)
+    };
+
+    if field == "protocol" {
+        format!("{}//{}{}{}{}{}", protocol, auth, host, pathname, search, hash)
+    } else if field == "hostname" || field == "port" || field == "username" || field == "password" {
+        format!("{}//{}{}{}{}{}", protocol, auth, host, pathname, search, hash)
+    } else {
+        format!("{}//{}{}{}{}{}", protocol, auth, host, pathname, search, hash)
+    }
+}
+
+/// Generic URL property setter — modifies UrlState, re-parses, and syncs all properties.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn url_prop_set(cx: *mut JSContext, obj: *mut JSObject, field: &str, new_val: &str) -> bool {
+    let state = match get_url_state(obj) {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let new_href = rebuild_href(&state, field, new_val);
+
+    // Re-parse from the new href
+    let new_state = if let Some(parsed) = parse_url(&new_href, None) {
+        parsed
+    } else {
+        // If re-parse fails, just update the field directly in existing state
+        let mut updated = *state;
+        match field {
+            "href" => updated.href = new_val.to_string(),
+            "protocol" => updated.protocol = new_val.to_string(),
+            "username" => updated.username = new_val.to_string(),
+            "password" => updated.password = new_val.to_string(),
+            "hostname" => updated.hostname = new_val.to_string(),
+            "port" => updated.port = new_val.to_string(),
+            "pathname" => updated.pathname = new_val.to_string(),
+            "search" => updated.search = new_val.to_string(),
+            "hash" => updated.hash = new_val.to_string(),
+            _ => {}
+        }
+        updated
+    };
+
+    // Store updated state — getters will automatically return new values
+    set_url_state(obj, Box::new(new_state));
+
+    // Update the computed read-only properties (host, origin) that don't have getters
+    let updated_state = match get_url_state(obj) {
+        Some(s) => s,
+        None => return true,
+    };
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
     for (name, value) in [
-        ("href", state.href.as_str()),
-        ("protocol", state.protocol.as_str()),
-        ("username", state.username.as_str()),
-        ("password", state.password.as_str()),
-        ("host", state.host.as_str()),
-        ("hostname", state.hostname.as_str()),
-        ("port", state.port.as_str()),
-        ("pathname", state.pathname.as_str()),
-        ("search", state.search.as_str()),
-        ("hash", state.hash.as_str()),
-        ("origin", state.origin.as_str()),
+        ("host", updated_state.host.as_str()),
+        ("origin", updated_state.origin.as_str()),
     ] {
         let Ok(c_name) = CString::new(name) else { continue };
         let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const ::std::os::raw::c_char, value.len());
@@ -231,7 +324,104 @@ unsafe fn update_url_props(cx: *mut JSContext, obj: *mut JSObject, state: &UrlSt
             JS_SetProperty(cx, obj_h, c_name.as_ptr(), val_h);
         }
     }
+    set_url_state(obj, updated_state);
+    true
+}
+
+/// Define a URL property with getter and optional setter.
+/// The getter reads from UrlState; the setter updates UrlState and syncs computed props.
+unsafe fn define_url_prop(cx: *mut JSContext, obj: *mut JSObject, name: &str, _initial_value: &str, getter: JSNative, setter: JSNative) { unsafe {
+    let Ok(c_name) = CString::new(name) else { return };
+
+    let attrs = if setter.is_none() {
+        (JSPROP_ENUMERATE | JSPROP_READONLY) as u32
+    } else {
+        JSPROP_ENUMERATE as u32
+    };
+
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    JS_DefineProperty1(cx, obj_h, c_name.as_ptr(), getter, setter, attrs);
 }}
+
+// Individual getter/setter for each URL property.
+// Each getter reads the UrlState from reserved slot and returns the field.
+// Each setter modifies the field, rebuilds href, re-parses, and syncs.
+
+macro_rules! url_prop_accessors {
+    ($($name:ident => $field:literal),* $(,)?) => {
+        $(
+            #[allow(unsafe_op_in_unsafe_fn)]
+            unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+                let args = CallArgs::from_vp(vp, _argc);
+                let this = args.thisv();
+                if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+                let obj = this.to_object();
+                let state = get_url_state(obj);
+                if let Some(state) = state {
+                    let val = url_state_get_field(&state, $field);
+                    let js_str = JS_NewStringCopyN(cx, val.as_ptr() as *const ::std::os::raw::c_char, val.len());
+                    set_url_state(obj, state);
+                    if !js_str.is_null() {
+                        args.rval().set(StringValue(&*js_str));
+                    } else {
+                        args.rval().set(UndefinedValue());
+                    }
+                } else {
+                    args.rval().set(UndefinedValue());
+                }
+                true
+            }
+        )*
+    };
+}
+
+// Generate getter functions for all URL properties
+url_prop_accessors! {
+    url_get_href => "href",
+    url_get_protocol => "protocol",
+    url_get_username => "username",
+    url_get_password => "password",
+    url_get_host => "host",
+    url_get_hostname => "hostname",
+    url_get_port => "port",
+    url_get_pathname => "pathname",
+    url_get_search => "search",
+    url_get_hash => "hash",
+    url_get_origin => "origin",
+}
+
+macro_rules! url_prop_setters {
+    ($($name:ident => $field:literal),* $(,)?) => {
+        $(
+            #[allow(unsafe_op_in_unsafe_fn)]
+            unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+                let args = CallArgs::from_vp(vp, _argc);
+                let this = args.thisv();
+                if !this.is_object() { return true; }
+                let obj = this.to_object();
+                if _argc == 0 { return true; }
+                let val = *args.get(0).ptr;
+                let new_val = if val.is_string() { crate::js_to_rust_string(cx, val) } else { String::new() };
+                url_prop_set(cx, obj, $field, &new_val);
+                true
+            }
+        )*
+    };
+}
+
+// Generate setter functions for mutable URL properties
+url_prop_setters! {
+    url_set_href => "href",
+    url_set_protocol => "protocol",
+    url_set_username => "username",
+    url_set_password => "password",
+    url_set_hostname => "hostname",
+    url_set_port => "port",
+    url_set_pathname => "pathname",
+    url_set_search => "search",
+    url_set_hash => "hash",
+}
+
 
 unsafe fn url_to_js<'a>(cx: *mut JSContext, state: &UrlState) -> *mut JSObject { unsafe {
     let obj = JS_NewObject(cx, &URL_CLASS);
@@ -239,17 +429,35 @@ unsafe fn url_to_js<'a>(cx: *mut JSContext, state: &UrlState) -> *mut JSObject {
         return obj;
     }
 
-    set_string_prop(cx, obj, "href", &state.href);
-    set_string_prop(cx, obj, "protocol", &state.protocol);
-    set_string_prop(cx, obj, "username", &state.username);
-    set_string_prop(cx, obj, "password", &state.password);
-    set_string_prop(cx, obj, "host", &state.host);
-    set_string_prop(cx, obj, "hostname", &state.hostname);
-    set_string_prop(cx, obj, "port", &state.port);
-    set_string_prop(cx, obj, "pathname", &state.pathname);
-    set_string_prop(cx, obj, "search", &state.search);
-    set_string_prop(cx, obj, "hash", &state.hash);
-    set_string_prop(cx, obj, "origin", &state.origin);
+    // Store UrlState in reserved slot for getter/setter access
+    set_url_state(obj, Box::new(UrlState {
+        href: state.href.clone(),
+        protocol: state.protocol.clone(),
+        username: state.username.clone(),
+        password: state.password.clone(),
+        host: state.host.clone(),
+        hostname: state.hostname.clone(),
+        port: state.port.clone(),
+        pathname: state.pathname.clone(),
+        search: state.search.clone(),
+        hash: state.hash.clone(),
+        origin: state.origin.clone(),
+    }));
+
+    // Define mutable properties with getter/setter
+    define_url_prop(cx, obj, "href", &state.href, Some(url_get_href), Some(url_set_href));
+    define_url_prop(cx, obj, "protocol", &state.protocol, Some(url_get_protocol), Some(url_set_protocol));
+    define_url_prop(cx, obj, "username", &state.username, Some(url_get_username), Some(url_set_username));
+    define_url_prop(cx, obj, "password", &state.password, Some(url_get_password), Some(url_set_password));
+    define_url_prop(cx, obj, "hostname", &state.hostname, Some(url_get_hostname), Some(url_set_hostname));
+    define_url_prop(cx, obj, "port", &state.port, Some(url_get_port), Some(url_set_port));
+    define_url_prop(cx, obj, "pathname", &state.pathname, Some(url_get_pathname), Some(url_set_pathname));
+    define_url_prop(cx, obj, "search", &state.search, Some(url_get_search), Some(url_set_search));
+    define_url_prop(cx, obj, "hash", &state.hash, Some(url_get_hash), Some(url_set_hash));
+
+    // host and origin are computed from other fields, read-only with getter only
+    define_url_prop(cx, obj, "host", &state.host, Some(url_get_host), None);
+    define_url_prop(cx, obj, "origin", &state.origin, Some(url_get_origin), None);
 
     // searchParams — create a URLSearchParams object with get/has/toString
     {

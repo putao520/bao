@@ -25,7 +25,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     unsafe {
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"spawn".as_ptr(), Some(cp_spawn), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"exec".as_ptr(), Some(cp_exec), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"execFile".as_ptr(), Some(cp_exec_file), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"execSync".as_ptr(), Some(cp_exec_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"execFileSync".as_ptr(), Some(cp_exec_file_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"spawnSync".as_ptr(), Some(cp_spawn_sync), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"fork".as_ptr(), Some(cp_fork), 1, JSPROP_ENUMERATE as u32);
 
         w2::JS_DefineProperty3(cx, mod_obj.handle(), c"ChildProcess".as_ptr(), mod_obj.handle(), JSPROP_ENUMERATE as u32);
@@ -433,6 +436,290 @@ unsafe extern "C" fn cp_exec_sync(
             let c_msg = CString::new(msg).unwrap_or_default();
             JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
             return false;
+        }
+    }
+    true
+}
+
+/// @trace REQ-ENG-007 child_process.execFile — async version, spawns child and returns ChildProcess object
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cp_exec_file(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, b"child_process.execFile requires a file path\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let file_val = *args.get(0).ptr;
+    if !file_val.is_string() {
+        JS_ReportErrorUTF8(cx, b"child_process.execFile requires a string file path\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+
+    let file_path = crate::js_to_rust_string(cx, file_val);
+
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+
+    let mut cmd = ::std::process::Command::new(&file_path);
+    if argc > 1 {
+        let args_val = *args.get(1).ptr;
+        if args_val.is_object() {
+            let args_obj = args_val.to_object();
+            let args_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &args_obj };
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(cx, args_obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            if len_val.is_int32() {
+                let len = len_val.to_int32() as u32;
+                for i in 0..len {
+                    let mut elem = UndefinedValue();
+                    JS_GetElement(cx, args_obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                    if elem.is_string() {
+                        cmd.arg(crate::js_to_rust_string(cx, elem));
+                    }
+                }
+            }
+        }
+    }
+
+    match cmd.stdout(::std::process::Stdio::piped()).stderr(::std::process::Stdio::piped()).spawn() {
+        Ok(child) => {
+            CHILD_PROCS.with(|cp| {
+                cp.borrow_mut().push(Box::into_raw(Box::new(child)) as *mut ::std::process::Child);
+            });
+            let child_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+            if child_obj.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let child_r = child_obj);
+            w2::JS_DefineFunction(cx_ref, child_r.handle(), c"wait".as_ptr(), Some(cp_child_wait), 0, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx_ref, child_r.handle(), c"kill".as_ptr(), Some(cp_child_kill), 0, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx_ref, child_r.handle(), c"stdout".as_ptr(), Some(cp_child_read_stdout), 0, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx_ref, child_r.handle(), c"stderr".as_ptr(), Some(cp_child_read_stderr), 0, JSPROP_ENUMERATE as u32);
+            args.rval().set(ObjectValue(child_obj));
+        }
+        Err(e) => {
+            let msg = format!("execFile failed: {}", e);
+            let c_msg = CString::new(msg).unwrap_or_default();
+            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            return false;
+        }
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cp_exec_file_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, b"child_process.execFileSync requires a file path\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let file_val = *args.get(0).ptr;
+    if !file_val.is_string() {
+        JS_ReportErrorUTF8(cx, b"child_process.execFileSync requires a string file path\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let file_path = crate::js_to_rust_string(cx, file_val);
+
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+
+    let mut cmd = ::std::process::Command::new(&file_path);
+    // Parse args from second argument (array of strings)
+    if argc > 1 {
+        let args_val = *args.get(1).ptr;
+        if args_val.is_object() {
+            let args_obj = args_val.to_object();
+            let args_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &args_obj };
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(cx, args_obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            if len_val.is_int32() {
+                let len = len_val.to_int32() as u32;
+                for i in 0..len {
+                    let mut elem = UndefinedValue();
+                    JS_GetElement(cx, args_obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                    if elem.is_string() {
+                        cmd.arg(crate::js_to_rust_string(cx, elem));
+                    }
+                }
+            } else if args_val.is_string() {
+                // Single string argument
+                cmd.arg(crate::js_to_rust_string(cx, args_val));
+            }
+        } else if args_val.is_string() {
+            cmd.arg(crate::js_to_rust_string(cx, args_val));
+        }
+    }
+
+    match cmd
+        .stdout(::std::process::Stdio::piped())
+        .stderr(::std::process::Stdio::piped())
+        .output()
+    {
+        Ok(out) => {
+            let stdout_str = String::from_utf8_lossy(&out.stdout).into_owned();
+            if !out.status.success() {
+                let stderr_str = String::from_utf8_lossy(&out.stderr).into_owned();
+                let msg = format!("execFileSync failed with status {}: {}", out.status.code().unwrap_or(-1), stderr_str);
+                let c_msg = CString::new(msg).unwrap_or_default();
+                JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+                return false;
+            }
+            if let Ok(c_out) = CString::new(stdout_str.as_str()) {
+                let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
+                if !js_str.is_null() {
+                    args.rval().set(StringValue(&*js_str));
+                    return true;
+                }
+            }
+            args.rval().set(UndefinedValue());
+        }
+        Err(e) => {
+            let msg = format!("execFileSync failed: {}", e);
+            let c_msg = CString::new(msg).unwrap_or_default();
+            JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+            return false;
+        }
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cp_spawn_sync(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    // Wrap raw pointer for rooted! macro
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(cx)
+    );
+    let cx_ref = &mut wrapped_cx;
+
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, b"child_process.spawnSync requires a command\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let cmd_val = *args.get(0).ptr;
+    if !cmd_val.is_string() {
+        JS_ReportErrorUTF8(cx, b"child_process.spawnSync requires a string command\0".as_ptr() as *const ::std::os::raw::c_char);
+        return false;
+    }
+    let command = crate::js_to_rust_string(cx, cmd_val);
+
+    if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
+        let c_msg = CString::new(e).unwrap_or_default();
+        JS_ReportErrorUTF8(cx, b"%s\0".as_ptr() as *const ::std::os::raw::c_char, c_msg.as_ptr());
+        return false;
+    }
+
+    let mut cmd = ::std::process::Command::new(&command);
+    // Parse args from second argument
+    if argc > 1 {
+        let args_val = *args.get(1).ptr;
+        if args_val.is_object() {
+            let args_obj = args_val.to_object();
+            let args_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &args_obj };
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(cx, args_obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            if len_val.is_int32() {
+                let len = len_val.to_int32() as u32;
+                for i in 0..len {
+                    let mut elem = UndefinedValue();
+                    JS_GetElement(cx, args_obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                    if elem.is_string() {
+                        cmd.arg(crate::js_to_rust_string(cx, elem));
+                    }
+                }
+            }
+        }
+    }
+
+    match cmd
+        .stdout(::std::process::Stdio::piped())
+        .stderr(::std::process::Stdio::piped())
+        .output()
+    {
+        Ok(out) => {
+            let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+            if result_obj.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+            let result_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &result_obj };
+
+            let status = Int32Value(out.status.code().unwrap_or(-1));
+            rooted!(&in(cx_ref) let sv = status);
+            JS_DefineProperty(cx, result_h, c"status".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
+
+            let stdout_str = String::from_utf8_lossy(&out.stdout).into_owned();
+            if let Ok(c_out) = CString::new(stdout_str.as_str()) {
+                let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
+                if !js_str.is_null() {
+                    let out_val = StringValue(&*js_str);
+                    rooted!(&in(cx_ref) let ov = out_val);
+                    JS_DefineProperty(cx, result_h, c"stdout".as_ptr(), ov.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+            }
+
+            let stderr_str = String::from_utf8_lossy(&out.stderr).into_owned();
+            if let Ok(c_err) = CString::new(stderr_str.as_str()) {
+                let js_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
+                if !js_str.is_null() {
+                    let err_val = StringValue(&*js_str);
+                    rooted!(&in(cx_ref) let ev = err_val);
+                    JS_DefineProperty(cx, result_h, c"stderr".as_ptr(), ev.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+            }
+
+            let pid = Int32Value(0);
+            rooted!(&in(cx_ref) let pv = pid);
+            JS_DefineProperty(cx, result_h, c"pid".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
+
+            let err_val = NullValue();
+            rooted!(&in(cx_ref) let erv = err_val);
+            JS_DefineProperty(cx, result_h, c"error".as_ptr(), erv.handle().into(), JSPROP_ENUMERATE as u32);
+
+            args.rval().set(ObjectValue(result_obj));
+        }
+        Err(e) => {
+            let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+            if result_obj.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+            let result_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &result_obj };
+            let err_msg = format!("{}", e);
+            if let Ok(c_err) = CString::new(err_msg) {
+                let js_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
+                if !js_str.is_null() {
+                    let err_val = StringValue(&*js_str);
+                    rooted!(&in(cx_ref) let ev = err_val);
+                    JS_DefineProperty(cx, result_h, c"error".as_ptr(), ev.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+            }
+            let status = Int32Value(-1);
+            rooted!(&in(cx_ref) let sv = status);
+            JS_DefineProperty(cx, result_h, c"status".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
+            args.rval().set(ObjectValue(result_obj));
         }
     }
     true

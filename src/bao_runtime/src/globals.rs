@@ -56,6 +56,9 @@ pub unsafe fn install_all(
     crate::node_dns::install(cx);
     crate::node_buffer::install(cx);
     crate::node_string_decoder::install(cx);
+    crate::node_tty::install(cx);
+    crate::node_vm::install(cx);
+    crate::node_module::install(cx);
     crate::node_querystring::install(cx);
     crate::web_api::install_web_encodings(cx, global);
     crate::web_api::install_atob_btoa(cx, global);

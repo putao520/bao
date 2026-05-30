@@ -119,6 +119,27 @@ unsafe extern "C" fn require_fn(
         }
     }
 
+    // process is a global — return it directly for require("process") / require("node:process")
+    if builtin_key == "process" {
+        let global = JS::CurrentGlobalOrNull(cx);
+        if !global.is_null() {
+            let mut val = mozjs::jsval::UndefinedValue();
+            let c_prop = CString::new("process").unwrap_or_default();
+            unsafe {
+                JS_GetProperty(
+                    cx,
+                    Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+                    c_prop.as_ptr(),
+                    MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val },
+                );
+            }
+            if val.is_object() {
+                args.rval().set(val);
+                return true;
+            }
+        }
+    }
+
     let base_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
 
     let resolved = match resolve_specifier(&specifier, base_dir.as_deref()) {

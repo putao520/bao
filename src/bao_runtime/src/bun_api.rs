@@ -617,6 +617,12 @@ pub fn install_process_global(
         JS_DefineFunction(cx, proc_obj.handle(), c"off".as_ptr(), Some(process_noop), 2, JSPROP_ENUMERATE as u32);
         JS_DefineFunction(cx, proc_obj.handle(), c"removeListener".as_ptr(), Some(process_noop), 2, JSPROP_ENUMERATE as u32);
         JS_DefineFunction(cx, proc_obj.handle(), c"removeAllListeners".as_ptr(), Some(process_noop), 0, JSPROP_ENUMERATE as u32);
+
+        // Cache process object for require("process") / require("node:process")
+        let proc_ptr = proc_obj.get();
+        if !proc_ptr.is_null() {
+            crate::require::cache_builtin(cx, "process", proc_ptr);
+        }
     }
 }
 
