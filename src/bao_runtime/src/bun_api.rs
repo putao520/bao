@@ -420,6 +420,16 @@ pub fn install_process_global(
                     rooted!(&in(cx) let v = StringValue(&*rust_ver));
                     JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"rust".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
                 }
+                let bun_alias = JS_NewStringCopyZ(cx.raw_cx(), b"0.1.0\0".as_ptr() as *const ::std::os::raw::c_char);
+                if !bun_alias.is_null() {
+                    rooted!(&in(cx) let v = StringValue(&*bun_alias));
+                    JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"bun".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+                let openssl_ver = JS_NewStringCopyZ(cx.raw_cx(), b"3.0.0\0".as_ptr() as *const ::std::os::raw::c_char);
+                if !openssl_ver.is_null() {
+                    rooted!(&in(cx) let v = StringValue(&*openssl_ver));
+                    JS_DefineProperty(cx.raw_cx(), ver_obj.handle().into(), c"openssl".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
+                }
                 JS_DefineProperty3(cx, proc_obj.handle(), c"versions".as_ptr(), ver_obj.handle(), JSPROP_ENUMERATE as u32);
             }
         }
@@ -507,8 +517,19 @@ pub fn install_process_global(
             }
         }
 
-        // process.hrtime()
-        JS_DefineFunction(cx, proc_obj.handle(), c"hrtime".as_ptr(), ::std::option::Option::Some(process_hrtime), 0, JSPROP_ENUMERATE as u32);
+        // process.hrtime() + hrtime.bigint
+        let hrtime_fn = JS_DefineFunction(cx, proc_obj.handle(), c"hrtime".as_ptr(), ::std::option::Option::Some(process_hrtime), 0, JSPROP_ENUMERATE as u32);
+        if !hrtime_fn.is_null() {
+            let hrtime_obj = JS_GetFunctionObject(hrtime_fn);
+            let bigint_fn = JS_NewFunction(cx.raw_cx(), Some(hrtime_bigint), 0, 0, c"bigint".as_ptr());
+            if !bigint_fn.is_null() {
+                let bigint_obj = JS_GetFunctionObject(bigint_fn);
+                let bigint_val = ObjectValue(bigint_obj);
+                let bigint_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &bigint_val };
+                let hrtime_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &hrtime_obj };
+                JS_DefineProperty(cx.raw_cx(), hrtime_h, c"bigint".as_ptr(), bigint_h, JSPROP_ENUMERATE as u32);
+            }
+        }
 
         // process.uptime()
         JS_DefineFunction(cx, proc_obj.handle(), c"uptime".as_ptr(), ::std::option::Option::Some(process_uptime), 0, JSPROP_ENUMERATE as u32);
