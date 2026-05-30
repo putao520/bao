@@ -164,14 +164,14 @@ fn parse_block_properties(source: &str, block_name: &str) -> Vec<PropertyDef> {
     props
 }
 
+#[allow(clippy::collapsible_if)]
 fn extract_string_value(source: &str, key: &str) -> String {
     let pattern = format!("{}:", key);
     if let Some(pos) = source.find(&pattern) {
-        let rest = &source[pos + pattern.len()..];
-        let rest = rest.trim();
-        if rest.starts_with('"') {
-            if let Some(end) = rest[1..].find('"') {
-                return rest[1..end + 1].to_string();
+        let rest = source[pos + pattern.len()..].trim();
+        if let Some(quoted) = rest.strip_prefix('"') {
+            if let Some(end) = quoted.find('"') {
+                return quoted[..end].to_string();
             }
         }
     }
