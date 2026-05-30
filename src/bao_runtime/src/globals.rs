@@ -14,7 +14,6 @@ use digest::Digest;
 
 thread_local! {
     static FILE_GLOBALS: RefCell<(Option<String>, Option<String>)> = RefCell::new((None, None));
-    static BUFFER_PROTOTYPE: RefCell<Option<*mut JSObject>> = RefCell::new(None);
 }
 
 use ::std::cell::RefCell;
@@ -198,9 +197,19 @@ pub fn install_buffer_global(
             let proto_val = ObjectValue(buf_proto.get());
             let proto_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &proto_val };
             JS_DefineProperty(cx.raw_cx(), buf_root.handle().into(), c"prototype".as_ptr(), proto_h, 0u32);
-            BUFFER_PROTOTYPE.with(|bp| { *bp.borrow_mut() = Some(buf_proto.get()); });
-        }
-    }
+
+            // Register native methods on prototype (shared by all instances)
+            JS_DefineFunction(cx, buf_proto.handle(), c"toString".as_ptr(),
+                Some(buffer_to_string), 0, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx, buf_proto.handle(), c"slice".as_ptr(),
+                Some(buffer_slice), 2, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx, buf_proto.handle(), c"copy".as_ptr(),
+                Some(buffer_copy), 1, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx, buf_proto.handle(), c"equals".as_ptr(),
+                Some(buffer_equals), 1, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx, buf_proto.handle(), c"indexOf".as_ptr(),
+                Some(buffer_index_of), 1, JSPROP_ENUMERATE as u32);
+        }    }
 
     // Inject Buffer prototype methods via JS eval
     let proto_src = r#"
@@ -391,13 +400,30 @@ pub fn install_buffer_global(
 
 /// Set Buffer.prototype as the prototype of a newly created buffer object.
 unsafe fn set_buffer_proto(cx: *mut JSContext, obj: *mut JSObject) {
-    BUFFER_PROTOTYPE.with(|bp| {
-        if let Some(proto) = *bp.borrow() {
-            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-            let proto_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &proto };
-            let _ = JS_SetPrototype(cx, obj_h, proto_h);
-        }
-    });
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return;
+    }
+    let cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let global_root = global);
+    let mut buffer_val = UndefinedValue();
+    let buffer_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_val };
+    JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), buffer_h);
+    if !buffer_val.is_object() {
+        return;
+    }
+    let buffer_obj = buffer_val.to_object();
+    rooted!(&in(cx_ref) let buffer_root = buffer_obj);
+    let mut proto_val = UndefinedValue();
+    let proto_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val };
+    JS_GetProperty(cx, buffer_root.handle().into(), c"prototype".as_ptr(), proto_h);
+    if !proto_val.is_object() {
+        return;
+    }
+    let proto_obj = proto_val.to_object();
+    rooted!(&in(cx_ref) let proto_root = proto_obj);
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let _ = JS_SetPrototype(cx, obj_h, proto_root.handle().into());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -548,70 +574,29 @@ unsafe fn create_buffer_from_bytes(
     args: &CallArgs,
     bytes: &[u8],
 ) -> bool {
-    let buf_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-    if buf_obj.is_null() {
+    let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let raw_obj = JS_NewPlainObject(&mut cx_ref);
+    if raw_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    set_buffer_proto(cx, buf_obj);
+    rooted!(&in(cx_ref) let buf_obj = raw_obj);
+    set_buffer_proto(cx, buf_obj.get());
 
-    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &buf_obj };
+    let obj_handle = buf_obj.handle().into();
 
-    let length_val = Int32Value(bytes.len() as i32);
-    let length_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &length_val };
-    JS_DefineProperty(cx, obj_handle, c"length".as_ptr(), length_handle, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let length_val = Int32Value(bytes.len() as i32));
+    JS_DefineProperty(cx, obj_handle, c"length".as_ptr(), length_val.handle().into(), JSPROP_ENUMERATE as u32);
 
-    let marker_val = Int32Value(1);
-    let marker_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &marker_val };
-    JS_DefineProperty(cx, obj_handle, c"_isBuffer".as_ptr(), marker_handle, 0);
+    rooted!(&in(cx_ref) let is_buf = BooleanValue(true));
+    JS_DefineProperty(cx, obj_handle, c"_isBuffer".as_ptr(), is_buf.handle().into(), 0u32);
 
     for (i, &byte) in bytes.iter().enumerate() {
-        let val = Int32Value(byte as i32);
-        let val_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-        JS_DefineElement(cx, obj_handle, i as u32, val_handle, JSPROP_ENUMERATE as u32);
+        rooted!(&in(cx_ref) let val = Int32Value(byte as i32));
+        JS_DefineElement(cx, obj_handle, i as u32, val.handle().into(), JSPROP_ENUMERATE as u32);
     }
 
-    let to_string_fn = JS_NewFunction(cx, Some(buffer_to_string), 0, 0, c"toString".as_ptr());
-    if !to_string_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(to_string_fn);
-        let fn_val = mozjs::jsval::ObjectValue(fn_ptr);
-        let fn_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
-        JS_DefineProperty(cx, obj_handle, c"toString".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
-    }
-
-    let slice_fn = JS_NewFunction(cx, Some(buffer_slice), 2, 0, c"slice".as_ptr());
-    if !slice_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(slice_fn);
-        let fn_val = mozjs::jsval::ObjectValue(fn_ptr);
-        let fn_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
-        JS_DefineProperty(cx, obj_handle, c"slice".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
-    }
-
-    let copy_fn = JS_NewFunction(cx, Some(buffer_copy), 1, 0, c"copy".as_ptr());
-    if !copy_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(copy_fn);
-        let fn_val = mozjs::jsval::ObjectValue(fn_ptr);
-        let fn_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
-        JS_DefineProperty(cx, obj_handle, c"copy".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
-    }
-
-    let equals_fn = JS_NewFunction(cx, Some(buffer_equals), 1, 0, c"equals".as_ptr());
-    if !equals_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(equals_fn);
-        let fn_val = mozjs::jsval::ObjectValue(fn_ptr);
-        let fn_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
-        JS_DefineProperty(cx, obj_handle, c"equals".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
-    }
-
-    let indexof_fn = JS_NewFunction(cx, Some(buffer_index_of), 1, 0, c"indexOf".as_ptr());
-    if !indexof_fn.is_null() {
-        let fn_ptr = JS_GetFunctionObject(indexof_fn);
-        let fn_val = mozjs::jsval::ObjectValue(fn_ptr);
-        let fn_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
-        JS_DefineProperty(cx, obj_handle, c"indexOf".as_ptr(), fn_handle, JSPROP_ENUMERATE as u32);
-    }
-
-    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+    args.rval().set(ObjectValue(buf_obj.get()));
     true
 }
 
@@ -701,7 +686,7 @@ unsafe extern "C" fn buffer_is_buffer(
     let mut marker = UndefinedValue();
     let marker_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut marker };
     JS_GetProperty(_cx, obj_handle, c"_isBuffer".as_ptr(), marker_handle);
-    args.rval().set(mozjs::jsval::BooleanValue(marker.is_int32() && marker.to_int32() == 1));
+    args.rval().set(mozjs::jsval::BooleanValue(marker.is_boolean() && marker.to_boolean()));
     true
 }
 
