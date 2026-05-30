@@ -371,3 +371,75 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 		  - stealth_edge_case_tests: 28 tests (CanvasNoise/BehaviorSimulator/StealthProfile 边界值, Debug traits, 跨 profile 一致性)
 		  - 发现: default_engine() 用 Firefox (非 Chrome)
 		  - SPEC: 零 ERROR, 2 WARNING (path param), 成熟度 60% (工具限制)
+		- [x] Wave 37: E1 codegen 后端增强 (REQ-ENG-002)
+		  - bao_engine codegen.rs: parse_classes 支持 accessor/getter/setter/klass static props
+		  - generate_bindings: constructor/finalize/function_specs/property_specs 生成
+		  - generate_module: 批量模块文件生成 + init 函数
+		  - 34 codegen_boundary_tests 通过
+		- [x] Wave 38: bao_engine 深度测试 — codegen 完整性 + engine 边界值
+		  - 82 bao_engine tests 通过 (17+34+30+1)
+		- [x] Wave 39: bao_cdp 全链路压力测试 + 错误恢复
+		  - stress_recovery_tests: 53 tests (并发 session, 错误恢复, bridge channel 压力)
+		- [x] Wave 40: bao_browser 渲染管线完整性 + PageHandle 生命周期
+		  - page_lifecycle_tests: 27 tests (PageState/BrowserError/Screenshot/PermissionGuard/BaoConfig)
+		  - JPEG Rgba→Rgb 编码 bug 修复
+		- [x] Wave 41: cdp-server JSON-RPC 协议合规
+		  - protocol_compliance_tests: 44 tests (CdpMessage 反序列化 16 种边界, CdpResponse/CdpEvent/CdpError 序列化, TargetInfo roundtrip, DomainRegistry 完整 dispatch, ServerConfig builder)
+		- [x] Wave 42: bao_runtime 边界测试
+		  - rust_boundary_tests: 28 tests (permission_bridge 全面覆盖 + stealth_http JA3/Akamai 纯函数)
+		- [x] Wave 43: bao_cdp ↔ cdp-server 集成 + CdpRouter 端到端
+		  - router_lifecycle_tests: 34 tests (CdpRouter 生命周期 + CDPServer 构造 + Bridge channel)
+		- [x] Wave 44: codegen 后端增强 + 深度边界测试
+		  - 34 codegen_boundary_tests (accessor/klass/generate_bindings/generate_module/generate_all/PropertyKind/ClassDef flags)
+		- [x] Wave 45: 跨 crate 类型兼容 + API 一致性测试
+		  - cross_crate_compat_tests: 23 tests (BaoConfig↔StealthProfile, PermissionGuard, CdpMessage/CdpError/TargetInfo 跨 crate, DomainRegistry dispatch, CdpRouter backend, BridgeCommand variants, ScreenshotFormat)
+		- [x] Wave 46: StealthEngine 集成 + cdp-server API 边界
+		  - stealth_engine_integration_tests: 27 tests (engine lifecycle, JS injection, canvas noise, behavior sim, profile completeness, cross-component consistency)
+		  - server_api_boundary_tests: 28 tests (CdpServer config, ws_url, TargetInfo serialization, multi-domain dispatch, full CDP roundtrip)
+		- [x] Wave 47: bao_cdp domain handler stress tests
+		  - domain_stress_tests: 30 tests (rapid enable/disable cycling, mixed domain interleaved, multi-session parallel, unknown command resilience, boundary params, session lifecycle stress)
+		- [x] Wave 48: TLS/HTTP2 fingerprint deep validation
+		  - fingerprint_deep_tests: 41 tests (JA3/JA4 computation, cipher suite classification, ALPN, Chrome-latest features, Akamai HTTP/2 fingerprint, header ordering, profile↔standalone consistency)
+		- [x] Wave 49: 全量回归 + clippy 收敛
+		  - 1067 tests pass, 0 failed
+		  - Clippy: 零 error
+		  - Cargo.toml: bao_browser 添加 cdp-server dev-dependency
+
+### 当前状态 (2026-05-31)
+| 指标 | 数值 |
+|------|------|
+| 总测试 | 1550 |
+| bao_engine | 122 |
+| bao_browser | 245 |
+| bao_cdp | 539 |
+| bao_stealth | 344 |
+| cdp-server | 300 |
+| Clippy | 零 error |
+| SPEC | 零 ERROR, 2 WARNING |
+
+### 下一步：Phase 2 深入实现
+- E1 (REQ-ENG-002): codegen 后端已实现，需验证与 .classes.ts 真实文件的兼容性
+- E5 (REQ-BRW-003): JSContext 融合评估需架构决策
+- E6/E7 (REQ-STL-001/002): TLS/HTTP2 指纹注入被上游 bun_http 编译阻塞
+- Phase 1 (删除手写轮子): 被上游 bun_* 编译阻塞
+		- [x] Wave 50: bao_runtime API 边界测试
+		  - runtime_api_boundary_tests: 34 tests (require_dir, permission_bridge, stealth_http, resolve_node_modules)
+		- [x] Wave 51: bao_engine + bao_stealth 深度测试扩展
+		  - webgl_audio_screen_deep_tests: 57 tests (WebGL/Audio/Canvas/Screen/Navigator)
+		  - codegen_edge_case_tests: 40 tests (parse/generate/roundtrip edge cases)
+		- [x] Wave 52: bao_cdp bridge channel + cdp-server registry
+		  - bridge_channel_deep_tests: 41 tests (all BridgeCommand variants, timeout, concurrent)
+		  - registry_advanced_tests: 18 tests (session lifecycle, thread safety, has_domain)
+		- [x] Wave 53: bao_browser permission/screenshot/error
+		  - permission_screenshot_error_tests: 45 tests (Permission, PermissionGuard, Screenshot, BrowserError)
+			- [x] Wave 54: bao_cdp protocol 全链路深度测试
+			  - protocol_message_deep_tests: 186 tests (CDPMessage 解析边界、12 domain 无 bridge 调度、serialize roundtrip、clone/debug、错误码)
+			- [x] Wave 55: bao_stealth behavior + cdp-server broadcaster 深度测试
+			  - behavior_deep_tests: 38 tests (mouse path geometry、typing delay ranges、scroll delta physics、seed 稳定性)
+			  - protocol_broadcaster_deep_tests: 45 tests (CdpMessage/CdpResponse/CdpError/CdpEvent、SessionState、ServerConfig builder、EventBroadcaster、DomainRegistry lifecycle、TargetInfo)
+			- [x] Wave 56: bao_browser config/pool/state 深度测试
+			  - config_pool_stats_deep_tests: 28 tests (BaoConfig 验证边界、PageConfig/BrowserConfig defaults、BrowserConfig→BaoConfig 转换、PageState 5 变体)
+			- [x] Wave 57: 全量回归 + clippy + 计划更新
+			  - 1550 tests pass, 0 failed
+			  - Clippy: 零 error（仅上游 mozjs warning）
+			  - 计划文件更新至当前状态
