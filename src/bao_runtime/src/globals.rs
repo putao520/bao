@@ -65,6 +65,7 @@ pub unsafe fn install_all(
     crate::node_perf_hooks::install(cx);
     crate::node_timers_module::install(cx);
     crate::node_readline::install(cx);
+    crate::node_tls::install_tls(cx);
     install_assert_strict(cx);
     install_file_globals_from_cache(cx, global);
 }

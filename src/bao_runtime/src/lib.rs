@@ -27,6 +27,7 @@ pub mod permission_bridge;
 pub mod node_stream;
 pub mod node_string_decoder;
 pub mod node_timers_module;
+pub mod node_tls;
 pub mod node_url;
 pub mod node_util;
 pub mod node_zlib;
