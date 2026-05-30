@@ -269,8 +269,34 @@ unsafe fn get_event_name(cx: *mut JSContext, args: &CallArgs) -> Option<String> 
 unsafe fn get_callback(args: &CallArgs) -> Option<*mut JSObject> { unsafe {
     if args.argc_ < 2 { return None; }
     let val = *args.get(1).ptr;
-    if val.is_object() { Some(val.to_object()) } else { None }
+    if val.is_object() {
+        let obj = val.to_object();
+        if mozjs_sys::jsapi::js::IsFunctionObject(obj) {
+            return Some(obj);
+        }
+    }
+    None
 }}
+
+unsafe fn is_function(obj: *mut JSObject) -> bool {
+    mozjs_sys::jsapi::js::IsFunctionObject(obj)
+}
+
+unsafe fn js_same_value(cx: *mut JSContext, a: JSVal, b: JSVal) -> bool {
+    let mut same = false;
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let av = a);
+    rooted!(&in(wrapped_cx) let bv = b);
+    w2::SameValue(&wrapped_cx, av.handle(), bv.handle(), &mut same);
+    same
+}
+
+fn throw_type_error(cx: *mut JSContext, msg: &str) {
+    unsafe {
+        let c_msg = CString::new(msg).unwrap_or_default();
+        JS_ReportErrorASCII(cx, c_msg.as_ptr());
+    }
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn event_emitter_constructor(
@@ -308,6 +334,20 @@ unsafe extern "C" fn ee_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> boo
         Some(n) => n,
         None => { args.rval().set(ObjectValue(this_obj)); return true; }
     };
+
+    if argc >= 2 {
+        let listener_val = *args.get(1).ptr;
+        if listener_val.is_object() {
+            if !is_function(listener_val.to_object()) {
+                throw_type_error(cx, "The \"listener\" argument must be of type function. Received object");
+                return false;
+            }
+        } else {
+            throw_type_error(cx, "The \"listener\" argument must be of type function");
+            return false;
+        }
+    }
+
     let callback = match get_callback(&args) {
         Some(cb) => cb,
         None => { args.rval().set(ObjectValue(this_obj)); return true; }
@@ -366,20 +406,24 @@ unsafe extern "C" fn ee_off(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
         return true;
     }
 
-    let val = *args.get(1).ptr;
-    if !val.is_object() { args.rval().set(ObjectValue(this_obj)); return true; }
-    let callback = val.to_object();
+    let callback_val = *args.get(1).ptr;
+    if !callback_val.is_object() { set_state(this_obj, state); args.rval().set(ObjectValue(this_obj)); return true; }
 
     if let Some(listeners) = state.listeners.get_mut(&event_name) {
-        if let Some(once_flags) = state.once_flags.get_mut(&event_name) {
-            let mut i = 0;
-            while i < listeners.len() {
-                if listeners[i] == callback {
-                    listeners.remove(i);
-                    if i < once_flags.len() { once_flags.remove(i); }
-                } else {
-                    i += 1;
-                }
+        let mut removed_indices: Vec<usize> = Vec::new();
+        let mut i = 0;
+        while i < listeners.len() {
+            let stored_val = ObjectValue(listeners[i]);
+            if js_same_value(cx, stored_val, callback_val) {
+                listeners.remove(i);
+                removed_indices.push(i);
+            } else {
+                i += 1;
+            }
+        }
+        if let Some(flags) = state.once_flags.get_mut(&event_name) {
+            for idx in removed_indices.into_iter().rev() {
+                if idx < flags.len() { flags.remove(idx); }
             }
         }
     }
