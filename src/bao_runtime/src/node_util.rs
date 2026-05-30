@@ -41,7 +41,7 @@ pub fn install_util(cx: &mut mozjs::context::JSContext) {
 
         // util.types
         {
-            rooted!(&in(cx) let types_obj = unsafe { w2::JS_NewPlainObject(cx) });
+            rooted!(&in(cx) let types_obj = w2::JS_NewPlainObject(cx));
             if !types_obj.get().is_null() {
                 w2::JS_DefineFunction(cx, types_obj.handle(), c"isBoolean".as_ptr(), Some(util_is_boolean), 1, 0);
                 w2::JS_DefineFunction(cx, types_obj.handle(), c"isNumber".as_ptr(), Some(util_is_number), 1, 0);

@@ -299,7 +299,7 @@ unsafe extern "C" fn clear_interval(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn set_immediate(
-    cx: *mut JSContext,
+    _cx: *mut JSContext,
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {

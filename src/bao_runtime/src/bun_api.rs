@@ -329,7 +329,7 @@ pub fn install_process_global(
                 let fd_val = Int32Value(1);
                 rooted!(&in(cx) let fd = fd_val);
                 JS_DefineProperty(cx.raw_cx(), stdout_obj.handle().into(), c"fd".as_ptr(), fd.handle().into(), JSPROP_ENUMERATE as u32);
-                let is_tty = unsafe { libc::isatty(1) == 1 };
+                let is_tty = libc::isatty(1) == 1;
                 let tty_val = BooleanValue(is_tty);
                 rooted!(&in(cx) let tv = tty_val);
                 JS_DefineProperty(cx.raw_cx(), stdout_obj.handle().into(), c"isTTY".as_ptr(), tv.handle().into(), JSPROP_ENUMERATE as u32);
@@ -344,7 +344,7 @@ pub fn install_process_global(
                 let fd_val = Int32Value(2);
                 rooted!(&in(cx) let fd = fd_val);
                 JS_DefineProperty(cx.raw_cx(), stderr_obj.handle().into(), c"fd".as_ptr(), fd.handle().into(), JSPROP_ENUMERATE as u32);
-                let is_tty = unsafe { libc::isatty(2) == 1 };
+                let is_tty = libc::isatty(2) == 1;
                 let tty_val = BooleanValue(is_tty);
                 rooted!(&in(cx) let tv = tty_val);
                 JS_DefineProperty(cx.raw_cx(), stderr_obj.handle().into(), c"isTTY".as_ptr(), tv.handle().into(), JSPROP_ENUMERATE as u32);

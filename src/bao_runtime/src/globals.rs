@@ -14,6 +14,7 @@ use digest::Digest;
 
 thread_local! {
     static FILE_GLOBALS: RefCell<(Option<String>, Option<String>)> = RefCell::new((None, None));
+    static BUFFER_PROTOTYPE: RefCell<Option<*mut JSObject>> = RefCell::new(None);
 }
 
 use ::std::cell::RefCell;
@@ -184,15 +185,21 @@ pub fn install_buffer_global(
         );
 
         JS_DefineProperty3(cx, global, c"Buffer".as_ptr(), buf_root.handle(), JSPROP_ENUMERATE as u32);
+
+        // Create dedicated Buffer.prototype object (not polluting Object.prototype)
+        rooted!(&in(cx) let buf_proto = JS_NewPlainObject(cx));
+        if !buf_proto.get().is_null() {
+            let proto_val = ObjectValue(buf_proto.get());
+            let proto_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &proto_val };
+            JS_DefineProperty(cx.raw_cx(), buf_root.handle().into(), c"prototype".as_ptr(), proto_h, 0u32);
+            BUFFER_PROTOTYPE.with(|bp| { *bp.borrow_mut() = Some(buf_proto.get()); });
+        }
     }
 
     // Inject Buffer prototype methods via JS eval
     let proto_src = r#"
 (function() {
-  var _bp = null;
-  function getProto(b) { if (!_bp && b) { _bp = Object.getPrototypeOf(b); } return _bp; }
-  var sample = Buffer.alloc(1);
-  getProto(sample);
+  var _bp = Buffer.prototype;
   if (!_bp) return;
 
   _bp.write = function(str, offset, encoding) {
@@ -281,6 +288,17 @@ pub fn install_buffer_global(
     }
 }
 
+/// Set Buffer.prototype as the prototype of a newly created buffer object.
+unsafe fn set_buffer_proto(cx: *mut JSContext, obj: *mut JSObject) {
+    BUFFER_PROTOTYPE.with(|bp| {
+        if let Some(proto) = *bp.borrow() {
+            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+            let proto_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &proto };
+            let _ = JS_SetPrototype(cx, obj_h, proto_h);
+        }
+    });
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_constructor(
     cx: *mut JSContext,
@@ -290,7 +308,7 @@ unsafe extern "C" fn buffer_constructor(
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
         let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-        if !obj.is_null() { args.rval().set(mozjs::jsval::ObjectValue(obj)); }
+        if !obj.is_null() { set_buffer_proto(cx, obj); args.rval().set(mozjs::jsval::ObjectValue(obj)); }
         return true;
     }
     let first = *args.get(0).ptr;
@@ -301,20 +319,21 @@ unsafe extern "C" fn buffer_constructor(
             let bytes = rust_str.as_bytes();
             let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
             if obj.is_null() { args.rval().set(UndefinedValue()); return true; }
+            set_buffer_proto(cx, obj);
             for (i, &byte) in bytes.iter().enumerate() {
                 let val = mozjs::jsval::Int32Value(byte as i32);
-                rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let v = val);
+                rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let v = val);
                 JS_DefineElement(cx,
                     Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
                     i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
             }
-            rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let len = mozjs::jsval::Int32Value(bytes.len() as i32));
+            rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let len = mozjs::jsval::Int32Value(bytes.len() as i32));
             JS_DefineProperty(cx,
                 Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
                 c"length".as_ptr() as *const ::std::os::raw::c_char,
                 len.handle().into(), JSPROP_ENUMERATE as u32);
             let buf_val = mozjs::jsval::BooleanValue(true);
-            rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let bv = buf_val);
+            rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let bv = buf_val);
             JS_DefineProperty(cx,
                 Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
                 c"_isBuffer".as_ptr() as *const ::std::os::raw::c_char,
@@ -327,19 +346,20 @@ unsafe extern "C" fn buffer_constructor(
         let size = first.to_int32().max(0) as usize;
         let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
         if obj.is_null() { args.rval().set(UndefinedValue()); return true; }
+        set_buffer_proto(cx, obj);
         for i in 0..size {
-            rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let v = mozjs::jsval::Int32Value(0));
+            rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let v = mozjs::jsval::Int32Value(0));
             JS_DefineElement(cx,
                 Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
                 i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
         }
-        rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let len = mozjs::jsval::Int32Value(size as i32));
+        rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let len = mozjs::jsval::Int32Value(size as i32));
         JS_DefineProperty(cx,
             Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
             c"length".as_ptr() as *const ::std::os::raw::c_char,
             len.handle().into(), JSPROP_ENUMERATE as u32);
         let buf_val = mozjs::jsval::BooleanValue(true);
-        rooted!(&in(unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) }) let bv = buf_val);
+        rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let bv = buf_val);
         JS_DefineProperty(cx,
             Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
             c"_isBuffer".as_ptr() as *const ::std::os::raw::c_char,
@@ -429,6 +449,7 @@ unsafe fn create_buffer_from_bytes(
         args.rval().set(UndefinedValue());
         return true;
     }
+    set_buffer_proto(cx, buf_obj);
 
     let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &buf_obj };
 

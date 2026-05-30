@@ -736,7 +736,6 @@ unsafe extern "C" fn fs_mkdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
                             code_h, JSPROP_ENUMERATE as u32);
                     }
                     let err_val = mozjs::jsval::ObjectValue(err_obj);
-                    let err_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
                     let err_args = HandleValueArray { length_: 1, elements_: &err_val as *const JSVal };
                     let global = CurrentGlobalOrNull(cx);
                     if !global.is_null() {
