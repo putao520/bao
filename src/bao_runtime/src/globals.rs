@@ -67,7 +67,7 @@ pub unsafe fn install_all(
     crate::node_perf_hooks::install(cx);
     crate::node_timers_module::install(cx);
     crate::node_readline::install(cx);
-    crate::node_tls::install_tls(cx);
+    crate::node_tls::install(cx);
     install_assert_strict(cx);
     install_file_globals_from_cache(cx, global);
     install_web_api_constructors(cx, global);
@@ -387,6 +387,61 @@ pub fn install_buffer_global(
     u8[3]=this[offset+4]; u8[2]=this[offset+5]; u8[1]=this[offset+6]; u8[0]=this[offset+7];
     return f64[0];
   };
+  _bp.writeInt32BE = function(val, offset) { return _bp.writeUInt32BE.call(this, val >>> 0, offset); };
+  _bp.writeFloatBE = function(val, offset) {
+    offset = offset || 0;
+    var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
+    f32[0] = val; this[offset+3]=u8[0]; this[offset+2]=u8[1]; this[offset+1]=u8[2]; this[offset]=u8[3];
+    return offset;
+  };
+  _bp.writeDoubleBE = function(val, offset) {
+    offset = offset || 0;
+    var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
+    f64[0] = val; for (var i = 0; i < 8; i++) this[offset + 7 - i] = u8[i];
+    return offset;
+  };
+  _bp.readBigInt64LE = function(offset) {
+    offset = offset || 0;
+    var lo = _bp.readUInt32LE.call(this, offset);
+    var hi = _bp.readInt32LE.call(this, offset + 4);
+    return BigInt(hi) << 32n | BigInt(lo >>> 0);
+  };
+  _bp.readBigUInt64LE = function(offset) {
+    offset = offset || 0;
+    var lo = _bp.readUInt32LE.call(this, offset);
+    var hi = _bp.readUInt32LE.call(this, offset + 4);
+    return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+  };
+  _bp.readBigInt64BE = function(offset) {
+    offset = offset || 0;
+    var hi = _bp.readInt32BE.call(this, offset);
+    var lo = _bp.readUInt32BE.call(this, offset + 4);
+    return BigInt(hi) << 32n | BigInt(lo >>> 0);
+  };
+  _bp.readBigUInt64BE = function(offset) {
+    offset = offset || 0;
+    var hi = _bp.readUInt32BE.call(this, offset);
+    var lo = _bp.readUInt32BE.call(this, offset + 4);
+    return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
+  };
+  _bp.writeBigInt64LE = function(val, offset) {
+    offset = offset || 0;
+    val = BigInt(val);
+    _bp.writeUInt32LE.call(this, Number(val & 0xFFFFFFFFn), offset);
+    _bp.writeInt32LE.call(this, Number(val >> 32n), offset + 4);
+    return offset;
+  };
+  _bp.writeBigUInt64LE = function(val, offset) { return _bp.writeBigInt64LE.call(this, val, offset); };
+  _bp.writeBigInt64BE = function(val, offset) {
+    offset = offset || 0;
+    val = BigInt(val);
+    _bp.writeInt32BE.call(this, Number(val >> 32n), offset);
+    _bp.writeUInt32BE.call(this, Number(val & 0xFFFFFFFFn), offset + 4);
+    return offset;
+  };
+  _bp.writeBigUInt64BE = function(val, offset) { return _bp.writeBigInt64BE.call(this, val, offset); };
+  _bp.readUInt8 = function(offset) { return this[offset || 0]; };
+  _bp.writeUInt8 = function(val, offset) { this[offset || 0] = val & 0xFF; return offset || 0; };
 })();
 "#;
     unsafe {
@@ -548,25 +603,57 @@ unsafe extern "C" fn buffer_from(
             _phantom_0: ::std::marker::PhantomData,
             ptr: &obj,
         };
-        let mut length_val = UndefinedValue();
-        let length_handle = MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut length_val,
-        };
-        JS_GetProperty(cx, obj_handle, c"length".as_ptr(), length_handle);
-        let len = if length_val.is_int32() { length_val.to_int32() as usize } else { 0 };
 
-        let mut bytes = Vec::with_capacity(len);
-        for i in 0..len {
-            let mut elem = UndefinedValue();
-            let elem_handle = MutableHandle::<Value> {
+        // Check if it's an ArrayBuffer using mozjs_sys API
+        let is_ab = unsafe { mozjs_sys::jsapi::JS::IsArrayBufferObject(obj) };
+
+        if is_ab {
+            // Buffer.from(arrayBuffer, byteOffset?, length?)
+            let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
+            let mut data_len: usize = 0;
+            let mut is_shared = false;
+            unsafe {
+                mozjs_sys::jsapi::JS::GetArrayBufferLengthAndData(
+                    obj, &mut data_len, &mut is_shared, &mut data_ptr,
+                );
+            }
+
+            let offset = if argc > 1 && (*args.get(1).ptr).is_int32() {
+                (*args.get(1).ptr).to_int32().max(0) as usize
+            } else { 0 };
+
+            let len = if argc > 2 && (*args.get(2).ptr).is_int32() {
+                (*args.get(2).ptr).to_int32().max(0) as usize
+            } else { data_len.saturating_sub(offset) };
+
+            if !data_ptr.is_null() && offset < data_len {
+                let end = (offset + len).min(data_len);
+                let slice = unsafe { ::std::slice::from_raw_parts(data_ptr.add(offset), end - offset) };
+                return create_buffer_from_bytes(cx, &args, slice);
+            }
+            create_buffer_from_bytes(cx, &args, &[])
+        } else {
+            // Array-like or Buffer object
+            let mut length_val = UndefinedValue();
+            let length_handle = MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut elem,
+                ptr: &mut length_val,
             };
-            JS_GetElement(cx, obj_handle, i as u32, elem_handle);
-            bytes.push(if elem.is_int32() { elem.to_int32() as u8 } else { 0 });
+            JS_GetProperty(cx, obj_handle, c"length".as_ptr(), length_handle);
+            let len = if length_val.is_int32() { length_val.to_int32() as usize } else { 0 };
+
+            let mut bytes = Vec::with_capacity(len);
+            for i in 0..len {
+                let mut elem = UndefinedValue();
+                let elem_handle = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut elem,
+                };
+                JS_GetElement(cx, obj_handle, i as u32, elem_handle);
+                bytes.push(if elem.is_int32() { elem.to_int32() as u8 } else { 0 });
+            }
+            create_buffer_from_bytes(cx, &args, &bytes)
         }
-        create_buffer_from_bytes(cx, &args, &bytes)
     } else {
         args.rval().set(UndefinedValue());
         true
@@ -634,8 +721,39 @@ unsafe extern "C" fn buffer_to_string(
         bytes.push(if elem.is_int32() { elem.to_int32() as u8 } else { 0 });
     }
 
-    let s = String::from_utf8_lossy(&bytes).into_owned();
-    let Ok(c_s) = ::std::ffi::CString::new(s) else {
+    let encoding = if argc > 0 && (*args.get(0).ptr).is_string() {
+        jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()))
+    } else {
+        String::new()
+    };
+    let enc_lower = encoding.to_lowercase();
+
+    let output = match enc_lower.as_str() {
+        "hex" => bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(""),
+        "base64" => {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        }
+        "base64url" => {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
+        }
+        "binary" | "latin1" => bytes.iter().map(|&b| b as char).collect::<String>(),
+        "ascii" => bytes.iter().map(|&b| (b & 0x7F) as char).collect::<String>(),
+        "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => {
+            let mut s = String::with_capacity(bytes.len() / 2);
+            for chunk in bytes.chunks(2) {
+                if chunk.len() == 2 {
+                    let code = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    if let Some(c) = char::from_u32(code as u32) { s.push(c); }
+                }
+            }
+            s
+        }
+        _ => String::from_utf8_lossy(&bytes).into_owned(),
+    };
+
+    let Ok(c_s) = ::std::ffi::CString::new(output) else {
         args.rval().set(UndefinedValue());
         return true;
     };

@@ -15,22 +15,26 @@ const QS_JS: &str = r#"
     return decodeURIComponent(s.replace(/\+/g, ' '));
   }
 
-  function parse(str, sep, eq) {
+  function parse(str, sep, eq, options) {
     sep = sep || '&';
     eq = eq || '=';
+    var decoder = (options && typeof options.decodeURIComponent === 'function') ? options.decodeURIComponent : decode;
+    var maxKeys = (options && typeof options.maxKeys === 'number') ? options.maxKeys : 1000;
     var obj = {};
     if (!str || str.length === 0) return obj;
     str = str.replace(/^\?/, '');
     var pairs = str.split(sep);
+    var count = 0;
     for (var i = 0; i < pairs.length; i++) {
+      if (maxKeys >= 0 && count >= maxKeys) break;
       var pair = pairs[i];
       var idx = pair.indexOf(eq);
       var key, val;
       if (idx >= 0) {
-        key = decode(pair.slice(0, idx));
-        val = decode(pair.slice(idx + 1));
+        key = decoder(pair.slice(0, idx));
+        val = decoder(pair.slice(idx + 1));
       } else {
-        key = decode(pair);
+        key = decoder(pair);
         val = '';
       }
       if (obj.hasOwnProperty(key)) {
@@ -41,23 +45,27 @@ const QS_JS: &str = r#"
       } else {
         obj[key] = val;
       }
+      count++;
     }
     return obj;
   }
 
-  function stringify(obj, sep, eq) {
+  function stringify(obj, sep, eq, options) {
     sep = sep || '&';
     eq = eq || '=';
+    var encoder = (options && typeof options.encodeURIComponent === 'function') ? options.encodeURIComponent : encode;
     var pairs = [];
     for (var key in obj) {
       if (!obj.hasOwnProperty(key)) continue;
       var val = obj[key];
-      if (Array.isArray(val)) {
+      if (val === null || val === undefined) {
+        pairs.push(encoder(key) + eq);
+      } else if (Array.isArray(val)) {
         for (var i = 0; i < val.length; i++) {
-          pairs.push(encode(key) + eq + encode(String(val[i])));
+          pairs.push(encoder(key) + eq + encoder(String(val[i])));
         }
       } else {
-        pairs.push(encode(key) + eq + encode(String(val)));
+        pairs.push(encoder(key) + eq + encoder(String(val)));
       }
     }
     return pairs.join(sep);
