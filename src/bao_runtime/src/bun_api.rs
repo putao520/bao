@@ -201,6 +201,67 @@ pub fn install_bun_global(
             JSPROP_ENUMERATE as u32,
         );
 
+        // Bun.read — alias for readFile
+        JS_DefineFunction(
+            cx,
+            bun_obj.handle(),
+            c"read".as_ptr(),
+            ::std::option::Option::Some(bun_read_file),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // Bun.exit
+        JS_DefineFunction(
+            cx,
+            bun_obj.handle(),
+            c"exit".as_ptr(),
+            ::std::option::Option::Some(bun_exit),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // Bun.sleepSync
+        JS_DefineFunction(
+            cx,
+            bun_obj.handle(),
+            c"sleepSync".as_ptr(),
+            ::std::option::Option::Some(bun_sleep_sync),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+
+        // Bun.revision — version string property
+        {
+            let rev_str = JS_NewStringCopyZ(cx.raw_cx(), b"0.1.0\0".as_ptr() as *const ::std::os::raw::c_char);
+            if !rev_str.is_null() {
+                rooted!(&in(cx) let rv = StringValue(&*rev_str));
+                JS_DefineProperty(cx.raw_cx(), bun_obj.handle().into(), c"revision".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+        }
+
+        // Bun.main — current script path
+        {
+            let main_path = crate::require::get_require_dir()
+                .unwrap_or_else(|| ::std::env::current_dir().unwrap_or_default());
+            let c_main = CString::new(main_path.to_string_lossy().into_owned()).unwrap_or_default();
+            let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_main.as_ptr());
+            if !js_str.is_null() {
+                rooted!(&in(cx) let mv = StringValue(&*js_str));
+                JS_DefineProperty(cx.raw_cx(), bun_obj.handle().into(), c"main".as_ptr(), mv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+        }
+
+        // Bun.hash — simple hash function
+        JS_DefineFunction(
+            cx,
+            bun_obj.handle(),
+            c"hash".as_ptr(),
+            ::std::option::Option::Some(bun_hash),
+            2,
+            JSPROP_ENUMERATE as u32,
+        );
+
         JS_DefineProperty3(
             cx,
             global,
@@ -2207,5 +2268,78 @@ unsafe extern "C" fn del_env_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         ::std::env::remove_var(&key);
     }
     args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_exit(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let code = if argc > 0 && (*args.get(0).ptr).is_int32() {
+        (*args.get(0).ptr).to_int32()
+    } else {
+        0
+    };
+    ::std::process::exit(code);
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_sleep_sync(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc > 0 && (*args.get(0).ptr).is_number() {
+        let ms = (*args.get(0).ptr).to_number() as u64;
+        ::std::thread::sleep(::std::time::Duration::from_millis(ms));
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let input = *args.get(0).ptr;
+    let algo = if argc > 1 && (*args.get(1).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(1).ptr)
+    } else {
+        "sha256".to_string()
+    };
+    let data = if input.is_string() {
+        crate::js_to_rust_string(cx, input).into_bytes()
+    } else if input.is_object() {
+        let obj = input.to_object();
+        let mut len_val = mozjs::jsval::UndefinedValue();
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+        let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { 0 };
+        let mut bytes = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let mut byte_val = mozjs::jsval::Int32Value(0);
+            JS_GetElement(cx, obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val });
+            bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
+        }
+        bytes
+    } else {
+        Vec::new()
+    };
+    use sha2::{Sha256, Sha512, Digest};
+    let result = match algo.as_str() {
+        "sha512" => {
+            let mut hasher = Sha512::new();
+            hasher.update(&data);
+            hasher.finalize().to_vec()
+        }
+        _ => {
+            let mut hasher = Sha256::new();
+            hasher.update(&data);
+            hasher.finalize().to_vec()
+        }
+    };
+    let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
+    let c_hex = CString::new(hex).unwrap_or_default();
+    let js_str = JS_NewStringCopyZ(cx, c_hex.as_ptr());
+    args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
     true
 }

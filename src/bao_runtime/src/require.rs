@@ -84,6 +84,10 @@ pub fn set_require_dir(dir: PathBuf) {
     REQUIRE_DIR.with(|d| *d.borrow_mut() = Some(dir));
 }
 
+pub fn get_require_dir() -> Option<PathBuf> {
+    REQUIRE_DIR.with(|d| d.borrow().clone())
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn require_fn(
     cx: *mut JSContext,
