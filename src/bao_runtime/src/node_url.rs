@@ -265,6 +265,46 @@ unsafe fn url_to_js<'a>(cx: *mut JSContext, state: &UrlState) -> *mut JSObject {
                 let sp_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sp_obj };
                 JS_DefineProperty(cx, sp_h, c"has".as_ptr(), fv_h, JSPROP_ENUMERATE as u32);
             }
+            let set_fn = JS_NewFunction(cx, Some(sp_set), 2, 0, c"set".as_ptr());
+            if !set_fn.is_null() {
+                let fn_obj = JS_GetFunctionObject(set_fn);
+                let fv = ObjectValue(fn_obj);
+                let fv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fv };
+                let sp_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sp_obj };
+                JS_DefineProperty(cx, sp_h, c"set".as_ptr(), fv_h, JSPROP_ENUMERATE as u32);
+            }
+            let delete_fn = JS_NewFunction(cx, Some(sp_delete), 1, 0, c"delete".as_ptr());
+            if !delete_fn.is_null() {
+                let fn_obj = JS_GetFunctionObject(delete_fn);
+                let fv = ObjectValue(fn_obj);
+                let fv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fv };
+                let sp_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sp_obj };
+                JS_DefineProperty(cx, sp_h, c"delete".as_ptr(), fv_h, JSPROP_ENUMERATE as u32);
+            }
+            let append_fn = JS_NewFunction(cx, Some(sp_append), 2, 0, c"append".as_ptr());
+            if !append_fn.is_null() {
+                let fn_obj = JS_GetFunctionObject(append_fn);
+                let fv = ObjectValue(fn_obj);
+                let fv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fv };
+                let sp_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sp_obj };
+                JS_DefineProperty(cx, sp_h, c"append".as_ptr(), fv_h, JSPROP_ENUMERATE as u32);
+            }
+            let getall_fn = JS_NewFunction(cx, Some(sp_get_all), 1, 0, c"getAll".as_ptr());
+            if !getall_fn.is_null() {
+                let fn_obj = JS_GetFunctionObject(getall_fn);
+                let fv = ObjectValue(fn_obj);
+                let fv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fv };
+                let sp_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sp_obj };
+                JS_DefineProperty(cx, sp_h, c"getAll".as_ptr(), fv_h, JSPROP_ENUMERATE as u32);
+            }
+            let tostr_fn = JS_NewFunction(cx, Some(sp_to_string), 0, 0, c"toString".as_ptr());
+            if !tostr_fn.is_null() {
+                let fn_obj = JS_GetFunctionObject(tostr_fn);
+                let fv = ObjectValue(fn_obj);
+                let fv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fv };
+                let sp_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sp_obj };
+                JS_DefineProperty(cx, sp_h, c"toString".as_ptr(), fv_h, JSPROP_ENUMERATE as u32);
+            }
             let sp_val = ObjectValue(sp_obj);
             let sp_val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &sp_val };
             let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };

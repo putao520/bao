@@ -1,5 +1,6 @@
 // Bun.* namespace + process global + servers + test runner
 use ::std::cell::RefCell;
+use ::std::collections::HashMap;
 use ::std::ffi::CString;
 use ::std::fs;
 use ::std::io::Read;
@@ -463,6 +464,16 @@ pub fn install_process_global(
         }
 
         JS_DefineProperty3(cx, global, c"process".as_ptr(), proc_obj.handle(), JSPROP_ENUMERATE as u32);
+
+        // process EventEmitter stubs — on/once/addListener use existing process_on
+        // emit/off/removeListener/removeAllListeners use process_noop (accept and ignore)
+        JS_DefineFunction(cx, proc_obj.handle(), c"on".as_ptr(), Some(process_on), 2, JSPROP_ENUMERATE as u32);
+        JS_DefineFunction(cx, proc_obj.handle(), c"once".as_ptr(), Some(process_on), 2, JSPROP_ENUMERATE as u32);
+        JS_DefineFunction(cx, proc_obj.handle(), c"addListener".as_ptr(), Some(process_on), 2, JSPROP_ENUMERATE as u32);
+        JS_DefineFunction(cx, proc_obj.handle(), c"emit".as_ptr(), Some(process_noop), 1, JSPROP_ENUMERATE as u32);
+        JS_DefineFunction(cx, proc_obj.handle(), c"off".as_ptr(), Some(process_noop), 2, JSPROP_ENUMERATE as u32);
+        JS_DefineFunction(cx, proc_obj.handle(), c"removeListener".as_ptr(), Some(process_noop), 2, JSPROP_ENUMERATE as u32);
+        JS_DefineFunction(cx, proc_obj.handle(), c"removeAllListeners".as_ptr(), Some(process_noop), 0, JSPROP_ENUMERATE as u32);
     }
 }
 
@@ -1843,6 +1854,13 @@ unsafe extern "C" fn process_stderr_write(
         ::std::io::Write::flush(&mut ::std::io::stderr()).ok();
     }
     args.rval().set(mozjs::jsval::BooleanValue(true));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn process_noop(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    args.rval().set(UndefinedValue());
     true
 }
 
