@@ -3,9 +3,17 @@ use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 use tungstenite::accept;
 use tungstenite::protocol::WebSocket;
+
+/// EventSender that discards all events. Used during command dispatch
+/// since domain handlers currently ignore the event_sender parameter.
+struct NoopEventSender;
+impl cdp_server::EventSender for NoopEventSender {
+    fn send_event(&self, _method: &str, _params: serde_json::Value) {}
+}
 
 mod ws;
 mod protocol;
@@ -29,6 +37,7 @@ pub struct CDPServer {
     cmd_tx: Sender<CDPCommand>,
     cmd_rx: Receiver<CDPCommand>,
     bridge: Option<BridgeSender>,
+    registry: Option<Arc<DomainRegistry>>,
 }
 
 pub enum CDPCommand {
@@ -41,6 +50,7 @@ pub struct CDPSession {
     target_id: String,
     ws: WebSocket<ReplayStream>,
     bridge: Option<BridgeSender>,
+    registry: Option<Arc<DomainRegistry>>,
 }
 
 /// Wraps a TcpStream with pre-read bytes, replaying them on the first reads
@@ -87,11 +97,14 @@ impl CDPServer {
             cmd_tx,
             cmd_rx,
             bridge: None,
+            registry: None,
         }
     }
 
     pub fn with_bridge(port: u16, bridge: BridgeSender) -> Self {
         let (cmd_tx, cmd_rx) = channel();
+        let registry = DomainRegistry::new();
+        domains::register_all_domains_into(bridge.clone(), &registry);
         CDPServer {
             port,
             target_id: format!("{:016x}", rand_id()),
@@ -99,6 +112,7 @@ impl CDPServer {
             cmd_tx,
             cmd_rx,
             bridge: Some(bridge),
+            registry: Some(Arc::new(registry)),
         }
     }
 
@@ -217,6 +231,7 @@ impl CDPServer {
                         target_id: self.target_id.clone(),
                         ws,
                         bridge: self.bridge.clone(),
+                        registry: self.registry.clone(),
                     });
                 }
                 Err(e) => {
@@ -251,13 +266,37 @@ impl CDPSession {
             None => return Ok(()),
         };
 
-        let response = protocol::handle_command(
-            cdp_msg.clone(), &self.target_id, &cdp_msg.params, self.bridge.as_ref(),
-        );
+        let response = match self.dispatch_cdp(&cdp_msg) {
+            Some(resp) => resp,
+            None => protocol::handle_command(
+                cdp_msg.clone(), &self.target_id, &cdp_msg.params, self.bridge.as_ref(),
+            ),
+        };
         let response_json = protocol::serialize_response(&response);
         let _ = ws::write_message(&mut self.ws, &response_json);
 
         Ok(())
+    }
+
+    /// Try dispatching via DomainRegistry. Returns Some(CDPResponse) if the domain
+    /// was found in the registry, None to fall back to old protocol routing.
+    fn dispatch_cdp(&self, cdp_msg: &CDPMessage) -> Option<CDPResponse> {
+        let registry = self.registry.as_ref()?;
+        let params = cdp_msg.params.clone().unwrap_or_default();
+        registry.dispatch_command(&cdp_msg.method, params, &NoopEventSender).map(|result| {
+            match result {
+                Ok(value) => CDPResponse {
+                    id: cdp_msg.id,
+                    result: Some(value),
+                    error: None,
+                },
+                Err(err) => CDPResponse {
+                    id: cdp_msg.id,
+                    result: None,
+                    error: Some(CDPError { code: err.code, message: err.message }),
+                },
+            }
+        })
     }
 
     #[allow(clippy::result_unit_err)]
@@ -396,5 +435,164 @@ mod tests {
     fn cdp_server_error_is_std_error() {
         let err = CDPServerError::Bind("test".into());
         let _: &dyn std::error::Error = &err;
+    }
+
+    // --- Registry integration tests (Wave 2) ---
+
+    #[test]
+    fn cdp_server_new_has_no_registry() {
+        let server = CDPServer::new(9222);
+        assert!(server.registry.is_none());
+    }
+
+    #[test]
+    fn cdp_server_with_bridge_has_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        assert!(server.registry.is_some());
+        let registry = server.registry.as_ref().unwrap();
+        assert!(registry.has_domain("Page"));
+        assert!(registry.has_domain("Runtime"));
+        assert!(registry.has_domain("DOM"));
+        assert!(registry.has_domain("Network"));
+    }
+
+    #[test]
+    fn cdp_server_with_bridge_registry_has_all_11_domains() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+        let expected = [
+            "Page", "Runtime", "DOM", "Network", "Debugger",
+            "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch",
+        ];
+        for domain in &expected {
+            assert!(registry.has_domain(domain), "domain '{}' should be registered", domain);
+        }
+    }
+
+    #[test]
+    fn cdp_server_with_bridge_target_not_in_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+        assert!(!registry.has_domain("Target"), "Target should NOT be in registry — falls back to old protocol");
+    }
+
+    #[test]
+    fn dispatch_cdp_with_registry_returns_page_enable() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let cdp_msg = CDPMessage {
+            id: 1,
+            method: "Page.enable".into(),
+            params: None,
+            session_id: None,
+        };
+
+        // Simulate what dispatch_cdp does
+        let params = cdp_msg.params.clone().unwrap_or_default();
+        let result = registry.dispatch_command(&cdp_msg.method, params, &NoopEventSender);
+        assert!(result.is_some());
+        let response = result.unwrap();
+        assert!(response.is_ok());
+        assert_eq!(response.unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn dispatch_cdp_with_registry_returns_runtime_enable() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("Runtime.enable", serde_json::json!({}), &NoopEventSender);
+        assert!(result.is_some());
+        let response = result.unwrap();
+        assert!(response.is_ok());
+        assert_eq!(response.unwrap()["executionContextId"], 1);
+    }
+
+    #[test]
+    fn dispatch_cdp_unregistered_domain_returns_none() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        // Target is NOT registered — should return None
+        let result = registry.dispatch_command("Target.getTargets", serde_json::json!({}), &NoopEventSender);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn dispatch_cdp_unknown_method_returns_error() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("Page.nonExistentMethod", serde_json::json!({}), &NoopEventSender);
+        assert!(result.is_some());
+        let err = result.unwrap().unwrap_err();
+        assert_eq!(err.code, -32601);
+    }
+
+    #[test]
+    fn dispatch_cdp_page_get_layout_metrics_via_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("Page.getLayoutMetrics", serde_json::json!({}), &NoopEventSender);
+        assert!(result.is_some());
+        let response = result.unwrap().unwrap();
+        assert_eq!(response["contentSize"]["width"], 1920);
+        assert_eq!(response["contentSize"]["height"], 1080);
+    }
+
+    #[test]
+    fn dispatch_cdp_network_enable_via_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("Network.enable", serde_json::json!({}), &NoopEventSender);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn dispatch_cdp_css_stub_via_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("CSS.enable", serde_json::json!({}), &NoopEventSender);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().unwrap(), serde_json::json!({}));
+    }
+
+    #[test]
+    fn dispatch_cdp_fetch_enable_via_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command(
+            "Fetch.enable",
+            serde_json::json!({"patterns": [{"urlPattern": "*"}]}),
+            &NoopEventSender,
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().unwrap()["patternCount"], 1);
+    }
+
+    #[test]
+    fn cdp_error_conversion_between_types() {
+        // Verify cdp_server::CdpError → protocol::CDPError conversion
+        let server_err = cdp_server::CdpError { code: -32601, message: "not found".into() };
+        let protocol_err = CDPError { code: server_err.code, message: server_err.message.clone() };
+        assert_eq!(protocol_err.code, -32601);
+        assert_eq!(protocol_err.message, "not found");
     }
 }
