@@ -334,25 +334,31 @@ fn test_emulation_clear_device_metrics() {
 
 #[test]
 fn test_emulation_set_user_agent_override() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(200);
     let registry = cdp_server::DomainRegistry::new();
     bao_cdp::domains::register_all_domains_into(tx, &registry);
 
-    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
-    let rx2 = rx.clone();
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done2 = done.clone();
     std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::SetUserAgent { user_agent } = cmd {
-                assert_eq!(user_agent, "TestBot/1.0");
+        while !done2.load(std::sync::atomic::Ordering::Relaxed) {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::SetUserAgent { user_agent } = cmd {
+                    assert_eq!(user_agent, "TestBot/1.0");
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got {
+                return;
             }
-            BridgeResponse { result: Ok(json!({})) }
-        });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
     let result = dispatch_cmd(&registry,"Emulation.setUserAgentOverride", json!({
         "userAgent": "TestBot/1.0"
     }));
     assert!(result.is_ok());
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[test]
