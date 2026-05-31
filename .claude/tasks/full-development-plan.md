@@ -489,3 +489,6 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 				- [x] Wave 69: BridgeCommand exhaustive (all 25 variants) + BridgeResponse + bridge_channel behavior tests
 				  - bridge_command_exhaustive_tests: 52 tests (all 25 BridgeCommand variants construction+debug, debug output verification, empty/unicode/edge values, BridgeResponse ok/err/null/empty, bridge_channel send timeout/closed receiver/is_alive/fire_and_forget)
 				  - 2637 tests pass, 0 failed
+				- [x] Wave 70: TlsFingerprint preset deep + compute_ja3/ja4 + tls13/tls12 classification + StealthProfile cross-preset completeness + StealthEngine accessor tests
+				  - tls_profile_deep_tests: 57 tests (TlsFingerprint firefox/chrome_120/chrome_latest field counts, ja3/ja4 format validation, alpn_strings, tls13/tls12 suite classification, StealthProfile cross-preset differentiation, StealthEngine all accessors, clone/debug)
+				  - 2694 tests pass, 0 failed
