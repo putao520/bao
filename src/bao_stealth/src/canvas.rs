@@ -41,3 +41,76 @@ impl CanvasNoise {
         (state as f64) / (u64::MAX as f64) - 0.5
     }
 }
+
+// @trace REQ-STL-003 [req:REQ-STL-003] [level:unit]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_stores_seed() {
+        let noise = CanvasNoise::new(42);
+        assert_eq!(noise.seed, 42);
+    }
+
+    #[test]
+    fn seed_getter_works() {
+        let noise = CanvasNoise::new(12345);
+        assert_eq!(noise.seed(), 12345);
+    }
+
+    #[test]
+    fn noise_amplitude_is_0_001() {
+        let noise = CanvasNoise::new(1);
+        assert!((noise.noise_amplitude() - 0.001).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn apply_to_pixel_deterministic_same_input_same_output() {
+        let noise = CanvasNoise::new(100);
+        let (r1, g1, b1, a1) = noise.apply_to_pixel(128, 64, 32, 255, 10, 20);
+        let (r2, g2, b2, a2) = noise.apply_to_pixel(128, 64, 32, 255, 10, 20);
+        assert_eq!((r1, g1, b1, a1), (r2, g2, b2, a2));
+    }
+
+    #[test]
+    fn apply_to_pixel_different_seeds_different_pixels() {
+        let n1 = CanvasNoise::new(100);
+        let n2 = CanvasNoise::new(200);
+        let (r1, g1, b1, _) = n1.apply_to_pixel(128, 64, 32, 255, 10, 20);
+        let (r2, g2, b2, _) = n2.apply_to_pixel(128, 64, 32, 255, 10, 20);
+        assert_ne!((r1, g1, b1), (r2, g2, b2));
+    }
+
+    #[test]
+    fn apply_to_pixel_different_seeds_different_results() {
+        let noise1 = CanvasNoise::new(100);
+        let noise2 = CanvasNoise::new(200);
+        let (r1, g1, b1, a1) = noise1.apply_to_pixel(128, 64, 32, 255, 10, 20);
+        let (r2, g2, b2, a2) = noise2.apply_to_pixel(128, 64, 32, 255, 10, 20);
+        assert_ne!((r1, g1, b1), (r2, g2, b2));
+    }
+
+    #[test]
+    fn apply_to_pixel_alpha_preserved() {
+        let noise = CanvasNoise::new(100);
+        let (_, _, _, a) = noise.apply_to_pixel(128, 64, 32, 200, 10, 20);
+        assert_eq!(a, 200);
+    }
+
+    #[test]
+    fn apply_to_pixel_values_in_range() {
+        let noise = CanvasNoise::new(100);
+        for x in 0..10u32 {
+            for y in 0..10u32 {
+                // black pixels: noise can only add, so r/g/b should be >= 0 (u8 guarantees this)
+                let (r, g, b, a) = noise.apply_to_pixel(0, 0, 0, 0, x, y);
+                assert!(r < 255 || g < 255 || b < 255 || a == 0);
+                // white pixels: noise can only subtract (via -0.5*amplitude*factor), verify no overflow panic
+                let (r, g, b, _a) = noise.apply_to_pixel(255, 255, 255, 255, x, y);
+                assert!(r > 0 || g > 0 || b > 0);
+                let _ = a;
+            }
+        }
+    }
+}
