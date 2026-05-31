@@ -471,3 +471,10 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 				  - canvas_noise_deep_tests: 31 tests (seed construction, deterministic output, alpha preservation, channel clamping, coordinate independence, large coords, clone/debug, noise hash properties)
 				  - http2_fingerprint_deep_tests: 36 tests (akamai_fingerprint format, settings_frame_payload, ordered_headers ordering, preset differentiation, clone/debug, custom fingerprint, zero values)
 				  - 2234 tests pass, 0 failed
+				- [x] Wave 65: screenshot encode + Permission edge + BrowserError + CDP types deep tests
+				  - screenshot_permission_error_tests: 45 tests (PNG/JPEG encode_image, Permission is_*_allowed edge cases, PermissionGuard integration, BrowserError Display/Debug)
+				  - cdp_types_deep_tests: 51 tests (CDPMessage/CDPError/CDPResponse/CDPEvent field validation, clone/debug, boundary IDs, parse errors, large params, unicode, determinism)
+				  - 2330 tests pass, 0 failed
+				- [x] Wave 66: NavigatorProfile + ScreenProfile + WebGLProfile + AudioProfile + inject_navigator_js deep tests
+				  - navigator_screen_webgl_audio_deep_tests: 63 tests (navigator preset fields, screen defaults/custom, WebGL vendor/renderer/extensions, Audio noise deterministic, inject_navigator_js content verification)
+				  - 2393 tests pass, 0 failed
