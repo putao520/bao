@@ -332,7 +332,7 @@ fn test_target_provider_list_targets() {
     use cdp_server::TargetProvider;
 
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    let provider = ServoTargetProvider::new(tx, "127.0.0.1".into(), 9222);
+    let provider = ServoTargetProvider::new(tx, "test-target-id".into(), "127.0.0.1".into(), 9222);
 
     // list_targets calls bridge.send() synchronously, so we need a thread
     // that's already listening when we call it.
@@ -363,7 +363,7 @@ fn test_target_provider_create_target() {
     use cdp_server::TargetProvider;
 
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    let provider = ServoTargetProvider::new(tx, "127.0.0.1".into(), 9222);
+    let provider = ServoTargetProvider::new(tx, "test-target-id".into(), "127.0.0.1".into(), 9222);
 
     thread::spawn(move || {
         rx.drain(|cmd| default_bridge_response(cmd));
@@ -379,7 +379,7 @@ fn test_target_provider_close_target() {
     use cdp_server::TargetProvider;
 
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    let provider = ServoTargetProvider::new(tx, "127.0.0.1".into(), 9222);
+    let provider = ServoTargetProvider::new(tx, "test-target-id".into(), "127.0.0.1".into(), 9222);
 
     thread::spawn(move || {
         rx.drain(|cmd| default_bridge_response(cmd));
@@ -394,7 +394,7 @@ fn test_target_provider_activate_target() {
     use cdp_server::TargetProvider;
 
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    let provider = ServoTargetProvider::new(tx, "127.0.0.1".into(), 9222);
+    let provider = ServoTargetProvider::new(tx, "test-target-id".into(), "127.0.0.1".into(), 9222);
 
     thread::spawn(move || {
         rx.drain(|_| BridgeResponse { result: Ok(json!({})) });

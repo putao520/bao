@@ -1,4 +1,5 @@
 // REQ-CDP-003: CDP module public API and domain registry  @trace REQ-CDP-001 [entity:CdpServer]
+// @trace REQ-IMPL-06
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::net::{TcpListener, TcpStream};

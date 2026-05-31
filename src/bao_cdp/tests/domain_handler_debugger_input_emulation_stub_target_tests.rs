@@ -721,7 +721,7 @@ fn test_fetch_unknown() {
 #[test]
 fn test_target_list_targets() {
     let (tx, rx) = bridge(500);
-    let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "127.0.0.1".into(), 9222);
+    let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "test-target-id".into(), "127.0.0.1".into(), 9222);
 
     // list_targets sends 2 bridge.send() calls sequentially (GetTitle, GetUrl).
     // Each send() blocks waiting for response, so we need a thread that processes
@@ -757,7 +757,7 @@ fn test_target_list_targets() {
 #[test]
 fn test_target_create_target_returns_existing() {
     let (tx, rx) = bridge(500);
-    let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "0.0.0.0".into(), 8080);
+    let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "test-target-id".into(), "0.0.0.0".into(), 8080);
 
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let done2 = done.clone();
@@ -786,7 +786,7 @@ fn test_target_create_target_returns_existing() {
 #[test]
 fn test_target_close_target() {
     let (tx, _rx) = bridge(50);
-    let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "localhost".into(), 3000);
+    let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "test-target-id".into(), "localhost".into(), 3000);
     // close_target sends fire-and-forget
     let result = provider.close_target("any-id");
     assert!(result.is_ok());
@@ -795,7 +795,7 @@ fn test_target_close_target() {
 #[test]
 fn test_target_activate_target() {
     let (tx, _rx) = bridge(50);
-    let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "localhost".into(), 3000);
+    let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "test-target-id".into(), "localhost".into(), 3000);
     let result = provider.activate_target("any-id");
     assert!(result.is_ok());
 }

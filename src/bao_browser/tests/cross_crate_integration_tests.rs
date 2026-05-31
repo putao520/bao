@@ -109,7 +109,7 @@ fn test_cdp_server_with_bridge_and_domains() {
     register_all_domains_into(bridge_tx.clone(), server.registry());
 
     let provider = std::sync::Arc::new(
-        ServoTargetProvider::new(bridge_tx, "127.0.0.1".into(), 0)
+        ServoTargetProvider::new(bridge_tx, "test-target-id".into(), "127.0.0.1".into(), 0)
     );
     server.set_target_provider(provider);
 

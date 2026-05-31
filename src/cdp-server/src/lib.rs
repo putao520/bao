@@ -1,4 +1,5 @@
 // @trace REQ-CDS-006 [entity:DomainRegistry] [entity:ServerConfig]
+// @trace REQ-CDS-008 [entity:ServerConfig]
 // cdp-server — Generic CDP (Chrome DevTools Protocol) server framework.
 // Transport layer (HTTP discovery + WebSocket) + session management +
 // message routing + event broadcast + domain handler registry.

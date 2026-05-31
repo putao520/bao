@@ -7,13 +7,14 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 pub struct ServoTargetProvider {
     bridge: BridgeSender,
+    target_id: String,
     port: u16,
     host: String,
 }
 
 impl ServoTargetProvider {
-    pub fn new(bridge: BridgeSender, host: String, port: u16) -> Self {
-        ServoTargetProvider { bridge, host, port }
+    pub fn new(bridge: BridgeSender, target_id: String, host: String, port: u16) -> Self {
+        ServoTargetProvider { bridge, target_id, host, port }
     }
 }
 
@@ -27,9 +28,8 @@ impl TargetProvider for ServoTargetProvider {
             .ok()
             .and_then(|v| v.as_str().map(|s| s.to_string()))
             .unwrap_or_else(|| "about:blank".into());
-        let id = format!("{:016x}", title.len() as u64 | (url.len() as u64) << 16);
         vec![TargetInfo {
-            id,
+            id: self.target_id.clone(),
             target_type: "page".into(),
             title,
             url,
@@ -135,7 +135,7 @@ mod tests {
 
     fn setup() -> (ServoTargetProvider, crate::servo_bridge::BridgeReceiver) {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        (ServoTargetProvider::new(sender, "127.0.0.1".into(), 9222), receiver)
+        (ServoTargetProvider::new(sender, "test-target-id".into(), "127.0.0.1".into(), 9222), receiver)
     }
 
     fn mock_responder(receiver: crate::servo_bridge::BridgeReceiver) -> thread::JoinHandle<()> {
@@ -203,6 +203,42 @@ mod tests {
         let responder = mock_responder(rx);
         let targets = provider.list_targets();
         assert!(targets[0].web_socket_debugger_url.starts_with("ws://127.0.0.1:9222/devtools/page/"));
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn target_id_matches_fixed_value() {
+        let (provider, rx) = setup();
+        let responder = mock_responder(rx);
+        let targets = provider.list_targets();
+        assert_eq!(targets[0].id, "test-target-id");
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn target_id_consistent_across_calls() {
+        let (provider, rx) = setup();
+        let responder = mock_responder(rx);
+        let id1 = provider.list_targets()[0].id.clone();
+        let id2 = provider.list_targets()[0].id.clone();
+        assert_eq!(id1, id2);
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn target_handler_and_provider_share_id() {
+        let (sender, receiver) = bridge_channel(TIMEOUT);
+        let target_id = "shared-abc123".to_string();
+        let provider = ServoTargetProvider::new(sender.clone(), target_id.clone(), "127.0.0.1".into(), 9222);
+        let handler = TargetHandler::new(sender, target_id.clone());
+
+        let responder = mock_responder(receiver);
+        let provider_id = provider.list_targets()[0].id.clone();
+        let handler_info = handler.live_target_info();
+        let handler_id = handler_info["targetId"].as_str().unwrap().to_string();
+        assert_eq!(provider_id, target_id);
+        assert_eq!(handler_id, target_id);
+        assert_eq!(provider_id, handler_id);
         responder.join().unwrap();
     }
 }

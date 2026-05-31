@@ -1,4 +1,4 @@
-// REQ-CDP-005: CDP router with session management  @trace REQ-CDP-001 [entity:CdpRouter] REQ-LIB-002
+// REQ-CDP-005: CDP router with session management  @trace REQ-CDP-001 [entity:CdpRouter] @trace REQ-LIB-002
 // REQ-LIB-002: CDP dual-layer API (internal/external routing)
 use std::cell::RefCell;
 use std::collections::HashMap;

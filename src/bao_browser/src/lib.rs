@@ -1,6 +1,8 @@
 // @trace REQ-BRW-001
+// @trace REQ-CLI-002
 #![allow(dead_code, unused_imports)]
 // REQ-BRW-001: Browser engine integration with servo
+// REQ-CLI-002: bao browser 子命令 → servo 初始化 + CDP 端口输出
 // REQ-LIB-004: BaoRuntime top-level coordinator
 mod config;
 mod cdp_handler;
@@ -29,7 +31,7 @@ use servo::{
 
 use bao_cdp::servo_bridge::bridge_channel;
 use bao_cdp::{CdpServer, ServerConfig};
-use bao_cdp::domains::{register_all_domains_into, ServoTargetProvider};
+use bao_cdp::domains::{register_all_domains_with_target, ServoTargetProvider};
 
 
 pub struct BaoRuntime {
@@ -156,10 +158,14 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
                 .host("127.0.0.1")
                 .port(port)
                 .build();
+            let target_id = format!("{:016x}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64);
             let mut server = CdpServer::new(config);
-            register_all_domains_into(bridge_tx.clone(), server.registry());
+            register_all_domains_with_target(bridge_tx.clone(), target_id.clone(), server.registry());
             let provider = std::sync::Arc::new(
-                ServoTargetProvider::new(bridge_tx, "127.0.0.1".into(), port)
+                ServoTargetProvider::new(bridge_tx, target_id, "127.0.0.1".into(), port)
             );
             server.set_target_provider(provider);
             let _ = server.run();
