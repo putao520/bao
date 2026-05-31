@@ -478,3 +478,7 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 				- [x] Wave 66: NavigatorProfile + ScreenProfile + WebGLProfile + AudioProfile + inject_navigator_js deep tests
 				  - navigator_screen_webgl_audio_deep_tests: 63 tests (navigator preset fields, screen defaults/custom, WebGL vendor/renderer/extensions, Audio noise deterministic, inject_navigator_js content verification)
 				  - 2393 tests pass, 0 failed
+				- [x] Wave 67: CDP domain handler command-level exhaustive coverage tests
+				  - domain_command_full_coverage_tests: 97 tests (all 11 domains: Runtime enable/disable/evaluate/callFunctionOn/getProperties/compileScript, Debugger enable/disable/setBreakpoint/removeBreakpoint/pause/resume/step*, CSS enable/disable/getComputedStyle, Overlay enable/disable/highlightNode, Log enable/disable/clear, Fetch enable/disable/continue/fail/fulfill, Page enable/disable/setContent/getLayoutMetrics, DOM enable/disable/describeNode/querySelector, Network enable/disable, Emulation setDeviceMetrics/clear/setTouch/setUserAgent, Input dispatch/insertText, registry completeness verification)
+				  - Fixed: bridge-dependent commands (Emulation.setDeviceMetricsOverride, Emulation.setUserAgentOverride, Page.addScriptToEvaluateOnNewDocument) correctly return -32603 when no backend responds
+				  - 2490 tests pass, 0 failed
