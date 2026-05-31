@@ -32,3 +32,177 @@ pub fn register_all_domains_into(bridge: BridgeSender, registry: &DomainRegistry
     registry.register(Box::new(stub::LogHandler)).expect("register Log");
     registry.register(Box::new(stub::FetchHandler)).expect("register Fetch");
 }
+
+// @trace TEST-CDP-DOM-001 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::servo_bridge::bridge_channel;
+    use cdp_server::{EventSender, CdpError};
+    use serde_json::{json, Value};
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_millis(100);
+
+    struct NoopSender;
+    impl EventSender for NoopSender {
+        fn send_event(&self, _method: &str, _params: Value) {}
+    }
+
+    // 1. register_all_domains_into registers 11 domains
+    #[test]
+    fn register_all_domains_into_registers_11_domains() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_into(bridge, &registry);
+
+        let expected_domains = [
+            "Page", "Runtime", "DOM", "Network", "Debugger",
+            "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch",
+        ];
+
+        for domain in &expected_domains {
+            assert!(registry.has_domain(domain), "domain '{}' should be registered", domain);
+        }
+    }
+
+    // 2. all domains have correct names and respond to known commands
+    #[test]
+    fn all_domains_have_correct_names_and_respond_to_known_commands() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_into(bridge, &registry);
+
+        // Test non-bridge commands for each domain
+        let known_commands: &[(&str, Value)] = &[
+            ("Page.enable", json!({})),
+            ("Runtime.enable", json!({})),
+            ("DOM.enable", json!({})),
+            ("Network.enable", json!({})),
+            ("Debugger.enable", json!({})),
+            ("Input.setIgnoreInputEvents", json!({})),
+            ("Emulation.clearDeviceMetricsOverride", json!({})),
+            ("CSS.enable", json!({})),
+            ("Overlay.enable", json!({})),
+            ("Log.enable", json!({})),
+            ("Fetch.disable", json!({})),
+        ];
+
+        for (command, params) in known_commands {
+            let result = registry.dispatch_command(command, params.clone(), &NoopSender);
+            assert!(result.is_some(), "{} should return Some", command);
+            assert!(result.unwrap().is_ok(), "{} should return Ok", command);
+        }
+    }
+
+    // 3. Page domain responds to non-bridge commands
+    #[test]
+    fn page_domain_responds_to_non_bridge_commands() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_into(bridge, &registry);
+
+        // Page.setContent doesn't require bridge
+        let result = registry.dispatch_command("Page.setContent", json!({ "html": "<html></html>" }), &NoopSender);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
+
+        // Page.getLayoutMetrics doesn't require bridge
+        let result = registry.dispatch_command("Page.getLayoutMetrics", json!({}), &NoopSender);
+        assert!(result.is_some());
+        let response = result.unwrap().unwrap();
+        assert!(response.get("contentSize").is_some());
+    }
+
+    // 4. CSS stub domain returns static responses
+    #[test]
+    fn css_stub_returns_static_responses() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_into(bridge, &registry);
+
+        let result = registry.dispatch_command("CSS.getComputedStyleForNode", json!({ "nodeId": 1 }), &NoopSender);
+        assert!(result.is_some());
+        let response = result.unwrap().unwrap();
+        assert!(response.get("computedStyle").is_some());
+    }
+
+    // 5. Overlay stub domain returns empty responses
+    #[test]
+    fn overlay_stub_returns_empty_responses() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_into(bridge, &registry);
+
+        let result = registry.dispatch_command("Overlay.highlightNode", json!({}), &NoopSender);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().unwrap(), json!({}));
+    }
+
+    // 6. Log stub domain handles clear command
+    #[test]
+    fn log_stub_handles_clear_command() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_into(bridge, &registry);
+
+        let result = registry.dispatch_command("Log.clear", json!({}), &NoopSender);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().unwrap(), json!({}));
+    }
+
+    // 7. Fetch stub domain handles enable with patterns
+    #[test]
+    fn fetch_stub_handles_enable_with_patterns() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_into(bridge, &registry);
+
+        let result = registry.dispatch_command(
+            "Fetch.enable",
+            json!({ "patterns": [{ "urlPattern": "*" }] }),
+            &NoopSender,
+        );
+        assert!(result.is_some());
+        let response = result.unwrap().unwrap();
+        assert_eq!(response.get("patternCount").unwrap(), 1);
+    }
+
+    // 8. Unknown command returns method not found error
+    #[test]
+    fn unknown_command_returns_method_not_found_error() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_into(bridge, &registry);
+
+        let result = registry.dispatch_command("Page.unknownMethod", json!({}), &NoopSender);
+        assert!(result.is_some());
+        let err = result.unwrap().unwrap_err();
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("unknownMethod"));
+    }
+
+    // 9. Domain not registered returns None
+    #[test]
+    fn unregistered_domain_returns_none() {
+        let registry = DomainRegistry::new();
+        // Don't register any domains
+        let result = registry.dispatch_command("Page.enable", json!({}), &NoopSender);
+        assert!(result.is_none());
+    }
+
+    // 10. All 11 domains are distinct (no duplicate registration)
+    #[test]
+    fn all_domains_are_distinct() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+
+        // First registration should succeed
+        register_all_domains_into(bridge.clone(), &registry);
+
+        // Attempting to register Page again should fail
+        let duplicate_result = registry.register(Box::new(page::PageHandler::new(bridge)));
+        assert!(duplicate_result.is_err());
+        assert!(duplicate_result.unwrap_err().contains("already registered"));
+    }
+}
