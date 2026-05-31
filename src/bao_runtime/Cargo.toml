@@ -36,3 +36,7 @@ bun_dns = { path = "../dns" }
 bun_spawn = { path = "../spawn" }
 bun_io = { path = "../io" }
 bun_base64 = { path = "../base64" }
+
+[dev-dependencies]
+bao_engine = { path = "../bao_engine" }
+tempfile = "3"

@@ -366,3 +366,132 @@ pub fn resolve_node_modules(specifier: &str, base_dir: Option<&Path>) -> ::std::
         dir = dir.parent()?;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::std::fs;
+
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::TempDir::new().expect("create temp dir")
+    }
+
+    #[test]
+    fn test_try_resolve_js_extension() {
+        let dir = tempdir();
+        let file = dir.path().join("mod.js");
+        fs::write(&file, "").unwrap();
+        let result = try_resolve(dir.path().join("mod").as_path());
+        assert_eq!(result.unwrap().extension().unwrap(), "js");
+    }
+
+    #[test]
+    fn test_try_resolve_ts_extension() {
+        let dir = tempdir();
+        let file = dir.path().join("mod.ts");
+        fs::write(&file, "").unwrap();
+        let result = try_resolve(dir.path().join("mod").as_path());
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_try_resolve_exact_match() {
+        let dir = tempdir();
+        let file = dir.path().join("data.json");
+        fs::write(&file, "{}").unwrap();
+        let result = try_resolve(dir.path().join("data.json").as_path());
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_try_resolve_index_js() {
+        let dir = tempdir();
+        let pkg = dir.path().join("pkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("index.js"), "").unwrap();
+        // try_resolve checks directory → falls through to index.js
+        // But since directory itself exists, it returns the dir path first.
+        // This verifies the behavior: directory paths resolve to themselves.
+        let result = try_resolve(pkg.as_path());
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_try_resolve_not_found() {
+        let dir = tempdir();
+        let result = try_resolve(dir.path().join("nonexistent").as_path());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_resolve_priority_js_over_mjs() {
+        let dir = tempdir();
+        fs::write(dir.path().join("mod.js"), "").unwrap();
+        fs::write(dir.path().join("mod.mjs"), "").unwrap();
+        let result = try_resolve(dir.path().join("mod").as_path()).unwrap();
+        assert_eq!(result.extension().unwrap(), "js");
+    }
+
+    #[test]
+    fn test_resolve_node_modules_finds_package() {
+        let dir = tempdir();
+        let nm = dir.path().join("node_modules").join("lodash");
+        fs::create_dir_all(&nm).unwrap();
+        fs::write(nm.join("index.js"), "").unwrap();
+        let result = resolve_node_modules("lodash", Some(dir.path()));
+        assert!(result.is_some());
+        assert!(result.unwrap().to_str().unwrap().contains("lodash"));
+    }
+
+    #[test]
+    fn test_resolve_node_modules_not_found() {
+        let dir = tempdir();
+        let nm = dir.path().join("node_modules");
+        fs::create_dir_all(&nm).unwrap();
+        let result = resolve_node_modules("nonexistent", Some(dir.path()));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_node_modules_traverses_up() {
+        let dir = tempdir();
+        let child = dir.path().join("sub").join("deep");
+        fs::create_dir_all(&child).unwrap();
+        let nm = dir.path().join("node_modules").join("pkg");
+        fs::create_dir_all(&nm).unwrap();
+        fs::write(nm.join("index.js"), "").unwrap();
+        let result = resolve_node_modules("pkg", Some(&child));
+        assert!(result.is_some());
+        assert!(result.unwrap().to_str().unwrap().contains("pkg"));
+    }
+
+    #[test]
+    fn test_resolve_specifier_absolute() {
+        let dir = tempdir();
+        let file = dir.path().join("target.js");
+        fs::write(&file, "").unwrap();
+        let abs = file.to_str().unwrap().to_string();
+        let result = resolve_specifier(&abs, None);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_resolve_specifier_relative() {
+        let dir = tempdir();
+        let file = dir.path().join("rel.js");
+        fs::write(&file, "").unwrap();
+        let result = resolve_specifier("./rel", Some(dir.path()));
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_resolve_specifier_parent_relative() {
+        let dir = tempdir();
+        let child = dir.path().join("sub");
+        fs::create_dir_all(&child).unwrap();
+        let file = dir.path().join("parent.js");
+        fs::write(&file, "").unwrap();
+        let result = resolve_specifier("../parent", Some(&child));
+        assert!(result.is_some());
+    }
+}
