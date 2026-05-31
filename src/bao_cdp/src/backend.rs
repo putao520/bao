@@ -163,3 +163,124 @@ impl CdpBackend for ExternalBackend {
         })
     }
 }
+
+// @trace TEST-CDP-004 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 1. InternalBackend::new() constructs without panic
+    #[test]
+    fn internal_backend_new_creates_without_panic() {
+        let _backend = InternalBackend::new();
+    }
+
+    // 2. Page.enable via InternalBackend returns ok
+    #[test]
+    fn internal_backend_send_command_page_enable_returns_ok() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("Page.enable", &None, "test-target").unwrap();
+        assert_eq!(result, serde_json::json!({}));
+    }
+
+    // 3. Runtime.enable returns ok with executionContextId
+    #[test]
+    fn internal_backend_send_command_runtime_enable_returns_ok_with_execution_context_id() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("Runtime.enable", &None, "test-target").unwrap();
+        assert!(result.get("executionContextId").is_some());
+        assert_eq!(result["executionContextId"], 1);
+    }
+
+    // 4. DOM.getDocument returns ok with root node
+    #[test]
+    fn internal_backend_send_command_dom_get_document_returns_ok() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("DOM.getDocument", &None, "test-target").unwrap();
+        assert!(result.get("root").is_some());
+        assert_eq!(result["root"]["nodeId"], 1);
+        assert_eq!(result["root"]["nodeType"], 9);
+    }
+
+    // 5. Network.enable returns ok
+    #[test]
+    fn internal_backend_send_command_network_enable_returns_ok() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("Network.enable", &None, "test-target").unwrap();
+        assert_eq!(result, serde_json::json!({}));
+    }
+
+    // 6. Debugger.enable returns ok
+    #[test]
+    fn internal_backend_send_command_debugger_enable_returns_ok() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("Debugger.enable", &None, "test-target").unwrap();
+        assert_eq!(result, serde_json::json!({}));
+    }
+
+    // 7. Unknown domain/command returns error code -32601
+    #[test]
+    fn internal_backend_send_command_unknown_returns_error_32601() {
+        let backend = InternalBackend::new();
+        let err = backend.send_command("Foo.bar", &None, "test-target").unwrap_err();
+        assert_eq!(err.code, -32601);
+    }
+
+    // 8. Page.getLayoutMetrics returns dimensions
+    #[test]
+    fn internal_backend_send_command_page_get_layout_metrics_returns_dimensions() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("Page.getLayoutMetrics", &None, "test-target").unwrap();
+        assert!(result.get("contentSize").is_some());
+        assert_eq!(result["contentSize"]["width"], 1920);
+        assert_eq!(result["contentSize"]["height"], 1080);
+    }
+
+    // 9. target_id is passed through to the command handler
+    #[test]
+    fn internal_backend_send_command_with_target_id_passed_through() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("Target.getTargets", &None, "my-custom-target").unwrap();
+        let infos = result["targetInfos"].as_array().unwrap();
+        assert_eq!(infos[0]["targetId"], "my-custom-target");
+    }
+
+    // 10. CSS.enable returns ok
+    #[test]
+    fn internal_backend_send_command_css_enable_returns_ok() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("CSS.enable", &None, "test-target").unwrap();
+        assert_eq!(result, serde_json::json!({}));
+    }
+
+    // 11. Log.enable returns ok
+    #[test]
+    fn internal_backend_send_command_log_enable_returns_ok() {
+        let backend = InternalBackend::new();
+        let result = backend.send_command("Log.enable", &None, "test-target").unwrap();
+        assert_eq!(result, serde_json::json!({}));
+    }
+
+    // 12. Fetch.enable returns ok with patternCount
+    #[test]
+    fn internal_backend_send_command_fetch_enable_returns_ok() {
+        let backend = InternalBackend::new();
+        let params = Some(serde_json::json!({"patterns": [{"urlPattern": "*"}]}));
+        let result = backend.send_command("Fetch.enable", &params, "test-target").unwrap();
+        assert_eq!(result["patternCount"], 1);
+    }
+
+    // 13. ExternalBackend::new with invalid endpoint still constructs (connects lazily)
+    #[test]
+    fn external_backend_new_with_invalid_endpoint_still_constructs() {
+        let backend = ExternalBackend::new("ws://127.0.0.1:1").unwrap();
+        assert_eq!(backend.endpoint, "ws://127.0.0.1:1");
+    }
+
+    // 14. InternalBackend is Send + Sync (CdpBackend trait requirement)
+    #[test]
+    fn internal_backend_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<InternalBackend>();
+    }
+}

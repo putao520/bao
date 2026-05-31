@@ -74,3 +74,195 @@ impl Http2Fingerprint {
         ordered
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn firefox_has_expected_values() {
+        let fp = Http2Fingerprint::firefox();
+        assert_eq!(fp.header_table_size, 65536);
+        assert_eq!(fp.enable_push, false);
+        assert_eq!(fp.max_concurrent_streams, 100);
+        assert_eq!(fp.initial_window_size, 131072);
+        assert_eq!(fp.max_frame_size, 16384);
+        assert_eq!(fp.max_header_list_size, 262144);
+        assert_eq!(fp.window_update_size, 131072);
+    }
+
+    #[test]
+    fn chrome_has_expected_values() {
+        let fp = Http2Fingerprint::chrome();
+        assert_eq!(fp.max_concurrent_streams, 1000);
+        assert_eq!(fp.initial_window_size, 6291456);
+        assert_eq!(fp.window_update_size, 15663105);
+    }
+
+    #[test]
+    fn firefox_pseudo_header_order() {
+        let fp = Http2Fingerprint::firefox();
+        assert_eq!(fp.pseudo_header_order, vec![":method", ":path", ":authority", ":scheme"]);
+    }
+
+    #[test]
+    fn chrome_pseudo_header_order() {
+        let fp = Http2Fingerprint::chrome();
+        assert_eq!(fp.pseudo_header_order, vec![":method", ":authority", ":scheme", ":path"]);
+    }
+
+    #[test]
+    fn firefox_and_chrome_have_different_akamai_fingerprints() {
+        let ff = Http2Fingerprint::firefox().akamai_fingerprint();
+        let ch = Http2Fingerprint::chrome().akamai_fingerprint();
+        assert_ne!(ff, ch);
+    }
+
+    #[test]
+    fn akamai_fingerprint_format_6_colon_separated_numbers() {
+        let fp = Http2Fingerprint::firefox();
+        let fingerprint = fp.akamai_fingerprint();
+        let parts: Vec<&str> = fingerprint.split(':').collect();
+        assert_eq!(parts.len(), 6);
+        for part in &parts {
+            assert!(part.parse::<u32>().is_ok());
+        }
+    }
+
+    #[test]
+    fn akamai_fingerprint_firefox_starts_with_65536() {
+        let fp = Http2Fingerprint::firefox();
+        let fingerprint = fp.akamai_fingerprint();
+        assert!(fingerprint.starts_with("65536:"));
+    }
+
+    #[test]
+    fn akamai_fingerprint_chrome_starts_with_65536() {
+        let fp = Http2Fingerprint::chrome();
+        let fingerprint = fp.akamai_fingerprint();
+        assert!(fingerprint.starts_with("65536:"));
+    }
+
+    #[test]
+    fn settings_frame_payload_returns_6_tuples() {
+        let fp = Http2Fingerprint::firefox();
+        let payload = fp.settings_frame_payload();
+        assert_eq!(payload.len(), 6);
+    }
+
+    #[test]
+    fn settings_frame_payload_firefox_first_is_0x01_65536() {
+        let fp = Http2Fingerprint::firefox();
+        let payload = fp.settings_frame_payload();
+        assert_eq!(payload[0], (0x01, 65536));
+    }
+
+    #[test]
+    fn settings_frame_payload_chrome_third_is_0x04_1000() {
+        let fp = Http2Fingerprint::chrome();
+        let payload = fp.settings_frame_payload();
+        assert_eq!(payload[2], (0x04, 1000));
+    }
+
+    #[test]
+    fn settings_frame_payload_enable_push_0_when_false() {
+        let fp = Http2Fingerprint::firefox();
+        let payload = fp.settings_frame_payload();
+        assert_eq!(payload[1], (0x03, 0));
+    }
+
+    #[test]
+    fn ordered_headers_pseudo_first_firefox() {
+        let fp = Http2Fingerprint::firefox();
+        let input: Vec<(&str, &str)> = vec![
+            ("content-length", "0"),
+            (":method", "GET"),
+            (":path", "/"),
+            ("host", "example.com"),
+            (":authority", "example.com"),
+            (":scheme", "https"),
+        ];
+        let ordered = fp.ordered_headers(&input);
+        assert_eq!(ordered[0].0, ":method");
+        assert_eq!(ordered[1].0, ":path");
+        assert_eq!(ordered[2].0, ":authority");
+        assert_eq!(ordered[3].0, ":scheme");
+    }
+
+    #[test]
+    fn ordered_headers_chrome_specific_order() {
+        let fp = Http2Fingerprint::chrome();
+        let input: Vec<(&str, &str)> = vec![
+            (":path", "/"),
+            (":scheme", "https"),
+            (":method", "GET"),
+            (":authority", "example.com"),
+        ];
+        let ordered = fp.ordered_headers(&input);
+        assert_eq!(ordered[0].0, ":method");
+        assert_eq!(ordered[1].0, ":authority");
+        assert_eq!(ordered[2].0, ":scheme");
+        assert_eq!(ordered[3].0, ":path");
+    }
+
+    #[test]
+    fn ordered_headers_no_pseudo_headers_preserves_order() {
+        let fp = Http2Fingerprint::firefox();
+        let input: Vec<(&str, &str)> = vec![
+            ("host", "example.com"),
+            ("content-length", "0"),
+            ("accept", "*/*"),
+        ];
+        let ordered = fp.ordered_headers(&input);
+        assert_eq!(ordered[0].0, "host");
+        assert_eq!(ordered[1].0, "content-length");
+        assert_eq!(ordered[2].0, "accept");
+    }
+
+    #[test]
+    fn ordered_headers_empty_input_returns_empty() {
+        let fp = Http2Fingerprint::firefox();
+        let input: Vec<(&str, &str)> = vec![];
+        let ordered = fp.ordered_headers(&input);
+        assert!(ordered.is_empty());
+    }
+
+    #[test]
+    fn ordered_headers_only_pseudo_headers() {
+        let fp = Http2Fingerprint::firefox();
+        let input: Vec<(&str, &str)> = vec![
+            (":method", "GET"),
+            (":path", "/"),
+            (":authority", "example.com"),
+            (":scheme", "https"),
+        ];
+        let ordered = fp.ordered_headers(&input);
+        assert_eq!(ordered.len(), 4);
+        assert_eq!(ordered[0].0, ":method");
+        assert_eq!(ordered[1].0, ":path");
+        assert_eq!(ordered[2].0, ":authority");
+        assert_eq!(ordered[3].0, ":scheme");
+    }
+
+    #[test]
+    fn clone_works() {
+        let fp = Http2Fingerprint::firefox();
+        let cloned = fp.clone();
+        assert_eq!(fp.header_table_size, cloned.header_table_size);
+        assert_eq!(fp.pseudo_header_order, cloned.pseudo_header_order);
+    }
+
+    #[test]
+    fn debug_format_contains_http2_fingerprint() {
+        let fp = Http2Fingerprint::firefox();
+        let debug_str = format!("{:?}", fp);
+        assert!(debug_str.contains("Http2Fingerprint"));
+    }
+
+    #[test]
+    fn firefox_and_chrome_different_pseudo_order() {
+        let ff = Http2Fingerprint::firefox();
+        let ch = Http2Fingerprint::chrome();
+        assert_ne!(ff.pseudo_header_order, ch.pseudo_header_order);
+    }
+}

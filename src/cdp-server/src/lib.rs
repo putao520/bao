@@ -178,3 +178,137 @@ impl ServerConfigBuilder {
         self.inner
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- ServerConfig defaults --
+
+    #[test]
+    fn server_config_default_host_is_127_0_0_1() {
+        assert_eq!(ServerConfig::default().host, "127.0.0.1");
+    }
+
+    #[test]
+    fn server_config_default_port_is_9222() {
+        assert_eq!(ServerConfig::default().port, 9222);
+    }
+
+    #[test]
+    fn server_config_default_timeout_is_30() {
+        assert_eq!(ServerConfig::default().http_timeout_seconds, 30);
+    }
+
+    #[test]
+    fn server_config_default_max_sessions_is_100() {
+        assert_eq!(ServerConfig::default().max_sessions, 100);
+    }
+
+    #[test]
+    fn server_config_default_browser_name_is_Bao() {
+        assert_eq!(ServerConfig::default().browser_name, "Bao/0.1.0");
+    }
+
+    #[test]
+    fn server_config_default_protocol_version_is_1_3() {
+        assert_eq!(ServerConfig::default().protocol_version, "1.3");
+    }
+
+    #[test]
+    fn server_config_default_user_agent_is_none() {
+        assert!(ServerConfig::default().user_agent.is_none());
+    }
+
+    #[test]
+    fn server_config_default_v8_version_is_none() {
+        assert!(ServerConfig::default().v8_version.is_none());
+    }
+
+    #[test]
+    fn server_config_default_webkit_version_is_none() {
+        assert!(ServerConfig::default().webkit_version.is_none());
+    }
+
+    // -- ServerConfigBuilder setters --
+
+    #[test]
+    fn builder_sets_host() {
+        assert_eq!(ServerConfig::builder().host("0.0.0.0").build().host, "0.0.0.0");
+    }
+
+    #[test]
+    fn builder_sets_port() {
+        assert_eq!(ServerConfig::builder().port(8080).build().port, 8080);
+    }
+
+    #[test]
+    fn builder_sets_timeout() {
+        assert_eq!(ServerConfig::builder().http_timeout_seconds(60).build().http_timeout_seconds, 60);
+    }
+
+    #[test]
+    fn builder_sets_max_sessions() {
+        assert_eq!(ServerConfig::builder().max_sessions(50).build().max_sessions, 50);
+    }
+
+    #[test]
+    fn builder_sets_browser_name() {
+        assert_eq!(ServerConfig::builder().browser_name("Chrome/120").build().browser_name, "Chrome/120");
+    }
+
+    #[test]
+    fn builder_sets_user_agent() {
+        let ua = ServerConfig::builder().user_agent("Mozilla/5.0").build().user_agent;
+        assert_eq!(ua.as_deref(), Some("Mozilla/5.0"));
+    }
+
+    #[test]
+    fn builder_sets_v8_version() {
+        let ver = ServerConfig::builder().v8_version("12.0").build().v8_version;
+        assert_eq!(ver.as_deref(), Some("12.0"));
+    }
+
+    #[test]
+    fn builder_sets_webkit_version() {
+        let ver = ServerConfig::builder().webkit_version("537.36").build().webkit_version;
+        assert_eq!(ver.as_deref(), Some("537.36"));
+    }
+
+    #[test]
+    fn builder_chaining_all_fields() {
+        let cfg = ServerConfig::builder()
+            .host("0.0.0.0")
+            .port(9223)
+            .http_timeout_seconds(120)
+            .max_sessions(200)
+            .browser_name("TestBrowser")
+            .user_agent("TestAgent")
+            .v8_version("13.0")
+            .webkit_version("600.0")
+            .build();
+        assert_eq!(cfg.host, "0.0.0.0");
+        assert_eq!(cfg.port, 9223);
+        assert_eq!(cfg.http_timeout_seconds, 120);
+        assert_eq!(cfg.max_sessions, 200);
+        assert_eq!(cfg.browser_name, "TestBrowser");
+        assert_eq!(cfg.user_agent.as_deref(), Some("TestAgent"));
+        assert_eq!(cfg.v8_version.as_deref(), Some("13.0"));
+        assert_eq!(cfg.webkit_version.as_deref(), Some("600.0"));
+    }
+
+    #[test]
+    fn builder_default_then_build_equals_default_config() {
+        let built = ServerConfig::builder().build();
+        let default = ServerConfig::default();
+        assert_eq!(built.host, default.host);
+        assert_eq!(built.port, default.port);
+        assert_eq!(built.http_timeout_seconds, default.http_timeout_seconds);
+        assert_eq!(built.max_sessions, default.max_sessions);
+        assert_eq!(built.browser_name, default.browser_name);
+        assert_eq!(built.protocol_version, default.protocol_version);
+        assert_eq!(built.user_agent, default.user_agent);
+        assert_eq!(built.v8_version, default.v8_version);
+        assert_eq!(built.webkit_version, default.webkit_version);
+    }
+}
