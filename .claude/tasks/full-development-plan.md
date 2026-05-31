@@ -482,3 +482,7 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 				  - domain_command_full_coverage_tests: 97 tests (all 11 domains: Runtime enable/disable/evaluate/callFunctionOn/getProperties/compileScript, Debugger enable/disable/setBreakpoint/removeBreakpoint/pause/resume/step*, CSS enable/disable/getComputedStyle, Overlay enable/disable/highlightNode, Log enable/disable/clear, Fetch enable/disable/continue/fail/fulfill, Page enable/disable/setContent/getLayoutMetrics, DOM enable/disable/describeNode/querySelector, Network enable/disable, Emulation setDeviceMetrics/clear/setTouch/setUserAgent, Input dispatch/insertText, registry completeness verification)
 				  - Fixed: bridge-dependent commands (Emulation.setDeviceMetricsOverride, Emulation.setUserAgentOverride, Page.addScriptToEvaluateOnNewDocument) correctly return -32603 when no backend responds
 				  - 2490 tests pass, 0 failed
+				- [x] Wave 68: ServerConfigBuilder + DomainRegistry + TargetInfo + SessionState + BaoConfig/PageConfig/BrowserConfig deep tests
+				  - cdp-server/server_config_builder_deep_tests: 45 tests (ServerConfig defaults, builder chaining, all builder methods, DomainRegistry register/dispatch/has_domain, TargetInfo fields/clone/serde, SessionState enum variants/eq/debug)
+				  - bao_browser/config_deep_tests: 35 tests (BaoConfig defaults + validate boundaries, PageConfig custom, BrowserConfig defaults + From<BaoConfig> conversion, port boundaries)
+				  - 2585 tests pass, 0 failed
