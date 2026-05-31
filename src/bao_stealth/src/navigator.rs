@@ -83,3 +83,108 @@ impl ScreenProfile {
         }
     }
 }
+
+// @trace REQ-STL-004 [req:REQ-STL-004] [level:unit]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn firefox_user_agent_contains_firefox() {
+        let profile = NavigatorProfile::firefox();
+        assert!(profile.user_agent.contains("Firefox"));
+    }
+
+    #[test]
+    fn firefox_platform_is_linux_x86_64() {
+        let profile = NavigatorProfile::firefox();
+        assert_eq!(profile.platform, "Linux x86_64");
+    }
+
+    #[test]
+    fn firefox_oscpu_is_some() {
+        let profile = NavigatorProfile::firefox();
+        assert!(profile.oscpu.is_some());
+    }
+
+    #[test]
+    fn firefox_vendor_is_empty() {
+        let profile = NavigatorProfile::firefox();
+        assert_eq!(profile.vendor, "");
+    }
+
+    #[test]
+    fn chrome_user_agent_contains_chrome() {
+        let profile = NavigatorProfile::chrome();
+        assert!(profile.user_agent.contains("Chrome"));
+    }
+
+    #[test]
+    fn chrome_vendor_is_google_inc() {
+        let profile = NavigatorProfile::chrome();
+        assert_eq!(profile.vendor, "Google Inc.");
+    }
+
+    #[test]
+    fn chrome_oscpu_is_none() {
+        let profile = NavigatorProfile::chrome();
+        assert!(profile.oscpu.is_none());
+    }
+
+    #[test]
+    fn chrome_build_id_is_none() {
+        let profile = NavigatorProfile::chrome();
+        assert!(profile.build_id.is_none());
+    }
+
+    #[test]
+    fn chrome_product_sub_is_20030107() {
+        let profile = NavigatorProfile::chrome();
+        assert_eq!(profile.product_sub, "20030107");
+    }
+
+    #[test]
+    fn screen_profile_default_has_1920x1080() {
+        let screen = ScreenProfile::default();
+        assert_eq!(screen.width, 1920);
+        assert_eq!(screen.height, 1080);
+    }
+
+    #[test]
+    fn screen_profile_default_avail_height_is_1040() {
+        let screen = ScreenProfile::default();
+        assert_eq!(screen.avail_height, 1040);
+    }
+
+    #[test]
+    fn screen_profile_new_custom_values() {
+        let screen = ScreenProfile::new(800, 600, 2.0);
+        assert_eq!(screen.width, 800);
+        assert_eq!(screen.height, 600);
+        assert_eq!(screen.device_pixel_ratio, 2.0);
+        assert_eq!(screen.color_depth, 24);
+        assert_eq!(screen.pixel_depth, 24);
+    }
+
+    #[test]
+    fn screen_profile_new_avail_height_minus_40() {
+        let screen = ScreenProfile::new(800, 600, 2.0);
+        assert_eq!(screen.avail_height, 560);
+    }
+
+    #[test]
+    fn navigator_profile_clone_preserves_user_agent() {
+        let profile = NavigatorProfile::firefox();
+        let cloned = profile.clone();
+        assert_eq!(cloned.user_agent, profile.user_agent);
+    }
+
+    #[test]
+    fn screen_profile_clone_works() {
+        let screen = ScreenProfile::default();
+        let cloned = screen.clone();
+        assert_eq!(cloned.width, screen.width);
+        assert_eq!(cloned.height, screen.height);
+        assert_eq!(cloned.device_pixel_ratio, screen.device_pixel_ratio);
+    }
+}

@@ -45,3 +45,92 @@ impl StealthProfile {
         }
     }
 }
+
+// @trace REQ-STL-007 [req:REQ-STL-007] [level:unit]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn firefox_default_creates_without_panic() {
+        let _ = StealthProfile::firefox_default();
+    }
+
+    #[test]
+    fn chrome_default_creates_without_panic() {
+        let _ = StealthProfile::chrome_default();
+    }
+
+    #[test]
+    fn firefox_user_agent_contains_firefox() {
+        let profile = StealthProfile::firefox_default();
+        assert!(
+            profile.navigator.user_agent.contains("Firefox"),
+            "Firefox profile user_agent should contain 'Firefox', got: {}",
+            profile.navigator.user_agent
+        );
+    }
+
+    #[test]
+    fn chrome_user_agent_contains_chrome() {
+        let profile = StealthProfile::chrome_default();
+        assert!(
+            profile.navigator.user_agent.contains("Chrome"),
+            "Chrome profile user_agent should contain 'Chrome', got: {}",
+            profile.navigator.user_agent
+        );
+    }
+
+    #[test]
+    fn firefox_and_chrome_have_different_user_agents() {
+        let ff = StealthProfile::firefox_default();
+        let ch = StealthProfile::chrome_default();
+        assert_ne!(
+            ff.navigator.user_agent, ch.navigator.user_agent,
+            "Firefox and Chrome profiles should have different user agents"
+        );
+    }
+
+    #[test]
+    fn firefox_and_chrome_have_different_navigator_vendor() {
+        let ff = StealthProfile::firefox_default();
+        let ch = StealthProfile::chrome_default();
+        assert_ne!(
+            ff.navigator.vendor, ch.navigator.vendor,
+            "Firefox and Chrome profiles should have different navigator.vendor"
+        );
+    }
+
+    #[test]
+    fn clone_works() {
+        let original = StealthProfile::firefox_default();
+        let cloned = original.clone();
+        assert_eq!(
+            original.navigator.user_agent, cloned.navigator.user_agent,
+            "Cloned profile should have the same user agent"
+        );
+    }
+
+    #[test]
+    fn debug_format_contains_stealth_profile() {
+        let profile = StealthProfile::firefox_default();
+        let debug_str = format!("{:?}", profile);
+        assert!(
+            debug_str.contains("StealthProfile"),
+            "Debug output should contain 'StealthProfile', got: {}",
+            debug_str
+        );
+    }
+
+    #[test]
+    fn firefox_screen_is_default_width() {
+        let profile = StealthProfile::firefox_default();
+        assert_eq!(profile.screen.width, 1920);
+    }
+
+    #[test]
+    fn chrome_screen_is_default_width() {
+        let profile = StealthProfile::chrome_default();
+        assert_eq!(profile.screen.width, 1920);
+    }
+}
