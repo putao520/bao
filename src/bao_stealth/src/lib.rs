@@ -112,3 +112,132 @@ WebGLRenderingContext.prototype.getParameter = function(param) {{
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_stores_profile() {
+        let profile = StealthProfile::firefox_default();
+        let engine = StealthEngine::new(profile.clone());
+        assert_eq!(engine.profile().navigator.user_agent, profile.navigator.user_agent);
+    }
+
+    #[test]
+    fn default_engine_is_firefox() {
+        let engine = StealthEngine::default_engine();
+        let firefox = StealthProfile::firefox_default();
+        assert_eq!(engine.profile().navigator.user_agent, firefox.navigator.user_agent);
+    }
+
+    #[test]
+    fn tls_config_matches_profile() {
+        let engine = StealthEngine::default_engine();
+        assert_eq!(engine.tls_config().ja3_hash, engine.profile().tls.ja3_hash);
+    }
+
+    #[test]
+    fn http2_config_matches_profile() {
+        let engine = StealthEngine::default_engine();
+        assert_eq!(engine.http2_config().header_table_size, engine.profile().http2.header_table_size);
+    }
+
+    #[test]
+    fn canvas_noise_matches_profile() {
+        let engine = StealthEngine::default_engine();
+        assert_eq!(engine.canvas_noise().seed(), engine.profile().canvas.seed());
+    }
+
+    #[test]
+    fn navigator_matches_profile() {
+        let engine = StealthEngine::default_engine();
+        assert_eq!(engine.navigator().user_agent, engine.profile().navigator.user_agent);
+    }
+
+    #[test]
+    fn screen_matches_profile() {
+        let engine = StealthEngine::default_engine();
+        assert_eq!(engine.screen().width, engine.profile().screen.width);
+        assert_eq!(engine.screen().height, engine.profile().screen.height);
+    }
+
+    #[test]
+    fn webgl_matches_profile() {
+        let engine = StealthEngine::default_engine();
+        assert_eq!(engine.webgl().vendor, engine.profile().webgl.vendor);
+        assert_eq!(engine.webgl().renderer, engine.profile().webgl.renderer);
+    }
+
+    #[test]
+    fn audio_matches_profile() {
+        let engine = StealthEngine::default_engine();
+        assert!((engine.audio().noise_amplitude() - engine.profile().audio.noise_amplitude()).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn behavior_matches_profile() {
+        let engine = StealthEngine::default_engine();
+        assert_eq!(engine.behavior().seed(), engine.profile().behavior.seed());
+    }
+
+    #[test]
+    fn inject_navigator_js_contains_user_agent() {
+        let engine = StealthEngine::default_engine();
+        let js = engine.inject_navigator_js();
+        assert!(js.contains(&engine.profile().navigator.user_agent));
+    }
+
+    #[test]
+    fn inject_navigator_js_contains_platform() {
+        let engine = StealthEngine::default_engine();
+        let js = engine.inject_navigator_js();
+        assert!(js.contains(&engine.profile().navigator.platform));
+    }
+
+    #[test]
+    fn inject_navigator_js_contains_language() {
+        let engine = StealthEngine::default_engine();
+        let js = engine.inject_navigator_js();
+        assert!(js.contains(&engine.profile().navigator.language));
+    }
+
+    #[test]
+    fn inject_navigator_js_sets_webdriver_false() {
+        let engine = StealthEngine::default_engine();
+        let js = engine.inject_navigator_js();
+        assert!(js.contains("webdriver"));
+        assert!(js.contains("false"));
+    }
+
+    #[test]
+    fn inject_navigator_js_contains_screen_dimensions() {
+        let engine = StealthEngine::default_engine();
+        let js = engine.inject_navigator_js();
+        assert!(js.contains(&engine.profile().screen.width.to_string()));
+        assert!(js.contains(&engine.profile().screen.height.to_string()));
+    }
+
+    #[test]
+    fn inject_navigator_js_contains_cdc_removal() {
+        let engine = StealthEngine::default_engine();
+        let js = engine.inject_navigator_js();
+        assert!(js.contains("cdc_adoQpoasnfa76pfcZLmcfl"));
+    }
+
+    #[test]
+    fn inject_navigator_js_contains_webgl_override() {
+        let engine = StealthEngine::default_engine();
+        let js = engine.inject_navigator_js();
+        assert!(js.contains(&engine.profile().webgl.vendor));
+        assert!(js.contains(&engine.profile().webgl.renderer));
+    }
+
+    #[test]
+    fn inject_navigator_js_contains_device_pixel_ratio() {
+        let engine = StealthEngine::default_engine();
+        let js = engine.inject_navigator_js();
+        let dpr = engine.profile().screen.device_pixel_ratio.to_string();
+        assert!(js.contains(&dpr));
+    }
+}

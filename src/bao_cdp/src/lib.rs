@@ -310,3 +310,91 @@ impl std::fmt::Display for CDPServerError {
 }
 
 impl std::error::Error for CDPServerError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn cdp_server_new_creates_server() {
+        let server = CDPServer::new(9222);
+        assert_eq!(server.port(), 9222);
+        assert!(!server.target_id().is_empty());
+    }
+
+    #[test]
+    fn cdp_server_ws_url_format() {
+        let server = CDPServer::new(9222);
+        let ws_url = server.ws_url();
+        assert!(ws_url.starts_with("ws://127.0.0.1:9222/devtools/page/"));
+    }
+
+    #[test]
+    fn cdp_server_json_url_format() {
+        let server = CDPServer::new(9222);
+        assert_eq!(server.json_url(), "http://127.0.0.1:9222/json");
+    }
+
+    #[test]
+    fn cdp_server_with_bridge() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        assert_eq!(server.port(), 9333);
+    }
+
+    #[test]
+    fn cdp_server_event_sender() {
+        let server = CDPServer::new(9222);
+        let _tx = server.event_sender();
+    }
+
+    #[test]
+    fn cdp_server_error_display_bind() {
+        let err = CDPServerError::Bind("port in use".into());
+        assert!(err.to_string().contains("Bind error"));
+        assert!(err.to_string().contains("port in use"));
+    }
+
+    #[test]
+    fn cdp_server_error_display_io() {
+        let err = CDPServerError::Io("broken pipe".into());
+        assert!(err.to_string().contains("IO error"));
+    }
+
+    #[test]
+    fn cdp_server_error_display_ws() {
+        let err = CDPServerError::WebSocket("handshake failed".into());
+        assert!(err.to_string().contains("WebSocket error"));
+    }
+
+    #[test]
+    fn cdp_server_error_display_protocol() {
+        let err = CDPServerError::Protocol("invalid frame".into());
+        assert!(err.to_string().contains("Protocol error"));
+    }
+
+    #[test]
+    fn cdp_command_send_event() {
+        let server = CDPServer::new(9222);
+        server.send_event("Page.loadEventFired", serde_json::json!({"timestamp": 12345.0}));
+    }
+
+    #[test]
+    fn cdp_command_shutdown() {
+        let server = CDPServer::new(9222);
+        server.shutdown();
+    }
+
+    #[test]
+    fn rand_id_is_nonzero() {
+        let id = rand_id();
+        assert_ne!(id, 0);
+    }
+
+    #[test]
+    fn cdp_server_error_is_std_error() {
+        let err = CDPServerError::Bind("test".into());
+        let _: &dyn std::error::Error = &err;
+    }
+}
