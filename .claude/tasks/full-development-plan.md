@@ -486,3 +486,6 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 				  - cdp-server/server_config_builder_deep_tests: 45 tests (ServerConfig defaults, builder chaining, all builder methods, DomainRegistry register/dispatch/has_domain, TargetInfo fields/clone/serde, SessionState enum variants/eq/debug)
 				  - bao_browser/config_deep_tests: 35 tests (BaoConfig defaults + validate boundaries, PageConfig custom, BrowserConfig defaults + From<BaoConfig> conversion, port boundaries)
 				  - 2585 tests pass, 0 failed
+				- [x] Wave 69: BridgeCommand exhaustive (all 25 variants) + BridgeResponse + bridge_channel behavior tests
+				  - bridge_command_exhaustive_tests: 52 tests (all 25 BridgeCommand variants construction+debug, debug output verification, empty/unicode/edge values, BridgeResponse ok/err/null/empty, bridge_channel send timeout/closed receiver/is_alive/fire_and_forget)
+				  - 2637 tests pass, 0 failed
