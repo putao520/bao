@@ -1428,6 +1428,445 @@ unsafe extern "C" fn url_format_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     true
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_state() -> UrlState {
+        UrlState {
+            href: "https://user:pass@example.com:8080/path/name?query=1#frag".into(),
+            protocol: "https:".into(),
+            username: "user".into(),
+            password: "pass".into(),
+            host: "example.com:8080".into(),
+            hostname: "example.com".into(),
+            port: "8080".into(),
+            pathname: "/path/name".into(),
+            search: "?query=1".into(),
+            hash: "#frag".into(),
+            origin: "https://example.com:8080".into(),
+        }
+    }
+
+    // ── parse_url: empty / whitespace ──
+
+    #[test]
+    fn parse_url_empty_returns_none() {
+        assert!(parse_url("", None).is_none());
+    }
+
+    #[test]
+    fn parse_url_whitespace_returns_none() {
+        assert!(parse_url("   ", None).is_none());
+    }
+
+    // ── parse_url: data: URLs ──
+
+    #[test]
+    fn parse_url_data_text() {
+        let s = parse_url("data:text/html,hello", None).unwrap();
+        assert_eq!(s.protocol, "data:");
+        assert_eq!(s.pathname, "text/html,hello");
+        assert_eq!(s.origin, "null");
+        assert_eq!(s.href, "data:text/html,hello");
+    }
+
+    #[test]
+    fn parse_url_data_base64() {
+        let s = parse_url("data:image/png;base64,abc123", None).unwrap();
+        assert_eq!(s.protocol, "data:");
+        assert_eq!(s.pathname, "image/png;base64,abc123");
+    }
+
+    // ── parse_url: blob: URLs ──
+
+    #[test]
+    fn parse_url_blob() {
+        let s = parse_url("blob:https://example.com/uuid-1234", None).unwrap();
+        assert_eq!(s.protocol, "blob:");
+        assert_eq!(s.pathname, "https://example.com/uuid-1234");
+        assert_eq!(s.origin, "null");
+    }
+
+    // ── parse_url: absolute URLs ──
+
+    #[test]
+    fn parse_url_https_full() {
+        let s = parse_url("https://example.com/path", None).unwrap();
+        assert_eq!(s.protocol, "https:");
+        assert_eq!(s.hostname, "example.com");
+        assert_eq!(s.pathname, "/path");
+        assert_eq!(s.port, "");
+        assert_eq!(s.username, "");
+        assert_eq!(s.password, "");
+    }
+
+    #[test]
+    fn parse_url_with_port() {
+        let s = parse_url("http://localhost:3000/api", None).unwrap();
+        assert_eq!(s.hostname, "localhost");
+        assert_eq!(s.port, "3000");
+        assert_eq!(s.host, "localhost:3000");
+        assert_eq!(s.pathname, "/api");
+    }
+
+    #[test]
+    fn parse_url_with_userinfo() {
+        let s = parse_url("ftp://user:pass@ftp.example.com/file.txt", None).unwrap();
+        assert_eq!(s.username, "user");
+        assert_eq!(s.password, "pass");
+        assert_eq!(s.hostname, "ftp.example.com");
+        assert_eq!(s.pathname, "/file.txt");
+    }
+
+    #[test]
+    fn parse_url_user_no_password() {
+        let s = parse_url("https://admin@host.com/", None).unwrap();
+        assert_eq!(s.username, "admin");
+        assert_eq!(s.password, "");
+    }
+
+    // ── parse_url: query and hash ──
+
+    #[test]
+    fn parse_url_query_and_hash() {
+        let s = parse_url("https://x.com/a?b=c#d", None).unwrap();
+        assert_eq!(s.search, "?b=c");
+        assert_eq!(s.hash, "#d");
+        assert_eq!(s.pathname, "/a");
+    }
+
+    #[test]
+    fn parse_url_hash_only() {
+        let s = parse_url("https://x.com/page#section", None).unwrap();
+        assert_eq!(s.search, "");
+        assert_eq!(s.hash, "#section");
+    }
+
+    #[test]
+    fn parse_url_query_only() {
+        let s = parse_url("https://x.com/search?q=rust", None).unwrap();
+        assert_eq!(s.search, "?q=rust");
+        assert_eq!(s.hash, "");
+    }
+
+    // ── parse_url: no path ──
+
+    #[test]
+    fn parse_url_no_path_defaults_to_slash() {
+        let s = parse_url("https://example.com", None).unwrap();
+        assert_eq!(s.pathname, "/");
+    }
+
+    // ── parse_url: IPv6 ──
+
+    #[test]
+    fn parse_url_ipv6_with_port() {
+        let s = parse_url("http://[::1]:8080/path", None).unwrap();
+        assert_eq!(s.hostname, "[::1]");
+        assert_eq!(s.port, "8080");
+        assert_eq!(s.host, "[::1]:8080");
+    }
+
+    #[test]
+    fn parse_url_ipv6_no_port() {
+        let s = parse_url("http://[2001:db8::1]/path", None).unwrap();
+        assert_eq!(s.hostname, "[2001:db8::1]");
+        assert_eq!(s.port, "");
+        assert_eq!(s.host, "[2001:db8::1]");
+    }
+
+    // ── parse_url: relative URLs with base ──
+
+    #[test]
+    fn parse_url_absolute_path_with_base() {
+        let s = parse_url("/new/path", Some("https://example.com/old/path")).unwrap();
+        assert_eq!(s.protocol, "https:");
+        assert_eq!(s.hostname, "example.com");
+        assert_eq!(s.pathname, "/new/path");
+    }
+
+    #[test]
+    fn parse_url_relative_path_with_base() {
+        let s = parse_url("sub/page.html", Some("https://example.com/dir/old.html")).unwrap();
+        assert!(s.pathname.contains("sub/page.html"));
+        assert_eq!(s.hostname, "example.com");
+    }
+
+    #[test]
+    fn parse_url_query_relative_with_base() {
+        let s = parse_url("?new=1", Some("https://example.com/page?old=1")).unwrap();
+        assert_eq!(s.search, "?new=1");
+        assert!(s.href.contains("example.com"));
+    }
+
+    #[test]
+    fn parse_url_hash_relative_with_base() {
+        let s = parse_url("#new-section", Some("https://example.com/page")).unwrap();
+        assert_eq!(s.hash, "#new-section");
+    }
+
+    // ── parse_url: scheme-relative ──
+
+    #[test]
+    fn parse_url_scheme_relative() {
+        let s = parse_url("//cdn.example.com/assets/img.png", None).unwrap();
+        assert_eq!(s.hostname, "cdn.example.com");
+        assert_eq!(s.pathname, "/assets/img.png");
+        assert_eq!(s.protocol, "http:");
+    }
+
+    // ── parse_url: no base for relative ──
+
+    #[test]
+    fn parse_url_relative_no_base_returns_none() {
+        assert!(parse_url("path/to/file", None).is_none());
+    }
+
+    #[test]
+    fn parse_url_slash_no_base_returns_none() {
+        assert!(parse_url("/path", None).is_none());
+    }
+
+    #[test]
+    fn parse_url_invalid_no_scheme_returns_none() {
+        assert!(parse_url("nocolon", None).is_none());
+    }
+
+    // ── parse_url: trimming ──
+
+    #[test]
+    fn parse_url_trims_whitespace() {
+        let s = parse_url("  https://example.com/  ", None).unwrap();
+        assert_eq!(s.hostname, "example.com");
+    }
+
+    // ── url_state_get_field ──
+
+    #[test]
+    fn get_field_href() {
+        assert_eq!(url_state_get_field(&make_state(), "href"), "https://user:pass@example.com:8080/path/name?query=1#frag");
+    }
+
+    #[test]
+    fn get_field_protocol() {
+        assert_eq!(url_state_get_field(&make_state(), "protocol"), "https:");
+    }
+
+    #[test]
+    fn get_field_username() {
+        assert_eq!(url_state_get_field(&make_state(), "username"), "user");
+    }
+
+    #[test]
+    fn get_field_password() {
+        assert_eq!(url_state_get_field(&make_state(), "password"), "pass");
+    }
+
+    #[test]
+    fn get_field_host() {
+        assert_eq!(url_state_get_field(&make_state(), "host"), "example.com:8080");
+    }
+
+    #[test]
+    fn get_field_hostname() {
+        assert_eq!(url_state_get_field(&make_state(), "hostname"), "example.com");
+    }
+
+    #[test]
+    fn get_field_port() {
+        assert_eq!(url_state_get_field(&make_state(), "port"), "8080");
+    }
+
+    #[test]
+    fn get_field_pathname() {
+        assert_eq!(url_state_get_field(&make_state(), "pathname"), "/path/name");
+    }
+
+    #[test]
+    fn get_field_search() {
+        assert_eq!(url_state_get_field(&make_state(), "search"), "?query=1");
+    }
+
+    #[test]
+    fn get_field_hash() {
+        assert_eq!(url_state_get_field(&make_state(), "hash"), "#frag");
+    }
+
+    #[test]
+    fn get_field_origin() {
+        assert_eq!(url_state_get_field(&make_state(), "origin"), "https://example.com:8080");
+    }
+
+    #[test]
+    fn get_field_unknown_returns_empty() {
+        assert_eq!(url_state_get_field(&make_state(), "nonexistent"), "");
+    }
+
+    // ── rebuild_href ──
+
+    #[test]
+    fn rebuild_href_change_pathname() {
+        let state = make_state();
+        let result = rebuild_href(&state, "pathname", "/new/path");
+        assert!(result.contains("/new/path"));
+        assert!(result.contains("example.com:8080"));
+        assert!(result.contains("https:"));
+    }
+
+    #[test]
+    fn rebuild_href_change_hash() {
+        let state = make_state();
+        let result = rebuild_href(&state, "hash", "#new-frag");
+        assert!(result.contains("#new-frag"));
+        assert!(!result.contains("#frag"));
+    }
+
+    #[test]
+    fn rebuild_href_change_search() {
+        let state = make_state();
+        let result = rebuild_href(&state, "search", "?updated=true");
+        assert!(result.contains("?updated=true"));
+        assert!(!result.contains("?query=1"));
+    }
+
+    #[test]
+    fn rebuild_href_change_hostname() {
+        let state = make_state();
+        let result = rebuild_href(&state, "hostname", "other.com");
+        assert!(result.contains("other.com"));
+    }
+
+    #[test]
+    fn rebuild_href_change_port() {
+        let state = make_state();
+        let result = rebuild_href(&state, "port", "9090");
+        assert!(result.contains(":9090"));
+    }
+
+    #[test]
+    fn rebuild_href_remove_port() {
+        let state = make_state();
+        let result = rebuild_href(&state, "port", "");
+        assert!(!result.contains(":8080"));
+    }
+
+    #[test]
+    fn rebuild_href_change_username() {
+        let state = make_state();
+        let result = rebuild_href(&state, "username", "alice");
+        assert!(result.contains("alice:pass@"));
+    }
+
+    #[test]
+    fn rebuild_href_change_password() {
+        let state = make_state();
+        let result = rebuild_href(&state, "password", "secret");
+        assert!(result.contains("user:secret@"));
+    }
+
+    #[test]
+    fn rebuild_href_set_href_directly() {
+        let state = make_state();
+        let result = rebuild_href(&state, "href", "http://other.com/");
+        assert_eq!(result, "http://other.com/");
+    }
+
+    #[test]
+    fn rebuild_href_no_auth_in_state() {
+        let mut state = make_state();
+        state.username = String::new();
+        state.password = String::new();
+        let result = rebuild_href(&state, "pathname", "/x");
+        assert!(!result.contains("@"));
+    }
+
+    #[test]
+    fn rebuild_href_username_only_no_password() {
+        let mut state = make_state();
+        state.password = String::new();
+        let result = rebuild_href(&state, "pathname", "/x");
+        assert!(result.contains("user@"));
+        assert!(!result.contains("user:@"));
+    }
+
+    // ── url_encode ──
+
+    #[test]
+    fn url_encode_simple() {
+        assert_eq!(url_encode("hello"), "hello");
+    }
+
+    #[test]
+    fn url_encode_space_to_plus() {
+        assert_eq!(url_encode("a b"), "a+b");
+    }
+
+    #[test]
+    fn url_encode_special_chars() {
+        assert_eq!(url_encode("a&b=c"), "a%26b%3Dc");
+    }
+
+    #[test]
+    fn url_encode_unicode() {
+        let encoded = url_encode("日本語");
+        assert!(encoded.starts_with('%'));
+    }
+
+    #[test]
+    fn url_encode_unreserved_not_encoded() {
+        assert_eq!(url_encode("A-Z_.~"), "A-Z_.~");
+    }
+
+    #[test]
+    fn url_encode_empty() {
+        assert_eq!(url_encode(""), "");
+    }
+
+    // ── url_decode ──
+
+    #[test]
+    fn url_decode_simple() {
+        assert_eq!(url_decode("hello"), "hello");
+    }
+
+    #[test]
+    fn url_decode_plus_to_space() {
+        assert_eq!(url_decode("a+b"), "a b");
+    }
+
+    #[test]
+    fn url_decode_percent() {
+        assert_eq!(url_decode("a%26b%3Dc"), "a&b=c");
+    }
+
+    #[test]
+    fn url_decode_percent_hex() {
+        assert_eq!(url_decode("%41%42%43"), "ABC");
+    }
+
+    #[test]
+    fn url_decode_incomplete_percent_passthrough() {
+        assert_eq!(url_decode("a%2"), "a%2");
+    }
+
+    #[test]
+    fn url_decode_empty() {
+        assert_eq!(url_decode(""), "");
+    }
+
+    #[test]
+    fn url_decode_roundtrip() {
+        let original = "hello world & friends=true";
+        assert_eq!(url_decode(&url_encode(original)), original);
+    }
+
+    #[test]
+    fn url_decode_percent_lowercase_hex() {
+        assert_eq!(url_decode("%2f"), "/");
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn url_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
