@@ -597,6 +597,59 @@ fn extract_json_string_field(json: &str, field: &str) -> ::std::option::Option<S
     Some(value_start[..end].to_string())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_field_basic() {
+        let json = r#"{"main": "index.js"}"#;
+        assert_eq!(extract_json_string_field(json, "main"), Some("index.js".into()));
+    }
+
+    #[test]
+    fn extract_field_missing() {
+        let json = r#"{"other": "value"}"#;
+        assert_eq!(extract_json_string_field(json, "main"), None);
+    }
+
+    #[test]
+    fn extract_field_empty_json() {
+        assert_eq!(extract_json_string_field("{}", "main"), None);
+    }
+
+    #[test]
+    fn extract_field_non_string_value() {
+        let json = r#"{"version": 42}"#;
+        assert_eq!(extract_json_string_field(json, "version"), None);
+    }
+
+    #[test]
+    fn extract_field_with_spaces() {
+        let json = r#"{"main" : "app.js" }"#;
+        assert_eq!(extract_json_string_field(json, "main"), Some("app.js".into()));
+    }
+
+    #[test]
+    fn extract_field_module_fallback() {
+        let json = r#"{"module": "esm/index.mjs"}"#;
+        assert_eq!(extract_json_string_field(json, "module"), Some("esm/index.mjs".into()));
+    }
+
+    #[test]
+    fn extract_field_multiple_fields() {
+        let json = r#"{"name": "pkg", "main": "src/index.ts", "version": "1.0"}"#;
+        assert_eq!(extract_json_string_field(json, "main"), Some("src/index.ts".into()));
+        assert_eq!(extract_json_string_field(json, "name"), Some("pkg".into()));
+    }
+
+    #[test]
+    fn extract_field_empty_value() {
+        let json = r#"{"main": ""}"#;
+        assert_eq!(extract_json_string_field(json, "main"), Some("".into()));
+    }
+}
+
 fn extract_module_error(cx: &mut mozjs::context::JSContext) -> JsError {
     rooted!(&in(cx) let mut exn = UndefinedValue());
     if let ::std::option::Option::Some(info) = unsafe {

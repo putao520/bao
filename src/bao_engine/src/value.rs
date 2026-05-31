@@ -120,6 +120,147 @@ fn format_number(n: f64) -> ::std::string::String {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::std::ptr;
+
+    #[test]
+    fn is_undefined_true() {
+        assert!(JsValue::Undefined.is_undefined());
+        assert!(!JsValue::Null.is_undefined());
+    }
+
+    #[test]
+    fn is_null_true() {
+        assert!(JsValue::Null.is_null());
+        assert!(!JsValue::Undefined.is_null());
+    }
+
+    #[test]
+    fn is_number_true() {
+        assert!(JsValue::Number(42.0).is_number());
+        assert!(!JsValue::Undefined.is_number());
+    }
+
+    #[test]
+    fn is_string_true() {
+        assert!(JsValue::String("hello".into()).is_string());
+        assert!(!JsValue::Undefined.is_string());
+    }
+
+    #[test]
+    fn is_object_true() {
+        assert!(JsValue::Object(ptr::null_mut()).is_object());
+        assert!(!JsValue::Undefined.is_object());
+    }
+
+    #[test]
+    fn as_bool_some() {
+        assert_eq!(JsValue::Bool(true).as_bool(), Some(true));
+        assert_eq!(JsValue::Bool(false).as_bool(), Some(false));
+    }
+
+    #[test]
+    fn as_bool_none_for_non_bool() {
+        assert_eq!(JsValue::Undefined.as_bool(), None);
+        assert_eq!(JsValue::Number(1.0).as_bool(), None);
+    }
+
+    #[test]
+    fn as_number_some() {
+        assert_eq!(JsValue::Number(3.14).as_number(), Some(3.14));
+        assert_eq!(JsValue::Number(0.0).as_number(), Some(0.0));
+    }
+
+    #[test]
+    fn as_number_none_for_non_number() {
+        assert_eq!(JsValue::Undefined.as_number(), None);
+        assert_eq!(JsValue::String("42".into()).as_number(), None);
+    }
+
+    #[test]
+    fn as_string_some() {
+        assert_eq!(JsValue::String("hello".into()).as_string(), Some("hello"));
+    }
+
+    #[test]
+    fn as_string_none_for_non_string() {
+        assert_eq!(JsValue::Undefined.as_string(), None);
+        assert_eq!(JsValue::Number(1.0).as_string(), None);
+    }
+
+    #[test]
+    fn as_object_some() {
+        let ptr = ptr::null_mut();
+        assert_eq!(JsValue::Object(ptr).as_object(), Some(ptr));
+    }
+
+    #[test]
+    fn as_object_none_for_non_object() {
+        assert_eq!(JsValue::Undefined.as_object(), None);
+    }
+
+    #[test]
+    fn to_display_string_undefined() {
+        assert_eq!(JsValue::Undefined.to_display_string(), "undefined");
+    }
+
+    #[test]
+    fn to_display_string_null() {
+        assert_eq!(JsValue::Null.to_display_string(), "null");
+    }
+
+    #[test]
+    fn to_display_string_bool() {
+        assert_eq!(JsValue::Bool(true).to_display_string(), "true");
+        assert_eq!(JsValue::Bool(false).to_display_string(), "false");
+    }
+
+    #[test]
+    fn to_display_string_integer() {
+        assert_eq!(JsValue::Number(42.0).to_display_string(), "42");
+        assert_eq!(JsValue::Number(0.0).to_display_string(), "0");
+        assert_eq!(JsValue::Number(-7.0).to_display_string(), "-7");
+    }
+
+    #[test]
+    fn to_display_string_float() {
+        assert_eq!(JsValue::Number(3.14).to_display_string(), "3.14");
+    }
+
+    #[test]
+    fn to_display_string_nan() {
+        assert_eq!(JsValue::Number(f64::NAN).to_display_string(), "NaN");
+    }
+
+    #[test]
+    fn to_display_string_infinity() {
+        assert_eq!(JsValue::Number(f64::INFINITY).to_display_string(), "Infinity");
+        assert_eq!(JsValue::Number(f64::NEG_INFINITY).to_display_string(), "-Infinity");
+    }
+
+    #[test]
+    fn to_display_string_string_value() {
+        assert_eq!(JsValue::String("hello".into()).to_display_string(), "hello");
+    }
+
+    #[test]
+    fn to_display_string_object() {
+        assert_eq!(JsValue::Object(ptr::null_mut()).to_display_string(), "[object Object]");
+    }
+
+    #[test]
+    fn format_number_large_integer() {
+        assert_eq!(format_number(1_000_000_000.0), "1000000000");
+    }
+
+    #[test]
+    fn format_number_small_float() {
+        assert_eq!(format_number(0.001), "0.001");
+    }
+}
+
 /// Convert a SpiderMonkey JSVal to a safe JsValue enum.
 ///
 /// # Safety
