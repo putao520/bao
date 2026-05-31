@@ -157,55 +157,84 @@ fn test_input_domain_name() {
 
 #[test]
 fn test_input_dispatch_mouse_event() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
     bao_cdp::domains::register_all_domains_into(tx, &registry);
 
+    let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let processed2 = processed.clone();
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
         let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count } = cmd {
-                assert_eq!(event_type, "mousePressed");
-                assert!((x - 100.0).abs() < f64::EPSILON);
-                assert!((y - 200.0).abs() < f64::EPSILON);
-                assert_eq!(button, Some(0));
-                assert_eq!(click_count, Some(1));
+        for _ in 0..200 {
+            let done = rx.try_process(|cmd| {
+                if let BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count } = cmd {
+                    assert_eq!(event_type, "mousePressed");
+                    assert!((x - 100.0).abs() < f64::EPSILON);
+                    assert!((y - 200.0).abs() < f64::EPSILON);
+                    assert_eq!(button, Some(0));
+                    assert_eq!(click_count, Some(1));
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if done {
+                processed2.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
             }
-            BridgeResponse { result: Ok(json!({})) }
-        });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
     let result = dispatch_cmd(&registry,"Input.dispatchMouseEvent", json!({
         "type": "mousePressed", "x": 100, "y": 200, "button": 0, "clickCount": 1
     }));
     assert!(result.is_ok());
+    // Wait for bridge thread to finish processing
+    for _ in 0..100 {
+        if processed.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 #[test]
 fn test_input_dispatch_key_event() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
     bao_cdp::domains::register_all_domains_into(tx, &registry);
 
+    let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let processed2 = processed.clone();
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
         let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::DispatchKeyEvent { event_type, key, code, text } = cmd {
-                assert_eq!(event_type, "keyDown");
-                assert_eq!(key, "Enter");
-                assert_eq!(code, "Enter");
-                assert!(text.is_none());
+        for _ in 0..200 {
+            let done = rx.try_process(|cmd| {
+                if let BridgeCommand::DispatchKeyEvent { event_type, key, code, text } = cmd {
+                    assert_eq!(event_type, "keyDown");
+                    assert_eq!(key, "Enter");
+                    assert_eq!(code, "Enter");
+                    assert!(text.is_none());
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if done {
+                processed2.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
             }
-            BridgeResponse { result: Ok(json!({})) }
-        });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
     let result = dispatch_cmd(&registry,"Input.dispatchKeyEvent", json!({
         "type": "keyDown", "key": "Enter", "code": "Enter"
     }));
     assert!(result.is_ok());
+    for _ in 0..100 {
+        if processed.load(std::sync::atomic::Ordering::SeqCst) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 #[test]
@@ -216,23 +245,36 @@ fn test_input_dispatch_touch_event() {
 
 #[test]
 fn test_input_insert_text() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
     bao_cdp::domains::register_all_domains_into(tx, &registry);
 
+    let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let processed2 = processed.clone();
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
         let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::InsertText { text } = cmd {
-                assert_eq!(text, "hello world");
+        for _ in 0..200 {
+            let done = rx.try_process(|cmd| {
+                if let BridgeCommand::InsertText { text } = cmd {
+                    assert_eq!(text, "hello world");
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if done {
+                processed2.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
             }
-            BridgeResponse { result: Ok(json!({})) }
-        });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
     let result = dispatch_cmd(&registry,"Input.insertText", json!({"text": "hello world"}));
     assert!(result.is_ok());
+    for _ in 0..100 {
+        if processed.load(std::sync::atomic::Ordering::SeqCst) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 #[test]
@@ -280,50 +322,76 @@ fn test_emulation_domain_name() {
 
 #[test]
 fn test_emulation_set_device_metrics_override() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
     bao_cdp::domains::register_all_domains_into(tx, &registry);
 
+    let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let processed2 = processed.clone();
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
         let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::SetViewport { width, height, device_scale_factor } = cmd {
-                assert_eq!(width, 1280);
-                assert_eq!(height, 720);
-                assert_eq!(device_scale_factor, Some(2.0));
+        for _ in 0..200 {
+            let done = rx.try_process(|cmd| {
+                if let BridgeCommand::SetViewport { width, height, device_scale_factor } = cmd {
+                    assert_eq!(width, 1280);
+                    assert_eq!(height, 720);
+                    assert_eq!(device_scale_factor, Some(2.0));
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if done {
+                processed2.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
             }
-            BridgeResponse { result: Ok(json!({})) }
-        });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
     let result = dispatch_cmd(&registry,"Emulation.setDeviceMetricsOverride", json!({
         "width": 1280, "height": 720, "deviceScaleFactor": 2.0
     }));
     assert!(result.is_ok());
+    for _ in 0..100 {
+        if processed.load(std::sync::atomic::Ordering::SeqCst) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 #[test]
 fn test_emulation_set_device_metrics_defaults() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
     bao_cdp::domains::register_all_domains_into(tx, &registry);
 
+    let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let processed2 = processed.clone();
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
         let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::SetViewport { width, height, device_scale_factor } = cmd {
-                assert_eq!(width, 1920);  // default
-                assert_eq!(height, 1080); // default
-                assert!(device_scale_factor.is_none());
+        for _ in 0..200 {
+            let done = rx.try_process(|cmd| {
+                if let BridgeCommand::SetViewport { width, height, device_scale_factor } = cmd {
+                    assert_eq!(width, 1920);  // default
+                    assert_eq!(height, 1080); // default
+                    assert!(device_scale_factor.is_none());
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if done {
+                processed2.store(true, std::sync::atomic::Ordering::SeqCst);
+                return;
             }
-            BridgeResponse { result: Ok(json!({})) }
-        });
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
     let result = dispatch_cmd(&registry,"Emulation.setDeviceMetricsOverride", json!({}));
     assert!(result.is_ok());
+    for _ in 0..100 {
+        if processed.load(std::sync::atomic::Ordering::SeqCst) { break; }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 #[test]
