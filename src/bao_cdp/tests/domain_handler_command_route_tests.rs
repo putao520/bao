@@ -60,18 +60,24 @@ fn test_page_disable() {
 
 #[test]
 fn test_page_navigate() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let h = PageHandler::new(tx);
-    // Start a thread to process the bridge command
-    let rx_clone = std::sync::Arc::new(std::sync::Mutex::new(rx));
-    let rx2 = rx_clone.clone();
+    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
+    let rx2 = rx.clone();
     std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            assert!(matches!(cmd, BridgeCommand::Navigate { .. }));
-            BridgeResponse { result: Ok(json!({})) }
-        });
+        for _ in 0..200 {
+            let done = {
+                let guard = rx2.lock().unwrap();
+                guard.try_process(|cmd| {
+                    assert!(matches!(cmd, BridgeCommand::Navigate { .. }));
+                    BridgeResponse { result: Ok(json!({})) }
+                })
+            };
+            if done { return; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let result = h.handle_command("Page.navigate", json!({"url": "https://example.com"}), noop_es());
     assert!(result.is_ok());
     let val = result.unwrap();
@@ -81,53 +87,74 @@ fn test_page_navigate() {
 
 #[test]
 fn test_page_navigate_default_url() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let h = PageHandler::new(tx);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::Navigate { url } = cmd {
-                assert_eq!(url, "about:blank");
-            }
-            BridgeResponse { result: Ok(json!({})) }
-        });
+        for _ in 0..200 {
+            let done = {
+                let guard = rx2.lock().unwrap();
+                guard.try_process(|cmd| {
+                    if let BridgeCommand::Navigate { url } = cmd {
+                        assert_eq!(url, "about:blank");
+                    }
+                    BridgeResponse { result: Ok(json!({})) }
+                })
+            };
+            if done { return; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let result = h.handle_command("Page.navigate", json!({}), noop_es());
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_page_reload() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let h = PageHandler::new(tx);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            assert!(matches!(cmd, BridgeCommand::Reload { .. }));
-            BridgeResponse { result: Ok(json!({})) }
-        });
+        for _ in 0..200 {
+            let done = {
+                let guard = rx2.lock().unwrap();
+                guard.try_process(|cmd| {
+                    assert!(matches!(cmd, BridgeCommand::Reload { .. }));
+                    BridgeResponse { result: Ok(json!({})) }
+                })
+            };
+            if done { return; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let result = h.handle_command("Page.reload", json!({"ignoreCache": true}), noop_es());
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_page_get_frame_tree() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let h = PageHandler::new(tx);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            assert!(matches!(cmd, BridgeCommand::GetUrl));
-            BridgeResponse { result: Ok(json!("https://example.com")) }
-        });
+        for _ in 0..200 {
+            let done = {
+                let guard = rx2.lock().unwrap();
+                guard.try_process(|cmd| {
+                    assert!(matches!(cmd, BridgeCommand::GetUrl));
+                    BridgeResponse { result: Ok(json!("https://example.com")) }
+                })
+            };
+            if done { return; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let result = h.handle_command("Page.getFrameTree", json!({}), noop_es());
     assert!(result.is_ok());
     let val = result.unwrap();
@@ -147,37 +174,51 @@ fn test_page_get_layout_metrics() {
 
 #[test]
 fn test_page_capture_screenshot() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let h = PageHandler::new(tx);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::TakeScreenshot { format, quality } = cmd {
-                assert_eq!(format, "png");
-                assert_eq!(quality, Some(80));
-            }
-            BridgeResponse { result: Ok(json!({"data": "base64data"})) }
-        });
+        for _ in 0..200 {
+            let done = {
+                let guard = rx2.lock().unwrap();
+                guard.try_process(|cmd| {
+                    if let BridgeCommand::TakeScreenshot { format, quality } = cmd {
+                        assert_eq!(format, "png");
+                        assert_eq!(quality, Some(80));
+                    }
+                    BridgeResponse { result: Ok(json!({"data": "base64data"})) }
+                })
+            };
+            if done { return; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let result = h.handle_command("Page.captureScreenshot", json!({"format": "png", "quality": 80}), noop_es());
     assert!(result.is_ok());
 }
 
 #[test]
 fn test_page_add_script() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let h = PageHandler::new(tx);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            assert!(matches!(cmd, BridgeCommand::AddScriptToEvaluateOnNewDocument { .. }));
-            BridgeResponse { result: Ok(json!({})) }
-        });
+        for _ in 0..200 {
+            let done = {
+                let guard = rx2.lock().unwrap();
+                guard.try_process(|cmd| {
+                    assert!(matches!(cmd, BridgeCommand::AddScriptToEvaluateOnNewDocument { .. }));
+                    BridgeResponse { result: Ok(json!({})) }
+                })
+            };
+            if done { return; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let result = h.handle_command("Page.addScriptToEvaluateOnNewDocument", json!({"source": "console.log(1)"}), noop_es());
     assert!(result.is_ok());
     assert_eq!(result.unwrap()["identifier"], "1");
