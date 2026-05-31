@@ -24,3 +24,62 @@ pub fn encode_image(image: &RgbaImage, format: ScreenshotFormat) -> Result<Vec<u
     }
     Ok(buf.into_inner())
 }
+
+#[cfg(test)]
+mod tests {
+    // @trace REQ-BRW-002 [req:REQ-BRW-002,REQ-CDP-007] [level:unit]
+    use super::*;
+    use image::Rgba;
+
+    fn red_image(w: u32, h: u32) -> RgbaImage {
+        RgbaImage::from_pixel(w, h, Rgba([255, 0, 0, 255]))
+    }
+
+    #[test]
+    fn encode_1x1_png_returns_nonempty_with_magic() {
+        let img = red_image(1, 1);
+        let out = encode_image(&img, ScreenshotFormat::Png).unwrap();
+        assert!(!out.is_empty());
+        assert_eq!(&out[0..4], &[0x89, 0x50, 0x4E, 0x47]);
+    }
+
+    #[test]
+    fn encode_1x1_jpeg_returns_nonempty_with_magic() {
+        let img = red_image(1, 1);
+        let out = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
+        assert!(!out.is_empty());
+        assert_eq!(&out[0..2], &[0xFF, 0xD8]);
+    }
+
+    #[test]
+    fn encode_100x100_png_produces_valid_data() {
+        let img = red_image(100, 100);
+        let out = encode_image(&img, ScreenshotFormat::Png).unwrap();
+        assert!(!out.is_empty());
+        assert_eq!(&out[0..4], &[0x89, 0x50, 0x4E, 0x47]);
+    }
+
+    #[test]
+    fn encode_100x100_jpeg_produces_valid_data() {
+        let img = red_image(100, 100);
+        let out = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
+        assert!(!out.is_empty());
+        assert_eq!(&out[0..2], &[0xFF, 0xD8]);
+    }
+
+    #[test]
+    fn encode_empty_image_no_panic() {
+        let img = red_image(0, 0);
+        let _ = encode_image(&img, ScreenshotFormat::Png);
+        let _ = encode_image(&img, ScreenshotFormat::Jpeg);
+    }
+
+    #[test]
+    fn both_formats_produce_nontrivial_output() {
+        let img = red_image(200, 200);
+        let png = encode_image(&img, ScreenshotFormat::Png).unwrap();
+        let jpeg = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
+        assert!(png.len() > 100, "PNG should be nontrivial: {} bytes", png.len());
+        assert!(jpeg.len() > 100, "JPEG should be nontrivial: {} bytes", jpeg.len());
+    }
+}

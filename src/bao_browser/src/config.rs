@@ -87,3 +87,99 @@ impl From<BrowserConfig> for BaoConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    // @trace REQ-BRW-001 [req:REQ-BRW-001,REQ-CDP-008] [level:unit]
+    use super::*;
+
+    #[test]
+    fn bao_config_default_values() {
+        let cfg = BaoConfig::default();
+        assert_eq!(cfg.cdp_port, None);
+        assert_eq!(cfg.max_pages, 50);
+        assert_eq!(cfg.idle_ttl, Duration::from_secs(60));
+        assert_eq!(cfg.default_viewport_width, 1920);
+        assert_eq!(cfg.default_viewport_height, 1080);
+        assert!(cfg.stealth_profile.is_none());
+    }
+
+    #[test]
+    fn validate_ok_with_defaults() {
+        assert!(BaoConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_fails_max_pages_zero() {
+        let mut cfg = BaoConfig::default();
+        cfg.max_pages = 0;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("max_pages must be >= 1"), "unexpected error: {err}");
+        assert!(err.contains("0"), "error should report the value 0: {err}");
+    }
+
+    #[test]
+    fn validate_fails_viewport_width_799() {
+        let mut cfg = BaoConfig::default();
+        cfg.default_viewport_width = 799;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("viewport_width must be >= 800"), "unexpected error: {err}");
+        assert!(err.contains("799"), "error should report the value 799: {err}");
+    }
+
+    #[test]
+    fn validate_fails_viewport_height_599() {
+        let mut cfg = BaoConfig::default();
+        cfg.default_viewport_height = 599;
+        let err = cfg.validate().unwrap_err();
+        assert!(err.contains("viewport_height must be >= 600"), "unexpected error: {err}");
+        assert!(err.contains("599"), "error should report the value 599: {err}");
+    }
+
+    #[test]
+    fn browser_config_default_values() {
+        let cfg = BrowserConfig::default();
+        assert_eq!(cfg.url, None);
+        assert_eq!(cfg.cdp_port, 9222);
+        assert_eq!(cfg.viewport_width, 1920);
+        assert_eq!(cfg.viewport_height, 1080);
+        assert!(cfg.headless);
+        assert!(cfg.stealth_profile.is_none());
+    }
+
+    #[test]
+    fn from_browser_config_preserves_cdp_port() {
+        let bc = BrowserConfig {
+            cdp_port: 9333,
+            ..Default::default()
+        };
+        let bao: BaoConfig = bc.into();
+        assert_eq!(bao.cdp_port, Some(9333));
+    }
+
+    #[test]
+    fn from_browser_config_preserves_stealth_profile_none() {
+        let bc = BrowserConfig::default();
+        let bao: BaoConfig = bc.into();
+        assert!(bao.stealth_profile.is_none());
+    }
+
+    #[test]
+    fn from_browser_config_maps_fields_correctly() {
+        let bc = BrowserConfig {
+            url: Some("https://example.com".into()),
+            cdp_port: 1234,
+            viewport_width: 1280,
+            viewport_height: 720,
+            headless: false,
+            stealth_profile: None,
+        };
+        let bao: BaoConfig = bc.into();
+        assert_eq!(bao.cdp_port, Some(1234));
+        assert_eq!(bao.max_pages, 50);
+        assert_eq!(bao.idle_ttl, Duration::from_secs(60));
+        assert_eq!(bao.default_viewport_width, 1280);
+        assert_eq!(bao.default_viewport_height, 720);
+        assert!(bao.stealth_profile.is_none());
+    }
+}

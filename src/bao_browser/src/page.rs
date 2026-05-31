@@ -1,5 +1,6 @@
 // @trace REQ-BRW-001 [entity:PageHandle]  REQ-BRW-002: Page lifecycle management (navigate, evaluate, screenshot)
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -281,5 +282,124 @@ fn format_js_value(v: &servo::JSValue) -> String {
                 .collect();
             format!("{{{}}}", formatted.join(", "))
         }
+    }
+}
+
+// @trace REQ-BRW-001 REQ-BRW-002 [req:REQ-BRW-001,REQ-BRW-002] [level:unit]
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_state_variants_equal_to_themselves() {
+        assert_eq!(PageState::Created, PageState::Created);
+        assert_eq!(PageState::Navigating, PageState::Navigating);
+        assert_eq!(PageState::Interactive, PageState::Interactive);
+        assert_eq!(PageState::Idle, PageState::Idle);
+        assert_eq!(PageState::Closed, PageState::Closed);
+    }
+
+    #[test]
+    fn page_state_clone_works() {
+        let state = PageState::Navigating;
+        let cloned = state.clone();
+        assert_eq!(state, cloned);
+    }
+
+    #[test]
+    fn page_state_copy_works() {
+        let state = PageState::Interactive;
+        let copied: PageState = state;
+        assert_eq!(state, copied);
+    }
+
+    #[test]
+    fn page_state_debug_format_includes_variant_name() {
+        assert!(format!("{:?}", PageState::Created).contains("Created"));
+        assert!(format!("{:?}", PageState::Navigating).contains("Navigating"));
+        assert!(format!("{:?}", PageState::Interactive).contains("Interactive"));
+        assert!(format!("{:?}", PageState::Idle).contains("Idle"));
+        assert!(format!("{:?}", PageState::Closed).contains("Closed"));
+    }
+
+    #[test]
+    fn page_state_created_not_equal_closed() {
+        assert_ne!(PageState::Created, PageState::Closed);
+    }
+
+    #[test]
+    fn format_js_value_string() {
+        let value = servo::JSValue::String("hello".into());
+        assert_eq!(format_js_value(&value), "hello");
+    }
+
+    #[test]
+    fn format_js_value_number() {
+        let value = servo::JSValue::Number(42.5);
+        assert_eq!(format_js_value(&value), "42.5");
+    }
+
+    #[test]
+    fn format_js_value_boolean_true() {
+        let value = servo::JSValue::Boolean(true);
+        assert_eq!(format_js_value(&value), "true");
+    }
+
+    #[test]
+    fn format_js_value_null() {
+        let value = servo::JSValue::Null;
+        assert_eq!(format_js_value(&value), "null");
+    }
+
+    #[test]
+    fn format_js_value_undefined() {
+        let value = servo::JSValue::Undefined;
+        assert_eq!(format_js_value(&value), "undefined");
+    }
+
+    #[test]
+    fn format_js_value_array() {
+        let value = servo::JSValue::Array(vec![
+            servo::JSValue::Number(1.0),
+            servo::JSValue::Number(2.0),
+            servo::JSValue::Number(3.0),
+        ]);
+        assert_eq!(format_js_value(&value), "[1, 2, 3]");
+    }
+
+    #[test]
+    fn format_js_value_object() {
+        let mut map = HashMap::new();
+        map.insert("name".into(), servo::JSValue::String("test".into()));
+        map.insert("count".into(), servo::JSValue::Number(5.0));
+        let value = servo::JSValue::Object(map);
+        let result = format_js_value(&value);
+        assert!(result.starts_with('{') && result.ends_with('}'));
+        assert!(result.contains("name: test"));
+        assert!(result.contains("count: 5"));
+    }
+
+    #[test]
+    fn format_js_value_element() {
+        let value = servo::JSValue::Element("div#main".into());
+        assert_eq!(format_js_value(&value), "[Element: div#main]");
+    }
+
+    #[test]
+    fn format_js_value_shadow_root() {
+        let value = servo::JSValue::ShadowRoot("host-element".into());
+        assert_eq!(format_js_value(&value), "[ShadowRoot: host-element]");
+    }
+
+    #[test]
+    fn format_js_value_frame() {
+        let value = servo::JSValue::Frame("iframe-123".into());
+        assert_eq!(format_js_value(&value), "[Frame: iframe-123]");
+    }
+
+    #[test]
+    fn format_js_value_window() {
+        let value = servo::JSValue::Window("window-456".into());
+        assert_eq!(format_js_value(&value), "[Window: window-456]");
     }
 }
