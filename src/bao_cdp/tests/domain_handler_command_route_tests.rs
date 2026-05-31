@@ -238,20 +238,27 @@ fn test_runtime_evaluate_empty() {
 
 #[test]
 fn test_runtime_evaluate_with_expression() {
-    let (tx, rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let h = RuntimeHandler::new(tx);
     let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
     let rx2 = rx.clone();
     std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            if let BridgeCommand::EvaluateJs { expression, return_by_value } = cmd {
-                assert_eq!(expression, "1+1");
-                assert!(return_by_value);
-            }
-            BridgeResponse { result: Ok(json!({"type": "number", "value": 2})) }
-        });
+        for _ in 0..200 {
+            let processed = {
+                let guard = rx2.lock().unwrap();
+                guard.try_process(|cmd| {
+                    if let BridgeCommand::EvaluateJs { expression, return_by_value } = cmd {
+                        assert_eq!(expression, "1+1");
+                        assert!(return_by_value);
+                    }
+                    BridgeResponse { result: Ok(json!({"type": "number", "value": 2})) }
+                })
+            };
+            if processed { return; }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     });
+    std::thread::sleep(std::time::Duration::from_millis(5));
     let result = h.handle_command("Runtime.evaluate", json!({"expression": "1+1"}), noop_es());
     assert!(result.is_ok());
 }
