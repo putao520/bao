@@ -103,11 +103,12 @@ impl CDPServer {
 
     pub fn with_bridge(port: u16, bridge: BridgeSender) -> Self {
         let (cmd_tx, cmd_rx) = channel();
+        let target_id = format!("{:016x}", rand_id());
         let registry = DomainRegistry::new();
-        domains::register_all_domains_into(bridge.clone(), &registry);
+        domains::register_all_domains_with_target(bridge.clone(), target_id.clone(), &registry);
         CDPServer {
             port,
-            target_id: format!("{:016x}", rand_id()),
+            target_id,
             sessions: HashMap::new(),
             cmd_tx,
             cmd_rx,
@@ -458,13 +459,13 @@ mod tests {
     }
 
     #[test]
-    fn cdp_server_with_bridge_registry_has_all_11_domains() {
+    fn cdp_server_with_bridge_registry_has_all_12_domains() {
         let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
         let expected = [
             "Page", "Runtime", "DOM", "Network", "Debugger",
-            "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch",
+            "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch", "Target",
         ];
         for domain in &expected {
             assert!(registry.has_domain(domain), "domain '{}' should be registered", domain);
@@ -472,11 +473,11 @@ mod tests {
     }
 
     #[test]
-    fn cdp_server_with_bridge_target_not_in_registry() {
+    fn cdp_server_with_bridge_target_is_in_registry() {
         let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
-        assert!(!registry.has_domain("Target"), "Target should NOT be in registry — falls back to old protocol");
+        assert!(registry.has_domain("Target"), "Target should be in registry");
     }
 
     #[test]
@@ -520,8 +521,8 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        // Target is NOT registered — should return None
-        let result = registry.dispatch_command("Target.getTargets", serde_json::json!({}), &NoopEventSender);
+        // HeapProfiler is NOT registered — should return None
+        let result = registry.dispatch_command("HeapProfiler.takeHeapSnapshot", serde_json::json!({}), &NoopEventSender);
         assert!(result.is_none());
     }
 
@@ -585,6 +586,60 @@ mod tests {
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().unwrap()["patternCount"], 1);
+    }
+
+    #[test]
+    fn dispatch_target_get_targets_via_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("Target.getTargets", serde_json::json!({}), &NoopEventSender);
+        assert!(result.is_some());
+        let response = result.unwrap();
+        assert!(response.is_ok());
+        let result_val = response.unwrap();
+        let infos = result_val["targetInfos"].as_array().unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0]["targetId"], server.target_id());
+    }
+
+    #[test]
+    fn dispatch_target_create_target_via_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("Target.createTarget", serde_json::json!({ "url": "https://example.com" }), &NoopEventSender);
+        assert!(result.is_some());
+        let response = result.unwrap();
+        assert!(response.is_ok());
+        assert_eq!(response.unwrap()["targetId"], server.target_id());
+    }
+
+    #[test]
+    fn dispatch_target_close_target_via_registry() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("Target.closeTarget", serde_json::json!({ "targetId": "abc" }), &NoopEventSender);
+        assert!(result.is_some());
+        let response = result.unwrap();
+        assert!(response.is_ok());
+        assert_eq!(response.unwrap()["success"], true);
+    }
+
+    #[test]
+    fn dispatch_target_unknown_returns_error() {
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let server = CDPServer::with_bridge(9333, sender);
+        let registry = server.registry.as_ref().unwrap();
+
+        let result = registry.dispatch_command("Target.nonExistent", serde_json::json!({}), &NoopEventSender);
+        assert!(result.is_some());
+        let err = result.unwrap().unwrap_err();
+        assert_eq!(err.code, -32601);
     }
 
     #[test]

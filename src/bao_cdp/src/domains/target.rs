@@ -1,6 +1,8 @@
 // @trace REQ-CDP-008
 
-use cdp_server::{TargetProvider, TargetInfo};
+use serde_json::{json, Value};
+
+use cdp_server::{CdpError, DomainHandler, EventSender, TargetProvider, TargetInfo};
 use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 pub struct ServoTargetProvider {
@@ -48,6 +50,76 @@ impl TargetProvider for ServoTargetProvider {
 
     fn activate_target(&self, _target_id: &str) -> Result<(), String> {
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TargetHandler — DomainHandler for the Target CDP domain
+// ---------------------------------------------------------------------------
+
+pub struct TargetHandler {
+    bridge: BridgeSender,
+    target_id: String,
+}
+
+impl TargetHandler {
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
+        TargetHandler { bridge, target_id }
+    }
+
+    fn live_target_info(&self) -> Value {
+        let title = self.bridge.send(BridgeCommand::GetTitle).result
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "Bao".into());
+        let url = self.bridge.send(BridgeCommand::GetUrl).result
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "about:blank".into());
+        json!({
+            "targetId": self.target_id,
+            "type": "page",
+            "title": title,
+            "url": url,
+            "attached": true
+        })
+    }
+}
+
+impl DomainHandler for TargetHandler {
+    fn domain_name(&self) -> &'static str { "Target" }
+
+    fn handle_command(
+        &self,
+        command: &str,
+        _params: Value,
+        _event_sender: &dyn EventSender,
+    ) -> Result<Value, CdpError> {
+        match command {
+            "Target.getTargets" | "Target.getTargetTargets" => {
+                Ok(json!({ "targetInfos": [self.live_target_info()] }))
+            }
+            "Target.createTarget" => Ok(json!({ "targetId": self.target_id })),
+            "Target.closeTarget" => {
+                self.bridge.send_fire_and_forget(BridgeCommand::ClosePage);
+                Ok(json!({ "success": true }))
+            }
+            "Target.setAutoAttach" | "Target.setDiscoverTargets" => Ok(json!({})),
+            "Target.getTargetInfo" => {
+                Ok(json!({ "targetInfo": self.live_target_info() }))
+            }
+            "Target.attachToTarget" => {
+                let session_id = format!("{:016x}",
+                    self.target_id.chars().map(|c| c as u64).sum::<u64>()
+                );
+                Ok(json!({ "sessionId": session_id }))
+            }
+            "Target.detachFromTarget" | "Target.sendMessageToTarget" => Ok(json!({})),
+            _ => Err(CdpError {
+                code: -32601,
+                message: format!("'{}' wasn't found", command),
+            }),
+        }
     }
 }
 

@@ -13,6 +13,7 @@ use cdp_server::DomainRegistry;
 use crate::servo_bridge::BridgeSender;
 
 pub use target::ServoTargetProvider;
+pub use target::TargetHandler;
 pub use page::PageHandler;
 pub use runtime::RuntimeHandler;
 pub use dom::DomHandler;
@@ -31,6 +32,12 @@ pub fn register_all_domains_into(bridge: BridgeSender, registry: &DomainRegistry
     registry.register(Box::new(stub::OverlayHandler)).expect("register Overlay");
     registry.register(Box::new(stub::LogHandler)).expect("register Log");
     registry.register(Box::new(stub::FetchHandler)).expect("register Fetch");
+}
+
+/// Register all 12 CDP domain handlers (including Target) into a DomainRegistry.
+pub fn register_all_domains_with_target(bridge: BridgeSender, target_id: String, registry: &DomainRegistry) {
+    register_all_domains_into(bridge.clone(), registry);
+    registry.register(Box::new(target::TargetHandler::new(bridge, target_id))).expect("register Target");
 }
 
 // @trace TEST-CDP-DOM-001 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
@@ -204,5 +211,39 @@ mod tests {
         let duplicate_result = registry.register(Box::new(page::PageHandler::new(bridge)));
         assert!(duplicate_result.is_err());
         assert!(duplicate_result.unwrap_err().contains("already registered"));
+    }
+
+    // 11. register_all_domains_with_target registers 12 domains including Target
+    #[test]
+    fn register_all_domains_with_target_registers_12_domains() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_with_target(bridge, "test-target-id".into(), &registry);
+
+        let expected_domains = [
+            "Page", "Runtime", "DOM", "Network", "Debugger",
+            "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch", "Target",
+        ];
+
+        for domain in &expected_domains {
+            assert!(registry.has_domain(domain), "domain '{}' should be registered", domain);
+        }
+    }
+
+    // 12. Target domain handles getTargets via registry
+    #[test]
+    fn target_domain_handles_get_targets_via_registry() {
+        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let registry = DomainRegistry::new();
+        register_all_domains_with_target(bridge, "my-target-123".into(), &registry);
+
+        let result = registry.dispatch_command("Target.getTargets", json!({}), &NoopSender);
+        assert!(result.is_some());
+        let response = result.unwrap();
+        assert!(response.is_ok());
+        let result_val = response.unwrap();
+        let infos = result_val["targetInfos"].as_array().unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0]["targetId"], "my-target-123");
     }
 }
