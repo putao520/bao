@@ -408,12 +408,12 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 ### 当前状态 (2026-05-31)
 | 指标 | 数值 |
 |------|------|
-| 总测试 | 1550 |
+| 总测试 | 1885 |
 | bao_engine | 122 |
-| bao_browser | 245 |
-| bao_cdp | 539 |
-| bao_stealth | 344 |
-| cdp-server | 300 |
+| bao_browser | 284 |
+| bao_cdp | 632 |
+| bao_stealth | 501 |
+| cdp-server | 346 |
 | Clippy | 零 error |
 | SPEC | 零 ERROR, 2 WARNING |
 
@@ -443,3 +443,31 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 			  - 1550 tests pass, 0 failed
 			  - Clippy: 零 error（仅上游 mozjs warning）
 			  - 计划文件更新至当前状态
+			- [x] Wave 58: bao_cdp router + stealth canvas/navigator/webgl/audio/http2 深度测试
+			  - router_backend_deep_tests: 60 tests (CdpRouter session, InternalBackend dispatch, BackendKind, detach, event handlers)
+			  - canvas_navigator_screen_deep_tests: 44 tests (CanvasNoise, NavigatorProfile presets, ScreenProfile, StealthEngine)
+			  - webgl_audio_http2_deep_tests: 45 tests (WebGLProfile, AudioProfile noise, Http2Fingerprint Akamai, ordered headers)
+			- [x] Wave 59: cdp-server config/protocol + browser error/permission/screenshot 深度测试
+			  - protocol_serverconfig_deep_tests: 46 tests (ServerConfig builder, TargetInfo serde, CdpMessage edge, DomainRegistry dispatch)
+			  - error_permission_screenshot_deep_tests: 39 tests (BrowserError, PermissionDenied, Permission, PermissionGuard, Screenshot encode)
+			- [x] Wave 60: TLS fingerprint computation + bridge command exhaustive tests
+			  - tls_fingerprint_deep_tests: 68 tests (JA3/JA4 computation, preset field validation, tls13/tls12 suite partition, alpn_strings, cross-preset consistency, clone/debug)
+			  - bridge_command_exhaustive_tests: 33 tests (GetDocument, GetAllCookies, optional field boundaries, empty/long inputs, stress drain, BridgeResponse value types)
+			  - 1885 tests pass, 0 failed
+			- [x] Wave 61: StealthEngine cross-profile + CDP serialize boundary tests
+			  - stealth_cross_profile_tests: 38 tests (engine construction, profile accessor, inject_navigator_js, Firefox vs Chrome, custom profile, component independence)
+			  - protocol_serialize_boundary_tests: 48 tests (parse_message valid/invalid, serialize_response/event, CDPError, roundtrip, large params, unicode)
+			  - 1971 tests pass, 0 failed
+			- [x] Wave 62: PageState/BaoConfig + cdp-server Transport boundary tests
+			  - page_state_config_tests: 31 tests (PageState lifecycle, BaoConfig defaults, PageConfig, PermissionGuard, viewport/ TTL boundaries)
+			  - transport_parse_boundary_tests: 35 tests (TargetInfo serde, ServerConfig builder, CdpServer, DomainRegistry, EventBroadcaster, SessionState, CdpResponse/CdpEvent)
+			  - 2037 tests pass, 0 failed
+			- [x] Wave 63: BehaviorSimulator deep + codegen roundtrip tests
+			  - behavior_simulator_deep_tests: 32 tests (mouse path, typing delays, scroll deltas, seed stability, edge cases)
+			  - codegen_roundtrip_tests: 34 tests (parse→generate→module roundtrip, PropertyKind, ClassDef, GeneratedBindings)
+			  - 2103 tests pass, 0 failed
+				- [x] Wave 64: Transport HTTP parse + CanvasNoise deep + Http2Fingerprint deep tests
+				  - transport_http_parse_tests: 64 tests (path detection, TargetInfo serde edge cases, ServerConfig boundaries, CdpServer ws_url, SessionState, CdpResponse/CdpEvent/CdpError, DomainRegistry, EventBroadcaster)
+				  - canvas_noise_deep_tests: 31 tests (seed construction, deterministic output, alpha preservation, channel clamping, coordinate independence, large coords, clone/debug, noise hash properties)
+				  - http2_fingerprint_deep_tests: 36 tests (akamai_fingerprint format, settings_frame_payload, ordered_headers ordering, preset differentiation, clone/debug, custom fingerprint, zero values)
+				  - 2234 tests pass, 0 failed
