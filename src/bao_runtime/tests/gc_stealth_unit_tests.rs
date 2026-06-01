@@ -40,9 +40,14 @@ fn test_stealth_http_rust_api() {
     let ordered_stealth = bao_runtime::stealth_http::ordered_headers(&Some(profile), &headers);
     assert_eq!(ordered_stealth.len(), 2);
 
-    let _agent = bao_runtime::stealth_http::create_stealth_agent(&None);
+    let config_none = bao_runtime::stealth_http::create_stealth_request(&None, bun_http::Method::GET, "https://example.com", &headers, None);
+    assert_eq!(config_none.method.as_str(), "GET");
+    assert!(config_none.user_agent.is_none());
+
     let profile2 = bao_stealth::StealthProfile::firefox_default();
-    let _agent_stealth = bao_runtime::stealth_http::create_stealth_agent(&Some(profile2));
+    let config_stealth = bao_runtime::stealth_http::create_stealth_request(&Some(profile2), bun_http::Method::POST, "https://example.com", &headers, Some(b"test"));
+    assert_eq!(config_stealth.method.as_str(), "POST");
+    assert!(config_stealth.user_agent.is_some());
 }
 
 #[test]

@@ -6,6 +6,13 @@
 // @trace REQ-IMPL-03: Phase 3 CDP Server implementation (completed)
 // @trace REQ-IMPL-04: Phase 4 Stealth anti-fingerprinting (completed)
 // @trace REQ-IMPL-05: Phase 5 Integration testing and release (completed)
+
+// Force-link all C library symbol replacements from bao_native_stubs
+// (pure Rust implementations of mimalloc, BoringSSL, uSockets, etc.)
+// Without this, the linker may GC unreferenced symbols from the rlib.
+fn _force_native_stubs_link() {
+    bao_native_stubs::force_link();
+}
 pub mod bun_api;
 pub mod bun_test;
 pub mod fetch_api;
@@ -40,9 +47,23 @@ pub mod node_zlib;
 pub mod require;
 pub mod runtime;
 pub mod timers;
+pub mod http_client;
 pub mod stealth_http;
 
 pub use runtime::BaoRuntime;
+
+/// Register atexit handler to prevent SpiderMonkey GC crashes on process exit.
+/// Must be called before any JsContext creation in test binaries.
+pub fn install_exit_handler() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        extern "C" fn noop() {}
+        unsafe {
+            libc::atexit(noop);
+        }
+    });
+}
 
 /// Safe JS string conversion: returns "" if JS string allocation fails.
 ///

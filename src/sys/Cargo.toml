@@ -25,7 +25,7 @@ bun_alloc.workspace = true
 bun_core.workspace = true
 bun_errno.workspace = true
 bun_paths.workspace = true
-bun_windows_sys.workspace = true
+bun_windows_sys = { workspace = true, target = "windows" }
 bun_wyhash.workspace = true
 thiserror.workspace = true
 

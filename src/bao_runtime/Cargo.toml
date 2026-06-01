@@ -24,10 +24,15 @@ hex = "0.4"
 base64 = "0.22"
 flate2 = "1"
 serde_json = "1"
-ureq = { version = "3", features = ["rustls"] }
+
+# C library symbol providers (pure Rust replacements)
+bao_native_stubs = { path = "../bao_native_stubs" }
 
 # Bun 纯 Rust crate（L0-L3 层，零 JSC 依赖）
 bun_http = { path = "../http" }
+bun_http_types = { path = "../http_types" }
+bun_core = { path = "../bun_core" }
+bun_url = { path = "../url" }
 bun_uws = { path = "../uws" }
 bun_picohttp = { path = "../picohttp" }
 bun_resolver = { path = "../resolver" }

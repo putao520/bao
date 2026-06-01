@@ -209,68 +209,46 @@ unsafe extern "C" fn https_request(
 }
 
 fn perform_https_request(url: &str, method: &str, headers_json: &str, body: &str) -> String {
-    let agent = crate::stealth_http::create_stealth_agent(&None);
+    let bun_method = match method {
+        "POST" => bun_http::Method::POST,
+        "PUT" => bun_http::Method::PUT,
+        "DELETE" => bun_http::Method::DELETE,
+        "PATCH" => bun_http::Method::PATCH,
+        "HEAD" => bun_http::Method::HEAD,
+        "OPTIONS" => bun_http::Method::OPTIONS,
+        _ => bun_http::Method::GET,
+    };
 
     let headers_map: ::std::collections::HashMap<String, String> = if !headers_json.is_empty() {
         serde_json::from_str(headers_json).unwrap_or_default()
     } else {
         ::std::collections::HashMap::new()
     };
+    let headers_vec: Vec<(String, String)> = headers_map.into_iter().collect();
 
-    let result = match method {
-        "POST" => {
-            let mut r = agent.post(url);
-            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
-            r.send(body.as_bytes())
-        }
-        "PUT" => {
-            let mut r = agent.put(url);
-            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
-            r.send(body.as_bytes())
-        }
-        "DELETE" => {
-            let mut r = agent.delete(url);
-            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
-            r.call()
-        }
-        "PATCH" => {
-            let mut r = agent.patch(url);
-            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
-            r.send(body.as_bytes())
-        }
-        "HEAD" => {
-            let mut r = agent.head(url);
-            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
-            r.call()
-        }
-        _ => {
-            let mut r = agent.get(url);
-            for (k, v) in &headers_map { r = r.header(k.as_str(), v.as_str()); }
-            r.call()
-        }
-    };
+    let result = crate::stealth_http::stealth_http_request(
+        &None, bun_method, url, &headers_vec, if body.is_empty() { None } else { Some(body.as_bytes()) },
+    );
 
     match result {
-        Ok(mut response) => {
-            let status_code = response.status().as_u16();
-            let reason = response.status().canonical_reason().unwrap_or("");
-            let headers_map: Vec<String> = response.headers()
-                .iter()
-                .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k.as_str()), escape_json(v.to_str().unwrap_or(""))))
+        Ok(resp) => {
+            let status_code = resp.status_code;
+            let headers_json_parts: Vec<String> = resp.headers.iter()
+                .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
                 .collect();
-            let headers_str = headers_map.join(",");
-            let response_body = response.body_mut().read_to_string().unwrap_or_default();
+            let headers_str = headers_json_parts.join(",");
+            let response_body = String::from_utf8_lossy(&resp.body).to_string();
 
             format!(
                 "{{\"statusCode\":{},\"statusMessage\":\"{}\",\"httpVersion\":\"1.1\",\"headers\":{{{}}},\"body\":\"{}\"}}",
                 status_code,
-                reason,
+                escape_json(&resp.status_text),
                 headers_str,
                 escape_json(&response_body)
             )
         }
         Err(e) => {
-            format!("{{\"statusCode\":0,\"statusMessage\":\"\",\"httpVersion\":\"\",\"headers\":{{}},\"body\":\"\",\"error\":\"{}\"}}", escape_json(&e.to_string()))
+            format!("{{\"statusCode\":0,\"statusMessage\":\"\",\"httpVersion\":\"\",\"headers\":{{}},\"body\":\"\",\"error\":\"{}\"}}", escape_json(&e))
         }
     }
 }

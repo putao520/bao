@@ -8,6 +8,7 @@ members = [
     "src/bao_bin",
     "src/bao_cdp",
     "src/bao_stealth",
+    "src/bao_native_stubs",
     "src/opaque",
     "src/bun_alloc",
     "src/bun_core",

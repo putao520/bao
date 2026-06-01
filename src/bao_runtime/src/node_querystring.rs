@@ -27,7 +27,7 @@ const QS_JS: &str = r#"
     var pairs = str.split(sep);
     var count = 0;
     for (var i = 0; i < pairs.length; i++) {
-      if (maxKeys >= 0 && count >= maxKeys) break;
+      if (maxKeys > 0 && count >= maxKeys) break;
       var pair = pairs[i];
       var idx = pair.indexOf(eq);
       var key, val;

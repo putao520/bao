@@ -222,20 +222,23 @@ use bao_runtime::stealth_http;
 use bao_stealth::StealthProfile;
 
 #[test]
-fn test_stealth_agent_chrome_creates_without_panic() {
+fn test_stealth_request_chrome_creates_without_panic() {
     let profile = StealthProfile::chrome_default();
-    let _agent = stealth_http::create_stealth_agent(&Some(profile));
+    let config = stealth_http::create_stealth_request(&Some(profile), bun_http::Method::GET, "https://example.com", &[], None);
+    assert!(config.user_agent.is_some());
 }
 
 #[test]
-fn test_stealth_agent_firefox_creates_without_panic() {
+fn test_stealth_request_firefox_creates_without_panic() {
     let profile = StealthProfile::firefox_default();
-    let _agent = stealth_http::create_stealth_agent(&Some(profile));
+    let config = stealth_http::create_stealth_request(&Some(profile), bun_http::Method::GET, "https://example.com", &[], None);
+    assert!(config.user_agent.is_some());
 }
 
 #[test]
-fn test_stealth_agent_no_profile_creates_without_panic() {
-    let _agent = stealth_http::create_stealth_agent(&None);
+fn test_stealth_request_no_profile_creates_without_panic() {
+    let config = stealth_http::create_stealth_request(&None, bun_http::Method::GET, "https://example.com", &[], None);
+    assert!(config.user_agent.is_none());
 }
 
 #[test]

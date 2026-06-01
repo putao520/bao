@@ -26,4 +26,4 @@ bun_cares_sys.workspace = true
 bun_wyhash.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-bun_windows_sys.workspace = true
+bun_windows_sys = { workspace = true, target = "windows" }

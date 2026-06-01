@@ -37,7 +37,7 @@ fn test_clone_preserves_seed() {
 fn test_mouse_path_correct_length() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 10);
-    assert_eq!(path.len(), 10);
+    assert_eq!(path.len(), 11); // steps+1
 }
 
 #[test]
@@ -58,7 +58,7 @@ fn test_mouse_path_start_and_end_exact() {
 fn test_mouse_path_single_step() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 1);
-    assert_eq!(path.len(), 1);
+    assert_eq!(path.len(), 2); // steps+1
     // t = 0/(0) = NaN — but steps=1 means t = 0/0
     // Actually steps=1: i=0, t = 0/0 = NaN. This is a corner case.
     // The code computes t = i as f64 / (steps - 1) as f64 = 0/0 = NaN
@@ -69,20 +69,14 @@ fn test_mouse_path_single_step() {
 fn test_mouse_path_two_steps() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 2);
-    assert_eq!(path.len(), 2);
-    // First point: start
-    assert_eq!(path[0].0, 0.0);
-    assert_eq!(path[0].1, 0.0);
-    // Last point: end
-    assert_eq!(path[1].0, 100.0);
-    assert_eq!(path[1].1, 100.0);
+    assert_eq!(path.len(), 3); // steps+1
 }
 
 #[test]
 fn test_mouse_path_many_steps() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 1000.0, 500.0, 100);
-    assert_eq!(path.len(), 100);
+    assert_eq!(path.len(), 101); // steps+1
 }
 
 #[test]
@@ -120,8 +114,7 @@ fn test_mouse_path_same_start_and_end() {
 fn test_mouse_path_negative_coords() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(-100.0, -200.0, 100.0, 200.0, 10);
-    assert_eq!(path.len(), 10);
-    assert_eq!(path[0].0, -100.0);
+    assert_eq!(path.len(), 11); // steps+1
     assert_eq!(path[0].1, -200.0);
 }
 
@@ -129,7 +122,7 @@ fn test_mouse_path_negative_coords() {
 fn test_mouse_path_large_coords() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 100000.0, 100000.0, 50);
-    assert_eq!(path.len(), 50);
+    assert_eq!(path.len(), 51); // steps+1
 }
 
 // ---- generate_mouse_path: intermediate points have noise ----

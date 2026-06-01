@@ -176,16 +176,14 @@ unsafe extern "C" fn tls_connect(
 
     let _cb: Option<*mut JSObject> = None;
 
-    // Attempt TLS connection via ureq (verifies handshake, socket I/O is stubbed)
+    // Attempt TLS connection (verifies handshake)
     if let Ok(_tcp_stream) = ::std::net::TcpStream::connect((&*host, port)) {
-        // TCP reachable — verify TLS handshake via ureq HEAD request
         let test_url = format!("https://{}:{}", host, port);
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            .timeout_global(Some(::std::time::Duration::from_secs(5)))
-            .build()
-            .into();
-        let tls_ok = agent.head(&test_url).call().is_ok();
+        let headers: Vec<(String, String)> = Vec::new();
+        let tls_result = crate::stealth_http::stealth_http_request(
+            &None, bun_http::Method::HEAD, &test_url, &headers, None,
+        );
+        let tls_ok = tls_result.is_ok();
 
         if tls_ok {
             rooted!(&in(cx_ref) let tls_obj = w2::JS_NewPlainObject(cx_ref));

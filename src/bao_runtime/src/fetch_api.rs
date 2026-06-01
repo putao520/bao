@@ -224,37 +224,30 @@ struct FetchResponse {
 }
 
 fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Result<FetchResponse, String> {
-    let agent = crate::stealth_http::create_stealth_agent(&None);
-
-    let result = match method {
-        "POST" => agent.post(url).send(body.map(|b| b.as_bytes()).unwrap_or_default()),
-        "PUT" => agent.put(url).send(body.map(|b| b.as_bytes()).unwrap_or_default()),
-        "DELETE" => agent.delete(url).call(),
-        "PATCH" => agent.patch(url).send(body.map(|b| b.as_bytes()).unwrap_or_default()),
-        "HEAD" => agent.head(url).call(),
-        _ => agent.get(url).call(),
+    let bun_method = match method {
+        "POST" => bun_http::Method::POST,
+        "PUT" => bun_http::Method::PUT,
+        "DELETE" => bun_http::Method::DELETE,
+        "PATCH" => bun_http::Method::PATCH,
+        "HEAD" => bun_http::Method::HEAD,
+        "OPTIONS" => bun_http::Method::OPTIONS,
+        _ => bun_http::Method::GET,
     };
 
-    match result {
-        Ok(mut resp) => {
-            let status_code = resp.status().as_u16();
-            let status_text = resp.status().canonical_reason().unwrap_or("").to_string();
-            let headers: Vec<(String, String)> = resp.headers()
-                .iter()
-                .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect();
-            let body_text = resp.body_mut().read_to_string().unwrap_or_default();
+    let headers: Vec<(String, String)> = Vec::new();
+    let body_bytes: Option<&[u8]> = body.map(|b| b.as_bytes());
 
-            ::std::result::Result::Ok(FetchResponse {
-                status_code,
-                body: body_text,
-                headers,
-                url: url.to_string(),
-                status_text,
-            })
-        }
-        Err(e) => ::std::result::Result::Err(format!("{}", e)),
-    }
+    let result = crate::stealth_http::stealth_http_request(
+        &None, bun_method, url, &headers, body_bytes,
+    ).map_err(|e| format!("{}", e))?;
+
+    ::std::result::Result::Ok(FetchResponse {
+        status_code: result.status_code as u16,
+        body: String::from_utf8_lossy(&result.body).to_string(),
+        headers: result.headers,
+        url: url.to_string(),
+        status_text: result.status_text,
+    })
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

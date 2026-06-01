@@ -421,7 +421,7 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 - E1 (REQ-ENG-002): codegen 后端已实现，需验证与 .classes.ts 真实文件的兼容性
 - E5 (REQ-BRW-003): JSContext 融合评估需架构决策
 - E6/E7 (REQ-STL-001/002): TLS/HTTP2 指纹注入被上游 bun_http 编译阻塞
-- Phase 1 (删除手写轮子): 被上游 bun_* 编译阻塞
+- Phase 1 (删除手写轮子): **链接阻塞已解决** — bao_native_stubs 提供 150+ 纯 Rust stubs，bao_runtime 109 单元测试全通过
 		- [x] Wave 50: bao_runtime API 边界测试
 		  - runtime_api_boundary_tests: 34 tests (require_dir, permission_bridge, stealth_http, resolve_node_modules)
 		- [x] Wave 51: bao_engine + bao_stealth 深度测试扩展
@@ -492,3 +492,55 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 				- [x] Wave 70: TlsFingerprint preset deep + compute_ja3/ja4 + tls13/tls12 classification + StealthProfile cross-preset completeness + StealthEngine accessor tests
 				  - tls_profile_deep_tests: 57 tests (TlsFingerprint firefox/chrome_120/chrome_latest field counts, ja3/ja4 format validation, alpn_strings, tls13/tls12 suite classification, StealthProfile cross-preset differentiation, StealthEngine all accessors, clone/debug)
 				  - 2694 tests pass, 0 failed
+
+				- [x] Wave 71: bun_simdutf_sys 纯 Rust 重写 — 消除 C 库依赖
+				  - 替换 60 个 unsafe extern "C" FFI 声明为 #[no_mangle] pub unsafe extern "C" fn 纯 Rust 实现
+				  - 覆盖: validate (utf8/ascii/utf16le/utf16be/utf32 + with_errors), convert (utf8↔utf16↔utf32, latin1→utf8, endianness), length/count, trim, base64 (encode/decode/decode16/decode_lenient/length_from_binary)
+				  - Cargo.toml edition = "2021" 避免 Rust 2024 strict unsafe 规则
+				  - cargo build -p bun_simdutf_sys / bun_core / bao_runtime 全部通过，零 C 库链接需求
+				- [x] Wave 71b: bun_windows_sys 条件编译修复
+				  - 16 个 #[link(name = "...")] 替换为 #[cfg_attr(windows, link(name = "..."))]
+				  - 保持 extern block 在所有平台可见，仅 Windows 激活链接属性
+				  - 消除 Linux 上 -lntdll -lkernel32 -lws2_32 -lshell32 -ladvapi32 链接错误
+
+## Wave 72: bao_native_stubs 链接集成 — 消除 131 个 undefined symbol
+
+**状态**: ✅ 完成
+
+**改动**:
+1. `bao_runtime/Cargo.toml` — 添加 `bao_native_stubs` 为 normal dependency
+2. `bao_runtime/src/lib.rs` — 添加 `_force_native_stubs_link()` 引用 `bao_native_stubs::force_link()` 防止链接器 GC
+
+**结果**:
+- 131 个 C 库符号全部由纯 Rust 实现: mimalloc(→libc), BoringSSL(46), uSockets(37), uWebSockets(6), UpgradedDuplex(10), Brotli(6), ZSTD(5), libdeflate(5), HPACK/lshpack(4), URL(2), c-ares(1), Bun-native(5), WTF(1), highway(1)
+- `cargo test -p bao_runtime`: 109 单元测试 + 1 集成测试全通过，零链接错误
+- `cargo build -p bao_engine -p bao_browser -p bao_cdp -p bao_stealth`: 全部通过
+
+## Wave 73: P1-0 bun_dispatch SpiderMonkey 适配 — link_interface! Jsc arm 实现
+
+**状态**: 🔲 待实施
+
+**背景**:
+- bun_dispatch::link_interface! 机制：低层 crate 声明接口+variant，高层 crate 提供 link_impl_*! 实现
+- Bun 中 Jsc arm 实现在 bun_jsc crate（~2800 LOC）
+- Bao 需要在 bao_engine 中为 SpiderMonkey 创建对应实现
+- 所有 bun_* crate 的 JSC 接口层通过此机制工作，适配后才能复用
+
+**需要实现的 link_interface! 接口**:
+1. JsEventLoop[Jsc] (bun_event_loop) — 17 方法：iteration_number, file_polls, uws_loop, tick, enqueue_task 等
+2. EventLoopCtx[Js] (bun_io) — 5 方法
+3. BufferedReaderParentLink[Js] (bun_io) — 2 方法
+4. ProcessExit[Jsc, Mini] (bun_spawn) — Mini 已有，需加 Jsc
+5. TranspilerCacheImpl[Jsc] (bun_ast) — 多方法
+6. VmLoaderCtx[Jsc] (bun_bundler) — 多方法
+7. BundleGenerateChunkCtx[Jsc] (bun_bundler) — 多方法
+8. ErrnoNames[Js] (bun_core) — 1 方法
+9. OutputSink[Sys] (bun_core) — 2 方法
+10. OutOfMemoryHandler[Jsc] (bun_crash_handler) — 1 方法
+
+**策略**:
+- 核心接口真实实现：JsEventLoop, EventLoopCtx, ProcessExit
+- 其余 stub：返回默认值/空指针
+- 实现位置：bao_engine/src/dispatch_sm.rs（集中适配层）
+
+**阻塞**: Phase 1 全量替换手写代码依赖此适配完成

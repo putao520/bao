@@ -1,7 +1,7 @@
 [package]
 name = "bun_simdutf_sys"
 version.workspace = true
-edition.workspace = true
+edition = "2021"
 
 [lib]
 path = "lib.rs"

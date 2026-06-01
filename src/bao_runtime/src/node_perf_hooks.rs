@@ -21,15 +21,15 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     unsafe {
-        w2::JS_DefineFunction(cx, perf_mod.handle(), c"now".as_ptr(), Some(perf_now), 0, 0);
-        w2::JS_DefineFunction(cx, perf_mod.handle(), c"mark".as_ptr(), Some(perf_mark), 1, 0);
-        w2::JS_DefineFunction(cx, perf_mod.handle(), c"measure".as_ptr(), Some(perf_measure), 2, 0);
+        w2::JS_DefineFunction(cx, perf_mod.handle(), c"now".as_ptr(), Some(perf_now), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, perf_mod.handle(), c"mark".as_ptr(), Some(perf_mark), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, perf_mod.handle(), c"measure".as_ptr(), Some(perf_measure), 2, JSPROP_ENUMERATE as u32);
 
         rooted!(&in(cx) let performance_obj = w2::JS_NewPlainObject(cx));
         if !performance_obj.get().is_null() {
-            w2::JS_DefineFunction(cx, performance_obj.handle(), c"now".as_ptr(), Some(perf_now), 0, 0);
-            w2::JS_DefineFunction(cx, performance_obj.handle(), c"mark".as_ptr(), Some(perf_mark), 1, 0);
-            w2::JS_DefineFunction(cx, performance_obj.handle(), c"measure".as_ptr(), Some(perf_measure), 2, 0);
+            w2::JS_DefineFunction(cx, performance_obj.handle(), c"now".as_ptr(), Some(perf_now), 0, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, performance_obj.handle(), c"mark".as_ptr(), Some(perf_mark), 1, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, performance_obj.handle(), c"measure".as_ptr(), Some(perf_measure), 2, JSPROP_ENUMERATE as u32);
             let perf_val = ObjectValue(performance_obj.get());
             let perf_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &perf_val };
             JS_DefineProperty(cx.raw_cx(), perf_mod.handle().into(), c"performance".as_ptr(), perf_h, JSPROP_ENUMERATE as u32);

@@ -1,0 +1,10 @@
+[package]
+name = "bao_native_stubs"
+version = "0.1.0"
+description = "Rust implementations of symbols originally provided by Zig-compiled C/Zig code in upstream Bun. Eliminates Zig dependency for test linking."
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+libc = "0.2"
+base64 = "0.22"
