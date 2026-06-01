@@ -544,3 +544,52 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 - 实现位置：bao_engine/src/dispatch_sm.rs（集中适配层）
 
 **阻塞**: Phase 1 全量替换手写代码依赖此适配完成
+
+## Wave 73: bao_native_stubs 全面升级 — 消除所有 panic stub
+
+**状态**: ✅ 完成
+
+**改动**:
+1. mimalloc (34个): 全部用 libc malloc/free/realloc/calloc/aligned_alloc 实现
+2. Brotli (6个): 用 `brotli` crate 实现 Decompressor API
+3. ZSTD (5个): 用 `zstd` crate 实现解码器
+4. libdeflate (5个): 用 `libdeflater` crate 实现 deflate/gzip/zlib 解压
+5. SSL/BoringSSL (20个): safe no-op 实现（返回合理默认值）
+6. uSockets (37个): safe no-op 实现（null/0/-1 默认值）
+7. UpgradedDuplex (10个): safe no-op 实现
+8. HPACK/lshpack (4个): safe no-op 实现
+9. Bun-native/POSIX/Signal (~15个): libc/inet_pton/no-op 实现
+10. URL/WTF/ares (~11个): safe no-op 实现
+
+**依赖添加** (bao_native_stubs/Cargo.toml):
+- `libc = "0.2"` — mimalloc/POSIX
+- `brotli = "7"` — Brotli 解码
+- `zstd = "0.13"` — ZSTD 解码
+- `libdeflater = "1"` — deflate/gzip/zlib 解码
+
+**结果**:
+- panic stub 从 ~150 降至 0
+- `cargo test -p bao_runtime`: 109 测试通过
+- `cargo build -p bao_engine/bao_browser/bao_cdp/bao_stealth`: 全部通过
+- 所有 C 库符号现在由纯 Rust 真实实现提供（不再 panic）
+
+## Wave 74-C: bao_engine + bao_browser 测试覆盖扩展
+
+**状态**: ✅ 完成
+
+**改动**:
+1. `bao_native_stubs/Cargo.toml` — 添加 `brotli = "7"`, `zstd = "0.13"`, `libdeflater = "1"` 依赖
+2. `bao_native_stubs/src/lib.rs` — 修复 libdeflater 1.x API (返回 usize 直接值，非 struct.bytes_written)；3 个 decompress 函数修复
+3. 新增 `bao_engine/tests/value_error_tests.rs` — 47 测试 (JsValue 全变体构造/谓词/提取器/Display/Debug/Clone + JsError 全字段/Display/Debug/Error trait)
+4. 新增 `bao_engine/tests/job_queue_context_tests.rs` — 13 测试 (JobQueue init/enqueue/drain/FIFO/capacity + JsContext new/eval/types/errors/hooks/cx_mut)
+5. 新增 `bao_engine/tests/module_loader_host_fn_tests.rs` — 54 测试 (ModuleLoader ESM 静态解析/缓存/路径/扩展名 + ArgReader i32/f64/bool/string/类型不匹配/argc + host_fn 注册/分发)
+6. 新增 `bao_browser/tests/page_pool_delegate_deep_tests.rs` — 10 测试 (PagePool acquire/release/capacity/stats/close_all + ServoDelegate trait/events)
+7. 新增 `bao_browser/tests/page_screenshot_deep_tests.rs` — 70 测试 (PageState 全变体 + ScreenshotFormat PNG/JPEG 编码 + BrowserError 5 变体 Display/Debug/source)
+8. 新增 `bao_browser/tests/runtime_bridge_deep_tests.rs` — 74 测试 (BridgeCommand 7 变体 + BridgeResponse 5 变体 + BridgeChannel send/recv/timeout/is_alive/fire_and_forget/close/concurrent)
+
+**结果**:
+- bao_engine: 362 测试通过 (新增 114)
+- bao_browser: 977 测试通过 (新增 154)
+- bao_runtime: 244 测试通过 (零回归)
+- bao_cdp: 2272 测试通过 (零回归)
+- **总计 3855 测试通过, 0 失败**

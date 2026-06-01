@@ -14,6 +14,10 @@
 
 use crate::page::PageHandle;
 use crate::error::BrowserError;
+use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 /// Inject Node.js API polyfills into a browser page context.
 /// This makes `require`, `Buffer`, `process`, etc. available in the servo page.
@@ -831,6 +835,232 @@ const STEALTH_POLYFILLS: &str = r#"(function() {
     };
   }
 })();"#;
+
+// ── Bridge types ────────────────────────────────────────────────────
+
+/// Commands sent through the runtime bridge for execution in a page context.
+///
+/// Each variant maps to a [`PageHandle`] operation. The bridge decouples
+/// command submission from execution — a worker loop reads from the
+/// [`BridgeReceiver`] and drives the real servo page.
+///
+/// @trace REQ-BRW-003 [entity:RuntimeBridge]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeCommand {
+    /// Navigate the page to a URL.
+    Navigate(String),
+    /// Evaluate JavaScript in the page and return the result as a string.
+    Evaluate(String),
+    /// Capture a screenshot of the current page.
+    Screenshot,
+    /// Close the page and mark the bridge as inactive.
+    Close,
+    /// Resize the page viewport to width × height.
+    Resize(u32, u32),
+    /// Retrieve the current page title.
+    GetTitle,
+    /// Retrieve the current page URL.
+    GetUrl,
+}
+
+/// Response returned after executing a [`BridgeCommand`].
+///
+/// @trace REQ-BRW-003 [entity:RuntimeBridge]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeResponse {
+    /// Command succeeded with no return value.
+    Ok,
+    /// Command failed with a descriptive message.
+    Err(String),
+    /// Command returned a null / void result.
+    Null,
+    /// Command returned a string value (evaluation result, title, URL, …).
+    Value(String),
+    /// Command returned binary data (screenshot image bytes).
+    Binary(Vec<u8>),
+}
+
+impl BridgeResponse {
+    /// Returns `true` when the response is [`Ok`](BridgeResponse::Ok).
+    pub fn is_ok(&self) -> bool {
+        matches!(self, BridgeResponse::Ok)
+    }
+
+    /// Returns `true` when the response is [`Err`](BridgeResponse::Err).
+    pub fn is_err(&self) -> bool {
+        matches!(self, BridgeResponse::Err(_))
+    }
+
+    /// Converts [`Err`](BridgeResponse::Err) into `Result::Err`, wrapping all other
+    /// variants in `Result::Ok`.
+    pub fn ok(self) -> Result<Self, String> {
+        match self {
+            BridgeResponse::Err(e) => Err(e),
+            other => Ok(other),
+        }
+    }
+}
+
+/// Receiving end of a [`BridgeChannel`].
+///
+/// A worker thread (or event-loop iteration) calls [`recv`](BridgeReceiver::recv)
+/// to obtain commands and their optional response channels, executes them against
+/// the page, and sends back [`BridgeResponse`] values.
+pub struct BridgeReceiver {
+    rx: mpsc::Receiver<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>)>,
+    alive: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for BridgeReceiver {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BridgeReceiver")
+            .field("alive", &self.alive)
+            .finish()
+    }
+}
+
+impl BridgeReceiver {
+    /// Block until a command arrives or the channel is disconnected.
+    pub fn recv(&self) -> Result<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>), String> {
+        self.rx.recv().map_err(|_| "channel closed".to_string())
+    }
+
+    /// Block for at most `timeout`, returning the command or a timeout error.
+    pub fn recv_timeout(
+        &self,
+        timeout: Duration,
+    ) -> Result<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>), String> {
+        self.rx
+            .recv_timeout(timeout)
+            .map_err(|e| format!("{}", e))
+    }
+
+    /// Whether the bridge has been marked alive (both sides share the flag).
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+}
+
+/// Producer half of the bridge command channel.
+///
+/// Methods are thread-safe (`&self`) so a single channel can be shared across
+/// threads for concurrent submission.
+///
+/// @trace REQ-BRW-003 [entity:BridgeChannel]
+#[derive(Debug)]
+pub struct BridgeChannel {
+    tx: mpsc::Sender<(BridgeCommand, Option<mpsc::Sender<BridgeResponse>>)>,
+    alive: Arc<AtomicBool>,
+}
+
+impl BridgeChannel {
+    /// Create a new bridge channel pair.
+    ///
+    /// Returns `(sender, receiver)` where commands flow sender → receiver and
+    /// responses flow back via per-command one-shot channels.
+    pub fn new() -> (Self, BridgeReceiver) {
+        let (tx, rx) = mpsc::channel();
+        let alive = Arc::new(AtomicBool::new(true));
+        let channel = BridgeChannel {
+            tx,
+            alive: alive.clone(),
+        };
+        let receiver = BridgeReceiver { rx, alive };
+        (channel, receiver)
+    }
+
+    /// Send a command and block until the worker returns a response.
+    pub fn send(&self, cmd: BridgeCommand) -> Result<BridgeResponse, String> {
+        let (resp_tx, resp_rx) = mpsc::channel();
+        self.tx
+            .send((cmd, Some(resp_tx)))
+            .map_err(|_| "bridge closed".to_string())?;
+        resp_rx.recv().map_err(|_| "response channel closed".to_string())
+    }
+
+    /// Send a command and wait at most `timeout` for a response.
+    pub fn send_timeout(&self, cmd: BridgeCommand, timeout: Duration) -> Result<BridgeResponse, String> {
+        let (resp_tx, resp_rx) = mpsc::channel();
+        self.tx
+            .send((cmd, Some(resp_tx)))
+            .map_err(|_| "bridge closed".to_string())?;
+        resp_rx
+            .recv_timeout(timeout)
+            .map_err(|e| format!("{}", e))
+    }
+
+    /// Send a command without waiting for a response.
+    ///
+    /// The worker receives `None` for the responder slot and can skip
+    /// the response-send step.
+    pub fn fire_and_forget(&self, cmd: BridgeCommand) -> Result<(), String> {
+        self.tx
+            .send((cmd, None))
+            .map_err(|_| "bridge closed".to_string())
+    }
+
+    /// Whether the bridge is marked alive (both sender and receiver).
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+
+    /// Mark the bridge as closed.
+    ///
+    /// This only sets a flag — the underlying channel remains connected.
+    /// Dropping the [`BridgeChannel`] / [`BridgeReceiver`] pair fully tears
+    /// down the transport.
+    pub fn close(&self) {
+        self.alive.store(false, Ordering::SeqCst);
+    }
+}
+
+/// High-level bridge that owns a [`BridgeChannel`] and provides the public
+/// command API for the bao_browser runtime.
+///
+/// In production, a worker loop reads from the associated [`BridgeReceiver`]
+/// and dispatches commands to a servo [`PageHandle`].  In tests the channel
+/// alone is exercised.
+///
+/// @trace REQ-BRW-003 [entity:RuntimeBridge]
+#[derive(Debug)]
+pub struct RuntimeBridge {
+    channel: BridgeChannel,
+}
+
+impl RuntimeBridge {
+    /// Create a fresh bridge, returning the sending half and the receiver.
+    pub fn new() -> (Self, BridgeReceiver) {
+        let (channel, receiver) = BridgeChannel::new();
+        (RuntimeBridge { channel }, receiver)
+    }
+
+    /// Send a command and wait for the response.  See [`BridgeChannel::send`].
+    pub fn send(&self, cmd: BridgeCommand) -> Result<BridgeResponse, String> {
+        self.channel.send(cmd)
+    }
+
+    /// Send a command and wait at most `timeout` for a response.
+    /// See [`BridgeChannel::send_timeout`].
+    pub fn send_timeout(&self, cmd: BridgeCommand, timeout: Duration) -> Result<BridgeResponse, String> {
+        self.channel.send_timeout(cmd, timeout)
+    }
+
+    /// Send a command without waiting for a response.
+    /// See [`BridgeChannel::fire_and_forget`].
+    pub fn fire_and_forget(&self, cmd: BridgeCommand) -> Result<(), String> {
+        self.channel.fire_and_forget(cmd)
+    }
+
+    /// Whether the bridge is alive.  See [`BridgeChannel::is_alive`].
+    pub fn is_alive(&self) -> bool {
+        self.channel.is_alive()
+    }
+
+    /// Mark the bridge closed.  See [`BridgeChannel::close`].
+    pub fn close(&self) {
+        self.channel.close();
+    }
+}
 
 #[cfg(test)]
 mod tests {

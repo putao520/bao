@@ -687,8 +687,6 @@ pub extern "C" fn BrotliDecoderCreateInstance(
     _free: *const c_void,
     _opaque: *mut c_void,
 ) -> *mut c_void {
-    use brotli::DecompressorWriter;
-    // We use a Vec<u8> buffer as the decompressor state
     let state = Box::new(Vec::<u8>::new());
     Box::into_raw(state) as *mut c_void
 }
@@ -772,12 +770,11 @@ pub extern "C" fn libdeflate_deflate_decompress_ex(
     actual_out_nbytes: *mut usize,
 ) -> c_int {
     if decompressor.is_null() || inp.is_null() || out.is_null() { return -1; }
-    let dec = unsafe { &*(decompressor as *const libdeflater::Decompressor) };
+    let dec = unsafe { &mut *(decompressor as *mut libdeflater::Decompressor) };
     let input = unsafe { core::slice::from_raw_parts(inp, in_nbytes) };
     let mut output_buf = vec![0u8; out_nbytes_avail];
     match dec.deflate_decompress(&input[..], &mut output_buf) {
-        Ok(result) => {
-            let written = result.bytes_written;
+        Ok(written) => {
             unsafe {
                 core::ptr::copy_nonoverlapping(output_buf.as_ptr(), out, written);
                 if !actual_in_nbytes.is_null() { *actual_in_nbytes = in_nbytes; }
@@ -800,12 +797,11 @@ pub extern "C" fn libdeflate_gzip_decompress_ex(
     actual_out_nbytes: *mut usize,
 ) -> c_int {
     if decompressor.is_null() || inp.is_null() || out.is_null() { return -1; }
-    let dec = unsafe { &*(decompressor as *const libdeflater::Decompressor) };
+    let dec = unsafe { &mut *(decompressor as *mut libdeflater::Decompressor) };
     let input = unsafe { core::slice::from_raw_parts(inp, in_nbytes) };
     let mut output_buf = vec![0u8; out_nbytes_avail];
     match dec.gzip_decompress(&input[..], &mut output_buf) {
-        Ok(result) => {
-            let written = result.bytes_written;
+        Ok(written) => {
             unsafe {
                 core::ptr::copy_nonoverlapping(output_buf.as_ptr(), out, written);
                 if !actual_in_nbytes.is_null() { *actual_in_nbytes = in_nbytes; }
@@ -835,12 +831,11 @@ pub extern "C" fn libdeflate_zlib_decompress_ex(
     actual_out_nbytes: *mut usize,
 ) -> c_int {
     if decompressor.is_null() || inp.is_null() || out.is_null() { return -1; }
-    let dec = unsafe { &*(decompressor as *const libdeflater::Decompressor) };
+    let dec = unsafe { &mut *(decompressor as *mut libdeflater::Decompressor) };
     let input = unsafe { core::slice::from_raw_parts(inp, in_nbytes) };
     let mut output_buf = vec![0u8; out_nbytes_avail];
     match dec.zlib_decompress(&input[..], &mut output_buf) {
-        Ok(result) => {
-            let written = result.bytes_written;
+        Ok(written) => {
             unsafe {
                 core::ptr::copy_nonoverlapping(output_buf.as_ptr(), out, written);
                 if !actual_in_nbytes.is_null() { *actual_in_nbytes = in_nbytes; }

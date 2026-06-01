@@ -21,6 +21,7 @@ pub use page::{PageHandle, PageState};
 pub use page_pool::PagePool;
 pub use permission::{Permission, PermissionDenied, PermissionGuard};
 pub use screenshot::{encode_image, ScreenshotFormat};
+pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, RuntimeBridge};
 
 use std::rc::Rc;
 use std::time::Duration;
