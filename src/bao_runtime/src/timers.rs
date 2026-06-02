@@ -651,6 +651,87 @@ impl bun_io::heap::HeapContext<EventLoopTimer> for BaoTimerHeapCtx {
 /// Type alias for the Bun-derived intrusive heap of EventLoopTimer nodes.
 pub type BaoTimerHeap = bun_io::heap::Intrusive<EventLoopTimer, BaoTimerHeapCtx>;
 
+/// P1-A.3c-step2: BaoTimerRegistry — the SpiderMonkey-side equivalent of
+/// Bun's `runtime::timer::All`. Owns `Box<BaoTimeoutObject>` nodes keyed by
+/// `timer_id` and tracks them in an intrusive pairing-heap of their
+/// `EventLoopTimer` slots. Single-thread (JS model) → no Mutex.
+///
+/// Lifetime note: stored in a thread_local `RefCell`, so any re-entrant
+/// schedule/cancel/drain must avoid holding `&mut` across JS callback
+/// dispatch — same pattern as Bun's `drain_timers` (drops the borrow before
+/// firing).
+pub struct BaoTimerRegistry {
+    heap: BaoTimerHeap,
+    /// Owns the BaoTimeoutObject memory; the intrusive heap reaches into
+    /// each box's `event_loop_timer` field via raw pointer.
+    owned: ::std::collections::HashMap<u32, ::std::boxed::Box<BaoTimeoutObject>>,
+}
+
+#[allow(clippy::derivable_impls)]
+impl ::std::default::Default for BaoTimerRegistry {
+    fn default() -> Self {
+        Self {
+            heap: ::std::default::Default::default(),
+            owned: ::std::default::Default::default(),
+        }
+    }
+}
+
+impl BaoTimerRegistry {
+    pub fn new() -> Self {
+        ::std::default::Default::default()
+    }
+
+    /// Number of timers currently held (oneshot + interval combined).
+    pub fn len(&self) -> usize {
+        self.owned.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.owned.is_empty()
+    }
+
+    /// Take ownership of `obj`, register it under `obj.timer_id`, and push
+    /// its `event_loop_timer` into the intrusive heap. Returns the timer_id.
+    ///
+    /// # Panics
+    /// Panics if `timer_id` is already registered (caller must cancel first).
+    pub fn insert(&mut self, mut obj: ::std::boxed::Box<BaoTimeoutObject>) -> u32 {
+        let id = obj.timer_id;
+        assert!(!self.owned.contains_key(&id), "duplicate timer_id {id} in BaoTimerRegistry");
+        // SAFETY: Box owns a heap allocation; we never move the Box while
+        // it's in the heap. Pointer stays valid until remove() pulls it out.
+        let timer_ptr: *mut EventLoopTimer = &mut obj.event_loop_timer;
+        unsafe { self.heap.insert(timer_ptr); }
+        self.owned.insert(id, obj);
+        id
+    }
+
+    /// Remove timer `id` from both the heap and the owned map. Returns
+    /// `Some(())` if found, `None` otherwise.
+    pub fn remove(&mut self, id: u32) -> ::std::option::Option<()> {
+        let mut obj = self.owned.remove(&id)?;
+        let timer_ptr: *mut EventLoopTimer = &mut obj.event_loop_timer;
+        // SAFETY: timer_ptr was inserted into self.heap by `insert`; the
+        // node is still live (we hold the Box). remove() detaches it from
+        // the heap without touching any other node.
+        unsafe { self.heap.remove(timer_ptr); }
+        ::std::mem::drop(obj);
+        ::std::option::Option::Some(())
+    }
+
+    /// Peek the earliest deadline in the heap (Bun's `get_timeout` analog).
+    pub fn next_deadline(&self) -> ::std::option::Option<bun_core::Timespec> {
+        let ptr = self.heap.peek();
+        if ptr.is_null() {
+            return ::std::option::Option::None;
+        }
+        // SAFETY: peek returns null or a valid timer pointer that's still
+        // owned by some box in self.owned; we only read `next`.
+        ::std::option::Option::Some(unsafe { (*ptr).next })
+    }
+}
+
 #[cfg(test)]
 mod bao_timeout_tests {
     use super::*;
@@ -819,5 +900,55 @@ mod bao_timeout_tests {
         }
         drop(earlier);
         drop(later);
+    }
+
+    #[test]
+    fn bao_timer_registry_insert_and_len() {
+        // P1-A.3c-step2: insert keeps ownership + heap membership consistent.
+        let mut reg = BaoTimerRegistry::new();
+        assert!(reg.is_empty());
+        assert_eq!(reg.len(), 0);
+
+        let mut obj = Box::new(BaoTimeoutObject::new_paused());
+        obj.timer_id = 1;
+        obj.event_loop_timer.next = bun_core::Timespec { sec: 100, nsec: 0 };
+        let id = reg.insert(obj);
+        assert_eq!(id, 1);
+        assert_eq!(reg.len(), 1);
+        assert!(!reg.is_empty());
+    }
+
+    #[test]
+    fn bao_timer_registry_next_deadline_returns_min() {
+        // Insert 3 timers out of order; next_deadline returns earliest.
+        let mut reg = BaoTimerRegistry::new();
+        for (id, sec) in [(1, 300), (2, 100), (3, 200)] {
+            let mut obj = Box::new(BaoTimeoutObject::new_paused());
+            obj.timer_id = id;
+            obj.event_loop_timer.next = bun_core::Timespec { sec, nsec: 0 };
+            reg.insert(obj);
+        }
+        let dl = reg.next_deadline().expect("heap non-empty");
+        assert_eq!(dl.sec, 100, "next_deadline must return earliest (sec=100)");
+    }
+
+    #[test]
+    fn bao_timer_registry_remove_clears_ownership() {
+        let mut reg = BaoTimerRegistry::new();
+        let mut obj = Box::new(BaoTimeoutObject::new_paused());
+        obj.timer_id = 42;
+        obj.event_loop_timer.next = bun_core::Timespec { sec: 500, nsec: 0 };
+        reg.insert(obj);
+        assert_eq!(reg.len(), 1);
+
+        let removed = reg.remove(42);
+        assert!(removed.is_some(), "remove returns Some for known id");
+        assert_eq!(reg.len(), 0);
+        assert!(reg.is_empty());
+        assert!(reg.next_deadline().is_none(), "heap must be empty after remove");
+
+        // Removing unknown id returns None.
+        let again = reg.remove(42);
+        assert!(again.is_none(), "remove returns None for unknown id");
     }
 }
