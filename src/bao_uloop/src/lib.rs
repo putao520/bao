@@ -58,6 +58,8 @@
 #![allow(clippy::missing_safety_doc)]
 #![cfg(target_os = "linux")] // 74-C.1: Linux epoll only; kqueue = 74-C.8
 
+pub mod poll;
+
 use core::ffi::{c_char, c_int, c_uint, c_void};
 use core::ptr;
 use core::sync::atomic::Ordering;
@@ -66,35 +68,21 @@ use bun_uws_sys::{InternalLoopData, Loop, PosixLoop, Timespec};
 
 // ────────────────────────────── constants ──────────────────────────────
 
-/// Tag value stored in bits 49..63 of `epoll_event.data.u64` to identify
-/// the wakeup eventfd. Must be 0 (null pointer with tag 0) so it's disjoint
-/// from FilePoll (1024) and BaoPoll (1..4).
-const WAKEUP_TAG: u16 = 0;
-
 /// Number of bits to shift the tag into the high position.
 /// Matches `TaggedPtr::ADDR_BITS` in `ptr/tagged_pointer.rs`.
 const ADDR_BITS: u32 = 49;
 
+/// Tag value for the wakeup eventfd: 0 (tag 0 = null-tagged pointer).
+const WAKEUP_TAG: u16 = 0;
+
 /// Encode a tagged pointer: `(ptr as u64 & ADDR_MASK) | (tag as u64 << ADDR_BITS)`.
-/// This is the same encoding as `TaggedPtr::init`.
+/// Used only for the wakeup eventfd registration. All other epoll events
+/// use untagged `data.ptr` (the CLEAR_POINTER_TAG dispatch model).
 #[inline]
 fn encode_tagged_ptr(ptr: *mut c_void, tag: u16) -> u64 {
     let addr = ptr as usize as u64;
     let addr_mask: u64 = (1u64 << ADDR_BITS) - 1;
     (addr & addr_mask) | ((tag as u64) << ADDR_BITS)
-}
-
-/// Decode the tag from a `data.u64` value.
-#[inline]
-fn decode_tag(data_u64: u64) -> u16 {
-    (data_u64 >> ADDR_BITS) as u16
-}
-
-/// Decode the pointer from a `data.u64` value (low 49 bits).
-#[inline]
-fn decode_ptr(data_u64: u64) -> *mut c_void {
-    let addr_mask: u64 = (1u64 << ADDR_BITS) - 1;
-    (data_u64 & addr_mask) as usize as *mut c_void
 }
 
 // ────────────────────────────── types ──────────────────────────────
@@ -169,23 +157,6 @@ thread_local! {
     static BAO_LOOP: std::cell::RefCell<Option<BaoLoopState>> =
         const { std::cell::RefCell::new(None) };
 }
-
-// ──────────────────────── FFI: FilePoll dispatch ─────────────────────
-
-// `Bun__internal_dispatch_ready_poll` is `#[unsafe(no_mangle)] pub(crate)` in
-// `bun_io` — we link to it as an extern "C" symbol. It handles FilePoll
-// ready events (tag 1024). Only available when linked against the full
-// workspace (not in isolated `cargo test -p bao_uloop`).
-#[cfg(not(test))]
-unsafe extern "C" {
-    fn Bun__internal_dispatch_ready_poll(loop_: *mut Loop, tagged_pointer: *mut c_void);
-}
-
-/// In isolated test builds, `Bun__internal_dispatch_ready_poll` is not linked.
-/// Provide a no-op fallback — no FilePoll registrations exist in unit tests.
-#[cfg(test)]
-#[allow(non_snake_case)]
-unsafe extern "C" fn Bun__internal_dispatch_ready_poll(_loop_: *mut Loop, _tagged_pointer: *mut c_void) {}
 
 // ──────────────────────────── allocation ───────────────────────────
 
@@ -358,18 +329,15 @@ enum HandlerKind {
 
 // ──────────────────────── epoll tick ────────────────────────────────
 
-/// Single `epoll_wait` + tagged dispatch. Replaces the old `run_mio_poll`.
+/// Single `epoll_wait` + dispatch. Replaces the old `run_mio_poll`.
 ///
 /// Reads ready events into `(*loop_).ready_polls`, sets
-/// `num_ready_polls` / `current_ready_poll`, then dispatches each event
-/// by its tag:
-///   - WAKEUP_TAG (0): drain the eventfd (read 8 bytes), fire wakeup_cb
-///   - FILE_POLL_TAG (1024): call `Bun__internal_dispatch_ready_poll`
-///   - 1..4: BaoPoll dispatch (74-C.2 wires this)
+/// `num_ready_polls` / `current_ready_poll`, then:
+///   1. Drain the wakeup eventfd (if present in ready events)
+///   2. Delegate all other events to `poll::dispatch_ready_polls`
+///      which uses the `CLEAR_POINTER_TAG` pattern: tagged → FilePoll,
+///      untagged → `us_internal_dispatch_ready_poll`.
 fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
-    // Compute timeout. Same logic as the old mio path:
-    // - pending > 0 or null timeout → non-blocking
-    // - explicit timespec → use it
     let timeout_ms: c_int = if pending > 0 || timeout.is_null() {
         0
     } else {
@@ -377,7 +345,6 @@ fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
         if ts.sec == 0 && ts.nsec == 0 {
             0
         } else {
-            // Convert to milliseconds, capping at i32::MAX for epoll_wait.
             let ms = ts.sec as i64 * 1000 + ts.nsec as i64 / 1_000_000;
             ms.min(i32::MAX as i64) as c_int
         }
@@ -389,7 +356,6 @@ fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
     });
     let Some(epfd) = epfd else { return };
 
-    // epoll_wait into PosixLoop.ready_polls (1024 entries).
     let loop_ptr: *mut PosixLoop = loop_ as *mut PosixLoop;
     let nfds = unsafe {
         libc::epoll_wait(
@@ -404,54 +370,38 @@ fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
         return;
     }
 
-    // Set num_ready_polls / current_ready_poll for downstream consumers
-    // (e.g. `PosixLoop::current_ready_event()`).
     unsafe {
         (*loop_ptr).num_ready_polls = nfds;
         (*loop_ptr).current_ready_poll = 0;
     }
 
-    // Dispatch each ready event by tag.
+    // Drain the wakeup eventfd first (if it's in the ready set).
+    // The wakeup is registered with WAKEUP_TAG in data.u64, so we identify
+    // it by checking against InternalLoopData.wakeup_async.
+    let wakeup_async_raw = unsafe {
+        (*loop_ptr).internal_loop_data.wakeup_async as *mut BaoWakeupAsync
+    };
+
     for i in 0..nfds {
         let event = unsafe { (*loop_ptr).ready_polls[i as usize] };
-        let data_u64 = event.u64;
-        let tag = decode_tag(data_u64);
-
-        // Set current_ready_poll so `current_ready_event()` returns this event.
-        unsafe { (*loop_ptr).current_ready_poll = i; }
-
-        match tag {
-            WAKEUP_TAG => {
-                // Drain the eventfd (must read to re-arm level-triggered).
-                let ptr_raw = decode_ptr(data_u64);
-                let wakeup_async = ptr_raw as *mut BaoWakeupAsync;
-                if !wakeup_async.is_null() {
-                    let fd = unsafe { (*wakeup_async).fd };
-                    let mut buf: u64 = 0;
-                    unsafe {
-                        libc::read(fd, &mut buf as *mut u64 as *mut c_void, 8);
-                    }
-                    // Fire the async callback if set.
-                    if let Some(cb) = unsafe { (*wakeup_async).cb } {
-                        unsafe { cb(wakeup_async) };
-                    }
+        if event.u64 == encode_tagged_ptr(wakeup_async_raw as *mut c_void, WAKEUP_TAG) {
+            if !wakeup_async_raw.is_null() {
+                let fd = unsafe { (*wakeup_async_raw).fd };
+                let mut buf: u64 = 0;
+                unsafe {
+                    libc::read(fd, &mut buf as *mut u64 as *mut c_void, 8);
+                }
+                if let Some(cb) = unsafe { (*wakeup_async_raw).cb } {
+                    unsafe { cb(wakeup_async_raw) };
                 }
             }
-            // FilePoll tag (1024) — dispatch to bun_io's handler.
-            1024 => {
-                let tagged_ptr = data_u64 as usize as *mut c_void;
-                unsafe { Bun__internal_dispatch_ready_poll(loop_, tagged_ptr); }
-            }
-            // BaoPoll tags (1..4) — 74-C.2 wires these.
-            1..=4 => {
-                // Placeholder: BaoPoll dispatch lands in 74-C.2.
-                // For now, just skip — no BaoPoll registrations exist yet.
-            }
-            _ => {
-                // Unknown tag — ignore (defensive).
-            }
+            // Null this event so the dispatch loop skips it
+            unsafe { (*loop_ptr).ready_polls[i as usize].u64 = 0; }
         }
     }
+
+    // Dispatch remaining events via the CLEAR_POINTER_TAG pattern.
+    unsafe { poll::dispatch_ready_polls(loop_); }
 }
 
 fn bump_iteration_nr(loop_: *mut Loop) {
