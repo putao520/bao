@@ -426,7 +426,8 @@ fn test_behavior_seed() {
 fn test_behavior_mouse_path_count() {
     let b = BehaviorSimulator::new(42);
     let path = b.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 20);
-    assert_eq!(path.len(), 20);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 21);
 }
 
 #[test]
@@ -462,7 +463,8 @@ fn test_behavior_mouse_path_different_seeds() {
 fn test_behavior_mouse_path_single_step() {
     let b = BehaviorSimulator::new(42);
     let path = b.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 1);
-    assert_eq!(path.len(), 1);
+    // 1 step → 2 points (start + end).
+    assert_eq!(path.len(), 2);
 }
 
 #[test]

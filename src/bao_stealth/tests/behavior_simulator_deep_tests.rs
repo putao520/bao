@@ -50,21 +50,25 @@ fn test_mouse_path_end_near_target() {
 fn test_mouse_path_correct_step_count() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 200.0, 200.0, 30);
-    assert_eq!(path.len(), 30);
+    // generate_mouse_path returns steps+1 points (start + N steps including end).
+    assert_eq!(path.len(), 31);
 }
 
 #[test]
 fn test_mouse_path_single_step() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 1);
-    assert_eq!(path.len(), 1);
+    // 1 step → 2 points (start + end).
+    assert_eq!(path.len(), 2);
 }
 
 #[test]
 fn test_mouse_path_zero_steps() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 0);
-    assert!(path.is_empty());
+    // 0 steps → 1 point (start only). The impl uses `steps + 1` points
+    // unconditionally, matching the "start + N intermediate" semantic.
+    assert_eq!(path.len(), 1);
 }
 
 #[test]
@@ -98,7 +102,8 @@ fn test_mouse_path_coordinates_are_finite() {
 fn test_mouse_path_same_start_end() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(50.0, 50.0, 50.0, 50.0, 10);
-    assert_eq!(path.len(), 10);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 11);
     // All points should be close to (50, 50) since start == end
     for (x, y) in &path {
         assert!((x - 50.0).abs() < 100.0);
@@ -110,7 +115,8 @@ fn test_mouse_path_same_start_end() {
 fn test_mouse_path_negative_coordinates() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(-500.0, -500.0, -100.0, -100.0, 10);
-    assert_eq!(path.len(), 10);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 11);
     for (x, y) in &path {
         assert!(x.is_finite());
         assert!(y.is_finite());

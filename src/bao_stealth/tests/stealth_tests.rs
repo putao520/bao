@@ -299,9 +299,10 @@ fn test_audio_noise_different_indices_differ() {
 fn test_behavior_mouse_path_starts_and_ends() {
     let sim = BehaviorSimulator::new(42);
     let path = sim.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 10);
-    assert_eq!(path.len(), 10);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 11);
     let (x0, y0) = path[0];
-    let (xn, yn) = path[9];
+    let (xn, yn) = path.last().unwrap();
     assert!(x0.abs() < 5.0);
     assert!(y0.abs() < 5.0);
     assert!((xn - 100.0).abs() < 5.0);

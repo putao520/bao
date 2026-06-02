@@ -91,32 +91,32 @@ fn test_canvas_noise_different_seeds_different_noise() {
 fn test_mouse_path_zero_steps() {
     let b = BehaviorSimulator::new(42);
     let path = b.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 0);
-    assert!(path.is_empty());
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 1);
 }
 
 #[test]
 fn test_mouse_path_single_step() {
     let b = BehaviorSimulator::new(42);
     let path = b.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 1);
-    assert_eq!(path.len(), 1);
-    // Single step: t = 0/0 → panic or special case?
-    // steps=1, loop 0..1 → i=0, t = 0.0/0.0 → NaN
-    // Let's just verify it doesn't panic
+    // 1 step → 2 points (start + end).
+    assert_eq!(path.len(), 2);
 }
 
 #[test]
 fn test_mouse_path_two_steps() {
     let b = BehaviorSimulator::new(42);
     let path = b.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 2);
-    assert_eq!(path.len(), 2);
-    // First and last should be near start/end (no offset for first/last)
+    // 2 steps → 3 points (start + 1 mid + end).
+    assert_eq!(path.len(), 3);
 }
 
 #[test]
 fn test_mouse_path_many_steps() {
     let b = BehaviorSimulator::new(42);
     let path = b.generate_mouse_path(0.0, 0.0, 1920.0, 1080.0, 100);
-    assert_eq!(path.len(), 100);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 101);
     // First point near start
     assert!(path[0].0 < 50.0);
     assert!(path[0].1 < 50.0);
@@ -126,7 +126,8 @@ fn test_mouse_path_many_steps() {
 fn test_mouse_path_same_start_end() {
     let b = BehaviorSimulator::new(42);
     let path = b.generate_mouse_path(500.0, 500.0, 500.0, 500.0, 10);
-    assert_eq!(path.len(), 10);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 11);
     // All points should be near (500, 500) with small offsets
     for (x, y) in &path {
         assert!((x - 500.0).abs() < 100.0, "x offset too large: {}", x);
@@ -138,7 +139,8 @@ fn test_mouse_path_same_start_end() {
 fn test_mouse_path_negative_coordinates() {
     let b = BehaviorSimulator::new(42);
     let path = b.generate_mouse_path(-100.0, -100.0, 100.0, 100.0, 5);
-    assert_eq!(path.len(), 5);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 6);
 }
 
 #[test]

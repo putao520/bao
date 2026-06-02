@@ -117,7 +117,8 @@ fn test_canvas_noise_preserves_alpha() {
 fn test_behavior_mouse_path_has_correct_steps() {
     let sim = BehaviorSimulator::new(12345);
     let path = sim.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 10);
-    assert_eq!(path.len(), 10);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 11);
 }
 
 #[test]

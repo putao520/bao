@@ -45,7 +45,8 @@ fn test_clone() {
 fn test_mouse_path_start_point() {
     let bs = BehaviorSimulator::new(42);
     let path = bs.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 10);
-    assert_eq!(path.len(), 10);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 11);
     // First point should be at (x1, y1)
     let (x, y) = path[0];
     assert!((x - 0.0).abs() < 0.001);
@@ -65,9 +66,10 @@ fn test_mouse_path_end_point() {
 #[test]
 fn test_mouse_path_step_count() {
     let bs = BehaviorSimulator::new(1);
-    assert_eq!(bs.generate_mouse_path(0.0, 0.0, 1.0, 1.0, 5).len(), 5);
-    assert_eq!(bs.generate_mouse_path(0.0, 0.0, 1.0, 1.0, 1).len(), 1);
-    assert_eq!(bs.generate_mouse_path(0.0, 0.0, 1.0, 1.0, 100).len(), 100);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(bs.generate_mouse_path(0.0, 0.0, 1.0, 1.0, 5).len(), 6);
+    assert_eq!(bs.generate_mouse_path(0.0, 0.0, 1.0, 1.0, 1).len(), 2);
+    assert_eq!(bs.generate_mouse_path(0.0, 0.0, 1.0, 1.0, 100).len(), 101);
 }
 
 #[test]
@@ -85,7 +87,8 @@ fn test_mouse_path_same_start_end() {
 fn test_mouse_path_negative_coords() {
     let bs = BehaviorSimulator::new(10);
     let path = bs.generate_mouse_path(-100.0, -200.0, 100.0, 200.0, 20);
-    assert_eq!(path.len(), 20);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 21);
     // Start and end should match
     let (x0, y0) = path[0];
     assert!((x0 - (-100.0)).abs() < 0.001);
@@ -129,12 +132,11 @@ fn test_mouse_path_same_call_twice() {
 fn test_mouse_path_single_step() {
     let bs = BehaviorSimulator::new(42);
     let path = bs.generate_mouse_path(10.0, 20.0, 30.0, 40.0, 1);
-    assert_eq!(path.len(), 1);
-    // With 1 step, steps-1=0 causes t=NaN, producing NaN coordinates
-    // This is a known edge case — just verify it returns 1 point
+    // 1 step → 2 points (start + end).
+    assert_eq!(path.len(), 2);
     let (x, y) = path[0];
-    assert!(x.is_nan() || (x - 10.0).abs() < 10.0);
-    assert!(y.is_nan() || (y - 20.0).abs() < 10.0);
+    assert!((x - 10.0).abs() < 10.0);
+    assert!((y - 20.0).abs() < 10.0);
 }
 
 // ---- Mouse path: two steps ----
@@ -143,11 +145,12 @@ fn test_mouse_path_single_step() {
 fn test_mouse_path_two_steps() {
     let bs = BehaviorSimulator::new(42);
     let path = bs.generate_mouse_path(0.0, 0.0, 100.0, 100.0, 2);
-    assert_eq!(path.len(), 2);
+    // 2 steps → 3 points (start + 1 mid + end).
+    assert_eq!(path.len(), 3);
     // First is start, last is end
     let (x0, y0) = path[0];
     assert!((x0 - 0.0).abs() < 0.001);
-    let (x1, y1) = path[1];
+    let (x1, y1) = path.last().unwrap();
     assert!((x1 - 100.0).abs() < 0.001);
 }
 
@@ -315,7 +318,8 @@ fn test_scroll_deltas_two_steps() {
 fn test_mouse_path_large_steps() {
     let bs = BehaviorSimulator::new(42);
     let path = bs.generate_mouse_path(0.0, 0.0, 1920.0, 1080.0, 500);
-    assert_eq!(path.len(), 500);
+    // generate_mouse_path returns steps+1 points.
+    assert_eq!(path.len(), 501);
 }
 
 #[test]
