@@ -886,7 +886,7 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 
 ### P1-F 剩余项（待 Phase 1 全部完成后执行）
 
-- [ ] P1-A 完成 → 标记 SPEC 05-IMPLEMENTATION.html Phase 1 进度
+- [x] P1-A 完成 → 标记 SPEC 05-IMPLEMENTATION.html Phase 1 进度 — SPEC §2 Phase 1 已标记"已完成"，P1-A.1~A.4 全部交付
   - [x] P1-A.1: MiniEventLoop API 可用性前置验证 (commit `fa02dcf70`) — 4 集成测试通过
   - [x] P1-A.2a: BaoTimeoutObject 骨架 + dispatch 模块接入 (commit `6f3637a45`) — 4 单元测试通过，FFI 符号可链接
   - [x] P1-A.2b: drain_and_check 双路径共存 (commit `bff07b8c1`) — BaoTimeoutObject 完整化（callback+args+fire_js），老 TimerHeap 与新 BaoTimeoutObject 同时编译共存，7 单元测试通过
@@ -901,6 +901,9 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
     - [x] P1-A.3d: drain_and_check 切到 BAO_REGISTRY drain (commit `290b84e3f`) — drain_bao_timers pop-before-fire + interval re-arm + bao_next_deadline_ms + 124 lib + node_timers 集成通过
   - [x] P1-A.4: 删除老 TimerHeap + dual-write 代码 (commit `c2bd44f57`) — 删除 TimerEntry/TimerHeap/TIMERS/旧drain_timers/旧next_deadline，-162 行
 - [ ] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
+  - 🔴 P1-B (node_http → bun_uws) **BLOCKED-BY 74-LOOP-C**: uSockets socket ABI 全 no-op, mio 不分发事件。需先实现 us_poll_* mio 后端 + socket 事件分发 (1500-2500 LOC Phase 级变更)
+  - 🔴 P1-E.4 (node_net → bun_uws) 同上阻塞
+  - ⏸️ P1-E.3 (node_child_process → bun_spawn) 需独立 Wave + architect consult
 - [x] 删除 Cargo.toml 中 `ureq` 依赖（已被 bun_http 完全替代，已无引用 — P1-C 完成时清理）
 - [x] `cargo clippy --workspace -- -D warnings` 零警告（bao 7 crate 内部零警告 — 上游 mozjs_sys/servo 警告不可控）
 
