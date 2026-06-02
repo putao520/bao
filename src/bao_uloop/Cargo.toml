@@ -1,14 +1,13 @@
 [package]
 name = "bao_uloop"
 version = "0.1.0"
-description = "Pure-Rust mio-backed implementation of the uSockets loop ABI for Bao"
+description = "Raw epoll + eventfd implementation of the uSockets loop ABI for Bao"
 edition = "2024"
 license = "MIT"
 
 # Tier-0 safe: must not depend on any Bun crate that itself reaches JS or the
 # network stack. `bun_uws_sys` provides the #[repr(C)] PosixLoop / InternalLoopData
-# mirror we allocate; `mio` provides the platform event-loop primitive.
+# mirror we allocate; `libc` provides raw epoll/eventfd syscalls.
 [dependencies]
 bun_uws_sys = { path = "../uws_sys" }
-mio = { version = "1", features = ["os-poll", "os-ext"] }
 libc = "0.2"
