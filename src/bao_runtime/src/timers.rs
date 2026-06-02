@@ -470,16 +470,26 @@ pub struct BaoTimeoutObject {
     /// Monotonic epoch for stable heap ordering of equal-deadline JS timers.
     /// Mirrors Bun's `TimerObjectInternals.flags.epoch` (u25 in Zig).
     pub epoch: u32,
+    /// JS callback to invoke when the timer fires. None = virgin state.
+    /// Stored as raw `*mut JSObject`; rooted by the implicit no-GC window
+    /// between schedule (host_fn set_timeout/set_interval) and fire (drain
+    /// runs to completion before yielding to the SM engine). Same pattern as
+    /// the legacy TimerHeap — see `TimerEntry.callback` doc.
+    pub callback: ::std::option::Option<*mut JSObject>,
+    /// Marshalled JS arguments preserved across the schedule→fire window.
+    pub args: ::std::vec::Vec<JSVal>,
 }
 
 impl BaoTimeoutObject {
-    /// Construct a paused (PENDING state) timeout with epoch 0.
+    /// Construct a paused (PENDING state) timeout with epoch 0, no callback.
     pub fn new_paused() -> Self {
         Self {
             event_loop_timer: EventLoopTimer::init_paused(
                 bun_event_loop::EventLoopTimer::Tag::TimeoutObject,
             ),
             epoch: 0,
+            callback: ::std::option::Option::None,
+            args: ::std::vec::Vec::new(),
         }
     }
 
@@ -497,11 +507,32 @@ impl BaoTimeoutObject {
         (t as *mut u8).wrapping_sub(offset) as *mut Self
     }
 
-    /// Mark this timer as fired. P1-A.3 will replace this with real JS
-    /// callback dispatch (rooted JSObject + JS_CallFunctionValue).
+    /// Mark this timer as fired and bump epoch for stable re-queue ordering.
+    /// Pure state transition — does NOT dispatch the JS callback.
+    /// Callers that need JS dispatch must use `fire_js` after retrieving the
+    /// current `JSContext*`.
     pub fn fire(&mut self, _now: &Timespec) {
         self.event_loop_timer.state = TimerState::FIRED;
         self.epoch = self.epoch.wrapping_add(1);
+    }
+
+    /// Mark fired AND dispatch the JS callback via `fire_js_callback_raw`.
+    /// This is the SpiderMonkey equivalent of Bun's `TimeoutObject::fire`.
+    /// No-op if no callback is attached (defensive — schedule path always
+    /// sets one). Swallows any JS exception per drain_timers convention.
+    ///
+    /// # Safety
+    /// - `raw_cx` must be a live `JSContext*` on the current thread.
+    /// - `self.callback` (if Some) must point to a live function object
+    ///   rooted by the caller for the duration of this call.
+    /// - `self.args` slice must point to `JSVal`s rooted by the caller.
+    pub unsafe fn fire_js(&mut self, raw_cx: *mut JSContext, now: &Timespec) {
+        self.fire(now);
+        if let ::std::option::Option::Some(cb) = self.callback
+            && !cb.is_null()
+        {
+            unsafe { fire_js_callback_raw(raw_cx, cb, &self.args) };
+        }
     }
 }
 
@@ -557,5 +588,43 @@ mod bao_timeout_tests {
             obj.event_loop_timer.tag == bun_event_loop::EventLoopTimer::Tag::TimeoutObject,
             "tag must be TimeoutObject for FFI dispatch",
         );
+    }
+
+    #[test]
+    fn bao_timeout_object_new_paused_has_no_callback() {
+        let obj = BaoTimeoutObject::new_paused();
+        assert!(obj.callback.is_none(), "new_paused must start with no callback");
+        assert!(obj.args.is_empty(), "new_paused must start with empty args");
+    }
+
+    #[test]
+    fn bao_timeout_object_fire_js_null_callback_is_noop() {
+        // fire_js with null callback must still transition state but skip
+        // JS dispatch (defensive guard). No JSContext is touched.
+        let mut obj = BaoTimeoutObject::new_paused();
+        let now = Timespec { sec: 1_700_000_000, nsec: 0 };
+
+        // SAFETY: passing null raw_cx is sound because the null callback
+        // guard returns before any JSAPI call. We deliberately test the
+        // defensive path — the production path requires a live cx.
+        unsafe { obj.fire_js(::std::ptr::null_mut(), &now); }
+
+        assert!(obj.event_loop_timer.state == TimerState::FIRED, "fire_js transitions state even with null callback");
+        assert_eq!(obj.epoch, 1, "fire_js bumps epoch");
+    }
+
+    #[test]
+    fn bao_timeout_object_callback_field_roundtrip() {
+        // Verify callback/args fields can be set and read back. Uses a
+        // sentinel pointer (non-null but never dereferenced) to validate
+        // storage without engaging JSAPI.
+        let mut obj = BaoTimeoutObject::new_paused();
+        let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
+        obj.callback = ::std::option::Option::Some(sentinel);
+        obj.args = vec![mozjs::jsval::Int32Value(42)];
+
+        assert_eq!(obj.callback, ::std::option::Option::Some(sentinel), "callback field stores raw pointer");
+        assert_eq!(obj.args.len(), 1, "args field stores JSVal vec");
+        assert_eq!(obj.args[0].to_int32(), 42, "JSVal roundtrips intact");
     }
 }

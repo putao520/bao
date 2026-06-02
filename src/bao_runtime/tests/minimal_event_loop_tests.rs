@@ -32,7 +32,7 @@ fn test_minimal_event_loop_init() {
     let mut loop_ = MiniEventLoop::init();
     assert!(!loop_.loop_ptr().is_null(), "MiniEventLoop must produce a non-null uSockets loop pointer");
     assert!(loop_.tasks.readable_length() == 0, "fresh loop must have empty task queue");
-    assert!(loop_.pipe_read_buffer().len() > 0, "pipe_read_buffer must be initialized on first access");
+    assert!(!loop_.pipe_read_buffer().is_empty(), "pipe_read_buffer must be initialized on first access");
 }
 
 #[test]
