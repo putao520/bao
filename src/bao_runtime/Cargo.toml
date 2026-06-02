@@ -43,4 +43,5 @@ bun_base64 = { path = "../base64" }
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine" }
+bao_uloop = { path = "../bao_uloop" }
 tempfile = "3"

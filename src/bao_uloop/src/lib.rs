@@ -568,6 +568,27 @@ pub unsafe extern "C" fn uws_loop_removePostHandler(
     });
 }
 
+/// Force the linker to keep bao_uloop's `#[no_mangle] extern "C"` symbols.
+/// Required because nothing in the regular call chain name-refers to them —
+/// `bun_event_loop` resolves them as unresolved C externs at link time, and a
+/// pure Rust `#[no_mangle]` symbol can be GC'd by the linker when no Rust
+/// reference exists. Call from `bao_native_stubs::force_link()` so every
+/// integration test binary pulls them in.
+#[inline(never)]
+pub fn force_link() {
+    let _ = uws_get_loop;
+    let _ = us_create_loop as unsafe extern "C" fn(_, _, _, _, _) -> *mut Loop;
+    let _ = us_loop_free as unsafe extern "C" fn(_);
+    let _ = us_wakeup_loop as unsafe extern "C" fn(_);
+    let _ = us_loop_run_bun_tick as unsafe extern "C" fn(_, _);
+    let _ = us_loop_run as unsafe extern "C" fn(_);
+    let _ = uws_loop_defer as unsafe extern "C" fn(_, _, _);
+    let _ = uws_loop_addPreHandler as unsafe extern "C" fn(_, _, _);
+    let _ = uws_loop_removePreHandler as unsafe extern "C" fn(_, _, _);
+    let _ = uws_loop_addPostHandler as unsafe extern "C" fn(_, _, _);
+    let _ = uws_loop_removePostHandler as unsafe extern "C" fn(_, _, _);
+}
+
 // ─────────────────────────── tests ─────────────────────────────────
 
 #[cfg(test)]

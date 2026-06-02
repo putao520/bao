@@ -25,6 +25,12 @@ mod c_lib_stubs;
 /// functions that require full process initialization.
 #[inline(never)]
 pub fn force_link() {
+    // Wave 74-LOOP-A: pull in bao_uloop's `#[no_mangle] extern "C"` loop
+    // symbols (uws_get_loop / us_wakeup_loop / us_loop_run_bun_tick / ...).
+    // Without this, the linker strips them and any code path that touches
+    // `bun_event_loop::MiniEventLoop` fails to link.
+    bao_uloop::force_link();
+
     // Actually call each function to prevent the linker from GC'ing them.
     // We pass safe arguments to exercise the function bodies.
     let p = mi_malloc(1);
