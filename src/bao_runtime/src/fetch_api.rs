@@ -239,7 +239,7 @@ fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Resul
 
     let result = crate::stealth_http::stealth_http_request(
         &None, bun_method, url, &headers, body_bytes,
-    ).map_err(|e| format!("{}", e))?;
+    ).map_err(|e| e.to_string())?;
 
     ::std::result::Result::Ok(FetchResponse {
         status_code: result.status_code as u16,

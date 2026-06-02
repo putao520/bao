@@ -2,8 +2,15 @@
 use std::io::{Read, Write};
 
 use tungstenite::Message;
+use tungstenite::Error as WsError;
 use tungstenite::protocol::WebSocket;
 
+/// Read one message from the WebSocket.
+///
+/// Returns:
+/// - `Ok(Some(msg))` — a text/binary frame was decoded
+/// - `Ok(None)` — would block / timed out / non-fatal control frame; caller should retry later
+/// - `Err(())` — fatal error (connection closed, IO failure, protocol violation)
 pub fn read_message<S: Read + Write>(ws: &mut WebSocket<S>) -> Result<Option<String>, ()> {
     match ws.read() {
         Ok(Message::Text(text)) => Ok(Some(text.to_string())),
@@ -13,6 +20,12 @@ pub fn read_message<S: Read + Write>(ws: &mut WebSocket<S>) -> Result<Option<Str
         Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => Ok(None),
         Ok(Message::Close(_)) => Err(()),
         Ok(Message::Frame(_)) => Ok(None),
+        Err(WsError::Io(ref e))
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            Ok(None)
+        }
         Err(_) => Err(()),
     }
 }

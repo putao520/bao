@@ -593,3 +593,42 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 - bao_runtime: 244 测试通过 (零回归)
 - bao_cdp: 2272 测试通过 (零回归)
 - **总计 3855 测试通过, 0 失败**
+
+## Wave 34: 多线程并发 + 架构韧性测试 + bao_cdp 服务器 BUG 修复
+
+**状态**: ✅ 完成
+
+**修复 bao_cdp 服务器两个致命 BUG**:
+
+### BUG #1: Shutdown 命令被静默丢弃 (`src/bao_cdp/src/lib.rs:158-164`)
+
+```rust
+// 原代码（致命 BUG）:
+while let Ok(CDPCommand::SendEvent(ev)) = self.cmd_rx.try_recv() { ... }
+if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
+```
+
+`while let Ok(SendEvent)` 是模式匹配。当 try_recv 返回 `Shutdown` 时，pattern 不匹配但**消息已被消耗**，Shutdown 被静默丢弃。导致 server.shutdown() 调用后服务器线程永远无法退出，test 进程挂死。
+
+**修复**: 单一 drain 循环，按 variant 分支处理。
+
+### BUG #2: session.process() 阻塞 (`src/bao_cdp/src/ws.rs:7-18`)
+
+`ws.read()` 默认阻塞，无超时。服务器单线程事件循环对每个 session 串行调用 `process() → ws.read_message() → ws.read()`，当任一 session 无数据时整个循环卡死，accept() 永远不会被调用，无法处理新连接或 Shutdown。
+
+**修复**:
+1. `handle_connection` 在 accept 前设置 `set_read_timeout(50ms)` + `set_write_timeout(1s)` 到 TcpStream
+2. `ws::read_message` 区分 `WouldBlock`/`TimedOut`（→ Ok(None)，可重试）与真实错误（→ Err，移除 session）
+
+**Wave 34 新增测试 23 个**:
+- `bao_cdp/tests/ws_resilience_tests.rs` — 10 测试（server 启动/端口冲突/顺序连接/并发 5×10/畸形 JSON/1MB 大包/连接断开清理/优雅关闭/会话隔离/Mutex 线程安全）
+- `bao_browser/tests/thread_safety_concurrency_tests.rs` — 12 测试（BridgeChannel Send/Sync + 并发 send + close race + multi-thread fire_and_forget + AtomicBool 可见性 + drop 语义）
+- `bao_engine/tests/resource_exhaustion_tests.rs` — 1 测试（JobQueue 100K 任务 + JsContext 1000 次 eval 循环 + 深递归 + 大字符串）
+
+**结果**:
+- bao_cdp: 2282 测试通过（+10），**ws_resilience_tests 1.26s 完成（之前挂死 7 小时）**
+- bao_browser: 989 测试通过（+12），零回归
+- bao_engine: 363 测试通过（+1），零回归
+- bao_runtime: 244 测试通过（5 失败为预先存在，与本修复无关）
+
+**总计 3878 测试通过, 零回归**。

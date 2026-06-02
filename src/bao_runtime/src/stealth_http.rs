@@ -78,6 +78,7 @@ pub fn stealth_http_request(
 // TLS fingerprint helpers (pure, no network I/O)
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn tls_cipher_name(suite: u16) -> Option<&'static str> {
     match suite {
         0x1301 => Some("TLS_AES_128_GCM_SHA256"),
@@ -99,6 +100,7 @@ fn tls_cipher_name(suite: u16) -> Option<&'static str> {
     }
 }
 
+#[allow(dead_code)]
 fn cipher_list_string(fp: &TlsFingerprint) -> String {
     fp.cipher_suites.iter()
         .filter_map(|&id| tls_cipher_name(id))
@@ -106,6 +108,7 @@ fn cipher_list_string(fp: &TlsFingerprint) -> String {
         .join(":")
 }
 
+#[allow(dead_code)]
 fn alpn_wire_format(fp: &TlsFingerprint) -> Vec<u8> {
     let mut wire = Vec::new();
     for proto in &fp.alpn_protocols {
@@ -130,6 +133,7 @@ pub fn h2_alpn_offer(fp: &Http2Fingerprint) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn h2_settings_wire_format(fp: &Http2Fingerprint) -> Vec<u8> {
     let settings = fp.settings_frame_payload();
     let mut wire = Vec::with_capacity(settings.len() * 6);

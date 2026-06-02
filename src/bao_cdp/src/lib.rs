@@ -156,11 +156,19 @@ impl CDPServer {
         eprintln!("DevTools: {}", self.ws_url());
 
         loop {
-            while let Ok(CDPCommand::SendEvent(ev)) = self.cmd_rx.try_recv() {
-                self.broadcast_event(&ev);
-            }
-            if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() {
-                break;
+            // Drain command channel without dropping Shutdown.
+            // The previous `while let Ok(SendEvent)` pattern consumed *any* message
+            // (including Shutdown) and silently dropped it when the pattern didn't match,
+            // making graceful shutdown impossible.
+            loop {
+                match self.cmd_rx.try_recv() {
+                    Ok(CDPCommand::SendEvent(ev)) => self.broadcast_event(&ev),
+                    Ok(CDPCommand::Shutdown) => {
+                        eprintln!("[server] run loop exiting");
+                        return Ok(());
+                    }
+                    Err(_) => break,
+                }
             }
 
             match listener.accept() {
@@ -225,6 +233,11 @@ impl CDPServer {
 
         // WebSocket upgrade — replay already-read bytes to tungstenite
         if request.starts_with("GET /devtools/page/") {
+            // Set short read timeout so session.process() doesn't block the event loop.
+            // The server is single-threaded; without a timeout, ws.read() would hang
+            // forever waiting for data, freezing accept() and Shutdown handling.
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(50)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(1000)));
             let replay = ReplayStream::new(stream, buf[..n].to_vec());
             match accept(replay) {
                 Ok(ws) => {
