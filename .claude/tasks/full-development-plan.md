@@ -524,9 +524,50 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 > "SpiderMonkey 版本的替换其实是最核心的任务，要全量处理好，再做其他的 C 库替换，再搞业务才是正确的顺序"
 
 **优先级（铁律）**:
-1. **P0**: Wave 73 全量 SpiderMonkey 适配（73-A → 73-G）
-2. **P1**: Wave 74-A (SSL stubs → rustls) + Wave 74-B (uSockets stubs → mio)
+1. **P0**: Wave 73 全量 SpiderMonkey 适配（73-A → 73-G）✅ 完成
+2. **P1**: ~~Wave 74-A (SSL stubs → rustls)~~ — **重新分类为 Phase 级**（详见下方）
+   + Wave 74-B (uSockets stubs → mio)
 3. **P2**: Phase 1 业务开发（删除 bao_runtime 手写代码 → bun_* crate）
+
+---
+
+## Wave 74-A: SSL/TLS 真实实现 [DEFERRED → Phase 级]
+
+**状态**: 🔄 推迟到 Phase 级架构变更
+
+**重新分类原因（2026-06-02 实测）**:
+- 架构师审计建议删除 7 个"孤儿" SSL stub（声称零调用方）
+- 实测删除后 `cargo test -p bao_runtime` 链接失败：`undefined symbol: SSL_enable_signed_cert_timestamps`（由 `bun_http::configure_http_client_with_alpn` 通过 `bun_boringssl_sys` extern 块引用）
+- 真相：stub 不是孤儿 — `bun_boringssl_sys` 声明 extern "C"，真实消费者（bun_uws SSLWrapper、bun_http、runtime/SecureContext）通过 `bun_boringssl::c::*` 调用，最终解析到 bao_native_stubs 提供的 #[no_mangle] 符号
+- **架构师审计错误根因**: 只统计了直接调用 `bao_native_stubs::SSL_*` 的 Rust 代码，遗漏了 FFI 间接调用链
+
+**实测结果**:
+- 已恢复 5 个 BoringSSL extension stubs（`SSL_CTX_set0_buffer_pool`, `CRYPTO_BUFFER_POOL_new`, `SSL_enable_ocsp_stapling`, `SSL_enable_signed_cert_timestamps`, `SSL_set_tlsext_host_name`）+ 2 个 uSockets SSL entry stubs（`us_ssl_ctx_from_options`, `us_ssl_socket_verify_error_from_ssl`）
+- 添加详细注释说明 stub 必须保留的原因
+- `cargo test -p bao_native_stubs` ✅ 通过
+- `cargo test -p bao_runtime` ✅ 测试逻辑通过（仅测试后 SIGSEGV 是已知 SpiderMonkey 析构问题）
+
+**Phase 级 rustls 迁移范围**（需要 architect 先做 SPEC 变更）:
+- SPEC 02-SYSTEM §3: 新增 rustls 组件 + BoringSSL 弃用路径
+- SPEC 04-DATA-MODEL: SSL_CTX Entity → rustls::ClientConfig
+- SPEC 10-REQUIREMENTS: REQ-ENG-002 拆分 TLS 子项
+- 代码迁移（影响 ~30 文件）:
+  - `src/boringssl_sys/boringssl.rs` — 替换 extern "C" 为 rustls 原生 API
+  - `src/boringssl/lib.rs` — 重写 TLS 后端用 rustls
+  - `src/uws/lib.rs:160-870` — 重写 SSLWrapper 用 `rustls::ClientConnection`/`ServerConnection`
+  - `src/http/HTTPContext.rs` + `src/http/lib.rs:930-949` — 替换 `SSL_set_tlsext_host_name` 等
+  - `src/runtime/api/bun/SecureContext.rs` — 用 rustls::ServerConfig 替换 SSL_CTX
+  - `src/runtime/socket/socket_body.rs` — 替换 SSL_new/SSL_connect 调用
+  - `src/bao_native_stubs/src/c_lib_stubs.rs` — 删除已恢复的 7 个 SSL stub + force_c_lib_stubs keep-alive
+
+**用户提问决策点（2026-06-02）**:
+用户提出"基于纯 Rust boringssl 让上层无感使用"——这与 Phase 级 rustls 迁移方向一致。
+推荐路径：B（重写 SSLWrapper 用 rustls 原生 API，~1500 LOC），优于 A（写 30K LOC OpenSSL 兼容层）。
+需 architect consult 后启动。
+
+**新任务（替代原 #258）**:
+- ~~#258 Wave 74-A: SSL stubs → rustls~~ → 关闭
+- 新建: Wave 74-TLS Phase 级 — BoringSSL → rustls 迁移（需 SPEC 变更）
 
 **背景**:
 - bun_dispatch::link_interface! 机制：低层 crate 声明接口+variant，高层 crate 提供 link_impl_*! 实现

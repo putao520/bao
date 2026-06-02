@@ -164,7 +164,12 @@ pub extern "C" fn us_socket_group_connect_unix(
     core::ptr::null_mut()
 }
 
-// SSL
+// SSL — see "BoringSSL extensions" block below for the Wave 74-A audit
+// context. These 2 us_ssl_* entry points are likewise called via FFI
+// indirection (bun_uws_sys / bun_boringssl_sys extern blocks), so the stubs
+// must stay until the Phase-level rustls migration replaces the whole TLS
+// stack. Keeping them as safe no-ops (return null / 0).
+
 #[no_mangle]
 pub extern "C" fn us_ssl_ctx_from_options(
     _options: *const c_void,
@@ -446,8 +451,19 @@ pub extern "C" fn uws_res_end(_res: *mut c_void, _data: *const c_char, _len: usi
 
 // ──────────────────────────────────────────────────────────────
 // BoringSSL extensions (not in system OpenSSL)
-// Original: BoringSSL-specific functions
 // ──────────────────────────────────────────────────────────────
+//
+// Wave 74-A audit (2026-06-02): these stubs ARE used — `bun_boringssl_sys`
+// declares them via `extern "C"` blocks, and `bun_http::configure_http_client_with_alpn`
+// (plus other consumers) calls them through `bun_boringssl::c::*`. There is
+// no native BoringSSL C library linked in this build, so removing the stubs
+// breaks the linker (`undefined symbol: SSL_enable_signed_cert_timestamps`).
+//
+// The architect's "0 caller" audit was wrong — it counted only direct
+// `bao_native_stubs::SSL_*` calls and missed the FFI indirection through
+// `bun_boringssl_sys`. Keeping these stubs is required until the Phase-level
+// rustls migration replaces both the stubs AND the `bun_boringssl_sys` extern
+// declarations with a single Rust TLS backend.
 
 #[no_mangle]
 pub extern "C" fn SSL_CTX_set0_buffer_pool(
