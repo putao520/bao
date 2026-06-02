@@ -898,7 +898,7 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
       - [x] step2: BaoTimerRegistry 结构（heap + owned map）+ insert/remove (commit `e661c42f9`) — 3 单元测试，124 lib 全绿
       - [x] step3: schedule_raw/clear_timeout 双写（commit `57aade83e`）— 注册 BAO_REGISTRY + NEXT_EPOCH，集成测试通过
       - [x] step4: dispatch.rs __bun_fire_timer 接 current_cx + fire_js (commit `c4fd5b9e4`) — CxGuard RAII + 124 lib + node_timers 集成通过
-    - [ ] P1-A.3d: drain_and_check 切到 MiniEventLoop::tick，验证全量定时器测试
+    - [x] P1-A.3d: drain_and_check 切到 BAO_REGISTRY drain (commit `290b84e3f`) — drain_bao_timers pop-before-fire + interval re-arm + bao_next_deadline_ms + 124 lib + node_timers 集成通过
   - [ ] P1-A.4: 删除老 TimerHeap + epoll 代码
 - [ ] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
 - [x] 删除 Cargo.toml 中 `ureq` 依赖（已被 bun_http 完全替代，已无引用 — P1-C 完成时清理）

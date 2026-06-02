@@ -1,47 +1,34 @@
 // @trace REQ-ENG-004
 use ::std::cell::{Cell, RefCell};
 use ::std::os::unix::io::RawFd;
-use ::std::time::{Duration, Instant};
+use ::std::time::Duration;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, ObjectValue};
 use mozjs::rust::wrappers2::JS_DefineFunction;
 
 thread_local! {
-    static TIMERS: RefCell<TimerHeap> = RefCell::new(TimerHeap::new());
     static NEXT_ID: Cell<u32> = const { Cell::new(1) };
     static EPOLL_FD: Cell<RawFd> = const { Cell::new(-1) };
     static REGISTERED_FDS: RefCell<Vec<RawFd>> = const { RefCell::new(Vec::new()) };
 
-    /// P1-A.3a: per-thread MiniEventLoop holder for the new timer dispatch
-    /// path. Lazily initialized on first access via `with_event_loop`.
-    /// Parallel to `bao_engine::dispatch_sm::BaoEventLoop` — eventual
-    /// consolidation (single source of truth per thread) is a P1-A.4+
-    /// concern. Stored as `Option<MiniEventLoop<'static>>` because
-    /// `MiniEventLoop::init()` is non-const.
+    /// Per-thread MiniEventLoop holder. Lazily initialized on first access
+    /// via `with_event_loop`.
     static BAO_RUNTIME_LOOP: RefCell<::std::option::Option<bun_event_loop::MiniEventLoop::MiniEventLoop<'static>>> =
         const { RefCell::new(::std::option::Option::None) };
 
-    /// P1-A.3b: thread-local pointer to the current `JSContext*`. Registered
-    /// by `drain_and_check` (or any JS-bearing entry point) before any
-    /// MiniEventLoop timer fire, so that `__bun_fire_timer` (which receives
-    /// only `*mut EventLoopTimer` + an opaque `_vm: *mut ()`) can recover
-    /// the live cx and dispatch JS callbacks via `fire_js_callback_raw`.
-    ///
-    /// Stored as `*mut JSContext` (raw pointer) — `Cell` for cheap set/get.
-    /// Null when no JS context is active on this thread.
+    /// Thread-local pointer to the current `JSContext*`. Registered by
+    /// `drain_and_check` before timer dispatch, so that `__bun_fire_timer`
+    /// can recover the live cx and dispatch JS callbacks.
     static CURRENT_CX: Cell<*mut JSContext> = const { Cell::new(::std::ptr::null_mut()) };
 
-    /// P1-A.3c-step3: per-thread BaoTimerRegistry holding the new Bun-style
-    /// intrusive-heap timers. Dual-written alongside the legacy TIMERS
-    /// TimerHeap during the P1-A.3c migration — register_timer/clear_timeout
-    /// push/remove from BOTH registries so P1-A.3d can flip drain_and_check
-    /// to read from this one without losing clearTimeout semantics.
+    /// Per-thread BaoTimerRegistry — Bun-style intrusive-heap timers.
+    /// Single source of truth for all timer registration, cancellation,
+    /// and drain operations.
     static BAO_REGISTRY: RefCell<BaoTimerRegistry> = RefCell::new(BaoTimerRegistry::new());
 
-    /// P1-A.3c-step3: monotonic epoch counter for stable heap ordering of
-    /// equal-deadline BaoTimeoutObjects. Mirrors Bun's
-    /// `TimerObjectInternals.flags.epoch`. Bumped on each schedule.
+    /// Monotonic epoch counter for stable heap ordering of equal-deadline
+    /// timers. Mirrors Bun's `TimerObjectInternals.flags.epoch`.
     static NEXT_EPOCH: Cell<u32> = const { Cell::new(1) };
 }
 
@@ -86,15 +73,13 @@ impl Drop for CxGuard {
     }
 }
 
-/// P1-A.3a: access or lazily materialize the per-thread MiniEventLoop.
+/// Access or lazily materialize the per-thread MiniEventLoop.
 ///
 /// Returns a `RefMut<MiniEventLoop<'static>>` that callers can use to
 /// schedule timers / enqueue tasks / tick. The loop survives for the
 /// thread's lifetime (intentionally leaked on thread exit to avoid
 /// ordering issues with JSContext teardown — same pattern as
 /// `bao_engine::BaoEventLoop`).
-///
-/// Not yet wired into `drain_and_check` — that's P1-A.3c/d.
 pub fn with_event_loop<F, R>(f: F) -> R
 where
     F: FnOnce(&mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>) -> R,
@@ -112,70 +97,6 @@ where
         f(opt)
     })
 }
-
-struct TimerEntry {
-    id: u32,
-    deadline: Instant,
-    interval: Option<Duration>,
-    callback: *mut JSObject,
-    args: Vec<JSVal>,
-}
-
-struct TimerHeap {
-    timers: Vec<TimerEntry>,
-}
-
-impl TimerHeap {
-    fn new() -> Self {
-        TimerHeap { timers: Vec::new() }
-    }
-
-    fn insert(&mut self, entry: TimerEntry) {
-        self.timers.push(entry);
-    }
-
-    fn remove(&mut self, id: u32) {
-        self.timers.retain(|t| t.id != id);
-    }
-
-    fn drain_ready(&mut self, now: Instant) -> Vec<TimerEntry> {
-        let mut ready = Vec::new();
-        let mut remaining = Vec::new();
-
-        for t in self.timers.drain(..) {
-            if now >= t.deadline {
-                ready.push(t);
-            } else {
-                remaining.push(t);
-            }
-        }
-
-        for t in &ready {
-            if let Some(interval) = t.interval {
-                let mut re_entry = TimerEntry {
-                    id: t.id,
-                    deadline: t.deadline + interval,
-                    interval: Some(interval),
-                    callback: t.callback,
-                    args: t.args.clone(),
-                };
-                while re_entry.deadline <= now {
-                    re_entry.deadline += interval;
-                }
-                remaining.push(re_entry);
-            }
-        }
-
-        self.timers = remaining;
-        ready
-    }
-
-    fn is_empty(&self) -> bool {
-        self.timers.is_empty()
-    }
-}
-
-unsafe impl Send for TimerHeap {}
 
 fn ensure_epoll_fd() -> RawFd {
     EPOLL_FD.with(|cell| {
@@ -302,78 +223,9 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     bao_has_pending_timers() || has_http
 }
 
-pub fn next_deadline() -> ::std::option::Option<Instant> {
-    TIMERS.with(|t| {
-        let heap = t.borrow();
-        if heap.is_empty() {
-            return None;
-        }
-        heap.timers.iter().map(|e| e.deadline).min()
-    })
-}
-
-/// Drain ready timers from TIMERS and fire their JS callbacks.
-/// Synchronises BAO_REGISTRY so the dual-write invariant is maintained:
-/// - One-shot timers: removed from BAO_REGISTRY after fire (prevent leak).
-/// - Interval timers: deadline updated in BAO_REGISTRY to match TIMERS re-arm.
-///
-/// Must NOT hold a borrow on BAO_REGISTRY across JS callback dispatch
-/// (callbacks may call setTimeout/clearTimeout → re-entrant borrow).
-pub fn drain_timers(cx: &mut mozjs::context::JSContext) -> bool {
-    let now = Instant::now();
-    let now_ts = bun_core::Timespec::now_allow_mocked_time();
-    let ready = TIMERS.with(|t| t.borrow_mut().drain_ready(now));
-
-    if ready.is_empty() {
-        return false;
-    }
-
-    // SAFETY: `cx.raw_cx()` returns the live JSContext* for the current
-    // thread; `fire_js_callback_raw` requires a live cx and rooted callback/
-    // args. Callbacks come from TimerEntry which stores raw `*mut JSObject`
-    // scheduled from JS host fns — bao_runtime keeps them alive via the
-    // implicit no-GC window between schedule and fire (drain_and_check runs
-    // to completion before yielding back to the JS engine).
-    let raw_cx = unsafe { cx.raw_cx() };
-    for entry in ready {
-        // Fire the JS callback first (no BAO_REGISTRY borrow held).
-        unsafe { fire_js_callback_raw(raw_cx, entry.callback, &entry.args) };
-
-        // Post-fire BAO_REGISTRY synchronisation — separate borrow scope
-        // so re-entrant setTimeout/clearTimeout from the callback above
-        // does not conflict with this borrow.
-        BAO_REGISTRY.with(|r| {
-            if let Some(interval) = entry.interval {
-                // Interval: re-arm the BaoTimeoutObject to match the
-                // new deadline that drain_ready computed for TIMERS.
-                // Re-arm strategy: update state back to PENDING, bump
-                // epoch, compute next deadline via Timespec arithmetic.
-                let mut reg = r.borrow_mut();
-                if let ::std::option::Option::Some(obj) = reg.owned.get_mut(&entry.id) {
-                    let interval_ms = interval.as_millis() as i64;
-                    // Advance next deadline past `now` (same while-loop as
-                    // drain_ready uses for Instant — but in Timespec domain).
-                    let mut next_ts = obj.event_loop_timer.next;
-                    while next_ts.order(&now_ts) != core::cmp::Ordering::Greater {
-                        next_ts = next_ts.add_ms(interval_ms);
-                    }
-                    obj.event_loop_timer.next = next_ts;
-                    obj.event_loop_timer.state = TimerState::PENDING;
-                    obj.epoch = obj.epoch.wrapping_add(1);
-                }
-            } else {
-                // One-shot: remove from BAO_REGISTRY to prevent leak.
-                r.borrow_mut().remove(entry.id);
-            }
-        });
-    }
-
-    true
-}
-
 /// Fire a JS callback via `JS_CallFunctionValue`, swallowing any pending
-/// exception. Extracted from `drain_timers` so `BaoTimeoutObject::fire`
-/// (P1-A.3) can reuse the same dispatch path without duplication.
+/// exception. Used by `drain_bao_timers` and `BaoTimeoutObject::fire_js`
+/// for JS callback dispatch.
 ///
 /// # Safety
 /// - `raw_cx` must be a live `JSContext*` on the current thread.
@@ -529,22 +381,12 @@ pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _ar
         None
     };
 
-    let entry = TimerEntry {
-        id,
-        deadline: Instant::now() + Duration::from_millis(if delay_ms == 0 && repeating { 1 } else { delay_ms }),
-        interval,
-        callback,
-        args: _args.to_vec(),
-    };
+    let effective_delay = if delay_ms == 0 && repeating { 1 } else { delay_ms };
 
-    TIMERS.with(|t| t.borrow_mut().insert(entry));
-
-    // P1-A.3c-step3: dual-write — also push a BaoTimeoutObject so the new
-    // BAO_REGISTRY stays in sync with the legacy TIMERS heap.
     let mut bao_obj = Box::new(BaoTimeoutObject::new_paused());
     bao_obj.timer_id = id;
     bao_obj.event_loop_timer.next = bun_core::Timespec::now_allow_mocked_time()
-        .add_ms((if delay_ms == 0 && repeating { 1 } else { delay_ms }) as i64);
+        .add_ms(effective_delay as i64);
     bao_obj.interval = interval;
     bao_obj.callback = ::std::option::Option::Some(callback);
     bao_obj.args = _args.to_vec();
@@ -559,8 +401,6 @@ pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _ar
 }
 
 pub fn cancel_raw(id: u32) {
-    TIMERS.with(|t| t.borrow_mut().remove(id));
-    // P1-A.3c-step3: dual-write cancel — also remove from BAO_REGISTRY.
     BAO_REGISTRY.with(|r| {
         r.borrow_mut().remove(id);
     });
@@ -595,8 +435,6 @@ unsafe extern "C" fn clear_timeout(
         let v = *args.get(0).ptr;
         if v.is_int32() {
             let id = v.to_int32() as u32;
-            TIMERS.with(|t| t.borrow_mut().remove(id));
-            // P1-A.3c-step3: dual-write cancel from JS host_fn.
             BAO_REGISTRY.with(|r| {
                 r.borrow_mut().remove(id);
             });
