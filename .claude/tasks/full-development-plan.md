@@ -893,11 +893,11 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
   - [ ] P1-A.3: 切流到 MiniEventLoop 并验证
     - [x] P1-A.3a: 在 bao_runtime 中持有 MiniEventLoop 实例（thread_local）(commit `55fb5f850`) — with_event_loop 访问器 + 1 单元测试通过
     - [x] P1-A.3b: 注册当前 JSContext 到 thread_local（commit `9aee784d4`）— register_current_cx/current_cx + 1 单元测试
-    - [ ] P1-A.3c: schedule_raw 路径双写（同时入老 TimerHeap + 新 Intrusive 堆）
+    - [x] P1-A.3c: schedule_raw 路径双写（同时入老 TimerHeap + 新 Intrusive 堆）
       - [x] step1: BaoTimerHeapCtx + interval/timer_id 字段 (commit `f170feb6e`) — 3 单元测试，复用 bun_io::heap Intrusive pairing-heap
       - [x] step2: BaoTimerRegistry 结构（heap + owned map）+ insert/remove (commit `e661c42f9`) — 3 单元测试，124 lib 全绿
-      - [ ] step3: schedule_raw 双写（同时入老 TimerHeap + 新 Registry）
-      - [ ] step4: dispatch.rs __bun_fire_timer 接 current_cx + fire_js
+      - [x] step3: schedule_raw/clear_timeout 双写（commit `57aade83e`）— 注册 BAO_REGISTRY + NEXT_EPOCH，集成测试通过
+      - [x] step4: dispatch.rs __bun_fire_timer 接 current_cx + fire_js (commit `c4fd5b9e4`) — CxGuard RAII + 124 lib + node_timers 集成通过
     - [ ] P1-A.3d: drain_and_check 切到 MiniEventLoop::tick，验证全量定时器测试
   - [ ] P1-A.4: 删除老 TimerHeap + epoll 代码
 - [ ] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
