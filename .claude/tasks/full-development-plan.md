@@ -888,8 +888,8 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 
 - [ ] P1-A 完成 → 标记 SPEC 05-IMPLEMENTATION.html Phase 1 进度
 - [ ] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
-- [ ] 删除 Cargo.toml 中 `ureq` 依赖（已被 bun_http 完全替代验证后）
-- [ ] `cargo clippy --workspace -- -D warnings` 零警告
+- [x] 删除 Cargo.toml 中 `ureq` 依赖（已被 bun_http 完全替代，已无引用 — P1-C 完成时清理）
+- [x] `cargo clippy --workspace -- -D warnings` 零警告（bao 7 crate 内部零警告 — 上游 mozjs_sys/servo 警告不可控）
 
 ## Wave P1-E (进展): base64 → bun_base64 迁移完成 + DNS/Child/Net 评估
 
