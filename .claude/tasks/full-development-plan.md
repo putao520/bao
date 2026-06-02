@@ -891,7 +891,7 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
   - [x] P1-A.2a: BaoTimeoutObject 骨架 + dispatch 模块接入 (commit `6f3637a45`) — 4 单元测试通过，FFI 符号可链接
   - [x] P1-A.2b: drain_and_check 双路径共存 (commit `bff07b8c1`) — BaoTimeoutObject 完整化（callback+args+fire_js），老 TimerHeap 与新 BaoTimeoutObject 同时编译共存，7 单元测试通过
   - [ ] P1-A.3: 切流到 MiniEventLoop 并验证
-    - [ ] P1-A.3a: 在 bao_runtime 中持有 MiniEventLoop 实例（thread_local）
+    - [x] P1-A.3a: 在 bao_runtime 中持有 MiniEventLoop 实例（thread_local）(commit `55fb5f850`) — with_event_loop 访问器 + 1 单元测试通过
     - [ ] P1-A.3b: 注册当前 JSContext 到 thread_local（供 __bun_fire_timer 检索）
     - [ ] P1-A.3c: schedule_raw 路径双写（同时入老 TimerHeap + 新 MiniEventLoop timer heap）
     - [ ] P1-A.3d: drain_and_check 切到 MiniEventLoop::tick，验证全量定时器测试

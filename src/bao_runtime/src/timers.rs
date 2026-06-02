@@ -21,6 +21,40 @@ thread_local! {
     /// `MiniEventLoop::init()` is non-const.
     static BAO_RUNTIME_LOOP: RefCell<::std::option::Option<bun_event_loop::MiniEventLoop::MiniEventLoop<'static>>> =
         const { RefCell::new(::std::option::Option::None) };
+
+    /// P1-A.3b: thread-local pointer to the current `JSContext*`. Registered
+    /// by `drain_and_check` (or any JS-bearing entry point) before any
+    /// MiniEventLoop timer fire, so that `__bun_fire_timer` (which receives
+    /// only `*mut EventLoopTimer` + an opaque `_vm: *mut ()`) can recover
+    /// the live cx and dispatch JS callbacks via `fire_js_callback_raw`.
+    ///
+    /// Stored as `*mut JSContext` (raw pointer) — `Cell` for cheap set/get.
+    /// Null when no JS context is active on this thread.
+    static CURRENT_CX: Cell<*mut JSContext> = const { Cell::new(::std::ptr::null_mut()) };
+}
+
+/// P1-A.3b: register the current thread's `JSContext*` for retrieval by
+/// MiniEventLoop-driven dispatch (notably `__bun_fire_timer`).
+///
+/// Must be called before any MiniEventLoop tick that may fire JS-bearing
+/// timers. `drain_and_check` is the natural place — it already holds a
+/// `&mut JSContext` and runs the dispatch loop.
+///
+/// # Safety
+/// - `cx` must be a live `JSContext*` on the current thread.
+/// - Caller must clear (pass null) before the JSContext is destroyed,
+///   or be confident the thread is single-threaded and the cx outlives
+///   any deferred timer dispatch.
+pub unsafe fn register_current_cx(cx: *mut JSContext) {
+    CURRENT_CX.with(|cell| cell.set(cx));
+}
+
+/// P1-A.3b: retrieve the currently-registered `JSContext*`, or null if
+/// no JS context is active on this thread. Intended for use by FFI
+/// dispatch (e.g. `__bun_fire_timer`) that lacks direct cx access.
+#[inline]
+pub fn current_cx() -> *mut JSContext {
+    CURRENT_CX.with(|cell| cell.get())
 }
 
 /// P1-A.3a: access or lazily materialize the per-thread MiniEventLoop.
@@ -673,5 +707,21 @@ mod bao_timeout_tests {
         let ptr2 = with_event_loop(|loop_| loop_.loop_ptr() as usize);
         assert!(ptr1 != 0, "MiniEventLoop loop_ptr must be non-null");
         assert_eq!(ptr1, ptr2, "with_event_loop must return the same loop on repeated calls");
+    }
+
+    #[test]
+    fn current_cx_roundtrip_via_thread_local() {
+        // P1-A.3b: register_current_cx writes; current_cx reads back.
+        // Sentinel pointer is never dereferenced — only validates storage.
+        let sentinel: *mut JSContext = 0x12345678 as *mut JSContext;
+        // SAFETY: sentinel is never dereferenced; we only validate the
+        // thread_local round-trip. Cleared at end so subsequent tests see
+        // null.
+        unsafe { register_current_cx(sentinel); }
+        assert_eq!(current_cx(), sentinel, "register_current_cx stores cx in thread_local");
+
+        // Clear back to null to avoid leaking sentinel into other tests.
+        unsafe { register_current_cx(::std::ptr::null_mut()); }
+        assert!(current_cx().is_null(), "register_current_cx(null) clears the slot");
     }
 }
