@@ -2133,6 +2133,7 @@ dependencies = [
  "bun_opaque",
  "bun_paths",
  "bun_windows_sys",
+ "cc",
  "const_format",
  "enum-map",
  "enumset",

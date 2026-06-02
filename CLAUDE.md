@@ -2,6 +2,29 @@
 
 Bun 的 SpiderMonkey 引擎分支，融合 servo 浏览器引擎，所有能力始终可用。
 
+## 核心原则（铁律，所有工作必须遵守）
+
+**Bun 的 C/Zig 层 → Rust 替换。JSC → SM。我们自己尽量少写、不写，全部复用 Bun crate，提供给 Servo 最好。**
+
+具体含义：
+- Bun workspace 中 ~85 个纯 Rust crate（零 JSC）→ 100% 复用，禁止手写已有功能
+- Bun 的 C++ uSockets/uWS 二进制（libuwsockets.cpp）→ 链接复用，禁止手写 Rust 翻译 C 代码
+- JSC → SpiderMonkey 替换是唯一需要手写的桥接层
+- 所有新代码必须先查 Bun workspace 是否已有实现，有则复用，无则尽量从 Bun 上游移植
+
+**只有以下情况允许手写 Rust**：
+1. loop 核心必须与 FilePoll 共享 epoll fd → bao_uloop 的 epoll tick 是必要的
+2. JSC → SM 的桥接层（bao_engine）是必要的
+3. Servo 集成桥接层（bao_browser）是必要的
+
+**禁止手写**：
+- us_socket_* / us_socket_group_* / us_listen_socket_* → 链接 C++ 二进制
+- bsd_send / bsd_shutdown 等 BSD socket 辅助 → C++ 二进制已有
+- HTTP 解析/响应 → bun_uws::App（C++ 二进制）已有
+- DNS → bun_dns 已有
+- 模块解析 → bun_resolver 已有
+- Base64 → bun_base64 已有
+
 ## 核心差异化
 
 1. **SpiderMonkey 引擎**：替代 JavaScriptCore (MPL-2.0)，与 servo 共享同一 JSContext
