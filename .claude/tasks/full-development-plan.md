@@ -890,7 +890,7 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
   - [x] P1-A.1: MiniEventLoop API 可用性前置验证 (commit `fa02dcf70`) — 4 集成测试通过
   - [x] P1-A.2a: BaoTimeoutObject 骨架 + dispatch 模块接入 (commit `6f3637a45`) — 4 单元测试通过，FFI 符号可链接
   - [x] P1-A.2b: drain_and_check 双路径共存 (commit `bff07b8c1`) — BaoTimeoutObject 完整化（callback+args+fire_js），老 TimerHeap 与新 BaoTimeoutObject 同时编译共存，7 单元测试通过
-  - [ ] P1-A.3: 切流到 MiniEventLoop 并验证
+  - [x] P1-A.3: 切流到 MiniEventLoop 并验证
     - [x] P1-A.3a: 在 bao_runtime 中持有 MiniEventLoop 实例（thread_local）(commit `55fb5f850`) — with_event_loop 访问器 + 1 单元测试通过
     - [x] P1-A.3b: 注册当前 JSContext 到 thread_local（commit `9aee784d4`）— register_current_cx/current_cx + 1 单元测试
     - [x] P1-A.3c: schedule_raw 路径双写（同时入老 TimerHeap + 新 Intrusive 堆）
@@ -899,7 +899,7 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
       - [x] step3: schedule_raw/clear_timeout 双写（commit `57aade83e`）— 注册 BAO_REGISTRY + NEXT_EPOCH，集成测试通过
       - [x] step4: dispatch.rs __bun_fire_timer 接 current_cx + fire_js (commit `c4fd5b9e4`) — CxGuard RAII + 124 lib + node_timers 集成通过
     - [x] P1-A.3d: drain_and_check 切到 BAO_REGISTRY drain (commit `290b84e3f`) — drain_bao_timers pop-before-fire + interval re-arm + bao_next_deadline_ms + 124 lib + node_timers 集成通过
-  - [ ] P1-A.4: 删除老 TimerHeap + epoll 代码
+  - [x] P1-A.4: 删除老 TimerHeap + dual-write 代码 (commit `c2bd44f57`) — 删除 TimerEntry/TimerHeap/TIMERS/旧drain_timers/旧next_deadline，-162 行
 - [ ] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
 - [x] 删除 Cargo.toml 中 `ureq` 依赖（已被 bun_http 完全替代，已无引用 — P1-C 完成时清理）
 - [x] `cargo clippy --workspace -- -D warnings` 零警告（bao 7 crate 内部零警告 — 上游 mozjs_sys/servo 警告不可控）
