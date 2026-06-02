@@ -27,7 +27,20 @@ pub unsafe extern "Rust" fn __bun_fire_timer(
                 // SAFETY: `now` is non-null per dispatch contract (caller
                 // passes a live timespec snapshot from the heap pop path).
                 let now_ref = unsafe { &*now };
-                (*timeout).fire(now_ref);
+                // P1-A.3c-step4: dispatch JS callback if a JSContext is
+                // registered on this thread. Falls back to state-only fire
+                // when no cx is available (e.g. during pure-Rust drain
+                // before runtime initialization, or unit tests).
+                let raw_cx = crate::timers::current_cx();
+                if raw_cx.is_null() {
+                    (*timeout).fire(now_ref);
+                } else {
+                    // SAFETY: current_cx() returns a live JSContext* set by
+                    // drain_and_check on entry. callback/args are rooted by
+                    // the schedule→fire no-GC window (same invariant as
+                    // legacy TimerEntry callback dispatch).
+                    unsafe { (*timeout).fire_js(raw_cx, now_ref) };
+                }
             }
         }
         _ => {}

@@ -69,6 +69,23 @@ pub fn current_cx() -> *mut JSContext {
     CURRENT_CX.with(|cell| cell.get())
 }
 
+/// P1-A.3c-step4: RAII guard that clears `CURRENT_CX` on drop. Used by
+/// `drain_and_check` so that any return path (early-exit, panic unwinding)
+/// restores a null cx — defensive against stale cx reads after the borrow
+/// on `&mut JSContext` ends.
+struct CxGuard;
+impl CxGuard {
+    fn new() -> Self {
+        Self
+    }
+}
+impl Drop for CxGuard {
+    fn drop(&mut self) {
+        // SAFETY: writing null is always sound — no lifetime concerns.
+        unsafe { register_current_cx(::std::ptr::null_mut()); }
+    }
+}
+
 /// P1-A.3a: access or lazily materialize the per-thread MiniEventLoop.
 ///
 /// Returns a `RefMut<MiniEventLoop<'static>>` that callers can use to
@@ -239,6 +256,16 @@ pub fn install_timer_globals(
 }
 
 pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
+    // P1-A.3c-step4: register current JSContext so dispatch.rs's
+    // __bun_fire_timer can recover it via current_cx() when firing
+    // BaoTimeoutObjects through the new BAO_REGISTRY path.
+    // SAFETY: cx is a live &mut JSContext on the current thread; the guard
+    // clears it on drop so subsequent code on this thread sees null.
+    unsafe {
+        register_current_cx(cx.raw_cx());
+    }
+    let _cx_guard = CxGuard::new();
+
     let epfd = ensure_epoll_fd();
     sync_http_listeners();
 
