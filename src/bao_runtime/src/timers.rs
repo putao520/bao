@@ -31,6 +31,18 @@ thread_local! {
     /// Stored as `*mut JSContext` (raw pointer) — `Cell` for cheap set/get.
     /// Null when no JS context is active on this thread.
     static CURRENT_CX: Cell<*mut JSContext> = const { Cell::new(::std::ptr::null_mut()) };
+
+    /// P1-A.3c-step3: per-thread BaoTimerRegistry holding the new Bun-style
+    /// intrusive-heap timers. Dual-written alongside the legacy TIMERS
+    /// TimerHeap during the P1-A.3c migration — register_timer/clear_timeout
+    /// push/remove from BOTH registries so P1-A.3d can flip drain_and_check
+    /// to read from this one without losing clearTimeout semantics.
+    static BAO_REGISTRY: RefCell<BaoTimerRegistry> = RefCell::new(BaoTimerRegistry::new());
+
+    /// P1-A.3c-step3: monotonic epoch counter for stable heap ordering of
+    /// equal-deadline BaoTimeoutObjects. Mirrors Bun's
+    /// `TimerObjectInternals.flags.epoch`. Bumped on each schedule.
+    static NEXT_EPOCH: Cell<u32> = const { Cell::new(1) };
 }
 
 /// P1-A.3b: register the current thread's `JSContext*` for retrieval by
@@ -370,11 +382,32 @@ pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _ar
     };
 
     TIMERS.with(|t| t.borrow_mut().insert(entry));
+
+    // P1-A.3c-step3: dual-write — also push a BaoTimeoutObject so the new
+    // BAO_REGISTRY stays in sync with the legacy TIMERS heap.
+    let mut bao_obj = Box::new(BaoTimeoutObject::new_paused());
+    bao_obj.timer_id = id;
+    bao_obj.event_loop_timer.next = bun_core::Timespec::now_allow_mocked_time()
+        .add_ms((if delay_ms == 0 && repeating { 1 } else { delay_ms }) as i64);
+    bao_obj.interval = interval;
+    bao_obj.callback = ::std::option::Option::Some(callback);
+    bao_obj.args = _args.to_vec();
+    bao_obj.epoch = NEXT_EPOCH.with(|c| {
+        let v = c.get();
+        c.set(v.wrapping_add(1));
+        v
+    });
+    BAO_REGISTRY.with(|r| r.borrow_mut().insert(bao_obj));
+
     id
 }
 
 pub fn cancel_raw(id: u32) {
     TIMERS.with(|t| t.borrow_mut().remove(id));
+    // P1-A.3c-step3: dual-write cancel — also remove from BAO_REGISTRY.
+    BAO_REGISTRY.with(|r| {
+        r.borrow_mut().remove(id);
+    });
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -407,6 +440,10 @@ unsafe extern "C" fn clear_timeout(
         if v.is_int32() {
             let id = v.to_int32() as u32;
             TIMERS.with(|t| t.borrow_mut().remove(id));
+            // P1-A.3c-step3: dual-write cancel from JS host_fn.
+            BAO_REGISTRY.with(|r| {
+                r.borrow_mut().remove(id);
+            });
         }
     }
     args.rval().set(UndefinedValue());
@@ -502,10 +539,28 @@ unsafe fn register_timer(
         deadline: Instant::now() + Duration::from_millis(if delay_ms == 0 && repeating { 1 } else { delay_ms }),
         interval,
         callback,
-        args: extra_args,
+        args: extra_args.clone(),
     };
 
     TIMERS.with(|t| t.borrow_mut().insert(entry));
+
+    // P1-A.3c-step3: dual-write to BaoTimerRegistry alongside legacy TIMERS.
+    // Builds the BaoTimeoutObject equivalent of the TimerEntry just inserted
+    // above, so P1-A.3d can flip drain_and_check to read from BAO_REGISTRY
+    // without changing host_fn behavior.
+    let mut bao_obj = Box::new(BaoTimeoutObject::new_paused());
+    bao_obj.timer_id = id;
+    bao_obj.event_loop_timer.next = bun_core::Timespec::now_allow_mocked_time()
+        .add_ms((if delay_ms == 0 && repeating { 1 } else { delay_ms }) as i64);
+    bao_obj.interval = interval;
+    bao_obj.callback = ::std::option::Option::Some(callback);
+    bao_obj.args = extra_args;
+    bao_obj.epoch = NEXT_EPOCH.with(|c| {
+        let v = c.get();
+        c.set(v.wrapping_add(1));
+        v
+    });
+    BAO_REGISTRY.with(|r| r.borrow_mut().insert(bao_obj));
 
     args.rval().set(Int32Value(id as i32));
     true
