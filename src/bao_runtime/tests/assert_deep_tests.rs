@@ -217,9 +217,10 @@ fn test_assert_deep() {
         });
 
         check("notDeepEqual_stub_accept", function() {
-            // Stub impl: does not throw even for equal values — accept this
-            assert.notDeepEqual({a: 1}, {a: 1});
-            return true;
+            // Real impl throws AssertionError when values are deeply equal.
+            // Verify correct behaviour (was previously a stub-accept placeholder).
+            try { assert.notDeepEqual({a: 1}, {a: 1}); return false; }
+            catch(e) { return e.name === 'AssertionError'; }
         });
 
         // ============================================================
@@ -252,9 +253,9 @@ fn test_assert_deep() {
         });
 
         check("throws_stub_accept", function() {
-            // Stub: does not validate — non-throwing function does not cause error
-            assert.throws(function() { return 42; });
-            return true;
+            // Real impl throws AssertionError when fn does not throw.
+            try { assert.throws(function() { return 42; }); return false; }
+            catch(e) { return e.name === 'AssertionError'; }
         });
 
         // ============================================================
@@ -272,9 +273,9 @@ fn test_assert_deep() {
         });
 
         check("doesNotThrow_stub_accept", function() {
-            // Stub: does not validate — throwing function does not cause assertion error
-            assert.doesNotThrow(function() { throw new Error('oops'); });
-            return true;
+            // Real impl re-throws when fn throws.
+            try { assert.doesNotThrow(function() { throw new Error('oops'); }); return false; }
+            catch(e) { return e instanceof Error; }
         });
 
         // ============================================================

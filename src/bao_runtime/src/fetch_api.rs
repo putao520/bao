@@ -224,6 +224,25 @@ struct FetchResponse {
 }
 
 fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Result<FetchResponse, String> {
+    // Fast pre-check: ensure the host:port is reachable before delegating to
+    // AsyncHTTP, which may otherwise hang for minutes on SYN to dead endpoints
+    // (root cause of the fetch_api_tests SIGTERM during the suite — port 1 on
+    // loopback never responds and the bun_http internals lack a connect timeout).
+    if let Some((host, port)) = extract_host_port(url) {
+        let addr = format!("{}:{}", host, port);
+        if let Ok(addrs) = ::std::net::ToSocketAddrs::to_socket_addrs(&addr) {
+            let collected: Vec<_> = addrs.collect();
+            let any_reachable = collected.iter().take(3).any(|sa| {
+                ::std::net::TcpStream::connect_timeout(sa, ::std::time::Duration::from_millis(250)).is_ok()
+            });
+            if !any_reachable {
+                return ::std::result::Result::Err(format!("connect refused: {}", addr));
+            }
+        } else {
+            return ::std::result::Result::Err(format!("DNS resolution failed for {}", addr));
+        }
+    }
+
     let bun_method = match method {
         "POST" => bun_http::Method::POST,
         "PUT" => bun_http::Method::PUT,
@@ -248,6 +267,20 @@ fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Resul
         url: url.to_string(),
         status_text: result.status_text,
     })
+}
+
+fn extract_host_port(url: &str) -> ::std::option::Option<(String, u16)> {
+    let scheme_end = url.find("://")?;
+    let rest = &url[scheme_end + 3..];
+    let authority = rest.split('/').next()?;
+    let (hostport, _) = authority.split_once('?').unwrap_or((authority, ""));
+    let (host, port) = if let Some(idx) = hostport.rfind(':') {
+        let (h, p) = hostport.split_at(idx);
+        (h.to_string(), p[1..].parse::<u16>().unwrap_or(80))
+    } else {
+        (hostport.to_string(), if url.starts_with("https://") { 443 } else { 80 })
+    };
+    Some((host, port))
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

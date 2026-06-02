@@ -245,7 +245,8 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let hostname =
         jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
 
-    let arr_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    let mut cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
     if arr_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -273,21 +274,8 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     }
                 }
             }
-            let len_val = Int32Value(idx as i32);
-            let len_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &len_val,
-            };
-            JS_DefineProperty(cx, arr_h, c"length".as_ptr(), len_h, JSPROP_ENUMERATE as u32);
         }
-        Err(_) => {
-            let len_val = Int32Value(0);
-            let len_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &len_val,
-            };
-            JS_DefineProperty(cx, arr_h, c"length".as_ptr(), len_h, JSPROP_ENUMERATE as u32);
-        }
+        Err(_) => {}
     }
 
     args.rval().set(ObjectValue(arr_obj));
@@ -297,21 +285,12 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dns_resolve6(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let arr_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    let mut cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
     if arr_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    let arr_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &arr_obj,
-    };
-    let len_val = Int32Value(0);
-    let len_h = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &len_val,
-    };
-    JS_DefineProperty(cx, arr_h, c"length".as_ptr(), len_h, JSPROP_ENUMERATE as u32);
     args.rval().set(ObjectValue(arr_obj));
     true
 }
@@ -338,7 +317,8 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     let ip_str = jsstr_to_string(cx, NonNull::new_unchecked(ip_val.to_string()));
 
-    let arr_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+    let mut cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
     if arr_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -364,21 +344,8 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                     JS_DefineElement(cx, arr_h, 0, val_h, JSPROP_ENUMERATE as u32);
                 }
             }
-            let len_val = Int32Value(1);
-            let len_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &len_val,
-            };
-            JS_DefineProperty(cx, arr_h, c"length".as_ptr(), len_h, JSPROP_ENUMERATE as u32);
         }
-        Err(_) => {
-            let len_val = Int32Value(0);
-            let len_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &len_val,
-            };
-            JS_DefineProperty(cx, arr_h, c"length".as_ptr(), len_h, JSPROP_ENUMERATE as u32);
-        }
+        Err(_) => {}
     }
 
     args.rval().set(ObjectValue(arr_obj));
@@ -394,7 +361,32 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     unsafe {
         let cx_raw = cx.raw_cx();
 
-        // Register native helper functions on module object for JS code to call
+        // The IIFE below is evaluated via JS::Evaluate2 in the global scope,
+        // so `__dns_*` helpers must be visible on the global object — defining
+        // them on mod_obj alone made `typeof __dns_lookup === "function"` fail
+        // and dns.lookup fell back to "not available" (root cause of the
+        // test_dns_net_deep family failures).
+        let global = CurrentGlobalOrNull(cx_raw);
+        if !global.is_null() {
+            let global_h = Handle::<*mut JSObject> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &global,
+            };
+            JS_DefineFunction(cx_raw, global_h, c"__dns_lookup".as_ptr(), Some(dns_lookup), 1, 0);
+            JS_DefineFunction(cx_raw, global_h, c"__dns_resolve".as_ptr(), Some(dns_resolve), 2, 0);
+            JS_DefineFunction(
+                cx_raw,
+                global_h,
+                c"__dns_resolve6".as_ptr(),
+                Some(dns_resolve6),
+                1,
+                0,
+            );
+            JS_DefineFunction(cx_raw, global_h, c"__dns_reverse".as_ptr(), Some(dns_reverse), 1, 0);
+        }
+
+        // Also keep mirrors on the module object for completeness (existing
+        // callers may import the helpers off the dns module).
         let mod_ptr = mod_obj.get();
         let mod_h = Handle::<*mut JSObject> {
             _phantom_0: ::std::marker::PhantomData,

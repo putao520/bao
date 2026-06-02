@@ -89,14 +89,86 @@ pub fn install_module_global(
         if mod_obj.get().is_null() {
             return;
         }
-        let exports_obj = mozjs_sys::jsapi::JS_NewPlainObject(raw);
-        if !exports_obj.is_null() {
-            let ev = mozjs::jsval::ObjectValue(exports_obj);
-            rooted!(&in(cx) let ev_r = ev);
-            let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_obj.get() };
-            let ev_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ev_r.get() };
-            JS_DefineProperty(raw, mod_h, c"exports".as_ptr(), ev_h, JSPROP_ENUMERATE as u32);
+
+        // `module.exports` is exposed as a live-bound getter/setter pair on
+        // both the `module` object and globalThis. The setter follows a hybrid
+        // strategy so multiple CJS patterns work simultaneously:
+        //   - assigning an object  → merge its enumerable own props into
+        //     globalThis and keep the "current exports" pointing at globalThis
+        //     (so `this === module.exports` holds for any non-strict `fn()`
+        //     call where `this` defaults to globalThis);
+        //   - assigning a function/class/primitive → store it directly so
+        //     `module.exports(4) === 12` and `new module.exports(5)` still
+        //     work (this is required for `export_default_function` and
+        //     `export_default_class`).
+        let setup = r#"(function(g, m) {
+  var current = g;
+  function defineExports(obj) {
+    Object.defineProperty(obj, 'exports', {
+      configurable: true,
+      enumerable: true,
+      get: function() { return current; },
+      set: function(v) {
+        if (v && typeof v === 'object' && typeof v !== 'function') {
+          for (var k in v) {
+            if (Object.prototype.hasOwnProperty.call(v, k)) {
+              g[k] = v[k];
+            }
+          }
+          current = g;
+        } else if (typeof v === 'function') {
+          // Merge own props of the function (e.g. static methods) too.
+          for (var k2 in v) {
+            if (Object.prototype.hasOwnProperty.call(v, k2)) {
+              g[k2] = v[k2];
+            }
+          }
+          current = v;
+        } else {
+          current = v;
         }
+      }
+    });
+  }
+  defineExports(m);
+  defineExports(g);
+})"#;
+        let mut setup_text = mozjs::rust::transform_str_to_source_text(setup);
+        let mut factory = UndefinedValue();
+        let factory_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut factory,
+        };
+        let opts = mozjs::glue::NewCompileOptions(raw, c"<module-setup>".as_ptr(), 1);
+        if !opts.is_null() {
+            let ok = JS::Evaluate2(raw, opts, &mut setup_text, factory_h);
+            libc::free(opts as *mut _);
+            if ok && factory.is_object() {
+                let elems = [ObjectValue(global.get()), ObjectValue(mod_obj.get())];
+                let args = HandleValueArray {
+                    length_: 2,
+                    elements_: elems.as_ptr(),
+                };
+                let mut rval = UndefinedValue();
+                let rval_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut rval,
+                };
+                let factory_obj = factory.to_object();
+                let factory_obj_h = Handle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &ObjectValue(factory_obj),
+                };
+                JS_CallFunctionValue(
+                    raw,
+                    global.into(),
+                    factory_obj_h,
+                    &args,
+                    rval_h,
+                );
+            }
+        }
+
         let dot_str = JS_NewStringCopyZ(raw, c".".as_ptr());
         if !dot_str.is_null() {
             let id_val = mozjs::jsval::StringValue(&*dot_str);

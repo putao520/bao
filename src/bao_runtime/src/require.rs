@@ -335,7 +335,12 @@ fn try_resolve(path: &Path) -> ::std::option::Option<PathBuf> {
             return Some(candidate);
         }
     }
-    if path.exists() {
+    // Only return the path itself if it is a regular file.
+    // Returning a bare directory here used to incorrectly resolve empty / "." /
+    // ".." specifiers to whatever node_modules directory happened to exist on
+    // the traversal path (root cause of test_resolve_node_modules_empty_specifier
+    // and test_resolve_node_modules_with_dot_specifier failures).
+    if path.is_file() {
         return Some(path.to_path_buf());
     }
     if path.is_dir() {
@@ -350,6 +355,11 @@ fn try_resolve(path: &Path) -> ::std::option::Option<PathBuf> {
 }
 
 pub fn resolve_node_modules(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
+    // Defensive guard: empty / "." / ".." are not valid package names and must
+    // not produce false positives by falling through to directory traversal.
+    if specifier.is_empty() || specifier == "." || specifier == ".." {
+        return None;
+    }
     let start = match base_dir {
         Some(d) => d.to_path_buf(),
         None => ::std::env::current_dir().ok()?,

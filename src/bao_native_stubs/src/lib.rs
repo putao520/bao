@@ -885,5 +885,20 @@ pub extern "C" fn ZSTD_isError(_code: usize) -> c_int { 0 }
 #[no_mangle]
 pub extern "C" fn __bun_crash_handler_out_of_memory() -> *mut c_void { unsafe { libc::abort() } }
 
+// @trace REQ-ENG-004 [algorithm:highway_index_of_char]
+// Highway SIMD char-index helper — pure Rust replacement for the C/Zig stub.
+// Returns haystack_len when not found (per Highway convention; matches the
+// `result == haystack.len()` check in src/highway/lib.rs:109).
 #[no_mangle]
-pub extern "C" fn highway_index_of_char(_haystack: *const u8, _haystack_len: usize, _needle: u8) -> c_int { -1 }
+pub extern "C" fn highway_index_of_char(haystack: *const u8, haystack_len: usize, needle: u8) -> usize {
+    if haystack.is_null() || haystack_len == 0 {
+        return haystack_len;
+    }
+    let slice = unsafe { core::slice::from_raw_parts(haystack, haystack_len) };
+    for (i, &b) in slice.iter().enumerate() {
+        if b == needle {
+            return i;
+        }
+    }
+    haystack_len
+}

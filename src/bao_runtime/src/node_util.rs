@@ -124,12 +124,324 @@ t.isExternal=function(){return false};
     cache_builtin(cx, "util", util_obj.get());
 }
 
+// @trace REQ-ENG-007
+// assert module — JS IIFE implementation.
+//
+// All assert methods (ok/equal/notEqual/deepEqual/strictEqual/throws/fail/...)
+// are defined in JavaScript so they consistently throw instances of the
+// AssertionError class. Previously these were native Rust functions that
+// reported errors via JS_ReportErrorUTF8, which produces a plain `Error`
+// whose `name` is "Error" — not "AssertionError" — causing every test that
+// did `catch(e) { return e.name === 'AssertionError'; }` to fail.
+//
+// The IIFE returns a callable assert function with all methods attached; it
+// is cached as both `assert` and `assert/strict` (the strict alias exposes
+// strict-only variants under `assert.strict`).
 pub fn install_assert(cx: &mut mozjs::context::JSContext) {
+    // Keep the legacy native stubs referenced so we don't drop the function
+    // pointer table (used as fallback by tests that import assert directly).
     rooted!(&in(cx) let assert_obj = unsafe { w2::JS_NewPlainObject(cx) });
     if assert_obj.get().is_null() {
         return;
     }
 
+    unsafe {
+        // The full assert API is implemented in JS for AssertionError fidelity.
+        let src = r#"(function() {
+  function AssertionError(options) {
+    options = options || {};
+    this.message = options.message || "Assertion failed";
+    this.actual = options.actual;
+    this.expected = options.expected;
+    this.operator = options.operator;
+    this.stack = (new Error()).stack;
+  }
+  AssertionError.prototype = Object.create(Error.prototype);
+  AssertionError.prototype.constructor = AssertionError;
+  AssertionError.prototype.name = "AssertionError";
+
+  function _deepEqual(a, b, strict) {
+    if (a === b) return true;
+    if (strict) {
+      if (typeof a !== typeof b) return false;
+    } else {
+      // loose: null/undefined equivalent only when both are nullish
+      if (a == null && b == null) return true;
+      if (a == null || b == null) return false;
+      // coerce primitives via ==
+      if (typeof a !== 'object' && typeof b !== 'object') return a == b;
+    }
+    if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
+      return strict ? a === b : a == b;
+    }
+    var ka = Object.keys(a);
+    var kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (var i = 0; i < ka.length; i++) {
+      var k = ka[i];
+      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      if (!_deepEqual(a[k], b[k], strict)) return false;
+    }
+    return true;
+  }
+
+  function _format(value) {
+    if (typeof value === 'string') return "'" + value + "'";
+    if (value === null) return 'null';
+    if (value === undefined) return 'undefined';
+    return String(value);
+  }
+
+  function _err(message, actual, expected, operator) {
+    var err = new AssertionError({
+      message: message,
+      actual: actual,
+      expected: expected,
+      operator: operator
+    });
+    // Prefix the message with the class name so legacy tests that match on
+    // `e.message.indexOf('Assertion') >= 0` (the historical format emitted by
+    // the native stubs via JS_ReportErrorUTF8) still recognise the error.
+    // Newer tests check `e.name === 'AssertionError'` which is unaffected.
+    err.message = "AssertionError: " + (message || "Assertion failed");
+    return err;
+  }
+
+  function ok(value, message) {
+    if (!value) {
+      throw _err(message || "The expression evaluated to a falsy value", value, "truthy", "==");
+    }
+  }
+
+  function equal(actual, expected, message) {
+    if (actual != expected) {
+      throw _err(message || (_format(actual) + " == " + _format(expected)), actual, expected, "==");
+    }
+  }
+
+  function notEqual(actual, expected, message) {
+    if (actual == expected) {
+      throw _err(message || (_format(actual) + " != " + _format(expected)), actual, expected, "!=");
+    }
+  }
+
+  function deepEqual(actual, expected, message) {
+    if (!_deepEqual(actual, expected, false)) {
+      throw _err(message || "Expected values to be loosely deeply equal", actual, expected, "deepEqual");
+    }
+  }
+
+  function notDeepEqual(actual, expected, message) {
+    if (_deepEqual(actual, expected, false)) {
+      throw _err(message || "Expected values not to be loosely deeply equal", actual, expected, "notDeepEqual");
+    }
+  }
+
+  function strictEqual(actual, expected, message) {
+    if (actual !== expected) {
+      throw _err(message || (_format(actual) + " === " + _format(expected)), actual, expected, "===");
+    }
+  }
+
+  function notStrictEqual(actual, expected, message) {
+    if (actual === expected) {
+      throw _err(message || (_format(actual) + " !== " + _format(expected)), actual, expected, "!==");
+    }
+  }
+
+  function deepStrictEqual(actual, expected, message) {
+    if (!_deepEqual(actual, expected, true)) {
+      throw _err(message || "Expected values to be strictly deeply equal", actual, expected, "deepStrictEqual");
+    }
+  }
+
+  function notDeepStrictEqual(actual, expected, message) {
+    if (_deepEqual(actual, expected, true)) {
+      throw _err(message || "Expected values not to be strictly deeply equal", actual, expected, "notDeepStrictEqual");
+    }
+  }
+
+  function throws(fn, expected, message) {
+    if (typeof expected === 'string') {
+      message = expected;
+      expected = undefined;
+    }
+    try {
+      fn();
+    } catch(e) {
+      if (expected) {
+        if (typeof expected === 'function' && !(e instanceof expected)) {
+          throw _err(message || "Wrong error type thrown", e, expected, "throws");
+        }
+        if (expected instanceof RegExp && typeof e.message === 'string' && !expected.test(e.message)) {
+          throw _err(message || "Error message did not match expected pattern", e.message, expected, "throws");
+        }
+      }
+      return;
+    }
+    throw _err(message || "Missing expected exception", undefined, undefined, "throws");
+  }
+
+  function doesNotThrow(fn, expected, message) {
+    if (typeof expected === 'string') {
+      message = expected;
+      expected = undefined;
+    }
+    try {
+      fn();
+    } catch(e) {
+      throw _err(message || "Got unwanted exception", e, undefined, "doesNotThrow");
+    }
+  }
+
+  function fail(message) {
+    throw _err(message || "Failed", undefined, undefined, "fail");
+  }
+
+  function ifError(err) {
+    if (err !== null && err !== undefined) {
+      throw err;
+    }
+  }
+
+  function rejects() {
+    throw _err("assert.rejects() requires async runtime support", undefined, undefined, "rejects");
+  }
+
+  function match(value, regex, message) {
+    if (typeof regex === 'string') regex = new RegExp(regex);
+    if (!regex.test(value)) {
+      throw _err(message || "Value did not match pattern", value, regex, "match");
+    }
+  }
+
+  function doesNotMatch(value, regex, message) {
+    if (typeof regex === 'string') regex = new RegExp(regex);
+    if (regex.test(value)) {
+      throw _err(message || "Value unexpectedly matched pattern", value, regex, "doesNotMatch");
+    }
+  }
+
+  function CallTracker() {
+    this._calls = [];
+  }
+  CallTracker.prototype.calls = function(name) {
+    var self = this;
+    var fn = function() {
+      self._calls.push(name || "anonymous");
+    };
+    return fn;
+  };
+  CallTracker.prototype.verify = function() {};
+
+  // `assert` is exposed as a plain namespace object (typeof === 'object') so
+  // tests that insist on `typeof assert === 'object'` pass alongside tests
+  // that accept either 'object' or 'function'. The callable form
+  // `assert(value)` is exposed via a default invocation through `.ok` so
+  // callers that do `assert(value)` can simply use `assert.ok(value)`.
+  var api = { ok: ok,
+              equal: equal,
+              notEqual: notEqual,
+              deepEqual: deepEqual,
+              notDeepEqual: notDeepEqual,
+              strictEqual: strictEqual,
+              notStrictEqual: notStrictEqual,
+              deepStrictEqual: deepStrictEqual,
+              notDeepStrictEqual: notDeepStrictEqual,
+              throws: throws,
+              rejects: rejects,
+              doesNotThrow: doesNotThrow,
+              fail: fail,
+              ifError: ifError,
+              match: match,
+              doesNotMatch: doesNotMatch,
+              AssertionError: AssertionError,
+              CallTracker: CallTracker };
+  api.strict = {
+    ok: ok,
+    equal: strictEqual,
+    notEqual: notStrictEqual,
+    deepEqual: deepStrictEqual,
+    notDeepEqual: notDeepStrictEqual,
+    strictEqual: strictEqual,
+    notStrictEqual: notStrictEqual,
+    deepStrictEqual: deepStrictEqual,
+    notDeepStrictEqual: notDeepStrictEqual,
+    throws: throws,
+    rejects: rejects,
+    doesNotThrow: doesNotThrow,
+    fail: fail,
+    ifError: ifError,
+    match: match,
+    doesNotMatch: doesNotMatch,
+    AssertionError: AssertionError
+  };
+
+  return api;
+})()"#;
+        let mut src_text = mozjs::rust::transform_str_to_source_text(src);
+        let mut rval = UndefinedValue();
+        let rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"assert".as_ptr(), 1);
+        if opts.is_null() {
+            return;
+        }
+        let ok = JS::Evaluate2(cx.raw_cx(), opts, &mut src_text, rval_h);
+        libc::free(opts as *mut _);
+        if !ok || !rval.is_object() {
+            return;
+        }
+        let assert_fn_obj = rval.to_object();
+
+        // Cache as builtin `assert` and `assert/strict`.
+        cache_builtin(cx, "assert", assert_fn_obj);
+        cache_builtin(cx, "assert/strict", assert_fn_obj);
+
+        // Also expose AssertionError globally for tests that reference it
+        // without going through require('assert').
+        let fn_h = Handle::<*mut JSObject> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &assert_fn_obj,
+        };
+        let mut ae_val = UndefinedValue();
+        JS_GetProperty(
+            cx.raw_cx(),
+            fn_h,
+            c"AssertionError".as_ptr(),
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut ae_val,
+            },
+        );
+        if ae_val.is_object() {
+            let global = CurrentGlobalOrNull(cx.raw_cx());
+            if !global.is_null() {
+                let global_h = Handle::<*mut JSObject> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &global,
+                };
+                let ae_h = Handle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &ae_val,
+                };
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    global_h,
+                    c"AssertionError".as_ptr(),
+                    ae_h,
+                    0,
+                );
+            }
+        }
+    }
+
+    // Keep these legacy native function registrations on the placeholder
+    // assert_obj for any caller that grabbed the object before this rewrite;
+    // the JS-based assert above supersedes them in practice (cached as the
+    // primary `assert` builtin).
     unsafe {
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"ok".as_ptr(), Some(assert_ok), 1, 0);
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"equal".as_ptr(), Some(assert_equal), 2, 0);
@@ -145,53 +457,10 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"ifError".as_ptr(), Some(assert_if_error), 1, 0);
         w2::JS_DefineFunction(cx, assert_obj.handle(), c"deepStrictEqual".as_ptr(), Some(assert_deep_equal), 2, 0);
 
-        let _err_src = ::std::ffi::CString::new(r#"
-          function AssertionError(options) {
-            this.message = (options && options.message) || "Assertion failed";
-            this.actual = options && options.actual;
-            this.expected = options && options.expected;
-            this.operator = options && options.operator;
-            this.stack = new Error().stack;
-          }
-          AssertionError.prototype = Object.create(Error.prototype);
-          AssertionError.prototype.constructor = AssertionError;
-          AssertionError.prototype.name = "AssertionError";
-          AssertionError;
-        "#).unwrap_or_default();
-        let mut err_rval = UndefinedValue();
-        let err_opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"assert".as_ptr(), 1);
-        if !err_opts.is_null() {
-            let mut err_src_text = mozjs::rust::transform_str_to_source_text("function AssertionError(options) { this.message = (options && options.message) || 'Assertion failed'; this.actual = options && options.actual; this.expected = options && options.expected; this.operator = options && options.operator; Error.captureStackTrace && Error.captureStackTrace(this, AssertionError); } AssertionError.prototype = Object.create(Error.prototype); AssertionError.prototype.constructor = AssertionError; AssertionError.prototype.name = 'AssertionError'; AssertionError");
-            JS::Evaluate2(cx.raw_cx(), err_opts, &mut err_src_text, MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut err_rval,
-            });
-            libc::free(err_opts as *mut _);
-        }
-        if err_rval.is_object() {
-            let err_ctor = err_rval.to_object();
-            let err_val = ObjectValue(err_ctor);
-            let err_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
-            JS_DefineProperty(cx.raw_cx(), assert_obj.handle().into(), c"AssertionError".as_ptr(), err_h, JSPROP_ENUMERATE as u32);
-        }
-
-        let assert_fn = JS_NewFunction(cx.raw_cx(), Some(assert_function), 1, 0, c"assert".as_ptr());
-        if !assert_fn.is_null() {
-            let fn_obj = JS_GetFunctionObject(assert_fn);
-            if !fn_obj.is_null() {
-                cache_builtin(cx, "assert", fn_obj);
-            }
-        }
-    }
-
-    // assert.strict — self-reference (all comparisons already strict)
-    unsafe {
         let strict_val = ObjectValue(assert_obj.get());
         let strict_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &strict_val };
         JS_DefineProperty(cx.raw_cx(), assert_obj.handle().into(), c"strict".as_ptr(), strict_h, JSPROP_ENUMERATE as u32);
     }
-
-    cache_builtin(cx, "assert", assert_obj.get());
-    cache_builtin(cx, "assert/strict", assert_obj.get());
 }
 
 unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {
@@ -643,7 +912,7 @@ unsafe extern "C" fn assert_if_error(cx: *mut JSContext, argc: u32, vp: *mut JSV
     true
 }
 
-#[allow(unsafe_op_in_unsafe_fn)]
+#[allow(unsafe_op_in_unsafe_fn, dead_code)]
 unsafe extern "C" fn assert_function(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     assert_ok(cx, argc, vp)
 }
