@@ -5,11 +5,11 @@
       "cron": "*/10 * * * *",
       "prompt": "读取 .claude/tasks/full-project-plan.md，检查所有未完成项，选择下一个未完成的任务继续推进。每个 Wave 内可并行的任务用 worker_dispatch 并行执行。完成后更新计划文件勾选对应条目。",
       "createdAt": 1780157705935,
-      "lastFiredAt": 1780386549388,
+      "lastFiredAt": 1780402179637,
       "recurring": true,
       "createdBySessionId": "38c16643-82f3-4da8-961d-4d9fae78a070",
-      "createdByPid": 3865688,
-      "createdByProcStart": "953330097"
+      "createdByPid": 2578033,
+      "createdByProcStart": "960843067"
     }
   ]
 }

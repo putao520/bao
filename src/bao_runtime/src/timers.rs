@@ -311,8 +311,16 @@ pub fn next_deadline() -> ::std::option::Option<Instant> {
     })
 }
 
+/// Drain ready timers from TIMERS and fire their JS callbacks.
+/// Synchronises BAO_REGISTRY so the dual-write invariant is maintained:
+/// - One-shot timers: removed from BAO_REGISTRY after fire (prevent leak).
+/// - Interval timers: deadline updated in BAO_REGISTRY to match TIMERS re-arm.
+///
+/// Must NOT hold a borrow on BAO_REGISTRY across JS callback dispatch
+/// (callbacks may call setTimeout/clearTimeout → re-entrant borrow).
 pub fn drain_timers(cx: &mut mozjs::context::JSContext) -> bool {
     let now = Instant::now();
+    let now_ts = bun_core::Timespec::now_allow_mocked_time();
     let ready = TIMERS.with(|t| t.borrow_mut().drain_ready(now));
 
     if ready.is_empty() {
@@ -327,7 +335,36 @@ pub fn drain_timers(cx: &mut mozjs::context::JSContext) -> bool {
     // to completion before yielding back to the JS engine).
     let raw_cx = unsafe { cx.raw_cx() };
     for entry in ready {
+        // Fire the JS callback first (no BAO_REGISTRY borrow held).
         unsafe { fire_js_callback_raw(raw_cx, entry.callback, &entry.args) };
+
+        // Post-fire BAO_REGISTRY synchronisation — separate borrow scope
+        // so re-entrant setTimeout/clearTimeout from the callback above
+        // does not conflict with this borrow.
+        BAO_REGISTRY.with(|r| {
+            if let Some(interval) = entry.interval {
+                // Interval: re-arm the BaoTimeoutObject to match the
+                // new deadline that drain_ready computed for TIMERS.
+                // Re-arm strategy: update state back to PENDING, bump
+                // epoch, compute next deadline via Timespec arithmetic.
+                let mut reg = r.borrow_mut();
+                if let ::std::option::Option::Some(obj) = reg.owned.get_mut(&entry.id) {
+                    let interval_ms = interval.as_millis() as i64;
+                    // Advance next deadline past `now` (same while-loop as
+                    // drain_ready uses for Instant — but in Timespec domain).
+                    let mut next_ts = obj.event_loop_timer.next;
+                    while next_ts.order(&now_ts) != core::cmp::Ordering::Greater {
+                        next_ts = next_ts.add_ms(interval_ms);
+                    }
+                    obj.event_loop_timer.next = next_ts;
+                    obj.event_loop_timer.state = TimerState::PENDING;
+                    obj.epoch = obj.epoch.wrapping_add(1);
+                }
+            } else {
+                // One-shot: remove from BAO_REGISTRY to prevent leak.
+                r.borrow_mut().remove(entry.id);
+            }
+        });
     }
 
     true
@@ -508,6 +545,9 @@ unsafe extern "C" fn set_immediate(
     true
 }
 
+/// Parse JS args from setTimeout/setInterval and delegate to `schedule_raw`
+/// for dual-write registration. Single source of truth for TimerEntry +
+/// BaoTimeoutObject construction, deadline calculation, and epoch bump.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn register_timer(
     _cx: *mut JSContext,
@@ -549,46 +589,7 @@ unsafe fn register_timer(
         Vec::new()
     };
 
-    let id = NEXT_ID.with(|n| {
-        let val = n.get();
-        n.set(val + 1);
-        val
-    });
-
-    let interval = if repeating {
-        Some(Duration::from_millis(delay_ms.max(1)))
-    } else {
-        None
-    };
-
-    let entry = TimerEntry {
-        id,
-        deadline: Instant::now() + Duration::from_millis(if delay_ms == 0 && repeating { 1 } else { delay_ms }),
-        interval,
-        callback,
-        args: extra_args.clone(),
-    };
-
-    TIMERS.with(|t| t.borrow_mut().insert(entry));
-
-    // P1-A.3c-step3: dual-write to BaoTimerRegistry alongside legacy TIMERS.
-    // Builds the BaoTimeoutObject equivalent of the TimerEntry just inserted
-    // above, so P1-A.3d can flip drain_and_check to read from BAO_REGISTRY
-    // without changing host_fn behavior.
-    let mut bao_obj = Box::new(BaoTimeoutObject::new_paused());
-    bao_obj.timer_id = id;
-    bao_obj.event_loop_timer.next = bun_core::Timespec::now_allow_mocked_time()
-        .add_ms((if delay_ms == 0 && repeating { 1 } else { delay_ms }) as i64);
-    bao_obj.interval = interval;
-    bao_obj.callback = ::std::option::Option::Some(callback);
-    bao_obj.args = extra_args;
-    bao_obj.epoch = NEXT_EPOCH.with(|c| {
-        let v = c.get();
-        c.set(v.wrapping_add(1));
-        v
-    });
-    BAO_REGISTRY.with(|r| r.borrow_mut().insert(bao_obj));
-
+    let id = schedule_raw(callback, delay_ms, repeating, &extra_args);
     args.rval().set(Int32Value(id as i32));
     true
 }
