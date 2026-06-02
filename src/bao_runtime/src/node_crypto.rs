@@ -4,7 +4,7 @@ use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
 use digest::Digest;
-use base64::Engine;
+// @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 use hmac::{Hmac, Mac};
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
@@ -194,7 +194,8 @@ unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     match encoding.as_str() {
         "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&result);
+            let encoded_bytes = bun_base64::encode_alloc(&result);
+            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
         }
         _ => return_string(cx, &args, &hex::encode(&result)),
@@ -302,7 +303,8 @@ unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     match encoding.as_str() {
         "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
-            let encoded = base64::engine::general_purpose::STANDARD.encode(&result);
+            let encoded_bytes = bun_base64::encode_alloc(&result);
+            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
         }
         _ => return_string(cx, &args, &hex::encode(&result)),
@@ -804,7 +806,11 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     HASH_DATA.with(|d| d.borrow_mut().clear());
     match encoding.to_lowercase().as_str() {
         "hex" => return_string(cx, &args, &hex::encode(&result)),
-        "base64" => return_string(cx, &args, &base64::engine::general_purpose::STANDARD.encode(&result)),
+        "base64" => {
+            let encoded_bytes = bun_base64::encode_alloc(&result);
+            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
+            return_string(cx, &args, &encoded)
+        }
         _ => return_string(cx, &args, &hex::encode(&result)),
     }
 }

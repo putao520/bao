@@ -13,7 +13,7 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1, CallOriginalPromiseResolve, CallOriginalPromiseThen};
 use mozjs::conversions::jsstr_to_string;
 
-use base64::Engine;
+// @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 
 // ── Minimal WebSocket client (RFC 6455) ──
 
@@ -40,7 +40,8 @@ impl WsClient {
         stream.set_nonblocking(false).ok();
 
         let key_base: [u8; 16] = rand::random();
-        let key = base64::engine::general_purpose::STANDARD.encode(key_base);
+        let key_bytes = bun_base64::encode_alloc(&key_base);
+        let key = ::std::str::from_utf8(&key_bytes).unwrap_or("");
 
         let request = format!(
             "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
@@ -496,7 +497,7 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         return true;
     }
     let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()));
-    match base64::engine::general_purpose::STANDARD.decode(s.as_bytes()) {
+    match bun_base64::decode_alloc(s.as_bytes()) {
         Ok(bytes) => {
             let decoded = String::from_utf8_lossy(&bytes);
             let c_str = ::std::ffi::CString::new(decoded.into_owned()).unwrap_or_default();
@@ -520,7 +521,8 @@ unsafe extern "C" fn btoa_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         return true;
     }
     let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()));
-    let encoded = base64::engine::general_purpose::STANDARD.encode(s.as_bytes());
+    let encoded_bytes = bun_base64::encode_alloc(s.as_bytes());
+    let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("");
     let c_str = ::std::ffi::CString::new(encoded).unwrap_or_default();
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
     if js_str.is_null() { args.rval().set(UndefinedValue()); }

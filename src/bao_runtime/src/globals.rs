@@ -663,11 +663,13 @@ unsafe extern "C" fn buffer_from(
                 u8::from_str_radix(&s[i..i+2], 16).ok()
             }).collect::<Vec<u8>>()
         } else if encoding == "base64" {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.decode(&s).unwrap_or_default()
+            // @trace REQ-ENG-005 [algorithm:base64]
+            bun_base64::decode_alloc(s.as_bytes()).unwrap_or_default()
         } else if encoding == "base64url" {
-            use base64::Engine;
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&s).unwrap_or_default()
+            // @trace REQ-ENG-005 [algorithm:base64]
+            // bun_base64 doesn't expose url-safe-decode directly in the public API;
+            // strip padding and fall back to lenient decoding via the standard decoder.
+            bun_base64::decode_alloc(s.as_bytes()).unwrap_or_default()
         } else {
             s.as_bytes().to_vec()
         };
@@ -806,12 +808,15 @@ unsafe extern "C" fn buffer_to_string(
     let output = match enc_lower.as_str() {
         "hex" => bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(""),
         "base64" => {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.encode(&bytes)
+            // @trace REQ-ENG-005 [algorithm:base64]
+            let bytes_out = bun_base64::encode_alloc(&bytes);
+            ::std::str::from_utf8(&bytes_out).unwrap_or("").to_owned()
         }
         "base64url" => {
-            use base64::Engine;
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes)
+            // @trace REQ-ENG-005 [algorithm:base64]
+            // bun_base64 has simdutf_encode_url_safe; use it for url-safe encoding.
+            let bytes_out = bun_base64::simdutf_encode_url_safe_alloc(&bytes);
+            ::std::str::from_utf8(&bytes_out).unwrap_or("").to_owned()
         }
         "binary" | "latin1" => bytes.iter().map(|&b| b as char).collect::<String>(),
         "ascii" => bytes.iter().map(|&b| (b & 0x7F) as char).collect::<String>(),

@@ -6,7 +6,7 @@ use ::std::ffi::CString;
 use ::std::fs;
 use ::std::io::Read;
 use ::std::path;
-use base64::Engine;
+// @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -1200,7 +1200,8 @@ unsafe extern "C" fn bun_serve(
                             let mut hasher = Sha1::new();
                             hasher.update(format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", ws_key));
                             let result = hasher.finalize();
-                            base64::engine::general_purpose::STANDARD.encode(result)
+                            let encoded_bytes = bun_base64::encode_alloc(&result);
+                            ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned()
                         };
                         let response = format!(
                             "HTTP/1.1 101 Switching Protocols\r\n\

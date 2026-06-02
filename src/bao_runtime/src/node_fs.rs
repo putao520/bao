@@ -2,7 +2,7 @@
 use ::std::ffi::CString;
 use ::std::fs;
 use ::std::path::Path;
-use base64::Engine;
+// @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 
 use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
@@ -270,7 +270,10 @@ unsafe fn return_string_content(cx: *mut JSContext, args: &CallArgs, data: &[u8]
             if js_str.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::StringValue(&*js_str)); }
         }
         Some("base64") => {
-            let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+            // @trace REQ-ENG-005 [algorithm:base64]
+            // SIMD-accelerated base64 encode via workspace bun_base64 (replaces crates.io base64).
+            let encoded_bytes = bun_base64::encode_alloc(data);
+            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("");
             let c_str = CString::new(encoded).unwrap_or_default();
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
             if js_str.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::StringValue(&*js_str)); }
@@ -974,7 +977,10 @@ unsafe fn string_or_buffer(cx: *mut JSContext, data: &[u8], encoding: ::std::opt
             if js_str.is_null() { UndefinedValue() } else { mozjs::jsval::StringValue(&*js_str) }
         }
         Some("base64") => {
-            let encoded = base64::engine::general_purpose::STANDARD.encode(data);
+            // @trace REQ-ENG-005 [algorithm:base64]
+            // SIMD-accelerated base64 encode via workspace bun_base64 (replaces crates.io base64).
+            let encoded_bytes = bun_base64::encode_alloc(data);
+            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("");
             let c_str = CString::new(encoded).unwrap_or_default();
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
             if js_str.is_null() { UndefinedValue() } else { mozjs::jsval::StringValue(&*js_str) }
