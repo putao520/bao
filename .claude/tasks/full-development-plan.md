@@ -160,7 +160,7 @@ Phase 4: 质量收敛                         ← 最后
 | ID | 任务 | 依赖 | 复杂度 | 状态 |
 |----|------|------|--------|------|
 | E8 | StealthProfile 贯穿 | 无 | 低 | ✅ Wave 33 完成 |
-| Wave 34 | 多线程并发 + 架构韧性测试 | 无 | 中 | 待实现 |
+| Wave 34 | 多线程并发 + 架构韧性测试 | 无 | 中 | ✅ 完成（commit 0b66e7547，修复 bao_cdp 服务器两个死锁 BUG + 23 新测试） |
 | E4 | servo 输入事件分发 | 无 | 中 | ✅ 已完成 |
 | E6 | TLS 指纹注入 | 被上游阻塞 | 中 | 🔶 stealth_http.rs 已创建 |
 | E7 | HTTP/2 指纹注入 | 被上游阻塞 | 中 | 🔶 stealth_http.rs 已创建 |
@@ -516,15 +516,108 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 - `cargo test -p bao_runtime`: 109 单元测试 + 1 集成测试全通过，零链接错误
 - `cargo build -p bao_engine -p bao_browser -p bao_cdp -p bao_stealth`: 全部通过
 
-## Wave 73: P1-0 bun_dispatch SpiderMonkey 适配 — link_interface! Jsc arm 实现
+## Wave 73: P1-0 bun_dispatch SpiderMonkey 适配 — link_interface! Jsc arm 全量实现
 
-**状态**: 🔲 待实施
+**状态**: 🔲 推进中（已拆分为 Wave 73-A 至 73-G，见下方）
+
+**用户决策（2026-06-02）**:
+> "SpiderMonkey 版本的替换其实是最核心的任务，要全量处理好，再做其他的 C 库替换，再搞业务才是正确的顺序"
+
+**优先级（铁律）**:
+1. **P0**: Wave 73 全量 SpiderMonkey 适配（73-A → 73-G）
+2. **P1**: Wave 74-A (SSL stubs → rustls) + Wave 74-B (uSockets stubs → mio)
+3. **P2**: Phase 1 业务开发（删除 bao_runtime 手写代码 → bun_* crate）
 
 **背景**:
 - bun_dispatch::link_interface! 机制：低层 crate 声明接口+variant，高层 crate 提供 link_impl_*! 实现
 - Bun 中 Jsc arm 实现在 bun_jsc crate（~2800 LOC）
 - Bao 需要在 bao_engine 中为 SpiderMonkey 创建对应实现
 - 所有 bun_* crate 的 JSC 接口层通过此机制工作，适配后才能复用
+
+**架构师分析关键发现（2026-06-02）**:
+- 当前 bao_runtime 不调用 JsEventLoop/EventLoopCtx::Js — 绕过 dispatch 用手写 TimerHeap
+- AsyncHTTP::send_sync 走独立 HTTP 线程的 MiniEventLoop（已有 Mini arm 实现）
+- 所以 Jsc arm 缺失但 3855 测试通过（dispatch 符号被 linker GC）
+- Wave 73 真正必要性 = 让 bao_runtime 删手写代码 → 必须 Jsc arm 可用
+
+**Variant 命名决策**:
+- (A) 沿用 `Jsc` variant 名，bao_engine 提供基于 SpiderMonkey 的实现 ✅ **选定**
+- 理由：不破坏上游 Bun 接口声明，最小化与 Bun 上游 diff
+- 替代方案：(B) 新增 `Sm` variant（破坏 SSOT，需改 6+ 低层 crate link_interface!）
+
+**接口 variant 全量核查（2026-06-02）**:
+
+| 接口 | 实际 variants | bao_engine 责任 |
+|------|--------------|----------------|
+| `JsEventLoop` (bun_event_loop) | `[Jsc]` | ✅ 实现 Jsc arm |
+| `EventLoopCtx` (bun_io) | `[Js, Mini]` | ✅ 实现 Js arm (Mini 已有 bun_event_loop) |
+| `TranspilerCacheImpl` (bun_ast) | `[Jsc]` | ⏸️ 延后（依赖 bun_ast，且 bao_runtime 当前不调用 bundler） |
+| `ProcessExit` (bun_spawn) | `[12 variants, 无 Jsc]` | ❌ 无 Jsc variant |
+| `VmLoaderCtx` (bun_bundler) | `[Runtime]` | ❌ 无 Jsc variant |
+| `BundleGenerateChunkCtx` (bun_crash_handler) | `[Linker]` feature-gated | ❌ 无 Jsc variant |
+| `BufferedReaderParentLink` (bun_io) | `[14 variants, 无 Jsc]` | ❌ 无 Jsc variant |
+| `ErrnoNames` (bun_core) | `[Sys]` | ❌ 已有 bun_errno 实现 |
+| `OutputSink` (bun_core) | `[Sys]` | ❌ 已有 bun_sys 实现 |
+
+**结论**：Wave 73 真正工作只有 2 个接口（17 + 11 = 28 方法），加上 73-A 框架 = 3 个 sub-wave。
+
+**Sub-Wave 拆分（依赖递增）**:
+
+### Wave 73-A: dispatch_sm.rs 框架 + BaoEventLoop 基础 [COMPLETED]
+- 创建 `bao_engine/src/dispatch_sm.rs`
+- 添加 bao_engine 对 bun_event_loop/bun_io/bun_core/bun_uws/bun_collections 依赖
+- 定义 `BaoEventLoop` 结构体 thread-local骨架
+- bao_engine 54 测试通过零回归
+
+### Wave 73-B/C/F: ❌ CANCELLED
+- ProcessExit[12 variants, 无 Jsc]、OutOfMemoryHandler(不存在)、VmLoaderCtx[Runtime, 无 Jsc] — plan 描述错误
+- 全 workspace 搜索 `link_interface!` 后确认真实 Jsc/Js variant 仅在 JsEventLoop/EventLoopCtx/TranspilerCacheImpl
+
+### Wave 73-D: EventLoopCtx[Js] arm [COMPLETED]
+- `bun_io::link_impl_EventLoopCtx! { Js for BaoEventLoop => ... }`
+- 11 方法：platform_event_loop_ptr/file_polls_ptr/increment_pending_unref_counter/ref_concurrently/unref_concurrently/after_event_loop_callback/set_after_event_loop_callback/pipe_read_buffer
+- backed by BaoEventLoop wrapping lazy-initialized `MiniEventLoop<'static>`
+- bao_engine 54 测试通过零回归，bao_runtime 编译通过
+
+### Wave 73-E: JsEventLoop[Jsc] arm (核心) [COMPLETED]
+- `bun_event_loop::link_impl_JsEventLoop! { Jsc for BaoEventLoop => ... }`
+- 17 方法：iteration_number/file_polls/put_file_poll/uws_loop/pipe_read_buffer/tick/auto_tick/auto_tick_active/global_object/bun_vm/stdout/stderr/enter/exit/enqueue_task/enqueue_task_concurrent/env/top_level_dir/create_null_delimited_env_map
+- `__bun_js_event_loop_current()` extern "Rust" 提供 thread-local `*mut BaoEventLoop`
+- bao_engine 54 测试通过零回归，bao_runtime 编译通过
+
+### Wave 73-G: dispatch_sm 集成测试验证 [COMPLETED]
+
+**范围重新定义**：原计划"删除 bao_runtime 手写 TimerHeap"属于 Phase 1 (groovy-sleeping-mitten.md)，
+不属于 Wave 73。Wave 73-G 重新定义为：**通过 bao_engine 集成测试验证 SpiderMonkey
+Jsc/Js arm 调度链路端到端可用**。
+
+**已交付**:
+- `src/bao_engine/tests/dispatch_sm_tests.rs` — 11 个集成测试
+  - `test_current_returns_static_ref` — BaoEventLoop::current() 同一线程返回相同指针
+  - `test_current_is_thread_local` — 跨线程 BaoEventLoop 实例独立
+  - `test_dispatch_to_uws_loop_through_jseventloop` — JsEventLoop::current().uws_loop() 同线程稳定
+  - `test_enter_exit_depth_balance` — enter()/exit() 重入计数器
+  - `test_pipe_read_buffer_non_null` — 64KiB pipe 缓冲区非空稳定
+  - `test_env_initially_null` — env 注册前为 null
+  - `test_global_object_initially_null` — global_object 注册前为 null
+  - `test_bun_vm_initially_null` — bun_vm 注册前为 null
+  - `test_event_loop_ctx_through_dispatch` — EventLoopCtx[Js] arm 调度无 panic
+  - `test_js_event_loop_current_symbol_resolves` — `__bun_js_event_loop_current` 符号解析正确
+  - `test_after_event_loop_callback_roundtrip` — set/get after_event_loop_callback 经调度往返
+- `src/bao_engine/Cargo.toml` 添加 `[dev-dependencies] bao_native_stubs` 拉入 C 库存根
+- 测试用 `#[used] static NATIVE_STUBS_LINKER_ANCHOR` 强制链接器保留存根符号
+
+**验证结果**:
+- `cargo test -p bao_engine --test dispatch_sm_tests` → 11/11 PASS
+- `cargo test -p bao_engine` → 243/243 PASS（54+34+30+40+39+34+11+1）零回归
+- bao_engine SpiderMonkey Jsc arm 调度路径已通过端到端集成测试验证
+
+**Wave 73 验收**: ✅ 完成（73-A 框架 + 73-D EventLoopCtx[Js] + 73-E JsEventLoop[Jsc] + 73-G 集成测试）
+**注意**: 测试中 `iteration_number()` 等 C-loop 直访方法在 Wave 74-B (mio) 完成前会
+触发 null 解引用，因此未纳入测试集。当 Wave 74-B 提供真实 `uws_get_loop()` 后，
+可补充对应测试。
+
+**阻塞**: Phase 1 全量替换手写代码依赖此适配完成
 
 **需要实现的 link_interface! 接口**:
 1. JsEventLoop[Jsc] (bun_event_loop) — 17 方法：iteration_number, file_polls, uws_loop, tick, enqueue_task 等

@@ -1,6 +1,7 @@
 // @trace REQ-ENG-001
 pub mod codegen;
 pub mod context;
+pub mod dispatch_sm;
 pub mod error;
 pub mod host_fn;
 pub mod job_queue;

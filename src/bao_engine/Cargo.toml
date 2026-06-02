@@ -11,3 +11,18 @@ mozjs_sys.workspace = true
 bao_engine_macros = { path = "../bao_engine_macros" }
 libc = "0.2"
 log = "0.4"
+
+# Wave 73: SpiderMonkey Jsc arm dispatch adapters
+# Low-tier crates whose `link_interface!` Jsc/Js variant bao_engine implements.
+bun_event_loop = { path = "../event_loop" }
+bun_io = { path = "../io" }
+bun_spawn = { path = "../spawn" }
+bun_crash_handler = { path = "../crash_handler" }
+bun_core = { path = "../bun_core" }
+bun_uws = { path = "../uws" }
+bun_collections = { path = "../collections" }
+# bun_ast / bun_bundler deferred to Wave 73-F (bun_bundler has unresolved lolhtml_sys)
+
+[dev-dependencies]
+# Wave 73-G: tests need bao_native_stubs to pull in C-library stubs (uSockets uws_get_loop, etc.)
+bao_native_stubs = { path = "../bao_native_stubs" }
