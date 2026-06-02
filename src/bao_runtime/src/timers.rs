@@ -12,6 +12,42 @@ thread_local! {
     static NEXT_ID: Cell<u32> = const { Cell::new(1) };
     static EPOLL_FD: Cell<RawFd> = const { Cell::new(-1) };
     static REGISTERED_FDS: RefCell<Vec<RawFd>> = const { RefCell::new(Vec::new()) };
+
+    /// P1-A.3a: per-thread MiniEventLoop holder for the new timer dispatch
+    /// path. Lazily initialized on first access via `with_event_loop`.
+    /// Parallel to `bao_engine::dispatch_sm::BaoEventLoop` — eventual
+    /// consolidation (single source of truth per thread) is a P1-A.4+
+    /// concern. Stored as `Option<MiniEventLoop<'static>>` because
+    /// `MiniEventLoop::init()` is non-const.
+    static BAO_RUNTIME_LOOP: RefCell<::std::option::Option<bun_event_loop::MiniEventLoop::MiniEventLoop<'static>>> =
+        const { RefCell::new(::std::option::Option::None) };
+}
+
+/// P1-A.3a: access or lazily materialize the per-thread MiniEventLoop.
+///
+/// Returns a `RefMut<MiniEventLoop<'static>>` that callers can use to
+/// schedule timers / enqueue tasks / tick. The loop survives for the
+/// thread's lifetime (intentionally leaked on thread exit to avoid
+/// ordering issues with JSContext teardown — same pattern as
+/// `bao_engine::BaoEventLoop`).
+///
+/// Not yet wired into `drain_and_check` — that's P1-A.3c/d.
+pub fn with_event_loop<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>) -> R,
+{
+    BAO_RUNTIME_LOOP.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if guard.is_none() {
+            // Ensure bao_uloop's #[no_mangle] extern "C" symbols are
+            // referenced — without this the linker may GC uSockets loop
+            // entrypoints that MiniEventLoop::init reaches via UwsLoop::get().
+            bao_uloop::force_link();
+            *guard = ::std::option::Option::Some(bun_event_loop::MiniEventLoop::MiniEventLoop::init());
+        }
+        let opt = guard.as_mut().expect("just initialized");
+        f(opt)
+    })
 }
 
 struct TimerEntry {
@@ -626,5 +662,16 @@ mod bao_timeout_tests {
         assert_eq!(obj.callback, ::std::option::Option::Some(sentinel), "callback field stores raw pointer");
         assert_eq!(obj.args.len(), 1, "args field stores JSVal vec");
         assert_eq!(obj.args[0].to_int32(), 42, "JSVal roundtrips intact");
+    }
+
+    #[test]
+    fn with_event_loop_lazily_materializes_mini_event_loop() {
+        // P1-A.3a: verify the per-thread MiniEventLoop holder works.
+        // Calling with_event_loop twice must yield the same underlying
+        // loop pointer (lazy-init contract).
+        let ptr1 = with_event_loop(|loop_| loop_.loop_ptr() as usize);
+        let ptr2 = with_event_loop(|loop_| loop_.loop_ptr() as usize);
+        assert!(ptr1 != 0, "MiniEventLoop loop_ptr must be non-null");
+        assert_eq!(ptr1, ptr2, "with_event_loop must return the same loop on repeated calls");
     }
 }
