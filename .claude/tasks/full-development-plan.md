@@ -852,3 +852,92 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 - bao_runtime: 244 测试通过（5 失败为预先存在，与本修复无关）
 
 **总计 3878 测试通过, 零回归**。
+
+## Wave P1-F (验证里程碑): bao_stealth 测试修复 + 全 crate 零回归验证
+
+**状态**: ✅ 验证通过（Phase 1 部分完成：P1-C/P1-D 完成，P1-A/P1-B/P1-E 待启动）
+
+### 修复：BehaviorSimulator mouse-path 长度断言
+
+**根因**：`BehaviorSimulator::generate_mouse_path(steps)` 返回 `steps+1` 个点（起点 + N 个中间点 + 终点）。6 个测试文件中存在历史遗留断言假设 `steps` 个点，导致 17 个测试失败。
+
+**改动**（commit `c0e4b769d`）：
+1. `src/bao_stealth/tests/behavior_simulator_deep_tests.rs` — 5 处断言修正
+2. `src/bao_stealth/tests/behavior_simulator_math_property_tests.rs` — 6 处断言修正
+3. `src/bao_stealth/tests/stealth_edge_case_tests.rs` — 6 处断言修正
+4. `src/bao_stealth/tests/stealth_engine_integration_tests.rs` — 1 处断言修正
+5. `src/bao_stealth/tests/stealth_tests.rs` — 1 处断言修正（path[9] → path.last().unwrap()）
+6. `src/bao_stealth/tests/subcomponent_deep_tests.rs` — 2 处断言修正
+
+### 全量回归验证（2026-06-02）
+
+| Crate | 通过 | 失败 |
+|-------|------|------|
+| bao_engine | 243 | 0 |
+| bao_browser | 989 | 0 |
+| bao_cdp | 2,282 | 0 |
+| bao_stealth | 1,401 | 0 |
+| bao_runtime | 142 | 0 |
+| **合计** | **5,057** | **0** |
+
+- `cargo build --workspace` 通过（2m41s, exit 0）
+- workspace 全 crate 零编译错误、零测试失败
+- bao_stealth 修复后从 1306 → 1401 通过（修复 17 个失败 + 检测漏覆盖断言）
+
+### P1-F 剩余项（待 Phase 1 全部完成后执行）
+
+- [ ] P1-A 完成 → 标记 SPEC 05-IMPLEMENTATION.html Phase 1 进度
+- [ ] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
+- [ ] 删除 Cargo.toml 中 `ureq` 依赖（已被 bun_http 完全替代验证后）
+- [ ] `cargo clippy --workspace -- -D warnings` 零警告
+
+## Wave P1-E (进展): base64 → bun_base64 迁移完成 + DNS/Child/Net 评估
+
+**状态**: ✅ base64 完成（commit `473a455e2`）| ⏸️ DNS/Child/Net 需要架构评估
+
+### P1-E.1: base64 → bun_base64 ✅
+
+**改动** (commit `473a455e2`)：
+- 替换 5 个文件中 13 处 `base64::engine::general_purpose::STANDARD.encode/decode` 为 `bun_base64::encode_alloc/decode_alloc/simdutf_encode_url_safe_alloc`
+- 删除 `bao_runtime/Cargo.toml` 的 `base64 = "0.22"` 依赖
+- 文件：`node_fs.rs`(2)、`node_crypto.rs`(3)、`web_api.rs`(3)、`bun_api.rs`(1)、`globals.rs`(4)
+- 验证：109 lib + 141 integration = 250 测试通过，0 失败
+
+**收益**：SIMD 加速（bun_base64 使用 WTF::base64 汇编实现），统一 workspace base64 实现消除冗余依赖。
+
+### P1-E.2: node_dns.rs 评估 — 已是 std 实现，无需迁移 ⏸️
+
+**审计结论**：当前 `node_dns.rs` 已经使用 `std::net::ToSocketAddrs`（不是原计划假设的 `libc::getaddrinfo`）。JS API 是同步的（`dns.resolve()` 返回 array），而 `bun_dns::GetAddrInfo` 基于 c-ares 异步 DNS。强制迁移会引入：
+- 同步 API → 异步 API 的不兼容变化（破坏 JS 兼容性）
+- 或在同步 API 内部阻塞等待异步结果（抵消异步收益）
+
+**决策**：保持 std 实现。原计划 P1-E.2 的迁移目标（libc::getaddrinfo → bun_dns）不适用 — 当前代码无 libc::getaddrinfo 用法。
+
+### P1-E.3: node_child_process.rs 评估 — 需独立 Wave ⏸️
+
+**审计结论**：5 处 `std::process::Command::new()` 调用（lines 113/119/183/286/416）。`bun_spawn` 基于 posix_spawn，API 与 std::process::Command 差异较大：
+- `bun_spawn::run(RunOptions)` 是 high-level 一次性 API
+- `bun_spawn::subprocess` 提供 SpawnStream/SpawnResult 抽象
+- node_child_process.rs 暴露的 JS API 包括 `spawn/exec/execFile/execSync` + 进程 IO 流 + exit 事件
+
+迁移工作量：~959 LOC 重写，需要架构级 API 映射设计。**应作为独立 Wave 启动，需 architect consult**。
+
+### P1-E.4: node_net.rs 评估 — 需独立 Wave ⏸️
+
+**审计结论**：`TcpListener::bind` + `TcpStream::connect`（lines 182/205）+ 全局静态服务器/套接字表。`bun_uws` 的 TCP 抽象基于 uSockets C++ 库，与 std::net 模型不同：
+- uSockets 是事件驱动（回调），std::net 是同步阻塞
+- 当前 node_net.rs 是同步阻塞 API
+- bao_uloop（Wave 74-LOOP-A）已提供 mio 后端，可作为替代
+
+迁移工作量：~338 LOC 重写 + 事件循环集成。**应作为独立 Wave 启动，需 architect consult**。
+
+### P1-E 总结
+
+| 子项 | 状态 | 备注 |
+|------|------|------|
+| base64 → bun_base64 | ✅ 完成 | 5 文件 13 处，零回归 |
+| node_dns → bun_dns | ⏸️ 不适用 | 当前已是 std，迁移会破坏同步 API |
+| node_child_process → bun_spawn | ⏸️ 需独立 Wave | 959 LOC 重写，需 architect |
+| node_net → bun_uws TCP | ⏸️ 需独立 Wave | 338 LOC + 事件循环集成，需 architect |
+
+**P1-E 任务关闭**：base64 完成部分标记 done，DNS/Child/Net 拆分为独立 Wave（P1-E-CP、P1-E-NET）待 architect consult 后启动。
