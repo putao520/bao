@@ -323,8 +323,7 @@ bun_event_loop::link_impl_JsEventLoop! {
             match guard.env {
                 Some(nn) => {
                     // SAFETY: env loader is live for the dispatch call.
-                    let map = unsafe { (*nn.as_ptr()).map.create_null_delimited_env_map() };
-                    map
+                    unsafe { (*nn.as_ptr()).map.create_null_delimited_env_map() }
                 },
                 None => Err(bun_core::AllocError),
             }

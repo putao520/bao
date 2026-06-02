@@ -145,6 +145,7 @@ impl CDPServer {
         let _ = self.cmd_tx.send(CDPCommand::Shutdown);
     }
 
+    #[allow(unreachable_code)]
     pub fn run(&mut self) -> Result<(), CDPServerError> {
         let listener = TcpListener::bind(("127.0.0.1", self.port))
             .map_err(|e| CDPServerError::Bind(e.to_string()))?;
@@ -194,7 +195,8 @@ impl CDPServer {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
 
-        Ok(())
+        // Outer loop only exits via `return Ok(())` on Shutdown.
+        unreachable!("run loop exited without Shutdown")
     }
 
     fn handle_connection(&self, mut stream: TcpStream) -> Option<CDPSession> {
