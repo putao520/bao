@@ -411,13 +411,13 @@ pub extern "C" fn uws_app_listen(
 // Request
 #[no_mangle]
 pub extern "C" fn uws_req_get_method(_req: *const c_void) -> *const c_char {
-    b"GET\0".as_ptr() as *const c_char
+    c"GET".as_ptr()
 }
 
 #[no_mangle]
 pub extern "C" fn uws_req_get_url(_req: *const c_void, _len: *mut usize) -> *const c_char {
     unsafe { _len.write(1) };
-    b"/\0".as_ptr() as *const c_char
+    c"/".as_ptr()
 }
 
 // Response

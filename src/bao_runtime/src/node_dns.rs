@@ -256,26 +256,23 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         ptr: &arr_obj,
     };
 
-    match (hostname.as_str(), 0u16).to_socket_addrs() {
-        Ok(addrs) => {
-            let mut idx = 0u32;
-            for addr in addrs {
-                let ip = addr.ip().to_string();
-                if let Ok(c_ip) = CString::new(ip.as_str()) {
-                    let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
-                    if !js_str.is_null() {
-                        let val = StringValue(&*js_str);
-                        let val_h = Handle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &val,
-                        };
-                        JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
-                        idx += 1;
-                    }
+    if let Ok(addrs) = (hostname.as_str(), 0u16).to_socket_addrs() {
+        let mut idx = 0u32;
+        for addr in addrs {
+            let ip = addr.ip().to_string();
+            if let Ok(c_ip) = CString::new(ip.as_str()) {
+                let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+                if !js_str.is_null() {
+                    let val = StringValue(&*js_str);
+                    let val_h = Handle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &val,
+                    };
+                    JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
+                    idx += 1;
                 }
             }
         }
-        Err(_) => {}
     }
 
     args.rval().set(ObjectValue(arr_obj));
@@ -329,23 +326,20 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     // Validate IP format and attempt reverse lookup via ToSocketAddrs
-    match ip_str.parse::<::std::net::IpAddr>() {
-        Ok(_addr) => {
-            // Standard library does not provide reverse DNS directly.
-            // Return the IP itself as the hostname in the array.
-            if let Ok(c_ip) = CString::new(ip_str.as_str()) {
-                let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
-                if !js_str.is_null() {
-                    let val = StringValue(&*js_str);
-                    let val_h = Handle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &val,
-                    };
-                    JS_DefineElement(cx, arr_h, 0, val_h, JSPROP_ENUMERATE as u32);
-                }
+    if let Ok(_addr) = ip_str.parse::<::std::net::IpAddr>() {
+        // Standard library does not provide reverse DNS directly.
+        // Return the IP itself as the hostname in the array.
+        if let Ok(c_ip) = CString::new(ip_str.as_str()) {
+            let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+            if !js_str.is_null() {
+                let val = StringValue(&*js_str);
+                let val_h = Handle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &val,
+                };
+                JS_DefineElement(cx, arr_h, 0, val_h, JSPROP_ENUMERATE as u32);
             }
         }
-        Err(_) => {}
     }
 
     args.rval().set(ObjectValue(arr_obj));

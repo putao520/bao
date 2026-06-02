@@ -29,15 +29,14 @@
 //!
 //! Each `PosixLoop` carries a `BaoLoopState` (held in a `thread_local!`)
 //! containing:
-//!   - `mio::Poll`       — the platform poll backend (epoll on Linux,
-//!                          kqueue on macOS/BSD)
-//!   - `mio::Waker`      — arm of the cross-thread wake token (replaces
-//!                          `us_wakeup_loop`'s eventfd / pipe)
-//!   - `deferred`        — `VecDeque` of next-tick callbacks pushed by
-//!                          `uws_loop_defer`
-//!   - `pre_handlers` /
-//!     `post_handlers`   — registered `addPreHandler` / `addPostHandler`
-//!                          callbacks (small vec of fn pointers)
+//!   - `mio::Poll` — the platform poll backend (epoll on Linux,
+//!     kqueue on macOS/BSD)
+//!   - `mio::Waker` — arm of the cross-thread wake token (replaces
+//!     `us_wakeup_loop`'s eventfd / pipe)
+//!   - `deferred` — `VecDeque` of next-tick callbacks pushed by
+//!     `uws_loop_defer`
+//!   - `pre_handlers` / `post_handlers` — registered `addPreHandler` /
+//!     `addPostHandler` callbacks (small vec of fn pointers)
 //!
 //! ## Scope (Wave 74-LOOP-A)
 //!
@@ -47,7 +46,6 @@
 //! `bao_native_stubs` as safe no-ops.
 
 #![allow(clippy::missing_safety_doc)]
-#![allow(clippy::non_camel_case_types)]
 
 use core::ffi::{c_char, c_uint, c_void};
 use core::ptr;
@@ -242,7 +240,7 @@ fn with_matching_state<R>(
     BAO_LOOP.with(|cell| {
         let mut slot = cell.borrow_mut();
         let state = slot.as_mut()?;
-        if state.loop_ptr as *mut Loop != loop_ {
+        if !ptr::eq(state.loop_ptr, loop_) {
             return None;
         }
         Some(f(state))
@@ -258,7 +256,7 @@ fn take_deferred(loop_: *mut Loop) -> Vec<DeferredCall> {
         let Some(state) = slot.as_mut() else {
             return Vec::new();
         };
-        if state.loop_ptr as *mut Loop != loop_ {
+        if !ptr::eq(state.loop_ptr, loop_) {
             return Vec::new();
         }
         state.deferred.drain(..).collect()
@@ -271,7 +269,7 @@ fn snapshot_handlers(loop_: *mut Loop, which: HandlerKind) -> Vec<HandlerSlot> {
         let Some(state) = slot.as_mut() else {
             return Vec::new();
         };
-        if state.loop_ptr as *mut Loop != loop_ {
+        if !ptr::eq(state.loop_ptr, loop_) {
             return Vec::new();
         }
         match which {
@@ -295,9 +293,7 @@ fn run_mio_poll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
     // non-blocking (zero). An indefinite block here would hang tests
     // (and Bun's drain loops). Callers wanting a blocking tick pass an
     // explicit `timespec`.
-    let poll_timeout: std::time::Duration = if pending > 0 {
-        std::time::Duration::ZERO
-    } else if timeout.is_null() {
+    let poll_timeout: std::time::Duration = if pending > 0 || timeout.is_null() {
         std::time::Duration::ZERO
     } else {
         let ts: Timespec = unsafe { *timeout };
@@ -311,7 +307,7 @@ fn run_mio_poll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
     BAO_LOOP.with(|cell| {
         let mut slot = cell.borrow_mut();
         let Some(state) = slot.as_mut() else { return };
-        if state.loop_ptr as *mut Loop != loop_ {
+        if !ptr::eq(state.loop_ptr, loop_) {
             return;
         }
         let Some(poll) = state.poll.as_mut() else {
@@ -329,7 +325,7 @@ fn bump_iteration_nr(loop_: *mut Loop) {
     BAO_LOOP.with(|cell| {
         let mut slot = cell.borrow_mut();
         let Some(state) = slot.as_mut() else { return };
-        if state.loop_ptr as *mut Loop != loop_ {
+        if !ptr::eq(state.loop_ptr, loop_) {
             return;
         }
         let p = state.loop_ptr;
@@ -379,7 +375,7 @@ pub unsafe extern "C" fn us_loop_free(loop_: *mut Loop) {
     BAO_LOOP.with(|cell| {
         let mut slot = cell.borrow_mut();
         if let Some(state) = slot.as_mut()
-            && state.loop_ptr as *mut Loop == loop_
+            && ptr::eq(state.loop_ptr, loop_)
         {
             // Free recv/send buffers (libc-allocated in `create_loop`).
             unsafe {
@@ -390,7 +386,7 @@ pub unsafe extern "C" fn us_loop_free(loop_: *mut Loop) {
                     libc::free((*loop_).internal_loop_data.send_buf as *mut c_void);
                 }
                 // Drop the Box<PosixLoop>.
-                let _ = Box::from_raw(loop_ as *mut PosixLoop);
+                let _ = Box::from_raw(loop_);
             }
             // Drop the mio::Poll / Waker by letting the field go out of scope.
             *slot = None;

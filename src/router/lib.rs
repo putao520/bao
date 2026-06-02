@@ -1598,7 +1598,7 @@ pub mod pattern {
                         let segment =
                             &path_[0..path_.iter().position(|&b| b == b'/').unwrap_or(path_.len())];
                         if !str_.eql_bytes(segment) {
-                            params.truncate(0); // TODO(b1): was shrink_retaining_capacity (MultiArrayList API)
+                            params.clear(); // TODO(b1): was shrink_retaining_capacity (MultiArrayList API)
                             return false;
                         }
 
@@ -1621,7 +1621,7 @@ pub mod pattern {
                             path_ = &path_[i + 1..];
 
                             if pattern.is_end(name) {
-                                params.truncate(0); // TODO(b1): was shrink_retaining_capacity (MultiArrayList API)
+                                params.clear(); // TODO(b1): was shrink_retaining_capacity (MultiArrayList API)
                                 return false;
                             }
 

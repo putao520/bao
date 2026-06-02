@@ -1,3 +1,13 @@
+// @trace REQ-ENG-004 [algorithm:simdutf] SIMD-accelerated UTF validation/conversion.
+// Binding file: pedantic clippy lints suppressed because bit-packed decode logic
+// intentionally mixes precedence (added parens would harm readability) and unsafe
+// blocks are prevalent FFI patterns.
+#![allow(
+    clippy::undocumented_unsafe_blocks,
+    clippy::manual_div_ceil,
+    clippy::precedence
+)]
+
 use core::ffi::{c_int, c_uint};
 
 #[repr(C)]

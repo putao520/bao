@@ -773,7 +773,7 @@ pub extern "C" fn libdeflate_deflate_decompress_ex(
     let dec = unsafe { &mut *(decompressor as *mut libdeflater::Decompressor) };
     let input = unsafe { core::slice::from_raw_parts(inp, in_nbytes) };
     let mut output_buf = vec![0u8; out_nbytes_avail];
-    match dec.deflate_decompress(&input[..], &mut output_buf) {
+    match dec.deflate_decompress(input, &mut output_buf) {
         Ok(written) => {
             unsafe {
                 core::ptr::copy_nonoverlapping(output_buf.as_ptr(), out, written);
@@ -800,7 +800,7 @@ pub extern "C" fn libdeflate_gzip_decompress_ex(
     let dec = unsafe { &mut *(decompressor as *mut libdeflater::Decompressor) };
     let input = unsafe { core::slice::from_raw_parts(inp, in_nbytes) };
     let mut output_buf = vec![0u8; out_nbytes_avail];
-    match dec.gzip_decompress(&input[..], &mut output_buf) {
+    match dec.gzip_decompress(input, &mut output_buf) {
         Ok(written) => {
             unsafe {
                 core::ptr::copy_nonoverlapping(output_buf.as_ptr(), out, written);
@@ -834,7 +834,7 @@ pub extern "C" fn libdeflate_zlib_decompress_ex(
     let dec = unsafe { &mut *(decompressor as *mut libdeflater::Decompressor) };
     let input = unsafe { core::slice::from_raw_parts(inp, in_nbytes) };
     let mut output_buf = vec![0u8; out_nbytes_avail];
-    match dec.zlib_decompress(&input[..], &mut output_buf) {
+    match dec.zlib_decompress(input, &mut output_buf) {
         Ok(written) => {
             unsafe {
                 core::ptr::copy_nonoverlapping(output_buf.as_ptr(), out, written);
