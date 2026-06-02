@@ -707,6 +707,52 @@ Jsc/Js arm 调度链路端到端可用**。
 - `cargo build -p bao_engine/bao_browser/bao_cdp/bao_stealth`: 全部通过
 - 所有 C 库符号现在由纯 Rust 真实实现提供（不再 panic）
 
+---
+
+## Wave 74-B: uSockets stubs → mio 真实事件循环 [DEFERRED → Phase 级]
+
+**状态**: 🔄 推迟到 Phase 级架构变更
+
+**审计（2026-06-02，吸取 Wave 74-A 教训）**:
+- `bao_native_stubs/src/c_lib_stubs.rs` 有 **72 个 us_/uws_ stubs**
+  - `us_loop_run_bun_tick`, `us_wakeup_loop`, `us_socket_*` (~17 个)
+  - `us_socket_group_*` (5 个)
+  - `us_ssl_*` (2 个 — 已在 Wave 74-A 恢复)
+  - `us_connecting_socket_*` (~10 个)
+  - `us_quic_*` (~25 个 — QUIC 路径)
+  - `uws_*` (~10 个 — HTTP/WS 服务端)
+- **消费者链**: `bun_uws_sys` 的 `unsafe extern "C" { pub fn us_loop_run(...); ... }` → 真实消费者（`bun_uws::Loop`, `bun_event_loop::MiniEventLoop`, `bun_http`, `bao_engine::dispatch_sm`）通过 FFI 间接调用
+
+**为什么不能简单"删除孤儿"（Wave 74-A 教训）**:
+- 架构师审计 Wave 74-A 时曾建议删除 7 个 SSL stub 声称"零调用方"
+- 实测 cargo test 链接失败：`undefined symbol: SSL_enable_signed_cert_timestamps`
+- 真相：`bun_boringssl_sys` 的 extern "C" 块 + `bun_uws_sys` 的 extern "C" 块都通过 FFI 间接引用这些 stubs
+- 72 个 us_/uws_ stubs 同样是 FFI 间接调用链的端点，**不能删除**
+
+**Phase 级 mio 迁移范围**（需要 architect 先做 SPEC 变更）:
+- SPEC 02-SYSTEM §3: 替换 uSockets C 库为 mio
+- SPEC 04-DATA-MODEL: us_loop*/us_socket* Entity → mio::Registry/Waker/Events
+- SPEC 10-REQUIREMENTS: REQ-ENG-001 拆分事件循环子项
+- 代码迁移（影响 ~40 文件）:
+  - `src/uws_sys/Loop.rs` — 替换 extern "C" 为 mio::Poll / Waker
+  - `src/uws_sys/socket.rs` — 替换 us_socket_* 为 mio::net::TcpStream
+  - `src/uws/lib.rs` — 重写 SSLWrapper + LoopHandler 用 mio
+  - `src/event_loop/MiniEventLoop.rs` — UwsLoop::get() 改为 mio 后端
+  - `src/bao_engine/src/dispatch_sm.rs` — uws_loop() 返回 mio::Poll 桥接
+  - `src/bao_native_stubs/src/c_lib_stubs.rs` — 删除 72 个 us_/uws_ stubs + force_c_lib_stubs keep-alive
+  - QUIC 路径（us_quic_*）— 需要决策是否用 quinn/mstrls 替代
+
+**关键差异（与 Wave 74-A）**:
+- Wave 74-A 的 7 个 SSL stubs 已是 safe no-op，删了链接失败但运行时无影响
+- Wave 74-B 的 72 个 us_/uws_ stubs 中，关键函数（us_loop_run, us_socket_write, uws_get_loop）被 dispatch_sm_tests 实测验证为返回 null 导致 SIGSEGV — 真实需要 mio 后端
+
+**用户提问决策点（2026-06-02）**:
+与 Wave 74-A 同源问题：是否启动 Phase 级 mio 迁移？需 architect consult 后启动。
+
+**新任务（替代原 #259）**:
+- ~~#259 Wave 74-B: uSockets stubs → mio~~ → 关闭
+- 新建: Wave 74-LOOP Phase 级 — uSockets → mio 迁移（需 SPEC 变更）
+
 ## Wave 74-C: bao_engine + bao_browser 测试覆盖扩展
 
 **状态**: ✅ 完成
