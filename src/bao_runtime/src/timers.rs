@@ -210,45 +210,68 @@ pub fn drain_timers(cx: &mut mozjs::context::JSContext) -> bool {
         return false;
     }
 
+    // SAFETY: `cx.raw_cx()` returns the live JSContext* for the current
+    // thread; `fire_js_callback_raw` requires a live cx and rooted callback/
+    // args. Callbacks come from TimerEntry which stores raw `*mut JSObject`
+    // scheduled from JS host fns — bao_runtime keeps them alive via the
+    // implicit no-GC window between schedule and fire (drain_and_check runs
+    // to completion before yielding back to the JS engine).
+    let raw_cx = unsafe { cx.raw_cx() };
     for entry in ready {
-        unsafe {
-            let raw_cx = cx.raw_cx();
-            let global = CurrentGlobalOrNull(raw_cx);
-            if global.is_null() {
-                continue;
-            }
-
-            let obj_handle = Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &global,
-            };
-            let fval = ObjectValue(entry.callback);
-            let fval_handle = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &fval,
-            };
-
-            let args_array = if entry.args.is_empty() {
-                HandleValueArray::empty()
-            } else {
-                HandleValueArray {
-                    length_: entry.args.len(),
-                    elements_: entry.args.as_ptr(),
-                }
-            };
-
-            let mut rval = UndefinedValue();
-            let rval_handle = MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mut rval,
-            };
-
-            JS_CallFunctionValue(raw_cx, obj_handle, fval_handle, &args_array, rval_handle);
-            JS_ClearPendingException(raw_cx);
-        }
+        unsafe { fire_js_callback_raw(raw_cx, entry.callback, &entry.args) };
     }
 
     true
+}
+
+/// Fire a JS callback via `JS_CallFunctionValue`, swallowing any pending
+/// exception. Extracted from `drain_timers` so `BaoTimeoutObject::fire`
+/// (P1-A.3) can reuse the same dispatch path without duplication.
+///
+/// # Safety
+/// - `raw_cx` must be a live `JSContext*` on the current thread.
+/// - `callback` must be a non-null live `JSObject*` (function object) rooted
+///   by the caller for the duration of this call.
+/// - `args` slice must point to `JSVal`s rooted by the caller.
+pub unsafe fn fire_js_callback_raw(
+    raw_cx: *mut JSContext,
+    callback: *mut JSObject,
+    args: &[JSVal],
+) {
+    unsafe {
+        let global = CurrentGlobalOrNull(raw_cx);
+        if global.is_null() {
+            return;
+        }
+
+        let obj_handle = Handle::<*mut JSObject> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &global,
+        };
+        let fval = ObjectValue(callback);
+        let fval_handle = Handle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &fval,
+        };
+
+        let args_array = if args.is_empty() {
+            HandleValueArray::empty()
+        } else {
+            HandleValueArray {
+                length_: args.len(),
+                elements_: args.as_ptr(),
+            }
+        };
+
+        let mut rval = UndefinedValue();
+        let rval_handle = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+
+        JS_CallFunctionValue(raw_cx, obj_handle, fval_handle, &args_array, rval_handle);
+        JS_ClearPendingException(raw_cx);
+    }
 }
 
 pub fn has_pending_timers() -> bool {
