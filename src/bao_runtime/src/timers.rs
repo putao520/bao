@@ -548,6 +548,16 @@ pub struct BaoTimeoutObject {
     pub callback: ::std::option::Option<*mut JSObject>,
     /// Marshalled JS arguments preserved across the schedule→fire window.
     pub args: ::std::vec::Vec<JSVal>,
+    /// P1-A.3c: re-arm interval for setInterval. None = one-shot setTimeout.
+    /// Set when scheduled via `setInterval`; consumed by drain logic which
+    /// re-inserts the timer after firing. Mirrors Bun's
+    /// `TimerObjectInternals.flags.repeat` (Duration in ms).
+    pub interval: ::std::option::Option<Duration>,
+    /// P1-A.3c: unique timer id used for clearTimeout/clearInterval lookups.
+    /// The JS-visible id (setTimeout return value) — same value as `id` in
+    /// the legacy `TimerEntry`. Stored on the object so cancel_raw can
+    /// identify the right BaoTimeoutObject when clearing.
+    pub timer_id: u32,
 }
 
 impl BaoTimeoutObject {
@@ -560,6 +570,8 @@ impl BaoTimeoutObject {
             epoch: 0,
             callback: ::std::option::Option::None,
             args: ::std::vec::Vec::new(),
+            interval: ::std::option::Option::None,
+            timer_id: 0,
         }
     }
 
@@ -605,6 +617,39 @@ impl BaoTimeoutObject {
         }
     }
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// P1-A.3c: BaoTimerRegistry — SpiderMonkey equivalent of Bun's `timer::All`.
+//
+// Reuses `bun_io::heap::Intrusive<EventLoopTimer, BaoTimerHeapCtx>` for the
+// pairing-heap algorithm. Owns `Box<BaoTimeoutObject>` in a HashMap keyed by
+// `timer_id` so clearInterval/clearTimeout can locate the node and the
+// intrusive heap's `remove` can recover the parent via `HeapNode::heap`.
+//
+// Per CLAUDE.md「去锁化」 — single-thread JS model → RefCell, no Mutex.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// ZST heap context that delegates to `EventLoopTimer::less` (Bun's
+/// comparator). Same comparator as Bun's `TimerHeapCtx` in
+/// `runtime/timer/mod.rs:314`.
+#[derive(::std::default::Default)]
+pub struct BaoTimerHeapCtx;
+
+impl bun_io::heap::HeapContext<EventLoopTimer> for BaoTimerHeapCtx {
+    /// # Safety
+    /// `a`/`b` must be live intrusive heap nodes (caller invariant per
+    /// `HeapContext` contract).
+    unsafe fn less(&self, a: *mut EventLoopTimer, b: *mut EventLoopTimer) -> bool {
+        // SAFETY: caller guarantees both pointers are live and aligned.
+        // EventLoopTimer::less is a pure comparison — it reads `next.sec`,
+        // `next.nsec`, dispatches `__bun_js_timer_epoch` for stable
+        // tie-breaking. No mutation, no JS recursion risk.
+        unsafe { EventLoopTimer::less((), &*a, &*b) }
+    }
+}
+
+/// Type alias for the Bun-derived intrusive heap of EventLoopTimer nodes.
+pub type BaoTimerHeap = bun_io::heap::Intrusive<EventLoopTimer, BaoTimerHeapCtx>;
 
 #[cfg(test)]
 mod bao_timeout_tests {
@@ -723,5 +768,56 @@ mod bao_timeout_tests {
         // Clear back to null to avoid leaking sentinel into other tests.
         unsafe { register_current_cx(::std::ptr::null_mut()); }
         assert!(current_cx().is_null(), "register_current_cx(null) clears the slot");
+    }
+
+    #[test]
+    fn bao_timeout_object_new_paused_has_no_interval() {
+        // P1-A.3c: new_paused initial state for interval + timer_id fields.
+        let obj = BaoTimeoutObject::new_paused();
+        assert!(obj.interval.is_none(), "new_paused must start with no interval (one-shot)");
+        assert_eq!(obj.timer_id, 0, "new_paused must start with timer_id 0");
+    }
+
+    #[test]
+    fn bao_timer_heap_ctx_default_compiles() {
+        // P1-A.3c: BaoTimerHeapCtx is a ZST, must be default-constructible.
+        let _ctx = BaoTimerHeapCtx::default();
+        // Heap with default context — Intrusive::default requires Context: Default.
+        let _heap: BaoTimerHeap = ::std::default::Default::default();
+    }
+
+    #[test]
+    fn bao_timer_heap_insert_then_peek_orders_by_deadline() {
+        // P1-A.3c: validate that BaoTimerHeap + BaoTimerHeapCtx orders
+        // EventLoopTimers by their `next` Timespec using Bun's `less`.
+        let mut earlier = Box::new(BaoTimeoutObject::new_paused());
+        earlier.event_loop_timer.next = bun_core::Timespec { sec: 100, nsec: 0 };
+        let mut later = Box::new(BaoTimeoutObject::new_paused());
+        later.event_loop_timer.next = bun_core::Timespec { sec: 200, nsec: 0 };
+
+        let earlier_ptr = (&mut earlier.event_loop_timer) as *mut EventLoopTimer;
+        let later_ptr = (&mut later.event_loop_timer) as *mut EventLoopTimer;
+
+        let mut heap: BaoTimerHeap = ::std::default::Default::default();
+        // SAFETY: both pointers are live heap-allocated EventLoopTimer nodes
+        // not currently in any other heap. They stay alive via the Box
+        // guards until the end of the test.
+        unsafe {
+            heap.insert(later_ptr);
+            heap.insert(earlier_ptr);
+        }
+
+        // peek returns the minimum (earliest deadline).
+        let peeked = heap.peek();
+        assert_eq!(peeked, earlier_ptr, "heap.peek must return earliest deadline (Bun's less ordering)");
+
+        // Cleanup: remove both nodes from the heap before dropping Boxes
+        // so the intrusive field is not in a heap state when dropped.
+        unsafe {
+            let _ = heap.delete_min();
+            let _ = heap.delete_min();
+        }
+        drop(earlier);
+        drop(later);
     }
 }
