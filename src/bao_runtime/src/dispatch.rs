@@ -24,7 +24,10 @@ pub unsafe extern "Rust" fn __bun_fire_timer(
         Tag::TimeoutObject | Tag::ImmediateObject => {
             let timeout = BaoTimeoutObject::from_timer_ptr(t);
             if (*timeout).event_loop_timer.state != TimerState::FIRED {
-                (*timeout).fire(now);
+                // SAFETY: `now` is non-null per dispatch contract (caller
+                // passes a live timespec snapshot from the heap pop path).
+                let now_ref = unsafe { &*now };
+                (*timeout).fire(now_ref);
             }
         }
         _ => {}
@@ -42,7 +45,10 @@ pub unsafe extern "Rust" fn __bun_js_timer_epoch(
 ) -> Option<u32> {
     match tag {
         Tag::TimeoutObject | Tag::ImmediateObject => {
-            let timeout = BaoTimeoutObject::from_timer_ptr(t);
+            // SAFETY: `t` is `*const` but `from_timer_ptr` takes `*mut`; cast
+            // away constness is safe because we only read `epoch` (no write)
+            // and the caller contract guarantees the parent object is live.
+            let timeout = BaoTimeoutObject::from_timer_ptr(t as *mut EventLoopTimer);
             Some((*timeout).epoch)
         }
         _ => None,

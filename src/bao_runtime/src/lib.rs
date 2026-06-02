@@ -15,6 +15,7 @@ fn _force_native_stubs_link() {
 }
 pub mod bun_api;
 pub mod bun_test;
+pub mod dispatch;
 pub mod fetch_api;
 pub mod gc_store;
 pub mod globals;

@@ -417,3 +417,122 @@ unsafe fn register_timer(
     args.rval().set(Int32Value(id as i32));
     true
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// P1-A.2: BaoTimeoutObject — SpiderMonkey equivalent of Bun's TimeoutObject.
+//
+// Carries an `EventLoopTimer` (the timer heap node) plus the JS-timer epoch
+// used for stable ordering of equal-deadline timers.
+//
+// `from_timer_ptr` is the `container_of` recovery — given a pointer to the
+// `event_loop_timer` field (what bun_event_loop's heap stores), recover the
+// parent `BaoTimeoutObject`. This is the FFI contract that
+// `dispatch::__bun_fire_timer` / `__bun_js_timer_epoch` fulfill.
+//
+// Until P1-A.3 wires drain_and_check through MiniEventLoop's timer heap,
+// nothing in bao_runtime actually allocates BaoTimeoutObject — but the type
+// + dispatch module must be linkable so bun_event_loop's EventLoopTimer
+// externs resolve. The unit test below validates the container_of roundtrip.
+// ──────────────────────────────────────────────────────────────────────────
+
+use bun_core::Timespec;
+use bun_event_loop::EventLoopTimer::{EventLoopTimer, State as TimerState};
+
+#[repr(C)]
+pub struct BaoTimeoutObject {
+    /// MUST be at offset 0 — `dispatch::__bun_fire_timer`/`__bun_js_timer_epoch`
+    /// recover `*mut BaoTimeoutObject` from this field's address via
+    /// `from_timer_ptr` (container_of via `offset_of!`).
+    pub event_loop_timer: EventLoopTimer,
+    /// Monotonic epoch for stable heap ordering of equal-deadline JS timers.
+    /// Mirrors Bun's `TimerObjectInternals.flags.epoch` (u25 in Zig).
+    pub epoch: u32,
+}
+
+impl BaoTimeoutObject {
+    /// Construct a paused (PENDING state) timeout with epoch 0.
+    pub fn new_paused() -> Self {
+        Self {
+            event_loop_timer: EventLoopTimer::init_paused(
+                bun_event_loop::EventLoopTimer::Tag::TimeoutObject,
+            ),
+            epoch: 0,
+        }
+    }
+
+    /// Container-of: recover the parent `BaoTimeoutObject` from a pointer to
+    /// its `event_loop_timer` field. This is the inverse of
+    /// `&obj.event_loop_timer as *mut _`.
+    ///
+    /// # Safety
+    /// `t` must be a non-null pointer to the `event_loop_timer` field of a
+    /// live `BaoTimeoutObject`. Caller must not hold a `&mut` to the parent
+    /// across this call (re-entrant JS callbacks can re-derive aliasing
+    /// `&mut`, same as Bun's TimeoutObject::fire pattern).
+    pub unsafe fn from_timer_ptr(t: *mut EventLoopTimer) -> *mut Self {
+        let offset = core::mem::offset_of!(Self, event_loop_timer);
+        (t as *mut u8).wrapping_sub(offset) as *mut Self
+    }
+
+    /// Mark this timer as fired. P1-A.3 will replace this with real JS
+    /// callback dispatch (rooted JSObject + JS_CallFunctionValue).
+    pub fn fire(&mut self, _now: &Timespec) {
+        self.event_loop_timer.state = TimerState::FIRED;
+        self.epoch = self.epoch.wrapping_add(1);
+    }
+}
+
+#[cfg(test)]
+mod bao_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn bao_timeout_object_offset_zero() {
+        // `event_loop_timer` MUST be at offset 0 — dispatch.rs's container_of
+        // depends on this invariant. Break this test if the layout changes.
+        let obj = BaoTimeoutObject::new_paused();
+        let base = &obj as *const _ as usize;
+        let timer = &obj.event_loop_timer as *const _ as usize;
+        assert_eq!(timer - base, 0, "event_loop_timer must be at offset 0");
+    }
+
+    #[test]
+    fn bao_timeout_object_from_timer_ptr_roundtrip() {
+        let obj = Box::new(BaoTimeoutObject::new_paused());
+        let obj_ptr = Box::into_raw(obj);
+        // SAFETY: obj_ptr is a live Box-derived pointer; addr_of_mut avoids
+        // creating a `&mut` that would alias with the raw pointer we hand to
+        // `from_timer_ptr`.
+        let timer_ptr = unsafe { core::ptr::addr_of_mut!((*obj_ptr).event_loop_timer) };
+
+        // SAFETY: timer_ptr is the event_loop_timer field of a live BaoTimeoutObject.
+        let recovered = unsafe { BaoTimeoutObject::from_timer_ptr(timer_ptr) };
+        assert_eq!(recovered, obj_ptr, "from_timer_ptr must recover the parent");
+
+        // SAFETY: reclaim the Box to avoid leaking. from_timer_ptr did not
+        // take ownership; we still own it via obj_ptr.
+        unsafe { drop(Box::from_raw(obj_ptr)); }
+    }
+
+    #[test]
+    fn bao_timeout_object_fire_transitions_state() {
+        let mut obj = BaoTimeoutObject::new_paused();
+        assert!(obj.event_loop_timer.state == TimerState::PENDING, "initial state is PENDING");
+        assert_eq!(obj.epoch, 0);
+
+        let now = Timespec { sec: 1_700_000_000, nsec: 0 };
+        obj.fire(&now);
+
+        assert!(obj.event_loop_timer.state == TimerState::FIRED, "fire transitions to FIRED");
+        assert_eq!(obj.epoch, 1, "fire bumps epoch for stable re-queue ordering");
+    }
+
+    #[test]
+    fn bao_timeout_object_tag_is_timeout_object() {
+        let obj = BaoTimeoutObject::new_paused();
+        assert!(
+            obj.event_loop_timer.tag == bun_event_loop::EventLoopTimer::Tag::TimeoutObject,
+            "tag must be TimeoutObject for FFI dispatch",
+        );
+    }
+}
