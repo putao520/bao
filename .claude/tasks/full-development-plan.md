@@ -753,6 +753,46 @@ Jsc/Js arm 调度链路端到端可用**。
 - ~~#259 Wave 74-B: uSockets stubs → mio~~ → 关闭
 - 新建: Wave 74-LOOP Phase 级 — uSockets → mio 迁移（需 SPEC 变更）
 
+### Wave 74-LOOP-A: bao_uloop mio 后端骨架 (#279)
+
+**状态**: ✅ 完成 (2026-06-02)
+
+**架构**: 架构师方案 B 精炼版 — 新建 `bao_uloop` crate，提供 `#[no_mangle]` uSockets loop ABI 替换 stub
+
+**改动**:
+1. 新建 `src/bao_uloop/Cargo.toml` — `bun_uws_sys` + `mio 1` + `libc`
+2. 新建 `src/bao_uloop/src/lib.rs` (~570 行):
+   - `BaoLoopState` thread_local — `Box::leak` PosixLoop + libc::malloc 524K recv/send buffers
+   - `uws_get_loop()` — 懒加载 per-thread loop
+   - `us_create_loop` / `us_loop_free` — 生命周期
+   - `us_loop_run_bun_tick(loop_, timeout)` — 7 阶段 tick (drain deferred → pre_cb → pre_handlers → mio poll → post_handlers → post_cb → bump iteration)
+   - `us_loop_run(loop_)` — 阻塞循环直到 `active == 0`
+   - `us_wakeup_loop(loop_)` — `mio::Waker` 跨线程唤醒 + 触发 wakeup_cb
+   - `uws_loop_defer` / `addPreHandler` / `addPostHandler` / `remove*` — 注册 API
+3. `Cargo.toml` — workspace members 添加 `src/bao_uloop`
+4. `bao_native_stubs/Cargo.toml` — 添加 `bao_uloop` 依赖（让 dev-deps 测试自动拖入 loop 符号）
+5. `bao_native_stubs/src/c_lib_stubs.rs` — 移除 3 个冲突 stub (`uws_get_loop`, `us_loop_run_bun_tick`, `us_wakeup_loop`)，由 bao_uloop 提供
+6. `bao_native_stubs/src/c_lib_stubs.rs:force_link()` — 引用更新为 `bao_uloop::*`，保持 linker 链活
+
+**单元测试 (6/6 通过)**:
+- `defer_runs_on_next_tick` — uws_loop_defer 在下一 tick 触发
+- `pre_post_handlers_fire` — addPreHandler/addPostHandler 注册的回调按序触发
+- `tick_increments_iteration_number` — `(*loop_).iteration_nr` 每次 tick 自增
+- `wakeup_clears_pending_on_next_tick` — `mio::Waker` 唤醒使 poll timeout 归零
+- `uws_get_loop_returns_non_null_per_thread` — 懒加载返回非空指针
+- `uws_get_loop_is_thread_local` — 不同线程拿到的 loop 指针不同
+
+**回归验证**:
+- bao_uloop: 6/6 ✅
+- bao_engine (243 tests): 54+34+30+40+39+34+11+1 = 243 全部通过，零回归
+- bao_native_stubs: 编译零 warning
+
+**关键决策**:
+- mio::Poll 用 `Duration::ZERO` 默认而非 `None`（单次迭代 API 绝不无限阻塞）
+- `pending_wakeups` 用 AtomicU32 跨线程同步 + `mio::Waker` 通知
+- callback 重入用 take/snapshot 模式（take_deferred / snapshot_handlers），RefCell 借用先 drop 再回调
+- `wakeup_cb` / `pre_cb` / `post_cb` 在 tick 各阶段实际触发（非死代码）
+
 ## Wave 74-C: bao_engine + bao_browser 测试覆盖扩展
 
 **状态**: ✅ 完成

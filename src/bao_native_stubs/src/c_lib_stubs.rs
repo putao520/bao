@@ -43,12 +43,12 @@ pub extern "C" fn lshpack_wrapper_enc_set_max_capacity(_enc: *mut c_void, _max_c
 // Original: uNetworking/uSockets C library
 // ──────────────────────────────────────────────────────────────
 
-// Loop
-#[no_mangle]
-pub extern "C" fn us_loop_run_bun_tick(_loop: *mut c_void) {}
-
-#[no_mangle]
-pub extern "C" fn us_wakeup_loop(_loop: *mut c_void) {}
+// Loop — `us_loop_run_bun_tick`, `us_wakeup_loop`, `uws_get_loop`,
+// `us_create_loop`, `us_loop_free`, `us_loop_run`, `uws_loop_defer`,
+// `uws_loop_addPreHandler`, `uws_loop_removePreHandler`,
+// `uws_loop_addPostHandler`, `uws_loop_removePostHandler` are now
+// provided by the `bao_uloop` crate (Wave 74-LOOP-A, mio-backed).
+// See `src/bao_uloop/src/lib.rs`.
 
 // Socket
 #[no_mangle]
@@ -384,10 +384,7 @@ pub extern "C" fn uws_create_app(
     core::ptr::null_mut()
 }
 
-#[no_mangle]
-pub extern "C" fn uws_get_loop(_app: *const c_void) -> *mut c_void {
-    core::ptr::null_mut()
-}
+// `uws_get_loop` is provided by `bao_uloop` (Wave 74-LOOP-A, mio-backed).
 
 #[no_mangle]
 pub extern "C" fn uws_app_any(
@@ -508,8 +505,14 @@ pub fn force_c_lib_stubs() {
         );
         lshpack_wrapper_enc_set_max_capacity(core::ptr::null_mut(), 0);
 
-        us_loop_run_bun_tick(core::ptr::null_mut());
-        us_wakeup_loop(core::ptr::null_mut());
+        // Wave 74-LOOP-A: these symbols now live in bao_uloop. Calling them
+        // with null is a no-op (they null-check early). We still touch them
+        // here so the linker keeps the dep chain bao_native_stubs → bao_uloop
+        // → mio alive even in dev-dependency test binaries.
+        unsafe {
+            bao_uloop::us_loop_run_bun_tick(core::ptr::null_mut(), core::ptr::null());
+            bao_uloop::us_wakeup_loop(core::ptr::null_mut());
+        }
         let _ = us_socket_ext(core::ptr::null());
         let _ = us_socket_is_shut_down(core::ptr::null());
         let _ = us_socket_is_established(core::ptr::null());
@@ -577,7 +580,7 @@ pub fn force_c_lib_stubs() {
         let _ = us_quic_pending_connect_resolved(core::ptr::null_mut(), core::ptr::null());
 
         let _ = uws_create_app(core::ptr::null_mut(), core::ptr::null(), false);
-        let _ = uws_get_loop(core::ptr::null());
+        let _ = bao_uloop::uws_get_loop();
         uws_app_any(core::ptr::null_mut(), 0, core::ptr::null(), 0, core::ptr::null(), core::ptr::null_mut());
         uws_app_listen(core::ptr::null_mut(), core::ptr::null(), 0, 0, core::ptr::null(), core::ptr::null_mut());
         let _ = uws_req_get_method(core::ptr::null());

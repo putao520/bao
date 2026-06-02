@@ -456,6 +456,14 @@ name = "bao_engine"
 version = "0.1.0"
 dependencies = [
  "bao_engine_macros",
+ "bao_native_stubs",
+ "bun_collections",
+ "bun_core",
+ "bun_crash_handler",
+ "bun_event_loop",
+ "bun_io",
+ "bun_spawn",
+ "bun_uws",
  "libc",
  "log",
  "mozjs",
@@ -475,6 +483,7 @@ dependencies = [
 name = "bao_native_stubs"
 version = "0.1.0"
 dependencies = [
+ "bao_uloop",
  "base64",
  "brotli 7.0.0",
  "libc",
@@ -527,6 +536,15 @@ dependencies = [
  "bao_engine",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "bao_uloop"
+version = "0.1.0"
+dependencies = [
+ "bun_uws_sys",
+ "libc",
+ "mio",
 ]
 
 [[package]]
@@ -5304,6 +5322,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "02bd0af71c67b473010cbbc60715ee815645a4dc942899111f494b4b737d6fda"
 dependencies = [
  "libc",
+ "log",
  "wasi",
  "windows-sys 0.61.2",
 ]

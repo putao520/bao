@@ -11,3 +11,9 @@ base64 = "0.22"
 brotli = "7"
 zstd = "0.13"
 libdeflater = "1"
+# Wave 74-LOOP-A: mio-backed loop core now lives in bao_uloop. Making it
+# a normal dep means any crate that pulls in bao_native_stubs (most test
+# binaries do, via dev-dependencies) also drags in bao_uloop's
+# `#[no_mangle]` loop symbols, replacing the old safe no-op stubs that
+# used to live here.
+bao_uloop = { path = "../bao_uloop" }
