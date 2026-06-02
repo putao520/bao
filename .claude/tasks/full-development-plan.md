@@ -889,7 +889,7 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 - [ ] P1-A 完成 → 标记 SPEC 05-IMPLEMENTATION.html Phase 1 进度
   - [x] P1-A.1: MiniEventLoop API 可用性前置验证 (commit `fa02dcf70`) — 4 集成测试通过
   - [x] P1-A.2a: BaoTimeoutObject 骨架 + dispatch 模块接入 (commit `6f3637a45`) — 4 单元测试通过，FFI 符号可链接
-  - [ ] P1-A.2b: drain_and_check 双路径共存
+  - [x] P1-A.2b: drain_and_check 双路径共存 (commit `bff07b8c1`) — BaoTimeoutObject 完整化（callback+args+fire_js），老 TimerHeap 与新 BaoTimeoutObject 同时编译共存，7 单元测试通过
   - [ ] P1-A.3: 切流到 MiniEventLoop 并验证
   - [ ] P1-A.4: 删除老 TimerHeap + epoll 代码
 - [ ] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
