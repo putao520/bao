@@ -255,10 +255,13 @@ pub fn install_timer_globals(
     }
 }
 
+/// P1-A.3d: main event-loop tick. Drains BAO_REGISTRY timers via the new
+/// Bun-style intrusive heap and fires their JS callbacks. Retains epoll for
+/// HTTP I/O (P1-B will replace this with bun_uws).
+///
+/// Returns `true` if the event loop should continue (has pending timers or
+/// active HTTP servers).
 pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
-    // P1-A.3c-step4: register current JSContext so dispatch.rs's
-    // __bun_fire_timer can recover it via current_cx() when firing
-    // BaoTimeoutObjects through the new BAO_REGISTRY path.
     // SAFETY: cx is a live &mut JSContext on the current thread; the guard
     // clears it on drop so subsequent code on this thread sees null.
     unsafe {
@@ -272,19 +275,16 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     crate::node_http::accept_connections();
 
     let has_http = crate::node_http::has_active_servers();
-    let deadline = next_deadline();
+    let deadline_ms = bao_next_deadline_ms();
 
-    let timeout_ms: i32 = if let Some(d) = deadline {
-        let now = Instant::now();
-        if d > now {
-            ((d - now).as_millis() as i32).min(100)
-        } else {
-            0
-        }
+    let timeout_ms: i32 = if let Some(ms) = deadline_ms {
+        ms.min(100)
     } else if has_http {
         100
     } else {
-        drain_timers(cx);
+        // No timers and no HTTP — drain any already-expired timers and exit.
+        let raw_cx = unsafe { cx.raw_cx() };
+        drain_bao_timers(raw_cx);
         bao_engine::job_queue::JobQueue::drain(cx);
         return false;
     };
@@ -295,10 +295,11 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     }
 
     crate::node_http::poll_http_requests(cx);
-    drain_timers(cx);
+    let raw_cx = unsafe { cx.raw_cx() };
+    drain_bao_timers(raw_cx);
     bao_engine::job_queue::JobQueue::drain(cx);
 
-    has_pending_timers() || has_http
+    bao_has_pending_timers() || has_http
 }
 
 pub fn next_deadline() -> ::std::option::Option<Instant> {
@@ -420,8 +421,99 @@ pub unsafe fn fire_js_callback_raw(
     }
 }
 
+/// P1-A.3d: check if BAO_REGISTRY has any pending timers.
+/// This is the new source of truth (replaces TIMERS-based check).
 pub fn has_pending_timers() -> bool {
-    TIMERS.with(|t| !t.borrow().is_empty())
+    BAO_REGISTRY.with(|r| !r.borrow().is_empty())
+}
+
+/// P1-A.3d: compute milliseconds until the next BAO_REGISTRY timer deadline.
+/// Returns `None` if no timers are pending. Result capped at 100ms (epoll max
+/// sleep to keep HTTP polling responsive).
+fn bao_next_deadline_ms() -> ::std::option::Option<i32> {
+    BAO_REGISTRY.with(|r| {
+        let reg = r.borrow();
+        match reg.next_deadline() {
+            None => None,
+            Some(dl) => {
+                let now = Timespec::now_allow_mocked_time();
+                if dl.order(&now) != core::cmp::Ordering::Greater {
+                    ::std::option::Option::Some(0) // already expired
+                } else if dl.sec > now.sec {
+                    // ≥1 second remaining → definitely > 100ms
+                    ::std::option::Option::Some(100)
+                } else {
+                    // Same second — nanosecond diff fits in i64 easily
+                    let diff_ns = dl.nsec - now.nsec;
+                    ::std::option::Option::Some(((diff_ns / 1_000_000) as i32).min(100))
+                }
+            }
+        }
+    })
+}
+
+/// P1-A.3d: alias for has_pending_timers (used by drain_and_check).
+fn bao_has_pending_timers() -> bool {
+    has_pending_timers()
+}
+
+/// P1-A.3d: drain ready timers from BAO_REGISTRY (new source of truth).
+///
+/// Pops expired timers from the intrusive heap, fires their JS callbacks,
+/// and re-arms interval timers. Uses "pop-before-fire" pattern to ensure
+/// re-entrant setTimeout/clearTimeout safety: no RefCell borrow is held
+/// across JS callback dispatch.
+fn drain_bao_timers(raw_cx: *mut JSContext) -> bool {
+    let now_ts = Timespec::now_allow_mocked_time();
+    let mut fired = false;
+
+    loop {
+        // Check if earliest deadline has expired (separate borrow scope).
+        let should_fire = BAO_REGISTRY.with(|r| {
+            let reg = r.borrow();
+            match reg.next_deadline() {
+                Some(dl) => dl.order(&now_ts) != core::cmp::Ordering::Greater,
+                None => false,
+            }
+        });
+        if !should_fire { break; }
+
+        // Pop the timer from BAO_REGISTRY — takes Box ownership.
+        // No borrow is held after this scope closes.
+        let obj_box = BAO_REGISTRY.with(|r| {
+            let mut reg = r.borrow_mut();
+            let peeked = reg.heap.peek();
+            if peeked.is_null() { return None; }
+            // SAFETY: peeked is non-null and points to a BaoTimeoutObject's
+            // event_loop_timer field (the only type we insert into this heap).
+            let timeout = unsafe { BaoTimeoutObject::from_timer_ptr(peeked) };
+            let id = unsafe { (*timeout).timer_id };
+            reg.remove(id)
+        });
+
+        let Some(mut obj) = obj_box else { break; };
+        fired = true;
+
+        // Fire JS callback — no BAO_REGISTRY borrow held.
+        // SAFETY: raw_cx is a live JSContext* registered by drain_and_check.
+        unsafe { obj.fire_js(raw_cx, &now_ts); }
+
+        // If interval, re-arm with updated deadline and re-insert.
+        if let Some(interval) = obj.interval {
+            let interval_ms = interval.as_millis() as i64;
+            let mut next_ts = obj.event_loop_timer.next;
+            while next_ts.order(&now_ts) != core::cmp::Ordering::Greater {
+                next_ts = next_ts.add_ms(interval_ms);
+            }
+            obj.event_loop_timer.next = next_ts;
+            obj.event_loop_timer.state = TimerState::PENDING;
+            obj.epoch = obj.epoch.wrapping_add(1);
+            BAO_REGISTRY.with(|r| r.borrow_mut().insert(obj));
+        }
+        // One-shot: Box<BaoTimeoutObject> dropped here.
+    }
+
+    fired
 }
 
 pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _args: &[JSVal]) -> u32 {
@@ -791,16 +883,15 @@ impl BaoTimerRegistry {
     }
 
     /// Remove timer `id` from both the heap and the owned map. Returns
-    /// `Some(())` if found, `None` otherwise.
-    pub fn remove(&mut self, id: u32) -> ::std::option::Option<()> {
+    /// ownership of the removed `BaoTimeoutObject`, or `None` if not found.
+    pub fn remove(&mut self, id: u32) -> ::std::option::Option<::std::boxed::Box<BaoTimeoutObject>> {
         let mut obj = self.owned.remove(&id)?;
         let timer_ptr: *mut EventLoopTimer = &mut obj.event_loop_timer;
         // SAFETY: timer_ptr was inserted into self.heap by `insert`; the
         // node is still live (we hold the Box). remove() detaches it from
         // the heap without touching any other node.
         unsafe { self.heap.remove(timer_ptr); }
-        ::std::mem::drop(obj);
-        ::std::option::Option::Some(())
+        ::std::option::Option::Some(obj)
     }
 
     /// Peek the earliest deadline in the heap (Bun's `get_timeout` analog).
@@ -1025,7 +1116,7 @@ mod bao_timeout_tests {
         assert_eq!(reg.len(), 1);
 
         let removed = reg.remove(42);
-        assert!(removed.is_some(), "remove returns Some for known id");
+        assert!(removed.is_some(), "remove returns Some(Box<..>) for known id");
         assert_eq!(reg.len(), 0);
         assert!(reg.is_empty());
         assert!(reg.next_deadline().is_none(), "heap must be empty after remove");
