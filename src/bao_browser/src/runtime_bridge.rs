@@ -1140,24 +1140,32 @@ mod tests {
     }
 
     #[test]
-    fn bridge_response_null_is_ok() {
+    fn bridge_response_null_not_err() {
         let resp = super::BridgeResponse::Null;
-        assert!(resp.is_ok());
-        assert!(!resp.is_err());
+        assert!(!resp.is_ok());  // Null is not BridgeResponse::Ok
+        assert!(!resp.is_err()); // Null is also not an error
     }
 
     #[test]
-    fn bridge_response_value_is_ok() {
+    fn bridge_response_value_not_err() {
         let resp = super::BridgeResponse::Value("result".into());
-        assert!(resp.is_ok());
+        assert!(!resp.is_ok());  // Value is not BridgeResponse::Ok
         assert!(!resp.is_err());
     }
 
     #[test]
-    fn bridge_response_binary_is_ok() {
+    fn bridge_response_binary_not_err() {
         let resp = super::BridgeResponse::Binary(vec![1, 2, 3]);
-        assert!(resp.is_ok());
+        assert!(!resp.is_ok());  // Binary is not BridgeResponse::Ok
         assert!(!resp.is_err());
+    }
+
+    #[test]
+    fn bridge_response_ok_method_wraps_non_err() {
+        // .ok() converts Err → Result::Err, all others → Result::Ok
+        assert!(super::BridgeResponse::Null.ok().is_ok());
+        assert!(super::BridgeResponse::Value("v".into()).ok().is_ok());
+        assert!(super::BridgeResponse::Binary(vec![]).ok().is_ok());
     }
 
     #[test]

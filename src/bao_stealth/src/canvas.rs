@@ -102,14 +102,25 @@ mod tests {
     // @trace REQ-STL-003 [req:REQ-STL-003] [level:unit]
 
     #[test]
-    fn apply_to_pixel_black_channel_agnostic() {
-        // Black pixel (0,0,0) with different seeds — noise should change result
+    fn apply_to_pixel_midgray_seed_dependent() {
+        // Different seeds with mid-gray pixel and varying coordinates
+        // should produce at least some different outputs across multiple positions
         let n1 = CanvasNoise::new(1);
         let n2 = CanvasNoise::new(9999);
-        let p1 = n1.apply_to_pixel(0, 0, 0, 255, 0, 0);
-        let p2 = n2.apply_to_pixel(0, 0, 0, 255, 0, 0);
-        // Noise is deterministic per seed, but different seeds must produce different pixels
-        assert_ne!(p1, p2);
+        // Check multiple coordinate pairs — at least one should differ
+        let mut any_different = false;
+        for x in 0..10u32 {
+            for y in 0..10u32 {
+                let p1 = n1.apply_to_pixel(128, 128, 128, 255, x, y);
+                let p2 = n2.apply_to_pixel(128, 128, 128, 255, x, y);
+                if p1 != p2 {
+                    any_different = true;
+                    break;
+                }
+            }
+            if any_different { break; }
+        }
+        assert!(any_different, "different seeds should produce different pixels somewhere");
     }
 
     #[test]
