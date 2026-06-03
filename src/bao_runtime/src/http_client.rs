@@ -136,4 +136,78 @@ mod tests {
         assert_eq!(resp.headers.len(), 1);
         assert_eq!(resp.body, b"hello".to_vec());
     }
+
+    // ─── HttpResponse extended tests ──────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_http_response_empty_body() {
+        let resp = HttpResponse {
+            status_code: 204,
+            status_text: "No Content".into(),
+            headers: vec![],
+            body: vec![],
+        };
+        assert_eq!(resp.status_code, 204);
+        assert!(resp.body.is_empty());
+        assert!(resp.headers.is_empty());
+    }
+
+    #[test]
+    fn test_http_response_multiple_headers() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![
+                ("content-type".into(), "application/json".into()),
+                ("x-request-id".into(), "abc-123".into()),
+                ("cache-control".into(), "no-cache".into()),
+            ],
+            body: b"{}".to_vec(),
+        };
+        assert_eq!(resp.headers.len(), 3);
+        assert_eq!(resp.headers[0].0, "content-type");
+        assert_eq!(resp.headers[1].1, "abc-123");
+    }
+
+    #[test]
+    fn test_http_response_error_status() {
+        let resp = HttpResponse {
+            status_code: 500,
+            status_text: "Internal Server Error".into(),
+            headers: vec![],
+            body: b"error".to_vec(),
+        };
+        assert_eq!(resp.status_code, 500);
+        assert_eq!(resp.status_text, "Internal Server Error");
+    }
+
+    #[test]
+    fn test_http_response_redirect_status() {
+        let resp = HttpResponse {
+            status_code: 301,
+            status_text: "Moved Permanently".into(),
+            headers: vec![("location".into(), "https://example.com".into())],
+            body: vec![],
+        };
+        assert_eq!(resp.status_code, 301);
+        assert_eq!(resp.headers[0].0, "location");
+    }
+
+    #[test]
+    fn test_method_all_variants() {
+        assert_eq!(Method::GET.as_str(), "GET");
+        assert_eq!(Method::POST.as_str(), "POST");
+        assert_eq!(Method::PUT.as_str(), "PUT");
+        assert_eq!(Method::DELETE.as_str(), "DELETE");
+        assert_eq!(Method::PATCH.as_str(), "PATCH");
+        assert_eq!(Method::HEAD.as_str(), "HEAD");
+        assert_eq!(Method::OPTIONS.as_str(), "OPTIONS");
+    }
+
+    #[test]
+    fn test_method_connect_trace() {
+        assert_eq!(Method::CONNECT.as_str(), "CONNECT");
+        assert_eq!(Method::TRACE.as_str(), "TRACE");
+    }
 }

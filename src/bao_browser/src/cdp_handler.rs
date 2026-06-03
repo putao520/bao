@@ -335,4 +335,52 @@ mod tests {
         assert_eq!(super::json_type_string("hello world"), "string");
         assert_eq!(super::json_type_string("some result"), "string");
     }
+
+    // ─── json_type edge cases ─────────────────────────────────────
+    // @trace REQ-CDP-005 [req:REQ-CDP-005] [level:unit]
+
+    #[test]
+    fn json_type_large_number() {
+        assert_eq!(super::json_type(&json!(i64::MAX)), "number");
+        assert_eq!(super::json_type(&json!(f64::MAX)), "number");
+    }
+
+    #[test]
+    fn json_type_nested_object() {
+        assert_eq!(super::json_type(&json!({"a": {"b": 1}})), "object");
+    }
+
+    #[test]
+    fn json_type_nested_array() {
+        assert_eq!(super::json_type(&json!([[1, 2], [3, 4]])), "object");
+    }
+
+    // ─── json_type_string edge cases ──────────────────────────────
+    // @trace REQ-CDP-005 [req:REQ-CDP-005] [level:unit]
+
+    #[test]
+    fn json_type_string_scientific_notation() {
+        assert_eq!(super::json_type_string("1e10"), "number");
+        assert_eq!(super::json_type_string("-2.5e-3"), "number");
+    }
+
+    #[test]
+    fn json_type_string_whitespace_is_string() {
+        assert_eq!(super::json_type_string("  "), "string");
+        assert_eq!(super::json_type_string(" 42"), "string");
+    }
+
+    #[test]
+    fn json_type_string_special_strings() {
+        // NaN and Infinity parse as f64, so they're "number"
+        assert_eq!(super::json_type_string("NaN"), "number");
+        assert_eq!(super::json_type_string("Infinity"), "number");
+        assert_eq!(super::json_type_string("[object Object]"), "object");
+    }
+
+    #[test]
+    fn json_type_string_negative_zero() {
+        assert_eq!(super::json_type_string("-0"), "number");
+        assert_eq!(super::json_type_string("0.0"), "number");
+    }
 }
