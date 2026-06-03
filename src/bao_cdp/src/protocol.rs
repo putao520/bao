@@ -879,4 +879,1605 @@ mod tests {
         assert_eq!(msg.id, 99);
         assert_eq!(msg.method, "Page.你好世界");
     }
+
+    // ─── CdpMessage parsing edge cases ─────────────────────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    // 34. CDPMessage with id = 0
+    #[test]
+    fn parse_message_id_zero() {
+        let msg = parse_message(r#"{"id":0,"method":"Page.enable"}"#).unwrap();
+        assert_eq!(msg.id, 0);
+        assert_eq!(msg.method, "Page.enable");
+    }
+
+    // 35. CDPMessage with id = i64::MAX
+    #[test]
+    fn parse_message_id_max() {
+        let msg = parse_message(r#"{"id":9223372036854775807,"method":"Page.enable"}"#).unwrap();
+        assert_eq!(msg.id, i64::MAX);
+    }
+
+    // 36. CDPMessage with negative id
+    #[test]
+    fn parse_message_negative_id() {
+        let msg = parse_message(r#"{"id":-1,"method":"Page.enable"}"#).unwrap();
+        assert_eq!(msg.id, -1);
+    }
+
+    // 37. CDPMessage with id = i64::MIN
+    #[test]
+    fn parse_message_id_min() {
+        let msg = parse_message(r#"{"id":-9223372036854775808,"method":"Page.enable"}"#).unwrap();
+        assert_eq!(msg.id, i64::MIN);
+    }
+
+    // 38. CDPMessage with empty method string
+    #[test]
+    fn parse_message_empty_method() {
+        let msg = parse_message(r#"{"id":1,"method":""}"#).unwrap();
+        assert_eq!(msg.method, "");
+    }
+
+    // 39. CDPMessage with method containing no dot
+    #[test]
+    fn parse_message_method_no_dot() {
+        let msg = parse_message(r#"{"id":1,"method":"NoDomain"}"#).unwrap();
+        assert_eq!(msg.method, "NoDomain");
+    }
+
+    // 40. CDPMessage with method containing multiple dots
+    #[test]
+    fn parse_message_method_multiple_dots() {
+        let msg = parse_message(r#"{"id":1,"method":"Page.navigate.to"}"#).unwrap();
+        assert_eq!(msg.method, "Page.navigate.to");
+        // splitn(2, '.') only splits on first dot
+        let parts: Vec<&str> = msg.method.splitn(2, '.').collect();
+        assert_eq!(parts[0], "Page");
+        assert_eq!(parts[1], "navigate.to");
+    }
+
+    // 41. CDPMessage with empty string input
+    #[test]
+    fn parse_message_empty_string() {
+        assert!(parse_message("").is_none());
+    }
+
+    // 42. CDPMessage with whitespace-only input
+    #[test]
+    fn parse_message_whitespace_only() {
+        assert!(parse_message("   ").is_none());
+    }
+
+    // 43. CDPMessage with extra JSON fields (should succeed, ignores unknown)
+    #[test]
+    fn parse_message_extra_fields() {
+        let msg = parse_message(r#"{"id":1,"method":"Page.enable","extra":"ignored"}"#);
+        assert!(msg.is_some());
+        assert_eq!(msg.unwrap().method, "Page.enable");
+    }
+
+    // 44. CDPMessage params as object
+    #[test]
+    fn parse_message_params_object() {
+        let msg = parse_message(r#"{"id":1,"method":"Page.navigate","params":{"url":"http://x.com"}}"#).unwrap();
+        assert!(msg.params.is_some());
+        assert_eq!(msg.params.unwrap()["url"], "http://x.com");
+    }
+
+    // 45. CDPMessage params as array (unusual but valid JSON)
+    #[test]
+    fn parse_message_params_array() {
+        let msg = parse_message(r#"{"id":1,"method":"Test.cmd","params":[1,2,3]}"#).unwrap();
+        assert!(msg.params.is_some());
+        assert!(msg.params.unwrap().is_array());
+    }
+
+    // 46. CDPMessage params as string (unusual but valid JSON)
+    #[test]
+    fn parse_message_params_string() {
+        let msg = parse_message(r#"{"id":1,"method":"Test.cmd","params":"hello"}"#).unwrap();
+        assert!(msg.params.is_some());
+        assert!(msg.params.unwrap().is_string());
+    }
+
+    // 47. CDPMessage params as number (unusual but valid JSON)
+    #[test]
+    fn parse_message_params_number() {
+        let msg = parse_message(r#"{"id":1,"method":"Test.cmd","params":42}"#).unwrap();
+        assert!(msg.params.is_some());
+        assert!(msg.params.unwrap().is_number());
+    }
+
+    // 48. CDPMessage params as boolean (unusual but valid JSON)
+    #[test]
+    fn parse_message_params_boolean() {
+        let msg = parse_message(r#"{"id":1,"method":"Test.cmd","params":true}"#).unwrap();
+        assert!(msg.params.is_some());
+        assert!(msg.params.unwrap().is_boolean());
+    }
+
+    // 49. CDPMessage with very long session_id
+    #[test]
+    fn parse_message_long_session_id() {
+        let long_session = "A".repeat(10000);
+        let raw = format!(r#"{{"id":1,"method":"Page.enable","session_id":"{}"}}"#, long_session);
+        let msg = parse_message(&raw).unwrap();
+        assert_eq!(msg.session_id.unwrap().len(), 10000);
+    }
+
+    // 50. CDPMessage with empty session_id
+    #[test]
+    fn parse_message_empty_session_id() {
+        let msg = parse_message(r#"{"id":1,"method":"Page.enable","session_id":""}"#).unwrap();
+        assert_eq!(msg.session_id, Some("".to_string()));
+    }
+
+    // ─── CDPResponse serialization edge cases ──────────────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    // 51. CDPResponse with null result
+    #[test]
+    fn serialize_response_null_result() {
+        let resp = CDPResponse {
+            id: 1,
+            result: Some(Value::Null),
+            error: None,
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["id"], 1);
+        assert_eq!(parsed["result"], Value::Null);
+    }
+
+    // 52. CDPResponse with empty object result
+    #[test]
+    fn serialize_response_empty_object_result() {
+        let resp = CDPResponse {
+            id: 2,
+            result: Some(json!({})),
+            error: None,
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["result"], json!({}));
+    }
+
+    // 53. CDPResponse with nested result
+    #[test]
+    fn serialize_response_nested_result() {
+        let resp = CDPResponse {
+            id: 3,
+            result: Some(json!({"root": {"nodeId": 1, "children": [{"nodeId": 2}]}})),
+            error: None,
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["result"]["root"]["nodeId"], 1);
+        assert_eq!(parsed["result"]["root"]["children"][0]["nodeId"], 2);
+    }
+
+    // 54. CDPResponse with id = 0
+    #[test]
+    fn serialize_response_id_zero() {
+        let resp = CDPResponse {
+            id: 0,
+            result: Some(json!({"ok": true})),
+            error: None,
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["id"], 0);
+    }
+
+    // 55. CDPResponse with negative id
+    #[test]
+    fn serialize_response_negative_id() {
+        let resp = CDPResponse {
+            id: -42,
+            result: Some(json!({})),
+            error: None,
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["id"], -42);
+    }
+
+    // 56. CDPResponse with i64::MAX id
+    #[test]
+    fn serialize_response_max_id() {
+        let resp = CDPResponse {
+            id: i64::MAX,
+            result: Some(json!({})),
+            error: None,
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["id"], i64::MAX);
+    }
+
+    // 57. CDPResponse with array result
+    #[test]
+    fn serialize_response_array_result() {
+        let resp = CDPResponse {
+            id: 5,
+            result: Some(json!([1, 2, 3])),
+            error: None,
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["result"], json!([1, 2, 3]));
+    }
+
+    // 58. CDPResponse with string result
+    #[test]
+    fn serialize_response_string_result() {
+        let resp = CDPResponse {
+            id: 6,
+            result: Some(json!("hello world")),
+            error: None,
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["result"], "hello world");
+    }
+
+    // ─── CDPError code boundaries ──────────────────────────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    // 59. CDPError code -32700 (Parse error)
+    #[test]
+    fn cdp_error_code_parse_error() {
+        let resp = CDPResponse {
+            id: 1,
+            result: None,
+            error: Some(CDPError { code: -32700, message: "Parse error".into() }),
+        };
+        let s = serialize_response(&resp);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["error"]["code"], -32700);
+        assert_eq!(parsed["error"]["message"], "Parse error");
+    }
+
+    // 60. CDPError code -32600 (Invalid Request)
+    #[test]
+    fn cdp_error_code_invalid_request() {
+        let err = CDPError { code: -32600, message: "Invalid Request".into() };
+        assert_eq!(err.code, -32600);
+        let s = serde_json::to_string(&err).unwrap();
+        assert!(s.contains("-32600"));
+    }
+
+    // 61. CDPError code -32601 (Method not found)
+    #[test]
+    fn cdp_error_code_method_not_found() {
+        let err = CDPError { code: -32601, message: "Method not found".into() };
+        assert_eq!(err.code, -32601);
+    }
+
+    // 62. CDPError code -32602 (Invalid params)
+    #[test]
+    fn cdp_error_code_invalid_params() {
+        let err = CDPError { code: -32602, message: "Invalid params".into() };
+        assert_eq!(err.code, -32602);
+    }
+
+    // 63. CDPError code -32603 (Internal error)
+    #[test]
+    fn cdp_error_code_internal_error() {
+        let err = CDPError { code: -32603, message: "Internal error".into() };
+        assert_eq!(err.code, -32603);
+    }
+
+    // 64. CDPError with custom error code
+    #[test]
+    fn cdp_error_custom_code() {
+        let err = CDPError { code: -32000, message: "Server error".into() };
+        let s = serde_json::to_string(&err).unwrap();
+        assert!(s.contains("-32000"));
+        assert!(s.contains("Server error"));
+    }
+
+    // 65. CDPError with empty message
+    #[test]
+    fn cdp_error_empty_message() {
+        let err = CDPError { code: -32601, message: String::new() };
+        let s = serde_json::to_string(&err).unwrap();
+        assert!(s.contains("-32601"));
+    }
+
+    // 66. CDPError with unicode message
+    #[test]
+    fn cdp_error_unicode_message() {
+        let err = CDPError { code: -32601, message: "方法未找到".into() };
+        let s = serde_json::to_string(&err).unwrap();
+        assert!(s.contains("方法未找到"));
+    }
+
+    // ─── CDPEvent edge cases ───────────────────────────────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    // 67. CDPEvent with no params
+    #[test]
+    fn cdp_event_no_params() {
+        let ev = CDPEvent {
+            method: "Page.domContentEventFired".into(),
+            params: None,
+        };
+        let s = serialize_event(&ev);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["method"], "Page.domContentEventFired");
+        assert!(parsed.get("params").is_none(), "params should be skipped when None");
+    }
+
+    // 68. CDPEvent with large data
+    #[test]
+    fn cdp_event_large_data() {
+        let large_string = "X".repeat(100_000);
+        let ev = CDPEvent {
+            method: "Network.dataReceived".into(),
+            params: Some(json!({ "dataLength": large_string.len(), "encodedDataLength": large_string.len() })),
+        };
+        let s = serialize_event(&ev);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["params"]["dataLength"], 100_000);
+    }
+
+    // 69. CDPEvent with nested params
+    #[test]
+    fn cdp_event_nested_params() {
+        let ev = CDPEvent {
+            method: "DOM.attributeModified".into(),
+            params: Some(json!({
+                "nodeId": 1,
+                "name": "class",
+                "value": "container active",
+                "metadata": {
+                    "source": "user",
+                    "timestamp": 1234567890
+                }
+            })),
+        };
+        let s = serialize_event(&ev);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["params"]["nodeId"], 1);
+        assert_eq!(parsed["params"]["metadata"]["source"], "user");
+    }
+
+    // 70. CDPEvent with null params
+    #[test]
+    fn cdp_event_null_params() {
+        let ev = CDPEvent {
+            method: "Page.frameResized".into(),
+            params: Some(Value::Null),
+        };
+        let s = serialize_event(&ev);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["params"], Value::Null);
+    }
+
+    // 71. CDPEvent with empty method
+    #[test]
+    fn cdp_event_empty_method() {
+        let ev = CDPEvent {
+            method: String::new(),
+            params: None,
+        };
+        let s = serialize_event(&ev);
+        let parsed: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed["method"], "");
+    }
+
+    // ─── handle_command edge cases ─────────────────────────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    // 72. handle_command with method containing no dot → empty domain
+    #[test]
+    fn handle_command_no_dot_method() {
+        let msg = CDPMessage { id: 1, method: "NoDomain".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("NoDomain"));
+    }
+
+    // 73. handle_command with empty method → empty domain, error
+    #[test]
+    fn handle_command_empty_method() {
+        let msg = CDPMessage { id: 2, method: String::new(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32601);
+    }
+
+    // 74. handle_command with known domain but unknown command
+    #[test]
+    fn handle_command_known_domain_unknown_command() {
+        let msg = CDPMessage { id: 3, method: "Page.nonExistentCommand".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("Page.nonExistentCommand"));
+    }
+
+    // 75. handle_command Target.getTargetInfo (no bridge) → ok with targetInfo
+    #[test]
+    fn handle_command_target_get_target_info() {
+        let msg = CDPMessage { id: 4, method: "Target.getTargetInfo".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        let info = result.get("targetInfo").unwrap();
+        assert_eq!(info["targetId"], "t1");
+        assert_eq!(info["type"], "page");
+        assert_eq!(info["attached"], true);
+    }
+
+    // 76. handle_command Target.attachToTarget → ok with sessionId
+    #[test]
+    fn handle_command_target_attach_to_target() {
+        let msg = CDPMessage { id: 5, method: "Target.attachToTarget".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(result.get("sessionId").is_some());
+        assert!(result["sessionId"].as_str().unwrap().len() > 0);
+    }
+
+    // 77. handle_command Target.detachFromTarget → ok empty
+    #[test]
+    fn handle_command_target_detach_from_target() {
+        let msg = CDPMessage { id: 6, method: "Target.detachFromTarget".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), json!({}));
+    }
+
+    // 78. handle_command Target.setDiscoverTargets → ok empty
+    #[test]
+    fn handle_command_target_set_discover_targets() {
+        let msg = CDPMessage { id: 7, method: "Target.setDiscoverTargets".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), json!({}));
+    }
+
+    // 79. handle_command Target.getTargetTargets → ok (alias for getTargets)
+    #[test]
+    fn handle_command_target_get_target_targets() {
+        let msg = CDPMessage { id: 8, method: "Target.getTargetTargets".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(result.get("targetInfos").unwrap().as_array().unwrap().len() > 0);
+    }
+
+    // 80. handle_command Page.navigate (no bridge) → ok with default url
+    #[test]
+    fn handle_command_page_navigate_no_bridge_default_url() {
+        let msg = CDPMessage { id: 9, method: "Page.navigate".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(result.get("frameId").is_some());
+    }
+
+    // 81. handle_command Page.navigate (no bridge) with url param
+    #[test]
+    fn handle_command_page_navigate_with_url() {
+        let msg = CDPMessage {
+            id: 10,
+            method: "Page.navigate".into(),
+            params: Some(json!({"url": "https://example.com"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(result.get("frameId").is_some());
+    }
+
+    // 82. handle_command Page.reload (no bridge) → ok
+    #[test]
+    fn handle_command_page_reload_no_bridge() {
+        let msg = CDPMessage { id: 11, method: "Page.reload".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["frameId"], "0");
+        assert_eq!(result["loaderId"], "0");
+    }
+
+    // 83. handle_command Page.getFrameTree (no bridge) → ok
+    #[test]
+    fn handle_command_page_get_frame_tree() {
+        let msg = CDPMessage { id: 12, method: "Page.getFrameTree".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        let frame = result["frameTree"]["frame"].as_object().unwrap();
+        assert!(frame.contains_key("id"));
+        assert!(frame.contains_key("url"));
+        assert!(frame.contains_key("mimeType"));
+    }
+
+    // 84. handle_command Page.getNavigationHistory (no bridge) → ok
+    #[test]
+    fn handle_command_page_get_navigation_history() {
+        let msg = CDPMessage { id: 13, method: "Page.getNavigationHistory".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["currentIndex"], 0);
+        assert!(result["entries"].is_array());
+    }
+
+    // 85. handle_command Page.captureScreenshot (no bridge) → ok with empty data
+    #[test]
+    fn handle_command_page_capture_screenshot_no_bridge() {
+        let msg = CDPMessage { id: 14, method: "Page.captureScreenshot".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["data"], "");
+    }
+
+    // 86. handle_command Page.addScriptToEvaluateOnNewDocument (no bridge, empty source)
+    #[test]
+    fn handle_command_page_add_script_empty_source() {
+        let msg = CDPMessage { id: 15, method: "Page.addScriptToEvaluateOnNewDocument".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["identifier"], "1");
+    }
+
+    // 87. handle_command Page.removeScriptToEvaluateOnNewDocument → ok empty
+    #[test]
+    fn handle_command_page_remove_script() {
+        let msg = CDPMessage { id: 16, method: "Page.removeScriptToEvaluateOnNewDocument".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), json!({}));
+    }
+
+    // 88. handle_command Page.setContent → ok empty
+    #[test]
+    fn handle_command_page_set_content() {
+        let msg = CDPMessage { id: 17, method: "Page.setContent".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), json!({}));
+    }
+
+    // 89. handle_command Page.close → ok empty
+    #[test]
+    fn handle_command_page_close() {
+        let msg = CDPMessage { id: 18, method: "Page.close".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), json!({}));
+    }
+
+    // 90. handle_command Page.bringToFront → ok empty
+    #[test]
+    fn handle_command_page_bring_to_front() {
+        let msg = CDPMessage { id: 19, method: "Page.bringToFront".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 91. handle_command Page.disable → ok empty
+    #[test]
+    fn handle_command_page_disable() {
+        let msg = CDPMessage { id: 20, method: "Page.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 92. handle_command Runtime.disable → ok empty
+    #[test]
+    fn handle_command_runtime_disable() {
+        let msg = CDPMessage { id: 21, method: "Runtime.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 93. handle_command Runtime.callFunctionOn → ok
+    #[test]
+    fn handle_command_runtime_call_function_on() {
+        let msg = CDPMessage { id: 22, method: "Runtime.callFunctionOn".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["result"]["type"], "undefined");
+    }
+
+    // 94. handle_command Runtime.getProperties → ok with empty array
+    #[test]
+    fn handle_command_runtime_get_properties() {
+        let msg = CDPMessage { id: 23, method: "Runtime.getProperties".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["result"], json!([]));
+    }
+
+    // 95. handle_command Runtime.evaluateAsync → ok
+    #[test]
+    fn handle_command_runtime_evaluate_async() {
+        let msg = CDPMessage { id: 24, method: "Runtime.evaluateAsync".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 96. handle_command Runtime.runScript → ok
+    #[test]
+    fn handle_command_runtime_run_script() {
+        let msg = CDPMessage { id: 25, method: "Runtime.runScript".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 97. handle_command Runtime.releaseObject → ok empty
+    #[test]
+    fn handle_command_runtime_release_object() {
+        let msg = CDPMessage { id: 26, method: "Runtime.releaseObject".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 98. handle_command Runtime.releaseObjectGroup → ok empty
+    #[test]
+    fn handle_command_runtime_release_object_group() {
+        let msg = CDPMessage { id: 27, method: "Runtime.releaseObjectGroup".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 99. handle_command Runtime.compileScript → ok empty
+    #[test]
+    fn handle_command_runtime_compile_script() {
+        let msg = CDPMessage { id: 28, method: "Runtime.compileScript".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 100. handle_command Runtime.unknown → error -32601
+    #[test]
+    fn handle_command_runtime_unknown_command() {
+        let msg = CDPMessage { id: 29, method: "Runtime.unknownMethod".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32601);
+        assert!(err.message.contains("Runtime.unknownMethod"));
+    }
+
+    // 101. handle_command DOM.enable → ok empty
+    #[test]
+    fn handle_command_dom_enable() {
+        let msg = CDPMessage { id: 30, method: "DOM.enable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 102. handle_command DOM.disable → ok empty
+    #[test]
+    fn handle_command_dom_disable() {
+        let msg = CDPMessage { id: 31, method: "DOM.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 103. handle_command DOM.describeNode → ok
+    #[test]
+    fn handle_command_dom_describe_node() {
+        let msg = CDPMessage { id: 32, method: "DOM.describeNode".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(result.get("node").is_some());
+    }
+
+    // 104. handle_command DOM.getBoxModel → ok with model
+    #[test]
+    fn handle_command_dom_get_box_model() {
+        let msg = CDPMessage { id: 33, method: "DOM.getBoxModel".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(result.get("model").is_some());
+        assert_eq!(result["model"]["width"], 1920);
+        assert_eq!(result["model"]["height"], 1080);
+    }
+
+    // 105. handle_command DOM.setAttributeValue (no bridge) → ok empty
+    #[test]
+    fn handle_command_dom_set_attribute_value_no_bridge() {
+        let msg = CDPMessage {
+            id: 34,
+            method: "DOM.setAttributeValue".into(),
+            params: Some(json!({"nodeId": 1, "name": "class", "value": "active"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 106. handle_command DOM.removeAttribute → ok empty
+    #[test]
+    fn handle_command_dom_remove_attribute() {
+        let msg = CDPMessage { id: 35, method: "DOM.removeAttribute".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 107. handle_command DOM.setOuterHTML → ok empty
+    #[test]
+    fn handle_command_dom_set_outer_html() {
+        let msg = CDPMessage { id: 36, method: "DOM.setOuterHTML".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 108. handle_command DOM.insertBefore → ok empty
+    #[test]
+    fn handle_command_dom_insert_before() {
+        let msg = CDPMessage { id: 37, method: "DOM.insertBefore".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 109. handle_command DOM.removeNode → ok empty
+    #[test]
+    fn handle_command_dom_remove_node() {
+        let msg = CDPMessage { id: 38, method: "DOM.removeNode".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 110. handle_command DOM.getOuterHTML (no bridge) → ok with default html
+    #[test]
+    fn handle_command_dom_get_outer_html_no_bridge() {
+        let msg = CDPMessage { id: 39, method: "DOM.getOuterHTML".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert!(result.get("outerHTML").is_some());
+    }
+
+    // 111. handle_command DOM.resolveNode → ok
+    #[test]
+    fn handle_command_dom_resolve_node() {
+        let msg = CDPMessage { id: 40, method: "DOM.resolveNode".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["object"]["type"], "node");
+    }
+
+    // 112. handle_command DOM.pushNodesByBackendIdsToFrontend → ok
+    #[test]
+    fn handle_command_dom_push_nodes_by_backend_ids() {
+        let msg = CDPMessage { id: 41, method: "DOM.pushNodesByBackendIdsToFrontend".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["nodeIds"], json!([]));
+    }
+
+    // 113. handle_command DOM.unknown → error -32601
+    #[test]
+    fn handle_command_dom_unknown_command() {
+        let msg = CDPMessage { id: 42, method: "DOM.nonExistent".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // 114. handle_command Network.disable → ok empty
+    #[test]
+    fn handle_command_network_disable() {
+        let msg = CDPMessage { id: 43, method: "Network.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 115. handle_command Network.getResponseBody → ok
+    #[test]
+    fn handle_command_network_get_response_body() {
+        let msg = CDPMessage { id: 44, method: "Network.getResponseBody".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["body"], "");
+        assert_eq!(result["base64Encoded"], false);
+    }
+
+    // 116. handle_command Network.setCacheDisabled → ok empty
+    #[test]
+    fn handle_command_network_set_cache_disabled() {
+        let msg = CDPMessage { id: 45, method: "Network.setCacheDisabled".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 117. handle_command Network.setExtraHTTPHeaders → ok empty
+    #[test]
+    fn handle_command_network_set_extra_http_headers() {
+        let msg = CDPMessage { id: 46, method: "Network.setExtraHTTPHeaders".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 118. handle_command Network.emulateNetworkConditions → ok empty
+    #[test]
+    fn handle_command_network_emulate_conditions() {
+        let msg = CDPMessage { id: 47, method: "Network.emulateNetworkConditions".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 119. handle_command Network.getAllCookies → ok with empty cookies
+    #[test]
+    fn handle_command_network_get_all_cookies() {
+        let msg = CDPMessage { id: 48, method: "Network.getAllCookies".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["cookies"], json!([]));
+    }
+
+    // 120. handle_command Network.deleteCookies → ok empty
+    #[test]
+    fn handle_command_network_delete_cookies() {
+        let msg = CDPMessage { id: 49, method: "Network.deleteCookies".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 121. handle_command Network.setCookie → ok empty
+    #[test]
+    fn handle_command_network_set_cookie() {
+        let msg = CDPMessage { id: 50, method: "Network.setCookie".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 122. handle_command Network.setRequestInterception → ok empty
+    #[test]
+    fn handle_command_network_set_request_interception() {
+        let msg = CDPMessage { id: 51, method: "Network.setRequestInterception".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 123. handle_command Network.continueInterceptedRequest → ok empty
+    #[test]
+    fn handle_command_network_continue_intercepted_request() {
+        let msg = CDPMessage { id: 52, method: "Network.continueInterceptedRequest".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 124. handle_command Network.unknown → error -32601
+    #[test]
+    fn handle_command_network_unknown() {
+        let msg = CDPMessage { id: 53, method: "Network.bogus".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // 125. handle_command CSS.disable → ok empty
+    #[test]
+    fn handle_command_css_disable() {
+        let msg = CDPMessage { id: 54, method: "CSS.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 126. handle_command CSS.getMatchedStylesForNode → ok
+    #[test]
+    fn handle_command_css_get_matched_styles() {
+        let msg = CDPMessage { id: 55, method: "CSS.getMatchedStylesForNode".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["matchedCSSRules"], json!([]));
+        assert_eq!(result["inlineStyle"], Value::Null);
+    }
+
+    // 127. handle_command CSS.getInlineStylesForNode → ok
+    #[test]
+    fn handle_command_css_get_inline_styles() {
+        let msg = CDPMessage { id: 56, method: "CSS.getInlineStylesForNode".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["inlineStyle"], Value::Null);
+    }
+
+    // 128. handle_command CSS.setStyleTexts → ok
+    #[test]
+    fn handle_command_css_set_style_texts() {
+        let msg = CDPMessage { id: 57, method: "CSS.setStyleTexts".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["styles"], json!([]));
+    }
+
+    // 129. handle_command CSS.unknown → error -32601
+    #[test]
+    fn handle_command_css_unknown() {
+        let msg = CDPMessage { id: 58, method: "CSS.bogus".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // 130. handle_command Emulation.clearDeviceMetricsOverride → ok empty
+    #[test]
+    fn handle_command_emulation_clear_device_metrics() {
+        let msg = CDPMessage { id: 59, method: "Emulation.clearDeviceMetricsOverride".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 131. handle_command Emulation.setUserAgentOverride (no bridge, empty ua) → ok empty
+    #[test]
+    fn handle_command_emulation_set_user_agent_no_bridge() {
+        let msg = CDPMessage { id: 60, method: "Emulation.setUserAgentOverride".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 132. handle_command Emulation.setTouchEmulationEnabled → ok empty
+    #[test]
+    fn handle_command_emulation_set_touch_emulation() {
+        let msg = CDPMessage { id: 61, method: "Emulation.setTouchEmulationEnabled".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 133. handle_command Emulation.setScriptExecutionDisabled → ok empty
+    #[test]
+    fn handle_command_emulation_set_script_execution_disabled() {
+        let msg = CDPMessage { id: 62, method: "Emulation.setScriptExecutionDisabled".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 134. handle_command Emulation.setFocusEmulationEnabled → ok empty
+    #[test]
+    fn handle_command_emulation_set_focus_emulation() {
+        let msg = CDPMessage { id: 63, method: "Emulation.setFocusEmulationEnabled".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 135. handle_command Emulation.setCPUThrottlingRate → ok empty
+    #[test]
+    fn handle_command_emulation_set_cpu_throttling() {
+        let msg = CDPMessage { id: 64, method: "Emulation.setCPUThrottlingRate".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 136. handle_command Emulation.setDefaultBackgroundColorOverride → ok empty
+    #[test]
+    fn handle_command_emulation_set_default_bg_color() {
+        let msg = CDPMessage { id: 65, method: "Emulation.setDefaultBackgroundColorOverride".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 137. handle_command Emulation.unknown → error -32601
+    #[test]
+    fn handle_command_emulation_unknown() {
+        let msg = CDPMessage { id: 66, method: "Emulation.bogus".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // 138. handle_command Input.dispatchKeyEvent (no bridge) → ok empty
+    #[test]
+    fn handle_command_input_dispatch_key_no_bridge() {
+        let msg = CDPMessage { id: 67, method: "Input.dispatchKeyEvent".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 139. handle_command Input.dispatchTouchEvent → ok empty
+    #[test]
+    fn handle_command_input_dispatch_touch() {
+        let msg = CDPMessage { id: 68, method: "Input.dispatchTouchEvent".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 140. handle_command Input.insertText (no bridge, empty text) → ok empty
+    #[test]
+    fn handle_command_input_insert_text_no_bridge() {
+        let msg = CDPMessage { id: 69, method: "Input.insertText".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 141. handle_command Input.setIgnoreInputEvents → ok empty
+    #[test]
+    fn handle_command_input_set_ignore_input_events() {
+        let msg = CDPMessage { id: 70, method: "Input.setIgnoreInputEvents".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 142. handle_command Input.setInterceptDrags → ok empty
+    #[test]
+    fn handle_command_input_set_intercept_drags() {
+        let msg = CDPMessage { id: 71, method: "Input.setInterceptDrags".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 143. handle_command Input.unknown → error -32601
+    #[test]
+    fn handle_command_input_unknown() {
+        let msg = CDPMessage { id: 72, method: "Input.bogus".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // 144. handle_command Overlay.highlightNode → ok empty
+    #[test]
+    fn handle_command_overlay_highlight_node() {
+        let msg = CDPMessage { id: 73, method: "Overlay.highlightNode".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 145. handle_command Overlay.hideHighlight → ok empty
+    #[test]
+    fn handle_command_overlay_hide_highlight() {
+        let msg = CDPMessage { id: 74, method: "Overlay.hideHighlight".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 146. handle_command Overlay.setInspectMode → ok empty
+    #[test]
+    fn handle_command_overlay_set_inspect_mode() {
+        let msg = CDPMessage { id: 75, method: "Overlay.setInspectMode".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 147. handle_command Overlay.setPausedInDebuggerMessage → ok empty
+    #[test]
+    fn handle_command_overlay_set_paused_in_debugger() {
+        let msg = CDPMessage { id: 76, method: "Overlay.setPausedInDebuggerMessage".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 148. handle_command Overlay.unknown → error -32601
+    #[test]
+    fn handle_command_overlay_unknown() {
+        let msg = CDPMessage { id: 77, method: "Overlay.bogus".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // 149. handle_command Debugger.disable → ok empty
+    #[test]
+    fn handle_command_debugger_disable() {
+        let msg = CDPMessage { id: 78, method: "Debugger.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 150. handle_command Debugger.removeBreakpoint → ok empty
+    #[test]
+    fn handle_command_debugger_remove_breakpoint() {
+        let msg = CDPMessage { id: 79, method: "Debugger.removeBreakpoint".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 151. handle_command Debugger.pause → ok empty
+    #[test]
+    fn handle_command_debugger_pause() {
+        let msg = CDPMessage { id: 80, method: "Debugger.pause".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 152. handle_command Debugger.resume → ok empty
+    #[test]
+    fn handle_command_debugger_resume() {
+        let msg = CDPMessage { id: 81, method: "Debugger.resume".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 153. handle_command Debugger.stepOver → ok empty
+    #[test]
+    fn handle_command_debugger_step_over() {
+        let msg = CDPMessage { id: 82, method: "Debugger.stepOver".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 154. handle_command Debugger.stepInto → ok empty
+    #[test]
+    fn handle_command_debugger_step_into() {
+        let msg = CDPMessage { id: 83, method: "Debugger.stepInto".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 155. handle_command Debugger.stepOut → ok empty
+    #[test]
+    fn handle_command_debugger_step_out() {
+        let msg = CDPMessage { id: 84, method: "Debugger.stepOut".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 156. handle_command Debugger.setSkipAllPauses → ok empty
+    #[test]
+    fn handle_command_debugger_set_skip_all_pauses() {
+        let msg = CDPMessage { id: 85, method: "Debugger.setSkipAllPauses".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 157. handle_command Debugger.setBreakpointsActive → ok empty
+    #[test]
+    fn handle_command_debugger_set_breakpoints_active() {
+        let msg = CDPMessage { id: 86, method: "Debugger.setBreakpointsActive".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 158. handle_command Debugger.evaluateOnCallFrame → ok
+    #[test]
+    fn handle_command_debugger_evaluate_on_call_frame() {
+        let msg = CDPMessage { id: 87, method: "Debugger.evaluateOnCallFrame".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["result"]["type"], "undefined");
+    }
+
+    // 159. handle_command Debugger.getPossibleBreakpoints → ok
+    #[test]
+    fn handle_command_debugger_get_possible_breakpoints() {
+        let msg = CDPMessage { id: 88, method: "Debugger.getPossibleBreakpoints".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["locations"], json!([]));
+    }
+
+    // 160. handle_command Debugger.getScriptSource → ok
+    #[test]
+    fn handle_command_debugger_get_script_source() {
+        let msg = CDPMessage { id: 89, method: "Debugger.getScriptSource".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["scriptSource"], "");
+    }
+
+    // 161. handle_command Debugger.setPauseOnExceptions → ok empty
+    #[test]
+    fn handle_command_debugger_set_pause_on_exceptions() {
+        let msg = CDPMessage { id: 90, method: "Debugger.setPauseOnExceptions".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 162. handle_command Debugger.unknown → error -32601
+    #[test]
+    fn handle_command_debugger_unknown() {
+        let msg = CDPMessage { id: 91, method: "Debugger.bogus".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // 163. handle_command Log.disable → ok empty
+    #[test]
+    fn handle_command_log_disable() {
+        let msg = CDPMessage { id: 92, method: "Log.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 164. handle_command Log.clear → ok empty
+    #[test]
+    fn handle_command_log_clear() {
+        let msg = CDPMessage { id: 93, method: "Log.clear".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 165. handle_command Log.startViolationsReport → ok empty
+    #[test]
+    fn handle_command_log_start_violations_report() {
+        let msg = CDPMessage { id: 94, method: "Log.startViolationsReport".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 166. handle_command Log.stopViolationsReport → ok empty
+    #[test]
+    fn handle_command_log_stop_violations_report() {
+        let msg = CDPMessage { id: 95, method: "Log.stopViolationsReport".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 167. handle_command Log.unknown → error -32601
+    #[test]
+    fn handle_command_log_unknown() {
+        let msg = CDPMessage { id: 96, method: "Log.bogus".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // 168. handle_command Fetch.disable → ok empty
+    #[test]
+    fn handle_command_fetch_disable() {
+        let msg = CDPMessage { id: 97, method: "Fetch.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 169. handle_command Fetch.continueWithResponse → ok
+    #[test]
+    fn handle_command_fetch_continue_with_response() {
+        let msg = CDPMessage {
+            id: 98,
+            method: "Fetch.continueWithResponse".into(),
+            params: Some(json!({"requestId": "r1"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["requestId"], "r1");
+        assert_eq!(result["continued"], true);
+    }
+
+    // 170. handle_command Fetch.failRequest → ok
+    #[test]
+    fn handle_command_fetch_fail_request() {
+        let msg = CDPMessage {
+            id: 99,
+            method: "Fetch.failRequest".into(),
+            params: Some(json!({"requestId": "r2", "reason": "Aborted"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["requestId"], "r2");
+        assert_eq!(result["failed"], true);
+        assert_eq!(result["reason"], "Aborted");
+    }
+
+    // 171. handle_command Fetch.fulfillRequest → ok
+    #[test]
+    fn handle_command_fetch_fulfill_request() {
+        let msg = CDPMessage {
+            id: 100,
+            method: "Fetch.fulfillRequest".into(),
+            params: Some(json!({"requestId": "r3", "responseCode": 404, "body": "dGVzdA=="})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["requestId"], "r3");
+        assert_eq!(result["fulfilled"], true);
+        assert_eq!(result["responseCode"], 404);
+    }
+
+    // 172. handle_command Fetch.getRequestPostData → ok
+    #[test]
+    fn handle_command_fetch_get_request_post_data() {
+        let msg = CDPMessage {
+            id: 101,
+            method: "Fetch.getRequestPostData".into(),
+            params: Some(json!({"requestId": "r4"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["requestId"], "r4");
+        assert_eq!(result["postData"], "");
+    }
+
+    // 173. handle_command Fetch.continueWithAuth → ok
+    #[test]
+    fn handle_command_fetch_continue_with_auth() {
+        let msg = CDPMessage {
+            id: 102,
+            method: "Fetch.continueWithAuth".into(),
+            params: Some(json!({"requestId": "r5"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["requestId"], "r5");
+    }
+
+    // 174. handle_command Fetch.takeResponseBodyAsStream → ok
+    #[test]
+    fn handle_command_fetch_take_response_body_as_stream() {
+        let msg = CDPMessage {
+            id: 103,
+            method: "Fetch.takeResponseBodyAsStream".into(),
+            params: Some(json!({"requestId": "r6"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["stream"], "stream-r6");
+    }
+
+    // 175. handle_command Fetch.enable without patterns → patternCount 0
+    #[test]
+    fn handle_command_fetch_enable_without_patterns() {
+        let msg = CDPMessage { id: 104, method: "Fetch.enable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["patternCount"], 0);
+        assert_eq!(result["enabled"], true);
+    }
+
+    // 176. handle_command Fetch.enable with multiple patterns
+    #[test]
+    fn handle_command_fetch_enable_with_multiple_patterns() {
+        let msg = CDPMessage {
+            id: 105,
+            method: "Fetch.enable".into(),
+            params: Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "https://*"}]})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["patternCount"], 2);
+    }
+
+    // 177. handle_command Fetch.unknown → error -32601
+    #[test]
+    fn handle_command_fetch_unknown() {
+        let msg = CDPMessage { id: 106, method: "Fetch.bogus".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        assert_eq!(resp.error.unwrap().code, -32601);
+    }
+
+    // ─── params_str edge cases ─────────────────────────────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    // 178. params_str with nested key returns empty
+    #[test]
+    fn params_str_nested_key_returns_empty() {
+        let params = Some(json!({"outer": {"inner": "value"}}));
+        let result = params_str(&params, "outer.inner");
+        assert_eq!(result, ""); // JSON pointer doesn't work with dot notation in params_str
+    }
+
+    // 179. params_str with numeric value returns empty (not a string)
+    #[test]
+    fn params_str_numeric_value_returns_empty() {
+        let params = Some(json!({"count": 42}));
+        let result = params_str(&params, "count");
+        assert_eq!(result, ""); // as_str() returns None for numbers
+    }
+
+    // 180. params_str with boolean value returns empty
+    #[test]
+    fn params_str_boolean_value_returns_empty() {
+        let params = Some(json!({"flag": true}));
+        let result = params_str(&params, "flag");
+        assert_eq!(result, ""); // as_str() returns None for booleans
+    }
+
+    // 181. params_str with null value returns empty
+    #[test]
+    fn params_str_null_value_returns_empty() {
+        let params = Some(json!({"key": null}));
+        let result = params_str(&params, "key");
+        assert_eq!(result, ""); // as_str() returns None for null
+    }
+
+    // 182. params_str with missing key returns empty
+    #[test]
+    fn params_str_missing_key_returns_empty() {
+        let params = Some(json!({"other": "value"}));
+        let result = params_str(&params, "key");
+        assert_eq!(result, "");
+    }
+
+    // 183. params_str with None params returns empty
+    #[test]
+    fn params_str_none_returns_empty() {
+        let result = params_str(&None, "key");
+        assert_eq!(result, "");
+    }
+
+    // 184. params_str with empty string value returns empty string
+    #[test]
+    fn params_str_empty_string_value() {
+        let params = Some(json!({"key": ""}));
+        let result = params_str(&params, "key");
+        assert_eq!(result, "");
+    }
+
+    // ─── bridge_send edge case (no bridge → error -32603) ──────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    // 185. handle_command with bridge-dependent command and no bridge returns -32603
+    #[test]
+    fn handle_command_bridge_required_no_bridge_returns_internal_error() {
+        // Page.navigate without bridge still succeeds (returns default)
+        // but Runtime.evaluate with non-empty expression and no bridge returns undefined
+        // DOM.querySelector with selector and no bridge returns nodeId:0
+        // The key scenario is when bridge_send is called with None
+        // This is tested indirectly through the domain handlers
+        // Direct test: bridge_send(None, ...) → Err(-32603)
+        let result = bridge_send(None, BridgeCommand::GetTitle);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.code, -32603);
+        assert!(err.message.contains("no servo bridge connected"));
+    }
+
+    // ─── CDPMessage Debug trait ────────────────────────────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    // 186. CDPMessage debug format
+    #[test]
+    fn cdp_message_debug_format() {
+        let msg = CDPMessage { id: 1, method: "Page.enable".into(), params: None, session_id: None };
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("CDPMessage"));
+        assert!(debug.contains("Page.enable"));
+    }
+
+    // 187. CDPMessage clone
+    #[test]
+    fn cdp_message_clone() {
+        let msg = CDPMessage { id: 1, method: "Page.enable".into(), params: Some(json!({"k": "v"})), session_id: Some("s1".into()) };
+        let cloned = msg.clone();
+        assert_eq!(cloned.id, msg.id);
+        assert_eq!(cloned.method, msg.method);
+        assert_eq!(cloned.params, msg.params);
+        assert_eq!(cloned.session_id, msg.session_id);
+    }
 }

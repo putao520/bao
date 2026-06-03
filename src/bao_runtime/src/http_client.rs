@@ -210,4 +210,147 @@ mod tests {
         assert_eq!(Method::CONNECT.as_str(), "CONNECT");
         assert_eq!(Method::TRACE.as_str(), "TRACE");
     }
+
+    // ─── http_client extended edge case tests ────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_http_response_status_codes_range() {
+        for code in [200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 500, 502, 503] {
+            let resp = HttpResponse {
+                status_code: code,
+                status_text: String::new(),
+                headers: vec![],
+                body: vec![],
+            };
+            assert_eq!(resp.status_code, code);
+        }
+    }
+
+    #[test]
+    fn test_http_response_body_binary() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![],
+            body: vec![0x89, 0x50, 0x4E, 0x47],
+        };
+        assert_eq!(&resp.body[..4], &[0x89, 0x50, 0x4E, 0x47]);
+    }
+
+    #[test]
+    fn test_http_response_header_value_with_semicolon() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![("content-type".into(), "text/html; charset=utf-8".into())],
+            body: vec![],
+        };
+        assert!(resp.headers[0].1.contains("charset=utf-8"));
+    }
+
+    #[test]
+    fn test_http_response_large_body() {
+        let large_body: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![],
+            body: large_body.clone(),
+        };
+        assert_eq!(resp.body.len(), 10_000);
+        assert_eq!(resp.body[0], 0);
+        assert_eq!(resp.body[255], 255);
+    }
+
+    #[test]
+    fn test_http_response_header_order_preserved() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![
+                ("x-first".into(), "1".into()),
+                ("x-second".into(), "2".into()),
+                ("x-third".into(), "3".into()),
+            ],
+            body: vec![],
+        };
+        assert_eq!(resp.headers[0].0, "x-first");
+        assert_eq!(resp.headers[1].0, "x-second");
+        assert_eq!(resp.headers[2].0, "x-third");
+    }
+
+    #[test]
+    fn test_http_response_status_4xx() {
+        for code in [400, 401, 403, 404, 405, 408, 429] {
+            let resp = HttpResponse {
+                status_code: code,
+                status_text: String::new(),
+                headers: vec![],
+                body: vec![],
+            };
+            assert!(resp.status_code >= 400 && resp.status_code < 500);
+        }
+    }
+
+    #[test]
+    fn test_http_response_status_5xx() {
+        for code in [500, 502, 503, 504] {
+            let resp = HttpResponse {
+                status_code: code,
+                status_text: String::new(),
+                headers: vec![],
+                body: vec![],
+            };
+            assert!(resp.status_code >= 500 && resp.status_code < 600);
+        }
+    }
+
+    #[test]
+    fn test_method_debug_format() {
+        // Method implements Debug, verify it doesn't panic
+        let _ = format!("{:?}", Method::GET);
+        let _ = format!("{:?}", Method::POST);
+    }
+
+    #[test]
+    fn test_http_response_unicode_body() {
+        let unicode_body = "你好世界".as_bytes().to_vec();
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![("content-type".into(), "text/plain; charset=utf-8".into())],
+            body: unicode_body.clone(),
+        };
+        assert_eq!(resp.body, unicode_body);
+    }
+
+    #[test]
+    fn test_http_response_empty_status_text() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: String::new(),
+            headers: vec![],
+            body: vec![],
+        };
+        assert!(resp.status_text.is_empty());
+    }
+
+    #[test]
+    fn test_http_response_header_duplicate_names() {
+        // Set-Cookie can appear multiple times
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![
+                ("set-cookie".into(), "a=1".into()),
+                ("set-cookie".into(), "b=2".into()),
+            ],
+            body: vec![],
+        };
+        assert_eq!(resp.headers.len(), 2);
+        assert_eq!(resp.headers[0].0, "set-cookie");
+        assert_eq!(resp.headers[1].0, "set-cookie");
+        assert_ne!(resp.headers[0].1, resp.headers[1].1);
+    }
 }

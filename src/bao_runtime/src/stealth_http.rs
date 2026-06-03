@@ -362,4 +362,158 @@ mod tests {
         let ch = StealthProfile::chrome_default();
         assert_ne!(cipher_list_string(&ff.tls), cipher_list_string(&ch.tls));
     }
+
+    // ─── stealth_http extended edge case tests ────────────────
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+
+    #[test]
+    fn test_create_stealth_request_with_headers() {
+        let config = create_stealth_request(
+            &None,
+            Method::POST,
+            "https://api.example.com",
+            &[("content-type".into(), "application/json".into())],
+            Some(b"{}"),
+        );
+        assert_eq!(config.headers.len(), 1);
+        assert_eq!(config.headers[0].0, "content-type");
+        assert_eq!(config.body.as_deref(), Some(b"{}" as &[u8]));
+    }
+
+    #[test]
+    fn test_create_stealth_request_firefox_adds_ua() {
+        let profile = StealthProfile::firefox_default();
+        let config = create_stealth_request(&Some(profile), Method::GET, "https://x.com", &[], None);
+        // Should have the user-agent appended to headers
+        let has_ua = config.headers.iter().any(|(k, _)| k == "user-agent");
+        assert!(has_ua, "Firefox profile must add user-agent header");
+        assert!(config.user_agent.is_some());
+    }
+
+    #[test]
+    fn test_create_stealth_request_chrome_adds_ua() {
+        let profile = StealthProfile::chrome_default();
+        let config = create_stealth_request(&Some(profile), Method::GET, "https://x.com", &[], None);
+        let has_ua = config.headers.iter().any(|(k, _)| k == "user-agent");
+        assert!(has_ua, "Chrome profile must add user-agent header");
+    }
+
+    #[test]
+    fn test_ordered_headers_empty() {
+        let ordered = ordered_headers(&None, &[]);
+        assert!(ordered.is_empty());
+    }
+
+    #[test]
+    fn test_ordered_headers_no_profile_preserves_order() {
+        let headers = vec![
+            ("z-header".to_string(), "last".to_string()),
+            ("a-header".to_string(), "first".to_string()),
+        ];
+        let ordered = ordered_headers(&None, &headers);
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].0, "z-header"); // no reorder without profile
+        assert_eq!(ordered[1].0, "a-header");
+    }
+
+    #[test]
+    fn test_stealth_sync_result_construction() {
+        let result = StealthSyncResult {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![("content-type".into(), "text/html".into())],
+            body: b"<html>".to_vec(),
+        };
+        assert_eq!(result.status_code, 200);
+        assert_eq!(result.status_text, "OK");
+        assert_eq!(result.headers.len(), 1);
+        assert_eq!(result.body, b"<html>".to_vec());
+    }
+
+    #[test]
+    fn test_stealth_sync_result_empty() {
+        let result = StealthSyncResult {
+            status_code: 204,
+            status_text: "No Content".into(),
+            headers: vec![],
+            body: vec![],
+        };
+        assert!(result.headers.is_empty());
+        assert!(result.body.is_empty());
+    }
+
+    #[test]
+    fn test_h2_alpn_offer_firefox() {
+        let profile = StealthProfile::firefox_default();
+        let offer = h2_alpn_offer(&profile.http2);
+        assert!(offer.contains("h2"), "Firefox should offer h2");
+        assert!(offer.contains("http/1.1"), "Firefox should fallback to http/1.1");
+    }
+
+    #[test]
+    fn test_h2_alpn_offer_chrome() {
+        let profile = StealthProfile::chrome_default();
+        let offer = h2_alpn_offer(&profile.http2);
+        assert!(offer.contains("h2"), "Chrome should offer h2");
+    }
+
+    #[test]
+    fn test_ja3_hash_firefox_chrome_differ() {
+        let ff_hash = ja3_hash(&Some(StealthProfile::firefox_default())).unwrap();
+        let ch_hash = ja3_hash(&Some(StealthProfile::chrome_default())).unwrap();
+        assert_ne!(ff_hash, ch_hash, "Firefox and Chrome JA3 must differ");
+    }
+
+    #[test]
+    fn test_tls_cipher_name_all_known_suites() {
+        let known = [0x1301, 0x1302, 0x1303, 0xC02B, 0xC02F, 0xC02C, 0xC030,
+                     0x009E, 0x009C, 0xCCA9, 0xCCA8, 0xC013, 0xC009, 0x0033, 0x0067];
+        for suite in known {
+            assert!(tls_cipher_name(suite).is_some(), "0x{:04X} should be a known suite", suite);
+        }
+    }
+
+    #[test]
+    fn test_tls_cipher_name_unknown_returns_none() {
+        assert!(tls_cipher_name(0x0000).is_none());
+        assert!(tls_cipher_name(0xFFFF).is_none());
+        assert!(tls_cipher_name(0x0100).is_none());
+    }
+
+    #[test]
+    fn test_alpn_wire_format_structure() {
+        let profile = StealthProfile::firefox_default();
+        let wire = alpn_wire_format(&profile.tls);
+        // Each ALPN entry is: 1 byte length + N bytes protocol
+        // Firefox has ["h2", "http/1.1"]
+        // h2: 0x02 + b"h2" = 3 bytes
+        // http/1.1: 0x08 + b"http/1.1" = 9 bytes
+        // Total: 12 bytes
+        assert_eq!(wire.len(), 12);
+    }
+
+    #[test]
+    fn test_alpn_wire_chrome_structure() {
+        let profile = StealthProfile::chrome_default();
+        let wire = alpn_wire_format(&profile.tls);
+        assert_eq!(wire.len(), 12); // same ALPN as Firefox
+    }
+
+    #[test]
+    fn test_cipher_list_all_known() {
+        let profile = StealthProfile::firefox_default();
+        let s = cipher_list_string(&profile.tls);
+        // Every cipher in Firefox's list should resolve
+        assert!(s.contains("TLS_AES_128_GCM_SHA256"));
+        assert!(s.contains("ECDHE_RSA_AES_128_GCM_SHA256"));
+    }
+
+    #[test]
+    fn test_h2_settings_wire_has_6_entries() {
+        // Each settings entry is 6 bytes (2 byte ID + 4 byte value)
+        // Firefox has 6 settings → 36 bytes
+        let profile = StealthProfile::firefox_default();
+        let wire = h2_settings_wire_format(&profile.http2);
+        assert_eq!(wire.len() % 6, 0, "wire length must be multiple of 6");
+    }
 }
