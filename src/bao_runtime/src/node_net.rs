@@ -29,6 +29,7 @@ use crate::require::cache_builtin;
 /// Extension data stored in each socket's `us_socket_ext` slot.
 /// Tracks pending write buffer for backpressure handling.
 #[repr(C)]
+#[allow(dead_code)]
 struct NetSocketExt {
     /// Non-zero if this socket is a client (connect) vs server-accepted.
     is_client: u8,
@@ -38,12 +39,14 @@ struct NetSocketExt {
 
 #[repr(C)]
 #[derive(Default)]
+#[allow(dead_code)]
 struct NetPendingWrite {
     ptr: *mut u8,
     len: usize,
     cap: usize,
 }
 
+#[allow(dead_code)]
 impl NetPendingWrite {
     fn is_empty(&self) -> bool {
         self.len == 0
@@ -197,7 +200,7 @@ unsafe extern "C" fn net_on_connecting_error(
 
 /// SSL handshake completion — no-op for plain TCP.
 unsafe extern "C" fn net_on_handshake(
-    s: *mut us_socket_t,
+    _s: *mut us_socket_t,
     _success: ::std::ffi::c_int,
     _err: bun_uws_sys::us_bun_verify_error_t,
     _custom_data: *mut ::std::ffi::c_void,
@@ -376,7 +379,7 @@ fn ensure_server_group(loop_: *mut Loop) -> *mut SocketGroup {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let port = if argc > 0 { (*args.get(0).ptr).to_int32() as i32 } else { 0 };
+    let port = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
         jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {
@@ -425,7 +428,7 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let port = if argc > 0 { (*args.get(0).ptr).to_int32() as i32 } else { 0 };
+    let port = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
     let addr = if argc > 1 && (*args.get(1).ptr).is_string() {
         jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {

@@ -112,8 +112,8 @@ impl BaoPoll {
     #[inline]
     pub fn events(&self) -> c_int {
         let pt = self.poll_type();
-        ((pt & POLL_TYPE_POLLING_IN != 0) as c_int) * libc::EPOLLIN
-            | ((pt & POLL_TYPE_POLLING_OUT != 0) as c_int) * libc::EPOLLOUT
+        (((pt & POLL_TYPE_POLLING_IN != 0) as c_int) * libc::EPOLLIN)
+            | (((pt & POLL_TYPE_POLLING_OUT != 0) as c_int) * libc::EPOLLOUT)
     }
 
     /// Return a pointer to the trailing extension bytes.
@@ -492,7 +492,7 @@ unsafe fn update_pending_ready_polls(
     _new_events: c_int,
 ) {
     unsafe {
-        let loop_ptr: *mut PosixLoop = loop_ as *mut PosixLoop;
+        let loop_ptr: *mut PosixLoop = loop_;
         let num_ready = (*loop_ptr).num_ready_polls;
         let current = (*loop_ptr).current_ready_poll;
 
@@ -523,7 +523,7 @@ unsafe fn update_pending_ready_polls(
 ///
 /// This matches the upstream `us_internal_dispatch_ready_polls` function.
 pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
-    let loop_ptr: *mut PosixLoop = loop_ as *mut PosixLoop;
+    let loop_ptr: *mut PosixLoop = loop_;
     let num_ready = unsafe { (*loop_ptr).num_ready_polls };
 
     for i in 0..num_ready {

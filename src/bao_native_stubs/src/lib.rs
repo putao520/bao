@@ -953,7 +953,7 @@ pub extern "C" fn highway_index_of_newline_or_non_ascii(haystack: *const u8, hay
     if haystack.is_null() || haystack_len == 0 { return haystack_len; }
     let slice = unsafe { core::slice::from_raw_parts(haystack, haystack_len) };
     for (i, &b) in slice.iter().enumerate() {
-        if b > 127 || b < 0x20 || b == b'\r' || b == b'\n' { return i; }
+        if !(0x20..=127).contains(&b) || b == b'\r' || b == b'\n' { return i; }
     }
     haystack_len
 }
@@ -993,7 +993,7 @@ pub extern "C" fn highway_index_of_needs_escape_for_javascript_string(text: *con
     if text.is_null() || text_len == 0 { return text_len; }
     let slice = unsafe { core::slice::from_raw_parts(text, text_len) };
     for (i, &b) in slice.iter().enumerate() {
-        if b >= 127 || b < 0x20 || b == b'\\' || b == quote_char || b == b'$' || b == b'\r' || b == b'\n' { return i; }
+        if !(0x20..127).contains(&b) || b == b'\\' || b == quote_char || b == b'$' || b == b'\r' || b == b'\n' { return i; }
     }
     text_len
 }

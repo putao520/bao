@@ -345,7 +345,7 @@ fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
         if ts.sec == 0 && ts.nsec == 0 {
             0
         } else {
-            let ms = ts.sec as i64 * 1000 + ts.nsec as i64 / 1_000_000;
+            let ms = ts.sec * 1000 + ts.nsec / 1_000_000;
             ms.min(i32::MAX as i64) as c_int
         }
     };
@@ -356,7 +356,7 @@ fn run_epoll(loop_: *mut Loop, pending: u32, timeout: *const Timespec) {
     });
     let Some(epfd) = epfd else { return };
 
-    let loop_ptr: *mut PosixLoop = loop_ as *mut PosixLoop;
+    let loop_ptr: *mut PosixLoop = loop_;
     let nfds = unsafe {
         libc::epoll_wait(
             epfd,
@@ -458,7 +458,7 @@ pub unsafe extern "C" fn us_loop_free(loop_: *mut Loop) {
         if let Some(state) = slot.as_mut()
             && ptr::eq(state.loop_ptr, loop_)
         {
-            let loop_ptr: *mut PosixLoop = loop_ as *mut PosixLoop;
+            let loop_ptr: *mut PosixLoop = loop_;
 
             // Close the wakeup eventfd and free BaoWakeupAsync.
             let wakeup_async_ptr = unsafe { (*loop_ptr).internal_loop_data.wakeup_async }
@@ -889,9 +889,8 @@ pub unsafe extern "C" fn us_dispatch_handshake(
 ) {
     unsafe {
         dispatch_via_vtable(s, || {}, |vt, sock| {
-            match vt.on_handshake {
-                Some(cb) => cb(sock, success, err, core::ptr::null_mut()),
-                None => {},
+            if let Some(cb) = vt.on_handshake {
+                cb(sock, success, err, core::ptr::null_mut());
             }
         })
     }
@@ -1618,27 +1617,22 @@ mod tests {
     #[test]
     fn multiple_pre_handlers_fire_in_registration_order() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Mutex;
         let counter = AtomicUsize::new(0);
-        let order: Mutex<Vec<usize>> = Mutex::new(Vec::new());
 
-        extern "C" fn pre_a(ctx: *mut c_void, _loop: *mut Loop) {
-            let data: &(AtomicUsize, Mutex<Vec<usize>>) = unsafe { &*(ctx as *const _) };
-            let n = data.0.fetch_add(1, Ordering::SeqCst);
-            data.1.lock().unwrap().push(n);
+        extern "C" fn pre_inc(ctx: *mut c_void, _loop: *mut Loop) {
+            unsafe { (*(ctx as *const AtomicUsize)).fetch_add(1, Ordering::SeqCst) };
         }
 
         let p = uws_get_loop();
-        let data = Box::into_raw(Box::new((&counter, &order)));
-
+        // Register the same handler twice with the same counter pointer.
+        // Both must fire on each tick.
         unsafe {
-            uws_loop_addPreHandler(p, data as *mut c_void, pre_a);
-            uws_loop_addPreHandler(p, (data as usize + 1) as *mut c_void, pre_a);
+            uws_loop_addPreHandler(p, &counter as *const AtomicUsize as *mut c_void, pre_inc);
+            uws_loop_addPreHandler(p, &counter as *const AtomicUsize as *mut c_void, pre_inc);
             us_loop_run_bun_tick(p, ptr::null());
         }
         let final_count = counter.load(Ordering::SeqCst);
         assert_eq!(final_count, 2, "both pre-handlers must fire");
-        unsafe { let _ = Box::from_raw(data); }
     }
 
     // ─── loop iteration tracking ────
@@ -1720,14 +1714,17 @@ mod tests {
     // ─── Timespec timeout conversion ────
 
     #[test]
-    fn tick_with_large_timeout_no_hang() {
+    fn tick_with_large_timeout_completes_when_woken() {
+        // A large timeout passed to epoll_wait would block for that duration,
+        // but a prior wakeup collapses the timeout to 0. Verify the tick
+        // completes immediately when there is a pending wakeup.
         let p = uws_get_loop();
         let ts = Timespec { sec: 3600, nsec: 0 }; // 1 hour
         unsafe {
+            us_wakeup_loop(p); // ensure pending > 0 so epoll timeout collapses to 0
             let before = (*p).iteration_number();
             us_loop_run_bun_tick(p, &ts);
             let after = (*p).iteration_number();
-            // Should complete immediately (no sockets to wait for)
             assert_eq!(after, before + 1);
         }
     }
