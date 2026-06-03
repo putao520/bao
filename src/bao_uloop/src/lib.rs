@@ -668,6 +668,307 @@ pub unsafe extern "C" fn uws_loop_removePostHandler(
     });
 }
 
+// ──────────────── us_dispatch_* kind→vtable routing ──────────────────
+// These are the socket event dispatchers called by libusockets (loop.c,
+// socket.c, context.c). In Bun upstream they're implemented in Zig
+// (src/runtime/socket/uws_dispatch.zig) and route by `s->kind` to the
+// appropriate vtable handler (HTTP, WS, etc.). Bao implements the same
+// routing logic: read `s.kind()` → for Invalid, panic → get
+// `s.raw_group().vtable` → call the callback if present, else return `s`.
+
+use bun_uws_sys::{SocketKind, us_socket_t, ConnectingSocket, us_bun_verify_error_t};
+use bun_uws_sys::socket_group::VTable;
+
+/// Dispatch a socket event through its group's vtable. Returns the socket
+/// unchanged if the group has no vtable or the callback slot is None.
+///
+/// # Safety
+/// `s` must be a live `us_socket_t` per the caller contract.
+#[inline]
+unsafe fn dispatch_via_vtable<S, R>(
+    s: *mut c_void,
+    fallback: S,
+    call: impl FnOnce(&'static VTable, *mut us_socket_t) -> R,
+) -> R
+where
+    S: FnOnce() -> R,
+{
+    let sock = s as *mut us_socket_t;
+    let sock_ref = unsafe { &mut *sock };
+    let kind = sock_ref.kind();
+
+    // Invalid kind = bug (socket not initialised or corrupted). Panic
+    // mirrors upstream Zig's unreachable trap.
+    if kind == SocketKind::Invalid {
+        panic!("us_dispatch: socket kind is Invalid — uninitialized or corrupted socket");
+    }
+
+    // All kinds route through their group's vtable. If the group has
+    // no vtable (or the specific callback slot is None), fall through
+    // and return the socket unchanged.
+    let group = sock_ref.raw_group();
+    match group.vtable {
+        Some(vtable) => call(vtable, sock),
+        None => fallback(),
+    }
+}
+
+/// Socket opened (accept or connect completion).
+/// Routes to `group.vtable.on_open` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_open(
+    s: *mut c_void,
+    is_client: c_int,
+    ip: *mut u8,
+    ip_length: c_int,
+) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_open {
+                Some(cb) => cb(sock, is_client, ip, ip_length) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Socket received data.
+/// Routes to `group.vtable.on_data` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_data(
+    s: *mut c_void,
+    data: *mut u8,
+    length: c_int,
+) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_data {
+                Some(cb) => cb(sock, data, length) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Socket received fd (IPC).
+/// Routes to `group.vtable.on_fd` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_fd(s: *mut c_void, fd: c_int) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_fd {
+                Some(cb) => cb(sock, fd) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Socket became writable.
+/// Routes to `group.vtable.on_writable` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_writable(s: *mut c_void) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_writable {
+                Some(cb) => cb(sock) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Socket closed.
+/// Routes to `group.vtable.on_close` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_close(
+    s: *mut c_void,
+    code: c_int,
+    reason: *mut c_void,
+) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_close {
+                Some(cb) => cb(sock, code, reason) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Socket timed out.
+/// Routes to `group.vtable.on_timeout` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_timeout(s: *mut c_void) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_timeout {
+                Some(cb) => cb(sock) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Socket long-timeout.
+/// Routes to `group.vtable.on_long_timeout` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_long_timeout(s: *mut c_void) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_long_timeout {
+                Some(cb) => cb(sock) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Socket received FIN/EOF.
+/// Routes to `group.vtable.on_end` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_end(s: *mut c_void) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_end {
+                Some(cb) => cb(sock) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Established socket connect error.
+/// Routes to `group.vtable.on_connect_error` if available, else returns `s`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_connect_error(s: *mut c_void, code: c_int) -> *mut c_void {
+    unsafe {
+        dispatch_via_vtable(s, || s, |vt, sock| {
+            match vt.on_connect_error {
+                Some(cb) => cb(sock, code) as *mut c_void,
+                None => s,
+            }
+        })
+    }
+}
+
+/// Connecting socket error.
+/// Routes to `group.vtable.on_connecting_error` if available, else returns `c`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_connecting_error(
+    c: *mut c_void,
+    code: c_int,
+) -> *mut c_void {
+    let conn = c as *mut ConnectingSocket;
+    let conn_ref = unsafe { &mut *conn };
+    // ConnectingSocket dispatch also goes through its group's vtable,
+    // but uses `us_connecting_socket_group` instead of `us_socket_group`.
+    let group_ptr = conn_ref.raw_group();
+    if group_ptr.is_null() {
+        return c;
+    }
+    let group = unsafe { &*group_ptr };
+    match group.vtable {
+        Some(vtable) => match vtable.on_connecting_error {
+            Some(cb) => unsafe { cb(conn, code) as *mut c_void },
+            None => c,
+        },
+        None => c,
+    }
+}
+
+/// SSL handshake completion. Calls `group.vtable.on_handshake` if available.
+/// C signature: `void us_dispatch_handshake(s, int success, us_bun_verify_error_t err)`.
+/// VTable callback signature: `fn(s, int success, us_bun_verify_error_t, *mut c_void)`.
+/// The 4th argument (custom_data) is passed as null, matching Zig upstream.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_handshake(
+    s: *mut c_void,
+    success: c_int,
+    err: us_bun_verify_error_t,
+) {
+    unsafe {
+        dispatch_via_vtable(s, || {}, |vt, sock| {
+            match vt.on_handshake {
+                Some(cb) => cb(sock, success, err, core::ptr::null_mut()),
+                None => {},
+            }
+        })
+    }
+}
+
+/// SSL raw ciphertext tap. Returns `s` unchanged — no vtable hook for this.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn us_dispatch_ssl_raw_tap(
+    s: *mut c_void,
+    _data: *mut u8,
+    _length: c_int,
+) -> *mut c_void {
+    s
+}
+
+// ──────────────── Bun__addrinfo_* stubs ────────────────────────────
+// Async DNS resolution API. In Bun upstream, these are implemented in
+// src/runtime/dns_jsc/dns.rs and backed by c-ares. For Bao's current
+// plain-TCP mode without async DNS, we provide no-op stubs that always
+// report "cache miss" (Bun__addrinfo_get returns -1) so the caller
+// falls back to synchronous getaddrinfo.
+
+/// Query the DNS cache. Returns -1 (cache miss) so the caller uses
+/// synchronous resolution.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__addrinfo_get(
+    _loop: *mut c_void,
+    _host: *const c_char,
+    _port: u16,
+    _ptr: *mut *mut c_void,
+) -> c_int {
+    -1
+}
+
+/// Associate a connecting socket with a DNS request. No-op.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__addrinfo_set(
+    _ptr: *mut c_void,
+    _socket: *mut c_void,
+) -> c_int {
+    0
+}
+
+/// Cancel a DNS request association. No-op.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__addrinfo_cancel(
+    _ptr: *mut c_void,
+    _socket: *mut c_void,
+) -> c_int {
+    0
+}
+
+/// Free a DNS request. No-op.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__addrinfo_freeRequest(
+    _req: *mut c_void,
+    _error: c_int,
+) {
+}
+
+/// Get the result of a DNS request. Returns NULL (no result).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__addrinfo_getRequestResult(
+    _req: *mut c_void,
+) -> *mut c_void {
+    ptr::null_mut()
+}
+
+/// Register QUIC address info callback. No-op.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__addrinfo_registerQuic(_req: *mut c_void, _pc: *mut c_void) {}
+
+/// Bun HTTP date header timer optimization. No-op in plain TCP mode.
+/// Called from us_internal_enable_sweep_timer in loop.c.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Bun__internal_ensureDateHeaderTimerIsEnabled(_loop: *mut c_void) {}
+
 /// Force the linker to keep bao_uloop's `#[no_mangle] extern "C"` symbols.
 #[inline(never)]
 pub fn force_link() {
@@ -682,6 +983,31 @@ pub fn force_link() {
     let _ = uws_loop_removePreHandler as unsafe extern "C" fn(_, _, _);
     let _ = uws_loop_addPostHandler as unsafe extern "C" fn(_, _, _);
     let _ = uws_loop_removePostHandler as unsafe extern "C" fn(_, _, _);
+
+    // Dispatch stubs
+    let _ = us_dispatch_open as unsafe extern "C" fn(_, _, _, _) -> *mut c_void;
+    let _ = us_dispatch_data as unsafe extern "C" fn(_, _, _) -> *mut c_void;
+    let _ = us_dispatch_fd as unsafe extern "C" fn(_, _) -> *mut c_void;
+    let _ = us_dispatch_writable as unsafe extern "C" fn(_) -> *mut c_void;
+    let _ = us_dispatch_close as unsafe extern "C" fn(_, _, _) -> *mut c_void;
+    let _ = us_dispatch_timeout as unsafe extern "C" fn(_) -> *mut c_void;
+    let _ = us_dispatch_long_timeout as unsafe extern "C" fn(_) -> *mut c_void;
+    let _ = us_dispatch_end as unsafe extern "C" fn(_) -> *mut c_void;
+    let _ = us_dispatch_connect_error as unsafe extern "C" fn(_, _) -> *mut c_void;
+    let _ = us_dispatch_connecting_error as unsafe extern "C" fn(_, _) -> *mut c_void;
+    let _ = us_dispatch_handshake as unsafe extern "C" fn(_, _, _);
+    let _ = us_dispatch_ssl_raw_tap as unsafe extern "C" fn(_, _, _) -> *mut c_void;
+
+    // Addrinfo stubs
+    let _ = Bun__addrinfo_get as unsafe extern "C" fn(_, _, _, _) -> c_int;
+    let _ = Bun__addrinfo_set as unsafe extern "C" fn(_, _) -> c_int;
+    let _ = Bun__addrinfo_cancel as unsafe extern "C" fn(_, _) -> c_int;
+    let _ = Bun__addrinfo_freeRequest as unsafe extern "C" fn(_, _);
+    let _ = Bun__addrinfo_getRequestResult as unsafe extern "C" fn(_) -> *mut c_void;
+    let _ = Bun__addrinfo_registerQuic as unsafe extern "C" fn(_, _);
+
+    // Bun internal stubs
+    let _ = Bun__internal_ensureDateHeaderTimerIsEnabled as unsafe extern "C" fn(_);
 }
 
 // ─────────────────────────── tests ─────────────────────────────────

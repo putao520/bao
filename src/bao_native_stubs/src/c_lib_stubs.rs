@@ -258,6 +258,16 @@ pub extern "C" fn uws_res_write_header_int(
 pub extern "C" fn uws_res_end(_res: *mut c_void, _data: *const c_char, _len: usize) {}
 
 // ──────────────────────────────────────────────────────────────
+// Socket utility functions (not in libusockets.a — Bun C++ layer)
+// ──────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn us_socket_get_fd(_s: *const c_void) -> c_int { -1 }
+
+#[no_mangle]
+pub extern "C" fn us_socket_sendfile_needs_more(_s: *mut c_void) -> c_int { 0 }
+
+// ──────────────────────────────────────────────────────────────
 // BoringSSL extensions (not in system OpenSSL)
 // ──────────────────────────────────────────────────────────────
 //
@@ -368,4 +378,8 @@ pub fn force_c_lib_stubs() {
     let _ = SSL_enable_ocsp_stapling(core::ptr::null_mut());
     let _ = SSL_enable_signed_cert_timestamps(core::ptr::null_mut());
     let _ = SSL_set_tlsext_host_name(core::ptr::null_mut(), core::ptr::null());
+
+    // Socket utility stubs
+    let _ = us_socket_get_fd(core::ptr::null());
+    let _ = us_socket_sendfile_needs_more(core::ptr::null_mut());
 }

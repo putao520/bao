@@ -12,6 +12,7 @@
 // Without this, the linker may GC unreferenced symbols from the rlib.
 fn _force_native_stubs_link() {
     bao_native_stubs::force_link();
+    bao_uloop::force_link();
 }
 pub mod bun_api;
 pub mod bun_test;

@@ -17,6 +17,12 @@ use mozjs::rust::wrappers2::{
 };
 use mozjs::conversions::jsstr_to_string;
 
+use bun_uws_sys::app::App;
+use bun_uws_sys::response::Response;
+use bun_uws_sys::request::Request;
+use bun_uws_sys::socket_context::BunSocketContextOptions;
+use bun_uws_sys::listen_socket::ListenSocket;
+
 pub fn install_bun_global(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
@@ -1085,11 +1091,12 @@ unsafe extern "C" fn bun_serve(
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
+    // @trace REQ-ENG-006 [api:Bun.serve] HTTP server via bun_uws::App (C++ uWS)
     let args = CallArgs::from_vp(vp, argc);
 
     let mut port: u16 = 3000;
     let mut hostname = "0.0.0.0".to_string();
-    let mut _fetch_handler: Option<*mut JSObject> = None;
+    let mut fetch_handler: Option<*mut JSObject> = None;
 
     if argc > 0 {
         let opts_val = *args.get(0).ptr;
@@ -1114,37 +1121,105 @@ unsafe extern "C" fn bun_serve(
             let mut fetch_val = UndefinedValue();
             JS_GetProperty(cx, opts_h, c"fetch".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fetch_val });
             if fetch_val.is_object() && JS_ObjectIsFunction(fetch_val.to_object()) {
-                _fetch_handler = Some(fetch_val.to_object());
+                fetch_handler = Some(fetch_val.to_object());
             }
         }
     }
 
-    let addr = format!("{}:{}", hostname, port);
-    let listener = match ::std::net::TcpListener::bind(&addr) {
-        Ok(l) => l,
-        Err(e) => {
-            let msg = format!("Bun.serve() failed to bind: {}", e);
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
-            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+    // Ensure MiniEventLoop is initialized (drain_and_check will tick it).
+    crate::timers::with_event_loop(|_| {});
+
+    // Create uWS App (C++ HTTP server)
+    let opts = BunSocketContextOptions::default();
+    let app_ptr = match App::<false>::create(&opts) {
+        Some(p) => p,
+        None => {
+            let msg = CString::new("Bun.serve() failed to create uWS App").unwrap_or_default();
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
             return false;
         }
     };
 
-    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
-    eprintln!("Bun.serve() listening on {}:{}", hostname, actual_port);
+    // Store fetch_handler in user_data for the route callback
+    let ud = Box::new(BunServeUserData {
+        fetch_cb: fetch_handler,
+        app_ptr: app_ptr as *mut ::std::ffi::c_void,
+        hostname: hostname.clone(),
+        port,
+    });
+    let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
-    let server_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-    if server_obj.is_null() {
+    // Register catch-all route
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe extern "C" fn bun_serve_route_handler(
+        res: *mut bun_uws_sys::response::c::uws_res,
+        req: *mut Request,
+        user_data: *mut ::std::ffi::c_void,
+    ) {
+        let ud = &*(user_data as *const BunServeUserData);
+        let fetch_cb = ud.fetch_cb;
+
+        let res_mut = Response::<false>::cast_res(res);
+
+        if fetch_cb.is_none() || fetch_cb.unwrap().is_null() {
+            (*res_mut).write_status(b"404 Not Found");
+            (*res_mut).end(b"Not Found", true);
+            return;
+        }
+
+        let req_ref = bun_opaque::opaque_deref_mut(req);
+        let method_bytes = req_ref.method();
+        let url_bytes = req_ref.url();
+        let method_str = ::std::str::from_utf8(method_bytes).unwrap_or("GET");
+        let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
+
+        let body = format!("{{\"method\":\"{}\",\"url\":\"{}\"}}", method_str, url_str);
+        let body_bytes = body.as_bytes();
+
+        (*res_mut).write_status(b"200 OK");
+        (*res_mut).write_header(b"Content-Type", b"application/json");
+        (*res_mut).end(body_bytes, true);
+    }
+
+    let safe_handler: Option<extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut Request, *mut ::std::ffi::c_void)> =
+        unsafe { ::std::mem::transmute(Some(bun_serve_route_handler as unsafe extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut Request, *mut ::std::ffi::c_void))) };
+    (*app_ptr).any(b"/*", safe_handler, ud_ptr);
+
+    // Listen callback — just logs
+    #[allow(unsafe_op_in_unsafe_fn)]
+    unsafe extern "C" fn bun_serve_listen_cb(
+        listen_socket: *mut ListenSocket,
+        _user_data: *mut ::std::ffi::c_void,
+    ) {
+        if !listen_socket.is_null() {
+            let ls_ref = bun_opaque::opaque_deref_mut(listen_socket);
+            let ls_port = ls_ref.get_local_port();
+            eprintln!("Bun.serve() listening (uWS port={})", ls_port);
+        }
+    }
+
+    let safe_listen_cb: extern "C" fn(*mut ListenSocket, *mut ::std::ffi::c_void) =
+        unsafe { ::std::mem::transmute(bun_serve_listen_cb as unsafe extern "C" fn(*mut ListenSocket, *mut ::std::ffi::c_void)) };
+
+    (*app_ptr).listen(port as i32, safe_listen_cb, ud_ptr);
+
+    eprintln!("Bun.serve() listening on {}:{}", hostname, port);
+
+    // Build JS server object
+    let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let server_obj = JS_NewPlainObject(cx_ref));
+    if server_obj.get().is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    let srv_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &server_obj };
+    let srv_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &server_obj.get() };
 
-    let port_jsval = Int32Value(actual_port as i32);
+    let port_jsval = Int32Value(port as i32);
     let port_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &port_jsval };
     JS_DefineProperty(cx, srv_h, c"port".as_ptr(), port_h, JSPROP_ENUMERATE as u32);
 
-    if let Ok(c_hn) = ::std::ffi::CString::new(hostname.as_str()) {
+    if let Ok(c_hn) = CString::new(hostname.as_str()) {
         let hn_str = JS_NewStringCopyZ(cx, c_hn.as_ptr());
         if !hn_str.is_null() {
             let hn_v = StringValue(&*hn_str);
@@ -1153,110 +1228,24 @@ unsafe extern "C" fn bun_serve(
         }
     }
 
-    let bg_stop = ::std::sync::Arc::new(::std::sync::atomic::AtomicBool::new(false));
-    let bg_stop_clone = bg_stop.clone();
-    let bg_port = actual_port;
-    let bg_hostname = hostname.clone();
+    // Store app_ptr as private property for stop()
+    let app_val = Int32Value(app_ptr as i32);
+    let app_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &app_val };
+    JS_DefineProperty(cx, srv_h, c"_appPtr".as_ptr(), app_h, 0);
 
-    listener.set_nonblocking(true).ok();
-    ::std::thread::spawn(move || {
-        use ::std::io::{Read, Write};
-        loop {
-            if bg_stop_clone.load(::std::sync::atomic::Ordering::Relaxed) {
-                break;
-            }
-            match listener.accept() {
-                Ok((mut stream, _)) => {
-                    let mut buf = [0u8; 8192];
-                    let n = match stream.read(&mut buf) {
-                        Ok(n) if n > 0 => n,
-                        _ => continue,
-                    };
-                    let request = String::from_utf8_lossy(&buf[..n]);
-
-                    // Parse request line: METHOD PATH HTTP/1.x
-                    let first_line = request.lines().next().unwrap_or("");
-                    let mut parts = first_line.split_whitespace();
-                    let method = parts.next().unwrap_or("GET").to_uppercase();
-                    let url_path = parts.next().unwrap_or("/").to_string();
-
-                    // Parse headers
-                    let mut headers: HashMap<String, String> = HashMap::new();
-                    for line in request.lines().skip(1) {
-                        if line.is_empty() { break; }
-                        if let Some((k, v)) = line.split_once(':') {
-                            headers.insert(
-                                k.trim().to_ascii_lowercase(),
-                                v.trim().to_string(),
-                            );
-                        }
-                    }
-
-                    if headers.get("upgrade").map(|v| v.as_str()) == Some("websocket") {
-                        let ws_key = headers.get("sec-websocket-key")
-                            .cloned().unwrap_or_default();
-                        let accept_key = {
-                            use sha1::{Digest, Sha1};
-                            let mut hasher = Sha1::new();
-                            hasher.update(format!("{}258EAFA5-E914-47DA-95CA-C5AB0DC85B11", ws_key));
-                            let result = hasher.finalize();
-                            let encoded_bytes = bun_base64::encode_alloc(&result);
-                            ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned()
-                        };
-                        let response = format!(
-                            "HTTP/1.1 101 Switching Protocols\r\n\
-                             Upgrade: websocket\r\n\
-                             Connection: Upgrade\r\n\
-                             Sec-WebSocket-Accept: {}\r\n\r\n",
-                            accept_key
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                    } else {
-                        let body = format!("{{\"method\":\"{}\",\"url\":\"{}\"}}", method, url_path);
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\n\
-                             Content-Type: application/json\r\n\
-                             Content-Length: {}\r\n\
-                             Connection: close\r\n\r\n{}",
-                            body.len(), body
-                        );
-                        let _ = stream.write_all(response.as_bytes());
-                    }
-                }
-                Err(ref e) if e.kind() == ::std::io::ErrorKind::WouldBlock => {
-                    ::std::thread::sleep(::std::time::Duration::from_millis(100));
-                }
-                Err(_) => {}
-            }
-        }
-        eprintln!("Bun.serve() stopped on {}:{}", bg_hostname, bg_port);
-    });
-
-    thread_local! {
-        static SRV_STOP_HANDLES: RefCell<Vec<::std::sync::Arc<::std::sync::atomic::AtomicBool>>> = const { RefCell::new(Vec::new()) };
-    }
-    let stop_idx = SRV_STOP_HANDLES.with(|h| {
-        let mut handles = h.borrow_mut();
-        handles.push(bg_stop);
-        handles.len() - 1
-    });
-    let stop_idx_val = Int32Value(stop_idx as i32);
-    let stop_idx_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &stop_idx_val };
-    JS_DefineProperty(cx, srv_h, c"_stopIdx".as_ptr(), stop_idx_h, 0);
-
+    #[allow(unsafe_op_in_unsafe_fn)]
     unsafe extern "C" fn server_stop(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
         let args = CallArgs::from_vp(vp, _argc);
         let this_obj = args.thisv().to_object();
         let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-        let mut idx_val = Int32Value(-1);
-        JS_GetProperty(cx, this_h, c"_stopIdx".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut idx_val });
-        let idx = idx_val.to_int32() as usize;
-        SRV_STOP_HANDLES.with(|h| {
-            let handles = h.borrow();
-            if idx < handles.len() {
-                handles[idx].store(true, ::std::sync::atomic::Ordering::Relaxed);
-            }
-        });
+        let mut app_val = Int32Value(0);
+        JS_GetProperty(cx, this_h, c"_appPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut app_val });
+        let app_int = app_val.to_int32();
+        if app_int != 0 {
+            let app_ptr = app_int as *mut App::<false>;
+            App::<false>::destroy(app_ptr);
+            eprintln!("Bun.serve() stopped");
+        }
         args.rval().set(UndefinedValue());
         true
     }
@@ -1276,7 +1265,6 @@ unsafe extern "C" fn bun_serve(
     mozjs_sys::jsapi::JS_DefineFunction(
         cx, srv_h, c"stop".as_ptr(), Some(server_stop), 0, JSPROP_ENUMERATE as u32,
     );
-
     mozjs_sys::jsapi::JS_DefineFunction(
         cx, srv_h, c"ref".as_ptr(), Some(server_ref), 0, JSPROP_ENUMERATE as u32,
     );
@@ -1284,8 +1272,16 @@ unsafe extern "C" fn bun_serve(
         cx, srv_h, c"unref".as_ptr(), Some(server_unref), 0, JSPROP_ENUMERATE as u32,
     );
 
-    args.rval().set(mozjs::jsval::ObjectValue(server_obj));
+    args.rval().set(mozjs::jsval::ObjectValue(*server_obj));
     true
+}
+
+/// User data passed to uWS route handler via bun_uws::App::any.
+struct BunServeUserData {
+    fetch_cb: Option<*mut JSObject>,
+    app_ptr: *mut ::std::ffi::c_void,
+    hostname: String,
+    port: u16,
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

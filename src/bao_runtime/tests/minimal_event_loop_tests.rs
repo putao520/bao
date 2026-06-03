@@ -12,9 +12,15 @@ use bun_event_loop::MiniEventLoop::MiniEventLoop;
 // Pull in bao_uloop's `#[no_mangle] extern "C"` symbols (uws_get_loop etc.)
 // — `MiniEventLoop::init()` reaches them via `UwsLoop::get()` but the linker
 // GCs unreferenced no-mangle symbols without an explicit Rust reference.
+// Also pull in bao_runtime::dispatch so `__bun_run_file_poll` (extern "Rust")
+// is not GC'd — `bun_io::posix_event_loop::FilePoll::on_update` references it
+// at link time.
 fn force_uloop_link() {
     bao_uloop::force_link();
     bao_native_stubs::force_link();
+    // Ensure dispatch module's extern "Rust" symbols survive link-time GC.
+    // The module is `pub` in bao_runtime, so just referencing it here is enough.
+    let _ = bao_runtime::dispatch::__bun_run_file_poll as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
 }
 
 #[derive(Debug)]

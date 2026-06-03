@@ -100,6 +100,53 @@ fn main() {
 
     c_build.compile("usockets");
 
+    // ── C++ compilation: uWS C-ABI wrapper (libuwsockets.cpp) ────────────
+    // Provides uws_app_*, uws_res_*, uws_req_* symbols that Rust FFI calls.
+    let uws_dir = packages_dir.join("bun-uws");
+    let uws_src = uws_dir.join("src");
+
+    let mut cpp_build = cc::Build::new();
+    cpp_build.compiler("clang++");
+    cpp_build.cpp(true);
+    cpp_build.opt_level(1);
+    cpp_build
+        .flag("-std=c++20")
+        .flag("-DBUN_DEBUG=1")
+        .flag("-DLIBUS_USE_EPOLL=1")
+        .flag("-DLIBUS_MAX_READY_POLLS=1024")
+        .flag("-DLIBUS_SOCKET_DESCRIPTOR=int")
+        .flag("-DLIBUS_SOCKET_ERROR=-1")
+        .flag("-DLIBUS_EXT_ALIGNMENT=16")
+        .flag("-fno-exceptions")          // uWS is compiled without exceptions
+        .flag("-Wno-deprecated-declarations");
+
+    // GCC compat wrapper
+    if wrapper_h.exists() {
+        cpp_build.flag(&format!("-include{}", wrapper_h.display()));
+    }
+
+    if with_tls {
+        cpp_build
+            .flag("-DLIBUS_USE_OPENSSL=1")
+            .flag("-DLIBUS_USE_BORINGSSL=1")
+            .flag("-DWITH_BORINGSSL=1");
+    }
+
+    // Include paths for uWS C++ headers + uSockets internals
+    cpp_build
+        .include(&packages_dir)          // for #include <bun-uws/src/App.h>
+        .include(&uws_dir)               // for #include "App.h" via bun-uws/src/
+        .include(&uws_src)               // for #include "App.h" etc.
+        .include(&usockets_dir)           // for #include "libusockets.h"
+        .include(&usockets_src)           // for #include "internal/internal.h"
+        .include(&usockets_src.join("internal"))
+        .include(&usockets_src.join("internal/networking"))
+        .include(&crate_dir)             // for #include "_libusockets.h"
+        .include(&crate_dir.join("src")); // for #include <wtf/Assertions.h>
+
+    cpp_build.file(crate_dir.join("libuwsockets.cpp"));
+    cpp_build.compile("uwsockets");
+
     // ── Link dependencies ─────────────────────────────────────────────────
     // pthread is needed for bsd.c (pthread_atfork in some code paths)
     println!("cargo:rustc-link-lib=pthread");

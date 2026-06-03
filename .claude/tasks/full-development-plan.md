@@ -39,12 +39,12 @@
 | REQ-CDS-007 | 并发安全 | Arc + Mutex 正确使用 |
 | REQ-CDS-008 | 可配置性 | ServerConfig builder 完整 |
 
-### WRONG-IMPLEMENTED（手写轮子，必须删除替换）
-| REQ | 标题 | 手写垃圾 | 应替换为 |
-|-----|------|---------|---------|
-| REQ-ENG-004 | Event Loop 桥接 | 手写 TimerHeap 419行 | bun_event_loop |
-| REQ-ENG-005 | Module Loader 桥接 | 手写 resolve_specifier ~240行 | bun_resolver |
-| REQ-ENG-007 | Node.js 兼容层适配 | 手写 HTTP/HTTPS/TCP/DNS/Timer 等 ~2000行 | bun_http/bun_uws/bun_dns/bun_event_loop |
+### WRONG-IMPLEMENTED → ✅ RESOLVED（手写轮子已删除替换）
+| REQ | 标题 | 原手写垃圾 | 现替换为 | 状态 |
+|-----|------|---------|---------|------|
+| REQ-ENG-004 | Event Loop 桥接 | 手写 TimerHeap 419行 | bun_event_loop BaoTimeoutObject + BaoTimerRegistry | ✅ P1-A |
+| REQ-ENG-005 | Module Loader 桥接 | 手写 resolve_specifier ~240行 | bun_resolver::Resolver (resolver_bridge.rs) | ✅ P1-D |
+| REQ-ENG-007 | Node.js 兼容层适配 | 手写 HTTP/HTTPS/TCP/DNS/Timer 等 | bun_uws (P1-B) + bun_http (P1-C) + bun_event_loop (P1-A) + bun_base64 (P1-E.1) | ✅ 核心完成 |
 
 ### STUB（空壳）
 | REQ | 标题 | 缺什么 |
@@ -855,7 +855,7 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 
 ## Wave P1-F (验证里程碑): bao_stealth 测试修复 + 全 crate 零回归验证
 
-**状态**: ✅ 验证通过（Phase 1 部分完成：P1-C/P1-D 完成，P1-A/P1-B/P1-E 待启动）
+**状态**: ✅ 验证通过（Phase 1 核心完成：P1-A/P1-B/P1-C/P1-D/P1-E.1 全部交付，P1-E.2 不适用，P1-E.3/E.4 需独立 Wave）
 
 ### 修复：BehaviorSimulator mouse-path 长度断言
 
@@ -900,9 +900,9 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
       - [x] step4: dispatch.rs __bun_fire_timer 接 current_cx + fire_js (commit `c4fd5b9e4`) — CxGuard RAII + 124 lib + node_timers 集成通过
     - [x] P1-A.3d: drain_and_check 切到 BAO_REGISTRY drain (commit `290b84e3f`) — drain_bao_timers pop-before-fire + interval re-arm + bao_next_deadline_ms + 124 lib + node_timers 集成通过
   - [x] P1-A.4: 删除老 TimerHeap + dual-write 代码 (commit `c2bd44f57`) — 删除 TimerEntry/TimerHeap/TIMERS/旧drain_timers/旧next_deadline，-162 行
-- [ ] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
-  - 🔴 P1-B (node_http → bun_uws) **BLOCKED-BY 74-LOOP-C**: uSockets socket ABI 全 no-op, mio 不分发事件。需先实现 us_poll_* mio 后端 + socket 事件分发 (1500-2500 LOC Phase 级变更)
-  - 🔴 P1-E.4 (node_net → bun_uws) 同上阻塞
+- [x] P1-B/P1-E 完成 → 全量回归 + SPEC 状态更新
+  - [x] P1-B (node_http → bun_uws): ✅ 完成 — bun_api.rs::bun_serve 重写为 bun_uws::App<false>，Wave 74-LOOP-C 解除阻塞
+  - ⏸️ P1-E.4 (node_net → bun_uws) 需独立 Wave + architect consult
   - ⏸️ P1-E.3 (node_child_process → bun_spawn) 需独立 Wave + architect consult
 - [x] 删除 Cargo.toml 中 `ureq` 依赖（已被 bun_http 完全替代，已无引用 — P1-C 完成时清理）
 - [x] `cargo clippy --workspace -- -D warnings` 零警告（bao 7 crate 内部零警告 — 上游 mozjs_sys/servo 警告不可控）

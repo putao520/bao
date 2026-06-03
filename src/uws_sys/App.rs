@@ -507,8 +507,8 @@ pub type uws_app_t = uws_app_s;
 pub mod c {
     use super::*;
 
-    pub(crate) type uws_listen_handler = Option<extern "C" fn(*mut UwsListenSocket, *mut c_void)>;
-    pub(crate) type uws_method_handler =
+    pub type uws_listen_handler = Option<extern "C" fn(*mut UwsListenSocket, *mut c_void)>;
+    pub type uws_method_handler =
         Option<extern "C" fn(*mut uws_res, *mut Request, *mut c_void)>;
     pub(crate) type uws_filter_handler = Option<extern "C" fn(*mut uws_res, i32, *mut c_void)>;
     pub(crate) type uws_missing_server_handler = Option<extern "C" fn(*const c_char, *mut c_void)>;

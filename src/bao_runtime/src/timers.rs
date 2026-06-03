@@ -1,6 +1,5 @@
 // @trace REQ-ENG-004
 use ::std::cell::{Cell, RefCell};
-use ::std::os::unix::io::RawFd;
 use ::std::time::Duration;
 
 use mozjs::jsapi::*;
@@ -9,8 +8,6 @@ use mozjs::rust::wrappers2::JS_DefineFunction;
 
 thread_local! {
     static NEXT_ID: Cell<u32> = const { Cell::new(1) };
-    static EPOLL_FD: Cell<RawFd> = const { Cell::new(-1) };
-    static REGISTERED_FDS: RefCell<Vec<RawFd>> = const { RefCell::new(Vec::new()) };
 
     /// Per-thread MiniEventLoop holder. Lazily initialized on first access
     /// via `with_event_loop`.
@@ -98,50 +95,7 @@ where
     })
 }
 
-fn ensure_epoll_fd() -> RawFd {
-    EPOLL_FD.with(|cell| {
-        let fd = cell.get();
-        if fd >= 0 {
-            return fd;
-        }
-        let fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
-        debug_assert!(fd >= 0, "epoll_create1 failed: {}", fd);
-        cell.set(fd);
-        fd
-    })
-}
-
-fn sync_http_listeners() {
-    let epfd = ensure_epoll_fd();
-    let current_fds: Vec<RawFd> = crate::node_http::listener_fds();
-    let registered: Vec<RawFd> = REGISTERED_FDS.with(|r| r.borrow().clone());
-
-    for fd in &current_fds {
-        if !registered.contains(fd) {
-            let mut ev = libc::epoll_event {
-                events: libc::EPOLLIN as u32,
-                u64: *fd as u64,
-            };
-            unsafe {
-                libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, *fd, &mut ev);
-            }
-        }
-    }
-
-    for fd in &registered {
-        if !current_fds.contains(fd) {
-            unsafe {
-                libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, *fd, ::std::ptr::null_mut());
-            }
-        }
-    }
-
-    REGISTERED_FDS.with(|r| *r.borrow_mut() = current_fds);
-}
-
-pub fn init() {
-    ensure_epoll_fd();
-}
+pub fn init() {}
 
 pub fn install_timer_globals(
     cx: &mut mozjs::context::JSContext,
@@ -176,12 +130,10 @@ pub fn install_timer_globals(
     }
 }
 
-/// P1-A.3d: main event-loop tick. Drains BAO_REGISTRY timers via the new
-/// Bun-style intrusive heap and fires their JS callbacks. Retains epoll for
-/// HTTP I/O (P1-B will replace this with bun_uws).
-///
-/// Returns `true` if the event loop should continue (has pending timers or
-/// active HTTP servers).
+/// P1-B: main event-loop tick. Uses MiniEventLoop::tick_once for I/O
+/// (bao_uloop epoll drives uWS App sockets). Drains BAO_REGISTRY timers
+/// and fires their JS callbacks. Returns `true` if the event loop should
+/// continue (has pending timers or active HTTP servers).
 pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     // SAFETY: cx is a live &mut JSContext on the current thread; the guard
     // clears it on drop so subsequent code on this thread sees null.
@@ -190,32 +142,13 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     }
     let _cx_guard = CxGuard::new();
 
-    let epfd = ensure_epoll_fd();
-    sync_http_listeners();
-
-    crate::node_http::accept_connections();
+    // Tick the MiniEventLoop — this drives bao_uloop epoll which handles
+    // all uWS App I/O (HTTP server sockets, etc.) and concurrent tasks.
+    with_event_loop(|loop_| {
+        loop_.tick_once(core::ptr::null_mut());
+    });
 
     let has_http = crate::node_http::has_active_servers();
-    let deadline_ms = bao_next_deadline_ms();
-
-    let timeout_ms: i32 = if let Some(ms) = deadline_ms {
-        ms.min(100)
-    } else if has_http {
-        100
-    } else {
-        // No timers and no HTTP — drain any already-expired timers and exit.
-        let raw_cx = unsafe { cx.raw_cx() };
-        drain_bao_timers(raw_cx);
-        bao_engine::job_queue::JobQueue::drain(cx);
-        return false;
-    };
-
-    let mut events: [libc::epoll_event; 32] = unsafe { ::std::mem::zeroed() };
-    unsafe {
-        libc::epoll_wait(epfd, events.as_mut_ptr(), 32, timeout_ms);
-    }
-
-    crate::node_http::poll_http_requests(cx);
     let raw_cx = unsafe { cx.raw_cx() };
     drain_bao_timers(raw_cx);
     bao_engine::job_queue::JobQueue::drain(cx);
@@ -279,32 +212,7 @@ pub fn has_pending_timers() -> bool {
     BAO_REGISTRY.with(|r| !r.borrow().is_empty())
 }
 
-/// P1-A.3d: compute milliseconds until the next BAO_REGISTRY timer deadline.
-/// Returns `None` if no timers are pending. Result capped at 100ms (epoll max
-/// sleep to keep HTTP polling responsive).
-fn bao_next_deadline_ms() -> ::std::option::Option<i32> {
-    BAO_REGISTRY.with(|r| {
-        let reg = r.borrow();
-        match reg.next_deadline() {
-            None => None,
-            Some(dl) => {
-                let now = Timespec::now_allow_mocked_time();
-                if dl.order(&now) != core::cmp::Ordering::Greater {
-                    ::std::option::Option::Some(0) // already expired
-                } else if dl.sec > now.sec {
-                    // ≥1 second remaining → definitely > 100ms
-                    ::std::option::Option::Some(100)
-                } else {
-                    // Same second — nanosecond diff fits in i64 easily
-                    let diff_ns = dl.nsec - now.nsec;
-                    ::std::option::Option::Some(((diff_ns / 1_000_000) as i32).min(100))
-                }
-            }
-        }
-    })
-}
-
-/// P1-A.3d: alias for has_pending_timers (used by drain_and_check).
+/// Alias for has_pending_timers (used by drain_and_check).
 fn bao_has_pending_timers() -> bool {
     has_pending_timers()
 }

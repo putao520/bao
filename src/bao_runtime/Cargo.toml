@@ -33,6 +33,8 @@ bun_http_types = { path = "../http_types" }
 bun_core = { path = "../bun_core" }
 bun_url = { path = "../url" }
 bun_uws = { path = "../uws" }
+bun_uws_sys = { path = "../uws_sys" }
+bun_opaque = { path = "../opaque" }
 bun_picohttp = { path = "../picohttp" }
 bun_resolver = { path = "../resolver" }
 bun_event_loop = { path = "../event_loop" }
