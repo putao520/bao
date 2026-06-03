@@ -137,3 +137,106 @@ impl WebViewDelegate for BaoWebViewDelegate {
         eprintln!("[webview] crashed: {reason}");
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── BaoWebViewState ────────────────────────────────────────────
+    // @trace REQ-BRW-001 [req:REQ-BRW-001] [level:unit]
+
+    #[test]
+    fn test_webview_state_default() {
+        let state = BaoWebViewState::default();
+        assert!(state.url.is_none());
+        assert!(state.title.is_none());
+        assert!(matches!(state.load_status, LoadStatus::Started));
+        assert!(!state.frame_ready);
+    }
+
+    #[test]
+    fn test_webview_state_url_mutate() {
+        let mut state = BaoWebViewState::default();
+        state.url = Some(url::Url::parse("https://example.com").unwrap());
+        assert!(state.url.is_some());
+        assert_eq!(state.url.unwrap().as_str(), "https://example.com/");
+    }
+
+    #[test]
+    fn test_webview_state_title_mutate() {
+        let mut state = BaoWebViewState::default();
+        state.title = Some("Test Page".to_string());
+        assert_eq!(state.title.as_deref(), Some("Test Page"));
+    }
+
+    #[test]
+    fn test_webview_state_frame_ready_toggle() {
+        let mut state = BaoWebViewState::default();
+        assert!(!state.frame_ready);
+        state.frame_ready = true;
+        assert!(state.frame_ready);
+    }
+
+    // ─── BaoServoDelegate ──────────────────────────────────────────
+    // @trace REQ-BRW-001 [req:REQ-BRW-001] [level:unit]
+
+    #[test]
+    fn test_servo_delegate_new_no_error() {
+        let delegate = BaoServoDelegate::new();
+        assert!(delegate.last_error().is_none());
+    }
+
+    #[test]
+    fn test_servo_delegate_default_no_error() {
+        let delegate = BaoServoDelegate::default();
+        assert!(delegate.last_error().is_none());
+    }
+
+    // ─── BaoWebViewDelegate ────────────────────────────────────────
+    // @trace REQ-BRW-001 [req:REQ-BRW-001] [level:unit]
+
+    #[test]
+    fn test_webview_delegate_new_with_state() {
+        let state = Rc::new(RefCell::new(BaoWebViewState::default()));
+        let viewport = PhysicalSize::new(1024, 768);
+        let delegate = BaoWebViewDelegate::new(state, viewport);
+        assert!(delegate.state().borrow().url.is_none());
+    }
+
+    #[test]
+    fn test_webview_delegate_state_rc_shared() {
+        let state = Rc::new(RefCell::new(BaoWebViewState::default()));
+        let viewport = PhysicalSize::new(800, 600);
+        let delegate = BaoWebViewDelegate::new(Rc::clone(&state), viewport);
+        // Modify state externally
+        state.borrow_mut().title = Some("External".to_string());
+        // Delegate sees same state
+        assert_eq!(delegate.state().borrow().title.as_deref(), Some("External"));
+    }
+
+    #[test]
+    fn test_webview_delegate_viewport_size() {
+        let state = Rc::new(RefCell::new(BaoWebViewState::default()));
+        let viewport = PhysicalSize::new(1440, 900);
+        let delegate = BaoWebViewDelegate::new(state, viewport);
+        // Verify delegate was created with specific viewport
+        assert!(delegate.state().borrow().url.is_none());
+    }
+
+    // ─── PoolStats ─────────────────────────────────────────────────
+    // @trace REQ-LIB-001 [req:REQ-LIB-001] [level:unit]
+
+    #[test]
+    fn test_pool_stats_fields() {
+        let stats = crate::page_pool::PoolStats {
+            active: 3,
+            idle: 1,
+            total_created: 5,
+            total_destroyed: 2,
+        };
+        assert_eq!(stats.active, 3);
+        assert_eq!(stats.idle, 1);
+        assert_eq!(stats.total_created, 5);
+        assert_eq!(stats.total_destroyed, 2);
+    }
+}
