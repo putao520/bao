@@ -1073,3 +1073,453 @@ unsafe extern "C" fn cp_child_read_stderr(
     }
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── status_to_exit_code ──────────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_status_to_exit_code_exited_zero() {
+        let status = Status::Exited(Exited { code: 0, signal: 0 });
+        assert_eq!(status_to_exit_code(&status), 0);
+    }
+
+    #[test]
+    fn test_status_to_exit_code_exited_nonzero() {
+        let status = Status::Exited(Exited { code: 42, signal: 0 });
+        assert_eq!(status_to_exit_code(&status), 42);
+    }
+
+    #[test]
+    fn test_status_to_exit_code_exited_with_signal() {
+        let status = Status::Exited(Exited { code: 0, signal: 9 });
+        assert_eq!(status_to_exit_code(&status), -9);
+    }
+
+    #[test]
+    fn test_status_to_exit_code_signaled() {
+        let status = Status::Signaled(15);
+        assert_eq!(status_to_exit_code(&status), -15);
+    }
+
+    #[test]
+    fn test_status_to_exit_code_running() {
+        let status = Status::Running;
+        assert_eq!(status_to_exit_code(&status), -1);
+    }
+
+    #[test]
+    fn test_status_to_exit_code_err() {
+        // Status::Err maps to -1 regardless of error type
+        let status = Status::Err(bun_sys::Error::from_code_int(libc::ESRCH, bun_sys::Tag::waitpid));
+        assert_eq!(status_to_exit_code(&status), -1);
+    }
+
+    // ─── shell_sync_opts ──────────────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_shell_sync_opts_unix_argv() {
+        let opts = shell_sync_opts("echo hello");
+        assert_eq!(opts.argv.len(), 3);
+
+        let shell = if cfg!(target_family = "unix") { "/bin/sh" } else { "cmd.exe" };
+        let flag = if cfg!(target_family = "unix") { "-c" } else { "/C" };
+
+        assert_eq!(&*opts.argv[0], shell.as_bytes());
+        assert_eq!(&*opts.argv[1], flag.as_bytes());
+        assert_eq!(&*opts.argv[2], b"echo hello");
+    }
+
+    #[test]
+    fn test_shell_sync_opts_stdin_is_ignore() {
+        let opts = shell_sync_opts("ls");
+        assert!(matches!(opts.stdin, SyncStdio::Ignore));
+    }
+
+    #[test]
+    fn test_shell_sync_opts_stdout_stderr_is_buffer() {
+        let opts = shell_sync_opts("ls");
+        assert!(matches!(opts.stdout, SyncStdio::Buffer));
+        assert!(matches!(opts.stderr, SyncStdio::Buffer));
+    }
+
+    #[test]
+    fn test_shell_sync_opts_not_detached() {
+        let opts = shell_sync_opts("ls");
+        assert!(!opts.detached);
+    }
+
+    #[test]
+    fn test_shell_sync_opts_empty_cwd() {
+        let opts = shell_sync_opts("ls");
+        assert!(opts.cwd.is_empty());
+    }
+
+    #[test]
+    fn test_shell_sync_opts_no_envp() {
+        let opts = shell_sync_opts("ls");
+        assert!(opts.envp.is_none());
+    }
+
+    // ─── SyncStdio mapping ───────────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_sync_stdio_variants() {
+        assert!(matches!(SyncStdio::Inherit, SyncStdio::Inherit));
+        assert!(matches!(SyncStdio::Ignore, SyncStdio::Ignore));
+        assert!(matches!(SyncStdio::Buffer, SyncStdio::Buffer));
+    }
+
+    #[test]
+    fn test_sync_stdio_equality() {
+        assert!(SyncStdio::Inherit == SyncStdio::Inherit);
+        assert!(SyncStdio::Ignore == SyncStdio::Ignore);
+        assert!(SyncStdio::Buffer == SyncStdio::Buffer);
+        assert!(SyncStdio::Inherit != SyncStdio::Buffer);
+        assert!(SyncStdio::Buffer != SyncStdio::Ignore);
+    }
+
+    #[test]
+    fn test_sync_stdio_copy() {
+        let a = SyncStdio::Buffer;
+        let b = a;
+        assert!(a == b);
+    }
+
+    #[test]
+    fn test_sync_stdio_clone() {
+        let a = SyncStdio::Inherit;
+        let b = a.clone();
+        assert!(a == b);
+    }
+
+    // ─── spawn_sync::Options defaults ────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_sync_options_default() {
+        let opts = spawn_sync::Options::default();
+        assert!(matches!(opts.stdin, SyncStdio::Ignore));
+        assert!(matches!(opts.stdout, SyncStdio::Inherit));
+        assert!(matches!(opts.stderr, SyncStdio::Inherit));
+        assert!(opts.ipc.is_none());
+        assert!(opts.cwd.is_empty());
+        assert!(!opts.detached);
+        assert!(opts.argv.is_empty());
+        assert!(opts.envp.is_none());
+        assert!(!opts.use_execve_on_macos);
+        assert!(opts.argv0.is_none());
+    }
+
+    #[test]
+    fn test_sync_options_argv_construction() {
+        let mut opts = spawn_sync::Options::default();
+        opts.argv.push(b"echo".to_vec().into_boxed_slice());
+        opts.argv.push(b"hello".to_vec().into_boxed_slice());
+        opts.stdout = SyncStdio::Buffer;
+        opts.stderr = SyncStdio::Buffer;
+        assert_eq!(opts.argv.len(), 2);
+        assert_eq!(&*opts.argv[0], b"echo");
+        assert_eq!(&*opts.argv[1], b"hello");
+    }
+
+    #[test]
+    fn test_sync_options_cwd_boxed_slice() {
+        let mut opts = spawn_sync::Options::default();
+        opts.cwd = b"/tmp".to_vec().into_boxed_slice();
+        assert_eq!(&*opts.cwd, b"/tmp");
+    }
+
+    // ─── Status / Exited type properties ─────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_status_is_ok_exited_zero() {
+        let status = Status::Exited(Exited { code: 0, signal: 0 });
+        assert!(status.is_ok());
+    }
+
+    #[test]
+    fn test_status_is_ok_exited_nonzero() {
+        let status = Status::Exited(Exited { code: 1, signal: 0 });
+        assert!(!status.is_ok());
+    }
+
+    #[test]
+    fn test_status_is_ok_signaled() {
+        let status = Status::Signaled(9);
+        assert!(!status.is_ok());
+    }
+
+    #[test]
+    fn test_status_is_ok_running() {
+        let status = Status::Running;
+        assert!(!status.is_ok());
+    }
+
+    #[test]
+    fn test_exited_default() {
+        let e = Exited::default();
+        assert_eq!(e.code, 0);
+        assert_eq!(e.signal, 0);
+    }
+
+    #[test]
+    fn test_exited_clone_copy() {
+        let e = Exited { code: 5, signal: 0 };
+        let e2 = e;
+        let e3 = e;
+        assert_eq!(e2.code, 5);
+        assert_eq!(e3.code, 5);
+    }
+
+    #[test]
+    fn test_status_default_is_running() {
+        let status = Status::default();
+        assert!(matches!(status, Status::Running));
+    }
+
+    // ─── spawn_sync::Result ──────────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_sync_result_is_ok_with_zero_exit() {
+        let result = spawn_sync::Result {
+            status: Status::Exited(Exited { code: 0, signal: 0 }),
+            stdout: vec![],
+            stderr: vec![],
+        };
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_sync_result_is_not_ok_with_nonzero_exit() {
+        let result = spawn_sync::Result {
+            status: Status::Exited(Exited { code: 1, signal: 0 }),
+            stdout: vec![],
+            stderr: vec![],
+        };
+        assert!(!result.is_ok());
+    }
+
+    #[test]
+    fn test_sync_result_stdout_stderr_capture() {
+        let result = spawn_sync::Result {
+            status: Status::Exited(Exited { code: 0, signal: 0 }),
+            stdout: b"hello\n".to_vec(),
+            stderr: vec![],
+        };
+        assert_eq!(result.stdout, b"hello\n");
+        assert!(result.stderr.is_empty());
+    }
+
+    // ─── bun_spawn integration: actual process spawn ─────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:integration]
+    // NOTE: These require a fully initialized event loop (uSockets loop).
+    // Run with `cargo test -- --ignored` when testing in a full runtime context.
+
+    #[test]
+    #[ignore = "requires initialized uSockets event loop"]
+    fn test_spawn_echo_hello() {
+        let opts = spawn_sync::Options {
+            stdin: SyncStdio::Ignore,
+            stdout: SyncStdio::Buffer,
+            stderr: SyncStdio::Buffer,
+            ipc: None,
+            cwd: Box::new([]),
+            detached: false,
+            argv: vec![
+                b"echo".to_vec().into_boxed_slice(),
+                b"hello".to_vec().into_boxed_slice(),
+            ],
+            envp: None,
+            use_execve_on_macos: false,
+            argv0: None,
+            windows: (),
+        };
+
+        let result = match spawn_sync::spawn(&opts) {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => panic!("spawn system error: {:?}", e),
+            Err(e) => panic!("spawn failed: {:?}", e),
+        };
+
+        assert!(result.is_ok());
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("hello"), "stdout was: {:?}", stdout);
+    }
+
+    #[test]
+    #[ignore = "requires initialized uSockets event loop"]
+    fn test_spawn_exit_code_nonzero() {
+        let opts = spawn_sync::Options {
+            stdin: SyncStdio::Ignore,
+            stdout: SyncStdio::Buffer,
+            stderr: SyncStdio::Buffer,
+            ipc: None,
+            cwd: Box::new([]),
+            detached: false,
+            argv: vec![
+                b"sh".to_vec().into_boxed_slice(),
+                b"-c".to_vec().into_boxed_slice(),
+                b"exit 42".to_vec().into_boxed_slice(),
+            ],
+            envp: None,
+            use_execve_on_macos: false,
+            argv0: None,
+            windows: (),
+        };
+
+        let result = match spawn_sync::spawn(&opts) {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => panic!("spawn system error: {:?}", e),
+            Err(e) => panic!("spawn failed: {:?}", e),
+        };
+
+        assert!(!result.is_ok());
+        assert_eq!(status_to_exit_code(&result.status), 42);
+    }
+
+    #[test]
+    #[ignore = "requires initialized uSockets event loop"]
+    fn test_spawn_stderr_capture() {
+        let opts = spawn_sync::Options {
+            stdin: SyncStdio::Ignore,
+            stdout: SyncStdio::Buffer,
+            stderr: SyncStdio::Buffer,
+            ipc: None,
+            cwd: Box::new([]),
+            detached: false,
+            argv: vec![
+                b"sh".to_vec().into_boxed_slice(),
+                b"-c".to_vec().into_boxed_slice(),
+                b"echo err >&2".to_vec().into_boxed_slice(),
+            ],
+            envp: None,
+            use_execve_on_macos: false,
+            argv0: None,
+            windows: (),
+        };
+
+        let result = match spawn_sync::spawn(&opts) {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => panic!("spawn system error: {:?}", e),
+            Err(e) => panic!("spawn failed: {:?}", e),
+        };
+
+        assert!(result.is_ok());
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(stderr.contains("err"), "stderr was: {:?}", stderr);
+    }
+
+    #[test]
+    #[ignore = "requires initialized uSockets event loop"]
+    fn test_spawn_nonexistent_command() {
+        let opts = spawn_sync::Options {
+            stdin: SyncStdio::Ignore,
+            stdout: SyncStdio::Buffer,
+            stderr: SyncStdio::Buffer,
+            ipc: None,
+            cwd: Box::new([]),
+            detached: false,
+            argv: vec![
+                b"/nonexistent/command/that/does/not/exist".to_vec().into_boxed_slice(),
+            ],
+            envp: None,
+            use_execve_on_macos: false,
+            argv0: None,
+            windows: (),
+        };
+
+        // spawn() should return an error (either Ok(Err) or Err) for a nonexistent binary
+        let result = spawn_sync::spawn(&opts);
+        match result {
+            Ok(Ok(r)) => {
+                // On some systems, posix_spawn succeeds but the child fails immediately
+                assert!(!r.is_ok(), "nonexistent command should not exit 0");
+            }
+            Ok(Err(_)) => {} // System error — expected
+            Err(_) => {}     // Spawn error — expected
+        }
+    }
+
+    #[test]
+    #[ignore = "requires initialized uSockets event loop"]
+    fn test_shell_sync_opts_spawn_echo() {
+        // Integration: shell_sync_opts builds opts that can actually spawn
+        let opts = shell_sync_opts("echo from_shell");
+        let result = match spawn_sync::spawn(&opts) {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => panic!("shell spawn system error: {:?}", e),
+            Err(e) => panic!("shell spawn failed: {:?}", e),
+        };
+
+        assert!(result.is_ok());
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("from_shell"), "stdout was: {:?}", stdout);
+    }
+
+    #[test]
+    #[ignore = "requires initialized uSockets event loop"]
+    fn test_spawn_cwd_option() {
+        let opts = spawn_sync::Options {
+            stdin: SyncStdio::Ignore,
+            stdout: SyncStdio::Buffer,
+            stderr: SyncStdio::Buffer,
+            ipc: None,
+            cwd: b"/tmp".to_vec().into_boxed_slice(),
+            detached: false,
+            argv: vec![
+                b"pwd".to_vec().into_boxed_slice(),
+            ],
+            envp: None,
+            use_execve_on_macos: false,
+            argv0: None,
+            windows: (),
+        };
+
+        let result = match spawn_sync::spawn(&opts) {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => panic!("spawn system error: {:?}", e),
+            Err(e) => panic!("spawn failed: {:?}", e),
+        };
+
+        assert!(result.is_ok());
+        let stdout = String::from_utf8_lossy(&result.stdout);
+        assert!(stdout.contains("/tmp"), "stdout was: {:?}", stdout);
+    }
+
+    #[test]
+    #[ignore = "requires initialized uSockets event loop"]
+    fn test_spawn_stdin_ignore() {
+        // Verify Ignore stdin doesn't cause spawn failure
+        let opts = spawn_sync::Options {
+            stdin: SyncStdio::Ignore,
+            stdout: SyncStdio::Buffer,
+            stderr: SyncStdio::Buffer,
+            ipc: None,
+            cwd: Box::new([]),
+            detached: false,
+            argv: vec![
+                b"true".to_vec().into_boxed_slice(),
+            ],
+            envp: None,
+            use_execve_on_macos: false,
+            argv0: None,
+            windows: (),
+        };
+
+        let result = match spawn_sync::spawn(&opts) {
+            Ok(Ok(r)) => r,
+            Ok(Err(e)) => panic!("spawn system error: {:?}", e),
+            Err(e) => panic!("spawn failed: {:?}", e),
+        };
+
+        assert!(result.is_ok());
+    }
+}
