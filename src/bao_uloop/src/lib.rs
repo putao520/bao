@@ -1365,4 +1365,183 @@ mod tests {
             assert!((*p).num_polls >= 0, "num_polls must be non-negative");
         }
     }
+
+    // ──── dispatch symbol reachability ────
+
+    #[test]
+    fn force_link_covers_all_dispatch_symbols() {
+        // force_link references all us_dispatch_* symbols.
+        // If this compiles, all dispatch functions are reachable.
+        force_link();
+    }
+
+    #[test]
+    fn us_dispatch_ssl_raw_tap_returns_socket() {
+        // ssl_raw_tap is a no-op that returns the socket pointer unchanged.
+        let fake_ptr = 0xDEAD_BEEF as *mut c_void;
+        let result = unsafe { us_dispatch_ssl_raw_tap(fake_ptr, ptr::null_mut(), 0) };
+        assert_eq!(result, fake_ptr, "ssl_raw_tap must return socket unchanged");
+    }
+
+    // ──── addrinfo extended tests ────
+
+    #[test]
+    fn addrinfo_free_request_is_no_op() {
+        // Should not panic with any pointer values
+        unsafe { Bun__addrinfo_freeRequest(ptr::null_mut(), 0); }
+        unsafe { Bun__addrinfo_freeRequest(ptr::null_mut(), -1); }
+    }
+
+    #[test]
+    fn addrinfo_register_quic_is_no_op() {
+        unsafe { Bun__addrinfo_registerQuic(ptr::null_mut(), ptr::null_mut()); }
+    }
+
+    #[test]
+    fn bun_internal_date_header_timer_is_no_op() {
+        unsafe { Bun__internal_ensureDateHeaderTimerIsEnabled(ptr::null_mut()); }
+    }
+
+    // ──── encode_tagged_ptr edge cases ────
+
+    #[test]
+    fn encode_tagged_ptr_with_null_pointer() {
+        let encoded = encode_tagged_ptr(ptr::null_mut(), 0);
+        assert_eq!(encoded, 0, "null ptr with tag 0 must be 0");
+    }
+
+    #[test]
+    fn encode_tagged_ptr_with_max_tag() {
+        let ptr = 0x1000 as *mut c_void;
+        let max_tag: u16 = (1u16 << 15) - 1; // u15 max
+        let encoded = encode_tagged_ptr(ptr, max_tag);
+        let addr_mask: u64 = (1u64 << ADDR_BITS) - 1;
+        assert_eq!(encoded & addr_mask, 0x1000, "pointer bits preserved");
+        assert_eq!((encoded >> ADDR_BITS) as u16, max_tag, "tag bits preserved");
+    }
+
+    #[test]
+    fn encode_tagged_ptr_different_tags_differ() {
+        let ptr = 0x2000 as *mut c_void;
+        let e1 = encode_tagged_ptr(ptr, 1);
+        let e2 = encode_tagged_ptr(ptr, 2);
+        assert_ne!(e1, e2, "different tags must produce different encoded values");
+    }
+
+    // ──── loop lifecycle edge cases ────
+
+    #[test]
+    fn us_loop_free_with_null_is_no_op() {
+        unsafe { us_loop_free(ptr::null_mut()); }
+    }
+
+    #[test]
+    fn loop_active_starts_at_zero() {
+        let p = uws_get_loop();
+        unsafe {
+            assert_eq!((*p).active, 0, "active must start at 0");
+        }
+    }
+
+    #[test]
+    fn loop_iteration_number_is_non_negative() {
+        let p = uws_get_loop();
+        unsafe {
+            let n = (*p).iteration_number();
+            assert!(n >= 0, "iteration_number must be non-negative");
+        }
+    }
+
+    #[test]
+    fn tick_with_nonzero_timeout_struct() {
+        let p = uws_get_loop();
+        let ts = Timespec { sec: 1, nsec: 500_000_000 }; // 1.5s
+        unsafe {
+            let before = (*p).iteration_number();
+            // With pending_wakeups=0 and timeout=1.5s, epoll_wait would block.
+            // But since no sockets are registered, it should timeout immediately
+            // and bump iteration_nr.
+            us_loop_run_bun_tick(p, &ts);
+            let after = (*p).iteration_number();
+            assert_eq!(after, before + 1, "tick must still bump iteration");
+        }
+    }
+
+    // ──── defer edge cases ────
+
+    #[test]
+    fn defer_many_callbacks_drain_in_fifo() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let counter = AtomicUsize::new(0);
+        let p = uws_get_loop();
+
+        extern "C" fn inc(ctx: *mut c_void) {
+            unsafe { (*(ctx as *const AtomicUsize)).fetch_add(1, Ordering::SeqCst) };
+        }
+
+        for _ in 0..100 {
+            unsafe { uws_loop_defer(p, &counter as *const AtomicUsize as *mut c_void, inc); }
+        }
+        unsafe {
+            us_loop_run_bun_tick(p, ptr::null());
+        }
+        assert_eq!(counter.load(Ordering::SeqCst), 100, "all 100 deferred callbacks must fire");
+    }
+
+    // ──── pre/post handler edge cases ────
+
+    #[test]
+    fn remove_nonexistent_handler_is_no_op() {
+        extern "C" fn noop(_ctx: *mut c_void, _loop_: *mut Loop) {}
+        let p = uws_get_loop();
+        unsafe {
+            // Removing a handler that was never added should not panic
+            uws_loop_removePreHandler(p, ptr::null_mut(), noop);
+            uws_loop_removePostHandler(p, ptr::null_mut(), noop);
+        }
+    }
+
+    #[test]
+    fn pre_handler_fires_before_epoll_post_handler_after() {
+        use std::sync::atomic::{AtomicIsize, Ordering};
+        // Use signed counter: pre sets +1, post sets -1
+        let phase = AtomicIsize::new(0);
+        let p = uws_get_loop();
+
+        extern "C" fn pre_mark(ctx: *mut c_void, _loop_: *mut Loop) {
+            unsafe { (*(ctx as *const AtomicIsize)).store(1, Ordering::SeqCst) };
+        }
+        extern "C" fn post_mark(ctx: *mut c_void, _loop_: *mut Loop) {
+            let prev = unsafe { (*(ctx as *const AtomicIsize)).load(Ordering::SeqCst) };
+            // Post should see pre's mark (prev == 1)
+            unsafe { (*(ctx as *const AtomicIsize)).store(prev + 10, Ordering::SeqCst) };
+        }
+
+        let raw = &phase as *const AtomicIsize as *mut c_void;
+        unsafe {
+            uws_loop_addPreHandler(p, raw, pre_mark);
+            uws_loop_addPostHandler(p, raw, post_mark);
+            us_loop_run_bun_tick(p, ptr::null());
+            // Pre set 1, post saw 1 and set 11
+            assert_eq!(phase.load(Ordering::SeqCst), 11, "pre must fire before post");
+            uws_loop_removePreHandler(p, raw, pre_mark);
+            uws_loop_removePostHandler(p, raw, post_mark);
+        }
+    }
+
+    // ──── wakeup edge cases ────
+
+    #[test]
+    fn wakeup_then_tick_then_wakeup_then_tick() {
+        let p = uws_get_loop();
+        unsafe {
+            us_wakeup_loop(p);
+            us_loop_run_bun_tick(p, ptr::null());
+            assert_eq!((*p).pending_wakeups, 0);
+
+            us_wakeup_loop(p);
+            us_loop_run_bun_tick(p, ptr::null());
+            assert_eq!((*p).pending_wakeups, 0, "second wakeup+tick cycle must also clear");
+        }
+    }
 }

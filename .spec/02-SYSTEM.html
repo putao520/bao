@@ -295,7 +295,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <p>关键发现：Bun 采用 <strong>foo + foo_jsc 两维分离模式</strong>，每个需要暴露给 JS 的功能域都有独立的纯 Rust crate 和 JSC 绑定 crate。</p>
 
 <table data-entity-table="BunJscBridge">
-<tr data-field="crate" data-type="string" data-required="true"><td>纯 Rust Crate</td><td>功能</td><td>JSC 桥接 Crate</td></tr>
+<tr data-field="crate" data-required="true" data-type="string"><td>纯 Rust Crate</td><td>功能</td><td>JSC 桥接 Crate</td></tr>
 <tr><td>bun_ast</td><td>AST 节点</td><td>bun_ast_jsc</td></tr>
 <tr><td>bun_css</td><td>CSS 处理</td><td>bun_css_jsc</td></tr>
 <tr><td>bun_http</td><td>HTTP 协议</td><td>bun_http_jsc</td></tr>
@@ -948,17 +948,34 @@ Permission 配置:
 
 <div id="artifact-sla-matrix" data-artifact-type="sla">
 <h3>服务等级目标</h3>
-<table>
-<tr><td>指标</td><td>目标值</td></tr>
-<tr><td>冷启动（纯脚本）</td><td>≤ 100ms</td></tr>
-<tr><td>冷启动（含 servo）</td><td>≤ 500ms</td></tr>
-<tr><td>热启动</td><td>≤ 20ms</td></tr>
-<tr><td>JS 执行延迟</td><td>≤ 1ms</td></tr>
-<tr><td>CDP 命令响应（非截图）</td><td>≤ 50ms</td></tr>
-<tr><td>截图延迟 (1080p)</td><td>≤ 500ms</td></tr>
-<tr><td>内存开销（基线）</td><td>≤ 80MB</td></tr>
-<tr><td>指纹检测率（启用 Stealth 时）</td><td>≤ 5%</td></tr>
-<tr><td>Playwright API 兼容</td><td>≥ 95%</td></tr>
+<script type="application/ld+json">
+{
+  "@type": "SLA",
+  "name": "BaoRuntimeSLA",
+  "metrics": [
+    {"name": "cold_start_script", "target": "≤ 100ms", "description": "冷启动（纯脚本）"},
+    {"name": "cold_start_servo", "target": "≤ 500ms", "description": "冷启动（含 servo）"},
+    {"name": "hot_start", "target": "≤ 20ms", "description": "热启动"},
+    {"name": "js_exec_latency", "target": "≤ 1ms", "description": "JS 执行延迟"},
+    {"name": "cdp_response", "target": "≤ 50ms", "description": "CDP 命令响应（非截图）"},
+    {"name": "screenshot_1080p", "target": "≤ 500ms", "description": "截图延迟 (1080p)"},
+    {"name": "memory_baseline", "target": "≤ 80MB", "description": "内存开销（基线）"},
+    {"name": "stealth_detect_rate", "target": "≤ 5%", "description": "指纹检测率（启用 Stealth 时）"},
+    {"name": "playwright_compat", "target": "≥ 95%", "description": "Playwright API 兼容"}
+  ]
+}
+</script>
+<table data-sla-table="BaoRuntimeSLA">
+<tr><th>指标</th><th>目标值</th><th>说明</th></tr>
+<tr data-metric="cold_start_script" data-target="≤ 100ms" data-desc="冷启动（纯脚本）"></tr>
+<tr data-metric="cold_start_servo" data-target="≤ 500ms" data-desc="冷启动（含 servo）"></tr>
+<tr data-metric="hot_start" data-target="≤ 20ms" data-desc="热启动"></tr>
+<tr data-metric="js_exec_latency" data-target="≤ 1ms" data-desc="JS 执行延迟"></tr>
+<tr data-metric="cdp_response" data-target="≤ 50ms" data-desc="CDP 命令响应（非截图）"></tr>
+<tr data-metric="screenshot_1080p" data-target="≤ 500ms" data-desc="截图延迟 (1080p)"></tr>
+<tr data-metric="memory_baseline" data-target="≤ 80MB" data-desc="内存开销（基线）"></tr>
+<tr data-metric="stealth_detect_rate" data-target="≤ 5%" data-desc="指纹检测率（启用 Stealth 时）"></tr>
+<tr data-metric="playwright_compat" data-target="≥ 95%" data-desc="Playwright API 兼容"></tr>
 </table>
 </div>
 

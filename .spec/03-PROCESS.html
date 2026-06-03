@@ -295,13 +295,15 @@ WebSocket Client (Playwright)
 <h2>§7 时序约束</h2>
 <!-- ============================================================ -->
 
-<div id="tmg-cdp-1" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms">
+<div id="tmg-cdp-1" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms" data-req-ref="REQ-CDP-001" data-api-ref="CDP.*">
 <h3>TMG-CDP-001: CDP 命令响应时序</h3>
 <script type="application/ld+json">
 {
   "@type": "TimingConstraint",
   "name": "CDPResponseTime",
   "constraint": "max_latency_ms",
+  "target": 3000,
+  "targetUnit": "ms",
   "domains": {
     "Runtime.evaluate": {"target": 50, "reason": "JS执行, 无I/O"},
     "DOM.querySelector": {"target": 10, "reason": "内存DOM遍历"},
@@ -314,13 +316,15 @@ WebSocket Client (Playwright)
 </script>
 </div>
 
-<div id="tmg-loop-1" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms">
+<div id="tmg-loop-1" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms" data-req-ref="REQ-ENG-004" data-api-ref="EventLoop.tick">
 <h3>TMG-LOOP-001: Event Loop Tick 时序</h3>
 <script type="application/ld+json">
 {
   "@type": "TimingConstraint",
   "name": "EventLoopTick",
   "constraint": "max_interval_ms",
+  "target": 20,
+  "targetUnit": "ms",
   "phases": {
     "io_poll": {"target": 1, "reason": "epoll/kqueue 非阻塞"},
     "timer_check": {"target": 0.1, "reason": "最小堆查找"},

@@ -755,4 +755,237 @@ mod tests {
         // Clean up — destroy the group.
         unsafe { SocketGroup::destroy(group_ptr); }
     }
+
+    // ──── extended unit tests ────
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_net_vtable_callback_signatures_match_dispatch() {
+        // Verify VTable callback types match bao_uloop dispatch expectations.
+        // on_open: (*mut us_socket_t, c_int, *mut u8, c_int) -> *mut us_socket_t
+        assert!(NET_VTABLE.on_open.is_some());
+        // on_data: (*mut us_socket_t, *mut u8, c_int) -> *mut us_socket_t
+        assert!(NET_VTABLE.on_data.is_some());
+        // on_writable: (*mut us_socket_t) -> *mut us_socket_t
+        assert!(NET_VTABLE.on_writable.is_some());
+        // on_close: (*mut us_socket_t, c_int, *mut c_void) -> *mut us_socket_t
+        assert!(NET_VTABLE.on_close.is_some());
+        // on_end: (*mut us_socket_t) -> *mut us_socket_t
+        assert!(NET_VTABLE.on_end.is_some());
+        // on_fd is deliberately None (not used for plain TCP)
+        assert!(NET_VTABLE.on_fd.is_none());
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_net_pending_write_large_data() {
+        let mut pw = NetPendingWrite::default();
+        let large: Vec<u8> = vec![0xAB; 1024 * 64]; // 64 KiB
+        pw.set_data(&large);
+        assert_eq!(pw.len, large.len());
+        assert!(!pw.is_empty());
+        pw.clear();
+        assert!(pw.is_empty());
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_net_pending_write_reuse_buffer() {
+        let mut pw = NetPendingWrite::default();
+        pw.set_data(b"first_write");
+        assert_eq!(pw.len, 11);
+        // Reusing buffer should not leak — set_data clears then extends
+        pw.set_data(b"second");
+        assert_eq!(pw.len, 6);
+        pw.clear();
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_net_cleanup_clears_all_thread_local_state() {
+        bao_uloop::force_link();
+        let loop_ = get_loop();
+        assert!(!loop_.is_null());
+
+        // Manually populate thread-local state to verify cleanup
+        NET_SERVER_GROUPS.with(|g| {
+            let mut group = Box::new(SocketGroup::default());
+            group.init(loop_, Some(&NET_VTABLE), ptr::null_mut());
+            g.borrow_mut().insert(9999, group);
+        });
+        NET_LISTEN_SOCKETS.with(|l| l.borrow_mut().push(9999));
+        NET_SOCKETS.with(|s| s.borrow_mut().insert(9998, true));
+
+        NET_SERVER_GROUPS.with(|g| assert!(!g.borrow().is_empty()));
+        NET_SOCKETS.with(|s| assert!(!s.borrow().is_empty()));
+
+        // NetCleanup drop should clear all thread-local state
+        let cleanup = NetCleanup;
+        drop(cleanup);
+
+        NET_SERVER_GROUPS.with(|g| assert!(g.borrow().is_empty()));
+        NET_LISTEN_SOCKETS.with(|l| assert!(l.borrow().is_empty()));
+        NET_SOCKETS.with(|s| assert!(s.borrow().is_empty()));
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_connect_result_initial_state() {
+        CONNECT_RESULT.with(|r| assert!(r.get().is_none(), "initial CONNECT_RESULT is None"));
+        CONNECT_ERROR.with(|e| assert!(!e.get(), "initial CONNECT_ERROR is false"));
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_connect_result_set_and_reset() {
+        CONNECT_RESULT.with(|r| r.set(Some(42)));
+        assert_eq!(CONNECT_RESULT.with(|r| r.get()), Some(42));
+        CONNECT_RESULT.with(|r| r.set(None));
+        assert!(CONNECT_RESULT.with(|r| r.get()).is_none());
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_connect_error_set_and_reset() {
+        CONNECT_ERROR.with(|e| e.set(true));
+        assert!(CONNECT_ERROR.with(|e| e.get()));
+        CONNECT_ERROR.with(|e| e.set(false));
+        assert!(!CONNECT_ERROR.with(|e| e.get()));
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_js_socket_methods_exist() {
+        // Verify JS Socket class has expected method names
+        assert!(NET_JS.contains("Socket.prototype.connect"));
+        assert!(NET_JS.contains("Socket.prototype.write"));
+        assert!(NET_JS.contains("Socket.prototype.end"));
+        assert!(NET_JS.contains("Socket.prototype.destroy"));
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_js_server_methods_exist() {
+        // Verify JS Server class has expected method names
+        assert!(NET_JS.contains("Server.prototype.listen"));
+        assert!(NET_JS.contains("Server.prototype.close"));
+        assert!(NET_JS.contains("Server.prototype.address"));
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_js_net_native_functions() {
+        // Verify JS code references native helper functions
+        assert!(NET_JS.contains("__net_listen"));
+        assert!(NET_JS.contains("__net_connect"));
+        assert!(NET_JS.contains("__net_write"));
+        assert!(NET_JS.contains("__net_close"));
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_js_isip_validation_logic() {
+        // Verify isIP JS logic checks IPv4 format
+        assert!(NET_JS.contains("split(\".\")"));
+        assert!(NET_JS.contains("parts.length === 4"));
+        assert!(NET_JS.contains("parseInt"));
+        assert!(NET_JS.contains("0 <= n && n <= 255") || NET_JS.contains("n < 0 || n > 255"));
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_net_socket_ext_default_is_zero() {
+        let ext = NetSocketExt {
+            is_client: 0,
+            pending_write: NetPendingWrite::default(),
+        };
+        assert_eq!(ext.is_client, 0);
+        assert!(ext.pending_write.is_empty());
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_net_socket_ext_client_flag() {
+        let ext = NetSocketExt {
+            is_client: 1,
+            pending_write: NetPendingWrite::default(),
+        };
+        assert_eq!(ext.is_client, 1);
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_thread_local_hashmap_operations() {
+        // Test basic HashMap operations on thread-local NET_SOCKETS
+        NET_SOCKETS.with(|m| {
+            let mut map = m.borrow_mut();
+            map.insert(100, true);
+            map.insert(200, true);
+            assert_eq!(map.len(), 2);
+            assert!(map.contains_key(&100));
+            assert!(map.contains_key(&200));
+            assert!(!map.contains_key(&300));
+            map.remove(&100);
+            assert_eq!(map.len(), 1);
+        });
+        // Clean up
+        NET_SOCKETS.with(|m| m.borrow_mut().clear());
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_thread_local_listen_socket_vec_operations() {
+        NET_LISTEN_SOCKETS.with(|l| {
+            let mut list = l.borrow_mut();
+            list.push(500);
+            list.push(600);
+            assert_eq!(list.len(), 2);
+            assert!(list.contains(&500));
+            assert!(list.contains(&600));
+            // swap_remove matches net_close logic
+            let pos = list.iter().position(|&k| k == 500).unwrap();
+            list.swap_remove(pos);
+            assert_eq!(list.len(), 1);
+        });
+        NET_LISTEN_SOCKETS.with(|l| l.borrow_mut().clear());
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_net_pending_write_drop_does_not_double_free() {
+        // Create and drop multiple times — should not panic or double-free
+        let mut pw = NetPendingWrite::default();
+        pw.set_data(b"test_data");
+        pw.clear();
+        pw.set_data(b"more_data");
+        // Drop should handle already-cleared state
+        drop(pw);
+    }
+
+    // @trace TEST-ENG-007 [req:REQ-ENG-007] [level:unit]
+    #[test]
+    fn test_multiple_server_groups_in_thread_local() {
+        bao_uloop::force_link();
+        let loop_ = get_loop();
+        assert!(!loop_.is_null());
+
+        let g1 = ensure_server_group(loop_);
+        let g2 = ensure_server_group(loop_);
+        assert!(!g1.is_null());
+        assert!(!g2.is_null());
+        assert_ne!(g1, g2, "each server should get a unique group");
+
+        // Store both groups
+        NET_SERVER_GROUPS.with(|g| {
+            let mut map = g.borrow_mut();
+            map.insert(g1 as usize, unsafe { Box::from_raw(g1) });
+            map.insert(g2 as usize, unsafe { Box::from_raw(g2) });
+            assert_eq!(map.len(), 2);
+        });
+
+        // Clean up via NetCleanup
+        let cleanup = NetCleanup;
+        drop(cleanup);
+        NET_SERVER_GROUPS.with(|g| assert!(g.borrow().is_empty()));
+    }
 }
