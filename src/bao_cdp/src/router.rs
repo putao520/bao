@@ -397,4 +397,127 @@ mod tests {
         assert_eq!(browser.endpoint, "ws://localhost:9222");
         assert_eq!(browser.session_id, "abcd1234efgh5678");
     }
+
+    // ─── CdpRouter extended edge case tests ────────────────────────
+    // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
+
+    #[test]
+    fn create_multiple_sessions_unique_ids() {
+        let router = CdpRouter::new();
+        let mut ids = std::collections::HashSet::new();
+        for i in 0..10 {
+            let session = router.create_internal_session(&format!("target-{i}"));
+            assert!(ids.insert(session.session_id().to_string()), "session ids must be unique");
+        }
+        assert_eq!(router.sessions.borrow().len(), 10);
+    }
+
+    #[test]
+    fn send_command_unknown_domain_still_returns() {
+        let router = CdpRouter::new();
+        let session = router.create_internal_session("target-1");
+        // Internal backend handles unknown domains with an error response
+        let result = session.send(&router, "UnknownDomain.someMethod", None);
+        // The result may be Ok or Err depending on internal backend behavior
+        // — we just verify it doesn't panic
+        let _ = result;
+    }
+
+    #[test]
+    fn send_registers_multiple_domains() {
+        let router = CdpRouter::new();
+        let session = router.create_internal_session("target-1");
+        let _ = session.send(&router, "Page.enable", None);
+        let _ = session.send(&router, "Runtime.enable", None);
+        let _ = session.send(&router, "Network.enable", None);
+        let sessions = router.sessions.borrow();
+        let inner = sessions.get(session.session_id()).unwrap();
+        let domains = inner.enabled_domains.borrow();
+        assert!(domains.contains("Page"));
+        assert!(domains.contains("Runtime"));
+        assert!(domains.contains("Network"));
+        assert_eq!(domains.len(), 3);
+    }
+
+    #[test]
+    fn session_id_is_hex_format() {
+        let router = CdpRouter::new();
+        let session = router.create_internal_session("target-1");
+        let id = session.session_id();
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()), "session id must be hex");
+    }
+
+    #[test]
+    fn detach_one_of_two_sessions() {
+        let router = CdpRouter::new();
+        let session1 = router.create_internal_session("target-1");
+        let session2 = router.create_internal_session("target-2");
+        assert_eq!(router.sessions.borrow().len(), 2);
+        let id1 = session1.session_id().to_string();
+        router.detach_session(&id1).unwrap();
+        assert_eq!(router.sessions.borrow().len(), 1);
+        // session2 still works
+        let result = session2.send(&router, "Page.enable", None);
+        let _ = result;
+    }
+
+    #[test]
+    fn send_command_with_params() {
+        let router = CdpRouter::new();
+        let session = router.create_internal_session("target-1");
+        let result = session.send(
+            &router,
+            "Page.navigate",
+            Some(serde_json::json!({"url": "https://example.com"})),
+        );
+        let _ = result;
+    }
+
+    #[test]
+    fn send_command_with_null_params() {
+        let router = CdpRouter::new();
+        let session = router.create_internal_session("target-1");
+        let result = session.send(&router, "Page.enable", Some(serde_json::Value::Null));
+        let _ = result;
+    }
+
+    #[test]
+    fn event_handler_receives_value() {
+        use std::sync::{Arc, Mutex};
+        let router = CdpRouter::new();
+        let session = router.create_internal_session("target-1");
+        let received: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let received_clone = Arc::clone(&received);
+        session.on("Runtime.consoleAPICalled", move |event| {
+            *received_clone.lock().unwrap() = Some(event.to_string());
+        });
+        let sessions = router.sessions.borrow();
+        let inner = sessions.get(session.session_id()).unwrap();
+        let binding = inner.event_handlers.borrow();
+        let handler = binding.get("Runtime.consoleAPICalled").unwrap();
+        let test_event = serde_json::json!({"type": "log", "args": [42]});
+        handler(test_event.clone());
+        let stored = received.lock().unwrap().clone();
+        assert_eq!(stored, Some(test_event.to_string()));
+    }
+
+    #[test]
+    fn backend_kind_all_variants() {
+        let variants = [BackendKind::Internal, BackendKind::External];
+        for v in &variants {
+            let _debug = format!("{:?}", v);
+            let _copy = *v;
+            let _clone = v.clone();
+        }
+    }
+
+    #[test]
+    fn external_browser_empty_endpoint() {
+        let browser = ExternalBrowser {
+            endpoint: String::new(),
+            session_id: String::new(),
+        };
+        assert!(browser.endpoint.is_empty());
+        assert!(browser.session_id.is_empty());
+    }
 }

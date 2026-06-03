@@ -1250,4 +1250,804 @@ mod tests {
         assert_eq!(cmd, super::BridgeCommand::Close);
         assert!(responder.is_none());
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Extended unit tests for bridge types and polyfills
+    // @trace REQ-BRW-003 [req:REQ-BRW-003] [level:unit]
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // ─── BridgeCommand Debug format tests ──────────────────────────────────
+
+    #[test]
+    fn bridge_command_debug_format_navigate() {
+        let cmd = super::BridgeCommand::Navigate("https://example.com".into());
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Navigate"));
+        assert!(debug_str.contains("https://example.com"));
+    }
+
+    #[test]
+    fn bridge_command_debug_format_evaluate() {
+        let cmd = super::BridgeCommand::Evaluate("return 42".into());
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Evaluate"));
+        assert!(debug_str.contains("return 42"));
+    }
+
+    #[test]
+    fn bridge_command_debug_format_screenshot() {
+        let cmd = super::BridgeCommand::Screenshot;
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Screenshot"));
+    }
+
+    #[test]
+    fn bridge_command_debug_format_close() {
+        let cmd = super::BridgeCommand::Close;
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Close"));
+    }
+
+    #[test]
+    fn bridge_command_debug_format_resize() {
+        let cmd = super::BridgeCommand::Resize(1920, 1080);
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Resize"));
+        assert!(debug_str.contains("1920"));
+        assert!(debug_str.contains("1080"));
+    }
+
+    #[test]
+    fn bridge_command_debug_format_get_title() {
+        let cmd = super::BridgeCommand::GetTitle;
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("GetTitle"));
+    }
+
+    #[test]
+    fn bridge_command_debug_format_get_url() {
+        let cmd = super::BridgeCommand::GetUrl;
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("GetUrl"));
+    }
+
+    // ─── BridgeCommand Clone tests ────────────────────────────────────────
+
+    #[test]
+    fn bridge_command_clone_navigate() {
+        let cmd = super::BridgeCommand::Navigate("https://test.com".into());
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
+    }
+
+    #[test]
+    fn bridge_command_clone_evaluate() {
+        let cmd = super::BridgeCommand::Evaluate("x + y".into());
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
+    }
+
+    #[test]
+    fn bridge_command_clone_resize() {
+        let cmd = super::BridgeCommand::Resize(1024, 768);
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
+    }
+
+    // ─── BridgeResponse Debug/Clone/Equality tests ────────────────────────
+
+    #[test]
+    fn bridge_response_debug_format_ok() {
+        let resp = super::BridgeResponse::Ok;
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("Ok"));
+    }
+
+    #[test]
+    fn bridge_response_debug_format_err() {
+        let resp = super::BridgeResponse::Err("something went wrong".into());
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("Err"));
+        assert!(debug_str.contains("something went wrong"));
+    }
+
+    #[test]
+    fn bridge_response_debug_format_null() {
+        let resp = super::BridgeResponse::Null;
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("Null"));
+    }
+
+    #[test]
+    fn bridge_response_debug_format_value() {
+        let resp = super::BridgeResponse::Value("result string".into());
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("Value"));
+        assert!(debug_str.contains("result string"));
+    }
+
+    #[test]
+    fn bridge_response_debug_format_binary() {
+        let resp = super::BridgeResponse::Binary(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains("Binary"));
+    }
+
+    #[test]
+    fn bridge_response_clone_ok() {
+        let resp = super::BridgeResponse::Ok;
+        let cloned = resp.clone();
+        assert_eq!(resp, cloned);
+    }
+
+    #[test]
+    fn bridge_response_clone_err() {
+        let resp = super::BridgeResponse::Err("error".into());
+        let cloned = resp.clone();
+        assert_eq!(resp, cloned);
+    }
+
+    #[test]
+    fn bridge_response_clone_value() {
+        let resp = super::BridgeResponse::Value("value".into());
+        let cloned = resp.clone();
+        assert_eq!(resp, cloned);
+    }
+
+    #[test]
+    fn bridge_response_clone_binary() {
+        let resp = super::BridgeResponse::Binary(vec![1, 2, 3, 4]);
+        let cloned = resp.clone();
+        assert_eq!(resp, cloned);
+    }
+
+    #[test]
+    fn bridge_response_equality_ok() {
+        assert_eq!(super::BridgeResponse::Ok, super::BridgeResponse::Ok);
+    }
+
+    #[test]
+    fn bridge_response_equality_err() {
+        assert_eq!(
+            super::BridgeResponse::Err("same error".into()),
+            super::BridgeResponse::Err("same error".into())
+        );
+        assert_ne!(
+            super::BridgeResponse::Err("error a".into()),
+            super::BridgeResponse::Err("error b".into())
+        );
+    }
+
+    #[test]
+    fn bridge_response_equality_value() {
+        assert_eq!(
+            super::BridgeResponse::Value("same".into()),
+            super::BridgeResponse::Value("same".into())
+        );
+        assert_ne!(
+            super::BridgeResponse::Value("a".into()),
+            super::BridgeResponse::Value("b".into())
+        );
+    }
+
+    #[test]
+    fn bridge_response_equality_binary() {
+        assert_eq!(
+            super::BridgeResponse::Binary(vec![1, 2, 3]),
+            super::BridgeResponse::Binary(vec![1, 2, 3])
+        );
+        assert_ne!(
+            super::BridgeResponse::Binary(vec![1, 2, 3]),
+            super::BridgeResponse::Binary(vec![1, 2, 4])
+        );
+    }
+
+    #[test]
+    fn bridge_response_variants_distinct() {
+        let responses = [
+            super::BridgeResponse::Ok,
+            super::BridgeResponse::Err("e".into()),
+            super::BridgeResponse::Null,
+            super::BridgeResponse::Value("v".into()),
+            super::BridgeResponse::Binary(vec![1]),
+        ];
+        for i in 0..responses.len() {
+            for j in 0..responses.len() {
+                if i != j {
+                    assert_ne!(responses[i], responses[j]);
+                }
+            }
+        }
+    }
+
+    // ─── BridgeChannel edge case tests ────────────────────────────────────
+
+    #[test]
+    fn bridge_channel_send_timeout_zero_timeout_returns_err() {
+        // send_timeout with Duration::ZERO: command is sent to channel,
+        // but no worker responds within 0ms → timeout error.
+        let (channel, receiver) = super::BridgeChannel::new();
+        // Drain the receiver in a separate thread so the send doesn't block
+        let _drainer = std::thread::spawn(move || {
+            // Just drain the command, don't respond
+            let _ = receiver.recv();
+        });
+        let result = channel.send_timeout(
+            super::BridgeCommand::GetTitle,
+            std::time::Duration::from_secs(0),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bridge_channel_send_timeout_short_timeout() {
+        let (channel, _receiver) = super::BridgeChannel::new();
+        // No worker to respond — should timeout
+        let result = channel.send_timeout(
+            super::BridgeCommand::GetTitle,
+            std::time::Duration::from_millis(1),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bridge_channel_fire_and_forget_multiple() {
+        let (channel, receiver) = super::BridgeChannel::new();
+        assert!(channel.fire_and_forget(super::BridgeCommand::GetTitle).is_ok());
+        assert!(channel.fire_and_forget(super::BridgeCommand::GetUrl).is_ok());
+        assert!(channel.fire_and_forget(super::BridgeCommand::Screenshot).is_ok());
+
+        let (cmd1, _) = receiver.recv().unwrap();
+        let (cmd2, _) = receiver.recv().unwrap();
+        let (cmd3, _) = receiver.recv().unwrap();
+
+        assert_eq!(cmd1, super::BridgeCommand::GetTitle);
+        assert_eq!(cmd2, super::BridgeCommand::GetUrl);
+        assert_eq!(cmd3, super::BridgeCommand::Screenshot);
+    }
+
+    #[test]
+    fn bridge_channel_close_then_send_fails() {
+        let (channel, receiver) = super::BridgeChannel::new();
+        channel.close();
+        // Channel is marked closed but underlying mpsc still works
+        // The alive flag is just a marker, not a hard barrier
+        // Verify the alive flag is set
+        assert!(!channel.is_alive());
+        // Drop receiver to actually close the channel
+        drop(receiver);
+        // Now send should fail
+        let result = channel.send(super::BridgeCommand::GetTitle);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bridge_channel_close_then_fire_and_forget_fails() {
+        let (channel, receiver) = super::BridgeChannel::new();
+        channel.close();
+        // Drop receiver to actually close the channel
+        drop(receiver);
+        let result = channel.fire_and_forget(super::BridgeCommand::Close);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bridge_channel_receiver_sees_close_flag() {
+        let (channel, receiver) = super::BridgeChannel::new();
+        assert!(receiver.is_alive());
+        channel.close();
+        assert!(!receiver.is_alive());
+    }
+
+    #[test]
+    fn bridge_channel_multiple_send_response_pairs() {
+        let (channel, receiver) = super::BridgeChannel::new();
+
+        let worker = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (cmd, responder) = receiver.recv().unwrap();
+                if let Some(resp_tx) = responder {
+                    let resp = match cmd {
+                        super::BridgeCommand::GetTitle => super::BridgeResponse::Value("Title".into()),
+                        super::BridgeCommand::GetUrl => super::BridgeResponse::Value("https://url.com".into()),
+                        _ => super::BridgeResponse::Ok,
+                    };
+                    resp_tx.send(resp).unwrap();
+                }
+            }
+        });
+
+        let r1 = channel.send(super::BridgeCommand::GetTitle).unwrap();
+        let r2 = channel.send(super::BridgeCommand::GetUrl).unwrap();
+        let r3 = channel.send(super::BridgeCommand::Screenshot).unwrap();
+
+        assert_eq!(r1, super::BridgeResponse::Value("Title".into()));
+        assert_eq!(r2, super::BridgeResponse::Value("https://url.com".into()));
+        assert_eq!(r3, super::BridgeResponse::Ok);
+
+        worker.join().unwrap();
+    }
+
+    // ─── BridgeReceiver edge case tests ───────────────────────────────────
+
+    #[test]
+    fn bridge_receiver_recv_timeout_short() {
+        let (_channel, receiver) = super::BridgeChannel::new();
+        // No command sent — should timeout
+        let result = receiver.recv_timeout(std::time::Duration::from_millis(1));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn bridge_receiver_recv_after_channel_dropped() {
+        let (channel, receiver) = super::BridgeChannel::new();
+        drop(channel);
+        // recv should return error when sender is dropped
+        let result = receiver.recv();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "channel closed");
+    }
+
+    #[test]
+    fn bridge_receiver_debug_format() {
+        let (_channel, receiver) = super::BridgeChannel::new();
+        let debug_str = format!("{:?}", receiver);
+        assert!(debug_str.contains("BridgeReceiver"));
+        assert!(debug_str.contains("alive"));
+    }
+
+    // ─── RuntimeBridge edge case tests ────────────────────────────────────
+
+    #[test]
+    fn runtime_bridge_send_timeout() {
+        let (bridge, receiver) = super::RuntimeBridge::new();
+
+        let worker = std::thread::spawn(move || {
+            let (cmd, responder) = receiver.recv().unwrap();
+            if let Some(resp_tx) = responder {
+                let resp = match cmd {
+                    super::BridgeCommand::Evaluate(ref code) => {
+                        super::BridgeResponse::Value(format!("evaluated: {}", code))
+                    }
+                    _ => super::BridgeResponse::Ok,
+                };
+                resp_tx.send(resp).unwrap();
+            }
+        });
+
+        let result = bridge
+            .send_timeout(
+                super::BridgeCommand::Evaluate("1+1".into()),
+                std::time::Duration::from_secs(5),
+            )
+            .unwrap();
+        assert_eq!(result, super::BridgeResponse::Value("evaluated: 1+1".into()));
+
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn runtime_bridge_close_propagates() {
+        let (bridge, receiver) = super::RuntimeBridge::new();
+        assert!(bridge.is_alive());
+        assert!(receiver.is_alive());
+        bridge.close();
+        assert!(!bridge.is_alive());
+        assert!(!receiver.is_alive());
+    }
+
+    #[test]
+    fn runtime_bridge_fire_and_forget_after_close_still_works() {
+        let (bridge, receiver) = super::RuntimeBridge::new();
+        bridge.close();
+        // close() only sets the alive flag, doesn't close the channel
+        // fire_and_forget should still work until receiver is dropped
+        assert!(bridge.fire_and_forget(super::BridgeCommand::Close).is_ok());
+        let (cmd, responder) = receiver.recv().unwrap();
+        assert_eq!(cmd, super::BridgeCommand::Close);
+        assert!(responder.is_none());
+    }
+
+    #[test]
+    fn runtime_bridge_send_after_receiver_dropped() {
+        let (bridge, receiver) = super::RuntimeBridge::new();
+        drop(receiver);
+        let result = bridge.send(super::BridgeCommand::GetTitle);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn runtime_bridge_debug_format() {
+        let (bridge, _receiver) = super::RuntimeBridge::new();
+        let debug_str = format!("{:?}", bridge);
+        assert!(debug_str.contains("RuntimeBridge"));
+    }
+
+    // ─── NODE_POLYFILLS content tests ─────────────────────────────────────
+
+    #[test]
+    fn node_polyfills_process_version() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("version: 'v20.11.0'"));
+    }
+
+    #[test]
+    fn node_polyfills_process_versions_structure() {
+        let poly = super::NODE_POLYFILLS;
+        // Check key version fields exist
+        assert!(poly.contains("node: '20.11.0'"));
+        assert!(poly.contains("v8: '12.4.254.14'"));
+        assert!(poly.contains("uv: '1.27.0'"));
+        assert!(poly.contains("zlib: '1.2.13'"));
+        assert!(poly.contains("brotli: '1.0.9'"));
+        assert!(poly.contains("ares: '1.19.1'"));
+        assert!(poly.contains("modules: '115'"));
+        assert!(poly.contains("openssl: '3.0.12'"));
+        assert!(poly.contains("icu: '74.2'"));
+        assert!(poly.contains("bun: '1.0.25'"));
+        assert!(poly.contains("bao: '0.1.0'"));
+    }
+
+    #[test]
+    fn node_polyfills_process_env() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("env:"));
+        assert!(poly.contains("e.HOME = '/'"));
+        assert!(poly.contains("e.PATH = '/usr/local/bin:/usr/bin:/bin'"));
+        assert!(poly.contains("e.TERM = 'xterm-256color'"));
+        assert!(poly.contains("e.NODE_VERSION = '20.11.0'"));
+        assert!(poly.contains("e.BAO_VERSION = '0.1.0'"));
+    }
+
+    #[test]
+    fn node_polyfills_process_argv() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("argv:"));
+        assert!(poly.contains("argv0: 'bao'"));
+    }
+
+    #[test]
+    fn node_polyfills_buffer_from() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("B.from = function"));
+        assert!(poly.contains("if (data instanceof B)"));
+        assert!(poly.contains("if (encoding === 'hex')"));
+        assert!(poly.contains("if (encoding === 'base64')"));
+    }
+
+    #[test]
+    fn node_polyfills_buffer_alloc() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("B.alloc = function"));
+        assert!(poly.contains("B.allocUnsafe = function"));
+        assert!(poly.contains("B.allocUnsafeSlow = function"));
+    }
+
+    #[test]
+    fn node_polyfills_buffer_static_methods() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("B.isBuffer = function"));
+        assert!(poly.contains("B.concat = function"));
+        assert!(poly.contains("B.byteLength = function"));
+        assert!(poly.contains("B.compare = function"));
+    }
+
+    #[test]
+    fn node_polyfills_buffer_instance_methods() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("B.prototype.slice = function"));
+        assert!(poly.contains("B.prototype.toString = function"));
+        assert!(poly.contains("B.prototype.toJSON = function"));
+        assert!(poly.contains("B.prototype.equals = function"));
+        assert!(poly.contains("B.prototype.compare = function"));
+        assert!(poly.contains("B.prototype.copy = function"));
+        assert!(poly.contains("B.prototype.fill = function"));
+        assert!(poly.contains("B.prototype.write = function"));
+        assert!(poly.contains("B.prototype.indexOf = function"));
+    }
+
+    #[test]
+    fn node_polyfills_buffer_read_methods() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("B.prototype.readUInt8 = function"));
+        assert!(poly.contains("B.prototype.readUInt16LE = function"));
+        assert!(poly.contains("B.prototype.readUInt16BE = function"));
+        assert!(poly.contains("B.prototype.readUInt32LE = function"));
+        assert!(poly.contains("B.prototype.readInt8 = function"));
+        assert!(poly.contains("B.prototype.readInt16LE = function"));
+        assert!(poly.contains("B.prototype.readInt32LE = function"));
+        assert!(poly.contains("B.prototype.readFloatLE = function"));
+        assert!(poly.contains("B.prototype.readDoubleLE = function"));
+    }
+
+    #[test]
+    fn node_polyfills_buffer_write_methods() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("B.prototype.writeUInt8 = function"));
+        assert!(poly.contains("B.prototype.writeUInt16LE = function"));
+        assert!(poly.contains("B.prototype.writeUInt32LE = function"));
+        assert!(poly.contains("B.prototype.writeInt8 = function"));
+        assert!(poly.contains("B.prototype.writeInt16LE = function"));
+        assert!(poly.contains("B.prototype.writeInt32LE = function"));
+        assert!(poly.contains("B.prototype.writeFloatLE = function"));
+        assert!(poly.contains("B.prototype.writeDoubleLE = function"));
+    }
+
+    #[test]
+    fn node_polyfills_require_cache() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("require.cache = _module_cache"));
+        assert!(poly.contains("_module_cache = {}"));
+    }
+
+    #[test]
+    fn node_polyfills_require_builtin_modules() {
+        let poly = super::NODE_POLYFILLS;
+        // Check key built-in modules are defined
+        assert!(poly.contains("'fs':"));
+        assert!(poly.contains("'path':"));
+        assert!(poly.contains("'url':"));
+        assert!(poly.contains("'querystring':"));
+        assert!(poly.contains("'events':"));
+        assert!(poly.contains("'util':"));
+        assert!(poly.contains("'stream':"));
+        assert!(poly.contains("'buffer':"));
+        assert!(poly.contains("'crypto':"));
+        assert!(poly.contains("'os':"));
+        assert!(poly.contains("'assert':"));
+        assert!(poly.contains("'timers':"));
+    }
+
+    #[test]
+    fn node_polyfills_path_module() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("join: function"));
+        assert!(poly.contains("resolve: function"));
+        assert!(poly.contains("dirname: function"));
+        assert!(poly.contains("basename: function"));
+        assert!(poly.contains("extname: function"));
+        assert!(poly.contains("sep: '/'"));
+        assert!(poly.contains("posix:"));
+        assert!(poly.contains("win32:"));
+    }
+
+    #[test]
+    fn node_polyfills_global_alias() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("global = globalThis"));
+    }
+
+    #[test]
+    fn node_polyfills_text_encoder_decoder() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("TextEncoder"));
+        assert!(poly.contains("TextDecoder"));
+    }
+
+    #[test]
+    fn node_polyfills_btoa_atob() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("btoa = function"));
+        assert!(poly.contains("atob = function"));
+        assert!(poly.contains("_b64chars"));
+    }
+
+    // ─── STEALTH_POLYFILLS content tests ───────────────────────────────────
+
+    #[test]
+    fn stealth_polyfills_navigator_webdriver_false() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("webdriver: false"));
+        assert!(poly.contains("Object.defineProperty(navigator, 'webdriver'"));
+    }
+
+    #[test]
+    fn stealth_polyfills_chrome_runtime_mock() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("window.chrome = {"));
+        assert!(poly.contains("runtime:"));
+        assert!(poly.contains("onConnect:"));
+        assert!(poly.contains("onMessage:"));
+        assert!(poly.contains("loadTimes: function"));
+        assert!(poly.contains("csi: function"));
+    }
+
+    #[test]
+    fn stealth_polyfills_permissions_api_mock() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("Permissions.prototype.query"));
+        assert!(poly.contains("if (desc.name === 'notifications')"));
+        assert!(poly.contains("state: 'default'"));
+    }
+
+    #[test]
+    fn stealth_polyfills_canvas_noise_injection() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("_noiseSeed"));
+        assert!(poly.contains("_noise(x)"));
+        assert!(poly.contains("HTMLCanvasElement.prototype.toDataURL"));
+        assert!(poly.contains("HTMLCanvasElement.prototype.toBlob"));
+        assert!(poly.contains("getImageData"));
+        assert!(poly.contains("putImageData"));
+    }
+
+    #[test]
+    fn stealth_polyfills_webgl_parameter_overrides() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("WebGLRenderingContext.prototype.getParameter"));
+        assert!(poly.contains("0x1F00")); // VENDOR
+        assert!(poly.contains("0x1F01")); // RENDERER
+        assert!(poly.contains("0x9245")); // UNMASKED_VENDOR_WEBGL
+        assert!(poly.contains("0x9246")); // UNMASKED_RENDERER_WEBGL
+        assert!(poly.contains("_webglVendor"));
+        assert!(poly.contains("_webglRenderer"));
+        assert!(poly.contains("WebGL2RenderingContext"));
+    }
+
+    #[test]
+    fn stealth_polyfills_audiocontext_noise() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("AudioContext"));
+        assert!(poly.contains("AnalyserNode.prototype.getFloatFrequencyData"));
+        assert!(poly.contains("_origGetFloatFreqData"));
+    }
+
+    #[test]
+    fn stealth_polyfills_navigator_overrides() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("userAgent: _ua"));
+        assert!(poly.contains("platform: _platform"));
+        assert!(poly.contains("vendor: _vendor"));
+        assert!(poly.contains("hardwareConcurrency: 8"));
+        assert!(poly.contains("deviceMemory: 8"));
+        assert!(poly.contains("maxTouchPoints: 0"));
+        assert!(poly.contains("languages: ['en-US', 'en']"));
+    }
+
+    #[test]
+    fn stealth_polyfills_screen_overrides() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("screen"));
+        assert!(poly.contains("width: 1920"));
+        assert!(poly.contains("height: 1080"));
+        assert!(poly.contains("availWidth: 1920"));
+        assert!(poly.contains("availHeight: 1040"));
+        assert!(poly.contains("colorDepth: 24"));
+        assert!(poly.contains("pixelDepth: 24"));
+    }
+
+    #[test]
+    fn stealth_polyfills_plugins_mock() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("navigator.plugins"));
+        assert!(poly.contains("PDF Viewer"));
+        assert!(poly.contains("Chrome PDF Viewer"));
+        assert!(poly.contains("Chromium PDF Viewer"));
+        assert!(poly.contains("length: 5"));
+    }
+
+    #[test]
+    fn stealth_polyfills_mimetypes_mock() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("navigator.mimeTypes"));
+        assert!(poly.contains("application/pdf"));
+        assert!(poly.contains("text/pdf"));
+        assert!(poly.contains("length: 2"));
+    }
+
+    #[test]
+    fn stealth_polyfills_user_agent_string() {
+        let poly = super::STEALTH_POLYFILLS;
+        assert!(poly.contains("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"));
+        assert!(poly.contains("AppleWebKit/537.36"));
+        assert!(poly.contains("Chrome/130.0.0.0"));
+        assert!(poly.contains("Safari/537.36"));
+    }
+
+    // ─── Edge case tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn bridge_command_empty_navigate_url() {
+        let cmd = super::BridgeCommand::Navigate("".into());
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Navigate"));
+    }
+
+    #[test]
+    fn bridge_command_empty_evaluate_string() {
+        let cmd = super::BridgeCommand::Evaluate("".into());
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("Evaluate"));
+    }
+
+    #[test]
+    fn bridge_response_empty_value() {
+        let resp = super::BridgeResponse::Value("".into());
+        assert!(!resp.is_ok());
+        assert!(!resp.is_err());
+        let result = resp.ok();
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), super::BridgeResponse::Value("".into()));
+    }
+
+    #[test]
+    fn bridge_response_empty_binary() {
+        let resp = super::BridgeResponse::Binary(vec![]);
+        assert!(!resp.is_ok());
+        assert!(!resp.is_err());
+        let cloned = resp.clone();
+        assert_eq!(resp, cloned);
+    }
+
+    #[test]
+    fn bridge_response_large_binary_payload() {
+        // Create a large binary payload (1MB)
+        let large_data: Vec<u8> = (0..=255).cycle().take(1024 * 1024).collect();
+        let resp = super::BridgeResponse::Binary(large_data.clone());
+        assert!(!resp.is_ok());
+        assert!(!resp.is_err());
+        let cloned = resp.clone();
+        assert_eq!(resp, cloned);
+        // Verify the data is intact
+        if let super::BridgeResponse::Binary(data) = cloned {
+            assert_eq!(data.len(), 1024 * 1024);
+            assert_eq!(data[0], 0);
+            assert_eq!(data[255], 255);
+            assert_eq!(data[256], 0); // cycles back
+        } else {
+            panic!("Expected Binary variant");
+        }
+    }
+
+    #[test]
+    fn bridge_command_unicode_navigate_url() {
+        let unicode_url = "https://例子.测试/路径?查询=值#片段";
+        let cmd = super::BridgeCommand::Navigate(unicode_url.into());
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains(unicode_url));
+    }
+
+    #[test]
+    fn bridge_command_unicode_evaluate_string() {
+        let unicode_code = "console.log('你好世界 🎉')";
+        let cmd = super::BridgeCommand::Evaluate(unicode_code.into());
+        let cloned = cmd.clone();
+        assert_eq!(cmd, cloned);
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains(unicode_code));
+    }
+
+    #[test]
+    fn bridge_response_unicode_value() {
+        let unicode_value = "结果: 成功 ✅ 日本語 한국어 العربية";
+        let resp = super::BridgeResponse::Value(unicode_value.into());
+        let cloned = resp.clone();
+        assert_eq!(resp, cloned);
+        let debug_str = format!("{:?}", resp);
+        assert!(debug_str.contains(unicode_value));
+    }
+
+    #[test]
+    fn bridge_response_unicode_error() {
+        let unicode_error = "错误: 文件未找到 📁❌";
+        let resp = super::BridgeResponse::Err(unicode_error.into());
+        assert!(resp.is_err());
+        let result = resp.ok();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), unicode_error);
+    }
+
+    #[test]
+    fn bridge_channel_debug_format() {
+        let (channel, _receiver) = super::BridgeChannel::new();
+        let debug_str = format!("{:?}", channel);
+        assert!(debug_str.contains("BridgeChannel"));
+        assert!(debug_str.contains("alive"));
+    }
 }

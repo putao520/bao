@@ -366,4 +366,191 @@ mod tests {
         assert!(check_fs_write("/var/log").is_err());
         cleanup();
     }
+
+    // ─── PermissionCheck extended edge case tests ──────────────────
+    // @trace REQ-LIB-004 [req:REQ-LIB-004] [level:unit]
+
+    #[test]
+    fn test_permission_check_debug_clone() {
+        let check = PermissionCheck {
+            read_paths: Some(vec!["/a".into()]),
+            write_paths: Some(vec!["/b".into()]),
+            net_hosts: Some(vec!["c.com".into()]),
+            env_allowed: false,
+            run_allowed: true,
+        };
+        let cloned = check.clone();
+        assert_eq!(cloned.read_paths, check.read_paths);
+        assert_eq!(cloned.write_paths, check.write_paths);
+        assert_eq!(cloned.net_hosts, check.net_hosts);
+        assert_eq!(cloned.env_allowed, check.env_allowed);
+        assert_eq!(cloned.run_allowed, check.run_allowed);
+        let debug = format!("{:?}", check);
+        assert!(debug.contains("PermissionCheck"));
+    }
+
+    #[test]
+    fn test_fs_read_empty_allowed_list_denies_all() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: Some(vec![]),
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_fs_read("/any/path").is_err());
+        cleanup();
+    }
+
+    #[test]
+    fn test_fs_write_empty_allowed_list_denies_all() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: Some(vec![]),
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_fs_write("/any/path").is_err());
+        cleanup();
+    }
+
+    #[test]
+    fn test_net_empty_allowed_list_denies_all() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: Some(vec![]),
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_net("any.com").is_err());
+        cleanup();
+    }
+
+    #[test]
+    fn test_fs_read_path_traversal_prefix_match() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: Some(vec!["/allowed".into()]),
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        // Prefix match: /allowed/../secret starts with /allowed
+        assert!(check_fs_read("/allowed/../secret").is_ok());
+        cleanup();
+    }
+
+    #[test]
+    fn test_env_run_independent() {
+        cleanup();
+        // env=true, run=false
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: false,
+        }));
+        assert!(check_env().is_ok());
+        assert!(check_run().is_err());
+        // env=false, run=true
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: false,
+            run_allowed: true,
+        }));
+        assert!(check_env().is_err());
+        assert!(check_run().is_ok());
+        cleanup();
+    }
+
+    #[test]
+    fn test_set_permission_none_clears_all() {
+        set_permission(Some(PermissionCheck {
+            read_paths: Some(vec!["/only".into()]),
+            write_paths: Some(vec!["/only".into()]),
+            net_hosts: Some(vec!["only.com".into()]),
+            env_allowed: false,
+            run_allowed: false,
+        }));
+        set_permission(None);
+        assert!(check_fs_read("/anything").is_ok());
+        assert!(check_fs_write("/anything").is_ok());
+        assert!(check_net("anything.com").is_ok());
+        assert!(check_env().is_ok());
+        assert!(check_run().is_ok());
+    }
+
+    #[test]
+    fn test_net_unicode_domain() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: Some(vec!["例え.jp".into()]),
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_net("例え.jp").is_ok());
+        assert!(check_net("sub.例え.jp").is_ok());
+        assert!(check_net("other.jp").is_err());
+        cleanup();
+    }
+
+    #[test]
+    fn test_fs_read_very_long_path() {
+        cleanup();
+        let long_path = "/tmp/".to_string() + &"a".repeat(1000);
+        set_permission(Some(PermissionCheck {
+            read_paths: Some(vec!["/tmp".into()]),
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_fs_read(&long_path).is_ok());
+        cleanup();
+    }
+
+    #[test]
+    fn test_net_very_long_host() {
+        cleanup();
+        let long_host = "a".repeat(500) + ".example.com";
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: Some(vec!["example.com".into()]),
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_net(&long_host).is_ok());
+        cleanup();
+    }
+
+    #[test]
+    fn test_cross_field_independence() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: Some(vec!["/read".into()]),
+            write_paths: Some(vec!["/write".into()]),
+            net_hosts: Some(vec!["net.com".into()]),
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        // read path allowed for read, denied for write
+        assert!(check_fs_read("/read/file").is_ok());
+        assert!(check_fs_write("/read/file").is_err());
+        // write path allowed for write, denied for read
+        assert!(check_fs_write("/write/file").is_ok());
+        assert!(check_fs_read("/write/file").is_err());
+        cleanup();
+    }
 }

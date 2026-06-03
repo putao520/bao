@@ -1028,13 +1028,13 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 | SPEC 成熟度 | 100% |
 | REQ 状态 | 36/36 implemented |
 | SPEC lint | 0 error, 399 warning (属性排序 + REQ 缺 category) |
-| bao_runtime lib 测试 | 295 通过 (7 ignored) |
+| bao_runtime lib 测试 | 346 通过 (7 ignored) |
 | bao_engine 测试 | 80 通过 (lib) |
-| bao_uloop 测试 | 88 通过 |
+| bao_uloop 测试 | 90 通过 |
 | bao_stealth 测试 | 138 通过 |
-| bao_cdp 测试 | 442 通过 |
-| bao_browser 测试 | 175 通过 |
-| 全 crate lib 测试总计 | 1,218 通过 |
+| bao_cdp 测试 | 452 通过 |
+| bao_browser 测试 | 251 通过 |
+| 全 crate lib 测试总计 | 1,357 通过 |
 | clippy (Bao crate) | 零 warning |
 | 链接错误 | 零 |
 
