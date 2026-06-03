@@ -507,4 +507,67 @@ mod tests {
         let info = get_sysinfo();
         assert!(info.freeram <= info.totalram, "freeram should <= totalram");
     }
+
+    // ─── libc_binding extended edge case tests ───────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_get_hostname_no_null_bytes() {
+        let host = get_hostname();
+        assert!(!host.contains('\0'), "hostname should not contain null bytes");
+    }
+
+    #[test]
+    fn test_get_os_release_format() {
+        let rel = get_os_release();
+        // Linux kernel version format: X.Y.Z...
+        assert!(rel.contains('.') || rel == "unknown", "release should contain dots or be unknown");
+    }
+
+    #[test]
+    fn test_get_sysinfo_uptime_reasonable() {
+        let info = get_sysinfo();
+        // Uptime should be less than 10 years in seconds (reasonable bound)
+        let ten_years_secs: u64 = 10 * 365 * 24 * 3600;
+        assert!(info.uptime < ten_years_secs, "uptime should be reasonable");
+    }
+
+    #[test]
+    fn test_get_sysinfo_totalram_reasonable() {
+        let info = get_sysinfo();
+        // Total RAM should be less than 10 TB (reasonable bound)
+        let ten_tb: u64 = 10 * 1024 * 1024 * 1024 * 1024;
+        assert!(info.totalram < ten_tb, "totalram should be reasonable");
+    }
+
+    #[test]
+    fn test_get_loadavg_three_values() {
+        let avg = get_loadavg();
+        // All three load averages should be finite
+        assert!(avg[0].is_finite(), "1min load avg should be finite");
+        assert!(avg[1].is_finite(), "5min load avg should be finite");
+        assert!(avg[2].is_finite(), "15min load avg should be finite");
+    }
+
+    #[test]
+    fn test_get_cpu_model_not_empty() {
+        let model = get_cpu_model();
+        assert!(!model.is_empty(), "CPU model should not be empty");
+    }
+
+    #[test]
+    fn test_get_os_version_not_unknown() {
+        let ver = get_os_version();
+        // On a real Linux system, version should not be "unknown"
+        assert_ne!(ver, "unknown", "os version should not be unknown on Linux");
+    }
+
+    #[test]
+    fn test_sysinfo_struct_fields_consistent() {
+        let info = get_sysinfo();
+        // mem_unit is already factored in, so totalram should be >= raw totalram
+        assert!(info.totalram > 0);
+        assert!(info.freeram > 0);
+        assert!(info.uptime > 0);
+    }
 }
