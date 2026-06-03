@@ -366,7 +366,7 @@ unsafe extern "C" fn path_to_namespaced(cx: *mut JSContext, argc: u32, vp: *mut 
 
 // --- Pure logic helpers ---
 
-fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
+pub(crate) fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
     if parts.is_empty() {
         return ".".to_string();
     }
@@ -437,7 +437,7 @@ fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
     }
 }
 
-fn normalize_path(path: &::std::path::Path) -> PathBuf {
+pub(crate) fn normalize_path(path: &::std::path::Path) -> PathBuf {
     let mut components = Vec::new();
     let has_root = path.is_absolute();
     for comp in path.components() {
@@ -471,7 +471,7 @@ fn normalize_path(path: &::std::path::Path) -> PathBuf {
     }
 }
 
-fn make_absolute(s: &str) -> PathBuf {
+pub(crate) fn make_absolute(s: &str) -> PathBuf {
     let p = PathBuf::from(s);
     if p.is_absolute() {
         normalize_path(&p)
@@ -481,7 +481,7 @@ fn make_absolute(s: &str) -> PathBuf {
     }
 }
 
-fn pathdiff(to: &Path, from: &Path) -> ::std::option::Option<PathBuf> {
+pub(crate) fn pathdiff(to: &Path, from: &Path) -> ::std::option::Option<PathBuf> {
     let to_abs = if to.is_absolute() { to.to_path_buf() } else { ::std::env::current_dir().ok()?.join(to) };
     let from_abs = if from.is_absolute() { from.to_path_buf() } else { ::std::env::current_dir().ok()?.join(from) };
 
@@ -522,4 +522,177 @@ unsafe fn get_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: 
     let handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
     JS_GetProperty(cx, obj, c_name.as_ptr(), handle);
     arg_to_string(cx, val)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- posix_join ---
+
+    #[test]
+    fn test_posix_join_empty() {
+        assert_eq!(posix_join(&[]), ".");
+    }
+
+    #[test]
+    fn test_posix_join_single() {
+        assert_eq!(posix_join(&["foo".to_string()]), "foo");
+    }
+
+    #[test]
+    fn test_posix_join_multiple() {
+        assert_eq!(posix_join(&["a".to_string(), "b".to_string(), "c".to_string()]), "a/b/c");
+    }
+
+    // posix_join: absolute parts after first are joined as relative, NOT overriding
+    #[test]
+    fn test_posix_join_absolute_part() {
+        // Leading / in non-first part is stripped (posix join behavior)
+        assert_eq!(posix_join(&["a".to_string(), "/b".to_string(), "c".to_string()]), "a/b/c");
+    }
+
+    #[test]
+    fn test_posix_join_trailing_slash() {
+        assert_eq!(posix_join(&["a/".to_string(), "b".to_string()]), "a/b");
+    }
+
+    #[test]
+    fn test_posix_join_dot() {
+        assert_eq!(posix_join(&[".".to_string(), "b".to_string()]), "b");
+    }
+
+    #[test]
+    fn test_posix_join_empty_parts_skipped() {
+        assert_eq!(posix_join(&["a".to_string(), "".to_string(), "b".to_string()]), "a/b");
+    }
+
+    #[test]
+    fn test_posix_join_root() {
+        assert_eq!(posix_join(&["/".to_string()]), "/");
+    }
+
+    #[test]
+    fn test_posix_join_dot_dot_normalizes() {
+        assert_eq!(posix_join(&["a".to_string(), "b".to_string(), "..".to_string()]), "a");
+    }
+
+    // posix_join: .. beyond root resolves within root (absolute path can't go beyond root)
+    #[test]
+    fn test_posix_join_dot_dot_beyond_root_stays() {
+        // For relative path, .. resolves upward; extra .. stays as ..
+        assert_eq!(posix_join(&["a".to_string(), "..".to_string(), "..".to_string()]), "..");
+    }
+
+    // --- normalize_path (Path-based) ---
+
+    #[test]
+    fn test_normalize_path_dot_dot() {
+        assert_eq!(normalize_path(::std::path::Path::new("/a/b/../c")), PathBuf::from("/a/c"));
+    }
+
+    #[test]
+    fn test_normalize_path_dot() {
+        assert_eq!(normalize_path(::std::path::Path::new("/a/./b")), PathBuf::from("/a/b"));
+    }
+
+    #[test]
+    fn test_normalize_path_root() {
+        assert_eq!(normalize_path(::std::path::Path::new("/")), PathBuf::from("/"));
+    }
+
+    #[test]
+    fn test_normalize_path_relative() {
+        assert_eq!(normalize_path(::std::path::Path::new("a/b/../c")), PathBuf::from("a/c"));
+    }
+
+    #[test]
+    fn test_normalize_path_double_dot_beyond_root() {
+        // Implementation preserves .. beyond root as /../b
+        assert_eq!(normalize_path(::std::path::Path::new("/a/../../b")), PathBuf::from("/../b"));
+    }
+
+    #[test]
+    fn test_normalize_path_empty_relative() {
+        assert_eq!(normalize_path(::std::path::Path::new(".")), PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_normalize_path_multiple_dots() {
+        assert_eq!(normalize_path(::std::path::Path::new("/a/b/c/../../d")), PathBuf::from("/a/d"));
+    }
+
+    // --- make_absolute ---
+
+    #[test]
+    fn test_make_absolute_already_absolute() {
+        assert_eq!(make_absolute("/foo/bar"), PathBuf::from("/foo/bar"));
+    }
+
+    #[test]
+    fn test_make_absolute_relative() {
+        let result = make_absolute("foo/bar");
+        assert!(result.is_absolute(), "result should be absolute: {:?}", result);
+        assert!(result.to_str().unwrap().contains("foo/bar"));
+    }
+
+    #[test]
+    fn test_make_absolute_dot() {
+        let result = make_absolute(".");
+        assert!(result.is_absolute());
+    }
+
+    #[test]
+    fn test_make_absolute_dot_dot() {
+        let result = make_absolute("/a/b/..");
+        // Path-based normalization: /a/b/.. -> /a
+        let s = result.to_str().unwrap();
+        assert!(s == "/a" || s == "/a/", "expected /a or /a/, got {}", s);
+    }
+
+    // --- pathdiff ---
+
+    #[test]
+    fn test_pathdiff_same() {
+        let p = Path::new("/a/b/c");
+        assert_eq!(pathdiff(p, p), Some(PathBuf::from("")));
+    }
+
+    #[test]
+    fn test_pathdiff_sibling() {
+        let to = Path::new("/a/b/c");
+        let from = Path::new("/a/b/d");
+        // pathdiff strips common prefix then builds relative path
+        assert_eq!(pathdiff(to, from), Some(PathBuf::from("../c")));
+    }
+
+    #[test]
+    fn test_pathdiff_child() {
+        let to = Path::new("/a/b/c/d");
+        let from = Path::new("/a/b");
+        assert_eq!(pathdiff(to, from), Some(PathBuf::from("c/d")));
+    }
+
+    #[test]
+    fn test_pathdiff_parent() {
+        let to = Path::new("/a/b");
+        let from = Path::new("/a/b/c/d");
+        assert_eq!(pathdiff(to, from), Some(PathBuf::from("../..")));
+    }
+
+    #[test]
+    fn test_pathdiff_different_roots() {
+        let to = Path::new("/a/b");
+        let from = Path::new("/c/d");
+        let result = pathdiff(to, from);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_pathdiff_relative() {
+        let to = Path::new("a/b");
+        let from = Path::new("a/c");
+        let result = pathdiff(to, from);
+        assert!(result.is_some());
+    }
 }

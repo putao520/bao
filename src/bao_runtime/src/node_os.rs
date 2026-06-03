@@ -344,7 +344,7 @@ unsafe extern "C" fn os_version(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
     true
 }
 
-mod libc_binding {
+pub(crate) mod libc_binding {
     
 
     pub fn get_username() -> String {
@@ -448,5 +448,63 @@ mod libc_binding {
                 "unknown".to_string()
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::libc_binding::*;
+
+    #[test]
+    fn test_get_username_not_empty() {
+        let name = get_username();
+        assert!(!name.is_empty(), "username should not be empty");
+        assert_ne!(name, "unknown", "username should not fallback to unknown");
+    }
+
+    #[test]
+    fn test_get_hostname_not_empty() {
+        let host = get_hostname();
+        assert!(!host.is_empty(), "hostname should not be empty");
+    }
+
+    #[test]
+    fn test_get_os_release_not_empty() {
+        let rel = get_os_release();
+        assert!(!rel.is_empty(), "os release should not be empty");
+    }
+
+    #[test]
+    fn test_get_sysinfo_positive() {
+        let info = get_sysinfo();
+        assert!(info.totalram > 0, "totalram should be > 0");
+        assert!(info.freeram > 0, "freeram should be > 0");
+        assert!(info.uptime > 0, "uptime should be > 0");
+    }
+
+    #[test]
+    fn test_get_loadavg_values() {
+        let avg = get_loadavg();
+        // Load averages are typically >= 0 on a running system
+        assert!(avg[0] >= 0.0, "1min load avg should be >= 0");
+    }
+
+    #[test]
+    fn test_get_cpu_model_not_unknown() {
+        let model = get_cpu_model();
+        // On Linux, /proc/cpuinfo should have model name
+        assert_ne!(model, "unknown", "CPU model should not be unknown on Linux");
+    }
+
+    #[test]
+    fn test_get_os_version_not_empty() {
+        let ver = get_os_version();
+        assert!(!ver.is_empty(), "os version should not be empty");
+    }
+
+    #[test]
+    fn test_sysinfo_freeram_less_than_total() {
+        let info = get_sysinfo();
+        assert!(info.freeram <= info.totalram, "freeram should <= totalram");
     }
 }
