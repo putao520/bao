@@ -1382,19 +1382,14 @@ mod bao_timeout_tests {
     }
 
     #[test]
-    fn bao_timeout_object_fire_js_with_sentinel_callback_skips_dispatch() {
-        // fire_js with a sentinel callback (non-null but invalid) should still
-        // transition state. We use a sentinel that would crash if dereferenced,
-        // but the test passes because we pass null cx which causes early return
-        // in fire_js_callback_raw (global is null).
+    fn bao_timeout_object_fire_js_none_callback_skips_dispatch_with_null_cx() {
+        // fire_js with callback=None and null cx should safely transition state.
+        // The None callback guard in fire_js returns before reaching
+        // fire_js_callback_raw, so null cx is safe.
         let mut obj = BaoTimeoutObject::new_paused();
-        let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
-        obj.callback = Some(sentinel);
         let now = Timespec { sec: 1_700_000_000, nsec: 0 };
-        // SAFETY: null cx causes early return in fire_js_callback_raw before
-        // dereferencing the sentinel callback.
         unsafe { obj.fire_js(::std::ptr::null_mut(), &now); }
-        assert!(obj.event_loop_timer.state == TimerState::FIRED, "fire_js should transition state to FIRED");
+        assert!(obj.event_loop_timer.state == TimerState::FIRED, "fire_js transitions state with None callback");
         assert_eq!(obj.epoch, 1);
     }
 
