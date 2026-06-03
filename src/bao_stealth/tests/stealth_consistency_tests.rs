@@ -186,7 +186,9 @@ fn test_chrome_js_injection_differs_from_firefox() {
 fn test_canvas_noise_modifies_pixel() {
     let noise = CanvasNoise::new(42);
     let (r, g, b, a) = noise.apply_to_pixel(128, 128, 128, 255, 10, 20);
-    assert!(r <= 255 && g <= 255 && b <= 255 && a <= 255, "Pixels should stay in valid range");
+    // Verify deterministic output (u8 is always 0-255 by definition)
+    let (r2, g2, b2, a2) = noise.apply_to_pixel(128, 128, 128, 255, 10, 20);
+    assert_eq!((r, g, b, a), (r2, g2, b2, a2));
 }
 
 #[test]
@@ -194,8 +196,8 @@ fn test_canvas_noise_different_positions_differ() {
     let noise = CanvasNoise::new(42);
     let p1 = noise.apply_to_pixel(128, 128, 128, 255, 0, 0);
     let p2 = noise.apply_to_pixel(128, 128, 128, 255, 100, 100);
-    // Different positions may or may not differ — just verify no crash
-    assert!(p1.0 <= 255 && p2.0 <= 255);
+    // Different positions — just verify no crash, output is valid u8
+    let _ = (p1, p2);
 }
 
 // ---- Debug traits ----

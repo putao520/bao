@@ -63,9 +63,8 @@ fn test_apply_to_pixel_different_seeds_differ() {
     }
     // With amplitude 0.001, may not produce different u8 values for all coords.
     // At minimum, verify they don't panic and produce valid results.
-    let p1 = cn1.apply_to_pixel(128, 128, 128, 255, 100, 200);
-    let p2 = cn2.apply_to_pixel(128, 128, 128, 255, 100, 200);
-    assert!(p1.0 <= 255 && p2.0 <= 255);
+    let _ = cn1.apply_to_pixel(128, 128, 128, 255, 100, 200);
+    let _ = cn2.apply_to_pixel(128, 128, 128, 255, 100, 200);
 }
 
 #[test]
@@ -75,7 +74,6 @@ fn test_apply_to_pixel_different_coords_same_output() {
     let p1 = cn.apply_to_pixel(128, 128, 128, 255, 0, 0);
     let p2 = cn.apply_to_pixel(128, 128, 128, 255, 100, 100);
     // Both produce valid pixels (may be equal due to tiny amplitude)
-    assert!(p1.0 <= 255 && p2.0 <= 255);
 }
 
 #[test]
@@ -125,9 +123,10 @@ fn test_apply_to_pixel_zero_channels_no_overflow() {
 fn test_apply_to_pixel_max_channels_no_overflow() {
     let cn = CanvasNoise::new(42);
     let (r, g, b, _) = cn.apply_to_pixel(255, 255, 255, 255, 0, 0);
-    assert!(r <= 255, "r should not overflow: {}", r);
-    assert!(g <= 255, "g should not overflow: {}", g);
-    assert!(b <= 255, "b should not overflow: {}", b);
+    // Max channels + noise should stay at 255 (clamped)
+    assert_eq!(r, 255);
+    assert_eq!(g, 255);
+    assert_eq!(b, 255);
 }
 
 // ---- Noise is small (amplitude = 0.001) ----
@@ -165,10 +164,7 @@ fn test_apply_to_pixel_noise_is_small_blue() {
 fn test_apply_to_pixel_x_produces_valid_output() {
     let cn = CanvasNoise::new(42);
     for x in 0..100u32 {
-        let (r, g, b, _) = cn.apply_to_pixel(128, 128, 128, 255, x, 0);
-        assert!(r <= 255);
-        assert!(g <= 255);
-        assert!(b <= 255);
+        let _ = cn.apply_to_pixel(128, 128, 128, 255, x, 0);
     }
 }
 
@@ -176,10 +172,7 @@ fn test_apply_to_pixel_x_produces_valid_output() {
 fn test_apply_to_pixel_y_produces_valid_output() {
     let cn = CanvasNoise::new(42);
     for y in 0..100u32 {
-        let (r, g, b, _) = cn.apply_to_pixel(128, 128, 128, 255, 0, y);
-        assert!(r <= 255);
-        assert!(g <= 255);
-        assert!(b <= 255);
+        let _ = cn.apply_to_pixel(128, 128, 128, 255, 0, y);
     }
 }
 
@@ -196,28 +189,19 @@ fn test_apply_to_pixel_xy_independence() {
 #[test]
 fn test_apply_to_pixel_large_x() {
     let cn = CanvasNoise::new(42);
-    let (r, g, b, _) = cn.apply_to_pixel(128, 128, 128, 255, u32::MAX, 0);
-    assert!(r <= 255);
-    assert!(g <= 255);
-    assert!(b <= 255);
+    let _ = cn.apply_to_pixel(128, 128, 128, 255, u32::MAX, 0);
 }
 
 #[test]
 fn test_apply_to_pixel_large_y() {
     let cn = CanvasNoise::new(42);
-    let (r, g, b, _) = cn.apply_to_pixel(128, 128, 128, 255, 0, u32::MAX);
-    assert!(r <= 255);
-    assert!(g <= 255);
-    assert!(b <= 255);
+    let _ = cn.apply_to_pixel(128, 128, 128, 255, 0, u32::MAX);
 }
 
 #[test]
 fn test_apply_to_pixel_large_xy() {
     let cn = CanvasNoise::new(42);
-    let (r, g, b, _) = cn.apply_to_pixel(128, 128, 128, 255, u32::MAX / 2, u32::MAX / 2);
-    assert!(r <= 255);
-    assert!(g <= 255);
-    assert!(b <= 255);
+    let _ = cn.apply_to_pixel(128, 128, 128, 255, u32::MAX / 2, u32::MAX / 2);
 }
 
 // ---- Clone preserves behavior ----
@@ -236,7 +220,7 @@ fn test_canvas_noise_clone_same_output() {
 #[test]
 fn test_canvas_noise_clone_independence() {
     let cn1 = CanvasNoise::new(42);
-    let mut cn2 = cn1.clone();
+    let cn2 = cn1.clone();
     // cn2 is independent (same seed but separate)
     let _ = cn2.apply_to_pixel(0, 0, 0, 0, 0, 0); // use cn2
     let p1 = cn1.apply_to_pixel(128, 128, 128, 255, 100, 200);
@@ -283,10 +267,7 @@ fn test_noise_function_is_hash_based() {
     let cn = CanvasNoise::new(42);
     for x in 0..10000u32 {
         for y in [0u32, 1, 100, 999].iter() {
-            let (r, g, b, a) = cn.apply_to_pixel(128, 64, 192, 200, x, *y);
-            assert!(r <= 255);
-            assert!(g <= 255);
-            assert!(b <= 255);
+            let (_, _, _, a) = cn.apply_to_pixel(128, 64, 192, 200, x, *y);
             assert_eq!(a, 200);
         }
     }
@@ -329,10 +310,7 @@ fn test_canvas_noise_10000_pixels_no_panic() {
     let cn = CanvasNoise::new(42);
     for y in 0..100u32 {
         for x in 0..100u32 {
-            let (r, g, b, a) = cn.apply_to_pixel(128, 128, 128, 255, x, y);
-            assert!(r <= 255);
-            assert!(g <= 255);
-            assert!(b <= 255);
+            let (_, _, _, a) = cn.apply_to_pixel(128, 128, 128, 255, x, y);
             assert_eq!(a, 255);
         }
     }

@@ -600,6 +600,8 @@ fn extract_json_string_field(json: &str, field: &str) -> ::std::option::Option<S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ::std::env;
+    use ::std::fs;
 
     #[test]
     fn extract_field_basic() {
@@ -647,6 +649,278 @@ mod tests {
     fn extract_field_empty_value() {
         let json = r#"{"main": ""}"#;
         assert_eq!(extract_json_string_field(json, "main"), Some("".into()));
+    }
+
+    // ─── extract_json_string_field edge cases ────────────────────────
+    // @trace REQ-ENG-005 [req:REQ-ENG-005] [level:unit]
+
+    #[test]
+    fn extract_field_nested_json() {
+        let json = r#"{"name": "pkg", "exports": {"main": "dist/index.js"}}"#;
+        // Simple parser finds the first "main" key — which is inside exports
+        // This is a known limitation of the simple string-search parser
+        let result = extract_json_string_field(json, "main");
+        assert!(result.is_some(), "parser finds first occurrence of 'main' key");
+    }
+
+    #[test]
+    fn extract_field_value_with_escapes() {
+        // Our simple parser doesn't handle escapes, but should not panic
+        let json = r#"{"main": "path/with\"quote"}"#;
+        // Will extract up to the first unescaped quote it finds
+        let result = extract_json_string_field(json, "main");
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn extract_field_no_closing_quote() {
+        let json = r#"{"main": "no_end"#;
+        assert_eq!(extract_json_string_field(json, "main"), None);
+    }
+
+    #[test]
+    fn extract_field_boolean_value() {
+        let json = r#"{"private": true}"#;
+        assert_eq!(extract_json_string_field(json, "private"), None);
+    }
+
+    #[test]
+    fn extract_field_null_value() {
+        let json = r#"{"main": null}"#;
+        assert_eq!(extract_json_string_field(json, "main"), None);
+    }
+
+    #[test]
+    fn extract_field_array_value() {
+        let json = r#"{"exports": ["a.js", "b.js"]}"#;
+        assert_eq!(extract_json_string_field(json, "exports"), None);
+    }
+
+    #[test]
+    fn extract_field_with_newlines() {
+        let json = "{\n  \"main\": \"lib/index.js\"\n}";
+        assert_eq!(extract_json_string_field(json, "main"), Some("lib/index.js".into()));
+    }
+
+    #[test]
+    fn extract_field_duplicate_keys() {
+        // Returns the first occurrence
+        let json = r#"{"main": "first.js", "main": "second.js"}"#;
+        assert_eq!(extract_json_string_field(json, "main"), Some("first.js".into()));
+    }
+
+    // ─── try_extensions / try_index with temp dirs ───────────────────
+    // @trace REQ-ENG-005 [req:REQ-ENG-005] [level:unit]
+
+    #[test]
+    fn try_extensions_finds_js() {
+        let dir = env::temp_dir().join("bao_test_try_ext_js");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("mod.js"), "").unwrap();
+        let result = try_extensions(&dir.join("mod"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().extension().unwrap(), "js");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_extensions_finds_mjs() {
+        let dir = env::temp_dir().join("bao_test_try_ext_mjs");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("mod.mjs"), "").unwrap();
+        let result = try_extensions(&dir.join("mod"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().extension().unwrap(), "mjs");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_extensions_finds_ts() {
+        let dir = env::temp_dir().join("bao_test_try_ext_ts");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("mod.ts"), "").unwrap();
+        let result = try_extensions(&dir.join("mod"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().extension().unwrap(), "ts");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_extensions_prefers_js_over_mjs() {
+        let dir = env::temp_dir().join("bao_test_try_ext_pref");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("mod.js"), "").unwrap();
+        fs::write(dir.join("mod.mjs"), "").unwrap();
+        let result = try_extensions(&dir.join("mod"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().extension().unwrap(), "js");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_extensions_none_when_no_match() {
+        let dir = env::temp_dir().join("bao_test_try_ext_none");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // No files created
+        assert!(try_extensions(&dir.join("nonexistent")).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_index_finds_index_js() {
+        let dir = env::temp_dir().join("bao_test_try_idx_js");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("index.js"), "").unwrap();
+        let result = try_index(&dir);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().file_name().unwrap(), "index.js");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_index_finds_index_mjs() {
+        let dir = env::temp_dir().join("bao_test_try_idx_mjs");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("index.mjs"), "").unwrap();
+        let result = try_index(&dir);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().file_name().unwrap(), "index.mjs");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_index_none_when_not_dir() {
+        let dir = env::temp_dir().join("bao_test_try_idx_notdir");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("not_a_dir");
+        fs::write(&file, "").unwrap();
+        assert!(try_index(&file).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn try_index_none_when_empty_dir() {
+        let dir = env::temp_dir().join("bao_test_try_idx_empty");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(try_index(&dir).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ─── resolve_package_main with temp dirs ────────────────────────
+    // @trace REQ-ENG-005 [req:REQ-ENG-005] [level:unit]
+
+    #[test]
+    fn resolve_package_main_with_main_field() {
+        let dir = env::temp_dir().join("bao_test_pkg_main");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("package.json"), r#"{"main": "lib/app.js"}"#).unwrap();
+        fs::create_dir_all(dir.join("lib")).unwrap();
+        fs::write(dir.join("lib").join("app.js"), "").unwrap();
+        let result = resolve_package_main(&dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("app.js"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_package_main_no_package_json() {
+        let dir = env::temp_dir().join("bao_test_pkg_nojson");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        assert!(resolve_package_main(&dir).is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_package_main_defaults_to_index_js() {
+        let dir = env::temp_dir().join("bao_test_pkg_default");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("package.json"), r#"{"name": "pkg"}"#).unwrap();
+        fs::write(dir.join("index.js"), "").unwrap();
+        let result = resolve_package_main(&dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("index.js"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_package_main_module_field_fallback() {
+        let dir = env::temp_dir().join("bao_test_pkg_module");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("package.json"), r#"{"module": "esm/index.mjs"}"#).unwrap();
+        fs::create_dir_all(dir.join("esm")).unwrap();
+        fs::write(dir.join("esm").join("index.mjs"), "").unwrap();
+        let result = resolve_package_main(&dir);
+        assert!(result.is_some());
+        assert!(result.unwrap().ends_with("index.mjs"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ─── resolve_specifier with temp dirs ───────────────────────────
+    // @trace REQ-ENG-005 [req:REQ-ENG-005] [level:unit]
+
+    #[test]
+    fn resolve_specifier_absolute_existing_file() {
+        let dir = env::temp_dir().join("bao_test_resolve_abs");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("test.js");
+        fs::write(&file, "").unwrap();
+        let result = resolve_specifier(&file.to_string_lossy(), None);
+        assert!(result.is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_specifier_absolute_nonexistent() {
+        let result = resolve_specifier("/nonexistent/path/to/module.js", None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn resolve_specifier_relative_with_base() {
+        let dir = env::temp_dir().join("bao_test_resolve_rel");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("app.js"), "").unwrap();
+        let result = resolve_specifier("./app.js", Some(&dir));
+        assert!(result.is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_specifier_relative_parent_with_base() {
+        let parent = env::temp_dir().join("bao_test_resolve_parent");
+        let _ = fs::remove_dir_all(&parent);
+        let child = parent.join("child");
+        fs::create_dir_all(&child).unwrap();
+        fs::write(parent.join("shared.js"), "").unwrap();
+        let result = resolve_specifier("../shared.js", Some(&child));
+        assert!(result.is_some());
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn resolve_specifier_bare_falls_through_to_node_modules() {
+        // Bare specifier without node_modules → None
+        let dir = env::temp_dir().join("bao_test_resolve_bare");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let result = resolve_specifier("nonexistent-pkg", Some(&dir));
+        assert!(result.is_none());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
 
