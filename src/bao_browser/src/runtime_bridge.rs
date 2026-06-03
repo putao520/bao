@@ -1064,10 +1064,11 @@ impl RuntimeBridge {
 
 #[cfg(test)]
 mod tests {
+    // ─── Polyfill validation ──────────────────────────────────────
+    // @trace REQ-BRW-003 [req:REQ-BRW-003] [level:unit]
+
     #[test]
     fn test_polyfills_are_valid_js() {
-        // Verify the polyfills don't have obvious syntax issues
-        // by checking they are non-empty and contain expected constructs
         assert!(!super::NODE_POLYFILLS.is_empty());
         assert!(super::NODE_POLYFILLS.contains("Buffer"));
         assert!(super::NODE_POLYFILLS.contains("require"));
@@ -1076,5 +1077,169 @@ mod tests {
         assert!(super::STEALTH_POLYFILLS.contains("navigator"));
         assert!(super::STEALTH_POLYFILLS.contains("WebGL"));
         assert!(super::STEALTH_POLYFILLS.contains("Canvas"));
+    }
+
+    // ─── BridgeCommand / BridgeResponse / BridgeChannel extended tests ──
+    // @trace REQ-BRW-003 [req:REQ-BRW-003] [level:unit]
+
+    #[test]
+    fn bridge_command_navigate_equality() {
+        let cmd1 = super::BridgeCommand::Navigate("https://example.com".into());
+        let cmd2 = super::BridgeCommand::Navigate("https://example.com".into());
+        let cmd3 = super::BridgeCommand::Navigate("https://other.com".into());
+        assert_eq!(cmd1, cmd2);
+        assert_ne!(cmd1, cmd3);
+    }
+
+    #[test]
+    fn bridge_command_evaluate_equality() {
+        let cmd1 = super::BridgeCommand::Evaluate("1+1".into());
+        let cmd2 = super::BridgeCommand::Evaluate("1+1".into());
+        assert_eq!(cmd1, cmd2);
+        assert_ne!(cmd1, super::BridgeCommand::Evaluate("2+2".into()));
+    }
+
+    #[test]
+    fn bridge_command_resize_equality() {
+        assert_eq!(super::BridgeCommand::Resize(800, 600), super::BridgeCommand::Resize(800, 600));
+        assert_ne!(super::BridgeCommand::Resize(800, 600), super::BridgeCommand::Resize(1024, 768));
+    }
+
+    #[test]
+    fn bridge_command_variants_distinct() {
+        let cmds = [
+            super::BridgeCommand::Navigate("x".into()),
+            super::BridgeCommand::Evaluate("y".into()),
+            super::BridgeCommand::Screenshot,
+            super::BridgeCommand::Close,
+            super::BridgeCommand::Resize(1, 1),
+            super::BridgeCommand::GetTitle,
+            super::BridgeCommand::GetUrl,
+        ];
+        for i in 0..cmds.len() {
+            for j in 0..cmds.len() {
+                if i != j {
+                    assert_ne!(cmds[i], cmds[j]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bridge_response_ok_is_ok() {
+        let resp = super::BridgeResponse::Ok;
+        assert!(resp.is_ok());
+        assert!(!resp.is_err());
+    }
+
+    #[test]
+    fn bridge_response_err_is_err() {
+        let resp = super::BridgeResponse::Err("failed".into());
+        assert!(!resp.is_ok());
+        assert!(resp.is_err());
+    }
+
+    #[test]
+    fn bridge_response_null_is_ok() {
+        let resp = super::BridgeResponse::Null;
+        assert!(resp.is_ok());
+        assert!(!resp.is_err());
+    }
+
+    #[test]
+    fn bridge_response_value_is_ok() {
+        let resp = super::BridgeResponse::Value("result".into());
+        assert!(resp.is_ok());
+        assert!(!resp.is_err());
+    }
+
+    #[test]
+    fn bridge_response_binary_is_ok() {
+        let resp = super::BridgeResponse::Binary(vec![1, 2, 3]);
+        assert!(resp.is_ok());
+        assert!(!resp.is_err());
+    }
+
+    #[test]
+    fn bridge_response_ok_method_on_err() {
+        let resp = super::BridgeResponse::Err("error msg".into());
+        let result = resp.ok();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "error msg");
+    }
+
+    #[test]
+    fn bridge_response_ok_method_on_ok_variants() {
+        assert!(super::BridgeResponse::Ok.ok().is_ok());
+        assert!(super::BridgeResponse::Null.ok().is_ok());
+        assert!(super::BridgeResponse::Value("v".into()).ok().is_ok());
+        assert!(super::BridgeResponse::Binary(vec![]).ok().is_ok());
+    }
+
+    #[test]
+    fn bridge_channel_new_alive() {
+        let (channel, _receiver) = super::BridgeChannel::new();
+        assert!(channel.is_alive());
+    }
+
+    #[test]
+    fn bridge_channel_close_sets_not_alive() {
+        let (channel, _receiver) = super::BridgeChannel::new();
+        channel.close();
+        assert!(!channel.is_alive());
+    }
+
+    #[test]
+    fn bridge_receiver_alive_shares_flag() {
+        let (channel, receiver) = super::BridgeChannel::new();
+        assert!(receiver.is_alive());
+        channel.close();
+        assert!(!receiver.is_alive());
+    }
+
+    #[test]
+    fn bridge_channel_fire_and_forget() {
+        let (channel, receiver) = super::BridgeChannel::new();
+        assert!(channel.fire_and_forget(super::BridgeCommand::GetTitle).is_ok());
+        let (cmd, responder) = receiver.recv().unwrap();
+        assert_eq!(cmd, super::BridgeCommand::GetTitle);
+        assert!(responder.is_none());
+    }
+
+    #[test]
+    fn bridge_channel_send_with_response() {
+        let (channel, receiver) = super::BridgeChannel::new();
+        // send() blocks until response — we need a worker thread
+        let worker = std::thread::spawn(move || {
+            let (cmd, responder) = receiver.recv().unwrap();
+            if let Some(resp_tx) = responder {
+                resp_tx.send(super::BridgeResponse::Value("title".into())).unwrap();
+            }
+        });
+        let result = channel.send(super::BridgeCommand::GetTitle).unwrap();
+        assert_eq!(result, super::BridgeResponse::Value("title".into()));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn runtime_bridge_new_alive() {
+        let (bridge, _receiver) = super::RuntimeBridge::new();
+        assert!(bridge.is_alive());
+    }
+
+    #[test]
+    fn runtime_bridge_close() {
+        let (bridge, _receiver) = super::RuntimeBridge::new();
+        bridge.close();
+        assert!(!bridge.is_alive());
+    }
+
+    #[test]
+    fn runtime_bridge_fire_and_forget() {
+        let (bridge, receiver) = super::RuntimeBridge::new();
+        assert!(bridge.fire_and_forget(super::BridgeCommand::Close).is_ok());
+        let (cmd, responder) = receiver.recv().unwrap();
+        assert_eq!(cmd, super::BridgeCommand::Close);
+        assert!(responder.is_none());
     }
 }
