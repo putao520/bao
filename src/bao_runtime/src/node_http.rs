@@ -128,7 +128,6 @@ struct ServerUserData {
 /// The res object's `writeHead`/`write`/`end` methods bridge to
 /// `Response::<false>::write_status`/`write_header`/`end`.
 #[allow(unsafe_op_in_unsafe_fn)]
-#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn uws_route_handler(
     res: *mut bun_uws_sys::response::c::uws_res,
     req: *mut bun_uws_sys::Request,

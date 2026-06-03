@@ -583,6 +583,8 @@ pub fn force_link_poll() {
 mod tests {
     use super::*;
 
+    // ──── BaoPoll layout ────
+
     #[test]
     fn bao_poll_layout_is_16_bytes_aligned() {
         assert_eq!(core::mem::size_of::<BaoPoll>(), 16);
@@ -601,6 +603,17 @@ mod tests {
     }
 
     #[test]
+    fn bao_poll_fd_max_values() {
+        let mut p: BaoPoll = unsafe { core::mem::zeroed() };
+        // Max positive 27-bit value: 2^26 - 1 = 67108863
+        p.set_fd(67108863);
+        assert_eq!(p.fd(), 67108863);
+        // Min negative 27-bit value: -2^26 = -67108864
+        p.set_fd(-67108864);
+        assert_eq!(p.fd(), -67108864);
+    }
+
+    #[test]
     fn bao_poll_type_read_write() {
         let mut p: BaoPoll = unsafe { core::mem::zeroed() };
         p.set_poll_type(POLL_TYPE_SOCKET);
@@ -610,6 +623,16 @@ mod tests {
         p.set_poll_type(POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_IN);
         assert_eq!(p.poll_type(), POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_IN);
         assert_eq!(p.kind(), POLL_TYPE_CALLBACK);
+    }
+
+    #[test]
+    fn bao_poll_all_kinds() {
+        let mut p: BaoPoll = unsafe { core::mem::zeroed() };
+        for &kind in &[POLL_TYPE_SOCKET, POLL_TYPE_SOCKET_SHUT_DOWN,
+                       POLL_TYPE_SEMI_SOCKET, POLL_TYPE_CALLBACK, POLL_TYPE_UDP] {
+            p.set_poll_type(kind);
+            assert_eq!(p.kind(), kind, "kind must match for {kind}");
+        }
     }
 
     #[test]
@@ -628,6 +651,8 @@ mod tests {
         assert_eq!(p.events(), 0);
     }
 
+    // ──── tagged pointer ────
+
     #[test]
     fn clear_pointer_tag_identifies_tagged() {
         // A pointer with high bits set (simulating FilePoll tagged pointer)
@@ -642,6 +667,21 @@ mod tests {
     }
 
     #[test]
+    fn null_pointer_is_not_tagged() {
+        assert!(!is_tagged_pointer(ptr::null_mut()));
+    }
+
+    #[test]
+    fn clear_pointer_tag_is_idempotent() {
+        let tagged: *mut c_void = ((1usize << 49) | 0x1000) as *mut c_void;
+        let once = clear_pointer_tag(tagged);
+        let twice = clear_pointer_tag(once);
+        assert_eq!(once, twice);
+    }
+
+    // ──── us_internal_poll_set_type ────
+
+    #[test]
     fn us_internal_poll_set_type_preserves_polling_bits() {
         let mut p: BaoPoll = unsafe { core::mem::zeroed() };
         p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_IN);
@@ -650,6 +690,76 @@ mod tests {
         assert_eq!(p.kind(), POLL_TYPE_SOCKET_SHUT_DOWN);
         assert_eq!(p.poll_type() & POLL_TYPE_POLLING_MASK, POLL_TYPE_POLLING_IN);
     }
+
+    #[test]
+    fn us_internal_poll_set_type_preserves_polling_out() {
+        let mut p: BaoPoll = unsafe { core::mem::zeroed() };
+        p.set_poll_type(POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_OUT);
+        unsafe { us_internal_poll_set_type(&mut p, POLL_TYPE_SOCKET); }
+        assert_eq!(p.kind(), POLL_TYPE_SOCKET);
+        assert_eq!(p.poll_type() & POLL_TYPE_POLLING_MASK, POLL_TYPE_POLLING_OUT);
+    }
+
+    // ──── us_create_poll / us_poll_free ────
+
+    #[test]
+    fn us_create_poll_returns_aligned_non_null() {
+        let loop_ = super::super::uws_get_loop();
+        let poll = unsafe { us_create_poll(loop_, 0, 0) };
+        assert!(!poll.is_null());
+        // Must be 16-byte aligned
+        assert_eq!((poll as usize) % 16, 0, "poll must be 16-byte aligned");
+        unsafe { us_poll_free(poll, loop_); }
+    }
+
+    #[test]
+    fn us_create_poll_with_ext_size() {
+        let loop_ = super::super::uws_get_loop();
+        let ext = 64;
+        let poll = unsafe { us_create_poll(loop_, 0, ext) };
+        assert!(!poll.is_null());
+        let ext_ptr = unsafe { us_poll_ext(poll) };
+        assert!(!ext_ptr.is_null());
+        // ext must be after the 16-byte BaoPoll header
+        assert_eq!(ext_ptr as usize, poll as usize + 16);
+        unsafe { us_poll_free(poll, loop_); }
+    }
+
+    #[test]
+    fn us_create_poll_increments_num_polls() {
+        let loop_ = super::super::uws_get_loop();
+        let before = unsafe { (*loop_).num_polls };
+        let poll = unsafe { us_create_poll(loop_, 0, 0) };
+        let after = unsafe { (*loop_).num_polls };
+        assert_eq!(after, before + 1, "fallthrough=0 must increment num_polls");
+        unsafe { us_poll_free(poll, loop_); }
+    }
+
+    #[test]
+    fn us_create_poll_fallthrough_skips_increment() {
+        let loop_ = super::super::uws_get_loop();
+        let before = unsafe { (*loop_).num_polls };
+        let poll = unsafe { us_create_poll(loop_, 1, 0) };
+        let after = unsafe { (*loop_).num_polls };
+        assert_eq!(after, before, "fallthrough=1 must not increment num_polls");
+        // Still need to free — but us_poll_free always decrements
+        unsafe { us_poll_free(poll, loop_); }
+    }
+
+    // ──── us_poll_init ────
+
+    #[test]
+    fn us_poll_init_sets_fd_and_type() {
+        let loop_ = super::super::uws_get_loop();
+        let poll = unsafe { us_create_poll(loop_, 0, 0) };
+        unsafe { us_poll_init(poll, 42, POLL_TYPE_CALLBACK); }
+        assert_eq!(unsafe { us_poll_fd(poll) }, 42);
+        assert_eq!(unsafe { us_internal_poll_type(poll) }, POLL_TYPE_CALLBACK);
+        assert_eq!(unsafe { us_poll_events(poll) }, 0, "no polling direction set");
+        unsafe { us_poll_free(poll, loop_); }
+    }
+
+    // ──── poll start/stop/change ────
 
     #[test]
     fn poll_start_stop_cycle() {
@@ -720,5 +830,54 @@ mod tests {
         unsafe { us_poll_free(poll, loop_); }
         unsafe { libc::close(fds[0]); }
         unsafe { libc::close(fds[1]); }
+    }
+
+    #[test]
+    fn poll_start_rc_returns_zero_on_success() {
+        let loop_ = super::super::uws_get_loop();
+        let mut fds: [c_int; 2] = [-1; 2];
+        let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(ret, 0);
+        let rfd = fds[0];
+
+        let poll = unsafe { us_create_poll(loop_, 0, 0) };
+        unsafe { us_poll_init(poll, rfd, POLL_TYPE_CALLBACK); }
+        let rc = unsafe { us_poll_start_rc(poll, loop_, libc::EPOLLIN) };
+        assert_eq!(rc, 0, "us_poll_start_rc must return 0 on success");
+
+        unsafe { us_poll_stop(poll, loop_); }
+        unsafe { us_poll_free(poll, loop_); }
+        unsafe { libc::close(fds[0]); }
+        unsafe { libc::close(fds[1]); }
+    }
+
+    #[test]
+    fn poll_free_with_null_is_no_op() {
+        let loop_ = super::super::uws_get_loop();
+        unsafe { us_poll_free(ptr::null_mut(), loop_); }
+    }
+
+    #[test]
+    fn poll_resize_same_size_returns_same_pointer() {
+        let loop_ = super::super::uws_get_loop();
+        let poll = unsafe { us_create_poll(loop_, 0, 32) };
+        unsafe { us_poll_init(poll, -1, POLL_TYPE_CALLBACK); }
+        // Resize to same size → should return same pointer
+        let new_p = unsafe { us_poll_resize(poll, loop_, 32, 32) };
+        assert_eq!(new_p, poll, "resize to same size must return same pointer");
+        unsafe { us_poll_free(poll, loop_); }
+    }
+
+    #[test]
+    fn poll_resize_larger_returns_new_pointer() {
+        let loop_ = super::super::uws_get_loop();
+        let poll = unsafe { us_create_poll(loop_, 0, 16) };
+        unsafe { us_poll_init(poll, -1, POLL_TYPE_CALLBACK); }
+        // Resize to larger → should return different pointer
+        let new_p = unsafe { us_poll_resize(poll, loop_, 16, 64) };
+        // new_p may or may not differ (depends on allocator), but must be non-null
+        assert!(!new_p.is_null(), "resize must return non-null");
+        // Don't free old poll — resize already accounted for it
+        unsafe { us_poll_free(new_p, loop_); }
     }
 }

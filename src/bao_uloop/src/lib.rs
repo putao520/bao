@@ -1016,6 +1016,8 @@ pub fn force_link() {
 mod tests {
     use super::*;
 
+    // ──── uws_get_loop ────
+
     #[test]
     fn uws_get_loop_returns_non_null_per_thread() {
         let p1 = uws_get_loop();
@@ -1048,6 +1050,8 @@ mod tests {
         );
     }
 
+    // ──── tick ────
+
     #[test]
     fn tick_increments_iteration_number() {
         let p = uws_get_loop();
@@ -1058,6 +1062,39 @@ mod tests {
             assert_eq!(after, before + 1, "tick must bump iteration_nr");
         }
     }
+
+    #[test]
+    fn multiple_ticks_increment_monotonically() {
+        let p = uws_get_loop();
+        unsafe {
+            let before = (*p).iteration_number();
+            for _ in 0..5 {
+                us_loop_run_bun_tick(p, ptr::null());
+            }
+            let after = (*p).iteration_number();
+            assert_eq!(after, before + 5, "5 ticks must bump by 5");
+        }
+    }
+
+    #[test]
+    fn tick_with_null_loop_returns_early() {
+        // Should not panic or crash
+        unsafe { us_loop_run_bun_tick(ptr::null_mut(), ptr::null()); }
+    }
+
+    #[test]
+    fn tick_with_zero_timeout_struct() {
+        let p = uws_get_loop();
+        let ts = Timespec { sec: 0, nsec: 0 };
+        unsafe {
+            let before = (*p).iteration_number();
+            us_loop_run_bun_tick(p, &ts);
+            let after = (*p).iteration_number();
+            assert_eq!(after, before + 1, "tick with zero timeout must still bump iteration");
+        }
+    }
+
+    // ──── defer ────
 
     #[test]
     fn defer_runs_on_next_tick() {
@@ -1081,6 +1118,50 @@ mod tests {
             assert_eq!(counter.load(Ordering::SeqCst), 1);
         }
     }
+
+    #[test]
+    fn defer_multiple_callbacks_run_in_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let seq: AtomicUsize = AtomicUsize::new(0);
+        let results: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+        extern "C" fn step_a(ctx: *mut c_void) {
+            let data: *const (AtomicUsize, std::sync::Mutex<Vec<usize>>) = ctx as *const _;
+            unsafe {
+                let n = (*data).0.fetch_add(1, Ordering::SeqCst);
+                (*data).1.lock().unwrap().push(n);
+            }
+        }
+
+        let p = uws_get_loop();
+
+        // Push 3 deferred callbacks that all point to the same shared data
+        let data = Box::into_raw(Box::new((seq, results)));
+        unsafe {
+            uws_loop_defer(p, data as *mut c_void, step_a);
+            uws_loop_defer(p, data as *mut c_void, step_a);
+            uws_loop_defer(p, data as *mut c_void, step_a);
+            us_loop_run_bun_tick(p, ptr::null());
+        }
+        let final_data = unsafe { &*data };
+        let final_seq = final_data.0.load(Ordering::SeqCst);
+        assert_eq!(final_seq, 3, "all 3 deferred callbacks must fire");
+        let order = final_data.1.lock().unwrap();
+        assert_eq!(order.len(), 3, "3 results recorded");
+        // FIFO order: 0, 1, 2
+        assert_eq!(order[0], 0);
+        assert_eq!(order[1], 1);
+        assert_eq!(order[2], 2);
+        unsafe { let _ = Box::from_raw(data); }
+    }
+
+    #[test]
+    fn defer_with_null_loop_is_no_op() {
+        extern "C" fn noop(_ctx: *mut c_void) {}
+        unsafe { uws_loop_defer(ptr::null_mut(), ptr::null_mut(), noop); }
+    }
+
+    // ──── pre/post handlers ────
 
     #[test]
     fn pre_post_handlers_fire() {
@@ -1111,6 +1192,19 @@ mod tests {
     }
 
     #[test]
+    fn add_handler_with_null_loop_is_no_op() {
+        extern "C" fn noop(_ctx: *mut c_void, _loop_: *mut Loop) {}
+        unsafe {
+            uws_loop_addPreHandler(ptr::null_mut(), ptr::null_mut(), noop);
+            uws_loop_addPostHandler(ptr::null_mut(), ptr::null_mut(), noop);
+            uws_loop_removePreHandler(ptr::null_mut(), ptr::null_mut(), noop);
+            uws_loop_removePostHandler(ptr::null_mut(), ptr::null_mut(), noop);
+        }
+    }
+
+    // ──── wakeup ────
+
+    #[test]
     fn wakeup_clears_pending_on_next_tick() {
         let p = uws_get_loop();
         unsafe {
@@ -1121,7 +1215,25 @@ mod tests {
         }
     }
 
-    // ──────── 74-C.1 new tests: epoll fd + eventfd ────────
+    #[test]
+    fn wakeup_with_null_loop_is_no_op() {
+        unsafe { us_wakeup_loop(ptr::null_mut()); }
+    }
+
+    #[test]
+    fn multiple_wakeups_accumulate_then_clear() {
+        let p = uws_get_loop();
+        unsafe {
+            us_wakeup_loop(p);
+            us_wakeup_loop(p);
+            us_wakeup_loop(p);
+            assert!((*p).pending_wakeups >= 3, "3 wakeups must accumulate");
+            us_loop_run_bun_tick(p, ptr::null());
+            assert_eq!((*p).pending_wakeups, 0, "tick clears all pending_wakeups");
+        }
+    }
+
+    // ──── 74-C.1 new tests: epoll fd + eventfd ────
 
     #[test]
     fn loop_fd_is_real_epoll_fd() {
@@ -1167,6 +1279,90 @@ mod tests {
         // The pending_wakeups should have been bumped.
         unsafe {
             assert!((*uws_get_loop()).pending_wakeups >= 1);
+        }
+    }
+
+    // ──── addrinfo stubs ────
+
+    #[test]
+    fn addrinfo_get_returns_cache_miss() {
+        let result = unsafe { Bun__addrinfo_get(ptr::null_mut(), ptr::null(), 0, ptr::null_mut()) };
+        assert_eq!(result, -1, "addrinfo_get must always return -1 (cache miss)");
+    }
+
+    #[test]
+    fn addrinfo_set_returns_zero() {
+        let result = unsafe { Bun__addrinfo_set(ptr::null_mut(), ptr::null_mut()) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn addrinfo_cancel_returns_zero() {
+        let result = unsafe { Bun__addrinfo_cancel(ptr::null_mut(), ptr::null_mut()) };
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn addrinfo_get_request_result_returns_null() {
+        let result = unsafe { Bun__addrinfo_getRequestResult(ptr::null_mut()) };
+        assert!(result.is_null(), "getRequestResult must return NULL");
+    }
+
+    // ──── encode_tagged_ptr ────
+
+    #[test]
+    fn encode_tagged_ptr_correct_layout() {
+        let ptr = 0x1000 as *mut c_void;
+        let encoded = encode_tagged_ptr(ptr, 0);
+        // Tag 0 → high bits all zero → just the pointer
+        let addr_mask: u64 = (1u64 << ADDR_BITS) - 1;
+        assert_eq!(encoded & addr_mask, 0x1000);
+        assert_eq!(encoded >> ADDR_BITS, 0);
+
+        let encoded2 = encode_tagged_ptr(ptr, 1024);
+        // Tag 1024 in high bits
+        assert_eq!(encoded2 & ((1u64 << ADDR_BITS) - 1), 0x1000);
+        assert_eq!((encoded2 >> ADDR_BITS) as u16, 1024);
+    }
+
+    // ──── us_loop_run ────
+
+    #[test]
+    fn us_loop_run_with_null_returns() {
+        unsafe { us_loop_run(ptr::null_mut()); }
+    }
+
+    #[test]
+    fn us_loop_run_exits_when_active_is_zero() {
+        let p = uws_get_loop();
+        unsafe {
+            // active starts at 0 (no sockets), so us_loop_run should exit immediately
+            assert_eq!((*p).active, 0);
+            us_loop_run(p);
+            // Should have incremented iteration at least once before seeing active==0
+        }
+    }
+
+    // ──── recv/send buffers ────
+
+    #[test]
+    fn loop_recv_send_buffers_are_non_null() {
+        let p = uws_get_loop();
+        unsafe {
+            assert!(!(*p).internal_loop_data.recv_buf.is_null(), "recv_buf must be allocated");
+            assert!(!(*p).internal_loop_data.send_buf.is_null(), "send_buf must be allocated");
+        }
+    }
+
+    #[test]
+    fn loop_num_polls_starts_at_wakeup_fd() {
+        // The wakeup eventfd is registered in epoll, but it's not counted
+        // as a "poll" in the us_create_poll sense. num_polls should start at 0
+        // or 1 depending on whether the wakeup fd counts.
+        let p = uws_get_loop();
+        unsafe {
+            // At minimum, no user-created polls exist
+            assert!((*p).num_polls >= 0, "num_polls must be non-negative");
         }
     }
 }

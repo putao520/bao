@@ -1277,6 +1277,7 @@ unsafe extern "C" fn bun_serve(
 }
 
 /// User data passed to uWS route handler via bun_uws::App::any.
+#[allow(dead_code)]
 struct BunServeUserData {
     fetch_cb: Option<*mut JSObject>,
     app_ptr: *mut ::std::ffi::c_void,

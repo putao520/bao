@@ -34,12 +34,14 @@ bun_core = { path = "../bun_core" }
 bun_url = { path = "../url" }
 bun_uws = { path = "../uws" }
 bun_uws_sys = { path = "../uws_sys" }
+bun_spawn = { path = "../spawn" }
+bun_spawn_sys = { path = "../spawn_sys" }
+bun_sys = { path = "../sys" }
 bun_opaque = { path = "../opaque" }
 bun_picohttp = { path = "../picohttp" }
 bun_resolver = { path = "../resolver" }
 bun_event_loop = { path = "../event_loop" }
 bun_dns = { path = "../dns" }
-bun_spawn = { path = "../spawn" }
 bun_io = { path = "../io" }
 bun_base64 = { path = "../base64" }
 bao_uloop = { path = "../bao_uloop" }

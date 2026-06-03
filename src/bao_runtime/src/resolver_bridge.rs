@@ -199,4 +199,57 @@ mod tests {
         // Should not panic, even if file not found
         assert!(result.is_none());
     }
+
+    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    #[test]
+    fn test_resolve_via_bun_resolver_mjs_extension() {
+        let dir = tempdir();
+        fs::write(dir.path().join("mod.mjs"), "// esm").unwrap();
+        let result = resolve_via_bun_resolver("./mod.mjs", Some(dir.path()));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().extension().unwrap(), "mjs");
+    }
+
+    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    #[test]
+    fn test_resolve_via_bun_resolver_tsx_extension() {
+        let dir = tempdir();
+        fs::write(dir.path().join("comp.tsx"), "// tsx").unwrap();
+        let result = resolve_via_bun_resolver("./comp", Some(dir.path()));
+        assert!(result.is_some());
+    }
+
+    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    #[test]
+    fn test_resolve_via_bun_resolver_nested_directory() {
+        let dir = tempdir();
+        let nested = dir.path().join("a").join("b").join("c");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("deep.js"), "// nested").unwrap();
+        let result = resolve_via_bun_resolver("./a/b/c/deep", Some(dir.path()));
+        assert!(result.is_some());
+        assert!(result.unwrap().to_str().unwrap().contains("deep.js"));
+    }
+
+    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    #[test]
+    fn test_resolve_via_bun_resolver_package_json_main() {
+        let dir = tempdir();
+        let pkg = dir.path().join("mypkg");
+        fs::create_dir_all(&pkg).unwrap();
+        fs::write(pkg.join("package.json"), r#"{"main": "lib/index.js"}"#).unwrap();
+        let lib = pkg.join("lib");
+        fs::create_dir_all(&lib).unwrap();
+        fs::write(lib.join("index.js"), "// main entry").unwrap();
+        let result = resolve_via_bun_resolver("mypkg", Some(dir.path()));
+        assert!(result.is_some());
+    }
+
+    // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
+    #[test]
+    fn test_install_idempotent() {
+        bao_native_stubs::force_link();
+        install();
+        install(); // second call should be a no-op, not panic
+    }
 }

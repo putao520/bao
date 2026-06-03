@@ -908,3 +908,249 @@ pub extern "C" fn highway_index_of_char(haystack: *const u8, haystack_len: usize
     }
     haystack_len
 }
+
+// @trace REQ-ENG-004 [algorithm:highway_char_frequency]
+#[no_mangle]
+pub extern "C" fn highway_char_frequency(text: *const u8, text_len: usize, freqs: *mut i32, delta: i32) {
+    if text.is_null() || text_len == 0 || freqs.is_null() || delta == 0 { return; }
+    let slice = unsafe { core::slice::from_raw_parts(text, text_len) };
+    let arr = unsafe { core::slice::from_raw_parts_mut(freqs, 64) };
+    for &b in slice.iter() {
+        let idx = match b {
+            b'A'..=b'Z' => (b - b'A') as usize,
+            b'a'..=b'z' => (b - b'a' + 26) as usize,
+            b'0'..=b'9' => (b - b'0' + 52) as usize,
+            b'_' => 62,
+            b'$' => 63,
+            _ => continue,
+        };
+        arr[idx] += delta;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn highway_index_of_interesting_character_in_string_literal(text: *const u8, text_len: usize, quote: u8) -> usize {
+    if text.is_null() || text_len == 0 { return text_len; }
+    let slice = unsafe { core::slice::from_raw_parts(text, text_len) };
+    for (i, &b) in slice.iter().enumerate() {
+        if b > 127 || b == b'\\' || b == quote || b == b'\r' || b == b'\n' { return i; }
+    }
+    text_len
+}
+
+#[no_mangle]
+pub extern "C" fn highway_index_of_interesting_character_in_multiline_comment(text: *const u8, text_len: usize) -> usize {
+    if text.is_null() || text_len == 0 { return text_len; }
+    let slice = unsafe { core::slice::from_raw_parts(text, text_len) };
+    for (i, &b) in slice.iter().enumerate() {
+        if b > 127 || b == b'*' || b == b'\r' || b == b'\n' { return i; }
+    }
+    text_len
+}
+
+#[no_mangle]
+pub extern "C" fn highway_index_of_newline_or_non_ascii(haystack: *const u8, haystack_len: usize) -> usize {
+    if haystack.is_null() || haystack_len == 0 { return haystack_len; }
+    let slice = unsafe { core::slice::from_raw_parts(haystack, haystack_len) };
+    for (i, &b) in slice.iter().enumerate() {
+        if b > 127 || b < 0x20 || b == b'\r' || b == b'\n' { return i; }
+    }
+    haystack_len
+}
+
+#[no_mangle]
+pub extern "C" fn highway_index_of_newline_or_non_ascii_or_hash_or_at(haystack: *const u8, haystack_len: usize) -> usize {
+    if haystack.is_null() || haystack_len == 0 { return haystack_len; }
+    let slice = unsafe { core::slice::from_raw_parts(haystack, haystack_len) };
+    for (i, &b) in slice.iter().enumerate() {
+        if b > 127 || b == b'\r' || b == b'\n' || b == b'#' || b == b'@' { return i; }
+    }
+    haystack_len
+}
+
+#[no_mangle]
+pub extern "C" fn highway_index_of_space_or_newline_or_non_ascii(haystack: *const u8, haystack_len: usize) -> usize {
+    if haystack.is_null() || haystack_len == 0 { return haystack_len; }
+    let slice = unsafe { core::slice::from_raw_parts(haystack, haystack_len) };
+    for (i, &b) in slice.iter().enumerate() {
+        if b > 127 || b == b' ' || b == b'\r' || b == b'\n' || b == b'\t' { return i; }
+    }
+    haystack_len
+}
+
+#[no_mangle]
+pub extern "C" fn highway_contains_newline_or_non_ascii_or_quote(text: *const u8, text_len: usize) -> bool {
+    if text.is_null() || text_len == 0 { return false; }
+    let slice = unsafe { core::slice::from_raw_parts(text, text_len) };
+    for &b in slice.iter() {
+        if b > 127 || b == b'\r' || b == b'\n' || b == b'"' || b == b'\'' || b == b'`' { return true; }
+    }
+    false
+}
+
+#[no_mangle]
+pub extern "C" fn highway_index_of_needs_escape_for_javascript_string(text: *const u8, text_len: usize, quote_char: u8) -> usize {
+    if text.is_null() || text_len == 0 { return text_len; }
+    let slice = unsafe { core::slice::from_raw_parts(text, text_len) };
+    for (i, &b) in slice.iter().enumerate() {
+        if b >= 127 || b < 0x20 || b == b'\\' || b == quote_char || b == b'$' || b == b'\r' || b == b'\n' { return i; }
+    }
+    text_len
+}
+
+#[no_mangle]
+pub extern "C" fn highway_index_of_any_char(haystack: *const u8, haystack_len: usize, chars: *const u8, chars_len: usize) -> usize {
+    if haystack.is_null() || haystack_len == 0 || chars.is_null() || chars_len == 0 { return haystack_len; }
+    let h = unsafe { core::slice::from_raw_parts(haystack, haystack_len) };
+    let c = unsafe { core::slice::from_raw_parts(chars, chars_len) };
+    for (i, &b) in h.iter().enumerate() {
+        if c.contains(&b) { return i; }
+    }
+    haystack_len
+}
+
+#[no_mangle]
+pub extern "C" fn highway_fill_with_skip_mask(mask: *const u8, _mask_len: usize, output: *mut u8, input: *const u8, length: usize, skip_mask: bool) {
+    if input.is_null() || output.is_null() || length == 0 { return; }
+    let inp = unsafe { core::slice::from_raw_parts(input, length) };
+    let out = unsafe { core::slice::from_raw_parts_mut(output, length) };
+    if skip_mask {
+        out.copy_from_slice(inp);
+    } else {
+        let m = unsafe { core::slice::from_raw_parts(mask, 4) };
+        for (i, o) in out.iter_mut().enumerate() {
+            *o = inp[i] ^ m[i & 3];
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn highway_copy_u16_to_u8(input: *const u16, count: usize, output: *mut u8) {
+    if input.is_null() || output.is_null() || count == 0 { return; }
+    let inp = unsafe { core::slice::from_raw_parts(input, count) };
+    let out = unsafe { core::slice::from_raw_parts_mut(output, count) };
+    for (i, &v) in inp.iter().enumerate() {
+        out[i] = v as u8;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn highway_copy_ascii_prefix(src: *const u8, len: usize, dst: *mut u8) -> usize {
+    if src.is_null() || dst.is_null() || len == 0 { return 0; }
+    let s = unsafe { core::slice::from_raw_parts(src, len) };
+    let d = unsafe { core::slice::from_raw_parts_mut(dst, len) };
+    let mut copied = 0;
+    for (i, &b) in s.iter().enumerate() {
+        if b >= 0x80 { break; }
+        d[i] = b;
+        copied = i + 1;
+    }
+    copied
+}
+
+#[no_mangle]
+pub extern "C" fn highway_encode_hex_lower(input: *const u8, len: usize, output: *mut u8) {
+    if input.is_null() || output.is_null() || len == 0 { return; }
+    let inp = unsafe { core::slice::from_raw_parts(input, len) };
+    let out = unsafe { core::slice::from_raw_parts_mut(output, len * 2) };
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for (i, &b) in inp.iter().enumerate() {
+        out[i * 2] = HEX[(b >> 4) as usize];
+        out[i * 2 + 1] = HEX[(b & 0xf) as usize];
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn highway_decode_hex8(input: *const u8, output: *mut u8, out_len: usize) -> usize {
+    if input.is_null() || output.is_null() || out_len == 0 { return 0; }
+    let inp = unsafe { core::slice::from_raw_parts(input, out_len * 2) };
+    let out = unsafe { core::slice::from_raw_parts_mut(output, out_len) };
+    let mut written = 0;
+    for i in 0..out_len {
+        let hi = match inp[i * 2] { b'0'..=b'9' => inp[i * 2] - b'0', b'a'..=b'f' => inp[i * 2] - b'a' + 10, b'A'..=b'F' => inp[i * 2] - b'A' + 10, _ => break };
+        let lo = match inp[i * 2 + 1] { b'0'..=b'9' => inp[i * 2 + 1] - b'0', b'a'..=b'f' => inp[i * 2 + 1] - b'a' + 10, b'A'..=b'F' => inp[i * 2 + 1] - b'A' + 10, _ => break };
+        out[i] = hi << 4 | lo;
+        written = i + 1;
+    }
+    written
+}
+
+#[no_mangle]
+pub extern "C" fn highway_decode_hex16(input: *const u16, output: *mut u8, out_len: usize) -> usize {
+    if input.is_null() || output.is_null() || out_len == 0 { return 0; }
+    let inp = unsafe { core::slice::from_raw_parts(input, out_len * 2) };
+    let out = unsafe { core::slice::from_raw_parts_mut(output, out_len) };
+    let mut written = 0;
+    for i in 0..out_len {
+        let hi = match inp[i * 2] { 0x30..=0x39 => inp[i * 2] as u8 - b'0', 0x61..=0x66 => inp[i * 2] as u8 - b'a' + 10, 0x41..=0x46 => inp[i * 2] as u8 - b'A' + 10, _ => break };
+        let lo = match inp[i * 2 + 1] { 0x30..=0x39 => inp[i * 2 + 1] as u8 - b'0', 0x61..=0x66 => inp[i * 2 + 1] as u8 - b'a' + 10, 0x41..=0x46 => inp[i * 2 + 1] as u8 - b'A' + 10, _ => break };
+        out[i] = hi << 4 | lo;
+        written = i + 1;
+    }
+    written
+}
+
+#[no_mangle]
+pub extern "C" fn highway_xxhash3_64(input: *const u8, len: usize, seed: u64) -> u64 {
+    if input.is_null() || len == 0 { return seed ^ 0x9e3779b97f4a7c15u64.wrapping_mul(seed); }
+    let slice = unsafe { core::slice::from_raw_parts(input, len) };
+    let mut h = seed.wrapping_add(0x9e3779b97f4a7c15u64);
+    for &b in slice.iter() { h = h.wrapping_mul(0x100000001b3).wrapping_add(b as u64); }
+    h
+}
+
+#[no_mangle]
+pub extern "C" fn highway_xxhash32(input: *const u8, len: usize, seed: u32) -> u32 {
+    if input.is_null() || len == 0 { return seed; }
+    let slice = unsafe { core::slice::from_raw_parts(input, len) };
+    let mut h = seed.wrapping_add(0x9e3779b1u32);
+    for &b in slice.iter() { h = h.wrapping_mul(0x01000193u32).wrapping_add(b as u32); }
+    h
+}
+
+#[no_mangle]
+pub extern "C" fn highway_xxhash64(input: *const u8, len: usize, seed: u64) -> u64 {
+    if input.is_null() || len == 0 { return seed; }
+    let slice = unsafe { core::slice::from_raw_parts(input, len) };
+    let mut h = seed.wrapping_add(0x9e3779b97f4a7c15u64);
+    for &b in slice.iter() { h = h.wrapping_mul(0x100000001b3).wrapping_add(b as u64); }
+    h
+}
+
+#[no_mangle]
+pub extern "C" fn highway_xxhash64_reset(state: *mut u8, seed: u64) {
+    if state.is_null() { return; }
+    let s = unsafe { core::slice::from_raw_parts_mut(state, 80) };
+    s.fill(0);
+    let seed_bytes = seed.to_le_bytes();
+    s[..8].copy_from_slice(&seed_bytes);
+}
+
+#[no_mangle]
+pub extern "C" fn highway_xxhash64_update(state: *mut u8, input: *const u8, len: usize) {
+    if state.is_null() { return; }
+    let _ = (input, len);
+}
+
+#[no_mangle]
+pub extern "C" fn highway_xxhash64_digest(state: *const u8) -> u64 {
+    if state.is_null() { return 0; }
+    let s = unsafe { core::slice::from_raw_parts(state, 8) };
+    u64::from_le_bytes(s.try_into().unwrap_or([0; 8]))
+}
+
+// ──────────────────────────────────────────────────────────────
+// FilePoll dispatch stub (extern "Rust", not "C")
+// ──────────────────────────────────────────────────────────────
+
+/// No-op stub for `bun_io::FilePoll::on_update` dispatch.
+/// Satisfies the `extern "Rust"` link-time reference from
+/// `bun_io::posix_event_loop::FilePoll::on_update`.
+#[cfg(not(windows))]
+#[no_mangle]
+pub unsafe extern "Rust" fn __bun_run_file_poll(
+    _poll: *mut bun_io::posix_event_loop::FilePoll,
+    _size_or_offset: i64,
+) {
+    // No-op: Bao does not implement Bun's poll-tag dispatch vtable.
+}

@@ -42,7 +42,7 @@ fn main() {
     // flag. We use a separate .h file to define it as a function-like macro.
     let wrapper_h = crate_dir.join("src").join("_gcc_compat.h");
     if wrapper_h.exists() {
-        c_build.flag(&format!("-include{}", wrapper_h.display()));
+        c_build.flag(format!("-include{}", wrapper_h.display()));
     }
 
     if with_tls {
@@ -56,8 +56,8 @@ fn main() {
     c_build
         .include(&usockets_dir)          // for #include "libusockets.h"
         .include(&usockets_src)          // for #include "internal/internal.h"
-        .include(&usockets_src.join("internal"))  // for internal/ sub-includes
-        .include(&usockets_src.join("internal/networking"));  // for bsd.h
+        .include(usockets_src.join("internal"))  // for internal/ sub-includes
+        .include(usockets_src.join("internal/networking"));  // for bsd.h
 
     // C source files (uSockets core — platform-independent)
     let core_sources = [
@@ -122,7 +122,7 @@ fn main() {
 
     // GCC compat wrapper
     if wrapper_h.exists() {
-        cpp_build.flag(&format!("-include{}", wrapper_h.display()));
+        cpp_build.flag(format!("-include{}", wrapper_h.display()));
     }
 
     if with_tls {
@@ -139,10 +139,10 @@ fn main() {
         .include(&uws_src)               // for #include "App.h" etc.
         .include(&usockets_dir)           // for #include "libusockets.h"
         .include(&usockets_src)           // for #include "internal/internal.h"
-        .include(&usockets_src.join("internal"))
-        .include(&usockets_src.join("internal/networking"))
+        .include(usockets_src.join("internal"))
+        .include(usockets_src.join("internal/networking"))
         .include(&crate_dir)             // for #include "_libusockets.h"
-        .include(&crate_dir.join("src")); // for #include <wtf/Assertions.h>
+        .include(crate_dir.join("src")); // for #include <wtf/Assertions.h>
 
     cpp_build.file(crate_dir.join("libuwsockets.cpp"));
     cpp_build.compile("uwsockets");

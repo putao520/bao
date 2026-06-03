@@ -276,4 +276,94 @@ mod tests {
         assert_eq!(check_run().unwrap_err(), "Permission denied: run");
         cleanup();
     }
+
+    #[test]
+    fn test_fs_read_empty_path() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: Some(vec!["/tmp".into()]),
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_fs_read("").is_err(), "empty path should not match /tmp prefix");
+        cleanup();
+    }
+
+    #[test]
+    fn test_fs_read_exact_prefix_match() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: Some(vec!["/tmp".into()]),
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_fs_read("/tmp").is_ok(), "exact prefix match should be allowed");
+        assert!(check_fs_read("/tmp/").is_ok(), "prefix + slash should be allowed");
+        cleanup();
+    }
+
+    #[test]
+    fn test_net_empty_host() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: Some(vec!["example.com".into()]),
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_net("").is_err(), "empty host should not match any domain");
+        cleanup();
+    }
+
+    #[test]
+    fn test_net_none_allows_all() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_net("any.host.com").is_ok());
+        cleanup();
+    }
+
+    #[test]
+    fn test_multiple_net_hosts() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: None,
+            net_hosts: Some(vec!["a.com".into(), "b.com".into()]),
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_net("a.com").is_ok());
+        assert!(check_net("b.com").is_ok());
+        assert!(check_net("sub.a.com").is_ok());
+        assert!(check_net("c.com").is_err());
+        cleanup();
+    }
+
+    #[test]
+    fn test_fs_write_multiple_prefixes() {
+        cleanup();
+        set_permission(Some(PermissionCheck {
+            read_paths: None,
+            write_paths: Some(vec!["/tmp".into(), "/home".into()]),
+            net_hosts: None,
+            env_allowed: true,
+            run_allowed: true,
+        }));
+        assert!(check_fs_write("/tmp/out").is_ok());
+        assert!(check_fs_write("/home/user/data").is_ok());
+        assert!(check_fs_write("/var/log").is_err());
+        cleanup();
+    }
 }
