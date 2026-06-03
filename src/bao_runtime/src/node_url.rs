@@ -1865,6 +1865,202 @@ mod tests {
     fn url_decode_percent_lowercase_hex() {
         assert_eq!(url_decode("%2f"), "/");
     }
+
+    // ── url_encode edge cases ──────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn url_encode_digits_not_encoded() {
+        assert_eq!(url_encode("0123456789"), "0123456789");
+    }
+
+    #[test]
+    fn url_encode_hyphen_underscore_dot_tilde_not_encoded() {
+        assert_eq!(url_encode("-_.~"), "-_.~");
+    }
+
+    #[test]
+    fn url_encode_slash_encoded() {
+        assert_eq!(url_encode("/path"), "%2Fpath");
+    }
+
+    #[test]
+    fn url_encode_colon_encoded() {
+        assert_eq!(url_encode("a:b"), "a%3Ab");
+    }
+
+    #[test]
+    fn url_encode_at_encoded() {
+        assert_eq!(url_encode("user@host"), "user%40host");
+    }
+
+    #[test]
+    fn url_encode_multiple_spaces() {
+        assert_eq!(url_encode("a b c"), "a+b+c");
+    }
+
+    #[test]
+    fn url_encode_all_special_chars() {
+        let encoded = url_encode("!@#$%^&*()");
+        assert!(!encoded.contains('!'));
+        assert!(!encoded.contains('@'));
+        assert!(!encoded.contains('#'));
+    }
+
+    #[test]
+    fn url_encode_null_byte() {
+        let input = "a\x00b";
+        let encoded = url_encode(input);
+        assert!(encoded.contains("%00"));
+    }
+
+    #[test]
+    fn url_encode_high_byte() {
+        // 0xFF as a byte in a string
+        let input = String::from_utf8_lossy(&[0xFF]).to_string();
+        let encoded = url_encode(&input);
+        assert!(encoded.starts_with('%'));
+    }
+
+    // ── url_decode edge cases ──────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn url_decode_percent_at_end_passthrough() {
+        assert_eq!(url_decode("hello%"), "hello%");
+    }
+
+    #[test]
+    fn url_decode_percent_one_char_passthrough() {
+        assert_eq!(url_decode("hello%a"), "hello%a");
+    }
+
+    #[test]
+    fn url_decode_invalid_hex_passthrough() {
+        assert_eq!(url_decode("%GG"), "%GG");
+    }
+
+    #[test]
+    fn url_decode_mixed_case_hex() {
+        assert_eq!(url_decode("%2F%2f"), "//");
+    }
+
+    #[test]
+    fn url_decode_null_byte() {
+        assert_eq!(url_decode("%00"), "\0");
+    }
+
+    #[test]
+    fn url_decode_multiple_pluses() {
+        assert_eq!(url_decode("a+b+c"), "a b c");
+    }
+
+    #[test]
+    fn url_decode_consecutive_percents() {
+        assert_eq!(url_decode("%41%42"), "AB");
+    }
+
+    // ── parse_url edge cases ────────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn parse_url_http_default_port() {
+        let s = parse_url("http://example.com/", None).unwrap();
+        assert_eq!(s.port, "");
+        assert_eq!(s.hostname, "example.com");
+    }
+
+    #[test]
+    fn parse_url_https_standard_port() {
+        let s = parse_url("https://example.com:443/path", None).unwrap();
+        assert_eq!(s.port, "443");
+    }
+
+    #[test]
+    fn parse_url_empty_pathname() {
+        let s = parse_url("https://example.com", None).unwrap();
+        assert_eq!(s.pathname, "/");
+    }
+
+    #[test]
+    fn parse_url_deep_path() {
+        let s = parse_url("https://example.com/a/b/c/d/e", None).unwrap();
+        assert_eq!(s.pathname, "/a/b/c/d/e");
+    }
+
+    #[test]
+    fn parse_url_long_query() {
+        let s = parse_url("https://x.com/?a=1&b=2&c=3&d=4", None).unwrap();
+        assert_eq!(s.search, "?a=1&b=2&c=3&d=4");
+    }
+
+    #[test]
+    fn parse_url_fragment_only_hash() {
+        let s = parse_url("https://x.com/#", None).unwrap();
+        assert_eq!(s.hash, "#");
+    }
+
+    #[test]
+    fn parse_url_empty_search() {
+        let s = parse_url("https://x.com/?", None).unwrap();
+        assert_eq!(s.search, "?");
+    }
+
+    #[test]
+    fn parse_url_password_with_special_chars() {
+        let s = parse_url("https://user:p@ss:w0rd@host.com/", None).unwrap();
+        assert_eq!(s.username, "user");
+        // The last @ separates userinfo from host
+    }
+
+    #[test]
+    fn parse_url_data_url_empty_pathname() {
+        let s = parse_url("data:,", None).unwrap();
+        assert_eq!(s.protocol, "data:");
+    }
+
+    #[test]
+    fn parse_url_blob_complex() {
+        let s = parse_url("blob:https://example.com/550e8400-e29b-41d4-a716-446655440000", None).unwrap();
+        assert_eq!(s.protocol, "blob:");
+        assert!(s.pathname.contains("example.com"));
+    }
+
+    #[test]
+    fn parse_url_relative_with_base_directory() {
+        let s = parse_url("file.txt", Some("https://example.com/docs/readme.md")).unwrap();
+        assert_eq!(s.hostname, "example.com");
+        assert!(s.pathname.contains("file.txt"));
+    }
+
+    // ── rebuild_href edge cases ─────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn rebuild_href_change_protocol() {
+        let state = make_state();
+        let result = rebuild_href(&state, "protocol", "http:");
+        assert!(result.starts_with("http://"));
+    }
+
+    #[test]
+    fn rebuild_href_clear_search_and_hash() {
+        let state = make_state();
+        let result = rebuild_href(&state, "search", "");
+        assert!(!result.contains("?query=1"));
+        let result2 = rebuild_href(&state, "hash", "");
+        assert!(!result2.contains("#frag"));
+    }
+
+    #[test]
+    fn rebuild_href_empty_hostname() {
+        let mut state = make_state();
+        state.hostname = String::new();
+        state.port = String::new();
+        state.host = String::new();
+        let result = rebuild_href(&state, "pathname", "/x");
+        assert!(result.contains("/x"));
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

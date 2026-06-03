@@ -880,4 +880,122 @@ mod tests {
         // Don't free old poll — resize already accounted for it
         unsafe { us_poll_free(new_p, loop_); }
     }
+
+    // ──── BaoPoll edge cases ────────────────────────────────────────
+    // @trace REQ-ENG-008 [req:REQ-ENG-008] [level:unit]
+
+    #[test]
+    fn bao_poll_fd_and_poll_type_independent() {
+        let mut p: BaoPoll = unsafe { core::mem::zeroed() };
+        p.set_fd(100);
+        p.set_poll_type(POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_IN);
+        assert_eq!(p.fd(), 100);
+        assert_eq!(p.poll_type(), POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_IN);
+        // Change fd, poll_type should be preserved
+        p.set_fd(200);
+        assert_eq!(p.fd(), 200);
+        assert_eq!(p.poll_type(), POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_IN);
+        // Change poll_type, fd should be preserved
+        p.set_poll_type(POLL_TYPE_SOCKET);
+        assert_eq!(p.fd(), 200);
+        assert_eq!(p.poll_type(), POLL_TYPE_SOCKET);
+    }
+
+    #[test]
+    fn bao_poll_fd_negative_values() {
+        let mut p: BaoPoll = unsafe { core::mem::zeroed() };
+        p.set_fd(-1);
+        assert_eq!(p.fd(), -1);
+        p.set_fd(-100);
+        assert_eq!(p.fd(), -100);
+        p.set_fd(-67108864); // min i27
+        assert_eq!(p.fd(), -67108864);
+    }
+
+    #[test]
+    fn bao_poll_poll_type_max_5bit() {
+        let mut p: BaoPoll = unsafe { core::mem::zeroed() };
+        // Max 5-bit value: 31
+        p.set_poll_type(31);
+        assert_eq!(p.poll_type(), 31);
+        // Values > 31 are masked to 5 bits
+        p.set_poll_type(32);
+        assert_eq!(p.poll_type(), 0, "32 & 0x1F = 0");
+        p.set_poll_type(33);
+        assert_eq!(p.poll_type(), 1, "33 & 0x1F = 1");
+    }
+
+    #[test]
+    fn bao_poll_kind_masks_low_3_bits() {
+        let mut p: BaoPoll = unsafe { core::mem::zeroed() };
+        // poll_type = 7 (0b111) → kind = 7 & 0b111 = 7
+        p.set_poll_type(7);
+        assert_eq!(p.kind(), 7);
+        // poll_type = POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_IN = 3 | 16 = 19
+        p.set_poll_type(POLL_TYPE_CALLBACK | POLL_TYPE_POLLING_IN);
+        assert_eq!(p.kind(), POLL_TYPE_CALLBACK);
+    }
+
+    #[test]
+    fn bao_poll_events_all_combinations() {
+        let mut p: BaoPoll = unsafe { core::mem::zeroed() };
+        // No polling bits
+        p.set_poll_type(POLL_TYPE_SOCKET);
+        assert_eq!(p.events(), 0);
+        // POLLING_IN only
+        p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_IN);
+        assert_eq!(p.events(), libc::EPOLLIN);
+        // POLLING_OUT only
+        p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_OUT);
+        assert_eq!(p.events(), libc::EPOLLOUT);
+        // Both
+        p.set_poll_type(POLL_TYPE_SOCKET | POLL_TYPE_POLLING_IN | POLL_TYPE_POLLING_OUT);
+        assert_eq!(p.events(), libc::EPOLLIN | libc::EPOLLOUT);
+    }
+
+    #[test]
+    fn bao_poll_ext_returns_pointer_after_header() {
+        let loop_ = super::super::uws_get_loop();
+        let poll = unsafe { us_create_poll(loop_, 0, 32) };
+        let ext = unsafe { us_poll_ext(poll) };
+        assert!(!ext.is_null());
+        assert_eq!(ext as usize, poll as usize + 16, "ext must be 16 bytes after poll");
+        unsafe { us_poll_free(poll, loop_); }
+    }
+
+    // ──── tagged pointer edge cases ─────────────────────────────────
+    // @trace REQ-ENG-008 [req:REQ-ENG-008] [level:unit]
+
+    #[test]
+    fn clear_pointer_tag_preserves_low_49_bits() {
+        // A pointer with all bits set
+        let all_bits: *mut c_void = usize::MAX as *mut c_void;
+        let cleared = clear_pointer_tag(all_bits);
+        // UNSET_BITS_49_UNTIL_64 = 0x0000_FFFF_FFFF_FFFF
+        // This clears bits 49..63 (15 high bits)
+        let expected: usize = 0x0000_FFFF_FFFF_FFFF;
+        assert_eq!(cleared as usize, expected);
+    }
+
+    #[test]
+    fn is_tagged_pointer_various_tags() {
+        let base: usize = 0x1000;
+        // Tag in bit 49 → tagged
+        let tagged: *mut c_void = (base | (1usize << 49)) as *mut c_void;
+        assert!(is_tagged_pointer(tagged));
+        // Tag in bit 63 → tagged
+        let high_tag: *mut c_void = (base | (1usize << 63)) as *mut c_void;
+        assert!(is_tagged_pointer(high_tag));
+        // No high bits → not tagged
+        let plain: *mut c_void = base as *mut c_void;
+        assert!(!is_tagged_pointer(plain));
+    }
+
+    #[test]
+    fn clear_pointer_tag_roundtrip_with_re_encode() {
+        let ptr = 0x5000 as *mut c_void;
+        let tagged: *mut c_void = ((1usize << 49) | (ptr as usize)) as *mut c_void;
+        let cleared = clear_pointer_tag(tagged);
+        assert_eq!(cleared, ptr);
+    }
 }
