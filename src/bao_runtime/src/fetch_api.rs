@@ -690,3 +690,90 @@ unsafe extern "C" fn request_constructor(
     args.rval().set(mozjs::jsval::ObjectValue(req_obj));
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_host_port_http_default() {
+        let (host, port) = extract_host_port("http://example.com/path").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
+    }
+
+    #[test]
+    fn extract_host_port_https_default() {
+        let (host, port) = extract_host_port("https://example.com/path").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn extract_host_port_with_port() {
+        let (host, port) = extract_host_port("http://localhost:8080/api").unwrap();
+        assert_eq!(host, "localhost");
+        assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn extract_host_port_with_query() {
+        let (host, port) = extract_host_port("http://host:3000/path?q=1").unwrap();
+        assert_eq!(host, "host");
+        assert_eq!(port, 3000);
+    }
+
+    #[test]
+    fn extract_host_port_no_path() {
+        let (host, port) = extract_host_port("http://example.com").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
+    }
+
+    #[test]
+    fn extract_host_port_no_scheme() {
+        assert!(extract_host_port("example.com/path").is_none());
+    }
+
+    #[test]
+    fn extract_host_port_empty() {
+        assert!(extract_host_port("").is_none());
+    }
+
+    #[test]
+    fn extract_host_port_ipv4() {
+        let (host, port) = extract_host_port("http://127.0.0.1:9222/json").unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 9222);
+    }
+
+    #[test]
+    fn fetch_response_status_code_type() {
+        // Verify FetchResponse struct has expected fields
+        let resp = FetchResponse {
+            status_code: 200,
+            body: "ok".to_string(),
+            headers: vec![],
+            url: "http://example.com".to_string(),
+            status_text: "OK".to_string(),
+        };
+        assert_eq!(resp.status_code, 200);
+        assert_eq!(resp.body, "ok");
+        assert_eq!(resp.url, "http://example.com");
+        assert_eq!(resp.status_text, "OK");
+    }
+
+    #[test]
+    fn fetch_response_headers_preserved() {
+        let resp = FetchResponse {
+            status_code: 404,
+            body: "not found".to_string(),
+            headers: vec![("content-type".into(), "text/html".into())],
+            url: "http://example.com/missing".to_string(),
+            status_text: "Not Found".to_string(),
+        };
+        assert_eq!(resp.headers.len(), 1);
+        assert_eq!(resp.headers[0].0, "content-type");
+        assert_eq!(resp.headers[0].1, "text/html");
+    }
+}

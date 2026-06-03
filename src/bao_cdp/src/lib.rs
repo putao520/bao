@@ -666,4 +666,9 @@ mod tests {
         assert_eq!(protocol_err.code, -32601);
         assert_eq!(protocol_err.message, "not found");
     }
+
+    #[test]
+    fn rand_id_unique() {
+        assert_ne!(rand_id(), rand_id(), "two consecutive rand_id calls should differ");
+    }
 }

@@ -719,3 +719,55 @@ unsafe extern "C" fn queue_microtask_fn(cx: *mut JSContext, argc: u32, vp: *mut 
     args.rval().set(UndefinedValue());
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ws_url_ws() {
+        let (host, port, path) = parse_ws_url("ws://example.com/chat").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
+        assert_eq!(path, "/chat");
+    }
+
+    #[test]
+    fn parse_ws_url_wss_rejected() {
+        assert!(parse_ws_url("wss://example.com/secure").is_err());
+    }
+
+    #[test]
+    fn parse_ws_url_with_port() {
+        let (host, port, path) = parse_ws_url("ws://localhost:8080/ws").unwrap();
+        assert_eq!(host, "localhost");
+        assert_eq!(port, 8080);
+        assert_eq!(path, "/ws");
+    }
+
+    #[test]
+    fn parse_ws_url_default_path() {
+        let (_, _, path) = parse_ws_url("ws://host/").unwrap();
+        assert_eq!(path, "/");
+    }
+
+    #[test]
+    fn parse_ws_url_no_path_defaults_to_slash() {
+        let (_, _, path) = parse_ws_url("ws://host").unwrap();
+        assert_eq!(path, "/");
+    }
+
+    #[test]
+    fn parse_ws_url_bare_host_no_scheme() {
+        let (host, _, _) = parse_ws_url("example.com/chat").unwrap();
+        assert_eq!(host, "example.com");
+    }
+
+    #[test]
+    fn parse_ws_url_empty_string() {
+        let (host, port, path) = parse_ws_url("").unwrap();
+        assert_eq!(host, "");
+        assert_eq!(port, 80);
+        assert_eq!(path, "/");
+    }
+}

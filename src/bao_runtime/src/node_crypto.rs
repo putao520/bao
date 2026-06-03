@@ -902,3 +902,80 @@ unsafe extern "C" fn crypto_create_secret_key(cx: *mut JSContext, argc: u32, vp:
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uuid_v4_format() {
+        let u = uuid_v4();
+        assert_eq!(u.len(), 36);
+        assert_eq!(&u[8..9], "-");
+        assert_eq!(&u[13..14], "-");
+        assert_eq!(&u[18..19], "-");
+        assert_eq!(&u[23..24], "-");
+    }
+
+    #[test]
+    fn uuid_v4_version_and_variant() {
+        let u = uuid_v4();
+        assert_eq!(&u[14..15], "4", "version nibble must be 4");
+        let v = u.as_bytes()[19];
+        assert!(matches!(v, b'8' | b'9' | b'a' | b'b'), "variant must be 8/9/a/b, got {}", v as char);
+    }
+
+    #[test]
+    fn uuid_v4_all_hex() {
+        let u = uuid_v4();
+        for (i, c) in u.chars().enumerate() {
+            if i == 8 || i == 13 || i == 18 || i == 23 {
+                assert_eq!(c, '-');
+            } else {
+                assert!(c.is_ascii_hexdigit(), "pos {} must be hex, got {}", i, c);
+            }
+        }
+    }
+
+    #[test]
+    fn uuid_v4_unique() {
+        assert_ne!(uuid_v4(), uuid_v4());
+    }
+
+    #[test]
+    fn xor_cipher_empty_data() {
+        assert!(xor_cipher(&[], b"key", b"iv").is_empty());
+    }
+
+    #[test]
+    fn xor_cipher_xor_is_involution() {
+        let data = b"hello world";
+        let key = b"secret";
+        let iv = b"ivector";
+        let encrypted = xor_cipher(data, key, iv);
+        let decrypted = xor_cipher(&encrypted, key, iv);
+        assert_eq!(decrypted, data.to_vec());
+    }
+
+    #[test]
+    fn xor_cipher_different_keys_differ() {
+        // data must be longer than combined_len so the key portion of the stream is reached
+        let data = b"test data that is long enough to reach the key portion";
+        let iv = b"iv";
+        assert_ne!(xor_cipher(data, b"key1", iv), xor_cipher(data, b"key2", iv));
+    }
+
+    #[test]
+    fn xor_cipher_different_ivs_differ() {
+        let data = b"test data long enough";
+        let key = b"key";
+        assert_ne!(xor_cipher(data, key, b"iv1"), xor_cipher(data, key, b"iv2"));
+    }
+
+    #[test]
+    fn xor_cipher_longer_than_stream_wraps() {
+        let data = vec![0x42u8; 100];
+        let result = xor_cipher(&data, b"k", b"i");
+        assert_eq!(result.len(), 100);
+    }
+}

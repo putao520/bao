@@ -1021,35 +1021,51 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 
 ---
 
-## 当前状态 (2026-06-03)
+## 当前状态 (2026-06-03, updated)
 
 | 指标 | 数值 |
 |------|------|
 | SPEC 成熟度 | 100% |
 | REQ 状态 | 36/36 implemented |
 | SPEC lint | 0 error, 399 warning (属性排序 + REQ 缺 category) |
-| bao_runtime lib 测试 | 346 通过 (7 ignored) |
-| bao_engine 测试 | 80 通过 (lib) |
-| bao_uloop 测试 | 90 通过 |
-| bao_stealth 测试 | 138 通过 |
-| bao_cdp 测试 | 452 通过 |
-| bao_browser 测试 | 251 通过 |
-| 全 crate lib 测试总计 | 1,357 通过 |
+| bao_runtime lib 测试 | 387 通过 (7 ignored) |
+| bao_engine lib 测试 | 80 通过 |
+| bao_uloop lib 测试 | 90 通过 |
+| bao_stealth lib 测试 | 138 通过 |
+| bao_cdp lib 测试 | 452 通过 |
+| bao_browser lib 测试 | 251 通过 |
+| bao_native_stubs lib 测试 | 0 (no tests) |
+| 全 Bao crate lib 测试总计 | 1,398 通过 |
 | clippy (Bao crate) | 零 warning |
 | 链接错误 | 零 |
+| us_dispatch_* | ✅ kind→vtable 路由完成 (P1-B.0 resolved) |
 
 ### Phase 完成状态
 
 | Phase | 状态 | 备注 |
 |-------|------|------|
-| Phase 1: 删除手写垃圾 | ✅ 全部完成 | P1-A/B/C/D/E.1/E.3/E.4 全部交付，E.2 不适用 |
+| Phase 1: 删除手写垃圾 | ✅ 全部完成 | P1-A/B/C/D/E.1/E.3 完成，E.2 不适用，E.4 需独立 Wave |
 | Phase 2: 未实现需求 | ✅ 大部分完成 | E1/E2/E3/E4/E8 完成，E5 需架构决策，E6/E7 被上游阻塞 |
 | Phase 3: SPEC 状态更新 | ✅ 完成 | 36/36 REQ implemented |
 | Phase 4: 质量收敛 | ✅ Q1/Q3 达标 | Q1 clippy 零 warning，Q3 成熟度 100%，Q2 测试逻辑全通过 |
 
 ### 剩余阻塞项
 
-| 任务 | 阻塞原因 |
-|------|---------|
-| E5 (JSContext 融合) | 需 architect consult |
-| E6/E7 (TLS/HTTP2 指纹注入) | 被上游 bun_http 阻塞 |
+| 任务 | 阻塞原因 | 可替代推进 |
+|------|---------|-----------|
+| E5 (JSContext 融合) | 需 architect consult | 无替代 |
+| E6/E7 (TLS/HTTP2 指纹注入) | 被上游 bun_http 阻塞 | 可扩展 stealth 纯逻辑测试 |
+| P1-E.4 (node_net → bun_uws) | 需独立 Wave + architect | 可补充 node_net 单元测试 |
+
+### 可推进项
+
+| 任务 | 优先级 | LOC 目标 |
+|------|--------|----------|
+| node_url.rs 单元测试补充 | P1 | 2084 LOC, 91 tests |
+| bun_api.rs 单元测试补充 | P1 | 2416 LOC, 0 tests |
+| globals.rs 单元测试补充 | P2 | 1664 LOC, 0 tests |
+| node_fs.rs 单元测试补充 | P2 | 1130 LOC, 0 tests |
+| fetch_api.rs 单元测试补充 | P2 | 692 LOC, 0 tests |
+| web_api.rs 单元测试补充 | P2 | 721 LOC, 0 tests |
+| node_http.rs 单元测试补充 | P2 | 723 LOC, 0 tests |
+| node_crypto.rs 单元测试补充 | P2 | 904 LOC, 0 tests |

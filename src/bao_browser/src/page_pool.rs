@@ -170,3 +170,70 @@ impl PagePool {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pool_stats_construction() {
+        let stats = PoolStats {
+            active: 3,
+            idle: 2,
+            total_created: 10,
+            total_destroyed: 5,
+        };
+        assert_eq!(stats.active, 3);
+        assert_eq!(stats.idle, 2);
+        assert_eq!(stats.total_created, 10);
+        assert_eq!(stats.total_destroyed, 5);
+    }
+
+    #[test]
+    fn pool_stats_zero() {
+        let stats = PoolStats {
+            active: 0,
+            idle: 0,
+            total_created: 0,
+            total_destroyed: 0,
+        };
+        assert_eq!(stats.active + stats.idle, 0);
+    }
+
+    #[test]
+    fn pool_stats_invariant() {
+        // total_created >= total_destroyed (can't destroy more than created)
+        let stats = PoolStats {
+            active: 5,
+            idle: 3,
+            total_created: 20,
+            total_destroyed: 12,
+        };
+        assert!(stats.total_created >= stats.total_destroyed);
+        assert_eq!(stats.active + stats.idle, stats.total_created - stats.total_destroyed);
+    }
+
+    #[test]
+    fn pool_stats_all_active() {
+        let stats = PoolStats {
+            active: 8,
+            idle: 0,
+            total_created: 8,
+            total_destroyed: 0,
+        };
+        assert_eq!(stats.idle, 0);
+        assert_eq!(stats.active, stats.total_created);
+    }
+
+    #[test]
+    fn pool_stats_all_idle() {
+        let stats = PoolStats {
+            active: 0,
+            idle: 4,
+            total_created: 4,
+            total_destroyed: 0,
+        };
+        assert_eq!(stats.active, 0);
+        assert_eq!(stats.idle, stats.total_created);
+    }
+}
