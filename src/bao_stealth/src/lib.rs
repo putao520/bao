@@ -7,15 +7,16 @@ mod canvas;
 mod navigator;
 mod webgl_audio;
 mod behavior;
+pub mod engine_props;
 
 pub use profile::StealthProfile;
 pub use tls::TlsFingerprint;
+pub use tls::TlsFingerprintConfig;
 pub use http2::Http2Fingerprint;
 pub use canvas::CanvasNoise;
 pub use navigator::{NavigatorProfile, ScreenProfile};
 pub use webgl_audio::{WebGLProfile, AudioProfile};
 pub use behavior::BehaviorSimulator;
-
 
 pub struct StealthEngine {
     profile: StealthProfile,
@@ -67,50 +68,6 @@ impl StealthEngine {
         &self.profile.behavior
     }
 
-    pub fn inject_navigator_js(&self) -> String {
-        let nav = &self.profile.navigator;
-        let scr = &self.profile.screen;
-        format!(
-            r#"
-Object.defineProperty(navigator, 'userAgent', {{ get: () => '{ua}' }});
-Object.defineProperty(navigator, 'platform', {{ get: () => '{platform}' }});
-Object.defineProperty(navigator, 'language', {{ get: () => '{language}' }});
-Object.defineProperty(navigator, 'languages', {{ get: () => ['{language}'] }});
-Object.defineProperty(navigator, 'hardwareConcurrency', {{ get: () => {cores} }});
-Object.defineProperty(navigator, 'webdriver', {{ get: () => false }});
-Object.defineProperty(navigator, 'maxTouchPoints', {{ get: () => {touch} }});
-Object.defineProperty(screen, 'width', {{ get: () => {w} }});
-Object.defineProperty(screen, 'height', {{ get: () => {h} }});
-Object.defineProperty(screen, 'availWidth', {{ get: () => {w} }});
-Object.defineProperty(screen, 'availHeight', {{ get: () => {h} }});
-Object.defineProperty(window, 'devicePixelRatio', {{ get: () => {dpr} }});
-
-// CDP stealth: remove automation markers
-delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
-if (window.chrome) {{ delete window.chrome.runtime; }}
-
-// WebGL vendor/renderer override
-const getParameter = WebGLRenderingContext.prototype.getParameter;
-WebGLRenderingContext.prototype.getParameter = function(param) {{
-    if (param === 0x1F00) return '{vendor}';
-    if (param === 0x1F01) return '{renderer}';
-    return getParameter.call(this, param);
-}};
-"#,
-            ua = nav.user_agent,
-            platform = nav.platform,
-            language = nav.language,
-            cores = nav.hardware_concurrency,
-            touch = nav.max_touch_points,
-            w = scr.width,
-            h = scr.height,
-            dpr = scr.device_pixel_ratio,
-            vendor = self.profile.webgl.vendor,
-            renderer = self.profile.webgl.renderer,
-        )
-    }
 }
 
 #[cfg(test)]
@@ -181,63 +138,4 @@ mod tests {
         assert_eq!(engine.behavior().seed(), engine.profile().behavior.seed());
     }
 
-    #[test]
-    fn inject_navigator_js_contains_user_agent() {
-        let engine = StealthEngine::default_engine();
-        let js = engine.inject_navigator_js();
-        assert!(js.contains(&engine.profile().navigator.user_agent));
-    }
-
-    #[test]
-    fn inject_navigator_js_contains_platform() {
-        let engine = StealthEngine::default_engine();
-        let js = engine.inject_navigator_js();
-        assert!(js.contains(&engine.profile().navigator.platform));
-    }
-
-    #[test]
-    fn inject_navigator_js_contains_language() {
-        let engine = StealthEngine::default_engine();
-        let js = engine.inject_navigator_js();
-        assert!(js.contains(&engine.profile().navigator.language));
-    }
-
-    #[test]
-    fn inject_navigator_js_sets_webdriver_false() {
-        let engine = StealthEngine::default_engine();
-        let js = engine.inject_navigator_js();
-        assert!(js.contains("webdriver"));
-        assert!(js.contains("false"));
-    }
-
-    #[test]
-    fn inject_navigator_js_contains_screen_dimensions() {
-        let engine = StealthEngine::default_engine();
-        let js = engine.inject_navigator_js();
-        assert!(js.contains(&engine.profile().screen.width.to_string()));
-        assert!(js.contains(&engine.profile().screen.height.to_string()));
-    }
-
-    #[test]
-    fn inject_navigator_js_contains_cdc_removal() {
-        let engine = StealthEngine::default_engine();
-        let js = engine.inject_navigator_js();
-        assert!(js.contains("cdc_adoQpoasnfa76pfcZLmcfl"));
-    }
-
-    #[test]
-    fn inject_navigator_js_contains_webgl_override() {
-        let engine = StealthEngine::default_engine();
-        let js = engine.inject_navigator_js();
-        assert!(js.contains(&engine.profile().webgl.vendor));
-        assert!(js.contains(&engine.profile().webgl.renderer));
-    }
-
-    #[test]
-    fn inject_navigator_js_contains_device_pixel_ratio() {
-        let engine = StealthEngine::default_engine();
-        let js = engine.inject_navigator_js();
-        let dpr = engine.profile().screen.device_pixel_ratio.to_string();
-        assert!(js.contains(&dpr));
-    }
 }

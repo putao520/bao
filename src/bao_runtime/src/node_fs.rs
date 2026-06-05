@@ -372,6 +372,9 @@ unsafe extern "C" fn fs_write_file_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         } else {
             fs::write(&path, &[] as &[u8])
         }
+    } else if data_val.is_object() {
+        let bytes = crate::node_crypto::extract_buffer_bytes(cx, data_val);
+        fs::write(&path, &bytes)
     } else {
         fs::write(&path, &[] as &[u8])
     };
@@ -397,6 +400,8 @@ unsafe extern "C" fn fs_append_file_sync(cx: *mut JSContext, argc: u32, vp: *mut
         if !s.is_null() {
             crate::jsstr_to_rust_string(cx, s).into_bytes()
         } else { Vec::new() }
+    } else if data_val.is_object() {
+        crate::node_crypto::extract_buffer_bytes(cx, data_val)
     } else { Vec::new() };
 
     use ::std::io::Write;

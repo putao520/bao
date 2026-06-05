@@ -30,7 +30,7 @@ fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
 #[test]
 fn test_process_deep_all() {
     bao_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::new().expect("JsContext");
+    let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bao_runtime::globals::install_all);
 
     // === process existence ===

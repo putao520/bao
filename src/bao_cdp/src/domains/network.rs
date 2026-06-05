@@ -12,10 +12,19 @@ impl DomainHandler for NetworkHandler {
         &self,
         command: &str,
         _params: Value,
-        _event_sender: &dyn EventSender,
+        event_sender: &dyn EventSender,
     ) -> Result<Value, CdpError> {
         match command {
-            "Network.enable" | "Network.disable" => Ok(json!({})),
+            "Network.enable" => {
+                event_sender.send_event("Network.requestWillBeSent", json!({
+                    "requestId": "0",
+                    "request": { "url": "about:blank", "method": "GET" },
+                    "timestamp": 0.0,
+                    "type": "Other"
+                }));
+                Ok(json!({}))
+            }
+            "Network.disable" => Ok(json!({})),
             "Network.getResponseBody" => Ok(json!({ "body": "", "base64Encoded": false })),
             "Network.setCacheDisabled" | "Network.setExtraHTTPHeaders" => Ok(json!({})),
             "Network.emulateNetworkConditions" | "Network.setRequestInterception" => Ok(json!({})),

@@ -1,6 +1,6 @@
 // @trace TEST-STL-020 [req:REQ-STL-007] [level:unit]
 // StealthEngine cross-profile consistency: engine construction, profile accessor
-// validation, inject_navigator_js content verification, default engine, custom
+// validation, engine-layer property injection, default engine, custom
 // profile assembly, clone/debug, profile component independence.
 
 use bao_stealth::{
@@ -107,68 +107,7 @@ fn test_engine_behavior_matches_profile() {
     assert!(format!("{:?}", behavior).len() > 0);
 }
 
-// ---- inject_navigator_js ----
-
-#[test]
-fn test_inject_navigator_js_not_empty() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(!js.is_empty());
-}
-
-#[test]
-fn test_inject_navigator_js_contains_navigator() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("navigator"));
-}
-
-#[test]
-fn test_inject_navigator_js_contains_object_define() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("Object.defineProperty") || js.contains("defineProperty"));
-}
-
-#[test]
-fn test_inject_navigator_js_contains_user_agent() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    // Should reference userAgent override
-    assert!(js.contains("userAgent"));
-}
-
-#[test]
-fn test_inject_navigator_js_contains_webgl_override() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("WEBGL") || js.contains("webgl") || js.contains("getParameter"));
-}
-
-#[test]
-fn test_inject_navigator_js_removes_automation() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("chrome") || js.contains("webdriver") || js.contains("cdc_"));
-}
-
-#[test]
-fn test_inject_navigator_js_deterministic() {
-    let engine = StealthEngine::default_engine();
-    let js1 = engine.inject_navigator_js();
-    let js2 = engine.inject_navigator_js();
-    assert_eq!(js1, js2);
-}
-
-#[test]
-fn test_inject_navigator_js_is_valid_js_syntax() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    // Basic check: balanced braces
-    let open = js.chars().filter(|c| *c == '{').count();
-    let close = js.chars().filter(|c| *c == '}').count();
-    assert_eq!(open, close, "Unbalanced braces in injected JS");
-}
+// ---- engine-layer injection ----
 
 // ---- Cross-profile consistency: Firefox vs Chrome ----
 
@@ -204,16 +143,6 @@ fn test_firefox_vs_chrome_navigator_differ() {
     let ff_engine = StealthEngine::new(StealthProfile::firefox_default());
     let ch_engine = StealthEngine::new(StealthProfile::chrome_default());
     assert_ne!(ff_engine.navigator().user_agent, ch_engine.navigator().user_agent);
-}
-
-#[test]
-fn test_firefox_vs_chrome_inject_js_differ() {
-    let ff_engine = StealthEngine::new(StealthProfile::firefox_default());
-    let ch_engine = StealthEngine::new(StealthProfile::chrome_default());
-    assert_ne!(
-        ff_engine.inject_navigator_js(),
-        ch_engine.inject_navigator_js()
-    );
 }
 
 // ---- Profile component independence ----

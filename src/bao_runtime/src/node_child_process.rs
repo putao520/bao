@@ -1324,7 +1324,6 @@ mod tests {
     // Run with `cargo test -- --ignored` when testing in a full runtime context.
 
     #[test]
-    #[ignore = "requires initialized uSockets event loop"]
     fn test_spawn_echo_hello() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -1355,7 +1354,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires initialized uSockets event loop"]
     fn test_spawn_exit_code_nonzero() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -1386,7 +1384,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires initialized uSockets event loop"]
     fn test_spawn_stderr_capture() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -1418,7 +1415,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires initialized uSockets event loop"]
     fn test_spawn_nonexistent_command() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -1449,7 +1445,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires initialized uSockets event loop"]
     fn test_shell_sync_opts_spawn_echo() {
         // Integration: shell_sync_opts builds opts that can actually spawn
         let opts = shell_sync_opts("echo from_shell");
@@ -1465,7 +1460,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires initialized uSockets event loop"]
     fn test_spawn_cwd_option() {
         let opts = spawn_sync::Options {
             stdin: SyncStdio::Ignore,
@@ -1495,7 +1489,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires initialized uSockets event loop"]
     fn test_spawn_stdin_ignore() {
         // Verify Ignore stdin doesn't cause spawn failure
         let opts = spawn_sync::Options {

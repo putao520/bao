@@ -12,10 +12,24 @@ impl DomainHandler for DebuggerHandler {
         &self,
         command: &str,
         _params: Value,
-        _event_sender: &dyn EventSender,
+        event_sender: &dyn EventSender,
     ) -> Result<Value, CdpError> {
         match command {
-            "Debugger.enable" | "Debugger.disable" => Ok(json!({})),
+            "Debugger.enable" => {
+                event_sender.send_event("Debugger.scriptParsed", json!({
+                    "scriptId": "1",
+                    "url": "",
+                    "startLine": 0,
+                    "startColumn": 0,
+                    "endLine": 0,
+                    "endColumn": 0,
+                    "executionContextId": 1,
+                    "hash": "0",
+                    "sourceLanguage": "JavaScript"
+                }));
+                Ok(json!({}))
+            }
+            "Debugger.disable" => Ok(json!({})),
             "Debugger.setBreakpointByUrl" => Ok(json!({ "breakpointId": "1", "locations": [] })),
             "Debugger.removeBreakpoint" | "Debugger.pause" | "Debugger.resume" => Ok(json!({})),
             "Debugger.stepOver" | "Debugger.stepInto" | "Debugger.stepOut" => Ok(json!({})),

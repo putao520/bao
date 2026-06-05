@@ -23,27 +23,66 @@ pub fn set_file_globals(filename: Option<String>, dirname: Option<String>) {
     FILE_GLOBALS.with(|f| *f.borrow_mut() = (filename, dirname));
 }
 
+/// Install Web APIs only — safe for browser page global (REQ-SEC-003).
+///
+/// Installs standard Web APIs that web pages expect: fetch, timers, crypto,
+/// WebSocket, performance, encodings, structuredClone, etc.
+/// Does NOT install Node.js APIs (require, fs, Bun, process, Buffer, etc.)
+/// which are only available in evaluate_js() privileged context.
+///
 /// # Safety
 ///
 /// Caller must ensure `cx` is a valid JSContext pointer and `global` is a valid
 /// handle to the global object in that context.
-pub unsafe fn install_all(
+pub unsafe fn install_web_apis(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
-    crate::bun_api::install_bun_global(cx, global);
-    crate::bun_api::install_process_global(cx, global);
-    install_buffer_global(cx, global);
+    bao_stealth::engine_props::ensure_default_profile();
+    bao_stealth::engine_props::install_stealth_props(cx.raw_cx(), global.get());
+    crate::fetch_api::ensure_default_fetch_stealth_profile();
+
+    // Web APIs — safe for page global
     crate::fetch_api::install_fetch_global(cx, global);
     crate::fetch_api::install_response_constructor(cx, global);
     crate::fetch_api::install_headers_constructor(cx, global);
     crate::fetch_api::install_request_constructor(cx, global);
-    crate::require::install_require(cx, global);
-    install_module_global(cx, global);
     crate::timers::install_timer_globals(cx, global);
     crate::web_api::install_performance(cx, global);
     crate::web_api::install_websocket_constructor(cx, global);
     install_crypto_global(cx, global);
+    crate::web_api::install_web_encodings(cx, global);
+    crate::web_api::install_atob_btoa(cx, global);
+    crate::web_api::install_queue_microtask(cx, global);
+    install_structured_clone(cx, global);
+    install_web_api_constructors(cx, global);
+}
+
+/// Install Node.js/Bun APIs — only for privileged CLI/engine context (REQ-SEC-003).
+///
+/// Installs require, module, Bun, process, Buffer, and all node_* module
+/// registrations. These are NOT installed on browser page globals.
+///
+/// # Safety
+///
+/// Caller must ensure `cx` is a valid JSContext pointer and `global` is a valid
+/// handle to the global object in that context.
+pub unsafe fn install_node_apis(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    bao_stealth::engine_props::ensure_default_profile();
+    bao_stealth::engine_props::install_stealth_props(cx.raw_cx(), global.get());
+    crate::fetch_api::ensure_default_fetch_stealth_profile();
+
+    // Node.js / Bun APIs — privileged context only
+    crate::bun_api::install_bun_global(cx, global);
+    crate::bun_api::install_process_global(cx, global);
+    install_buffer_global(cx, global);
+    crate::require::install_require(cx, global);
+    install_module_global(cx, global);
+
+    // Node.js built-in module registrations
     crate::node_events::install(cx);
     crate::node_path::install(cx);
     crate::node_fs::install(cx);
@@ -65,18 +104,139 @@ pub unsafe fn install_all(
     crate::node_vm::install(cx);
     crate::node_module::install(cx);
     crate::node_querystring::install(cx);
-    crate::web_api::install_web_encodings(cx, global);
-    crate::web_api::install_atob_btoa(cx, global);
-    crate::web_api::install_queue_microtask(cx, global);
-    install_structured_clone(cx, global);
     crate::node_perf_hooks::install(cx);
     crate::node_timers_module::install(cx);
     crate::node_readline::install(cx);
     crate::node_tls::install(cx);
+
+    // CLI/engine-specific
     install_assert_strict(cx);
     install_file_globals_from_cache(cx, global);
-    install_web_api_constructors(cx, global);
     crate::bun_test::install_bun_test(cx);
+}
+
+/// Install all APIs (Web + Node) — only for CLI/engine context.
+///
+/// In CLI mode, the full runtime is needed. This is the legacy entry point.
+/// Browser mode should use `install_web_apis` instead.
+///
+/// # Safety
+///
+/// Caller must ensure `cx` is a valid JSContext pointer and `global` is a valid
+/// handle to the global object in that context.
+pub unsafe fn install_all(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    install_web_apis(cx, global);
+    install_node_apis(cx, global);
+}
+
+/// Install module object on a target object (REQ-SEC-002 parameter injection).
+///
+/// Same as `install_module_global` but attaches module to `target` instead of
+/// `global`. Used by `create_node_api_scope_values` to build the temporary
+/// scope object for privileged evaluate_js.
+///
+/// The module.exports getter/setter setup still references `global` as the
+/// default exports target, but the `module` property itself is only on `target`.
+///
+/// # Safety
+///
+/// Caller must ensure `cx` is a valid JSContext pointer and both `target` and
+/// `global` are valid handles to JSObjects.
+pub unsafe fn install_module_on_target(
+    cx: &mut mozjs::context::JSContext,
+    target: mozjs::rust::Handle<*mut JSObject>,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    let raw = cx.raw_cx();
+    rooted!(&in(cx) let mod_obj = mozjs_sys::jsapi::JS_NewPlainObject(raw));
+    if mod_obj.get().is_null() {
+        return;
+    }
+
+    // module.exports getter/setter setup — same JS as install_module_global,
+    // but the `defineExports(g)` call still binds exports on global so that
+    // `module.exports === globalThis` pattern works in privileged scripts.
+    let setup = r#"(function(g, m) {
+  var current = g;
+  function defineExports(obj) {
+    Object.defineProperty(obj, 'exports', {
+      configurable: true,
+      enumerable: true,
+      get: function() { return current; },
+      set: function(v) {
+        if (v && typeof v === 'object' && typeof v !== 'function') {
+          for (var k in v) {
+            if (Object.prototype.hasOwnProperty.call(v, k)) {
+              g[k] = v[k];
+            }
+          }
+          current = g;
+        } else if (typeof v === 'function') {
+          for (var k2 in v) {
+            if (Object.prototype.hasOwnProperty.call(v, k2)) {
+              g[k2] = v[k2];
+            }
+          }
+          current = v;
+        } else {
+          current = v;
+        }
+      }
+    });
+  }
+  defineExports(m);
+  defineExports(g);
+})"#;
+    let mut setup_text = mozjs::rust::transform_str_to_source_text(setup);
+    let mut factory = UndefinedValue();
+    let factory_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut factory,
+    };
+    let opts = mozjs::glue::NewCompileOptions(raw, c"<module-setup>".as_ptr(), 1);
+    if !opts.is_null() {
+        let ok = JS::Evaluate2(raw, opts, &mut setup_text, factory_h);
+        libc::free(opts as *mut _);
+        if ok && factory.is_object() {
+            let elems = [ObjectValue(global.get()), ObjectValue(mod_obj.get())];
+            let args = HandleValueArray {
+                length_: 2,
+                elements_: elems.as_ptr(),
+            };
+            let mut rval = UndefinedValue();
+            let rval_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut rval,
+            };
+            let factory_obj = factory.to_object();
+            let factory_obj_h = Handle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &ObjectValue(factory_obj),
+            };
+            JS_CallFunctionValue(
+                raw,
+                global.into(),
+                factory_obj_h,
+                &args,
+                rval_h,
+            );
+        }
+    }
+
+    let dot_str = JS_NewStringCopyZ(raw, c".".as_ptr());
+    if !dot_str.is_null() {
+        let id_val = mozjs::jsval::StringValue(&*dot_str);
+        rooted!(&in(cx) let id_r = id_val);
+        let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_obj.get() };
+        let id_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &id_r.get() };
+        JS_DefineProperty(raw, mod_h, c"id".as_ptr(), id_h, (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+    }
+
+    // Attach module to target (scope), NOT to global
+    JS_DefineProperty3(cx, target, c"module".as_ptr(), mod_obj.handle(), JSPROP_ENUMERATE as u32);
 }
 
 pub fn install_module_global(
@@ -1659,6 +1819,317 @@ if (typeof _g.FormData === 'undefined') {
             let mut src_text = mozjs::rust::transform_str_to_source_text(src);
             mozjs_sys::jsapi::JS::Evaluate2(raw, opts, &mut src_text, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
             libc::free(opts as *mut _);
+        }
+    }
+}
+
+/// Install __filename / __dirname on a target object (REQ-SEC-002 parameter injection).
+///
+/// Same as `install_file_globals_from_cache` but attaches properties to `target`
+/// instead of `global`. Used by `create_node_api_scope_values`.
+///
+/// # Safety
+///
+/// Caller must ensure `cx` is a valid JSContext pointer and `target` is a
+/// valid handle to a JSObject.
+unsafe fn install_file_globals_on_target(
+    cx: &mut mozjs::context::JSContext,
+    target: mozjs::rust::Handle<*mut JSObject>,
+) {
+    let (filename, dirname) = FILE_GLOBALS.with(|f| f.borrow().clone());
+    let raw = cx.raw_cx();
+    if let Some(fn_str) = filename
+        && let Ok(c_fn) = ::std::ffi::CString::new(fn_str) {
+            let js_str = JS_NewStringCopyZ(raw, c_fn.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+                JS_DefineProperty(raw, target.into(), c"__filename".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+            }
+        }
+    if let Some(dir_str) = dirname
+        && let Ok(c_dir) = ::std::ffi::CString::new(dir_str) {
+            let js_str = JS_NewStringCopyZ(raw, c_dir.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+                JS_DefineProperty(raw, target.into(), c"__dirname".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+            }
+        }
+}
+
+/// Create Node API scope values for privileged evaluate_js (REQ-SEC-002).
+///
+/// Instead of installing Node APIs (require, Bun, process, Buffer, module,
+/// __filename, __dirname) directly on the Window global, this function creates
+/// a temporary scope object `__bao_privileged_apis` on global and puts all
+/// Node API values into it. The IIFE wrapper in wrap_privileged_script then:
+/// 1. Extracts the scope object: `var __scope = globalThis.__bao_privileged_apis`
+/// 2. Deletes the scope: `delete globalThis.__bao_privileged_apis`
+/// 3. Deletes global helper functions: `delete globalThis.__bao_setEnv`,
+///    `delete globalThis.__bao_delEnv`
+/// 4. Deletes global Buffer: `delete globalThis.Buffer`
+/// 5. Passes scope values as function parameters to the user script
+///
+/// This prevents page-level JS from accessing Node APIs because:
+/// - The scope object is deleted before any page JS can run
+/// - servo's script thread is single-threaded, no interleaving is possible
+/// - Even if page JS uses Reflect.ownKeys during the callback, the scope
+///   property is non-enumerable (not discoverable by casual inspection)
+///
+/// # Safety
+///
+/// Caller must ensure `cx` is a valid JSContext pointer and `global` is a
+/// valid handle to the global object. This function is called from servo's
+/// `register_script_thread_callback`, which runs on the script thread.
+pub unsafe fn create_node_api_scope_values(
+    cx: &mut mozjs::context::JSContext,
+    global: mozjs::rust::Handle<*mut JSObject>,
+) {
+    // Step 1: Create scope object
+    rooted!(&in(cx) let scope_obj = JS_NewPlainObject(cx));
+    if scope_obj.get().is_null() {
+        return;
+    }
+
+    // Step 2: Install all Node API values on the scope object
+    // (not on global — they'll be passed as IIFE parameters)
+    crate::bun_api::install_bun_on_target(cx, scope_obj.handle());
+    crate::bun_api::install_process_on_target(cx, scope_obj.handle(), global);
+    crate::require::install_require_on_target(cx, scope_obj.handle());
+    install_module_on_target(cx, scope_obj.handle(), global);
+    install_file_globals_on_target(cx, scope_obj.handle());
+
+    // Buffer is special: the prototype JS eval needs Buffer on global
+    // to work correctly. So we install Buffer globally first, then copy
+    // the reference into the scope. The IIFE wrapper will delete
+    // globalThis.Buffer after extracting the scope.
+    install_buffer_global(cx, global);
+
+    // Copy the Buffer reference from global into scope
+    {
+        let mut buffer_val = UndefinedValue();
+        let buffer_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_val };
+        JS_GetProperty(cx.raw_cx(), global.into(), c"Buffer".as_ptr(), buffer_h);
+        if buffer_val.is_object() {
+            rooted!(&in(cx) let buffer_obj = buffer_val.to_object());
+            JS_DefineProperty3(cx, scope_obj.handle(), c"Buffer".as_ptr(), buffer_obj.handle(), JSPROP_ENUMERATE as u32);
+        }
+    }
+
+    // Step 3: Attach scope object to global as __bao_privileged_apis
+    // Non-enumerable + configurable: not discoverable by casual inspection,
+    // but deletable by the IIFE wrapper.
+    // In SpiderMonkey, default property attributes are: configurable=true,
+    // enumerable=false, writable=true. JSPROP_PERMANENT (4) makes it
+    // non-configurable/non-deletable. JSPROP_ENUMERATE (1) makes it enumerable.
+    // So flags=0 means: non-enumerable, configurable, writable.
+    // (Note: Reflect.ownKeys can still find it, but that's acceptable because
+    // the scope is deleted in the IIFE's first line before any page JS runs.)
+    JS_DefineProperty3(
+        cx,
+        global,
+        c"__bao_privileged_apis".as_ptr(),
+        scope_obj.handle(),
+        0u32,  // non-enumerable, configurable (default), writable (default)
+    );
+}
+
+// ── Unit tests for globals pure Rust data/logic ───────────────────────
+// @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_globals_default_empty() {
+        FILE_GLOBALS.with(|fg| {
+            let fg = fg.borrow();
+            assert!(fg.0.is_none());
+            assert!(fg.1.is_none());
+        });
+    }
+
+    #[test]
+    fn set_file_globals_updates_main() {
+        set_file_globals(Some("/app/index.js".to_string()), Some("/app".to_string()));
+        FILE_GLOBALS.with(|fg| {
+            let fg = fg.borrow();
+            assert_eq!(fg.0.as_deref(), Some("/app/index.js"));
+            assert_eq!(fg.1.as_deref(), Some("/app"));
+        });
+        set_file_globals(None, None);
+    }
+
+    #[test]
+    fn set_file_globals_different_paths() {
+        set_file_globals(Some("/home/user/project/src/main.ts".to_string()), Some("/home/user/project/src".to_string()));
+        FILE_GLOBALS.with(|fg| {
+            let fg = fg.borrow();
+            assert!(fg.0.as_ref().unwrap().contains("main.ts"));
+            assert!(fg.1.as_ref().unwrap().contains("src"));
+        });
+        set_file_globals(None, None);
+    }
+
+    #[test]
+    fn set_file_globals_idempotent() {
+        set_file_globals(Some("/a/b.js".to_string()), Some("/a".to_string()));
+        set_file_globals(Some("/a/b.js".to_string()), Some("/a".to_string()));
+        FILE_GLOBALS.with(|fg| {
+            let fg = fg.borrow();
+            assert_eq!(fg.0.as_deref(), Some("/a/b.js"));
+        });
+        set_file_globals(None, None);
+    }
+
+    #[test]
+    fn file_globals_path_with_spaces() {
+        set_file_globals(Some("/path with spaces/app.js".to_string()), Some("/path with spaces".to_string()));
+        FILE_GLOBALS.with(|fg| {
+            let fg = fg.borrow();
+            assert_eq!(fg.0.as_deref(), Some("/path with spaces/app.js"));
+        });
+        set_file_globals(None, None);
+    }
+
+    #[test]
+    fn file_globals_unicode_path() {
+        set_file_globals(Some("/用户/项目/app.js".to_string()), Some("/用户/项目".to_string()));
+        FILE_GLOBALS.with(|fg| {
+            let fg = fg.borrow();
+            assert_eq!(fg.0.as_deref(), Some("/用户/项目/app.js"));
+        });
+        set_file_globals(None, None);
+    }
+
+    #[test]
+    fn file_globals_partial_set_filename_only() {
+        set_file_globals(Some("/only/file.js".to_string()), None);
+        FILE_GLOBALS.with(|fg| {
+            let fg = fg.borrow();
+            assert_eq!(fg.0.as_deref(), Some("/only/file.js"));
+            assert!(fg.1.is_none());
+        });
+        set_file_globals(None, None);
+    }
+
+    #[test]
+    fn file_globals_partial_set_dirname_only() {
+        set_file_globals(None, Some("/only/dir".to_string()));
+        FILE_GLOBALS.with(|fg| {
+            let fg = fg.borrow();
+            assert!(fg.0.is_none());
+            assert_eq!(fg.1.as_deref(), Some("/only/dir"));
+        });
+        set_file_globals(None, None);
+    }
+
+    // ── REQ-SEC-003: API split structural verification ────────────────────
+    // @trace TEST-SEC-003 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
+    //
+    // These tests verify the CODE STRUCTURE guarantees that Node APIs are
+    // not on the page global. Runtime verification requires servo and is
+    // tested in bao_browser/tests/security_sandbox_tests.rs.
+
+    /// Verify install_web_apis is a separate function from install_node_apis.
+    /// REQ-SEC-003: The two must be distinct so browser pages get Web APIs only.
+    #[test]
+    fn web_apis_and_node_apis_are_separate_functions() {
+        let _ = install_web_apis as unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
+        let _ = install_node_apis as unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
+        let _ = install_all as unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
+    }
+
+    /// Verify install_all is a distinct function (not aliased to either sub-function).
+    /// REQ-SEC-003: install_all must call BOTH functions for CLI mode.
+    #[test]
+    fn install_all_is_distinct_from_sub_functions() {
+        let all_ptr = install_all as usize;
+        let web_ptr = install_web_apis as usize;
+        let node_ptr = install_node_apis as usize;
+        assert_ne!(all_ptr, web_ptr, "install_all must not be aliased to install_web_apis");
+        assert_ne!(all_ptr, node_ptr, "install_all must not be aliased to install_node_apis");
+    }
+
+    /// Verify install_web_apis does NOT call any Node API installer.
+    /// install_node_apis does NOT call any Web-only API installer.
+    /// REQ-SEC-003: Static source analysis to prevent accidental re-merging.
+    #[test]
+    fn web_apis_excludes_node_api_installers() {
+        let source = include_str!("globals.rs");
+
+        // Find install_web_apis function body (between install_web_apis and install_node_apis)
+        let web_start = source.find("pub unsafe fn install_web_apis")
+            .expect("install_web_apis function not found in source");
+        let web_end = source[web_start..].find("pub unsafe fn install_node_apis")
+            .expect("install_node_apis function not found after install_web_apis");
+        let web_body = &source[web_start..web_start + web_end];
+
+        // Node API installers that must NOT appear in install_web_apis
+        let node_installers = [
+            "bun_api::install_bun_global",
+            "bun_api::install_process_global",
+            "install_buffer_global",
+            "require::install_require",
+            "install_module_global",
+            "node_events::install",
+            "node_fs::install",
+            "node_crypto::install",
+            "node_http::install",
+            "node_https::install",
+            "node_os::install",
+            "node_child_process::install",
+            "node_stream::install",
+            "node_zlib::install",
+            "node_net::install",
+            "node_dns::install",
+            "node_buffer::install",
+            "node_tty::install",
+            "node_vm::install",
+            "node_module::install",
+            "node_querystring::install",
+            "node_perf_hooks::install",
+            "node_timers_module::install",
+            "node_readline::install",
+            "node_tls::install",
+            "install_assert_strict",
+            "install_file_globals_from_cache",
+            "bun_test::install_bun_test",
+        ];
+
+        for installer in &node_installers {
+            assert!(
+                !web_body.contains(installer),
+                "REQ-SEC-003 REGRESSION: install_web_apis contains Node API installer: {}",
+                installer
+            );
+        }
+
+        // Web API installers that MUST appear in install_web_apis
+        let web_installers = [
+            "fetch_api::install_fetch_global",
+            "fetch_api::install_response_constructor",
+            "fetch_api::install_headers_constructor",
+            "fetch_api::install_request_constructor",
+            "timers::install_timer_globals",
+            "web_api::install_performance",
+            "web_api::install_websocket_constructor",
+            "install_crypto_global",
+            "web_api::install_web_encodings",
+            "web_api::install_atob_btoa",
+            "web_api::install_queue_microtask",
+            "install_structured_clone",
+            "install_web_api_constructors",
+        ];
+
+        for installer in &web_installers {
+            assert!(
+                web_body.contains(installer),
+                "REQ-SEC-003 REGRESSION: install_web_apis missing web API installer: {}",
+                installer
+            );
         }
     }
 }

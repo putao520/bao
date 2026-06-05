@@ -2061,6 +2061,52 @@ mod tests {
         let result = rebuild_href(&state, "pathname", "/x");
         assert!(result.contains("/x"));
     }
+
+    // ── url_state_get_field ────────────────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn url_state_get_field_all_known_fields() {
+        let state = make_state();
+        assert_eq!(url_state_get_field(&state, "href"), state.href);
+        assert_eq!(url_state_get_field(&state, "protocol"), state.protocol);
+        assert_eq!(url_state_get_field(&state, "username"), state.username);
+        assert_eq!(url_state_get_field(&state, "password"), state.password);
+        assert_eq!(url_state_get_field(&state, "host"), state.host);
+        assert_eq!(url_state_get_field(&state, "hostname"), state.hostname);
+        assert_eq!(url_state_get_field(&state, "port"), state.port);
+        assert_eq!(url_state_get_field(&state, "pathname"), state.pathname);
+        assert_eq!(url_state_get_field(&state, "search"), state.search);
+        assert_eq!(url_state_get_field(&state, "hash"), state.hash);
+        assert_eq!(url_state_get_field(&state, "origin"), state.origin);
+    }
+
+    #[test]
+    fn url_state_get_field_unknown_returns_empty() {
+        let state = make_state();
+        assert_eq!(url_state_get_field(&state, "nonexistent"), "");
+        assert_eq!(url_state_get_field(&state, ""), "");
+    }
+
+    #[test]
+    fn url_state_get_field_empty_state() {
+        let state = UrlState {
+            href: String::new(),
+            protocol: String::new(),
+            username: String::new(),
+            password: String::new(),
+            host: String::new(),
+            hostname: String::new(),
+            port: String::new(),
+            pathname: String::new(),
+            search: String::new(),
+            hash: String::new(),
+            origin: String::new(),
+        };
+        assert_eq!(url_state_get_field(&state, "href"), "");
+        assert_eq!(url_state_get_field(&state, "protocol"), "");
+    }
+
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

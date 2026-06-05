@@ -1,7 +1,7 @@
 // @trace TEST-STL-024 [req:REQ-STL-004,REQ-STL-005] [level:unit]
 // NavigatorProfile, ScreenProfile, WebGLProfile, AudioProfile deep tests:
 // preset field validation, custom construction, clone/debug, edge cases,
-// cross-preset differentiation, inject_navigator_js content verification.
+// cross-preset differentiation, engine-layer property injection.
 
 use bao_stealth::{
     NavigatorProfile, ScreenProfile, WebGLProfile, AudioProfile,
@@ -415,89 +415,4 @@ fn test_audio_apply_noise_batch_consistent() {
     assert_eq!(results1, results2);
 }
 
-// ---- StealthEngine inject_navigator_js ----
-
-#[test]
-fn test_inject_js_contains_user_agent() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("userAgent"));
-    assert!(js.contains("Firefox"));
-}
-
-#[test]
-fn test_inject_js_contains_platform() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("platform"));
-    assert!(js.contains("Linux x86_64"));
-}
-
-#[test]
-fn test_inject_js_contains_language() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("language"));
-}
-
-#[test]
-fn test_inject_js_contains_webdriver_false() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("webdriver"));
-    assert!(js.contains("false"));
-}
-
-#[test]
-fn test_inject_js_contains_screen_dims() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("screen"));
-    assert!(js.contains("1920"));
-    assert!(js.contains("1080"));
-}
-
-#[test]
-fn test_inject_js_contains_device_pixel_ratio() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("devicePixelRatio"));
-}
-
-#[test]
-fn test_inject_js_contains_cdc_removal() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("cdc_adoQpoasnfa76pfcZLmcfl"));
-}
-
-#[test]
-fn test_inject_js_contains_webgl_override() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("getParameter"));
-    assert!(js.contains("0x1F00")); // VENDOR
-}
-
-#[test]
-fn test_inject_js_chrome_different_ua() {
-    let engine = StealthEngine::new(StealthProfile::chrome_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("Chrome"));
-    assert!(!js.contains("Firefox"));
-}
-
-#[test]
-fn test_inject_js_chrome_vendor_google() {
-    let engine = StealthEngine::new(StealthProfile::chrome_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("Google Inc."));
-}
-
-#[test]
-fn test_inject_js_deterministic() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js1 = engine.inject_navigator_js();
-    let js2 = engine.inject_navigator_js();
-    assert_eq!(js1, js2);
-}
+// ---- StealthEngine engine-layer injection ----

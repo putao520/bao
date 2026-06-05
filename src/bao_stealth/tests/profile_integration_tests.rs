@@ -259,55 +259,6 @@ fn test_http2_window_update_valid() {
 // ===========================================================================
 
 #[test]
-fn test_engine_js_injection_contains_user_agent() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains(&engine.navigator().user_agent));
-}
-
-#[test]
-fn test_engine_js_injection_contains_platform() {
-    let engine = StealthEngine::new(StealthProfile::firefox_default());
-    let js = engine.inject_navigator_js();
-    assert!(js.contains(&engine.navigator().platform));
-}
-
-#[test]
-fn test_engine_js_injection_contains_screen_dimensions() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    let scr = engine.screen();
-    assert!(js.contains(&scr.width.to_string()));
-    assert!(js.contains(&scr.height.to_string()));
-}
-
-#[test]
-fn test_engine_js_injection_contains_webgl_override() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("WebGLRenderingContext"));
-    assert!(js.contains("getParameter"));
-    assert!(js.contains(&engine.webgl().vendor));
-    assert!(js.contains(&engine.webgl().renderer));
-}
-
-#[test]
-fn test_engine_js_injection_removes_cdc() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("cdc_adoQpoasnfa76pfcZLmcfl"));
-}
-
-#[test]
-fn test_engine_firefox_and_chrome_different_js() {
-    let ff_engine = StealthEngine::new(StealthProfile::firefox_default());
-    let ch_engine = StealthEngine::new(StealthProfile::chrome_default());
-    let ff_js = ff_engine.inject_navigator_js();
-    let ch_js = ch_engine.inject_navigator_js();
-    assert_ne!(ff_js, ch_js);
-}
-
-#[test]
 fn test_engine_accessors_match_profile() {
     let profile = StealthProfile::firefox_default();
     let engine = StealthEngine::new(profile.clone());

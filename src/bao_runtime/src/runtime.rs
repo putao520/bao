@@ -1,6 +1,6 @@
 // @trace REQ-ENG-006 REQ-CLI-001 [entity:BaoRuntime]
 // @trace REQ-CLI-001: bao CLI entry point and runtime initialization
-use bao_engine::context::JsContext;
+use bao_engine::context::{JsContext, SmRuntimeGuard};
 use bao_engine::error::JsError;
 use bao_engine::module_loader::ModuleLoader;
 use bao_engine::value::JsValue;
@@ -11,16 +11,19 @@ use crate::timers;
 
 pub struct BaoRuntime {
     ctx: JsContext,
+    // Declared after ctx so it drops last: guard drop triggers
+    // JS_DestroyContext + JS_ShutDown after all JS execution is done.
+    _guard: Option<SmRuntimeGuard>,
 }
 
 impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
         Self::init_env_aliases();
         crate::bun_api::init_process_start();
-        let mut ctx = JsContext::new()?;
+        let (mut ctx, guard) = JsContext::init_runtime()?;
         ctx.set_global_setup(globals::install_all);
         ctx.set_post_eval_hook(timers::drain_and_check);
-        ::std::result::Result::Ok(BaoRuntime { ctx })
+        ::std::result::Result::Ok(BaoRuntime { ctx, _guard: guard })
     }
 
     fn init_env_aliases() {
@@ -41,7 +44,8 @@ impl BaoRuntime {
     pub fn eval_module(&mut self, source: &str, filename: &str) -> ::std::result::Result<JsValue, JsError> {
         let setup = self.ctx.global_setup();
         let hook = self.ctx.post_eval_hook();
-        ModuleLoader::eval_module(self.ctx.cx_mut(), source, filename, setup, hook)
+        let mut cx = self.ctx.cx();
+        ModuleLoader::eval_module(&mut cx, source, filename, setup, hook)
     }
 
     pub fn run_file(&mut self, path: &str) -> ::std::result::Result<JsValue, JsError> {

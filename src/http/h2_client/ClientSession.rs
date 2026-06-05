@@ -594,7 +594,10 @@ impl ClientSession {
     }
 
     fn replenish_window(&mut self) {
-        let threshold = LOCAL_INITIAL_WINDOW_SIZE / 2;
+        let effective_window = self.ssl_config.as_ref().map_or(LOCAL_INITIAL_WINDOW_SIZE, |cfg| {
+            if cfg.h2_initial_window_size != 0 { cfg.h2_initial_window_size } else { LOCAL_INITIAL_WINDOW_SIZE }
+        });
+        let threshold = effective_window / 2;
         if self.conn_unacked_bytes >= threshold {
             self.write_window_update(0, self.conn_unacked_bytes);
             self.conn_unacked_bytes = 0;

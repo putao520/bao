@@ -212,7 +212,7 @@ unsafe extern "C" fn uws_route_handler(
     JS_DefineProperty(raw_cx, res_obj.handle().into(), c"statusCode".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
 
     // Store uWS res pointer on the JS response object for write/end.
-    let res_ptr_val = Int32Value(res as i32);
+    let res_ptr_val = mozjs::jsval::PrivateValue(res as *const core::ffi::c_void);
     rooted!(&in(cx_ref) let rv = res_ptr_val);
     JS_DefineProperty(raw_cx, res_obj.handle().into(), c"_uwsRes".as_ptr(), rv.handle().into(), 0);
 
@@ -241,13 +241,9 @@ unsafe extern "C" fn uws_route_handler(
 #[inline]
 unsafe fn get_uws_res(cx: *mut JSContext, obj: *mut JSObject) -> *mut bun_uws_sys::response::c::uws_res {
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-    let mut ptr_val = Int32Value(0);
+    let mut ptr_val = UndefinedValue();
     JS_GetProperty(cx, obj_h, c"_uwsRes".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ptr_val });
-    if ptr_val.is_int32() {
-        ptr_val.to_int32() as *mut bun_uws_sys::response::c::uws_res
-    } else {
-        core::ptr::null_mut()
-    }
+    ptr_val.to_private() as *mut bun_uws_sys::response::c::uws_res
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -552,7 +548,7 @@ unsafe extern "C" fn server_listen(
     // Store app pointer on server object for close/destroy.
     let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref3 = &mut wrapped_cx3;
-    let app_ptr_val = Int32Value(app_ptr as i32);
+    let app_ptr_val = mozjs::jsval::PrivateValue(app_ptr as *const core::ffi::c_void);
     rooted!(&in(cx_ref3) let apv = app_ptr_val);
     JS_DefineProperty(cx, server_h, c"_appPtr".as_ptr(), apv.handle().into(), 0);
 
@@ -594,17 +590,16 @@ unsafe extern "C" fn server_close(
     let server_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &server_obj };
 
     // Destroy the uWS App if it exists.
-    let mut app_ptr_val = Int32Value(0);
+    let mut app_ptr_val = UndefinedValue();
     JS_GetProperty(cx, server_h, c"_appPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut app_ptr_val });
-    if app_ptr_val.is_int32() {
-        let app_ptr = app_ptr_val.to_int32() as *mut App<false>;
-        if !app_ptr.is_null() {
-            App::<false>::destroy(app_ptr);
-            ACTIVE_APPS.with(|s| {
-                let mut apps = s.borrow_mut();
-                apps.retain(|&p| p != app_ptr);
-            });
-        }
+    let app_ptr = app_ptr_val.to_private() as *mut App<false>;
+    if !app_ptr.is_null() {
+        (*app_ptr).close();
+        App::<false>::destroy(app_ptr);
+        ACTIVE_APPS.with(|s| {
+            let mut apps = s.borrow_mut();
+            apps.retain(|&p| p != app_ptr);
+        });
     }
 
     args.rval().set(UndefinedValue());
@@ -720,4 +715,146 @@ unsafe extern "C" fn http_get(
     vp: *mut mozjs::jsval::JSVal,
 ) -> bool {
     http_request(cx, argc, vp)
+}
+
+// ── Unit tests for node_http pure Rust data/logic ──────────────────────
+// @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── ACTIVE_APPS thread_local ──
+
+    #[test]
+    fn has_active_servers_false_initially() {
+        assert!(!has_active_servers());
+    }
+
+    #[test]
+    fn listener_fds_empty() {
+        let fds = listener_fds();
+        assert!(fds.is_empty());
+    }
+
+    // ── ServerUserData ──
+
+    #[test]
+    fn server_user_data_default_nulls() {
+        let ud = ServerUserData {
+            cx: ::std::ptr::null_mut(),
+            global: ::std::ptr::null_mut(),
+            handler: ::std::ptr::null_mut(),
+        };
+        assert!(ud.cx.is_null());
+        assert!(ud.global.is_null());
+        assert!(ud.handler.is_null());
+    }
+
+    #[test]
+    fn server_user_data_stores_fields() {
+        let ud = ServerUserData {
+            cx: 0x1 as *mut JSContext,
+            global: 0x2 as *mut JSObject,
+            handler: 0x3 as *mut JSObject,
+        };
+        assert!(!ud.cx.is_null());
+        assert!(!ud.global.is_null());
+        assert!(!ud.handler.is_null());
+    }
+
+    // ── HTTP STATUS_CODES (static data) ──
+
+    static STATUS_CODES: &[(&str, &str)] = &[
+        ("200", "OK"), ("201", "Created"), ("204", "No Content"),
+        ("301", "Moved Permanently"), ("302", "Found"), ("304", "Not Modified"),
+        ("400", "Bad Request"), ("401", "Unauthorized"), ("403", "Forbidden"),
+        ("404", "Not Found"), ("405", "Method Not Allowed"),
+        ("500", "Internal Server Error"), ("502", "Bad Gateway"), ("503", "Service Unavailable"),
+    ];
+
+    #[test]
+    fn status_codes_count() {
+        assert_eq!(STATUS_CODES.len(), 14);
+    }
+
+    #[test]
+    fn status_codes_contains_200_ok() {
+        assert!(STATUS_CODES.iter().any(|(c, m)| *c == "200" && *m == "OK"));
+    }
+
+    #[test]
+    fn status_codes_contains_404_not_found() {
+        assert!(STATUS_CODES.iter().any(|(c, m)| *c == "404" && *m == "Not Found"));
+    }
+
+    #[test]
+    fn status_codes_contains_500_internal_server_error() {
+        assert!(STATUS_CODES.iter().any(|(c, m)| *c == "500" && *m == "Internal Server Error"));
+    }
+
+    #[test]
+    fn status_codes_all_numeric() {
+        for (code, _) in STATUS_CODES {
+            assert!(code.chars().all(|c| c.is_ascii_digit()));
+        }
+    }
+
+    #[test]
+    fn status_codes_all_non_empty_messages() {
+        for (_, msg) in STATUS_CODES {
+            assert!(!msg.is_empty());
+        }
+    }
+
+    #[test]
+    fn status_codes_codes_unique() {
+        let mut codes: Vec<&&str> = STATUS_CODES.iter().map(|(c, _)| c).collect();
+        codes.sort();
+        codes.dedup();
+        assert_eq!(codes.len(), STATUS_CODES.len());
+    }
+
+    // ── HTTP METHODS string ──
+
+    #[test]
+    fn http_methods_string_format() {
+        let methods = "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,TRACE";
+        let method_list: Vec<&str> = methods.split(',').collect();
+        assert_eq!(method_list.len(), 8);
+        assert!(method_list.contains(&"GET"));
+        assert!(method_list.contains(&"POST"));
+        assert!(method_list.contains(&"DELETE"));
+        assert!(method_list.contains(&"PATCH"));
+    }
+
+    #[test]
+    fn http_methods_all_uppercase() {
+        let methods = "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,TRACE";
+        for m in methods.split(',') {
+            assert_eq!(m, m.to_uppercase());
+        }
+    }
+
+    // ── common_headers list ──
+
+    #[test]
+    fn common_headers_count() {
+        let common_headers: &[&[u8]] = &[
+            b"host", b"content-type", b"content-length", b"accept",
+            b"user-agent", b"connection", b"authorization", b"cookie",
+        ];
+        assert_eq!(common_headers.len(), 8);
+    }
+
+    #[test]
+    fn common_headers_all_lowercase() {
+        let common_headers: &[&[u8]] = &[
+            b"host", b"content-type", b"content-length", b"accept",
+            b"user-agent", b"connection", b"authorization", b"cookie",
+        ];
+        for &h in common_headers {
+            assert!(h.iter().all(|b| b.is_ascii_lowercase() || *b == b'-'));
+        }
+    }
 }

@@ -217,7 +217,7 @@ unsafe fn install_test_globals(
 #[test]
 fn test_module_loader_host_fn_all() {
     let _temp = TempDir::new("modload");
-    let mut ctx = JsContext::new().expect("Failed to create JsContext");
+    let mut ctx = JsContext::for_test().expect("Failed to create JsContext");
     ctx.set_global_setup(install_test_globals);
 
     // =====================================================================
@@ -226,17 +226,17 @@ fn test_module_loader_host_fn_all() {
 
     // 1.1 Basic ESM: export const
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, "export const x = 42;", "test_basic.mjs", None, None);
+            ModuleLoader::eval_module(&mut cx, "export const x = 42;", "test_basic.mjs", None, None);
         assert!(result.is_ok(), "ESM 'export const' should evaluate: {:?}", result);
     }
 
     // 1.2 ESM: export with string
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result = ModuleLoader::eval_module(
-            cx,
+            &mut cx,
             r#"export const msg = "hello module";"#,
             "test_str.mjs",
             None,
@@ -247,9 +247,9 @@ fn test_module_loader_host_fn_all() {
 
     // 1.3 ESM: export function
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result = ModuleLoader::eval_module(
-            cx,
+            &mut cx,
             "export function add(a, b) { return a + b; }",
             "test_fn.mjs",
             None,
@@ -260,17 +260,17 @@ fn test_module_loader_host_fn_all() {
 
     // 1.4 ESM: export default
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, "export default 42;", "test_default.mjs", None, None);
+            ModuleLoader::eval_module(&mut cx, "export default 42;", "test_default.mjs", None, None);
         assert!(result.is_ok(), "ESM default export should evaluate: {:?}", result);
     }
 
     // 1.5 ESM: named export block
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result = ModuleLoader::eval_module(
-            cx,
+            &mut cx,
             "const a = 1; const b = 2; export { a, b };",
             "test_named.mjs",
             None,
@@ -281,9 +281,9 @@ fn test_module_loader_host_fn_all() {
 
     // 1.6 ESM: re-export
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result = ModuleLoader::eval_module(
-            cx,
+            &mut cx,
             "export { default } from 'data:text/javascript,export default 42';",
             "test_reexport.mjs",
             None,
@@ -296,9 +296,9 @@ fn test_module_loader_host_fn_all() {
 
     // 1.7 ESM: syntax error
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result = ModuleLoader::eval_module(
-            cx,
+            &mut cx,
             "export const = broken syntax",
             "test_bad.mjs",
             None,
@@ -309,17 +309,17 @@ fn test_module_loader_host_fn_all() {
 
     // 1.8 ESM: empty module
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, "", "test_empty.mjs", None, None);
+            ModuleLoader::eval_module(&mut cx, "", "test_empty.mjs", None, None);
         assert!(result.is_ok(), "Empty module should evaluate: {:?}", result);
     }
 
     // 1.9 ESM: import.meta
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result = ModuleLoader::eval_module(
-            cx,
+            &mut cx,
             "export const meta = import.meta;",
             "test_meta.mjs",
             None,
@@ -334,9 +334,9 @@ fn test_module_loader_host_fn_all() {
 
     // 1.10 ESM: module that uses standard library APIs
     {
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result = ModuleLoader::eval_module(
-            cx,
+            &mut cx,
             "export const obj = { a: 1, b: 2 }; export function total() { return obj.a + obj.b; }",
             "test_stdlib.mjs",
             None,
@@ -355,9 +355,9 @@ fn test_module_loader_host_fn_all() {
         _dir.create_file("dep.js", "export const val = 10;");
         let main_path = _dir.create_file("main.mjs", "import { val } from './dep.js';\nexport { val };");
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM import .js should resolve: {:?}",
@@ -371,9 +371,9 @@ fn test_module_loader_host_fn_all() {
         _dir.create_file("dep.mjs", "export const val = 20;");
         let main_path = _dir.create_file("main.mjs", "import { val } from './dep.mjs';\nexport { val };");
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM import .mjs should resolve: {:?}",
@@ -388,9 +388,9 @@ fn test_module_loader_host_fn_all() {
         let main_path =
             _dir.create_file("main.mjs", "import { val } from './dep';\nexport { val };");
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM extensionless import → .js should resolve: {:?}",
@@ -405,9 +405,9 @@ fn test_module_loader_host_fn_all() {
         let main_path =
             _dir.create_file("main.mjs", "import { val } from './dep';\nexport { val };");
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM extensionless import → .ts should resolve: {:?}",
@@ -422,9 +422,9 @@ fn test_module_loader_host_fn_all() {
         let main_path =
             _dir.create_file("main.mjs", "import { val } from './lib';\nexport { val };");
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM index.js resolution should work: {:?}",
@@ -441,9 +441,9 @@ fn test_module_loader_host_fn_all() {
             "import { val } from 'helper';\nexport { val };",
         );
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM node_modules resolution should work: {:?}",
@@ -461,14 +461,14 @@ fn test_module_loader_host_fn_all() {
         let path_str = main_path.to_str().unwrap().to_owned();
 
         let result1 = {
-            let cx = ctx.cx_mut();
-            ModuleLoader::eval_module(cx, &content, &path_str, None, None)
+            let mut cx = ctx.cx();
+            ModuleLoader::eval_module(&mut cx, &content, &path_str, None, None)
         };
         assert!(result1.is_ok(), "First module eval should succeed: {:?}", result1);
 
         let result2 = {
-            let cx = ctx.cx_mut();
-            ModuleLoader::eval_module(cx, &content, &path_str, None, None)
+            let mut cx = ctx.cx();
+            ModuleLoader::eval_module(&mut cx, &content, &path_str, None, None)
         };
         assert!(
             result2.is_ok(),
@@ -493,14 +493,14 @@ fn test_module_loader_host_fn_all() {
         let content_b = fs::read_to_string(&b_path).unwrap();
 
         let result_a = {
-            let cx = ctx.cx_mut();
-            ModuleLoader::eval_module(cx, &content_a, a_path.to_str().unwrap(), None, None)
+            let mut cx = ctx.cx();
+            ModuleLoader::eval_module(&mut cx, &content_a, a_path.to_str().unwrap(), None, None)
         };
         assert!(result_a.is_ok(), "Module A should load shared dep: {:?}", result_a);
 
         let result_b = {
-            let cx = ctx.cx_mut();
-            ModuleLoader::eval_module(cx, &content_b, b_path.to_str().unwrap(), None, None)
+            let mut cx = ctx.cx();
+            ModuleLoader::eval_module(&mut cx, &content_b, b_path.to_str().unwrap(), None, None)
         };
         assert!(
             result_b.is_ok(),
@@ -516,9 +516,9 @@ fn test_module_loader_host_fn_all() {
         let main_path =
             _dir.create_file("main.mjs", "import { val } from './dep';\nexport { val };");
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM ./ import should resolve: {:?}",
@@ -533,9 +533,9 @@ fn test_module_loader_host_fn_all() {
         _dir.create_file("sub/main.mjs", "import { val } from './dep.mjs';\nexport { val };");
         let main_path = _dir.absolute_path("sub/main.mjs");
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM sub-directory import should resolve: {:?}",
@@ -556,9 +556,9 @@ fn test_module_loader_host_fn_all() {
             "import { val } from 'pkg';\nexport { val };",
         );
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         assert!(
             result.is_ok(),
             "ESM package.json main resolution should work: {:?}",
@@ -574,9 +574,9 @@ fn test_module_loader_host_fn_all() {
             "import { val } from 'nonexistent-pkg';\nexport { val };",
         );
         let content = fs::read_to_string(&main_path).unwrap();
-        let cx = ctx.cx_mut();
+        let mut cx = ctx.cx();
         let result =
-            ModuleLoader::eval_module(cx, &content, main_path.to_str().unwrap(), None, None);
+            ModuleLoader::eval_module(&mut cx, &content, main_path.to_str().unwrap(), None, None);
         // This should fail since the package doesn't exist
         assert!(
             result.is_err(),

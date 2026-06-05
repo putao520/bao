@@ -21,10 +21,22 @@ impl DomainHandler for RuntimeHandler {
         &self,
         command: &str,
         params: Value,
-        _event_sender: &dyn EventSender,
+        event_sender: &dyn EventSender,
     ) -> Result<Value, CdpError> {
         match command {
-            "Runtime.enable" => Ok(json!({ "executionContextId": 1 })),
+            "Runtime.enable" => {
+                event_sender.send_event(
+                    "Runtime.executionContextCreated",
+                    json!({
+                        "context": {
+                            "id": 1,
+                            "origin": "",
+                            "name": ""
+                        }
+                    }),
+                );
+                Ok(json!({ "executionContextId": 1 }))
+            }
             "Runtime.disable" => Ok(json!({})),
             "Runtime.evaluate" => {
                 let expression = params.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();

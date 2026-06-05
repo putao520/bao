@@ -362,3 +362,62 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         cache_builtin(cx, "https", mod_obj.get());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_json_plain_string() {
+        assert_eq!(escape_json("hello"), "hello");
+    }
+
+    #[test]
+    fn escape_json_double_quote() {
+        assert_eq!(escape_json(r#"say "hi""#), r#"say \"hi\""#);
+    }
+
+    #[test]
+    fn escape_json_backslash() {
+        assert_eq!(escape_json(r"path\to\file"), r"path\\to\\file");
+    }
+
+    #[test]
+    fn escape_json_newline() {
+        assert_eq!(escape_json("line1\nline2"), "line1\\nline2");
+    }
+
+    #[test]
+    fn escape_json_carriage_return() {
+        assert_eq!(escape_json("hello\rworld"), "hello\\rworld");
+    }
+
+    #[test]
+    fn escape_json_tab() {
+        assert_eq!(escape_json("col1\tcol2"), "col1\\tcol2");
+    }
+
+    #[test]
+    fn escape_json_control_chars() {
+        let input = "bell\x07bell";
+        let escaped = escape_json(input);
+        assert!(escaped.contains("\\u0007"));
+    }
+
+    #[test]
+    fn escape_json_empty() {
+        assert_eq!(escape_json(""), "");
+    }
+
+    #[test]
+    fn escape_json_mixed() {
+        let input = r#"{"key":"val\nue"}"#;
+        let expected = r#"{\"key\":\"val\\nue\"}"#;
+        assert_eq!(escape_json(input), expected);
+    }
+
+    #[test]
+    fn escape_json_unicode_preserved() {
+        assert_eq!(escape_json("你好"), "你好");
+    }
+}

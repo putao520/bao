@@ -98,7 +98,7 @@ fn main() {
 fn run_eval(code: &str) -> ::std::result::Result<(), i32> {
     let mut rt = bao_runtime::BaoRuntime::new()
         .map_err(|_| { eprintln!("Error: Failed to initialize SpiderMonkey"); 1 })?;
-    match rt.eval(code, "<eval>") {
+    let eval_result = match rt.eval(code, "<eval>") {
         Ok(val) => {
             if !val.is_undefined() {
                 println!("{}", val.to_display_string());
@@ -109,7 +109,14 @@ fn run_eval(code: &str) -> ::std::result::Result<(), i32> {
             eprintln!("Error: {}", e);
             Err(1)
         }
+    };
+    // After eval, check if process.exit()/Bun.exit() was called.
+    // If so, return the requested exit code so main() can exit orderly.
+    // BaoRuntime drops naturally here → SmRuntimeGuard drops → JS_ShutDown.
+    if bao_runtime::should_exit() {
+        return Err(bao_runtime::exit_code());
     }
+    eval_result
 }
 
 fn run_file(path: &str, force_module: bool) -> ::std::result::Result<(), i32> {
@@ -125,25 +132,33 @@ fn run_file(path: &str, force_module: bool) -> ::std::result::Result<(), i32> {
         rt.run_file(path)
     };
 
-    match result {
+    let eval_result = match result {
         Ok(_) => Ok(()),
         Err(e) => {
             eprintln!("Error: {}", e);
             Err(1)
         }
+    };
+    if bao_runtime::should_exit() {
+        return Err(bao_runtime::exit_code());
     }
+    eval_result
 }
 
 fn run_module_eval(code: &str) -> ::std::result::Result<(), i32> {
     let mut rt = bao_runtime::BaoRuntime::new()
         .map_err(|_| { eprintln!("Error: Failed to initialize SpiderMonkey"); 1 })?;
-    match rt.eval_module(code, "<module>") {
+    let eval_result = match rt.eval_module(code, "<module>") {
         Ok(_) => Ok(()),
         Err(e) => {
             eprintln!("Error: {}", e);
             Err(1)
         }
+    };
+    if bao_runtime::should_exit() {
+        return Err(bao_runtime::exit_code());
     }
+    eval_result
 }
 
 fn run_build(
@@ -183,7 +198,7 @@ fn run_test(
     let mut rt = bao_runtime::BaoRuntime::new()
         .map_err(|_| { eprintln!("Error: Failed to initialize runtime"); 1 })?;
 
-    if let Some(code) = eval {
+    let test_result = if let Some(code) = eval {
         match rt.eval(code, "<test-eval>") {
             Ok(_) => Ok(()),
             Err(e) => { eprintln!("FAIL: {}", e); Err(1) }
@@ -204,6 +219,7 @@ fn run_test(
                                 Ok(_) => {}
                                 Err(e) => eprintln!("FAIL [{}]: {}", path_str, e),
                             }
+                            bao_runtime::clear_exit();
                         }
                     }
                 }
@@ -222,9 +238,11 @@ fn run_test(
                 Ok(_) => {}
                 Err(e) => { eprintln!("FAIL [{}]: {}", file, e); any_fail = true; }
             }
+            bao_runtime::clear_exit();
         }
         if any_fail { Err(1) } else { Ok(()) }
-    }
+    };
+    test_result
 }
 
 fn run_install(

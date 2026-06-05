@@ -4,14 +4,14 @@
 <meta charset="UTF-8">
 <title>Bao - 测试用例</title>
 </head>
-<body>
+<body><main data-spec-content="">
 <h1>Bao 测试用例</h1>
 
 <!-- ============================================================ -->
 <h2>§1 多页面库测试 (REQ-LIB-001 ~ REQ-LIB-004)</h2>
 <!-- ============================================================ -->
 
-<div data-req-ref="REQ-LIB-001" data-test="TEST-LIB-001" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-001" id="test-TEST-LIB-001" data-test="TEST-LIB-001" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-001: 多页面创建与隔离</h3>
 <p><strong>关联需求</strong>: REQ-LIB-001 <span data-xref-type="req" data-xref-id="REQ-LIB-001"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -34,7 +34,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-001" data-test="TEST-LIB-002" data-test-categories="unit,positive,negative,integration,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-001" id="test-TEST-LIB-002" data-test="TEST-LIB-002" data-test-categories="unit,positive,negative,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-002: Page 显式关闭与资源释放</h3>
 <p><strong>关联需求</strong>: REQ-LIB-001 <span data-xref-type="req" data-xref-id="REQ-LIB-001"></span></p>
 <p><strong>测试类型</strong>: 正向 + 负向测试</p>
@@ -53,7 +53,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-002" data-test="TEST-LIB-003" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-002" id="test-TEST-LIB-003" data-test="TEST-LIB-003" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-003: PagePool 空闲 TTL 回收</h3>
 <p><strong>关联需求</strong>: REQ-LIB-002 <span data-xref-type="req" data-xref-id="REQ-LIB-002"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -73,7 +73,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-002" data-test="TEST-LIB-004" data-test-categories="unit,boundary,negative,integration,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-002" id="test-TEST-LIB-004" data-test="TEST-LIB-004" data-test-categories="unit,boundary,negative,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-004: PagePool max_total 硬上限</h3>
 <p><strong>关联需求</strong>: REQ-LIB-002 <span data-xref-type="req" data-xref-id="REQ-LIB-002"></span></p>
 <p><strong>测试类型</strong>: 边界 + 负向测试</p>
@@ -92,7 +92,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-003" data-test="TEST-LIB-005" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-003" id="test-TEST-LIB-005" data-test="TEST-LIB-005" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-005: 高性能 Rust/JS API (内部后端)</h3>
 <p><strong>关联需求</strong>: REQ-LIB-003 <span data-xref-type="req" data-xref-id="REQ-LIB-003"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -111,7 +111,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-003" data-test="TEST-LIB-006" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-003" id="test-TEST-LIB-006" data-test="TEST-LIB-006" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-006: CDP 兼容层 (内部模式)</h3>
 <p><strong>关联需求</strong>: REQ-LIB-003 <span data-xref-type="req" data-xref-id="REQ-LIB-003"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -131,7 +131,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-003" data-test="TEST-LIB-007" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-003" id="test-TEST-LIB-007" data-test="TEST-LIB-007" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-007: 外部 CDP 端点连接</h3>
 <p><strong>关联需求</strong>: REQ-LIB-003 <span data-xref-type="req" data-xref-id="REQ-LIB-003"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -151,7 +151,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-004" data-test="TEST-LIB-008" data-test-categories="unit,positive,negative,integration,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-004" id="test-TEST-LIB-008" data-test="TEST-LIB-008" data-test-categories="unit,positive,negative,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-008: Permission 白名单拦截</h3>
 <p><strong>关联需求</strong>: REQ-LIB-004 <span data-xref-type="req" data-xref-id="REQ-LIB-004"></span></p>
 <p><strong>测试类型</strong>: 正向 + 负向测试</p>
@@ -172,7 +172,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-004" data-test="TEST-LIB-009" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-004" id="test-TEST-LIB-009" data-test="TEST-LIB-009" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-009: Permission 零开销验证</h3>
 <p><strong>关联需求</strong>: REQ-LIB-004 <span data-xref-type="req" data-xref-id="REQ-LIB-004"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -188,7 +188,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-LIB-001" data-test="TEST-LIB-010" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-001" id="test-TEST-LIB-010" data-test="TEST-LIB-010" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-LIB-010: 多页面 + Stealth 集成</h3>
 <p><strong>关联需求</strong>: REQ-LIB-001, REQ-LIB-003</p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -211,49 +211,49 @@
 <h2>§2 Engine Tests (REQ-ENG-001~007)</h2>
 <!-- ============================================================ -->
 
-<div data-req-ref="REQ-ENG-001" data-test="TEST-ENG-001" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-001" id="test-TEST-ENG-001" data-test="TEST-ENG-001" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-ENG-001: SpiderMonkey 引擎初始化与 JS 执行</h3>
 <p><strong>关联需求</strong>: REQ-ENG-001 <span data-xref-type="req" data-xref-id="REQ-ENG-001"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 SpiderMonkey JSContext 创建、脚本执行、异常捕获。覆盖于 phase1_integration.js。</p>
 </div>
 
-<div data-req-ref="REQ-ENG-002" data-test="TEST-ENG-002" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-002" id="test-TEST-ENG-002" data-test="TEST-ENG-002" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-ENG-002: 代码生成后端验证</h3>
 <p><strong>关联需求</strong>: REQ-ENG-002 <span data-xref-type="req" data-xref-id="REQ-ENG-002"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 .classes.ts 代码生成后端从 JSC 迁移到 SM 后功能正常。覆盖于 phase1_integration.js。</p>
 </div>
 
-<div data-req-ref="REQ-ENG-003" data-test="TEST-ENG-003" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-003" id="test-TEST-ENG-003" data-test="TEST-ENG-003" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-ENG-003: host_fn 安全 FFI 层</h3>
 <p><strong>关联需求</strong>: REQ-ENG-003 <span data-xref-type="req" data-xref-id="REQ-ENG-003"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Rust-JS 类型转换、console.log、异常处理。覆盖于 phase1_integration.js。</p>
 </div>
 
-<div data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-004" id="test-TEST-ENG-004" data-test="TEST-ENG-004" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-ENG-004: 事件循环桥接</h3>
 <p><strong>关联需求</strong>: REQ-ENG-004 <span data-xref-type="req" data-xref-id="REQ-ENG-004"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Promise/async/await 和 JobQueue 桥接。覆盖于 phase1_integration.js。</p>
 </div>
 
-<div data-req-ref="REQ-ENG-005" data-test="TEST-ENG-005" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-005" id="test-TEST-ENG-005" data-test="TEST-ENG-005" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-ENG-005: 模块加载器桥接</h3>
 <p><strong>关联需求</strong>: REQ-ENG-005 <span data-xref-type="req" data-xref-id="REQ-ENG-005"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 require() 和 ESM import 功能。覆盖于 phase1_integration.js。</p>
 </div>
 
-<div data-req-ref="REQ-ENG-006" data-test="TEST-ENG-006" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-006" id="test-TEST-ENG-006" data-test="TEST-ENG-006" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-ENG-006: Bun API 适配</h3>
 <p><strong>关联需求</strong>: REQ-ENG-006 <span data-xref-type="req" data-xref-id="REQ-ENG-006"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Bun.file/Bun.write/Bun.env 等 API。覆盖于 phase1_integration.js。</p>
 </div>
 
-<div data-req-ref="REQ-ENG-007" data-test="TEST-ENG-007" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-007" id="test-TEST-ENG-007" data-test="TEST-ENG-007" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-ENG-007: Node.js 兼容层</h3>
 <p><strong>关联需求</strong>: REQ-ENG-007 <span data-xref-type="req" data-xref-id="REQ-ENG-007"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -264,14 +264,14 @@
 <h2>§3 CLI Tests (REQ-CLI-001~002)</h2>
 <!-- ============================================================ -->
 
-<div data-req-ref="REQ-CLI-001" data-test="TEST-CLI-001" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CLI-001" id="test-TEST-CLI-001" data-test="TEST-CLI-001" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CLI-001: bao 命令品牌替换</h3>
 <p><strong>关联需求</strong>: REQ-CLI-001 <span data-xref-type="req" data-xref-id="REQ-CLI-001"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 bao run/bao test/bao build 命令可执行，输出包含 'bao' 而非 'bun'。覆盖于 phase1_integration.js。</p>
 </div>
 
-<div data-req-ref="REQ-CLI-002" data-test="TEST-CLI-002" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CLI-002" id="test-TEST-CLI-002" data-test="TEST-CLI-002" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CLI-002: bao browser 子命令</h3>
 <p><strong>关联需求</strong>: REQ-CLI-002 <span data-xref-type="req" data-xref-id="REQ-CLI-002"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -282,21 +282,21 @@
 <h2>§4 Browser Tests (REQ-BRW-001~003)</h2>
 <!-- ============================================================ -->
 
-<div data-req-ref="REQ-BRW-001" data-test="TEST-BRW-001" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-BRW-001" id="test-TEST-BRW-001" data-test="TEST-BRW-001" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-BRW-001: libservo 集成</h3>
 <p><strong>关联需求</strong>: REQ-BRW-001 <span data-xref-type="req" data-xref-id="REQ-BRW-001"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 ServoDelegate + WebViewDelegate 创建和事件循环。覆盖于 phase5_multipage.js。</p>
 </div>
 
-<div data-req-ref="REQ-BRW-002" data-test="TEST-BRW-002" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-BRW-002" id="test-TEST-BRW-002" data-test="TEST-BRW-002" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-BRW-002: 内存渲染与截图</h3>
 <p><strong>关联需求</strong>: REQ-BRW-002 <span data-xref-type="req" data-xref-id="REQ-BRW-002"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 SoftwareRenderingContext 创建和 screenshot 编码。覆盖于 phase5_multipage.js。</p>
 </div>
 
-<div data-req-ref="REQ-BRW-003" data-test="TEST-BRW-003" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-BRW-003" id="test-TEST-BRW-003" data-test="TEST-BRW-003" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-BRW-003: JSContext 融合</h3>
 <p><strong>关联需求</strong>: REQ-BRW-003 <span data-xref-type="req" data-xref-id="REQ-BRW-003"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -307,56 +307,56 @@
 <h2>§5 CDP Tests (REQ-CDP-001~008)</h2>
 <!-- ============================================================ -->
 
-<div data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-001" id="test-TEST-CDP-001" data-test="TEST-CDP-001" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CDP-001: CDP WebSocket 服务</h3>
 <p><strong>关联需求</strong>: REQ-CDP-001 <span data-xref-type="req" data-xref-id="REQ-CDP-001"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 WebSocket 握手、消息帧解析、JSON 端点。覆盖于 phase5_cdp.js。</p>
 </div>
 
-<div data-req-ref="REQ-CDP-002" data-test="TEST-CDP-002" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-002" id="test-TEST-CDP-002" data-test="TEST-CDP-002" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CDP-002: Runtime Domain</h3>
 <p><strong>关联需求</strong>: REQ-CDP-002 <span data-xref-type="req" data-xref-id="REQ-CDP-002"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Runtime.evaluate/enable/disable。覆盖于 phase5_cdp.js。</p>
 </div>
 
-<div data-req-ref="REQ-CDP-003" data-test="TEST-CDP-003" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-003" id="test-TEST-CDP-003" data-test="TEST-CDP-003" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CDP-003: Debugger Domain</h3>
 <p><strong>关联需求</strong>: REQ-CDP-003 <span data-xref-type="req" data-xref-id="REQ-CDP-003"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Debugger enable/setBreakpoint/resume。覆盖于 phase5_cdp.js。</p>
 </div>
 
-<div data-req-ref="REQ-CDP-004" data-test="TEST-CDP-004" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-004" id="test-TEST-CDP-004" data-test="TEST-CDP-004" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CDP-004: Page Domain</h3>
 <p><strong>关联需求</strong>: REQ-CDP-004 <span data-xref-type="req" data-xref-id="REQ-CDP-004"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Page.navigate/enable/captureScreenshot。覆盖于 phase5_cdp.js。</p>
 </div>
 
-<div data-req-ref="REQ-CDP-005" data-test="TEST-CDP-005" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-005" id="test-TEST-CDP-005" data-test="TEST-CDP-005" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CDP-005: DOM Domain</h3>
 <p><strong>关联需求</strong>: REQ-CDP-005 <span data-xref-type="req" data-xref-id="REQ-CDP-005"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 DOM.getDocument/querySelector/getBoxModel。覆盖于 phase5_cdp.js。</p>
 </div>
 
-<div data-req-ref="REQ-CDP-006" data-test="TEST-CDP-006" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-006" id="test-TEST-CDP-006" data-test="TEST-CDP-006" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CDP-006: Network Domain</h3>
 <p><strong>关联需求</strong>: REQ-CDP-006 <span data-xref-type="req" data-xref-id="REQ-CDP-006"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Network.enable/getCookies/setCookie。覆盖于 phase5_cdp.js。</p>
 </div>
 
-<div data-req-ref="REQ-CDP-007" data-test="TEST-CDP-007" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-007" id="test-TEST-CDP-007" data-test="TEST-CDP-007" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CDP-007: CSS/Input/Emulation/Overlay Domains</h3>
 <p><strong>关联需求</strong>: REQ-CDP-007 <span data-xref-type="req" data-xref-id="REQ-CDP-007"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 11 个辅助 CDP domain 全部响应。覆盖于 phase5_cdp.js。</p>
 </div>
 
-<div data-req-ref="REQ-CDP-008" data-test="TEST-CDP-008" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-008" id="test-TEST-CDP-008" data-test="TEST-CDP-008" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-CDP-008: Target Domain</h3>
 <p><strong>关联需求</strong>: REQ-CDP-008 <span data-xref-type="req" data-xref-id="REQ-CDP-008"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -367,49 +367,49 @@
 <h2>§6 Stealth Tests (REQ-STL-001~007)</h2>
 <!-- ============================================================ -->
 
-<div data-req-ref="REQ-STL-001" data-test="TEST-STL-001" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-001" id="test-TEST-STL-001" data-test="TEST-STL-001" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-STL-001: TLS 指纹模拟</h3>
 <p><strong>关联需求</strong>: REQ-STL-001 <span data-xref-type="req" data-xref-id="REQ-STL-001"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Firefox/Chrome JA3 cipher suite/extension/signature 配置。覆盖于 phase4_stealth.js。</p>
 </div>
 
-<div data-req-ref="REQ-STL-002" data-test="TEST-STL-002" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-002" id="test-TEST-STL-002" data-test="TEST-STL-002" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-STL-002: HTTP/2 指纹匹配</h3>
 <p><strong>关联需求</strong>: REQ-STL-002 <span data-xref-type="req" data-xref-id="REQ-STL-002"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 HTTP/2 SETTINGS 参数和 Akamai 指纹。覆盖于 phase4_stealth.js。</p>
 </div>
 
-<div data-req-ref="REQ-STL-003" data-test="TEST-STL-003" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-003" id="test-TEST-STL-003" data-test="TEST-STL-003" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-STL-003: Canvas 指纹保护</h3>
 <p><strong>关联需求</strong>: REQ-STL-003 <span data-xref-type="req" data-xref-id="REQ-STL-003"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证确定性像素噪声生成。覆盖于 phase4_stealth.js。</p>
 </div>
 
-<div data-req-ref="REQ-STL-004" data-test="TEST-STL-004" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-004" id="test-TEST-STL-004" data-test="TEST-STL-004" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-STL-004: Navigator/Screen 属性构造</h3>
 <p><strong>关联需求</strong>: REQ-STL-004 <span data-xref-type="req" data-xref-id="REQ-STL-004"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 Navigator/Screen profile 数据正确性。覆盖于 phase4_stealth.js。</p>
 </div>
 
-<div data-req-ref="REQ-STL-005" data-test="TEST-STL-005" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-005" id="test-TEST-STL-005" data-test="TEST-STL-005" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-STL-005: WebGL/Audio 指纹保护</h3>
 <p><strong>关联需求</strong>: REQ-STL-005 <span data-xref-type="req" data-xref-id="REQ-STL-005"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证 WebGL vendor/renderer 和 Audio 噪声。覆盖于 phase4_stealth.js。</p>
 </div>
 
-<div data-req-ref="REQ-STL-006" data-test="TEST-STL-006" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-006" id="test-TEST-STL-006" data-test="TEST-STL-006" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-STL-006: 行为模拟</h3>
 <p><strong>关联需求</strong>: REQ-STL-006 <span data-xref-type="req" data-xref-id="REQ-STL-006"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
 <p>验证鼠标轨迹和打字延迟生成。覆盖于 phase4_stealth.js。</p>
 </div>
 
-<div data-req-ref="REQ-STL-007" data-test="TEST-STL-007" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-007" id="test-TEST-STL-007" data-test="TEST-STL-007" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-STL-007: CDP 隐身</h3>
 <p><strong>关联需求</strong>: REQ-STL-007 <span data-xref-type="req" data-xref-id="REQ-STL-007"></span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -420,7 +420,7 @@
 <h2>§6.5 实施阶段集成测试 (REQ-IMPL-01 ~ REQ-IMPL-05)</h2>
 <!-- ============================================================ -->
 
-<div data-req-ref="REQ-IMPL-01" data-test="TEST-IMPL-01" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-01" id="test-TEST-IMPL-01" data-test="TEST-IMPL-01" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-IMPL-01: Phase 1 SpiderMonkey 引擎集成验证</h3>
 <p><strong>关联需求</strong>: REQ-IMPL-01 <span data-xref-type="req" data-xref-id="REQ-IMPL-01"></span></p>
 <p><strong>测试类型</strong>: 集成测试</p>
@@ -439,7 +439,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-IMPL-02" data-test="TEST-IMPL-02" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-02" id="test-TEST-IMPL-02" data-test="TEST-IMPL-02" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-IMPL-02: Phase 2 servo 引擎集成验证</h3>
 <p><strong>关联需求</strong>: REQ-IMPL-02 <span data-xref-type="req" data-xref-id="REQ-IMPL-02"></span></p>
 <p><strong>测试类型</strong>: 集成测试</p>
@@ -457,7 +457,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-IMPL-03" data-test="TEST-IMPL-03" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-03" id="test-TEST-IMPL-03" data-test="TEST-IMPL-03" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-IMPL-03: Phase 3 CDP Server 验证</h3>
 <p><strong>关联需求</strong>: REQ-IMPL-03 <span data-xref-type="req" data-xref-id="REQ-IMPL-03"></span></p>
 <p><strong>测试类型</strong>: 集成测试</p>
@@ -475,7 +475,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-IMPL-04" data-test="TEST-IMPL-04" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-04" id="test-TEST-IMPL-04" data-test="TEST-IMPL-04" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-IMPL-04: Phase 4 Stealth 反指纹验证</h3>
 <p><strong>关联需求</strong>: REQ-IMPL-04 <span data-xref-type="req" data-xref-id="REQ-IMPL-04"></span></p>
 <p><strong>测试类型</strong>: 集成测试</p>
@@ -492,7 +492,7 @@
 </ul>
 </div>
 
-<div data-req-ref="REQ-IMPL-05" data-test="TEST-IMPL-05" data-test-categories="unit,positive,integration,system,acceptance" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-05" id="test-TEST-IMPL-05" data-test="TEST-IMPL-05" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
 <h3>TEST-IMPL-05: Phase 5 全栈集成验证</h3>
 <p><strong>关联需求</strong>: REQ-IMPL-05 <span data-xref-type="req" data-xref-id="REQ-IMPL-05"></span></p>
 <p><strong>测试类型</strong>: 集成测试</p>
@@ -515,112 +515,112 @@
 <h2>§7 Acceptance Tests (验收测试)</h2>
 <!-- ============================================================ -->
 
-<div data-req-ref="REQ-ENG-001" data-test="TEST-ACCEPT-01" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-001" id="test-TEST-ACCEPT-01" data-test="TEST-ACCEPT-01" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-ENG-001 acceptance — test_acceptance.js + phase1_integration.js</p>
 </div>
-<div data-req-ref="REQ-ENG-002" data-test="TEST-ACCEPT-02" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-002" id="test-TEST-ACCEPT-02" data-test="TEST-ACCEPT-02" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-ENG-002 acceptance — test_acceptance.js</p>
 </div>
-<div data-req-ref="REQ-ENG-003" data-test="TEST-ACCEPT-03" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-003" id="test-TEST-ACCEPT-03" data-test="TEST-ACCEPT-03" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-ENG-003 acceptance — test_acceptance.js</p>
 </div>
-<div data-req-ref="REQ-ENG-004" data-test="TEST-ACCEPT-04" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-004" id="test-TEST-ACCEPT-04" data-test="TEST-ACCEPT-04" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-ENG-004 acceptance — test_nfr_benchmarks.js (timer/loop)</p>
 </div>
-<div data-req-ref="REQ-ENG-005" data-test="TEST-ACCEPT-05" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-005" id="test-TEST-ACCEPT-05" data-test="TEST-ACCEPT-05" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-ENG-005 acceptance — test_dynamic_import.js (14 assertions)</p>
 </div>
-<div data-req-ref="REQ-ENG-006" data-test="TEST-ACCEPT-06" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-006" id="test-TEST-ACCEPT-06" data-test="TEST-ACCEPT-06" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-ENG-006 acceptance — test_acceptance.js (Bun.* API)</p>
 </div>
-<div data-req-ref="REQ-ENG-007" data-test="TEST-ACCEPT-07" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-ENG-007" id="test-TEST-ACCEPT-07" data-test="TEST-ACCEPT-07" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-ENG-007 acceptance — test_node_modules.js (34 assertions)</p>
 </div>
-<div data-req-ref="REQ-CLI-001" data-test="TEST-ACCEPT-08" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CLI-001" id="test-TEST-ACCEPT-08" data-test="TEST-ACCEPT-08" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CLI-001 acceptance — phase1_integration.js (CLI commands)</p>
 </div>
-<div data-req-ref="REQ-CLI-002" data-test="TEST-ACCEPT-09" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CLI-002" id="test-TEST-ACCEPT-09" data-test="TEST-ACCEPT-09" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CLI-002 acceptance — phase2_browser.js (12 assertions)</p>
 </div>
-<div data-req-ref="REQ-BRW-001" data-test="TEST-ACCEPT-10" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-BRW-001" id="test-TEST-ACCEPT-10" data-test="TEST-ACCEPT-10" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-BRW-001 acceptance — phase2_browser.js</p>
 </div>
-<div data-req-ref="REQ-BRW-002" data-test="TEST-ACCEPT-11" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-BRW-002" id="test-TEST-ACCEPT-11" data-test="TEST-ACCEPT-11" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-BRW-002 acceptance — phase2_browser.js (screenshot/render)</p>
 </div>
-<div data-req-ref="REQ-BRW-003" data-test="TEST-ACCEPT-12" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-BRW-003" id="test-TEST-ACCEPT-12" data-test="TEST-ACCEPT-12" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-BRW-003 acceptance — phase5_multipage.js (10 assertions)</p>
 </div>
-<div data-req-ref="REQ-CDP-001" data-test="TEST-ACCEPT-13" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-001" id="test-TEST-ACCEPT-13" data-test="TEST-ACCEPT-13" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CDP-001 acceptance — phase3_cdp.js (WebSocket server)</p>
 </div>
-<div data-req-ref="REQ-CDP-002" data-test="TEST-ACCEPT-14" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-002" id="test-TEST-ACCEPT-14" data-test="TEST-ACCEPT-14" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CDP-002 acceptance — phase3_cdp.js (Runtime domain)</p>
 </div>
-<div data-req-ref="REQ-CDP-003" data-test="TEST-ACCEPT-15" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-003" id="test-TEST-ACCEPT-15" data-test="TEST-ACCEPT-15" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CDP-003 acceptance — phase3_cdp.js (Debugger domain)</p>
 </div>
-<div data-req-ref="REQ-CDP-004" data-test="TEST-ACCEPT-16" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-004" id="test-TEST-ACCEPT-16" data-test="TEST-ACCEPT-16" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CDP-004 acceptance — phase3_cdp.js (Page domain)</p>
 </div>
-<div data-req-ref="REQ-CDP-005" data-test="TEST-ACCEPT-17" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-005" id="test-TEST-ACCEPT-17" data-test="TEST-ACCEPT-17" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CDP-005 acceptance — phase3_cdp.js (DOM domain)</p>
 </div>
-<div data-req-ref="REQ-CDP-006" data-test="TEST-ACCEPT-18" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-006" id="test-TEST-ACCEPT-18" data-test="TEST-ACCEPT-18" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CDP-006 acceptance — phase3_cdp.js (Network domain)</p>
 </div>
-<div data-req-ref="REQ-CDP-007" data-test="TEST-ACCEPT-19" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-007" id="test-TEST-ACCEPT-19" data-test="TEST-ACCEPT-19" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CDP-007 acceptance — phase3_cdp.js (CSS/Input/Emulation)</p>
 </div>
-<div data-req-ref="REQ-CDP-008" data-test="TEST-ACCEPT-20" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-CDP-008" id="test-TEST-ACCEPT-20" data-test="TEST-ACCEPT-20" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-CDP-008 acceptance — phase5_cdp.js (Target domain)</p>
 </div>
-<div data-req-ref="REQ-STL-001" data-test="TEST-ACCEPT-21" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-001" id="test-TEST-ACCEPT-21" data-test="TEST-ACCEPT-21" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-STL-001 acceptance — phase4_stealth.js (TLS)</p>
 </div>
-<div data-req-ref="REQ-STL-002" data-test="TEST-ACCEPT-22" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-002" id="test-TEST-ACCEPT-22" data-test="TEST-ACCEPT-22" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-STL-002 acceptance — phase4_stealth.js (HTTP/2)</p>
 </div>
-<div data-req-ref="REQ-STL-003" data-test="TEST-ACCEPT-23" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-003" id="test-TEST-ACCEPT-23" data-test="TEST-ACCEPT-23" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-STL-003 acceptance — phase4_stealth.js (Canvas)</p>
 </div>
-<div data-req-ref="REQ-STL-004" data-test="TEST-ACCEPT-24" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-004" id="test-TEST-ACCEPT-24" data-test="TEST-ACCEPT-24" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-STL-004 acceptance — phase4_stealth.js (Navigator)</p>
 </div>
-<div data-req-ref="REQ-STL-005" data-test="TEST-ACCEPT-25" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-005" id="test-TEST-ACCEPT-25" data-test="TEST-ACCEPT-25" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-STL-005 acceptance — phase4_stealth.js (WebGL/Audio)</p>
 </div>
-<div data-req-ref="REQ-STL-006" data-test="TEST-ACCEPT-26" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-006" id="test-TEST-ACCEPT-26" data-test="TEST-ACCEPT-26" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-STL-006 acceptance — phase4_stealth.js (Behavior)</p>
 </div>
-<div data-req-ref="REQ-STL-007" data-test="TEST-ACCEPT-27" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-STL-007" id="test-TEST-ACCEPT-27" data-test="TEST-ACCEPT-27" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-STL-007 acceptance — phase4_stealth.js (CDP stealth)</p>
 </div>
-<div data-req-ref="REQ-LIB-001" data-test="TEST-ACCEPT-28" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-001" id="test-TEST-ACCEPT-28" data-test="TEST-ACCEPT-28" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-LIB-001 acceptance — phase5_multipage.js</p>
 </div>
-<div data-req-ref="REQ-LIB-002" data-test="TEST-ACCEPT-29" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-002" id="test-TEST-ACCEPT-29" data-test="TEST-ACCEPT-29" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-LIB-002 acceptance — phase5_multipage.js (PagePool)</p>
 </div>
-<div data-req-ref="REQ-LIB-003" data-test="TEST-ACCEPT-30" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-003" id="test-TEST-ACCEPT-30" data-test="TEST-ACCEPT-30" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-LIB-003 acceptance — phase5_cdp.js (CDP abstraction)</p>
 </div>
-<div data-req-ref="REQ-LIB-004" data-test="TEST-ACCEPT-31" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-LIB-004" id="test-TEST-ACCEPT-31" data-test="TEST-ACCEPT-31" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-LIB-004 acceptance — phase5_permission.js (10 assertions)</p>
 </div>
-<div data-req-ref="REQ-IMPL-01" data-test="TEST-ACCEPT-32" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-01" id="test-TEST-ACCEPT-32" data-test="TEST-ACCEPT-32" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-IMPL-01 acceptance — phase6_impl.js</p>
 </div>
-<div data-req-ref="REQ-IMPL-02" data-test="TEST-ACCEPT-33" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-02" id="test-TEST-ACCEPT-33" data-test="TEST-ACCEPT-33" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-IMPL-02 acceptance — phase6_impl.js</p>
 </div>
-<div data-req-ref="REQ-IMPL-03" data-test="TEST-ACCEPT-34" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-03" id="test-TEST-ACCEPT-34" data-test="TEST-ACCEPT-34" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-IMPL-03 acceptance — phase6_impl.js</p>
 </div>
-<div data-req-ref="REQ-IMPL-04" data-test="TEST-ACCEPT-35" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-04" id="test-TEST-ACCEPT-35" data-test="TEST-ACCEPT-35" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-IMPL-04 acceptance — phase6_impl.js</p>
 </div>
-<div data-req-ref="REQ-IMPL-05" data-test="TEST-ACCEPT-36" data-test-categories="acceptance,positive" data-test-env="local" data-test-level="integration">
+<div data-req-ref="REQ-IMPL-05" id="test-TEST-ACCEPT-36" data-test="TEST-ACCEPT-36" data-test-categories="acceptance,positive,integration" data-test-env="local" data-test-level="integration">
 <p>REQ-IMPL-05 acceptance — phase6_impl.js + test_criteria_gap.js</p>
 </div>
 
@@ -636,5 +636,9 @@
 </ul>
 </div>
 
-</body>
+<section data-bug-status="draft" data-bug="BUG-STL-001" id="bug-stl-001"><h3>BUG-STL-001: </h3></section><section data-bug-status="draft" data-bug="BUG-STL-002" id="bug-stl-002"><h3>BUG-STL-002: </h3></section><section data-bug-created="2025-06-05" data-bug-reporter="claude" data-bug-domain="ENG" data-bug-type="defect" data-bug-severity="major" data-bug-status="confirmed" data-bug="BUG-ENG-354" id="bug-eng-354"><h3>BUG-ENG-354: Bun.serve server.stop() SIGSEGV — 64-bit pointer truncated to Int32Value</h3><p>server_stop() stores app_ptr as Int32Value (4 bytes) but on 64-bit systems pointers are 8 bytes. When stop() reads back the truncated pointer via JS_GetProperty and casts to *mut App&lt;false&gt;, the upper 32 bits are lost → invalid pointer → SIGSEGV.
+
+Location: src/bao_runtime/src/bun_api.rs:1228 (store) and :1238-1242 (read+cast).
+
+Fix: Use JS::ObjectValue with a typed object, or store the pointer as two i32 values, or use a PrivateValue slot instead of Int32Value.</p></section><section data-test-categories="integration,positive,negative" data-req-ref="REQ-SEC-002" data-test="TEST-SEC-002" id="test-sec-2"><h3>TEST-SEC-002 双层 JS 执行模型验证 — 可信脚本全权限 + 页面 JS 沙箱</h3><p>验证双层执行模型的安全边界和功能完备性。负面测试：页面 JS 无法访问 Node API。正面测试：可信脚本同时拥有 DOM 和 Node.js 权限。测试步骤：1. 创建页面，页面 JS 中 typeof require === 'undefined' 2. 页面 JS 中 typeof Bun === 'undefined' 3. evaluate_js('require("fs")') 可正常工作 4. evaluate_js('Bun.file()') 可正常工作 5. evaluate_js('document.title') 可正常访问 DOM 6. evaluate_js('window.navigator.userAgent') 可正常访问</p><a data-xref-id="req-sec-2" data-xref-type="req" href="./02-SYSTEM#req-sec-2">REQ-SEC-002</a></section><section data-test-categories="unit,positive,negative" data-req-ref="REQ-SEC-003" data-test="TEST-SEC-003" id="test-sec-3"><h3>TEST-SEC-003 Node API 沙箱隔离验证 — 全局对象安全审计</h3><p>验证 Node.js API 不再暴露在页面 Window global 上。安全审计测试。测试步骤：1. 页面 JS 中 require === undefined 2. 页面 JS 中 process === undefined 3. 页面 JS 中 Buffer === undefined 4. 页面 JS 中 Bun === undefined 5. 页面 JS 中 console 正常工作 6. 页面 JS 中 fetch 正常工作 7. 页面 JS 中 URL/URLSearchParams 正常工作 8. 页面 JS 中 globalThis 无 require/process/Buffer/Bun 属性</p><a data-xref-id="req-sec-3" data-xref-type="req" href="./02-SYSTEM#req-sec-3">REQ-SEC-003</a></section><section data-req-ref="REQ-SEC-001" data-test="" id="test-unnamed"><h3>undefined undefined</h3><a data-xref-id="req-sec-1" data-xref-type="req" href="./02-SYSTEM#req-sec-1">REQ-SEC-001</a></section><section data-test-categories="integration,positive" data-req-ref="REQ-SEC-001" data-test="TEST-SEC-001" id="test-sec-1"><h3>TEST-SEC-001 CORS 安全策略禁用验证 — 跨域请求自由访问</h3><a data-xref-id="req-sec-1" data-xref-type="req" href=".html#req-sec-1">REQ-SEC-001</a></section></main></body>
 </html>

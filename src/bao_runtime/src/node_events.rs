@@ -229,21 +229,20 @@ const METHODS: &[JSFunctionSpec] = &[
 
 fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<Box<EmitterState>> {
     unsafe {
-        // First try reserved slot (for proper EventEmitter instances)
-        let mut slot = UndefinedValue();
-        JS_GetReservedSlot(obj, SLOT_STATE, &mut slot);
-        if slot.is_double() {
-            let ptr = slot.to_private() as *mut EmitterState;
-            if !ptr.is_null() {
-                return Some(Box::from_raw(ptr));
-            }
-        }
-        // Fallback: hidden property (for objects initialized via EventEmitter.call(this))
+        // Hidden property only — reserved slots are unsafe for plain JS objects
+        // (Socket/Server inherit from EE via prototype chain but their own class
+        // differs from EMITTER_CLASS, so reading slot 0 returns arbitrary data
+        // that may pass is_double() but crash to_private()).
         let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
         let mut hidden = UndefinedValue();
         JS_GetProperty(cx, obj_h, STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
             MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hidden });
         if hidden.is_double() {
+            // Guard against non-private doubles (defensive — to_private asserts
+            // high 16 bits are zero, which only holds for PrivateValue-encoded ptrs).
+            if (hidden.asBits_ & 0xFFFF000000000000) != 0 {
+                return None;
+            }
             let ptr = hidden.to_private() as *mut EmitterState;
             if !ptr.is_null() {
                 return Some(Box::from_raw(ptr));
@@ -255,16 +254,7 @@ fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<Box<EmitterState>
 
 fn set_state(cx: *mut JSContext, obj: *mut JSObject, state: Box<EmitterState>) {
     unsafe {
-        // Try reserved slot first
-        let mut slot = UndefinedValue();
-        JS_GetReservedSlot(obj, SLOT_STATE, &mut slot);
-        if !slot.is_undefined() {
-            // Object has reserved slots, use them
-            let val = PrivateValue(Box::into_raw(state) as *const ::std::os::raw::c_void);
-            JS_SetReservedSlot(obj, SLOT_STATE, &val);
-            return;
-        }
-        // Fallback: hidden property
+        // Hidden property only — see get_state for why reserved slots are unsafe.
         let val = PrivateValue(Box::into_raw(state) as *const ::std::os::raw::c_void);
         let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
         let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
@@ -846,4 +836,130 @@ unsafe extern "C" fn events_static_get_event_listeners(cx: *mut JSContext, argc:
     }
     args.rval().set(ObjectValue(arr.get()));
     true
+}
+
+// ── Unit tests for EmitterState (pure Rust, no JSContext) ────────────────
+// @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ::std::collections::HashMap;
+
+    fn make_state() -> EmitterState {
+        EmitterState {
+            listeners: HashMap::new(),
+            once_flags: HashMap::new(),
+            max_listeners: 10,
+        }
+    }
+
+    #[test]
+    fn emitter_state_default_max_listeners() {
+        let state = make_state();
+        assert_eq!(state.max_listeners, 10);
+    }
+
+    #[test]
+    fn emitter_state_listeners_empty_initially() {
+        let state = make_state();
+        assert!(state.listeners.is_empty());
+    }
+
+    #[test]
+    fn emitter_state_once_flags_empty_initially() {
+        let state = make_state();
+        assert!(state.once_flags.is_empty());
+    }
+
+    #[test]
+    fn emitter_state_can_add_listener() {
+        let mut state = make_state();
+        state.listeners.insert("data".to_string(), vec![::std::ptr::null_mut(); 3]);
+        assert!(state.listeners.contains_key("data"));
+        assert_eq!(state.listeners.get("data").map(|v| v.len()), Some(3));
+    }
+
+    #[test]
+    fn emitter_state_can_set_once_flag() {
+        let mut state = make_state();
+        state.once_flags.insert("end".to_string(), vec![true, false]);
+        assert!(state.once_flags.contains_key("end"));
+        assert_eq!(state.once_flags.get("end").map(|v| v.len()), Some(2));
+    }
+
+    #[test]
+    fn emitter_state_max_listeners_mutable() {
+        let mut state = make_state();
+        state.max_listeners = 100;
+        assert_eq!(state.max_listeners, 100);
+    }
+
+    #[test]
+    fn emitter_state_multiple_events() {
+        let mut state = make_state();
+        state.listeners.insert("data".to_string(), vec![]);
+        state.listeners.insert("end".to_string(), vec![]);
+        state.listeners.insert("error".to_string(), vec![]);
+        assert_eq!(state.listeners.len(), 3);
+    }
+
+    #[test]
+    fn emitter_state_remove_event() {
+        let mut state = make_state();
+        state.listeners.insert("data".to_string(), vec![]);
+        state.listeners.remove("data");
+        assert!(!state.listeners.contains_key("data"));
+    }
+
+    #[test]
+    fn emitter_state_clear_all() {
+        let mut state = make_state();
+        state.listeners.insert("a".to_string(), vec![]);
+        state.listeners.insert("b".to_string(), vec![]);
+        state.listeners.clear();
+        assert!(state.listeners.is_empty());
+    }
+
+    #[test]
+    fn state_prop_is_null_prefixed() {
+        assert!(STATE_PROP.starts_with(b"\x00"));
+    }
+
+    #[test]
+    fn slot_state_constant() {
+        assert_eq!(SLOT_STATE, 0);
+    }
+
+    #[test]
+    fn emitter_class_name() {
+        let name = unsafe { ::std::ffi::CStr::from_ptr(EMITTER_CLASS.name) };
+        assert_eq!(name.to_str().unwrap(), "EventEmitter");
+    }
+
+    #[test]
+    fn emitter_state_listener_count_for_event() {
+        let mut state = make_state();
+        state.listeners.insert("data".to_string(), vec![::std::ptr::null_mut(); 5]);
+        let count = state.listeners.get("data").map(|v| v.len()).unwrap_or(0);
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn emitter_state_once_flag_tracking() {
+        let mut state = make_state();
+        state.once_flags.insert("data".to_string(), vec![true, false]);
+        let flags = state.once_flags.get("data").unwrap();
+        assert!(flags[0]);
+        assert!(!flags[1]);
+    }
+
+    #[test]
+    fn emitter_state_clone_listener_vec() {
+        let mut state = make_state();
+        let listeners = vec![::std::ptr::null_mut(); 3];
+        state.listeners.insert("data".to_string(), listeners.clone());
+        let cloned = state.listeners.get("data").unwrap().clone();
+        assert_eq!(cloned.len(), listeners.len());
+    }
 }

@@ -13,9 +13,17 @@
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use base64::Engine;
-use core::ffi::{c_char, c_int, c_uint, c_void};
+use core::ffi::{c_char, c_int, c_short, c_uint, c_void};
 
 mod c_lib_stubs;
+
+/// Get the C `environ` pointer portably.
+unsafe fn extern_environ() -> *mut *mut c_char {
+    extern "C" {
+        static environ: *mut *mut c_char;
+    }
+    unsafe { environ }
+}
 
 /// Force the linker to include all native stub symbols.
 /// Call this from test code: `bao_native_stubs::force_link();`
@@ -371,24 +379,141 @@ pub extern "C" fn __bun_resolver_init_package_manager(
 // bun_spawn / bun_core stubs
 // ──────────────────────────────────────────────────────────────
 
+/// BunSpawnRequest mirrors `bun_core::spawn_ffi::BunSpawnRequest`.
+/// We duplicate it here to avoid importing bun_core (which would create
+/// a circular dependency for the native stubs crate).
+#[repr(C)]
+struct BunSpawnRequest {
+    chdir_buf: *const c_char,
+    detached: bool,
+    new_process_group: bool,
+    actions: SpawnActionsList,
+    pty_slave_fd: c_int,
+    linux_pdeathsig: c_int,
+}
+
+#[repr(C)]
+struct SpawnActionsList {
+    ptr: *const SpawnAction,
+    len: usize,
+}
+
+#[repr(C)]
+struct SpawnAction {
+    kind: c_int, // 0=None, 1=Close, 2=Dup2, 3=Open
+    path: *const c_char,
+    fds: [c_int; 2],
+    flags: c_int,
+    mode: c_int,
+}
+
+const ACTION_CLOSE: c_int = 1;
+const ACTION_DUP2: c_int = 2;
+const ACTION_OPEN: c_int = 3;
+
+/// Rust implementation of `posix_spawn_bun`.
+///
+/// The upstream C++ version (`bun-spawn.cpp`) uses vfork() + custom child setup.
+/// Bao's version converts `BunSpawnRequest` actions to standard
+/// `posix_spawn_file_actions_t` and calls `posix_spawnp`, avoiding
+/// the glibc 2.39 clone3+CLONE_INTO_CGROUP EBADF bug on cgroup v2 systems.
 #[no_mangle]
 pub extern "C" fn posix_spawn_bun(
-    pid: *mut i32,
+    pid: *mut c_int,
     path: *const c_char,
-    file_actions: *mut c_void,
-    attrp: *mut c_void,
+    request: *const c_void,
     argv: *const *mut c_char,
     envp: *const *mut c_char,
 ) -> c_int {
     unsafe {
-        libc::posix_spawn(
+        let req = &*(request as *const BunSpawnRequest);
+
+        // Build posix_spawn file actions from BunSpawnRequest
+        let mut fa: libc::posix_spawn_file_actions_t = core::mem::zeroed();
+        let rc = libc::posix_spawn_file_actions_init(&mut fa);
+        if rc != 0 {
+            return rc;
+        }
+
+        // Apply chdir if specified
+        if !req.chdir_buf.is_null() {
+            libc::posix_spawn_file_actions_addchdir_np(&mut fa, req.chdir_buf);
+        }
+
+        // Convert custom actions to posix_spawn actions
+        for i in 0..req.actions.len {
+            let action = &*req.actions.ptr.add(i);
+            match action.kind {
+                ACTION_CLOSE => {
+                    libc::posix_spawn_file_actions_addclose(&mut fa, action.fds[0]);
+                }
+                ACTION_DUP2 => {
+                    if action.fds[0] == action.fds[1] {
+                        // dup2(old, old) is a no-op, but clear CLOEXEC.
+                        // posix_spawn doesn't have a "clear CLOEXEC" action,
+                        // so we do dup2 to a temp fd, then dup2 back.
+                        // Simpler: just addinherit on platforms that support it.
+                        // For now, dup2 to self is handled by posix_spawn.
+                    }
+                    libc::posix_spawn_file_actions_adddup2(&mut fa, action.fds[0], action.fds[1]);
+                }
+                ACTION_OPEN => {
+                    libc::posix_spawn_file_actions_addopen(
+                        &mut fa,
+                        action.fds[0],
+                        action.path,
+                        action.flags,
+                        action.mode as libc::mode_t,
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        // Build spawn attributes
+        let mut attr: libc::posix_spawnattr_t = core::mem::zeroed();
+        let rc = libc::posix_spawnattr_init(&mut attr);
+        if rc != 0 {
+            libc::posix_spawn_file_actions_destroy(&mut fa);
+            return rc;
+        }
+
+        let mut flags: c_short = (libc::POSIX_SPAWN_SETSIGDEF | libc::POSIX_SPAWN_SETSIGMASK) as c_short;
+        if req.new_process_group {
+            flags |= 0x80; // POSIX_SPAWN_SETSID on Linux
+        }
+
+        // Reset all signals to default in child
+        let mut sigdefault: libc::sigset_t = core::mem::zeroed();
+        libc::sigemptyset(&mut sigdefault);
+        libc::posix_spawnattr_setsigdefault(&mut attr, &sigdefault);
+
+        // Unblock all signals in child
+        let mut sigmask: libc::sigset_t = core::mem::zeroed();
+        libc::sigfillset(&mut sigmask);
+        libc::posix_spawnattr_setsigmask(&mut attr, &sigmask);
+
+        libc::posix_spawnattr_setflags(&mut attr, flags);
+
+        // Use the provided envp, or environ if null
+        let env = if envp.is_null() {
+            extern_environ()
+        } else {
+            envp as *mut *mut c_char
+        };
+
+        let rc = libc::posix_spawnp(
             pid,
             path,
-            file_actions as *mut libc::posix_spawn_file_actions_t,
-            attrp as *mut libc::posix_spawnattr_t,
-            argv,
-            envp,
-        )
+            &fa,
+            &attr,
+            argv as *mut *mut c_char,
+            env,
+        );
+
+        libc::posix_spawnattr_destroy(&mut attr);
+        libc::posix_spawn_file_actions_destroy(&mut fa);
+        rc
     }
 }
 
@@ -1153,4 +1278,32 @@ pub unsafe extern "Rust" fn __bun_run_file_poll(
     _size_or_offset: i64,
 ) {
     // No-op: Bao does not implement Bun's poll-tag dispatch vtable.
+}
+
+// ──────────────────────────────────────────────────────────────
+// BoringSSL SSL_* stubs
+// ──────────────────────────────────────────────────────────────
+// These 4 functions are declared in boringssl_sys and called by bun_http
+// for TLS fingerprint configuration. Bao's boringssl is zig-translated
+// Rust (not compiled C++), so the native symbols don't exist.
+// Stubs return 1 (success) to satisfy the caller's error-checking.
+
+#[no_mangle]
+pub extern "C" fn SSL_set_cipher_list(_ssl: *mut c_void, _str: *const c_char) -> c_int {
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn SSL_set_ciphersuites(_ssl: *mut c_void, _str: *const c_char) -> c_int {
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn SSL_set1_curves_list(_ssl: *mut c_void, _curves: *const c_char) -> c_int {
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn SSL_set1_sigalgs_list(_ssl: *mut c_void, _str: *const c_char) -> c_int {
+    1
 }

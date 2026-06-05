@@ -69,6 +69,26 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
     cache_builtin(cx, "assert/strict", strict_obj.get());
 }
 
+/// Install require() on a target object (REQ-SEC-002 parameter injection).
+///
+/// Same as `install_require` but attaches the require function to `target`
+/// instead of `global`. Used by `create_node_api_scope_values` to build
+/// the temporary scope object for privileged evaluate_js.
+///
+/// # Safety
+///
+/// Caller must ensure `cx` is a valid JSContext pointer and `target` is a
+/// valid handle to the scope JSObject.
+pub unsafe fn install_require_on_target(
+    cx: &mut mozjs::context::JSContext,
+    target: mozjs::rust::Handle<*mut JSObject>,
+) {
+    mozjs::rust::wrappers2::JS_DefineFunction(
+        cx, target, c"require".as_ptr(),
+        ::std::option::Option::Some(require_fn), 1, JSPROP_ENUMERATE as u32,
+    );
+}
+
 pub fn install_require(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,

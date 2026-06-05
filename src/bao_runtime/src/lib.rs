@@ -56,6 +56,39 @@ pub mod stealth_http;
 
 pub use runtime::BaoRuntime;
 
+// ── Orderly exit infrastructure ──
+// process.exit() / Bun.exit() set a flag instead of calling std::process::exit(),
+// so the CLI main loop can return naturally → BaoRuntime drops → SmRuntimeGuard
+// drops (Runtime then Engine) → JS_ShutDown. No segfault from bypassed drop chain.
+
+thread_local! {
+    static EXIT_REQUESTED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static EXIT_CODE: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+/// Request process exit with the given code. Called by process.exit() and Bun.exit().
+pub fn request_exit(code: i32) {
+    EXIT_CODE.with(|c| c.set(code));
+    EXIT_REQUESTED.with(|r| r.set(true));
+}
+
+/// Check whether process.exit() or Bun.exit() was called.
+pub fn should_exit() -> bool {
+    EXIT_REQUESTED.with(|r| r.get())
+}
+
+/// Return the exit code set by process.exit() / Bun.exit().
+pub fn exit_code() -> i32 {
+    EXIT_CODE.with(|c| c.get())
+}
+
+/// Clear the exit flag. Used by test runner between test files
+/// so one file's process.exit() doesn't affect subsequent files.
+pub fn clear_exit() {
+    EXIT_REQUESTED.with(|r| r.set(false));
+    EXIT_CODE.with(|c| c.set(0));
+}
+
 /// Register atexit handler to prevent SpiderMonkey GC crashes on process exit.
 /// Must be called before any JsContext creation in test binaries.
 pub fn install_exit_handler() {

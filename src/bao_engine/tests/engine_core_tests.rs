@@ -31,7 +31,7 @@ unsafe fn install_test_globals(
 
 #[test]
 fn test_bao_engine_core_all() {
-    let mut ctx = JsContext::new().expect("Failed to create JsContext");
+    let mut ctx = JsContext::for_test().expect("Failed to create JsContext");
     ctx.set_global_setup(install_test_globals);
 
     // --- Context creation (already done above) ---

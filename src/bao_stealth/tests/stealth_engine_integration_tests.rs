@@ -49,33 +49,6 @@ fn test_engine_profile_accessor_matches_constructor() {
 
 // ---- JS injection output validation ----
 
-#[test]
-fn test_inject_navigator_js_contains_user_agent() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    let ua = &engine.navigator().user_agent;
-    assert!(js.contains(ua.as_str()), "JS should contain the user agent string");
-}
-
-#[test]
-fn test_inject_navigator_js_is_valid_js() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    // Basic sanity: non-empty, starts with common JS patterns
-    assert!(!js.is_empty());
-    // Should contain navigator property override
-    assert!(js.contains("navigator") || js.contains("Object.defineProperty"));
-}
-
-#[test]
-fn test_inject_navigator_js_differs_between_profiles() {
-    let chrome_engine = StealthEngine::new(StealthProfile::chrome_default());
-    let firefox_engine = StealthEngine::new(StealthProfile::firefox_default());
-    let chrome_js = chrome_engine.inject_navigator_js();
-    let firefox_js = firefox_engine.inject_navigator_js();
-    assert_ne!(chrome_js, firefox_js, "Chrome and Firefox JS injections should differ");
-}
-
 // ---- Cross-component consistency ----
 
 #[test]

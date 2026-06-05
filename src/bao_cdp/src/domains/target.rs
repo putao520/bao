@@ -92,8 +92,8 @@ impl DomainHandler for TargetHandler {
     fn handle_command(
         &self,
         command: &str,
-        _params: Value,
-        _event_sender: &dyn EventSender,
+        params: Value,
+        event_sender: &dyn EventSender,
     ) -> Result<Value, CdpError> {
         match command {
             "Target.getTargets" | "Target.getTargetTargets" => {
@@ -104,7 +104,38 @@ impl DomainHandler for TargetHandler {
                 self.bridge.send_fire_and_forget(BridgeCommand::ClosePage);
                 Ok(json!({ "success": true }))
             }
-            "Target.setAutoAttach" | "Target.setDiscoverTargets" => Ok(json!({})),
+            "Target.setDiscoverTargets" => {
+                let discover = params.get("discover").and_then(|v| v.as_bool()).unwrap_or(true);
+                if discover {
+                    event_sender.send_event("Target.targetCreated", json!({
+                        "targetInfo": {
+                            "targetId": self.target_id,
+                            "type": "page",
+                            "title": "",
+                            "url": "about:blank",
+                            "attached": false
+                        }
+                    }));
+                }
+                Ok(json!({}))
+            }
+            "Target.setAutoAttach" => {
+                let auto_attach = params.get("autoAttach").and_then(|v| v.as_bool()).unwrap_or(false);
+                if auto_attach {
+                    event_sender.send_event("Target.attachedToTarget", json!({
+                        "sessionId": format!("{:016x}", self.target_id.chars().map(|c| c as u64).sum::<u64>()),
+                        "targetInfo": {
+                            "targetId": self.target_id,
+                            "type": "page",
+                            "title": "",
+                            "url": "about:blank",
+                            "attached": true
+                        },
+                        "waitingForDebuggerOnStart": false
+                    }));
+                }
+                Ok(json!({}))
+            }
             "Target.getTargetInfo" => {
                 Ok(json!({ "targetInfo": self.live_target_info() }))
             }

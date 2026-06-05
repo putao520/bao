@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>Bao - 核心流程</title>
 </head>
-<body>
+<body><main data-spec-content="">
 <h1>Bao 核心流程</h1>
 
 <!-- ============================================================ -->
@@ -394,7 +394,7 @@ Main Thread (事件循环 + JSContext + DOM)
   ├─ 创建 BaoWebViewDelegate (独立状态回调)
   │   └─ Rc::new(BaoWebViewDelegate::new(state, viewport))
   │
-  ├─ WebViewBuilder::new(&servo, rendering_context)
+  ├─ WebViewBuilder::new(&amp;servo, rendering_context)
   │   ├─ .delegate(delegate)
   │   ├─ .url(url) (如果配置了初始 URL)
   │   └─ .build()
@@ -525,5 +525,5 @@ SpiderMonkey GC OOM:
 </pre>
 </div>
 
-</body>
+</main></body>
 </html>

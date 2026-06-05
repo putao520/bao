@@ -40,7 +40,7 @@ unsafe fn install_test_globals(
 
 #[test]
 fn test_error_handling_deep() {
-    let mut ctx = JsContext::new().expect("JsContext");
+    let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(install_test_globals);
 
     // =============================================

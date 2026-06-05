@@ -90,3 +90,26 @@ struct us_bun_verify_error_t us_socket_verify_error(struct us_socket_t *s) {
     struct us_bun_verify_error_t err = {0, NULL, NULL};
     return err;
 }
+
+// SNI server-name stubs — libuwsockets.cpp references these unconditionally
+// (uWS::TemplatedApp::listen / HttpContext::onData). In plain TCP mode (no
+// BoringSSL) they are never meaningfully called: uWS guards with `if (ssl)`.
+// Provide no-op stubs so the linker is satisfied; real implementations live
+// in crypto/openssl.c (compiled when BAO_UWS_WITH_TLS is set).
+
+int us_listen_socket_add_server_name(struct us_listen_socket_t *ls,
+                                     const char *hostname_pattern,
+                                     struct ssl_ctx_st *ssl_ctx,
+                                     void *user) {
+    (void)ls; (void)hostname_pattern; (void)ssl_ctx; (void)user; return 0;
+}
+
+void us_listen_socket_on_server_name(struct us_listen_socket_t *ls,
+                                     void (*cb)(struct us_listen_socket_t *,
+                                                const char *hostname)) {
+    (void)ls; (void)cb;
+}
+
+void *us_socket_server_name_userdata(us_socket_r s) {
+    (void)s; return NULL;
+}

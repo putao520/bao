@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>Bao - 实施路线图</title>
 </head>
-<body>
+<body><main data-spec-content="">
 <h1>Bao 实施路线图</h1>
 <p>基于 SPEC 测绘的 Bun (105 crate, 13层 DAG) 和 Servo (66 组件) 架构分析结果，制定分阶段实施计划。</p>
 
@@ -28,7 +28,7 @@
 <h2>§2 Phase 1: SpiderMonkey 替换 JSC</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-IMPL-01" data-req-domain="IMPL" data-req-status="implemented">
+<div data-req-category="business" data-req="REQ-IMPL-01" data-req-domain="IMPL" data-req-status="implemented">
 <h3>Phase 1 详细任务（已完成）</h3>
 
 <h4>1.1 集成 mozjs crate</h4>
@@ -73,6 +73,14 @@
 <tr><td>CLI 入口</td><td>bao run/test/build/install/browser 命令</td><td>REQ-CLI-001</td></tr>
 </table>
 
+<h4>验收标准</h4>
+<ul>
+<li data-criterion="176/176 integration tests 通过" data-criterion-id="REQ-IMPL-01-C1">176/176 integration tests 通过</li>
+<li data-criterion="WebAssembly 原生支持" data-criterion-id="REQ-IMPL-01-C2">WebAssembly 原生支持</li>
+<li data-criterion="Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常" data-criterion-id="REQ-IMPL-01-C3">Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常</li>
+<li data-criterion="mozjs crate 集成且 JSContext 生命周期管理完整" data-criterion-id="REQ-IMPL-01-C4">mozjs crate 集成且 JSContext 生命周期管理完整</li>
+</ul>
+
 <h4>Phase 1 验证</h4>
 <ul>
 <li>176/176 integration tests 通过</li>
@@ -85,7 +93,7 @@
 <h2>§3 Phase 2: servo 引擎集成 + 渲染</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-IMPL-02" data-req-domain="IMPL" data-req-status="implemented">
+<div data-req-category="business" data-req="REQ-IMPL-02" data-req-domain="IMPL" data-req-status="implemented">
 <h3>Phase 2 详细任务</h3>
 
 <h4>2.1 servo path 依赖集成</h4>
@@ -136,6 +144,17 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 
 <h4>Phase 2 验证点</h4>
 <ul>
+<h4>验收标准</h4>
+<ul>
+<li data-criterion="bao browser --url=https://example.com 启动正常" data-criterion-id="REQ-IMPL-02-C1">bao browser --url=https://example.com 启动正常</li>
+<li data-criterion="页面 HTML 加载完成，DOM 树构建正确" data-criterion-id="REQ-IMPL-02-C2">页面 HTML 加载完成，DOM 树构建正确（servo Stylo + LayoutThread 内置）</li>
+<li data-criterion="截图输出 PNG/JPEG/WebP" data-criterion-id="REQ-IMPL-02-C3">截图输出 PNG/JPEG/WebP（servo webrender 渲染）</li>
+<li data-criterion="console/require 等 Bao 全局对象在 servo JSContext 中可用" data-criterion-id="REQ-IMPL-02-C4">console/require 等 Bao 全局对象在 servo JSContext 中可用（融合验证）</li>
+<li data-criterion="Web API + Node.js API 同一 JSContext 共存" data-criterion-id="REQ-IMPL-02-C5">Web API + Node.js API 同一 JSContext 共存</li>
+</ul>
+
+<h4>Phase 2 验证</h4>
+<ul>
 <li>bao browser --url=https://example.com 启动正常</li>
 <li>页面 HTML 加载完成，DOM 树构建正确（servo Stylo + LayoutThread 内置）</li>
 <li>截图输出 PNG/JPEG/WebP（servo webrender 渲染）</li>
@@ -148,7 +167,7 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <h2>§4 Phase 3: CDP Server</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-IMPL-03" data-req-domain="IMPL" data-req-status="implemented">
+<div data-req-category="business" data-req="REQ-IMPL-03" data-req-domain="IMPL" data-req-status="implemented">
 <h3>Phase 3 详细任务</h3>
 <table>
 <tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
@@ -164,6 +183,16 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <tr><td>Target Domain</td><td>Context/Target 发现与管理</td><td>REQ-CDP-008</td></tr>
 <tr><td>Playwright 兼容验证</td><td>Playwright 连接 CDP → 基本操作正常</td><td>NFR-COMPAT-001</td></tr>
 </table>
+
+<h4>验收标准</h4>
+<ul>
+<li data-criterion="Playwright 成功连接 CDP WebSocket" data-criterion-id="REQ-IMPL-03-C1">Playwright 成功连接 CDP WebSocket</li>
+<li data-criterion="Page.navigate 导航正常" data-criterion-id="REQ-IMPL-03-C2">Page.navigate 导航正常</li>
+<li data-criterion="Runtime.evaluate 执行 JS 正常" data-criterion-id="REQ-IMPL-03-C3">Runtime.evaluate 执行 JS 正常</li>
+<li data-criterion="DOM.querySelector 查询正常" data-criterion-id="REQ-IMPL-03-C4">DOM.querySelector 查询正常</li>
+<li data-criterion="Page.captureScreenshot 截图正常" data-criterion-id="REQ-IMPL-03-C5">Page.captureScreenshot 截图正常</li>
+<li data-criterion="11 个 CDP Domain 全部路由正常" data-criterion-id="REQ-IMPL-03-C6">11 个 CDP Domain 全部路由正常</li>
+</ul>
 
 <h4>Phase 3 验证点</h4>
 <ul>
@@ -181,7 +210,7 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <h2>§5 Phase 4: Stealth 反指纹</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-IMPL-04" data-req-domain="IMPL" data-req-status="implemented">
+<div data-req-category="business" data-req="REQ-IMPL-04" data-req-domain="IMPL" data-req-status="implemented">
 <h3>Phase 4 详细任务</h3>
 <table>
 <tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
@@ -199,7 +228,17 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <tr><td>滚动模式模拟</td><td>加速-匀速-减速特征</td><td>REQ-STL-006</td></tr>
 </table>
 
-<h4>Phase 4 验证点</h4>
+<h4>验收标准</h4>
+	<ul>
+	<li data-criterion="TLS JA3/JA4 哈希匹配 Firefox" data-criterion-id="REQ-IMPL-04-C1">TLS JA3/JA4 哈希匹配 Firefox</li>
+	<li data-criterion="HTTP/2 AKAMAI 指纹匹配 Firefox" data-criterion-id="REQ-IMPL-04-C2">HTTP/2 AKAMAI 指纹匹配 Firefox</li>
+	<li data-criterion="Canvas 噪声对人类不可见但每次不同" data-criterion-id="REQ-IMPL-04-C3">Canvas 噪声对人类不可见但每次不同（确定性种子保证一致性）</li>
+	<li data-criterion="navigator.webdriver === false" data-criterion-id="REQ-IMPL-04-C4">navigator.webdriver === false（SM 引擎层设置，JS 层无法覆盖）</li>
+	<li data-criterion="指纹检测网站识别率 ≤ 5%" data-criterion-id="REQ-IMPL-04-C5">指纹检测网站识别率 ≤ 5%</li>
+	<li data-criterion="行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）" data-criterion-id="REQ-IMPL-04-C6">行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）</li>
+	</ul>
+
+	<h4>Phase 4 验证点</h4>
 <ul>
 <li>TLS JA3/JA4 哈希匹配 Firefox</li>
 <li>HTTP/2 指纹匹配 Firefox</li>
@@ -214,7 +253,7 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <h2>§6 Phase 5: 集成测试与发布</h2>
 <!-- ============================================================ -->
 
-<div data-req="REQ-IMPL-05" data-req-domain="IMPL" data-req-status="implemented">
+<div data-req-category="business" data-req="REQ-IMPL-05" data-req-domain="IMPL" data-req-status="implemented">
 <h3>Phase 5 详细任务</h3>
 <table>
 <tr><td>任务</td><td>描述</td></tr>
@@ -229,6 +268,16 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <tr><td>文档编写</td><td>API 文档、使用指南、架构文档</td></tr>
 <tr><td>首个 Release</td><td>v0.1.0 发布</td></tr>
 </table>
+
+<h4>验收标准</h4>
+<ul>
+<li data-criterion="SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过" data-criterion-id="REQ-IMPL-05-C1">SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过</li>
+<li data-criterion="Bun 测试套件在 Bao 上运行 ≥ 90% 通过" data-criterion-id="REQ-IMPL-05-C2">Bun 测试套件在 Bao 上运行 ≥ 90% 通过</li>
+<li data-criterion="Playwright 完整 API 兼容性测试通过" data-criterion-id="REQ-IMPL-05-C3">Playwright 完整 API 兼容性测试通过</li>
+<li data-criterion="性能基准：启动延迟 &lt; 2s、截图延迟 &lt; 500ms、内存开销 &lt; 200MB" data-criterion-id="REQ-IMPL-05-C4">性能基准：启动延迟 &lt; 2s、截图延迟 &lt; 500ms、内存开销 &lt; 200MB</li>
+<li data-criterion="长时间运行 24h 内存增长 &lt; 10%" data-criterion-id="REQ-IMPL-05-C5">长时间运行 24h 内存增长 &lt; 10%</li>
+<li data-criterion="跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64" data-criterion-id="REQ-IMPL-05-C6">跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64</li>
+</ul>
 </div>
 
 <!-- ============================================================ -->
@@ -275,5 +324,5 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 </table>
 </div>
 
-</body>
+</main></body>
 </html>

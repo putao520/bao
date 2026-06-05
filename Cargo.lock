@@ -425,11 +425,14 @@ name = "bao_browser"
 version = "0.1.0"
 dependencies = [
  "bao_cdp",
+ "bao_engine",
+ "bao_runtime",
  "bao_stealth",
  "base64",
  "cdp-server",
  "dpi",
  "image",
+ "mozjs",
  "serde",
  "serde_json",
  "servo",
@@ -539,6 +542,8 @@ name = "bao_stealth"
 version = "0.1.0"
 dependencies = [
  "bao_engine",
+ "mozjs",
+ "mozjs_sys",
  "serde",
  "serde_json",
 ]

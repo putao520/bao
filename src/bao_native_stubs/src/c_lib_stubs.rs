@@ -191,81 +191,14 @@ pub extern "C" fn us_quic_pending_connect_resolved(
 
 // ──────────────────────────────────────────────────────────────
 // uWebSockets — HTTP/WebSocket server C API
-// Original: uNetworking/uWebSockets C++ wrapper
+// Original: uNetworking/uWebSockets C++ wrapper (libuwsockets.a)
+//
+// SPEC (CLAUDE.md L13/L26) 禁止手写 C++ 已实现的符号的 Rust 翻译。
+// `bun_uws_sys` 编译产出 libuwsockets.a，导出真实 uws_create_app /
+// uws_app_any / uws_app_listen / uws_req_* / uws_res_* / us_socket_get_fd /
+// us_socket_sendfile_needs_more 等符号。这里不再保留 stub —— 让 C++ 二进制
+// 符号在链接器解析中胜出。
 // ──────────────────────────────────────────────────────────────
-
-#[no_mangle]
-pub extern "C" fn uws_create_app(
-    _loop: *mut c_void,
-    _options: *const c_void,
-    _is_ssl: bool,
-) -> *mut c_void {
-    core::ptr::null_mut()
-}
-
-#[no_mangle]
-pub extern "C" fn uws_app_any(
-    _app: *mut c_void,
-    _method: c_int,
-    _pattern: *const c_char,
-    _pattern_len: usize,
-    _handler: *const c_void,
-    _user_data: *mut c_void,
-) {}
-
-#[no_mangle]
-pub extern "C" fn uws_app_listen(
-    _app: *mut c_void,
-    _host: *const c_char,
-    _host_len: usize,
-    _port: c_int,
-    _cb: *const c_void,
-    _user_data: *mut c_void,
-) {}
-
-#[no_mangle]
-pub extern "C" fn uws_req_get_method(_req: *const c_void) -> *const c_char {
-    c"GET".as_ptr()
-}
-
-#[no_mangle]
-pub extern "C" fn uws_req_get_url(_req: *const c_void, _len: *mut usize) -> *const c_char {
-    unsafe { _len.write(1) };
-    c"/".as_ptr()
-}
-
-#[no_mangle]
-pub extern "C" fn uws_res_write_status(_res: *mut c_void, _status: *const c_char, _len: usize) {}
-
-#[no_mangle]
-pub extern "C" fn uws_res_write_header(
-    _res: *mut c_void,
-    _key: *const c_char,
-    _key_len: usize,
-    _value: *const c_char,
-    _value_len: usize,
-) {}
-
-#[no_mangle]
-pub extern "C" fn uws_res_write_header_int(
-    _res: *mut c_void,
-    _key: *const c_char,
-    _key_len: usize,
-    _value: u64,
-) {}
-
-#[no_mangle]
-pub extern "C" fn uws_res_end(_res: *mut c_void, _data: *const c_char, _len: usize) {}
-
-// ──────────────────────────────────────────────────────────────
-// Socket utility functions (not in libusockets.a — Bun C++ layer)
-// ──────────────────────────────────────────────────────────────
-
-#[no_mangle]
-pub extern "C" fn us_socket_get_fd(_s: *const c_void) -> c_int { -1 }
-
-#[no_mangle]
-pub extern "C" fn us_socket_sendfile_needs_more(_s: *mut c_void) -> c_int { 0 }
 
 // ──────────────────────────────────────────────────────────────
 // BoringSSL extensions (not in system OpenSSL)
@@ -275,6 +208,84 @@ pub extern "C" fn us_socket_sendfile_needs_more(_s: *mut c_void) -> c_int { 0 }
 // `extern "C"` blocks, and `bun_http::configure_http_client_with_alpn`
 // calls them through `bun_boringssl::c::*`. Keeping them until
 // the Phase-level rustls migration replaces the whole TLS stack.
+
+// ──────────────────────────────────────────────────────────────
+// C-library → Rust hooks (BUG-353 fallout)
+// ──────────────────────────────────────────────────────────────
+//
+// After BUG-353 fix removed bao_uloop's 11 conflicting #[no_mangle]
+// Rust symbols, the C library libusockets.a is now actually linked.
+// This exposes 5 hooks the C side calls into Bun:
+//
+//   1. Bun__JSC_onBeforeWait  — JSC VM pre-wait hook (no-op for SM)
+//   2. Bun__panic             — fatal panic from C
+//   3. sys_epoll_pwait2       — Linux syscall wrapper
+//   4. us_udp_socket_close    — UDP socket close (we don't compile UDP)
+//   5. us_quic_loop_process   — QUIC loop tick (we don't compile QUIC)
+//
+// CLAUDE.md L13/L26 allows these: they are NOT C-implemented socket
+// I/O (which we MUST link). They are Rust-side hooks the C library
+// needs to call back. JSC→SM bridge replaces (1); the rest are
+// minimal stubs matching Bun's contract.
+
+/// JSC VM pre-wait hook. In upstream Bun this drains JSC's GC etc.
+/// SpiderMonkey integration is handled via bao_engine's JobQueue, so
+/// this is a no-op here.
+#[no_mangle]
+pub extern "C" fn Bun__JSC_onBeforeWait(_jsc_vm: *mut c_void) {}
+
+/// Fatal panic from C. Mirrors bun_bin/phase_c_exports.rs semantics
+/// but lives here so bao_bin (which doesn't depend on bun_bin) gets
+/// the symbol resolved at link time.
+#[no_mangle]
+pub extern "C" fn Bun__panic(msg: *const u8, len: usize) -> ! {
+    let msg_str = if msg.is_null() || len == 0 {
+        "(no message)".to_string()
+    } else {
+        let slice = unsafe { core::slice::from_raw_parts(msg, len) };
+        String::from_utf8_lossy(slice).into_owned()
+    };
+    eprintln!("Bun__panic from C: {}", msg_str);
+    std::process::abort();
+}
+
+/// Linux epoll_pwait2 syscall wrapper. Mirrors bun_platform/linux.rs
+/// semantics. Used by libusockets.a's epoll_kqueue.c:bun_epoll_pwait2.
+#[no_mangle]
+pub extern "C" fn sys_epoll_pwait2(
+    epfd: c_int,
+    events: *mut libc::epoll_event,
+    maxevents: c_int,
+    timeout: *const libc::timespec,
+    sigmask: *const libc::sigset_t,
+) -> isize {
+    // SAFETY: direct syscall; arguments mirror the kernel ABI for epoll_pwait2(2).
+    unsafe {
+        libc::syscall(
+            libc::SYS_epoll_pwait2,
+            epfd as isize as usize,
+            events as usize,
+            maxevents as isize as usize,
+            timeout as usize,
+            sigmask as usize,
+            // glibc passes 8 here (not sizeof(sigset_t)=128) — what kernel expects.
+            8usize,
+        ) as isize
+    }
+}
+
+/// UDP socket close. No-op in plain TCP mode (libusockets.a's UDP and
+/// QUIC files are not compiled in by bun_uws_sys/build.rs).
+#[no_mangle]
+pub extern "C" fn us_udp_socket_close(_socket: *mut c_void) {}
+
+/// QUIC loop processing. No-op — QUIC is not compiled in.
+#[no_mangle]
+pub extern "C" fn us_quic_loop_process(_loop: *mut c_void) {}
+
+// ──────────────────────────────────────────────────────────────
+// BoringSSL extensions — original section continues below
+// ──────────────────────────────────────────────────────────────
 
 #[no_mangle]
 pub extern "C" fn SSL_CTX_set0_buffer_pool(
@@ -361,25 +372,14 @@ pub fn force_c_lib_stubs() {
     us_quic_pending_connect_cancel(core::ptr::null_mut());
     let _ = us_quic_pending_connect_resolved(core::ptr::null_mut(), core::ptr::null());
 
-    let _ = uws_create_app(core::ptr::null_mut(), core::ptr::null(), false);
+    // SPEC (CLAUDE.md L13/L26): uws_* / us_socket_get_fd / us_socket_sendfile_needs_more
+    // 由 libuwsockets.a (bun_uws_sys) 提供。这里不再 force_link，让真实 C++ 符号
+    // 在链接器解析中胜出。
     let _ = bao_uloop::uws_get_loop();
-    uws_app_any(core::ptr::null_mut(), 0, core::ptr::null(), 0, core::ptr::null(), core::ptr::null_mut());
-    uws_app_listen(core::ptr::null_mut(), core::ptr::null(), 0, 0, core::ptr::null(), core::ptr::null_mut());
-    let _ = uws_req_get_method(core::ptr::null());
-    let mut url_len = 0usize;
-    let _ = uws_req_get_url(core::ptr::null(), &mut url_len);
-    uws_res_write_status(core::ptr::null_mut(), core::ptr::null(), 0);
-    uws_res_write_header(core::ptr::null_mut(), core::ptr::null(), 0, core::ptr::null(), 0);
-    uws_res_write_header_int(core::ptr::null_mut(), core::ptr::null(), 0, 0);
-    uws_res_end(core::ptr::null_mut(), core::ptr::null(), 0);
 
     let _ = SSL_CTX_set0_buffer_pool(core::ptr::null_mut(), core::ptr::null_mut());
     let _ = CRYPTO_BUFFER_POOL_new();
     let _ = SSL_enable_ocsp_stapling(core::ptr::null_mut());
     let _ = SSL_enable_signed_cert_timestamps(core::ptr::null_mut());
     let _ = SSL_set_tlsext_host_name(core::ptr::null_mut(), core::ptr::null());
-
-    // Socket utility stubs
-    let _ = us_socket_get_fd(core::ptr::null());
-    let _ = us_socket_sendfile_needs_more(core::ptr::null_mut());
 }

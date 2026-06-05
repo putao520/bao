@@ -15,28 +15,49 @@ use bun_picohttp as picohttp;
 pub fn write_preface(session: &mut ClientSession) {
     session.queue(wire::CLIENT_PREFACE);
 
-    let mut settings = [0u8; 3 * wire::SettingsPayloadUnit::BYTE_SIZE];
-    encode_setting(
-        &mut settings[0..6],
-        wire::SettingsType::SETTINGS_ENABLE_PUSH,
-        0,
-    );
-    encode_setting(
-        &mut settings[6..12],
-        wire::SettingsType::SETTINGS_INITIAL_WINDOW_SIZE,
-        LOCAL_INITIAL_WINDOW_SIZE,
-    );
-    encode_setting(
-        &mut settings[12..18],
-        wire::SettingsType::SETTINGS_MAX_HEADER_LIST_SIZE,
-        LOCAL_MAX_HEADER_LIST_SIZE,
-    );
-    session.write_frame(wire::FrameType::HTTP_FRAME_SETTINGS, 0, 0, &settings);
+    // Check for custom H2 fingerprint SETTINGS from stealth profile
+    // h2_settings_payload is stored as binary wire format in SSLConfig
+    let custom_settings = session
+        .ssl_config
+        .as_ref()
+        .and_then(|cfg| cfg.h2_settings_payload.as_deref().map(|p| p.to_vec()));
+
+    if let Some(ref payload) = custom_settings {
+        session.write_frame(wire::FrameType::HTTP_FRAME_SETTINGS, 0, 0, payload);
+    } else {
+        let mut settings = [0u8; 3 * wire::SettingsPayloadUnit::BYTE_SIZE];
+        encode_setting(
+            &mut settings[0..6],
+            wire::SettingsType::SETTINGS_ENABLE_PUSH,
+            0,
+        );
+        encode_setting(
+            &mut settings[6..12],
+            wire::SettingsType::SETTINGS_INITIAL_WINDOW_SIZE,
+            LOCAL_INITIAL_WINDOW_SIZE,
+        );
+        encode_setting(
+            &mut settings[12..18],
+            wire::SettingsType::SETTINGS_MAX_HEADER_LIST_SIZE,
+            LOCAL_MAX_HEADER_LIST_SIZE,
+        );
+        session.write_frame(wire::FrameType::HTTP_FRAME_SETTINGS, 0, 0, &settings);
+    }
 
     // Connection-level window starts at 64 KiB regardless of SETTINGS;
     // open it to match the per-stream window so the first response isn't
     // throttled before our first WINDOW_UPDATE.
-    session.write_window_update(0, LOCAL_INITIAL_WINDOW_SIZE - wire::DEFAULT_WINDOW_SIZE);
+    let window_size = session
+        .ssl_config
+        .as_ref()
+        .map_or(LOCAL_INITIAL_WINDOW_SIZE, |cfg| {
+            if cfg.h2_initial_window_size != 0 {
+                cfg.h2_initial_window_size
+            } else {
+                LOCAL_INITIAL_WINDOW_SIZE
+            }
+        });
+    session.write_window_update(0, window_size - wire::DEFAULT_WINDOW_SIZE);
     session.preface_sent = true;
 }
 
@@ -49,7 +70,7 @@ fn encode_setting(dst: &mut [u8], setting: wire::SettingsType, value: u32) {
 /// One classification pass per request header replaces a dozen case-insensitive
 /// string compares. Names are lowercased once (required for the wire anyway),
 /// then dispatched by length+content.
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum RequestHeader {
     /// RFC 9113 §8.2.2 hop-by-hop: never forwarded.
     Drop,
@@ -439,3 +460,186 @@ pub(crate) fn encode_hpack_table_size_update(encoded: &mut Vec<u8>, value: u32) 
 }
 
 // ported from: src/http/h2_client/encode.zig
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── classify_request_header tests ──────────────────────────
+    // @trace REQ-STL-002 [req:REQ-STL-002] [level:unit]
+
+    #[test]
+    fn classify_hop_by_hop_headers() {
+        assert_eq!(classify_request_header(b"connection"), Some(RequestHeader::Drop));
+        assert_eq!(classify_request_header(b"keep-alive"), Some(RequestHeader::Drop));
+        assert_eq!(classify_request_header(b"proxy-connection"), Some(RequestHeader::Drop));
+        assert_eq!(classify_request_header(b"transfer-encoding"), Some(RequestHeader::Drop));
+        assert_eq!(classify_request_header(b"upgrade"), Some(RequestHeader::Drop));
+    }
+
+    #[test]
+    fn classify_host_promoted() {
+        assert_eq!(classify_request_header(b"host"), Some(RequestHeader::Host));
+    }
+
+    #[test]
+    fn classify_te_special() {
+        assert_eq!(classify_request_header(b"te"), Some(RequestHeader::Te));
+    }
+
+    #[test]
+    fn classify_content_length() {
+        assert_eq!(classify_request_header(b"content-length"), Some(RequestHeader::ContentLength));
+    }
+
+    #[test]
+    fn classify_expect() {
+        assert_eq!(classify_request_header(b"expect"), Some(RequestHeader::Expect));
+    }
+
+    #[test]
+    fn classify_sensitive_headers() {
+        assert_eq!(classify_request_header(b"authorization"), Some(RequestHeader::Sensitive));
+        assert_eq!(classify_request_header(b"cookie"), Some(RequestHeader::Sensitive));
+        assert_eq!(classify_request_header(b"set-cookie"), Some(RequestHeader::Sensitive));
+    }
+
+    #[test]
+    fn classify_unknown_returns_none() {
+        assert_eq!(classify_request_header(b"accept"), None);
+        assert_eq!(classify_request_header(b"content-type"), None);
+        assert_eq!(classify_request_header(b"x-custom"), None);
+        assert_eq!(classify_request_header(b""), None);
+    }
+
+    #[test]
+    fn classify_is_case_sensitive_after_lowercase() {
+        // classify_request_header expects lowercased input (the caller lowercases first)
+        assert_eq!(classify_request_header(b"Connection"), None); // uppercase → unrecognized
+        assert_eq!(classify_request_header(b"HOST"), None);
+        assert_eq!(classify_request_header(b"Host"), None);
+    }
+
+    // ─── encode_hpack_table_size_update tests ───────────────────
+    // @trace REQ-STL-002 [req:REQ-STL-002] [level:unit]
+
+    #[test]
+    fn hpack_table_size_update_small_value() {
+        // Values < 31: single byte (0x20 | value)
+        let mut buf = Vec::new();
+        encode_hpack_table_size_update(&mut buf, 0);
+        assert_eq!(buf, [0x20]);
+
+        let mut buf = Vec::new();
+        encode_hpack_table_size_update(&mut buf, 16);
+        assert_eq!(buf, [0x20 | 16]);
+
+        let mut buf = Vec::new();
+        encode_hpack_table_size_update(&mut buf, 30);
+        assert_eq!(buf, [0x20 | 30]);
+    }
+
+    #[test]
+    fn hpack_table_size_update_value_31() {
+        // 31 = 0x20 | 31 = 0x3F, then rest = 0 → one more byte (0x00)
+        let mut buf = Vec::new();
+        encode_hpack_table_size_update(&mut buf, 31);
+        assert_eq!(buf, [0x3F, 0x00]);
+    }
+
+    #[test]
+    fn hpack_table_size_update_large_value_65536() {
+        // 65536: prefix byte 0x3F, then rest = 65536 - 31 = 65505
+        // 65505 in 7-bit prefix: 65505 >> 7 = 511, remainder = 65505 & 0x7F = 97
+        // 511 >> 7 = 3, remainder = 511 & 0x7F = 127
+        // 3 < 128 → final byte = 3
+        // So: 0x3F, 0x80|127=0xFF, 0x80|97=0xE1, 3
+        let mut buf = Vec::new();
+        encode_hpack_table_size_update(&mut buf, 65536);
+        // Verify the encoding can be decoded back to 65536
+        let decoded = decode_hpack_int(&buf, 5); // 5-bit prefix
+        assert_eq!(decoded, 65536);
+    }
+
+    #[test]
+    fn hpack_table_size_update_max_u32() {
+        let mut buf = Vec::new();
+        encode_hpack_table_size_update(&mut buf, u32::MAX);
+        let decoded = decode_hpack_int(&buf, 5);
+        assert_eq!(decoded, u32::MAX);
+    }
+
+    /// Decode an HPACK-style integer with N-bit prefix from the buffer.
+    /// Used to verify encode_hpack_table_size_update output roundtrips.
+    fn decode_hpack_int(buf: &[u8], prefix_bits: u8) -> u32 {
+        let mask = (1u8 << prefix_bits) - 1;
+        let first = buf[0] & mask;
+        if first < mask {
+            return first as u32;
+        }
+        let mut value = mask as u32;
+        let mut i = 1;
+        let mut shift = 0u32;
+        while i < buf.len() {
+            let b = buf[i] as u32;
+            value += (b & 0x7F) << shift;
+            shift += 7;
+            i += 1;
+            if b & 0x80 == 0 {
+                break;
+            }
+        }
+        value
+    }
+
+    // ─── encode_setting tests ───────────────────────────────────
+
+    #[test]
+    fn encode_setting_header_table_size() {
+        let mut dst = [0u8; 6];
+        encode_setting(&mut dst, wire::SettingsType::SETTINGS_HEADER_TABLE_SIZE, 65536);
+        assert_eq!(dst[0..2], [0x00, 0x01]); // ID = 1
+        assert_eq!(u32::from_be_bytes([dst[2], dst[3], dst[4], dst[5]]), 65536);
+    }
+
+    #[test]
+    fn encode_setting_initial_window_size() {
+        let mut dst = [0u8; 6];
+        encode_setting(&mut dst, wire::SettingsType::SETTINGS_INITIAL_WINDOW_SIZE, 6291456);
+        assert_eq!(dst[0..2], [0x00, 0x04]); // ID = 4 (RFC 7540 §6.5.2)
+        assert_eq!(u32::from_be_bytes([dst[2], dst[3], dst[4], dst[5]]), 6291456);
+    }
+
+    #[test]
+    fn encode_setting_enable_push_zero() {
+        let mut dst = [0u8; 6];
+        encode_setting(&mut dst, wire::SettingsType::SETTINGS_ENABLE_PUSH, 0);
+        assert_eq!(dst[0..2], [0x00, 0x02]); // ID = 2 (RFC 7540 §6.5.2)
+        // Value = 0 → all four bytes are NUL (the original bug tested this)
+        assert_eq!(dst[2..6], [0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn encode_setting_max_concurrent_streams() {
+        let mut dst = [0u8; 6];
+        encode_setting(&mut dst, wire::SettingsType::SETTINGS_MAX_CONCURRENT_STREAMS, 1000);
+        assert_eq!(dst[0..2], [0x00, 0x03]); // ID = 3 (RFC 7540 §6.5.2)
+        assert_eq!(u32::from_be_bytes([dst[2], dst[3], dst[4], dst[5]]), 1000);
+    }
+
+    #[test]
+    fn encode_setting_max_frame_size() {
+        let mut dst = [0u8; 6];
+        encode_setting(&mut dst, wire::SettingsType::SETTINGS_MAX_FRAME_SIZE, 16384);
+        assert_eq!(dst[0..2], [0x00, 0x05]); // ID = 5
+        assert_eq!(u32::from_be_bytes([dst[2], dst[3], dst[4], dst[5]]), 16384);
+    }
+
+    #[test]
+    fn encode_setting_max_header_list_size() {
+        let mut dst = [0u8; 6];
+        encode_setting(&mut dst, wire::SettingsType::SETTINGS_MAX_HEADER_LIST_SIZE, 262144);
+        assert_eq!(dst[0..2], [0x00, 0x06]); // ID = 6
+        assert_eq!(u32::from_be_bytes([dst[2], dst[3], dst[4], dst[5]]), 262144);
+    }
+}

@@ -531,7 +531,7 @@ thread_local! {
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
+pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
     if !val.is_object() { return Vec::new(); }
     let obj = val.to_object();
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
@@ -977,5 +977,66 @@ mod tests {
         let data = vec![0x42u8; 100];
         let result = xor_cipher(&data, b"k", b"i");
         assert_eq!(result.len(), 100);
+    }
+
+    #[test]
+    fn uuid_v4_length() {
+        let id = uuid_v4();
+        assert_eq!(id.len(), 36); // 32 hex + 4 dashes
+    }
+
+    #[test]
+    fn uuid_v4_dash_positions() {
+        let id = uuid_v4();
+        assert_eq!(id.chars().filter(|c| *c == '-').count(), 4);
+        assert_eq!(&id[8..9], "-");
+        assert_eq!(&id[13..14], "-");
+        assert_eq!(&id[18..19], "-");
+        assert_eq!(&id[23..24], "-");
+    }
+
+    #[test]
+    fn uuid_v4_multiple_unique() {
+        let ids: Vec<String> = (0..100).map(|_| uuid_v4()).collect();
+        let unique: ::std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), 100);
+    }
+
+    #[test]
+    fn xor_cipher_identity_with_zero_key_and_iv() {
+        let data = b"hello world";
+        let result = xor_cipher(data, b"\x00", b"\x00");
+        // XOR with 0 is identity
+        assert_eq!(result, data);
+    }
+
+    #[test]
+    fn xor_cipher_single_byte_key() {
+        let data = b"\xff\x00\xaa\x55";
+        let result = xor_cipher(data, b"\xff", b"\x00");
+        // stream = [0x00, 0xFF] (iv first, then key appended)
+        // data[0] ^ stream[0] = 0xFF ^ 0x00 = 0xFF
+        // data[1] ^ stream[1] = 0x00 ^ 0xFF = 0xFF
+        assert_eq!(result[0], 0xFF);
+        assert_eq!(result[1], 0xFF);
+    }
+
+    #[test]
+    fn xor_cipher_preserves_length() {
+        for len in [0, 1, 15, 16, 17, 255, 256] {
+            let data = vec![0xABu8; len];
+            let result = xor_cipher(&data, b"key", b"iv");
+            assert_eq!(result.len(), len);
+        }
+    }
+
+    #[test]
+    fn xor_cipher_double_apply_restores() {
+        let data = b"secret message";
+        let key = b"mykey";
+        let iv = b"myiv ";
+        let encrypted = xor_cipher(data, key, iv);
+        let decrypted = xor_cipher(&encrypted, key, iv);
+        assert_eq!(decrypted, data);
     }
 }

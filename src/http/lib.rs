@@ -915,6 +915,11 @@ pub enum AlpnOffer {
 /// from `on_open` for every TLS socket — must run even when the hostname is an
 /// IP literal (with empty SNI) so ALPN is still advertised.
 ///
+/// When `tls_props` is provided and contains TLS fingerprint fields
+/// (`tls12_cipher_list`, `tls13_cipher_suites`, `tls_curves_list`,
+/// `tls_sigalgs_list`), those are applied via BoringSSL API to simulate
+/// specific TLS fingerprints (JA3/JA4).
+///
 // `ssl` is the live SSL handle for a just-opened socket (BoringSSL never
 // returns null); `hostname` is null (no SNI for IP literals) or a
 // NUL-terminated buffer that outlives this call. The deref is null-guarded.
@@ -923,6 +928,7 @@ pub fn configure_http_client_with_alpn(
     ssl: &mut boringssl::c::SSL,
     hostname: *const core::ffi::c_char,
     offer: AlpnOffer,
+    tls_props: Option<&ssl_config::SSLConfig>,
 ) {
     // SAFETY: `ssl` is a live `&mut SSL`; `hostname` is null-guarded before deref.
     unsafe {
@@ -947,6 +953,22 @@ pub fn configure_http_client_with_alpn(
 
         boringssl::c::SSL_enable_signed_cert_timestamps(ssl);
         boringssl::c::SSL_enable_ocsp_stapling(ssl);
+
+        // Apply TLS fingerprint fields from SSLConfig (stealth profile)
+        if let Some(props) = tls_props {
+            if !props.tls12_cipher_list.is_null() {
+                let _ = boringssl::c::SSL_set_cipher_list(ssl, props.tls12_cipher_list);
+            }
+            if !props.tls13_cipher_suites.is_null() {
+                let _ = boringssl::c::SSL_set_ciphersuites(ssl, props.tls13_cipher_suites);
+            }
+            if !props.tls_curves_list.is_null() {
+                let _ = boringssl::c::SSL_set1_curves_list(ssl, props.tls_curves_list);
+            }
+            if !props.tls_sigalgs_list.is_null() {
+                let _ = boringssl::c::SSL_set1_sigalgs_list(ssl, props.tls_sigalgs_list);
+            }
+        }
     }
 }
 
@@ -1635,6 +1657,7 @@ impl<'a> HTTPClient<'a> {
                     unsafe { &mut *ssl_ptr },
                     host_z,
                     self.alpn_offer(),
+                    self.tls_props.as_deref(),
                 );
             }
         } else {

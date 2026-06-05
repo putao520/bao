@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <title>Bao - 系统架构</title>
 </head>
-<body>
+<body><main data-spec-content="">
 <h1>Bao 系统架构</h1>
 <p>Bao = Bun Runtime + SpiderMonkey Engine + Servo Browser Engine + CDP Server + Stealth Module</p>
 
@@ -52,7 +52,7 @@
 <h2>§1.1 BaoRuntime 公共 API</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-bao-runtime-api" data-api="GET /api/bao-runtime" data-artifact-type="api">
+<div id="artifact-bao-runtime-api" data-api="GET /api/bao-runtime" data-artifact-type="api-spec">
 <p>关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>,
 <span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>,
 <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>,
@@ -67,13 +67,13 @@
 impl BaoRuntime {
     /// 创建 BaoRuntime 实例（单例模式）
     /// 内部初始化: SpiderMonkey JSContext + Servo + Event Loop
-    pub fn new(config: BaoConfig) -> Result&lt;Self, BaoError&gt;
+    pub fn new(config: BaoConfig) -&gt; Result&lt;Self, BaoError&gt;
 
     /// 获取 PagePool 引用
-    pub fn page_pool(&self) -> &PagePool
+    pub fn page_pool(&amp;self) -&gt; &amp;PagePool
 
     /// 获取 CdpRouter 引用
-    pub fn cdp_router(&self) -> &CdpRouter
+    pub fn cdp_router(&amp;self) -&gt; &amp;CdpRouter
 }
 
 // ── BaoConfig ──────────────────────────────────────────────
@@ -89,16 +89,16 @@ pub struct BaoConfig {
 
 impl PagePool {
     /// 创建新 Page
-    pub fn create_page(&self, config: PageConfig) -> Result&lt;PageHandle, BaoError&gt;
+    pub fn create_page(&amp;self, config: PageConfig) -&gt; Result&lt;PageHandle, BaoError&gt;
 
     /// 获取指定 Page
-    pub fn get_page(&self, id: WebViewId) -> Option&lt;PageHandle&gt;
+    pub fn get_page(&amp;self, id: WebViewId) -&gt; Option&lt;PageHandle&gt;
 
     /// 关闭指定 Page (显式释放)
-    pub fn close_page(&self, id: WebViewId) -> Result&lt;(), BaoError&gt;
+    pub fn close_page(&amp;self, id: WebViewId) -&gt; Result&lt;(), BaoError&gt;
 
     /// 获取统计信息
-    pub fn stats(&self) -> PoolStats
+    pub fn stats(&amp;self) -&gt; PoolStats
 }
 
 pub struct PageConfig {
@@ -113,54 +113,54 @@ pub struct PageConfig {
 
 impl Page {
     /// 高性能 API: 导航到 URL
-    pub async fn goto(&self, url: &str) -> Result&lt;(), BaoError&gt;
+    pub async fn goto(&amp;self, url: &amp;str) -&gt; Result&lt;(), BaoError&gt;
 
     /// 高性能 API: 执行 JS 表达式
-    pub async fn evaluate(&self, script: &str) -> Result&lt;JsValue, BaoError&gt;
+    pub async fn evaluate(&amp;self, script: &amp;str) -&gt; Result&lt;JsValue, BaoError&gt;
 
     /// 高性能 API: 截图
-    pub async fn screenshot(&self, format: ScreenshotFormat) -> Result&lt;Vec&lt;u8&gt;, BaoError&gt;
+    pub async fn screenshot(&amp;self, format: ScreenshotFormat) -&gt; Result&lt;Vec&lt;u8&gt;, BaoError&gt;
 
     /// 高性能 API: 获取页面标题
-    pub fn title(&self) -> Option&lt;String&gt;
+    pub fn title(&amp;self) -&gt; Option&lt;String&gt;
 
     /// 高性能 API: 获取当前 URL
-    pub fn url(&self) -> Option&lt;String&gt;
+    pub fn url(&amp;self) -&gt; Option&lt;String&gt;
 
     /// CDP 兼容层: 创建 CDP Session
-    pub fn create_cdp_session(&self) -> CdpSession
+    pub fn create_cdp_session(&amp;self) -&gt; CdpSession
 
     /// 显式关闭页面
-    pub fn close(&self) -> Result&lt;(), BaoError&gt;
+    pub fn close(&amp;self) -&gt; Result&lt;(), BaoError&gt;
 
     /// 页面 ID
-    pub fn id(&self) -> WebViewId
+    pub fn id(&amp;self) -&gt; WebViewId
 
     /// 页面状态
-    pub fn state(&self) -> PageState
+    pub fn state(&amp;self) -&gt; PageState
 }
 
 // ── CdpRouter ──────────────────────────────────────────────
 
 impl CdpRouter {
     /// 创建 CDP Session (内部后端)
-    pub fn create_internal_session(&self, page: &PageHandle) -> CdpSession
+    pub fn create_internal_session(&amp;self, page: &amp;PageHandle) -&gt; CdpSession
 
     /// 连接外部 CDP 端点
-    pub async fn connect_external(&self, endpoint: &str) -> Result&lt;ExternalBrowser, BaoError&gt;
+    pub async fn connect_external(&amp;self, endpoint: &amp;str) -&gt; Result&lt;ExternalBrowser, BaoError&gt;
 }
 
 // ── CdpSession (CDP 兼容层) ────────────────────────────────
 
 impl CdpSession {
     /// 发送 CDP 命令
-    pub async fn send(&self, method: &str, params: Value) -> Result&lt;Value, CdpError&gt;
+    pub async fn send(&amp;self, method: &amp;str, params: Value) -&gt; Result&lt;Value, CdpError&gt;
 
     /// 监听 CDP 事件
-    pub fn on(&self, event: &str, callback: impl Fn(Value))
+    pub fn on(&amp;self, event: &amp;str, callback: impl Fn(Value))
 
     /// 断开 CDP Session
-    pub fn detach(&self)
+    pub fn detach(&amp;self)
 }
 
 // ── Permission ─────────────────────────────────────────────
@@ -178,7 +178,7 @@ pub struct Permission {
 <span data-xref-type="req" data-xref-id="REQ-ENG-006">REQ-ENG-006</span>, <span data-xref-type="req" data-xref-id="REQ-CLI-002">REQ-CLI-002</span>
 <span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span></p></div>
 
-<div id="artifact-bao-runtime-js-api" data-api="GET /api/bao-runtime-js" data-artifact-type="api">
+<div id="artifact-bao-runtime-js-api" data-api="GET /api/bao-runtime-js" data-artifact-type="api-spec">
 <h3>JS 公共 API 接口</h3>
 <pre>
 // ── Bao 全局对象 ──────────────────────────────────────────
@@ -212,7 +212,7 @@ const cdp = page.createCDPSession();
 const { result } = await cdp.send('Runtime.evaluate', {
   expression: '1 + 1'
 });
-cdp.on('Page.loadEventFired', () => console.log('loaded'));
+cdp.on('Page.loadEventFired', () =&gt; console.log('loaded'));
 cdp.detach();
 
 // ── 外部连接 ──────────────────────────────────────────────
@@ -233,6 +233,109 @@ const restrictedPage = runtime.createPage({ permission: perm });
 </pre>
 
 <p data-xref-type="api" data-xref-id="GET /api/bao-runtime-js">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-006">REQ-ENG-006</span></p></div>
+
+<!-- ============================================================ -->
+<h2>§1.2 库模式 (In-Process) API 契约 — 零配置路径</h2>
+<!-- ============================================================ -->
+
+<div id="artifact-bao-library-mode-api" data-api="GET /api/bao-library-mode" data-artifact-type="api-spec">
+<p>Bao 是<strong>库优先</strong>的设计：CLI (<code>bao run</code>) 只是库的一个消费者。
+所有能力（SpiderMonkey JSContext、Node.js/Bun API、Web API、Stealth 反指纹、CDP、浏览器引擎）均可
+<strong>作为 Rust 库直接在进程中调用</strong>，无需子进程、无需 display server、无需独立二进制。</p>
+
+<h3>Rust 库 API 接口（零配置路径）</h3>
+<pre>
+// ── 1. 纯 JS 模式（无浏览器）───────────────────────────────
+//
+// 用户场景：在 Rust 项目中嵌入 Bao JS 运行时（替代 Deno_core / rusty_v8）
+// 一行初始化，所有默认值就绪：
+//   - SpiderMonkey JSContext
+//   - Node.js 兼容层 (require, fs, path, http, crypto, dns, net, ...)
+//   - Bun/Bao 全局对象
+//   - Stealth 反指纹默认启用（Firefox profile）
+//
+// 调用顺序：用户代码 → ctx.set_global_setup(globals::install_all)
+//   install_all 内部幂等初始化：
+//     bao_stealth::engine_props::ensure_default_profile()
+//     bao_stealth::engine_props::install_stealth_props(cx, global)
+//     bao_runtime::fetch_api::ensure_default_fetch_stealth_profile()
+
+use bao_engine::context::JsContext;
+use bao_engine::value::JsValue;
+
+let mut ctx = JsContext::for_test()?;            // 或 JsContext::from_servo_runtime()
+ctx.set_global_setup(bao_runtime::globals::install_all);
+
+let ua: String = match ctx.eval("navigator.userAgent", "&lt;app&gt;")? {
+    JsValue::String(s) =&gt; s,
+    _ =&gt; panic!("expected string"),
+};
+assert!(ua.contains("Firefox"));   // 默认 stealth profile 自动注入
+
+// ── 2. 浏览器模式（servo 集成）─────────────────────────────
+//
+// 用户场景：headless 浏览器自动化（替代 Playwright/CDP 直接驱动 Chrome）
+//
+use bao_browser::BaoRuntime;
+
+let runtime = BaoRuntime::new(BaoConfig::default())?;   // servo + PagePool + 事件循环
+let page = runtime.page_pool().create_page(PageConfig {
+    url: Some("https://example.com".into()),
+    stealth_profile: Some(StealthProfile::chrome_default()),  // per-page 覆盖默认 Firefox
+    ..Default::default()
+})?;
+
+page.goto("https://example.com").await?;
+let title: String = page.evaluate("document.title").await?;
+let png: Vec&lt;u8&gt; = page.screenshot(ScreenshotFormat::Png).await?;
+page.close()?;
+
+// ── 3. CDP 外接模式（驱动外部 Chrome）─────────────────────
+//
+let cdp = runtime.cdp_router().connect_external("ws://127.0.0.1:9222").await?;
+let ext_page = cdp.new_page().await?;
+</pre>
+
+<h3>Stealth 反指纹 — 默认启用契约</h3>
+<table data-api-table="stealth-default">
+<tr><th>API</th><th>语义</th><th>调用方</th></tr>
+<tr><td><code>engine_props::ensure_default_profile()</code></td>
+    <td>幂等：若 thread_local 未设置，注入 <code>StealthProfile::firefox_default()</code>。
+        浏览器模式（PageHandle 创建时显式 <code>set_profile</code>）会跳过默认初始化，
+        实现 per-page 隔离</td>
+    <td><code>globals::install_all</code></td></tr>
+<tr><td><code>fetch_api::ensure_default_fetch_stealth_profile()</code></td>
+    <td>幂等：若 thread_local 未设置，注入 Firefox TLS/HTTP2 指纹。
+        <code>fetch()</code> 自动应用 — 无需手动配置</td>
+    <td><code>globals::install_all</code></td></tr>
+<tr><td><code>engine_props::install_stealth_props(cx, global)</code></td>
+    <td>注入 navigator.{userAgent,vendor,platform,hardwareConcurrency,webdriver,...}
+        和 screen.{width,height,colorDepth,...} 为 PERMANENT accessor getters。
+        对 servo DOM 上已存在的 navigator/screen 直接覆盖；
+        对最小化 JsContext 自动创建空对象</td>
+    <td><code>globals::install_all</code></td></tr>
+</table>
+
+<h3>关键不变量</h3>
+<ul>
+<li><strong>反爬虫默认全开</strong>：库用户无需手动 <code>set_profile</code>，
+    <code>ctx.set_global_setup(install_all)</code> 一行完成全部初始化</li>
+<li><strong>幂等</strong>：<code>ensure_default_profile</code> / <code>ensure_default_fetch_stealth_profile</code>
+    不会覆盖已显式设置的 profile（包括 PageHandle 的 per-page 配置）</li>
+<li><strong>进程内可用</strong>：所有 API 在同一 SpiderMonkey Runtime 中工作，
+    无子进程开销，无 display server 依赖（servo 用 headless rendering）</li>
+<li><strong>mozjs 单线程</strong>：mozjs Runtime 是 per-thread singleton，
+    每个 <code>#[test]</code> 函数独占一个线程；同一线程上多次
+    <code>JsContext::for_test()</code> 返回同一 Runtime 的 wrapper</li>
+</ul>
+
+<p data-xref-type="api" data-xref-id="GET /api/bao-library-mode">关联需求:
+<span data-xref-type="req" data-xref-id="REQ-ENG-001">REQ-ENG-001</span>
+<span data-xref-type="req" data-xref-id="REQ-ENG-006">REQ-ENG-006</span>
+<span data-xref-type="req" data-xref-id="REQ-CLI-001">REQ-CLI-001</span>
+<span data-xref-type="req" data-xref-id="REQ-STL-001">REQ-STL-001</span>
+<span data-xref-type="req" data-xref-id="REQ-STL-002">REQ-STL-002</span>
+<span data-xref-type="req" data-xref-id="REQ-STL-007">REQ-STL-007</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§2 Bun 源项目 Crate 架构</h2>
@@ -694,12 +797,12 @@ Created ──navigate──→ Navigating ──load_complete──→ Interact
 <h3>错误处理分层</h3>
 <pre>
 JS 层错误 → SpiderMonkey Exception → JS 可捕获
-Rust 层错误 → Result<T, E> → 上抛到 JS 层或日志
+Rust 层错误 → Result<t, E=""> → 上抛到 JS 层或日志
 C++ FFI 错误 → panic → Rust catch_unwind → JS Error
 网络错误 → 自定义 Error enum → 重试/降级/上报
-渲染错误 → Option<PixelBuffer> → 降级为空白截图
+渲染错误 → Option<pixelbuffer> → 降级为空白截图
 CDP 错误 → JSON-RPC Error Response → 客户端处理
-</pre>
+</pixelbuffer></t,></pre>
 </div>
 
 <!-- ============================================================ -->
@@ -989,5 +1092,16 @@ Permission 配置:
 </ul>
 </div>
 
-</body>
+<section data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="draft" data-req="REQ-SEC-001" id="req-sec-1"><h3>REQ-SEC-001 CORS 安全策略禁用</h3><p>bao 内置浏览器的所有 HTTP 请求不受 CORS（跨域资源共享）限制。修改 servo net 模块的 CORS 检查逻辑，使其在 bao 模式下跳过 CORS 验证。效果等同 Chromium --disable-web-security。页面 JS 和可信脚本的 fetch/XMLHttpRequest 均可自由访问任意域名的响应体。</p><div data-criterion="页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错">页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错</div><div data-criterion="XMLHttpRequest 跨域请求返回完整响应（非 opaque response）">XMLHttpRequest 跨域请求返回完整响应（非 opaque response）</div><div data-criterion="servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证">servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证</div><div data-criterion="CORS preflight (OPTIONS) 请求不再发送">CORS preflight (OPTIONS) 请求不再发送</div><div data-criterion="CORS 缓存 (CorsCache) 不再生效">CORS 缓存 (CorsCache) 不再生效</div><div data-criterion="修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块">修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块</div><a data-xref-id="test-sec-1" data-xref-type="test" href="11-TESTING.html#test-sec-1">TEST-SEC-001</a></section><section data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="draft" data-req="REQ-SEC-002" id="req-sec-2"><h3>REQ-SEC-002 双层 JS 执行模型 — 可信脚本作用域注入</h3><p>bao 的 evaluate_js 支持两种执行模式：
+1. 页面模式（受限）：网页自身的 JS 运行在标准 web 安全沙箱内，只有前端 API（window/document/navigator/fetch 等），无法访问 Node.js API
+2. 可信模式（全权限）：通过 PageHandle.evaluate_js() 执行的脚本拥有完整 Node.js/Bun 运行时权限（require/fs/crypto/Bun.*/process/Buffer），同时可访问当前页面的 DOM（window/document/navigator）
+
+实现机制：单 realm + CommonJS 包裹函数。evaluate_js 将用户脚本包装为 (function(require, module, exports, Bun, process, Buffer, __filename, __dirname){ &lt;user_script&gt; })，通过 JS_CallFunction 传入预先创建的 Node API JSValue 作为实参。Node API 从不写入 Window global，页面 JS 物理上无法访问。</p><div data-criterion="页面 JS 中 typeof require === 'undefined'，无法访问任何 Node.js API">页面 JS 中 typeof require === 'undefined'，无法访问任何 Node.js API</div><div data-criterion="页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时">页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时</div><div data-criterion="可信脚本中 require('fs') 可正常读写文件">可信脚本中 require('fs') 可正常读写文件</div><div data-criterion="可信脚本中 Bun.file() / Bun.write() 可正常工作">可信脚本中 Bun.file() / Bun.write() 可正常工作</div><div data-criterion="可信脚本中 window / document / navigator 可正常访问 DOM">可信脚本中 window / document / navigator 可正常访问 DOM</div><div data-criterion="可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）">可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）</div><div data-criterion="可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容">可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容</div><div data-criterion="Node API JSValue 在 servo 的 script thread 上创建，与页面 JS 同 realm">Node API JSValue 在 servo 的 script thread 上创建，与页面 JS 同 realm</div><a data-xref-id="test-sec-2" data-xref-type="test" href="./11-TESTING#test-sec-2">TEST-SEC-002</a></section><section data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="draft" data-req="REQ-SEC-003" id="req-sec-3"><h3>REQ-SEC-003 Node API 沙箱隔离 — 移除页面全局注入</h3><p>修复现有安全漏洞：runtime_bridge.rs 中 install_all_native() 将 require/fs/crypto/Bun.* 等 Node.js API 直接挂在 Window global 上，导致任意网页 JS 可调用 require('fs') 读写磁盘。
+
+修复方案：
+1. 移除 install_all_native() 中对所有 Node.js API 的全局注入
+2. 改为按需创建 Node API JSValue 对象（不挂 global），供可信脚本的 CommonJS 包裹函数使用
+3. 页面 JS 仅保留标准 Web API（console/fetch/URL/URLSearchParams/WebSocket 等）
+4. 保留 console 注入（页面 JS 需要 console.log）
+5. 保留 Web 标准 API（fetch/Headers/Request/Response/URL/URLSearchParams）</p><div data-criterion="runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global">runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global</div><div data-criterion="页面 JS 中 typeof require === 'undefined'">页面 JS 中 typeof require === 'undefined'</div><div data-criterion="页面 JS 中 typeof process === 'undefined'">页面 JS 中 typeof process === 'undefined'</div><div data-criterion="页面 JS 中 typeof Buffer === 'undefined'">页面 JS 中 typeof Buffer === 'undefined'</div><div data-criterion="页面 JS 中 typeof Bun === 'undefined'">页面 JS 中 typeof Bun === 'undefined'</div><div data-criterion="页面 JS 中 console.log() 正常工作（console 保留在 global）">页面 JS 中 console.log() 正常工作（console 保留在 global）</div><div data-criterion="页面 JS 中 fetch() 正常工作（Web API 保留在 global）">页面 JS 中 fetch() 正常工作（Web API 保留在 global）</div><div data-criterion="页面 JS 中 URL/URLSearchParams 正常工作">页面 JS 中 URL/URLSearchParams 正常工作</div><div data-criterion="install_all_native() 重构为 create_node_api_values() 返回 JSValue 对象但不挂 global">install_all_native() 重构为 create_node_api_values() 返回 JSValue 对象但不挂 global</div><a data-xref-id="test-sec-3" data-xref-type="test" href="./11-TESTING#test-sec-3">TEST-SEC-003</a></section></main></body>
 </html>

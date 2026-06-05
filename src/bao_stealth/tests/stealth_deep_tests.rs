@@ -194,21 +194,6 @@ fn test_stealth_profile_firefox_complete() {
 }
 
 #[test]
-fn test_stealth_profile_chrome_complete() {
-    let profile = StealthProfile::chrome_default();
-    let engine = StealthEngine::new(profile);
-    assert!(!engine.inject_navigator_js().is_empty());
-}
-
-#[test]
-fn test_stealth_engine_js_injection_contains_all_overrides() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    // Should contain key override patterns
-    assert!(js.contains("userAgent") || js.contains("user_agent"), "JS should override userAgent");
-}
-
-#[test]
 fn test_tls_is_tls13_suite_recognized() {
     let fp = TlsFingerprint::chrome_latest();
     let tls13 = fp.tls13_suites();

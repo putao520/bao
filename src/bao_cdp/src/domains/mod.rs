@@ -18,6 +18,9 @@ pub use page::PageHandler;
 pub use runtime::RuntimeHandler;
 pub use dom::DomHandler;
 pub use network::NetworkHandler;
+pub use debugger::DebuggerHandler;
+pub use emulation::EmulationHandler;
+pub use input::InputHandler;
 
 /// Register all CDP domain handlers into an existing DomainRegistry.
 pub fn register_all_domains_into(bridge: BridgeSender, registry: &DomainRegistry) {

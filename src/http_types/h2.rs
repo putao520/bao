@@ -352,3 +352,361 @@ impl FullSettingsPayload {
 }
 
 // ported from: src/http/H2FrameParser.zig + src/runtime/api/bun/h2_frame_parser.zig (wire types)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ─── CLIENT_PREFACE ────────────────────────────
+    #[test]
+    fn client_preface_is_24_bytes() {
+        assert_eq!(CLIENT_PREFACE.len(), 24);
+    }
+
+    #[test]
+    fn client_preface_starts_with_pri_method() {
+        assert!(CLIENT_PREFACE.starts_with(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"));
+    }
+
+    // ─── constants ─────────────────────────────────
+    #[test]
+    fn max_window_size_is_i31_max() {
+        assert_eq!(MAX_WINDOW_SIZE, 0x7FFF_FFFF);
+    }
+
+    #[test]
+    fn max_stream_id_is_i31_max() {
+        assert_eq!(MAX_STREAM_ID, 0x7FFF_FFFF);
+    }
+
+    #[test]
+    fn default_window_size_is_65535() {
+        assert_eq!(DEFAULT_WINDOW_SIZE, 65535);
+    }
+
+    #[test]
+    fn default_max_frame_size_is_16384() {
+        assert_eq!(DEFAULT_MAX_FRAME_SIZE, 16384);
+    }
+
+    #[test]
+    fn max_frame_size_is_u24_max() {
+        assert_eq!(MAX_FRAME_SIZE, 0x00FF_FFFF);
+    }
+
+    // ─── FrameType ────────────────────────────────
+    #[test]
+    fn frame_type_discriminants_rfc7540() {
+        assert_eq!(FrameType::HTTP_FRAME_DATA as u8, 0x00);
+        assert_eq!(FrameType::HTTP_FRAME_HEADERS as u8, 0x01);
+        assert_eq!(FrameType::HTTP_FRAME_PRIORITY as u8, 0x02);
+        assert_eq!(FrameType::HTTP_FRAME_RST_STREAM as u8, 0x03);
+        assert_eq!(FrameType::HTTP_FRAME_SETTINGS as u8, 0x04);
+        assert_eq!(FrameType::HTTP_FRAME_PUSH_PROMISE as u8, 0x05);
+        assert_eq!(FrameType::HTTP_FRAME_PING as u8, 0x06);
+        assert_eq!(FrameType::HTTP_FRAME_GOAWAY as u8, 0x07);
+        assert_eq!(FrameType::HTTP_FRAME_WINDOW_UPDATE as u8, 0x08);
+        assert_eq!(FrameType::HTTP_FRAME_CONTINUATION as u8, 0x09);
+    }
+
+    // ─── ErrorCode ─────────────────────────────────
+    #[test]
+    fn error_code_rfc7540_values() {
+        assert_eq!(ErrorCode::NO_ERROR.0, 0x0);
+        assert_eq!(ErrorCode::PROTOCOL_ERROR.0, 0x1);
+        assert_eq!(ErrorCode::INTERNAL_ERROR.0, 0x2);
+        assert_eq!(ErrorCode::FLOW_CONTROL_ERROR.0, 0x3);
+        assert_eq!(ErrorCode::SETTINGS_TIMEOUT.0, 0x4);
+        assert_eq!(ErrorCode::STREAM_CLOSED.0, 0x5);
+        assert_eq!(ErrorCode::FRAME_SIZE_ERROR.0, 0x6);
+        assert_eq!(ErrorCode::REFUSED_STREAM.0, 0x7);
+        assert_eq!(ErrorCode::CANCEL.0, 0x8);
+        assert_eq!(ErrorCode::COMPRESSION_ERROR.0, 0x9);
+        assert_eq!(ErrorCode::CONNECT_ERROR.0, 0xa);
+        assert_eq!(ErrorCode::ENHANCE_YOUR_CALM.0, 0xb);
+        assert_eq!(ErrorCode::INADEQUATE_SECURITY.0, 0xc);
+        assert_eq!(ErrorCode::HTTP_1_1_REQUIRED.0, 0xd);
+    }
+
+    #[test]
+    fn error_code_is_newtype_not_enum() {
+        // Any u32 value off the wire is valid — non-exhaustive
+        let custom = ErrorCode(0xFF);
+        assert_eq!(custom.0, 0xFF);
+    }
+
+    // ─── SettingsType ──────────────────────────────
+    #[test]
+    fn settings_type_rfc7540_ids() {
+        assert_eq!(SettingsType::SETTINGS_HEADER_TABLE_SIZE.0, 0x1);
+        assert_eq!(SettingsType::SETTINGS_ENABLE_PUSH.0, 0x2);
+        assert_eq!(SettingsType::SETTINGS_MAX_CONCURRENT_STREAMS.0, 0x3);
+        assert_eq!(SettingsType::SETTINGS_INITIAL_WINDOW_SIZE.0, 0x4);
+        assert_eq!(SettingsType::SETTINGS_MAX_FRAME_SIZE.0, 0x5);
+        assert_eq!(SettingsType::SETTINGS_MAX_HEADER_LIST_SIZE.0, 0x6);
+    }
+
+    #[test]
+    fn settings_type_extension_ids() {
+        assert_eq!(SettingsType::SETTINGS_ENABLE_CONNECT_PROTOCOL.0, 0x8);
+        assert_eq!(SettingsType::SETTINGS_NO_RFC7540_PRIORITIES.0, 0x9);
+    }
+
+    #[test]
+    fn settings_type_is_newtype() {
+        let unknown = SettingsType(0xDEAD);
+        assert_eq!(unknown.0, 0xDEAD);
+    }
+
+    // ─── FrameHeader decode/encode roundtrip ───────
+    #[test]
+    fn frame_header_decode_zero_length() {
+        let raw: [u8; 9] = [0, 0, 0, 0x04, 0, 0, 0, 0, 0];
+        let hdr = FrameHeader::decode(&raw);
+        assert_eq!(hdr.length, 0);
+        assert_eq!(hdr.type_, 0x04);
+        assert_eq!(hdr.flags, 0);
+        assert_eq!(hdr.stream_identifier, 0);
+    }
+
+    #[test]
+    fn frame_header_decode_max_u24_length() {
+        // u24 max = 0xFFFFFF
+        let raw: [u8; 9] = [0xFF, 0xFF, 0xFF, 0x01, 0x05, 0x00, 0x00, 0x00, 0x01];
+        let hdr = FrameHeader::decode(&raw);
+        assert_eq!(hdr.length, 0x00FF_FFFF);
+        assert_eq!(hdr.type_, 0x01);
+        assert_eq!(hdr.flags, 0x05);
+        assert_eq!(hdr.stream_identifier, 1);
+    }
+
+    #[test]
+    fn frame_header_decode_ignores_reserved_bit() {
+        // Stream ID with reserved bit set (bit 31) → must be ignored per RFC 7540 §4.1
+        let raw: [u8; 9] = [0, 0, 0, 0x04, 0, 0x80, 0x00, 0x00, 0x01];
+        let hdr = FrameHeader::decode(&raw);
+        // u32::from_be_bytes includes the reserved bit — caller must mask
+        assert_eq!(hdr.stream_identifier & 0x7FFF_FFFF, 1);
+        assert!(hdr.stream_identifier & 0x8000_0000 != 0); // reserved bit present
+    }
+
+    #[test]
+    fn frame_header_encode_roundtrip() {
+        let original = FrameHeader {
+            length: 16384,
+            type_: FrameType::HTTP_FRAME_HEADERS as u8,
+            flags: 0x05,
+            stream_identifier: 42,
+        };
+        let mut buf = [0u8; 9];
+        original.encode_into(&mut buf);
+        let decoded = FrameHeader::decode(&buf);
+        assert_eq!(decoded.length, original.length);
+        assert_eq!(decoded.type_, original.type_);
+        assert_eq!(decoded.flags, original.flags);
+        assert_eq!(decoded.stream_identifier, original.stream_identifier);
+    }
+
+    #[test]
+    fn frame_header_encode_zero_fields() {
+        let hdr = FrameHeader::default();
+        let mut buf = [0u8; 9];
+        hdr.encode_into(&mut buf);
+        // Default: type=SETTINGS(0x04), length=0, flags=0, stream_id=0
+        assert_eq!(buf, [0, 0, 0, 0x04, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn frame_header_encode_large_length() {
+        let hdr = FrameHeader {
+            length: 0x00FF_FFFF,
+            type_: FrameType::HTTP_FRAME_DATA as u8,
+            flags: 0x01,
+            stream_identifier: 0,
+        };
+        let mut buf = [0u8; 9];
+        hdr.encode_into(&mut buf);
+        assert_eq!(buf[0..3], [0xFF, 0xFF, 0xFF]); // u24 max
+        assert_eq!(buf[3], 0x00); // DATA
+        assert_eq!(buf[4], 0x01); // END_STREAM
+    }
+
+    // ─── UInt31WithReserved ────────────────────────
+    #[test]
+    fn uint31_reserved_bit_extraction() {
+        let val = UInt31WithReserved::init(42, true);
+        assert!(val.reserved());
+        assert_eq!(val.uint31(), 42);
+    }
+
+    #[test]
+    fn uint31_no_reserved() {
+        let val = UInt31WithReserved::init(100, false);
+        assert!(!val.reserved());
+        assert_eq!(val.uint31(), 100);
+    }
+
+    #[test]
+    fn uint31_reserved_masks_value() {
+        // Value > u31 max gets masked
+        let val = UInt31WithReserved::init(0xFFFF_FFFF, false);
+        assert_eq!(val.uint31(), 0x7FFF_FFFF);
+        assert!(!val.reserved());
+    }
+
+    #[test]
+    fn uint31_from_bytes_roundtrip() {
+        let original = UInt31WithReserved::init(12345, true);
+        let mut dst = [0u8; 4];
+        original.encode_into(&mut dst);
+        let decoded = UInt31WithReserved::from_bytes(&dst);
+        assert_eq!(decoded.uint31(), 12345);
+        assert!(decoded.reserved());
+    }
+
+    #[test]
+    fn uint31_to_uint32_preserves_layout() {
+        let val = UInt31WithReserved::init(1, true);
+        assert_eq!(val.to_uint32(), 0x8000_0001);
+    }
+
+    // ─── SettingsPayloadUnit encode ────────────────
+    #[test]
+    fn settings_payload_unit_encode_header_table_size() {
+        let mut buf = [0u8; 6];
+        SettingsPayloadUnit::encode(&mut buf, SettingsType::SETTINGS_HEADER_TABLE_SIZE, 4096);
+        assert_eq!(buf[0..2], [0x00, 0x01]); // ID = 1
+        assert_eq!(u32::from_be_bytes([buf[2], buf[3], buf[4], buf[5]]), 4096);
+    }
+
+    #[test]
+    fn settings_payload_unit_encode_initial_window_size() {
+        let mut buf = [0u8; 6];
+        SettingsPayloadUnit::encode(&mut buf, SettingsType::SETTINGS_INITIAL_WINDOW_SIZE, 65535);
+        assert_eq!(buf[0..2], [0x00, 0x04]); // ID = 4
+        assert_eq!(u32::from_be_bytes([buf[2], buf[3], buf[4], buf[5]]), 65535);
+    }
+
+    #[test]
+    fn settings_payload_unit_encode_max_value() {
+        let mut buf = [0u8; 6];
+        SettingsPayloadUnit::encode(&mut buf, SettingsType::SETTINGS_INITIAL_WINDOW_SIZE, 0x7FFF_FFFF);
+        assert_eq!(buf[2..6], [0x7F, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn settings_payload_unit_encode_zero_value() {
+        // Critical: NUL bytes must be preserved (not truncated)
+        let mut buf = [0u8; 6];
+        SettingsPayloadUnit::encode(&mut buf, SettingsType::SETTINGS_ENABLE_PUSH, 0);
+        assert_eq!(buf[0..2], [0x00, 0x02]);
+        assert_eq!(buf[2..6], [0x00, 0x00, 0x00, 0x00]);
+    }
+
+    // ─── StreamPriority ────────────────────────────
+    #[test]
+    fn stream_priority_byte_size_is_5() {
+        assert_eq!(core::mem::size_of::<StreamPriority>(), 5);
+    }
+
+    #[test]
+    fn stream_priority_from_and_encode_roundtrip() {
+        let mut sp = StreamPriority::default();
+        let src: [u8; 5] = [0x00, 0x00, 0x00, 0x05, 16]; // stream_id=5, weight=16
+        StreamPriority::from(&mut sp, &src);
+        // Packed struct — read via byte view to avoid unaligned references (E0793)
+        let bytes = bytemuck::bytes_of(&sp);
+        // from() does swap_bytes on stream_identifier (BE→native), weight stays raw
+        let stream_id = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert_eq!(stream_id, 5);
+        assert_eq!(bytes[4], 16);
+
+        let mut encoded = [0u8; 5];
+        sp.encode_into(&mut encoded);
+        assert_eq!(encoded, src);
+    }
+
+    #[test]
+    fn stream_priority_from_byte_swap() {
+        let mut sp = StreamPriority::default();
+        // Wire: big-endian stream_identifier + raw weight
+        let src: [u8; 5] = [0x80, 0x00, 0x00, 0x01, 255];
+        StreamPriority::from(&mut sp, &src);
+        let bytes = bytemuck::bytes_of(&sp);
+        // from() copies raw bytes then swap_bytes stream_identifier (BE→native)
+        // Wire BE [0x80,0x00,0x00,0x01] → native value 0x80000001 after swap
+        let stream_id = u32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+        assert_eq!(stream_id, 0x80000001);
+        assert_eq!(bytes[4], 255);
+    }
+
+    // ─── FullSettingsPayload ───────────────────────
+    #[test]
+    fn full_settings_payload_byte_size_is_42() {
+        assert_eq!(core::mem::size_of::<FullSettingsPayload>(), 42);
+    }
+
+    #[test]
+    fn full_settings_payload_default_values() {
+        let d = FullSettingsPayload::default();
+        // Packed struct — use byte view to avoid unaligned references (E0793)
+        let bytes = bytemuck::bytes_of(&d);
+        // Each setting: 2-byte type (BE u16) + 4-byte value (native endian since Default assigns directly)
+        // On LE: value bytes are LE, on BE: value bytes are BE
+        // header_table_size (offset 2, 4 bytes)
+        let hts = u32::from_ne_bytes([bytes[2], bytes[3], bytes[4], bytes[5]]);
+        assert_eq!(hts, 4096);
+        // enable_push (offset 8, 4 bytes)
+        let ep = u32::from_ne_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]);
+        assert_eq!(ep, 1);
+        // initial_window_size (offset 20, 4 bytes)
+        let iws = u32::from_ne_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+        assert_eq!(iws, 65535);
+        // max_frame_size (offset 26, 4 bytes)
+        let mfs = u32::from_ne_bytes([bytes[26], bytes[27], bytes[28], bytes[29]]);
+        assert_eq!(mfs, 16384);
+        // max_header_list_size (offset 32, 4 bytes)
+        let mhls = u32::from_ne_bytes([bytes[32], bytes[33], bytes[34], bytes[35]]);
+        assert_eq!(mhls, 65535);
+        // enable_connect_protocol (offset 38, 4 bytes)
+        let ecp = u32::from_ne_bytes([bytes[38], bytes[39], bytes[40], bytes[41]]);
+        assert_eq!(ecp, 0);
+    }
+
+    #[test]
+    fn full_settings_payload_type_fields_match_settings_type() {
+        let d = FullSettingsPayload::default();
+        let bytes = bytemuck::bytes_of(&d);
+        // Each setting starts with 2-byte type field (u16, native endian in packed struct)
+        let hts_type = u16::from_ne_bytes([bytes[0], bytes[1]]);
+        let ep_type = u16::from_ne_bytes([bytes[6], bytes[7]]);
+        let mcs_type = u16::from_ne_bytes([bytes[12], bytes[13]]);
+        let iws_type = u16::from_ne_bytes([bytes[18], bytes[19]]);
+        let mfs_type = u16::from_ne_bytes([bytes[24], bytes[25]]);
+        let mhls_type = u16::from_ne_bytes([bytes[30], bytes[31]]);
+        let ecp_type = u16::from_ne_bytes([bytes[36], bytes[37]]);
+        assert_eq!(hts_type, SettingsType::SETTINGS_HEADER_TABLE_SIZE.0);
+        assert_eq!(ep_type, SettingsType::SETTINGS_ENABLE_PUSH.0);
+        assert_eq!(mcs_type, SettingsType::SETTINGS_MAX_CONCURRENT_STREAMS.0);
+        assert_eq!(iws_type, SettingsType::SETTINGS_INITIAL_WINDOW_SIZE.0);
+        assert_eq!(mfs_type, SettingsType::SETTINGS_MAX_FRAME_SIZE.0);
+        assert_eq!(mhls_type, SettingsType::SETTINGS_MAX_HEADER_LIST_SIZE.0);
+        assert_eq!(ecp_type, SettingsType::SETTINGS_ENABLE_CONNECT_PROTOCOL.0);
+    }
+
+    // ─── u32_from_bytes ────────────────────────────
+    #[test]
+    fn u32_from_bytes_be() {
+        assert_eq!(u32_from_bytes(&[0x00, 0x01, 0x02, 0x03]), 0x00010203);
+    }
+
+    #[test]
+    fn u32_from_bytes_zero() {
+        assert_eq!(u32_from_bytes(&[0, 0, 0, 0]), 0);
+    }
+
+    #[test]
+    fn u32_from_bytes_max() {
+        assert_eq!(u32_from_bytes(&[0xFF, 0xFF, 0xFF, 0xFF]), u32::MAX);
+    }
+}

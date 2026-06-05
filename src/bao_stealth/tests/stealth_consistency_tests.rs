@@ -164,22 +164,6 @@ fn test_behavior_scroll_deltas_deterministic() {
 
 // ---- JS injection content consistency ----
 
-#[test]
-fn test_navigator_js_injection_is_valid() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(!js.is_empty(), "JS injection should not be empty");
-}
-
-#[test]
-fn test_chrome_js_injection_differs_from_firefox() {
-    let chrome = StealthEngine::new(StealthProfile::chrome_default());
-    let firefox = StealthEngine::new(StealthProfile::firefox_default());
-    let chrome_js = chrome.inject_navigator_js();
-    let firefox_js = firefox.inject_navigator_js();
-    assert_ne!(chrome_js, firefox_js, "Chrome and Firefox JS injections should differ");
-}
-
 // ---- CanvasNoise pixel application ----
 
 #[test]

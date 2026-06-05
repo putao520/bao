@@ -17,7 +17,7 @@ unsafe fn install_test_globals(
 
 #[test]
 fn test_value_type_boundaries_all() {
-    let mut ctx = JsContext::new().expect("JsContext");
+    let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(install_test_globals);
 
     // --- Undefined ---

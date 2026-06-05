@@ -362,16 +362,3 @@ fn test_engine_chrome_profile() {
     assert!(engine.navigator().user_agent.contains("Chrome"));
     assert_eq!(engine.navigator().vendor, "Google Inc.");
 }
-
-#[test]
-fn test_inject_navigator_js_contains_overrides() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("navigator"));
-    assert!(js.contains("userAgent"));
-    assert!(js.contains("webdriver"));
-    assert!(js.contains("screen"));
-    assert!(js.contains("devicePixelRatio"));
-    assert!(js.contains("WebGL"));
-    assert!(js.contains("cdc_adoQpoasnfa76pfcZLmcfl"));
-}

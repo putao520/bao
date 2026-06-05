@@ -3,8 +3,9 @@
 // Applies HTTP/2 header ordering and User-Agent injection from StealthProfile.
 // Actual HTTP execution is delegated to crate::http_client::http_request().
 
-use bao_stealth::{Http2Fingerprint, StealthProfile, TlsFingerprint};
+use bao_stealth::{Http2Fingerprint, StealthProfile, TlsFingerprint, TlsFingerprintConfig};
 use bun_http::Method;
+use bun_http::ssl_config::SSLConfig;
 
 /// Configuration for a stealth-aware HTTP request.
 /// Produced by `create_stealth_request()`, consumed by callers that
@@ -77,6 +78,29 @@ pub fn stealth_http_request(
 // ---------------------------------------------------------------------------
 // TLS fingerprint helpers (pure, no network I/O)
 // ---------------------------------------------------------------------------
+
+/// Build an `SSLConfig` with TLS fingerprint fields populated from a `StealthProfile`.
+/// Returns a default `SSLConfig` (no fingerprint) when profile is `None`.
+///
+/// The caller owns the returned `SSLConfig` and must ensure it is not interned
+/// (interning requires `SharedPtr::new(config)` via the global registry).
+/// When the config is dropped, its C-string fields are freed via `deinit`.
+// @trace REQ-STL-001
+pub fn stealth_profile_to_ssl_config(profile: &Option<StealthProfile>) -> SSLConfig {
+    let mut config = SSLConfig::default();
+    if let Some(p) = profile {
+        let tls_cfg = TlsFingerprintConfig::from_fingerprint(&p.tls);
+        config.tls12_cipher_list = bun_core::dupe_z(tls_cfg.tls12_cipher_list.as_bytes());
+        config.tls13_cipher_suites = bun_core::dupe_z(tls_cfg.tls13_cipher_suites.as_bytes());
+        config.tls_curves_list = bun_core::dupe_z(tls_cfg.curves_list.as_bytes());
+        config.tls_sigalgs_list = bun_core::dupe_z(tls_cfg.sigalgs_list.as_bytes());
+        // HTTP/2 fingerprint: binary wire format SETTINGS + window size
+        // Flows through SSLConfig → ClientSession → write_preface() naturally
+        config.h2_settings_payload = Some(h2_settings_wire_format(&p.http2).into_boxed_slice());
+        config.h2_initial_window_size = p.http2.initial_window_size;
+    }
+    config
+}
 
 #[allow(dead_code)]
 fn tls_cipher_name(suite: u16) -> Option<&'static str> {
@@ -515,5 +539,340 @@ mod tests {
         let profile = StealthProfile::firefox_default();
         let wire = h2_settings_wire_format(&profile.http2);
         assert_eq!(wire.len() % 6, 0, "wire length must be multiple of 6");
+    }
+
+    // ─── stealth_profile_to_ssl_config bridge tests ────────────
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+
+    #[test]
+    fn test_ssl_config_no_profile_is_default() {
+        let config = stealth_profile_to_ssl_config(&None);
+        assert!(config.tls12_cipher_list.is_null());
+        assert!(config.tls13_cipher_suites.is_null());
+        assert!(config.tls_curves_list.is_null());
+        assert!(config.tls_sigalgs_list.is_null());
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_has_fingerprint_fields() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        assert!(!config.tls12_cipher_list.is_null(), "tls12_cipher_list should be set");
+        assert!(!config.tls13_cipher_suites.is_null(), "tls13_cipher_suites should be set");
+        assert!(!config.tls_curves_list.is_null(), "tls_curves_list should be set");
+        assert!(!config.tls_sigalgs_list.is_null(), "tls_sigalgs_list should be set");
+    }
+
+    #[test]
+    fn test_ssl_config_chrome_has_fingerprint_fields() {
+        let profile = StealthProfile::chrome_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        assert!(!config.tls12_cipher_list.is_null());
+        assert!(!config.tls13_cipher_suites.is_null());
+        assert!(!config.tls_curves_list.is_null());
+        assert!(!config.tls_sigalgs_list.is_null());
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_tls12_cipher_content() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let s = unsafe { std::ffi::CStr::from_ptr(config.tls12_cipher_list) }.to_str().unwrap();
+        assert!(s.contains("ECDHE"), "TLS 1.2 ciphers should contain ECDHE: {}", s);
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_tls13_cipher_content() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let s = unsafe { std::ffi::CStr::from_ptr(config.tls13_cipher_suites) }.to_str().unwrap();
+        assert!(s.contains("TLS_AES_128_GCM_SHA256"), "TLS 1.3 should contain AES-128: {}", s);
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_curves_content() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let s = unsafe { std::ffi::CStr::from_ptr(config.tls_curves_list) }.to_str().unwrap();
+        assert!(s.contains("X25519"), "Curves should contain X25519: {}", s);
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_sigalgs_content() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let s = unsafe { std::ffi::CStr::from_ptr(config.tls_sigalgs_list) }.to_str().unwrap();
+        assert!(s.contains("ecdsa_secp256r1_sha256"), "Sigalgs should contain ECDSA P-256: {}", s);
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_chrome_different_ciphers() {
+        let ff = StealthProfile::firefox_default();
+        let ch = StealthProfile::chrome_default();
+        let ff_config = stealth_profile_to_ssl_config(&Some(ff));
+        let ch_config = stealth_profile_to_ssl_config(&Some(ch));
+        let ff_s = unsafe { std::ffi::CStr::from_ptr(ff_config.tls12_cipher_list) }.to_str().unwrap();
+        let ch_s = unsafe { std::ffi::CStr::from_ptr(ch_config.tls12_cipher_list) }.to_str().unwrap();
+        assert_ne!(ff_s, ch_s, "Firefox and Chrome TLS 1.2 ciphers must differ");
+    }
+
+    #[test]
+    fn test_ssl_config_drop_does_not_leak() {
+        // Create and drop to verify no double-free or leak
+        let profile = StealthProfile::firefox_default();
+        let _config = stealth_profile_to_ssl_config(&Some(profile));
+        // drop happens here — if deinit works correctly, no UB
+    }
+
+    // ─── H2 fingerprint injection tests ──────────────────────
+    // @trace REQ-STL-002 [req:REQ-STL-002] [level:unit]
+
+    #[test]
+    fn test_ssl_config_no_profile_h2_fields_default() {
+        let config = stealth_profile_to_ssl_config(&None);
+        assert!(config.h2_settings_payload.is_none(), "no profile → None h2_settings_payload");
+        assert_eq!(config.h2_initial_window_size, 0, "no profile → h2_initial_window_size=0");
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_h2_settings_payload_set() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let payload = config.h2_settings_payload.as_deref().expect("Firefox profile must set h2_settings_payload");
+        // Binary wire format: 6 settings × 6 bytes = 36 bytes
+        assert_eq!(payload.len(), 36, "Firefox H2 SETTINGS payload = 6 settings × 6 bytes = 36");
+    }
+
+    #[test]
+    fn test_ssl_config_chrome_h2_settings_payload_set() {
+        let profile = StealthProfile::chrome_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let payload = config.h2_settings_payload.as_deref().expect("Chrome profile must set h2_settings_payload");
+        assert_eq!(payload.len(), 36, "Chrome H2 SETTINGS payload = 6 settings × 6 bytes = 36");
+    }
+
+    #[test]
+    fn test_ssl_config_firefox_h2_initial_window_size() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        assert_eq!(config.h2_initial_window_size, 131072, "Firefox initial_window_size=131072");
+    }
+
+    #[test]
+    fn test_ssl_config_chrome_h2_initial_window_size() {
+        let profile = StealthProfile::chrome_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        assert_eq!(config.h2_initial_window_size, 6291456, "Chrome initial_window_size=6291456");
+    }
+
+    #[test]
+    fn test_ssl_config_h2_settings_firefox_chrome_differ() {
+        let ff = StealthProfile::firefox_default();
+        let ch = StealthProfile::chrome_default();
+        let ff_config = stealth_profile_to_ssl_config(&Some(ff));
+        let ch_config = stealth_profile_to_ssl_config(&Some(ch));
+        let ff_payload = ff_config.h2_settings_payload.as_deref().unwrap();
+        let ch_payload = ch_config.h2_settings_payload.as_deref().unwrap();
+        assert_ne!(ff_payload, ch_payload, "Firefox and Chrome H2 SETTINGS binary must differ");
+    }
+
+    #[test]
+    fn test_h2_settings_wire_format_firefox_first_setting() {
+        let profile = StealthProfile::firefox_default();
+        let wire = h2_settings_wire_format(&profile.http2);
+        // First setting: HEADER_TABLE_SIZE (0x01) = 65536
+        assert_eq!(wire[0..2], [0x00, 0x01], "first setting ID = 0x0001");
+        let value = u32::from_be_bytes([wire[2], wire[3], wire[4], wire[5]]);
+        assert_eq!(value, 65536, "Firefox HEADER_TABLE_SIZE = 65536");
+    }
+
+    #[test]
+    fn test_h2_settings_wire_format_chrome_window_size() {
+        let profile = StealthProfile::chrome_default();
+        let wire = h2_settings_wire_format(&profile.http2);
+        // Find INITIAL_WINDOW_SIZE (0x02) in the wire format
+        let mut found_iws = false;
+        for i in (0..wire.len()).step_by(6) {
+            let id = u16::from_be_bytes([wire[i], wire[i + 1]]);
+            if id == 0x02 {
+                let value = u32::from_be_bytes([wire[i + 2], wire[i + 3], wire[i + 4], wire[i + 5]]);
+                assert_eq!(value, 6291456, "Chrome INITIAL_WINDOW_SIZE = 6291456");
+                found_iws = true;
+                break;
+            }
+        }
+        assert!(found_iws, "INITIAL_WINDOW_SIZE setting must be present");
+    }
+
+    #[test]
+    fn test_h2_settings_wire_format_firefox_enable_push_zero() {
+        let profile = StealthProfile::firefox_default();
+        let wire = h2_settings_wire_format(&profile.http2);
+        for i in (0..wire.len()).step_by(6) {
+            let id = u16::from_be_bytes([wire[i], wire[i + 1]]);
+            if id == 0x03 {
+                let value = u32::from_be_bytes([wire[i + 2], wire[i + 3], wire[i + 4], wire[i + 5]]);
+                assert_eq!(value, 0, "ENABLE_PUSH must be 0");
+                return;
+            }
+        }
+        panic!("ENABLE_PUSH setting not found");
+    }
+
+    #[test]
+    fn test_h2_settings_wire_format_chrome_max_concurrent() {
+        let profile = StealthProfile::chrome_default();
+        let wire = h2_settings_wire_format(&profile.http2);
+        for i in (0..wire.len()).step_by(6) {
+            let id = u16::from_be_bytes([wire[i], wire[i + 1]]);
+            if id == 0x04 {
+                let value = u32::from_be_bytes([wire[i + 2], wire[i + 3], wire[i + 4], wire[i + 5]]);
+                assert_eq!(value, 1000, "Chrome MAX_CONCURRENT_STREAMS = 1000");
+                return;
+            }
+        }
+        panic!("MAX_CONCURRENT_STREAMS setting not found");
+    }
+
+    #[test]
+    fn test_ssl_config_h2_binary_roundtrip() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile.clone()));
+        let payload = config.h2_settings_payload.as_deref().unwrap();
+        let original = h2_settings_wire_format(&profile.http2);
+        assert_eq!(payload, &original[..], "binary roundtrip must match original wire format");
+    }
+
+    // ─── H2 fingerprint pipeline integration tests ──────────────
+    // @trace REQ-STL-002 [req:REQ-STL-002] [level:unit]
+    // Verifies the full data path: StealthProfile.http2 → h2_settings_wire_format()
+    // → SSLConfig.h2_settings_payload (Option<Box<[u8]>>) → write_preface/replenish_window
+
+    #[test]
+    fn test_h2_payload_preserves_nul_bytes() {
+        // The original bug: CStrPtr truncated at first \0 byte. Binary format
+        // MUST preserve NUL bytes (value 0x00000000 is a valid settings value).
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let payload = config.h2_settings_payload.as_deref().unwrap();
+        // Wire format contains ENABLE_PUSH=0 which encodes as [0x00, 0x03, 0x00, 0x00, 0x00, 0x00]
+        // — the last 4 bytes are all NUL. Verify they're present.
+        assert!(payload.contains(&0u8), "binary payload must contain NUL bytes (ENABLE_PUSH value = 0)");
+        // Verify no truncation: 6 settings × 6 bytes = 36
+        assert_eq!(payload.len(), 36, "payload must not be truncated at NUL bytes");
+    }
+
+    #[test]
+    fn test_h2_payload_chrome_preserves_nul_bytes() {
+        let profile = StealthProfile::chrome_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let payload = config.h2_settings_payload.as_deref().unwrap();
+        // Chrome also has ENABLE_PUSH=0 → NUL bytes
+        assert!(payload.contains(&0u8), "Chrome payload must contain NUL bytes");
+        assert_eq!(payload.len(), 36, "Chrome payload must be 36 bytes");
+    }
+
+    #[test]
+    fn test_h2_firefox_wire_all_settings_big_endian() {
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let payload = config.h2_settings_payload.as_deref().unwrap();
+        // Decode all 6 settings from binary wire format
+        let decoded: Vec<(u16, u32)> = (0..payload.len())
+            .step_by(6)
+            .map(|i| {
+                let id = u16::from_be_bytes([payload[i], payload[i + 1]]);
+                let value = u32::from_be_bytes([payload[i + 2], payload[i + 3], payload[i + 4], payload[i + 5]]);
+                (id, value)
+            })
+            .collect();
+        assert_eq!(decoded.len(), 6, "Firefox must have exactly 6 settings");
+        // Verify specific Firefox values
+        let ht = decoded.iter().find(|(id, _)| *id == 0x01);
+        assert_eq!(ht.map(|(_, v)| *v), Some(65536), "Firefox HEADER_TABLE_SIZE = 65536");
+        let iws = decoded.iter().find(|(id, _)| *id == 0x02);
+        assert_eq!(iws.map(|(_, v)| *v), Some(131072), "Firefox INITIAL_WINDOW_SIZE = 131072");
+        let ep = decoded.iter().find(|(id, _)| *id == 0x03);
+        assert_eq!(ep.map(|(_, v)| *v), Some(0), "Firefox ENABLE_PUSH = 0");
+        let mcs = decoded.iter().find(|(id, _)| *id == 0x04);
+        assert_eq!(mcs.map(|(_, v)| *v), Some(100), "Firefox MAX_CONCURRENT_STREAMS = 100");
+        let mfs = decoded.iter().find(|(id, _)| *id == 0x05);
+        assert_eq!(mfs.map(|(_, v)| *v), Some(16384), "Firefox MAX_FRAME_SIZE = 16384");
+        let mhl = decoded.iter().find(|(id, _)| *id == 0x06);
+        assert_eq!(mhl.map(|(_, v)| *v), Some(262144), "Firefox MAX_HEADER_LIST_SIZE = 262144");
+    }
+
+    #[test]
+    fn test_h2_chrome_wire_all_settings_big_endian() {
+        let profile = StealthProfile::chrome_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        let payload = config.h2_settings_payload.as_deref().unwrap();
+        let decoded: Vec<(u16, u32)> = (0..payload.len())
+            .step_by(6)
+            .map(|i| {
+                let id = u16::from_be_bytes([payload[i], payload[i + 1]]);
+                let value = u32::from_be_bytes([payload[i + 2], payload[i + 3], payload[i + 4], payload[i + 5]]);
+                (id, value)
+            })
+            .collect();
+        assert_eq!(decoded.len(), 6, "Chrome must have exactly 6 settings");
+        // Chrome-specific values
+        let iws = decoded.iter().find(|(id, _)| *id == 0x02);
+        assert_eq!(iws.map(|(_, v)| *v), Some(6291456), "Chrome INITIAL_WINDOW_SIZE = 6291456");
+        let mcs = decoded.iter().find(|(id, _)| *id == 0x04);
+        assert_eq!(mcs.map(|(_, v)| *v), Some(1000), "Chrome MAX_CONCURRENT_STREAMS = 1000");
+    }
+
+    #[test]
+    fn test_h2_window_size_firefox_pipeline() {
+        // Verify initial_window_size flows through SSLConfig correctly
+        let profile = StealthProfile::firefox_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        assert_eq!(config.h2_initial_window_size, 131072, "Firefox window size must be 131072 (128 KiB)");
+    }
+
+    #[test]
+    fn test_h2_window_size_chrome_pipeline() {
+        let profile = StealthProfile::chrome_default();
+        let config = stealth_profile_to_ssl_config(&Some(profile));
+        assert_eq!(config.h2_initial_window_size, 6291456, "Chrome window size must be 6291456 (6 MiB)");
+    }
+
+    #[test]
+    fn test_h2_window_size_default_pipeline() {
+        // No profile → h2_initial_window_size = 0 → write_preface uses LOCAL_INITIAL_WINDOW_SIZE
+        let config = stealth_profile_to_ssl_config(&None);
+        assert_eq!(config.h2_initial_window_size, 0, "no profile → window size 0 (use LOCAL_INITIAL_WINDOW_SIZE)");
+    }
+
+    #[test]
+    fn test_h2_firefox_chrome_payloads_differ_in_all_bytes() {
+        let ff = StealthProfile::firefox_default();
+        let ch = StealthProfile::chrome_default();
+        let ff_config = stealth_profile_to_ssl_config(&Some(ff));
+        let ch_config = stealth_profile_to_ssl_config(&Some(ch));
+        let ff_payload = ff_config.h2_settings_payload.as_deref().unwrap();
+        let ch_payload = ch_config.h2_settings_payload.as_deref().unwrap();
+        // Payloads should differ (different setting values)
+        assert_ne!(ff_payload, ch_payload, "Firefox and Chrome H2 SETTINGS payloads must differ");
+    }
+
+    #[test]
+    fn test_h2_no_profile_has_none_payload() {
+        let config = stealth_profile_to_ssl_config(&None);
+        assert!(config.h2_settings_payload.is_none(), "no profile → h2_settings_payload must be None");
+    }
+
+    #[test]
+    fn test_h2_payload_byte_level_identity_with_wire_format() {
+        // Verify byte-for-byte identity between h2_settings_wire_format output
+        // and what's stored in SSLConfig.h2_settings_payload
+        for profile_fn in [StealthProfile::firefox_default, StealthProfile::chrome_default] {
+            let profile = profile_fn();
+            let wire = h2_settings_wire_format(&profile.http2);
+            let config = stealth_profile_to_ssl_config(&Some(profile));
+            let payload = config.h2_settings_payload.clone().unwrap();
+            assert_eq!(&payload[..], &wire, "SSLConfig payload must exactly match wire format bytes");
+        }
     }
 }

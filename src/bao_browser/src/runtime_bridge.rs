@@ -1,57 +1,206 @@
 // @trace REQ-BRW-003  REQ-BRW-001: Bridge between servo browser context and Node.js APIs
 // REQ-ENG-007: Unified runtime coordination
 //
-// Architecture: dual-context bridge
+// Architecture: native host function injection via servo's script thread callback
 // - servo's JSContext handles DOM + Web APIs (created by servo internally)
-// - Node.js APIs are injected as self-contained JS polyfills via evaluate_javascript()
+// - Node.js APIs are registered as mozjs native functions on servo's Window global
+// - Uses servo's register_script_thread_callback → handle_evaluate_javascript drain pattern
 // - Event loop coordination: servo's spin_event_loop() drives both contexts
 //
-// Why not share a single JSContext:
-// - JSEngine::init() can only be called once (mozjs constraint)
-// - servo calls it internally in JSEngineSetup::default()
-// - Direct JSContext injection is not supported by servo's public API
-// - Bridge approach is the pragmatic solution that respects servo's architecture
+// JSContext fusion:
+// - servo creates JSContext internally in JSEngineSetup::default()
+// - bao_runtime::globals::install_all registers native functions on that same JSContext
+// - Callback receives (cx: *mut JSContext, global: *mut JSObject) from servo
+// - No second JSContext needed — true parasitic fusion
 
 use crate::page::PageHandle;
 use crate::error::BrowserError;
+use std::ptr::{self, NonNull};
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Inject Node.js API polyfills into a browser page context.
-/// This makes `require`, `Buffer`, `process`, etc. available in the servo page.
+/// Inject Node.js APIs temporarily for privileged evaluate_js execution (REQ-SEC-002).
+///
+/// Uses `register_script_thread_callback` to queue a callback that creates
+/// a temporary scope object `__bao_privileged_apis` on the global. The scope
+/// contains all Node.js/Bun API values (require, Bun, process, Buffer, module,
+/// __filename, __dirname) but they are NOT installed on the Window global itself.
+///
+/// The IIFE wrapper in `wrap_privileged_script` extracts the scope, deletes it
+/// from globalThis, and passes the values as function parameters to the user
+/// script. This prevents page-level JS from accessing Node APIs (REQ-SEC-003).
+///
+/// This is the dual-layer JS model: page JS runs with Web APIs only,
+/// but evaluate_js scripts get the full Node.js/Bun runtime via parameters.
+pub fn inject_node_apis_for_evaluate(webview_id: servo::WebViewId) {
+    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
+        Box::new(move |cx_ptr, global_ptr| {
+            unsafe { create_scope_values_native(cx_ptr, global_ptr); }
+        });
+
+    servo::register_script_thread_callback(webview_id, callback);
+}
+
+/// Bridge callback to create Node API scope values for privileged evaluate_js.
+///
+/// Creates `__bao_privileged_apis` on the global with all Node API values.
+/// The IIFE wrapper deletes this scope and passes the values as parameters.
+/// Node APIs are never written to the Window global itself (REQ-SEC-003).
+unsafe fn create_scope_values_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std::ffi::c_void) {
+    use mozjs::context::JSContext;
+    use mozjs::gc::Handle;
+    use mozjs::jsapi::{JSContext as RawJSContext, JSObject};
+
+    let raw_cx = cx_ptr as *mut RawJSContext;
+    let raw_global = global_ptr as *mut JSObject;
+
+    let cx_nn = match NonNull::new(raw_cx) {
+        Some(nn) => nn,
+        None => return,
+    };
+
+    if raw_global.is_null() {
+        return;
+    }
+
+    let mut cx = unsafe { JSContext::from_ptr(cx_nn) };
+    let global = unsafe { Handle::from_marked_location(raw_global as *const *mut JSObject) };
+
+    unsafe {
+        bao_runtime::globals::create_node_api_scope_values(&mut cx, global);
+    }
+}
+
+/// Inject Node.js APIs as native mozjs host functions on servo's Window global.
+///
+/// Uses `servo::register_script_thread_callback` to queue a callback that will
+/// be drained on servo's script thread during `handle_evaluate_javascript`.
+/// The callback casts the raw pointers to mozjs types and calls
+/// `bao_runtime::globals::install_all` to register all Node.js/Bun host functions
+/// natively — zero JS polyfill strings, maximum performance.
+///
+/// Also installs stealth anti-fingerprinting properties as PERMANENT engine-layer
+/// getters if a stealth profile is provided.
+///
+/// Falls back to JS polyfill injection if native registration is unavailable.
 pub fn inject_node_apis(page: &PageHandle) -> Result<(), BrowserError> {
-    page.evaluate_js(NODE_POLYFILLS)?;
+    inject_node_apis_with_stealth(page, None)
+}
+
+/// Inject Node.js APIs with optional stealth profile.
+///
+/// Same as `inject_node_apis`, but also installs stealth properties as PERMANENT
+/// engine-layer getters when a profile is provided.
+pub fn inject_node_apis_with_stealth(page: &PageHandle, stealth_profile: Option<bao_stealth::StealthProfile>) -> Result<(), BrowserError> {
+    let webview_id = page.webview_id()
+        .ok_or_else(|| BrowserError::Init("page has no webview".into()))?;
+
+    let registered = register_native_host_functions(webview_id, stealth_profile);
+
+    // Trigger the callback drain by evaluating an empty script.
+    // Uses evaluate_js_web (no Node API injection) to avoid recursion.
+    // servo's handle_evaluate_javascript will drain pending callbacks
+    // before executing the (empty) JS.
+    page.evaluate_js_web("")?;
+
+    if !registered {
+        // Fallback: inject JS polyfill string
+        page.evaluate_js_web(NODE_POLYFILLS)?;
+    }
+
     Ok(())
 }
 
-/// Inject stealth anti-fingerprinting scripts into a browser page context.
-/// These scripts modify navigator, screen, canvas, WebGL, and audio APIs.
-pub fn inject_stealth_scripts(page: &PageHandle) -> Result<(), BrowserError> {
-    page.evaluate_js(STEALTH_POLYFILLS)?;
-    Ok(())
+/// Attempt to register bao_runtime's native host functions via servo's callback mechanism.
+///
+/// Returns `true` if registration succeeded, `false` if servo's API is unavailable
+/// (e.g., older servo build without `register_script_thread_callback`).
+///
+/// If `stealth_profile` is provided, stealth properties are installed as PERMANENT
+/// engine-layer getters after the Node.js host functions.
+fn register_native_host_functions(webview_id: servo::WebViewId, stealth_profile: Option<bao_stealth::StealthProfile>) -> bool {
+    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
+        Box::new(move |cx_ptr, global_ptr| {
+            // SAFETY: Called on servo's script thread with valid JSContext/JSObject.
+            unsafe { install_all_native(cx_ptr, global_ptr, &stealth_profile); }
+        });
+
+    servo::register_script_thread_callback(webview_id, callback);
+    true
+}
+
+/// Bridge callback: cast raw servo pointers to mozjs types and install all host functions.
+///
+/// Called on servo's script thread during `handle_evaluate_javascript` drain.
+/// `cx_ptr` is `*mut mozjs::jsapi::JSContext` (servo's script thread JSContext).
+/// `global_ptr` is `*mut mozjs::jsapi::JSObject` (servo's Window global object).
+///
+/// If `stealth_profile` is `Some`, installs stealth properties as PERMANENT engine-layer
+/// getters (JSPROP_PERMANENT ≡ configurable:false) after the Node.js host functions.
+unsafe fn install_all_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std::ffi::c_void, stealth_profile: &Option<bao_stealth::StealthProfile>) {
+    use mozjs::context::JSContext;
+    use mozjs::gc::Handle;
+    use mozjs::jsapi::{JSContext as RawJSContext, JSObject};
+
+    let raw_cx = cx_ptr as *mut RawJSContext;
+    let raw_global = global_ptr as *mut JSObject;
+
+    let cx_nn = match NonNull::new(raw_cx) {
+        Some(nn) => nn,
+        None => return,
+    };
+
+    if raw_global.is_null() {
+        return;
+    }
+
+    // SAFETY: We are on servo's script thread, the JSContext is valid,
+    // and this is the only JSContext alive (SpiderMonkey constraint).
+    let mut cx = unsafe { JSContext::from_ptr(cx_nn) };
+
+    // Create a Handle from the raw global pointer.
+    // SAFETY: global_ptr points to a valid, live JSObject on the GC heap.
+    // The Handle is valid for the duration of this callback (no GC in between).
+    let global = unsafe { Handle::from_marked_location(raw_global as *const *mut JSObject) };
+
+    // Register Web APIs only on page global (REQ-SEC-003).
+    // Node.js APIs (require, fs, Bun, process, etc.) are NOT installed on
+    // the page global — they are only available in privileged evaluate_js context.
+    unsafe {
+        bao_runtime::globals::install_web_apis(&mut cx, global);
+    }
+
+    // Install stealth properties as PERMANENT engine-layer getters.
+    // JSPROP_PERMANENT ≡ configurable:false → JS Object.defineProperty throws TypeError.
+    // Zero JS injection — all properties are native accessor getters.
+    if let Some(profile) = stealth_profile {
+        bao_stealth::engine_props::set_profile(profile);
+        bao_runtime::fetch_api::set_fetch_stealth_profile(Some(profile.clone()));
+        unsafe {
+            bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
+        }
+    } else {
+        bao_runtime::fetch_api::set_fetch_stealth_profile(None);
+    }
 }
 
 /// Inject both Node.js APIs and stealth scripts into a page.
 pub fn inject_all(page: &PageHandle, stealth: bool) -> Result<(), BrowserError> {
-    inject_node_apis(page)?;
-    if stealth {
-        inject_stealth_scripts(page)?;
-    }
-    Ok(())
+    let profile = if stealth {
+        page.stealth_profile()
+    } else {
+        None
+    };
+    inject_node_apis_with_stealth(page, profile)
 }
 
-/// Inject Node.js APIs and (if profile present) profile-aware stealth scripts into a page.
+/// Inject Node.js APIs and (if profile present) stealth properties into a page.
+///
+/// Stealth properties are installed as PERMANENT engine-layer getters (zero JS injection).
 pub fn inject_all_with_profile(page: &PageHandle, profile: &Option<bao_stealth::StealthProfile>) -> Result<(), BrowserError> {
-    inject_node_apis(page)?;
-    if let Some(prof) = profile {
-        let engine = bao_stealth::StealthEngine::new(prof.clone());
-        let js = engine.inject_navigator_js();
-        page.evaluate_js(&js)?;
-        inject_stealth_scripts(page)?;
-    }
-    Ok(())
+    inject_node_apis_with_stealth(page, profile.clone())
 }
 
 const NODE_POLYFILLS: &str = r#"(function() {
@@ -605,237 +754,6 @@ const NODE_POLYFILLS: &str = r#"(function() {
   }
 })();"#;
 
-const STEALTH_POLYFILLS: &str = r#"(function() {
-  // @trace REQ-STL-002 Navigator/Screen fingerprint masking
-  // @trace REQ-STL-003 Canvas/WebGL noise injection
-  // @trace REQ-STL-006 AudioContext noise injection
-
-  // Stealth configuration — matches Chrome 130 on Windows
-  var _ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
-  var _platform = 'Win32';
-  var _vendor = 'Google Inc.';
-
-  // Navigator overrides
-  if (typeof navigator !== 'undefined') {
-    var _navigatorProps = {
-      userAgent: _ua,
-      platform: _platform,
-      vendor: _vendor,
-      appVersion: _ua.replace('Mozilla/', ''),
-      language: 'en-US',
-      languages: ['en-US', 'en'],
-      hardwareConcurrency: 8,
-      deviceMemory: 8,
-      maxTouchPoints: 0,
-      vendorSub: '',
-      productSub: '20030107',
-      cookiesEnabled: true,
-      doNotTrack: null,
-      webdriver: false,
-    };
-
-    Object.keys(_navigatorProps).forEach(function(prop) {
-      if (prop in navigator) {
-        try {
-          Object.defineProperty(navigator, prop, {
-            get: function() { return _navigatorProps[prop]; },
-            configurable: true,
-          });
-        } catch(e) {}
-      }
-    });
-
-    // Plugins — fake standard Chrome plugins
-    if (navigator.plugins) {
-      try {
-        Object.defineProperty(navigator, 'plugins', {
-          get: function() {
-            return {
-              length: 5,
-              0: { name: 'PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-              1: { name: 'Chrome PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-              2: { name: 'Chromium PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-              3: { name: 'Microsoft Edge PDF Viewer', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-              4: { name: 'WebKit built-in PDF', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
-              item: function(i) { return this[i]; },
-              namedItem: function(name) { for (var i=0;i<this.length;i++) if(this[i].name===name) return this[i]; return null; },
-              refresh: function() {},
-            };
-          },
-          configurable: true,
-        });
-      } catch(e) {}
-    }
-
-    // MimeTypes
-    if (navigator.mimeTypes) {
-      try {
-        Object.defineProperty(navigator, 'mimeTypes', {
-          get: function() {
-            return {
-              length: 2,
-              0: { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-              1: { type: 'text/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
-              item: function(i) { return this[i]; },
-              namedItem: function(name) { for (var i=0;i<this.length;i++) if(this[i].type===name) return this[i]; return null; },
-            };
-          },
-          configurable: true,
-        });
-      } catch(e) {}
-    }
-  }
-
-  // Screen overrides
-  if (typeof screen !== 'undefined') {
-    var _screenProps = {
-      width: 1920,
-      height: 1080,
-      availWidth: 1920,
-      availHeight: 1040,
-      colorDepth: 24,
-      pixelDepth: 24,
-    };
-
-    Object.keys(_screenProps).forEach(function(prop) {
-      if (prop in screen) {
-        try {
-          Object.defineProperty(screen, prop, {
-            get: function() { return _screenProps[prop]; },
-            configurable: true,
-          });
-        } catch(e) {}
-      }
-    });
-  }
-
-  // Canvas noise injection
-  if (typeof HTMLCanvasElement !== 'undefined') {
-    var _origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-    var _origToBlob = HTMLCanvasElement.prototype.toBlob;
-    var _origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
-
-    // Deterministic noise seed based on session
-    var _noiseSeed = (function() {
-      var s = 0;
-      var str = _ua + _platform + 'bao-stealth';
-      for (var i = 0; i < str.length; i++) {
-        s = ((s << 5) - s) + str.charCodeAt(i);
-        s = s & s;
-      }
-      return s;
-    })();
-
-    function _noise(x) {
-      x = ((x >> 16) ^ x) * 0x45d9f3b;
-      x = ((x >> 16) ^ x) * 0x45d9f3b;
-      x = (x >> 16) ^ x;
-      return (x & 0xFF) > 127 ? 1 : -1;
-    }
-
-    HTMLCanvasElement.prototype.toDataURL = function() {
-      var ctx = this.getContext('2d');
-      if (ctx && this.width > 0 && this.height > 0) {
-        try {
-          var imgData = ctx.getImageData(0, 0, Math.min(this.width, 1), Math.min(this.height, 1));
-          imgData.data[0] = (imgData.data[0] + _noise(_noiseSeed)) & 0xFF;
-          ctx.putImageData(imgData, 0, 0);
-        } catch(e) {}
-      }
-      return _origToDataURL.apply(this, arguments);
-    };
-
-    HTMLCanvasElement.prototype.toBlob = function() {
-      var ctx = this.getContext('2d');
-      if (ctx && this.width > 0 && this.height > 0) {
-        try {
-          var imgData = ctx.getImageData(0, 0, Math.min(this.width, 1), Math.min(this.height, 1));
-          imgData.data[0] = (imgData.data[0] + _noise(_noiseSeed + 1)) & 0xFF;
-          ctx.putImageData(imgData, 0, 0);
-        } catch(e) {}
-      }
-      return _origToBlob.apply(this, arguments);
-    };
-
-    CanvasRenderingContext2D.prototype.getImageData = function(sx, sy, sw, sh) {
-      var result = _origGetImageData.apply(this, arguments);
-      var data = result.data;
-      for (var i = 0; i < Math.min(data.length, 16); i++) {
-        data[i] = (data[i] + _noise(_noiseSeed + i)) & 0xFF;
-      }
-      return result;
-    };
-  }
-
-  // WebGL fingerprint masking
-  if (typeof WebGLRenderingContext !== 'undefined') {
-    var _origGetParameter = WebGLRenderingContext.prototype.getParameter;
-    var _webglVendor = 'Google Inc. (NVIDIA)';
-    var _webglRenderer = 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1080 Direct3D11 vs_5_0 ps_5_0)';
-
-    WebGLRenderingContext.prototype.getParameter = function(param) {
-      if (param === 0x1F00) return _webglVendor;     // VENDOR
-      if (param === 0x1F01) return _webglRenderer;   // RENDERER
-      if (param === 0x9245) return 'WebKit WebGL';   // UNMASKED_VENDOR_WEBGL
-      if (param === 0x9246) return _webglRenderer;   // UNMASKED_RENDERER_WEBGL
-      return _origGetParameter.apply(this, arguments);
-    };
-
-    // WebGL2
-    if (typeof WebGL2RenderingContext !== 'undefined') {
-      var _origGetParameter2 = WebGL2RenderingContext.prototype.getParameter;
-      WebGL2RenderingContext.prototype.getParameter = function(param) {
-        if (param === 0x1F00) return _webglVendor;
-        if (param === 0x1F01) return _webglRenderer;
-        if (param === 0x9245) return 'WebKit WebGL';
-        if (param === 0x9246) return _webglRenderer;
-        return _origGetParameter2.apply(this, arguments);
-      };
-    }
-  }
-
-  // AudioContext noise
-  if (typeof AudioContext !== 'undefined' || typeof webkitAudioContext !== 'undefined') {
-    var _AudioCtx = typeof AudioContext !== 'undefined' ? AudioContext : webkitAudioContext;
-    var _origGetFloatFreqData = AnalyserNode.prototype.getFloatFrequencyData;
-
-    AnalyserNode.prototype.getFloatFrequencyData = function(array) {
-      _origGetFloatFreqData.apply(this, arguments);
-      for (var i = 0; i < array.length; i++) {
-        array[i] += _noise(_noiseSeed + i) * 0.001;
-      }
-    };
-  }
-
-  // WebDriver detection prevention
-  if (typeof navigator !== 'undefined') {
-    delete navigator.__proto__.webdriver;
-    try {
-      Object.defineProperty(navigator, 'webdriver', { get: function() { return false; }, configurable: true });
-    } catch(e) {}
-  }
-
-  // Permissions API masking
-  if (typeof Permissions !== 'undefined' && Permissions.prototype.query) {
-    var _origPermissionsQuery = Permissions.prototype.query;
-    Permissions.prototype.query = function(desc) {
-      if (desc.name === 'notifications') {
-        return Promise.resolve({ state: 'default', onchange: null });
-      }
-      return _origPermissionsQuery.apply(this, arguments);
-    };
-  }
-
-  // Chrome runtime mock (prevents detection of missing chrome.runtime)
-  if (typeof window !== 'undefined' && !window.chrome) {
-    window.chrome = {
-      runtime: { onConnect: { addListener: function(){} }, onMessage: { addListener: function(){} } },
-      loadTimes: function() { return { firstPaintTime: 0, startLoadTime: 0 }; },
-      csi: function() { return { onloadT: 0, startE: 0, pageT: 0 }; },
-    };
-  }
-})();"#;
-
 // ── Bridge types ────────────────────────────────────────────────────
 
 /// Commands sent through the runtime bridge for execution in a page context.
@@ -1073,10 +991,6 @@ mod tests {
         assert!(super::NODE_POLYFILLS.contains("Buffer"));
         assert!(super::NODE_POLYFILLS.contains("require"));
         assert!(super::NODE_POLYFILLS.contains("process"));
-        assert!(!super::STEALTH_POLYFILLS.is_empty());
-        assert!(super::STEALTH_POLYFILLS.contains("navigator"));
-        assert!(super::STEALTH_POLYFILLS.contains("WebGL"));
-        assert!(super::STEALTH_POLYFILLS.contains("Canvas"));
     }
 
     // ─── BridgeCommand / BridgeResponse / BridgeChannel extended tests ──
@@ -1832,118 +1746,6 @@ mod tests {
         assert!(poly.contains("_b64chars"));
     }
 
-    // ─── STEALTH_POLYFILLS content tests ───────────────────────────────────
-
-    #[test]
-    fn stealth_polyfills_navigator_webdriver_false() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("webdriver: false"));
-        assert!(poly.contains("Object.defineProperty(navigator, 'webdriver'"));
-    }
-
-    #[test]
-    fn stealth_polyfills_chrome_runtime_mock() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("window.chrome = {"));
-        assert!(poly.contains("runtime:"));
-        assert!(poly.contains("onConnect:"));
-        assert!(poly.contains("onMessage:"));
-        assert!(poly.contains("loadTimes: function"));
-        assert!(poly.contains("csi: function"));
-    }
-
-    #[test]
-    fn stealth_polyfills_permissions_api_mock() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("Permissions.prototype.query"));
-        assert!(poly.contains("if (desc.name === 'notifications')"));
-        assert!(poly.contains("state: 'default'"));
-    }
-
-    #[test]
-    fn stealth_polyfills_canvas_noise_injection() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("_noiseSeed"));
-        assert!(poly.contains("_noise(x)"));
-        assert!(poly.contains("HTMLCanvasElement.prototype.toDataURL"));
-        assert!(poly.contains("HTMLCanvasElement.prototype.toBlob"));
-        assert!(poly.contains("getImageData"));
-        assert!(poly.contains("putImageData"));
-    }
-
-    #[test]
-    fn stealth_polyfills_webgl_parameter_overrides() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("WebGLRenderingContext.prototype.getParameter"));
-        assert!(poly.contains("0x1F00")); // VENDOR
-        assert!(poly.contains("0x1F01")); // RENDERER
-        assert!(poly.contains("0x9245")); // UNMASKED_VENDOR_WEBGL
-        assert!(poly.contains("0x9246")); // UNMASKED_RENDERER_WEBGL
-        assert!(poly.contains("_webglVendor"));
-        assert!(poly.contains("_webglRenderer"));
-        assert!(poly.contains("WebGL2RenderingContext"));
-    }
-
-    #[test]
-    fn stealth_polyfills_audiocontext_noise() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("AudioContext"));
-        assert!(poly.contains("AnalyserNode.prototype.getFloatFrequencyData"));
-        assert!(poly.contains("_origGetFloatFreqData"));
-    }
-
-    #[test]
-    fn stealth_polyfills_navigator_overrides() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("userAgent: _ua"));
-        assert!(poly.contains("platform: _platform"));
-        assert!(poly.contains("vendor: _vendor"));
-        assert!(poly.contains("hardwareConcurrency: 8"));
-        assert!(poly.contains("deviceMemory: 8"));
-        assert!(poly.contains("maxTouchPoints: 0"));
-        assert!(poly.contains("languages: ['en-US', 'en']"));
-    }
-
-    #[test]
-    fn stealth_polyfills_screen_overrides() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("screen"));
-        assert!(poly.contains("width: 1920"));
-        assert!(poly.contains("height: 1080"));
-        assert!(poly.contains("availWidth: 1920"));
-        assert!(poly.contains("availHeight: 1040"));
-        assert!(poly.contains("colorDepth: 24"));
-        assert!(poly.contains("pixelDepth: 24"));
-    }
-
-    #[test]
-    fn stealth_polyfills_plugins_mock() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("navigator.plugins"));
-        assert!(poly.contains("PDF Viewer"));
-        assert!(poly.contains("Chrome PDF Viewer"));
-        assert!(poly.contains("Chromium PDF Viewer"));
-        assert!(poly.contains("length: 5"));
-    }
-
-    #[test]
-    fn stealth_polyfills_mimetypes_mock() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("navigator.mimeTypes"));
-        assert!(poly.contains("application/pdf"));
-        assert!(poly.contains("text/pdf"));
-        assert!(poly.contains("length: 2"));
-    }
-
-    #[test]
-    fn stealth_polyfills_user_agent_string() {
-        let poly = super::STEALTH_POLYFILLS;
-        assert!(poly.contains("Mozilla/5.0 (Windows NT 10.0; Win64; x64)"));
-        assert!(poly.contains("AppleWebKit/537.36"));
-        assert!(poly.contains("Chrome/130.0.0.0"));
-        assert!(poly.contains("Safari/537.36"));
-    }
-
     // ─── Edge case tests ──────────────────────────────────────────────────
 
     #[test]
@@ -2049,5 +1851,100 @@ mod tests {
         let debug_str = format!("{:?}", channel);
         assert!(debug_str.contains("BridgeChannel"));
         assert!(debug_str.contains("alive"));
+    }
+
+    // ── REQ-SEC-002/003: Runtime bridge security structural verification ──
+    // @trace TEST-SEC-003 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
+
+    /// Verify install_all_native calls install_web_apis (NOT install_all).
+    /// REQ-SEC-003: The bridge must NOT inject Node APIs on page global.
+    #[test]
+    fn runtime_bridge_calls_web_apis_not_install_all() {
+        let source = include_str!("runtime_bridge.rs");
+
+        let func_start = source.find("unsafe fn install_all_native")
+            .expect("install_all_native function not found");
+        let func_end = source[func_start..].find("fn inject_node_apis_for_evaluate")
+            .or_else(|| source[func_start..].find("/// Inject Node.js APIs as native"))
+            .or_else(|| source[func_start..].find("// ── Bridge types"))
+            .expect("end boundary not found after install_all_native");
+        let func_body = &source[func_start..func_start + func_end];
+
+        assert!(
+            func_body.contains("bao_runtime::globals::install_web_apis"),
+            "REQ-SEC-003 REGRESSION: install_all_native must call install_web_apis"
+        );
+        assert!(
+            !func_body.contains("bao_runtime::globals::install_all"),
+            "REQ-SEC-003 REGRESSION: install_all_native calls install_all (should be install_web_apis)"
+        );
+        assert!(
+            !func_body.contains("bao_runtime::globals::install_node_apis"),
+            "REQ-SEC-003 REGRESSION: install_all_native calls install_node_apis directly"
+        );
+    }
+
+    /// Verify inject_node_apis_for_evaluate calls create_node_api_scope_values.
+    /// REQ-SEC-002: Privileged evaluate_js gets Node APIs via scope object,
+    /// NOT by installing them on the Window global (REQ-SEC-003).
+    #[test]
+    fn runtime_bridge_privileged_injection_creates_scope() {
+        let source = include_str!("runtime_bridge.rs");
+
+        let func_start = source.find("unsafe fn create_scope_values_native")
+            .expect("create_scope_values_native function not found");
+        let func_body_start = source[func_start..].find("{")
+            .expect("function body start not found");
+        // Search up to the next function definition or 2000 chars, whichever comes first
+        let search_limit = source[func_start + func_body_start..]
+            .find("pub fn inject_node_apis")
+            .or_else(|| source[func_start + func_body_start..].find("/// Inject Node.js APIs as native"))
+            .unwrap_or(2000)
+            .min(2000);
+        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+
+        assert!(
+            func_body.contains("bao_runtime::globals::create_node_api_scope_values"),
+            "REQ-SEC-002 REGRESSION: create_scope_values_native must call create_node_api_scope_values"
+        );
+        assert!(
+            !func_body.contains("bao_runtime::globals::install_node_apis"),
+            "REQ-SEC-003 REGRESSION: create_scope_values_native must NOT call install_node_apis (that installs on global)"
+        );
+        assert!(
+            !func_body.contains("bao_runtime::globals::install_web_apis"),
+            "create_scope_values_native should NOT redundantly call install_web_apis"
+        );
+    }
+
+    /// Verify inject_node_apis_with_stealth uses evaluate_js_web (not evaluate_js).
+    /// REQ-SEC-002: Internal drain must NOT trigger Node API injection (avoid recursion).
+    #[test]
+    fn runtime_bridge_drain_uses_web_mode() {
+        let source = include_str!("runtime_bridge.rs");
+
+        let func_start = source.find("pub fn inject_node_apis_with_stealth")
+            .expect("inject_node_apis_with_stealth function not found");
+        let func_end = source[func_start..].find("fn register_native_host_functions")
+            .expect("end boundary not found");
+        let func_body = &source[func_start..func_start + func_end];
+
+        assert!(
+            func_body.contains("evaluate_js_web"),
+            "REQ-SEC-002 REGRESSION: inject_node_apis_with_stealth must use evaluate_js_web (not evaluate_js)"
+        );
+        assert!(
+            !func_body.contains("page.evaluate_js(\"\")"),
+            "REQ-SEC-002 REGRESSION: inject_node_apis_with_stealth uses evaluate_js (would cause recursion)"
+        );
+    }
+
+    /// Verify NODE_POLYFILLS contains Node API names (for fallback mode).
+    #[test]
+    fn node_polyfills_contains_security_sensitive_names() {
+        let poly = super::NODE_POLYFILLS;
+        assert!(poly.contains("require"), "NODE_POLYFILLS must contain 'require'");
+        assert!(poly.contains("Buffer"), "NODE_POLYFILLS must contain 'Buffer'");
+        assert!(poly.contains("process"), "NODE_POLYFILLS must contain 'process'");
     }
 }

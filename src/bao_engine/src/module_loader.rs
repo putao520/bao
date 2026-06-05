@@ -11,7 +11,7 @@ use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
-use mozjs::rust::wrappers2::{CompileModule1, ModuleEvaluate, ModuleLink};
+use mozjs::rust::wrappers2::{CompileModule1, JS_GetRuntime, ModuleEvaluate, ModuleLink};
 use mozjs::rust::{
     transform_str_to_source_text, CompileOptionsWrapper, RealmOptions, Runtime,
     SIMPLE_GLOBAL_CLASS,
@@ -30,8 +30,20 @@ thread_local! {
 pub struct ModuleLoader;
 
 impl ModuleLoader {
+    /// Register module hooks on a Runtime that we own.
     pub fn init(runtime: &Runtime) {
         let rt = runtime.rt();
+        unsafe {
+            SetModuleResolveHook(rt, Some(host_resolve_imported_module));
+            SetModuleMetadataHook(rt, Some(host_populate_import_meta));
+            SetModuleDynamicImportHook(rt, Some(host_dynamic_import));
+        }
+    }
+
+    /// Register module hooks on servo's JSContext (parasitic mode).
+    /// Gets JSRuntime from the JSContext pointer via JS_GetRuntime.
+    pub fn init_thread_local(cx: &mozjs::context::JSContext) {
+        let rt = unsafe { JS_GetRuntime(cx) };
         unsafe {
             SetModuleResolveHook(rt, Some(host_resolve_imported_module));
             SetModuleMetadataHook(rt, Some(host_populate_import_meta));

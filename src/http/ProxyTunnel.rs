@@ -250,7 +250,7 @@ fn on_open(ctx: *mut HTTPClient) {
         let ssl = unsafe { &mut *ssl_ptr.as_ptr() };
         if bun_core::is_ip_address(_hostname) {
             // SNI is null (IP literal — no SNI).
-            crate::configure_http_client_with_alpn(ssl, core::ptr::null(), AlpnOffer::H1);
+            crate::configure_http_client_with_alpn(ssl, core::ptr::null(), AlpnOffer::H1, None);
         } else {
             // SAFETY: TEMP_HOSTNAME is only accessed from the single HTTP thread.
             let temp_hostname = crate::temp_hostname();
@@ -262,12 +262,13 @@ fn on_open(ctx: *mut HTTPClient) {
                     ssl,
                     temp_hostname.as_ptr().cast(),
                     AlpnOffer::H1,
+                    None,
                 );
             } else {
                 let mut owned = _hostname.to_vec();
                 owned.push(0);
                 // `owned` is NUL-terminated and outlives this call.
-                crate::configure_http_client_with_alpn(ssl, owned.as_ptr().cast(), AlpnOffer::H1);
+                crate::configure_http_client_with_alpn(ssl, owned.as_ptr().cast(), AlpnOffer::H1, None);
                 // owned drops here (was: defer if hostname_needs_free free(hostname))
             }
         }

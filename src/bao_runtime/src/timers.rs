@@ -135,6 +135,12 @@ pub fn install_timer_globals(
 /// and fires their JS callbacks. Returns `true` if the event loop should
 /// continue (has pending timers or active HTTP servers).
 pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
+    // If process.exit() / Bun.exit() was called, stop the event loop.
+    // The CLI main will pick up the exit code and exit orderly.
+    if crate::should_exit() {
+        return false;
+    }
+
     // SAFETY: cx is a live &mut JSContext on the current thread; the guard
     // clears it on drop so subsequent code on this thread sees null.
     unsafe {
@@ -142,11 +148,16 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     }
     let _cx_guard = CxGuard::new();
 
-    // Tick the MiniEventLoop — this drives bao_uloop epoll which handles
-    // all uWS App I/O (HTTP server sockets, etc.) and concurrent tasks.
-    with_event_loop(|loop_| {
-        loop_.tick_once(core::ptr::null_mut());
-    });
+    // Tick the MiniEventLoop — only if there are active servers or pending I/O.
+    // For pure synchronous scripts (no HTTP, no timers), skip the tick to
+    // avoid blocking on epoll_wait with no events.
+    let has_http_before_tick = crate::node_http::has_active_servers();
+    let has_pending_before_tick = bao_has_pending_timers();
+    if has_http_before_tick || has_pending_before_tick {
+        with_event_loop(|loop_| {
+            loop_.tick_once(core::ptr::null_mut());
+        });
+    }
 
     let has_http = crate::node_http::has_active_servers();
     let raw_cx = unsafe { cx.raw_cx() };

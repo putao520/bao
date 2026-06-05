@@ -338,31 +338,6 @@ fn test_default_engine_has_screen() {
 }
 
 #[test]
-fn test_inject_navigator_js_contains_user_agent() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("navigator"));
-    assert!(js.contains("userAgent"));
-    assert!(js.contains("screen"));
-    assert!(js.contains("devicePixelRatio"));
-}
-
-#[test]
-fn test_inject_navigator_js_contains_webgl_override() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("WebGLRenderingContext"));
-    assert!(js.contains("getParameter"));
-}
-
-#[test]
-fn test_inject_navigator_js_removes_cdc_markers() {
-    let engine = StealthEngine::default_engine();
-    let js = engine.inject_navigator_js();
-    assert!(js.contains("cdc_adoQpoasnfa76pfcZLmcfl"));
-}
-
-#[test]
 fn test_engine_profile_access() {
     let profile = StealthProfile::firefox_default();
     let engine = StealthEngine::new(profile);

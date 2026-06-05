@@ -94,7 +94,7 @@ impl BaoEventLoop {
     ///
     /// # Panics
     ///
-    /// Panics if called before `JsContext::new()` registers the context —
+    /// Panics if called before `JsContext::for_test()` registers the context —
     /// mirrors JSC's panic when no VM is installed on the current thread.
     /// Wave 73-E will add the registration check.
     #[inline]

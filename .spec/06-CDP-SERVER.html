@@ -4,7 +4,71 @@
 <meta charset="UTF-8">
 <title>Bao - CDP Server 通用库</title>
 </head>
-<body>
+<body><script type="application/ld+json">
+{
+  "@type": "Interface",
+  "name": "DomainHandler",
+  "description": "CDP Domain 处理器 trait，所有浏览器操作由此 trait 实现者提供",
+  "methods": [
+    {"name": "domain_name", "signature": "fn domain_name(&self) -> &'static str", "description": "返回 CDP domain 名（如 \"Page\", \"Runtime\"）"},
+    {"name": "handle_command", "signature": "fn handle_command(&self, command: &str, params: Value) -> Result<Value, CDPError>", "description": "处理 CDP 命令，command 为 Domain.Method 格式"},
+    {"name": "on_session_created", "signature": "fn on_session_created(&self, session_id: &str)", "description": "Session 创建回调（可选，默认空实现）"},
+    {"name": "on_session_destroyed", "signature": "fn on_session_destroyed(&self, session_id: &str)", "description": "Session 销毁回调（可选，默认空实现）"}
+  ]
+}
+</script><script type="application/ld+json">
+{
+  "@type": "Interface",
+  "name": "EventSender",
+  "description": "事件发送器 trait，由 cdp-server 内部实现，注入到 DomainHandler",
+  "methods": [
+    {"name": "send_event", "signature": "fn send_event(&self, method: &str, params: Value)", "description": "向所有订阅该 domain 的 Session 广播事件"}
+  ]
+}
+</script><script type="application/ld+json">
+{
+  "@type": "Interface",
+  "name": "TargetProvider",
+  "description": "浏览器 Target 管理器 trait，由后端实现",
+  "methods": [
+    {"name": "list_targets", "signature": "fn list_targets(&self) -> Vec<TargetInfo>", "description": "列出所有可用的浏览器 Target"},
+    {"name": "create_target", "signature": "fn create_target(&self, url: &str) -> Result<TargetInfo, String>", "description": "创建新 Target（打开新页面）"},
+    {"name": "close_target", "signature": "fn close_target(&self, target_id: &str) -> Result<(), String>", "description": "关闭指定 Target"},
+    {"name": "activate_target", "signature": "fn activate_target(&self, target_id: &str) -> Result<(), String>", "description": "激活指定 Target（前置显示）"}
+  ]
+}
+</script><script type="application/ld+json">
+{
+  "@type": "StateMachine",
+  "name": "SM-CDP-SESSION",
+  "description": "CDP Session 生命周期状态机",
+  "states": ["Created", "Active", "Closing", "Closed"],
+  "initialState": "Created",
+  "transitions": [
+    {"from": "Created", "to": "Active", "on": "Domain.enable（首个 domain 启用）"},
+    {"from": "Active", "to": "Active", "on": "命令处理 / 事件接收"},
+    {"from": "Active", "to": "Closing", "on": "WebSocket 断开 / Target.detachFromTarget"},
+    {"from": "Created", "to": "Closing", "on": "WebSocket 断开（未 enable 即断开）"},
+    {"from": "Closing", "to": "Closed", "on": "资源释放完成"}
+  ]
+}
+</script><script type="application/ld+json">
+{
+  "@type": "StateMachine",
+  "name": "SM-CDP-TARGET",
+  "description": "CDP Target 生命周期状态机",
+  "states": ["Created", "Attached", "Detached", "Closed"],
+  "initialState": "Created",
+  "transitions": [
+    {"from": "Created", "to": "Attached", "on": "Target.attachToTarget（首个 Session 附加）"},
+    {"from": "Attached", "to": "Detached", "on": "所有 Session 分离"},
+    {"from": "Detached", "to": "Attached", "on": "新 Session 附加"},
+    {"from": "Attached", "to": "Closed", "on": "Target.closeTarget / /json/close"},
+    {"from": "Detached", "to": "Closed", "on": "Target.closeTarget / /json/close"},
+    {"from": "Created", "to": "Closed", "on": "Target.closeTarget（未附加即关闭）"}
+  ]
+}
+</script><main data-spec-content="">
 <h1>CDP Server 通用库设计</h1>
 <p>独立 crate（可发布 crates.io），提供泛型 CDP 协议服务端框架。bao_cdp 作为 servo-specific 后端接入。</p>
 
@@ -38,53 +102,20 @@
 <!-- ============================================================ -->
 
 <h3>§2.1 DomainHandler Trait</h3>
-<script type="application/ld+json">
-{
-  "@type": "Interface",
-  "name": "DomainHandler",
-  "description": "CDP Domain 处理器 trait，所有浏览器操作由此 trait 实现者提供",
-  "methods": [
-    {"name": "domain_name", "signature": "fn domain_name(&self) -> &'static str", "description": "返回 CDP domain 名（如 \"Page\", \"Runtime\"）"},
-    {"name": "handle_command", "signature": "fn handle_command(&self, command: &str, params: Value) -> Result<Value, CDPError>", "description": "处理 CDP 命令，command 为 Domain.Method 格式"},
-    {"name": "on_session_created", "signature": "fn on_session_created(&self, session_id: &str)", "description": "Session 创建回调（可选，默认空实现）"},
-    {"name": "on_session_destroyed", "signature": "fn on_session_destroyed(&self, session_id: &str)", "description": "Session 销毁回调（可选，默认空实现）"}
-  ]
-}
-</script>
+
 
 <p>约束：<code>DomainHandler: Send + Sync</code>（跨线程安全）。</p>
 <p>每个 DomainHandler 实例对应一个 CDP Domain（如 Page、Runtime、DOM）。</p>
 
 <h3>§2.2 EventSender Trait</h3>
-<script type="application/ld+json">
-{
-  "@type": "Interface",
-  "name": "EventSender",
-  "description": "事件发送器 trait，由 cdp-server 内部实现，注入到 DomainHandler",
-  "methods": [
-    {"name": "send_event", "signature": "fn send_event(&self, method: &str, params: Value)", "description": "向所有订阅该 domain 的 Session 广播事件"}
-  ]
-}
-</script>
+
 
 <p>约束：<code>EventSender: Send + Sync + Clone</code>。</p>
 <p>DomainHandler 在处理命令时持有 EventSender 引用，可在任意时刻调用 <code>send_event</code>。</p>
 <p>事件 method 格式：<code>Domain.eventName</code>（如 <code>Page.loadEventFired</code>）。</p>
 
 <h3>§2.3 TargetProvider Trait</h3>
-<script type="application/ld+json">
-{
-  "@type": "Interface",
-  "name": "TargetProvider",
-  "description": "浏览器 Target 管理器 trait，由后端实现",
-  "methods": [
-    {"name": "list_targets", "signature": "fn list_targets(&self) -> Vec<TargetInfo>", "description": "列出所有可用的浏览器 Target"},
-    {"name": "create_target", "signature": "fn create_target(&self, url: &str) -> Result<TargetInfo, String>", "description": "创建新 Target（打开新页面）"},
-    {"name": "close_target", "signature": "fn close_target(&self, target_id: &str) -> Result<(), String>", "description": "关闭指定 Target"},
-    {"name": "activate_target", "signature": "fn activate_target(&self, target_id: &str) -> Result<(), String>", "description": "激活指定 Target（前置显示）"}
-  ]
-}
-</script>
+
 
 <p>约束：<code>TargetProvider: Send + Sync</code>。</p>
 <p><code>TargetInfo</code> 结构：<code>{id, type, title, url, webSocketDebuggerUrl}</code>。</p>
@@ -150,37 +181,33 @@
 </div>
 
 <div id="api-cds-json-close" data-api="GET /json/close/{targetId}">
-<script type="application/ld+json">
-{
+<script type="application/ld+json">{
   "@type": "Api",
   "method": "GET",
   "path": "/json/close/{targetId}",
   "title": "关闭 Target",
   "params": [{"name": "targetId", "type": "string", "required": true, "in": "path", "description": "路径参数：要关闭的 Target ID"}],
   "response": "TargetInfo — 被关闭的 Target 信息"
-}
-</script>
+}</script>
 <table data-api-params="">
 <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
-<tr data-desc="路径参数：要关闭的 Target ID" data-in="path" data-param="targetId" data-required="true" data-type="string"></tr>
+<tr data-param="targetId" data-in="path" data-required="true" data-type="string"><td>targetId</td><td>string</td><td>必填</td><td>路径参数：要关闭的 Target ID</td></tr>
 </table>
 <p data-xref-type="req" data-xref-id="REQ-CDS-002">关联需求: REQ-CDS-002</p>
 </div>
 
 <div id="api-cds-json-activate" data-api="GET /json/activate/{targetId}">
-<script type="application/ld+json">
-{
+<script type="application/ld+json">{
   "@type": "Api",
   "method": "GET",
   "path": "/json/activate/{targetId}",
   "title": "激活 Target",
   "params": [{"name": "targetId", "type": "string", "required": true, "in": "path", "description": "路径参数：要激活的 Target ID"}],
   "response": "string — \"Target activated\""
-}
-</script>
+}</script>
 <table data-api-params="">
 <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
-<tr data-desc="路径参数：要激活的 Target ID" data-in="path" data-param="targetId" data-required="true" data-type="string"></tr>
+<tr data-param="targetId" data-in="path" data-required="true" data-type="string"><td>targetId</td><td>string</td><td>必填</td><td>路径参数：要激活的 Target ID</td></tr>
 </table>
 <p data-xref-type="req" data-xref-id="REQ-CDS-002">关联需求: REQ-CDS-002</p>
 </div>
@@ -442,9 +469,7 @@
 <h2>§8 数据模型</h2>
 <!-- ============================================================ -->
 
-<div id="entity-cdp-server" data-entity="CdpServer"
-  data-field-config="ServerConfig;required;服务器配置"
-  data-field-listener="TcpListener;required;TCP 监听器">;required;活跃 Session 映射" data-field-domain_registry="DomainRegistry;required;DomainHandler 注册表" data-field-target_provider="TargetProvider;required;Target 管理器" data-field-event_broadcaster="EventBroadcaster;required;事件广播器">
+<div id="entity-cdp-server" data-entity="CdpServer" data-field-config="ServerConfig;required;服务器配置" data-field-listener="TcpListener;required;TCP 监听器">;required;活跃 Session 映射" data-field-domain_registry="DomainRegistry;required;DomainHandler 注册表" data-field-target_provider="TargetProvider;required;Target 管理器" data-field-event_broadcaster="EventBroadcaster;required;事件广播器"&gt;
 <h3>CdpServer 实体 — CDP 服务器实例</h3>
 <script type="application/ld+json">
 {
@@ -465,7 +490,7 @@
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
 <tr data-field="config" data-required="true" data-type="json"><td>config</td><td>ServerConfig</td><td>是</td><td></td><td>服务器配置</td></tr>
 <tr data-field="listener" data-required="true" data-type="json"><td>listener</td><td>TcpListener</td><td>是</td><td></td><td>TCP 监听器</td></tr>
-<tr data-field="sessions" data-required="true" data-type="json"><td>sessions</td><td>HashMap<SessionId, CdpSession></td><td>是</td><td></td><td>活跃 Session 映射</td></tr>
+<tr data-field="sessions" data-required="true" data-type="json"><td>sessions</td><td>HashMap<sessionid, CdpSession=""></sessionid,></td><td>是</td><td></td><td>活跃 Session 映射</td></tr>
 <tr data-field="domain_registry" data-required="true" data-type="json"><td>domain_registry</td><td>DomainRegistry</td><td>是</td><td></td><td>DomainHandler 注册表</td></tr>
 <tr data-field="target_provider" data-required="true" data-type="json"><td>target_provider</td><td>TargetProvider</td><td>是</td><td></td><td>Target 管理器</td></tr>
 <tr data-field="event_broadcaster" data-required="true" data-type="json"><td>event_broadcaster</td><td>EventBroadcaster</td><td>是</td><td></td><td>事件广播器</td></tr>
@@ -475,10 +500,7 @@
 <span data-xref-type="req" data-xref-id="REQ-CDS-003">REQ-CDS-003</span>, <span data-xref-type="req" data-xref-id="REQ-CDS-007">REQ-CDS-007</span></p>
 </div>
 
-<div id="entity-cdp-session-generic" data-entity="CdpSessionGeneric"
-  data-field-session_id="string;required;会话唯一标识（16 位 hex）"
-  data-field-target_id="string;required;关联的 Target ID"
-  data-field-websocket="WebSocket;required;WebSocket 连接">;required;已启用的 CDP domain 集合" data-field-state="enum[Created, Active, Closing, Closed];required;Session 生命周期状态" data-field-is_browser_session="boolean;required;是否为 Browser-level Session（接收所有事件）">
+<div id="entity-cdp-session-generic" data-entity="CdpSessionGeneric" data-field-session_id="string;required;会话唯一标识（16 位 hex）" data-field-target_id="string;required;关联的 Target ID" data-field-websocket="WebSocket;required;WebSocket 连接">;required;已启用的 CDP domain 集合" data-field-state="enum[Created, Active, Closing, Closed];required;Session 生命周期状态" data-field-is_browser_session="boolean;required;是否为 Browser-level Session（接收所有事件）"&gt;
 <h3>CdpSession 实体 — CDP 客户端会话（通用版）</h3>
 <script type="application/ld+json">
 {
@@ -500,7 +522,7 @@
 <tr data-field="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td><td>会话唯一标识（16 位 hex）</td></tr>
 <tr data-field="target_id" data-required="true" data-type="string"><td>target_id</td><td>string</td><td>是</td><td></td><td>关联的 Target ID</td></tr>
 <tr data-field="websocket" data-required="true" data-type="json"><td>websocket</td><td>WebSocket</td><td>是</td><td></td><td>WebSocket 连接</td></tr>
-<tr data-field="enabled_domains" data-required="true" data-type="json"><td>enabled_domains</td><td>HashSet<string></td><td>是</td><td></td><td>已启用的 CDP domain 集合</td></tr>
+<tr data-field="enabled_domains" data-required="true" data-type="json"><td>enabled_domains</td><td>HashSet<string></string></td><td>是</td><td></td><td>已启用的 CDP domain 集合</td></tr>
 <tr data-field="state" data-required="true" data-type="enum"><td>state</td><td>enum[Created, Active, Closing, Closed]</td><td>是</td><td></td><td>Session 生命周期状态</td></tr>
 <tr data-field="is_browser_session" data-required="true" data-type="boolean"><td>is_browser_session</td><td>boolean</td><td>是</td><td></td><td>是否为 Browser-level Session（接收所有事件）</td></tr>
 </table>
@@ -509,12 +531,7 @@
 <span data-xref-type="req" data-xref-id="REQ-CDS-005">REQ-CDS-005</span></p>
 </div>
 
-<div id="entity-cdp-target" data-entity="CdpTarget"
-  data-field-id="string;required;Target 唯一标识"
-  data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型"
-  data-field-title="string;required;页面标题"
-  data-field-url="string;required;页面 URL"
-  data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL">
+<div id="entity-cdp-target" data-entity="CdpTarget" data-field-id="string;required;Target 唯一标识" data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型" data-field-title="string;required;页面标题" data-field-url="string;required;页面 URL" data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL">
 <h3>CdpTarget 实体 — CDP 浏览器 Target</h3>
 <script type="application/ld+json">
 {
@@ -542,7 +559,7 @@
 <p data-xref-type="entity" data-xref-id="CdpTarget">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDS-002">REQ-CDS-002</span></p>
 </div>
 
-<div id="entity-domain-registry" data-entity="DomainRegistry">>;required;domain 名 → DomainHandler 映射" data-field-event_sender="EventSender;required;注入到所有 DomainHandler 的事件发送器">
+<div id="entity-domain-registry" data-entity="DomainRegistry">&gt;;required;domain 名 → DomainHandler 映射" data-field-event_sender="EventSender;required;注入到所有 DomainHandler 的事件发送器"&gt;
 <h3>DomainRegistry 实体 — DomainHandler 注册表</h3>
 <script type="application/ld+json">
 {
@@ -557,7 +574,7 @@
 </script>
 <table data-entity-table="DomainRegistry">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="handlers" data-required="true" data-type="json"><td>handlers</td><td>HashMap<string, Box<dyn DomainHandler>></td><td>是</td><td></td><td>domain 名 → DomainHandler 映射</td></tr>
+<tr data-field="handlers" data-required="true" data-type="json"><td>handlers</td><td>HashMap<string, Box<dyn="" DomainHandler="">&gt;</string,></td><td>是</td><td></td><td>domain 名 → DomainHandler 映射</td></tr>
 <tr data-field="event_sender" data-required="true" data-type="json"><td>event_sender</td><td>EventSender</td><td>是</td><td></td><td>注入到所有 DomainHandler 的事件发送器</td></tr>
 </table>
 
@@ -565,10 +582,7 @@
 <span data-xref-type="req" data-xref-id="REQ-CDS-006">REQ-CDS-006</span></p>
 </div>
 
-<div id="entity-event-subscription" data-entity="EventSubscription"
-  data-field-session_id="string;required;Session ID"
-  data-field-domain="string;required;订阅的 Domain 名"
-  data-field-created_at="datetime;required;订阅创建时间（Domain.enable 调用时间）">
+<div id="entity-event-subscription" data-entity="EventSubscription" data-field-session_id="string;required;Session ID" data-field-domain="string;required;订阅的 Domain 名" data-field-created_at="datetime;required;订阅创建时间（Domain.enable 调用时间）">
 <h3>EventSubscription 实体 — 事件订阅关系</h3>
 <script type="application/ld+json">
 {
@@ -592,16 +606,7 @@
 <p data-xref-type="entity" data-xref-id="EventSubscription">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDS-005">REQ-CDS-005</span></p>
 </div>
 
-<div id="entity-server-config" data-entity="ServerConfig"
-  data-field-host="string;required;监听地址"
-  data-field-port="integer;required;监听端口"
-  data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数"
-  data-field-max_sessions="integer;required;最大并发 Session 数"
-  data-field-browser_name="string;required;浏览器名称（/json/version 返回）"
-  data-field-protocol_version="string;required;CDP 协议版本"
-  data-field-user_agent="string;optional;用户代理字符串"
-  data-field-v8_version="string;optional;JS 引擎版本标识"
-  data-field-webkit_version="string;optional;渲染引擎版本标识">
+<div id="entity-server-config" data-entity="ServerConfig" data-field-host="string;required;监听地址" data-field-port="integer;required;监听端口" data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数" data-field-max_sessions="integer;required;最大并发 Session 数" data-field-browser_name="string;required;浏览器名称（/json/version 返回）" data-field-protocol_version="string;required;CDP 协议版本" data-field-user_agent="string;optional;用户代理字符串" data-field-v8_version="string;optional;JS 引擎版本标识" data-field-webkit_version="string;optional;渲染引擎版本标识">
 <h3>ServerConfig 实体 — 服务器配置</h3>
 <script type="application/ld+json">
 {
@@ -625,8 +630,8 @@
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
 <tr data-constraints="默认 " data-field="host" data-required="true" data-type="string"><td>host</td><td>string</td><td>是</td><td>默认 "127.0.0.1"</td><td>监听地址</td></tr>
 <tr data-constraints="默认 9222, 范围 1-65535" data-field="port" data-required="true" data-type="integer"><td>port</td><td>integer</td><td>是</td><td>默认 9222, 范围 1-65535</td><td>监听端口</td></tr>
-<tr data-field="http_timeout_seconds" data-required="true" data-type="integer">= 1"><td>http_timeout_seconds</td><td>integer</td><td>是</td><td>默认 30, >= 1</td><td>HTTP 请求超时秒数</td></tr>
-<tr data-field="max_sessions" data-required="true" data-type="integer">= 1"><td>max_sessions</td><td>integer</td><td>是</td><td>默认 100, >= 1</td><td>最大并发 Session 数</td></tr>
+<tr data-field="http_timeout_seconds" data-required="true" data-type="integer">= 1"&gt;<td>http_timeout_seconds</td><td>integer</td><td>是</td><td>默认 30, &gt;= 1</td><td>HTTP 请求超时秒数</td></tr>
+<tr data-field="max_sessions" data-required="true" data-type="integer">= 1"&gt;<td>max_sessions</td><td>integer</td><td>是</td><td>默认 100, &gt;= 1</td><td>最大并发 Session 数</td></tr>
 <tr data-constraints="默认 " data-field="browser_name" data-required="true" data-type="string"><td>browser_name</td><td>string</td><td>是</td><td>默认 "Bao/0.1.0"</td><td>浏览器名称（/json/version 返回）</td></tr>
 <tr data-constraints="固定 " data-field="protocol_version" data-required="true" data-type="string"><td>protocol_version</td><td>string</td><td>是</td><td>固定 "1.3"</td><td>CDP 协议版本</td></tr>
 <tr data-field="user_agent" data-required="false" data-type="string"><td>user_agent</td><td>string</td><td>否</td><td></td><td>用户代理字符串</td></tr>
@@ -707,22 +712,7 @@ bao_cdp/
 <!-- ============================================================ -->
 
 <h3>§11.1 Session 生命周期状态机 (SM-CDP-SESSION)</h3>
-<script type="application/ld+json">
-{
-  "@type": "StateMachine",
-  "name": "SM-CDP-SESSION",
-  "description": "CDP Session 生命周期状态机",
-  "states": ["Created", "Active", "Closing", "Closed"],
-  "initialState": "Created",
-  "transitions": [
-    {"from": "Created", "to": "Active", "on": "Domain.enable（首个 domain 启用）"},
-    {"from": "Active", "to": "Active", "on": "命令处理 / 事件接收"},
-    {"from": "Active", "to": "Closing", "on": "WebSocket 断开 / Target.detachFromTarget"},
-    {"from": "Created", "to": "Closing", "on": "WebSocket 断开（未 enable 即断开）"},
-    {"from": "Closing", "to": "Closed", "on": "资源释放完成"}
-  ]
-}
-</script>
+
 
 <p>不变量：</p>
 <ul>
@@ -732,23 +722,7 @@ bao_cdp/
 </ul>
 
 <h3>§11.2 Target 生命周期状态机 (SM-CDP-TARGET)</h3>
-<script type="application/ld+json">
-{
-  "@type": "StateMachine",
-  "name": "SM-CDP-TARGET",
-  "description": "CDP Target 生命周期状态机",
-  "states": ["Created", "Attached", "Detached", "Closed"],
-  "initialState": "Created",
-  "transitions": [
-    {"from": "Created", "to": "Attached", "on": "Target.attachToTarget（首个 Session 附加）"},
-    {"from": "Attached", "to": "Detached", "on": "所有 Session 分离"},
-    {"from": "Detached", "to": "Attached", "on": "新 Session 附加"},
-    {"from": "Attached", "to": "Closed", "on": "Target.closeTarget / /json/close"},
-    {"from": "Detached", "to": "Closed", "on": "Target.closeTarget / /json/close"},
-    {"from": "Created", "to": "Closed", "on": "Target.closeTarget（未附加即关闭）"}
-  ]
-}
-</script>
+
 
 <p>不变量：</p>
 <ul>
@@ -920,5 +894,5 @@ bao_cdp/
 </ul>
 </div>
 
-</body>
+</main></body>
 </html>

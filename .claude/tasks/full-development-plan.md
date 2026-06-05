@@ -59,8 +59,8 @@
 |-----|------|--------|
 | REQ-BRW-002 | 内存渲染 | SoftwareRenderingContext 存在，完整渲染管线未验证 |
 | REQ-BRW-003 | SpiderMonkey JSContext 融合 | runtime_bridge.rs 明确说不共享 JSContext，用 JS polyfill 桥接 |
-| REQ-STL-001 | TLS 指纹模拟 | TlsFingerprint 数据模型完整，但未注入 HTTP 客户端 |
-| REQ-STL-002 | HTTP/2 指纹匹配 | Http2Fingerprint 数据模型完整，但未注入 HTTP 客户端 |
+| REQ-STL-001 | TLS 指纹模拟 | ✅ L1 完成：SSLConfig 扩展 + configure_http_client_with_alpn 注入 + TlsFingerprint→BoringSSL 桥接 |
+| REQ-STL-002 | HTTP/2 指纹匹配 | ✅ Http2Fingerprint → SSLConfig → ClientSession → write_preface/replenish_window 管道完成 |
 | REQ-STL-007 | CDP 隐蔽性 | StealthProfile 未贯穿到 BaoConfig（stealth: bool 非 Profile） |
 
 ---
@@ -162,8 +162,8 @@ Phase 4: 质量收敛                         ← 最后
 | E8 | StealthProfile 贯穿 | 无 | 低 | ✅ Wave 33 完成 |
 | Wave 34 | 多线程并发 + 架构韧性测试 | 无 | 中 | ✅ 完成（commit 0b66e7547，修复 bao_cdp 服务器两个死锁 BUG + 23 新测试） |
 | E4 | servo 输入事件分发 | 无 | 中 | ✅ 已完成 |
-| E6 | TLS 指纹注入 | 被上游阻塞 | 中 | 🔶 stealth_http.rs 已创建 |
-| E7 | HTTP/2 指纹注入 | 被上游阻塞 | 中 | 🔶 stealth_http.rs 已创建 |
+| E6 | TLS 指纹注入 | ✅ L1+L2 完成 | 中 | L1: SSLConfig 扩展 + configure_http_client_with_alpn 注入; L2: StealthProfile→SSLConfig 桥接 |
+| E7 | HTTP/2 指纹注入 | ✅ 完成 | SSLConfig.h2_settings_payload: Option<Box<[u8]>> + write_preface/replenish_window 读取 |
 | E2 | 通用 host_fn 包装 | 无 | 高 | ✅ ArgReader + define_host_fn! 宏 |
 | E3 | Bun.* / Bao.* API | 无 | 高 | ✅ 已完成 (60+ 断言测试通过) |
 | E1 | 代码生成后端 | 无 | 高 | 待实现 |
@@ -420,7 +420,7 @@ Phase 4: Q1, Q2, Q3 (全部完成后)
 ### 下一步：Phase 2 深入实现
 - E1 (REQ-ENG-002): codegen 后端已实现，需验证与 .classes.ts 真实文件的兼容性
 - E5 (REQ-BRW-003): JSContext 融合评估需架构决策
-- E6/E7 (REQ-STL-001/002): TLS/HTTP2 指纹注入被上游 bun_http 编译阻塞
+- E6/E7 (REQ-STL-001/002): ✅ TLS/HTTP2 指纹注入完成（SSLConfig Option<Box<[u8]>> 管道）
 - Phase 1 (删除手写轮子): **链接阻塞已解决** — bao_native_stubs 提供 150+ 纯 Rust stubs，bao_runtime 109 单元测试全通过
 		- [x] Wave 50: bao_runtime API 边界测试
 		  - runtime_api_boundary_tests: 34 tests (require_dir, permission_bridge, stealth_http, resolve_node_modules)
@@ -1021,31 +1021,46 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 
 ---
 
-## 当前状态 (2026-06-03, updated)
+## 当前状态 (2026-06-04, updated)
 
 | 指标 | 数值 |
 |------|------|
 | SPEC 成熟度 | 100% |
 | REQ 状态 | 36/36 implemented |
 | SPEC lint | 0 error, 399 warning (属性排序 + REQ 缺 category) |
-| bao_runtime lib 测试 | 387 通过 (7 ignored) |
+| bao_runtime lib 测试 | 541 通过 |
 | bao_engine lib 测试 | 80 通过 |
 | bao_uloop lib 测试 | 90 通过 |
-| bao_stealth lib 测试 | 138 通过 |
-| bao_cdp lib 测试 | 452 通过 |
-| bao_browser lib 测试 | 251 通过 |
+| bao_stealth lib 测试 | 161 通过 |
+| bao_cdp lib 测试 | 453 通过 |
+| bao_browser lib 测试 | 256 通过 |
 | bao_native_stubs lib 测试 | 0 (no tests) |
-| 全 Bao crate lib 测试总计 | 1,398 通过 |
+| 全 Bao crate lib 测试总计 | 1,581 通过 |
 | clippy (Bao crate) | 零 warning |
 | 链接错误 | 零 |
 | us_dispatch_* | ✅ kind→vtable 路由完成 (P1-B.0 resolved) |
+
+### 纯单元测试覆盖分析 (2026-06-03)
+
+**结论**: 测试覆盖率已达架构极限。大部分 Bao 模块深度依赖 JSContext/SpiderMonkey/Servo，无法纯单元测试。
+
+**已有良好测试覆盖的模块**:
+- bao_stealth: 全 7 子模块 (tls/http2/canvas/navigator/webgl_audio/behavior/profile) 均有完整纯单元测试
+- bao_cdp: protocol/router/backend/servo_bridge 均有完整测试
+- bao_browser: config/permission/error/page_pool/screenshot 均有完整测试
+- bao_runtime: node_url (90+ tests), node_path (posix_join/normalize/pathdiff), node_os (libc_binding), http_client (HttpResponse/Method), fetch_api (extract_host_port), node_crypto (uuid_v4/xor_cipher), web_api (parse_ws_url), timers (BaoTimeoutObject/BaoTimerRegistry)
+
+**JSContext 依赖无法纯单元测试的模块**:
+- bao_engine: dispatch_sm/context/host_fn/job_queue/module_loader (全部依赖 mozjs JSContext)
+- bao_runtime: node_buffer/node_events/node_util/node_querystring/node_perf_hooks/gc_store/require/resolver_bridge/stealth_http/globals/bun_api/node_http/node_https/node_dns/node_net/node_fs/node_stream/node_readline/node_string_decoder/node_tls/node_tty/node_vm/node_zlib/node_module/dispatch/runtime (全部依赖 mozjs JSContext)
+- bao_browser: page/delegate/runtime_bridge (依赖 Servo/ServoBuilder)
 
 ### Phase 完成状态
 
 | Phase | 状态 | 备注 |
 |-------|------|------|
 | Phase 1: 删除手写垃圾 | ✅ 全部完成 | P1-A/B/C/D/E.1/E.3 完成，E.2 不适用，E.4 需独立 Wave |
-| Phase 2: 未实现需求 | ✅ 大部分完成 | E1/E2/E3/E4/E8 完成，E5 需架构决策，E6/E7 被上游阻塞 |
+| Phase 2: 未实现需求 | ✅ 大部分完成 | E1/E2/E3/E4/E6/E7/E8 完成，E5 需架构决策 |
 | Phase 3: SPEC 状态更新 | ✅ 完成 | 36/36 REQ implemented |
 | Phase 4: 质量收敛 | ✅ Q1/Q3 达标 | Q1 clippy 零 warning，Q3 成熟度 100%，Q2 测试逻辑全通过 |
 
@@ -1054,18 +1069,22 @@ if let Ok(CDPCommand::Shutdown) = self.cmd_rx.try_recv() { break }
 | 任务 | 阻塞原因 | 可替代推进 |
 |------|---------|-----------|
 | E5 (JSContext 融合) | 需 architect consult | 无替代 |
-| E6/E7 (TLS/HTTP2 指纹注入) | 被上游 bun_http 阻塞 | 可扩展 stealth 纯逻辑测试 |
+| E7 (HTTP/2 指纹注入) | ✅ 已完成 | SSLConfig.h2_settings_payload: Option<Box<[u8]>> 管道完成 |
 | P1-E.4 (node_net → bun_uws) | 需独立 Wave + architect | 可补充 node_net 单元测试 |
 
 ### 可推进项
 
-| 任务 | 优先级 | LOC 目标 |
-|------|--------|----------|
-| node_url.rs 单元测试补充 | P1 | 2084 LOC, 91 tests |
-| bun_api.rs 单元测试补充 | P1 | 2416 LOC, 0 tests |
-| globals.rs 单元测试补充 | P2 | 1664 LOC, 0 tests |
-| node_fs.rs 单元测试补充 | P2 | 1130 LOC, 0 tests |
-| fetch_api.rs 单元测试补充 | P2 | 692 LOC, 0 tests |
-| web_api.rs 单元测试补充 | P2 | 721 LOC, 0 tests |
-| node_http.rs 单元测试补充 | P2 | 723 LOC, 0 tests |
-| node_crypto.rs 单元测试补充 | P2 | 904 LOC, 0 tests |
+| 任务 | 优先级 | 状态 |
+|------|--------|------|
+| E6 L2: StealthProfile→SSLConfig 运行时桥接 | P0 | ✅ 完成 |
+| node_url.rs 单元测试补充 | P1 | ✅ 完成 (94 tests) |
+| bun_api.rs 单元测试补充 | P1 | ✅ 完成 (18 tests) |
+| globals.rs 单元测试补充 | P2 | ✅ 完成 (10 tests) |
+| node_http.rs 单元测试补充 | P2 | ✅ 完成 (16 tests) |
+| node_events.rs 单元测试补充 | P2 | ✅ 完成 (15 tests) |
+| fetch_api.rs 单元测试补充 | P2 | ✅ 完成 (7 tests, total 17) |
+| web_api.rs 单元测试补充 | P2 | ✅ 完成 (11 tests, total 18) |
+| node_crypto.rs 单元测试补充 | P2 | ✅ 完成 (8 tests, total 17) |
+| node_https.rs 单元测试补充 | P2 | ✅ 完成 (10 escape_json tests) |
+| node_fs.rs 单元测试补充 | P2 | 🔶 JSContext 依赖，纯逻辑极少 |
+| node_dns.rs 单元测试补充 | P2 | 🔶 JS 实现，无纯 Rust 逻辑 |

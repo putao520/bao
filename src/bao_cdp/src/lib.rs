@@ -9,11 +9,21 @@ use std::sync::Arc;
 use tungstenite::accept;
 use tungstenite::protocol::WebSocket;
 
-/// EventSender that discards all events. Used during command dispatch
-/// since domain handlers currently ignore the event_sender parameter.
-struct NoopEventSender;
-impl cdp_server::EventSender for NoopEventSender {
-    fn send_event(&self, _method: &str, _params: serde_json::Value) {}
+/// EventSender backed by the CDP command channel. When a domain handler
+/// calls `send_event`, the event is queued into the channel and later
+/// broadcast to all connected WebSocket sessions by the server run loop.
+pub struct SessionEventSender {
+    pub cmd_tx: Sender<CDPCommand>,
+}
+
+impl cdp_server::EventSender for SessionEventSender {
+    fn send_event(&self, method: &str, params: serde_json::Value) {
+        let ev = CDPEvent {
+            method: method.to_string(),
+            params: Some(params),
+        };
+        let _ = self.cmd_tx.send(CDPCommand::SendEvent(ev));
+    }
 }
 
 mod ws;
@@ -41,6 +51,7 @@ pub struct CDPServer {
     registry: Option<Arc<DomainRegistry>>,
 }
 
+#[derive(Debug)]
 pub enum CDPCommand {
     SendEvent(CDPEvent),
     Shutdown,
@@ -52,6 +63,7 @@ pub struct CDPSession {
     ws: WebSocket<ReplayStream>,
     bridge: Option<BridgeSender>,
     registry: Option<Arc<DomainRegistry>>,
+    cmd_tx: Sender<CDPCommand>,
 }
 
 /// Wraps a TcpStream with pre-read bytes, replaying them on the first reads
@@ -221,7 +233,33 @@ impl CDPServer {
             return None;
         }
 
-        if request.starts_with("GET /json") {
+        if request.starts_with("GET /json/new") {
+            let url = request
+                .split_whitespace().nth(1)
+                .and_then(|p| p.strip_prefix("/json/new?"))
+                .unwrap_or("about:blank");
+            let entry = serde_json::json!({
+                "id": self.target_id,
+                "type": "page",
+                "title": "Bao",
+                "url": url,
+                "webSocketDebuggerUrl": format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, self.target_id)
+            });
+            respond_json(&mut stream, &entry);
+            return None;
+        }
+
+        if request.starts_with("GET /json/close/") {
+            respond_json(&mut stream, &serde_json::json!("Target is closing"));
+            return None;
+        }
+
+        if request.starts_with("GET /json/activate/") {
+            respond_json(&mut stream, &serde_json::json!("Target activated"));
+            return None;
+        }
+
+        if request.starts_with("GET /json/list") || request.starts_with("GET /json ") || request == "GET /json" {
             let entry = serde_json::json!({
                 "id": self.target_id,
                 "type": "page",
@@ -249,6 +287,7 @@ impl CDPServer {
                         ws,
                         bridge: self.bridge.clone(),
                         registry: self.registry.clone(),
+                        cmd_tx: self.cmd_tx.clone(),
                     });
                 }
                 Err(e) => {
@@ -300,7 +339,10 @@ impl CDPSession {
     fn dispatch_cdp(&self, cdp_msg: &CDPMessage) -> Option<CDPResponse> {
         let registry = self.registry.as_ref()?;
         let params = cdp_msg.params.clone().unwrap_or_default();
-        registry.dispatch_command(&cdp_msg.method, params, &NoopEventSender).map(|result| {
+        let event_sender = SessionEventSender {
+            cmd_tx: self.cmd_tx.clone(),
+        };
+        registry.dispatch_command(&cdp_msg.method, params, &event_sender).map(|result| {
             match result {
                 Ok(value) => CDPResponse {
                     id: cdp_msg.id,
@@ -371,6 +413,11 @@ impl std::error::Error for CDPServerError {}
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    fn test_event_sender() -> SessionEventSender {
+        let (cmd_tx, _cmd_rx) = channel();
+        SessionEventSender { cmd_tx }
+    }
 
     #[test]
     fn cdp_server_new_creates_server() {
@@ -511,7 +558,7 @@ mod tests {
 
         // Simulate what dispatch_cdp does
         let params = cdp_msg.params.clone().unwrap_or_default();
-        let result = registry.dispatch_command(&cdp_msg.method, params, &NoopEventSender);
+        let result = registry.dispatch_command(&cdp_msg.method, params, &test_event_sender());
         assert!(result.is_some());
         let response = result.unwrap();
         assert!(response.is_ok());
@@ -524,7 +571,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("Runtime.enable", serde_json::json!({}), &NoopEventSender);
+        let result = registry.dispatch_command("Runtime.enable", serde_json::json!({}), &test_event_sender());
         assert!(result.is_some());
         let response = result.unwrap();
         assert!(response.is_ok());
@@ -538,7 +585,7 @@ mod tests {
         let registry = server.registry.as_ref().unwrap();
 
         // HeapProfiler is NOT registered — should return None
-        let result = registry.dispatch_command("HeapProfiler.takeHeapSnapshot", serde_json::json!({}), &NoopEventSender);
+        let result = registry.dispatch_command("HeapProfiler.takeHeapSnapshot", serde_json::json!({}), &test_event_sender());
         assert!(result.is_none());
     }
 
@@ -548,7 +595,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("Page.nonExistentMethod", serde_json::json!({}), &NoopEventSender);
+        let result = registry.dispatch_command("Page.nonExistentMethod", serde_json::json!({}), &test_event_sender());
         assert!(result.is_some());
         let err = result.unwrap().unwrap_err();
         assert_eq!(err.code, -32601);
@@ -560,7 +607,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("Page.getLayoutMetrics", serde_json::json!({}), &NoopEventSender);
+        let result = registry.dispatch_command("Page.getLayoutMetrics", serde_json::json!({}), &test_event_sender());
         assert!(result.is_some());
         let response = result.unwrap().unwrap();
         assert_eq!(response["contentSize"]["width"], 1920);
@@ -573,7 +620,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("Network.enable", serde_json::json!({}), &NoopEventSender);
+        let result = registry.dispatch_command("Network.enable", serde_json::json!({}), &test_event_sender());
         assert!(result.is_some());
         assert_eq!(result.unwrap().unwrap(), serde_json::json!({}));
     }
@@ -584,7 +631,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("CSS.enable", serde_json::json!({}), &NoopEventSender);
+        let result = registry.dispatch_command("CSS.enable", serde_json::json!({}), &test_event_sender());
         assert!(result.is_some());
         assert_eq!(result.unwrap().unwrap(), serde_json::json!({}));
     }
@@ -598,7 +645,7 @@ mod tests {
         let result = registry.dispatch_command(
             "Fetch.enable",
             serde_json::json!({"patterns": [{"urlPattern": "*"}]}),
-            &NoopEventSender,
+            &test_event_sender(),
         );
         assert!(result.is_some());
         assert_eq!(result.unwrap().unwrap()["patternCount"], 1);
@@ -610,7 +657,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("Target.getTargets", serde_json::json!({}), &NoopEventSender);
+        let result = registry.dispatch_command("Target.getTargets", serde_json::json!({}), &test_event_sender());
         assert!(result.is_some());
         let response = result.unwrap();
         assert!(response.is_ok());
@@ -626,7 +673,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("Target.createTarget", serde_json::json!({ "url": "https://example.com" }), &NoopEventSender);
+        let result = registry.dispatch_command("Target.createTarget", serde_json::json!({ "url": "https://example.com" }), &test_event_sender());
         assert!(result.is_some());
         let response = result.unwrap();
         assert!(response.is_ok());
@@ -639,7 +686,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("Target.closeTarget", serde_json::json!({ "targetId": "abc" }), &NoopEventSender);
+        let result = registry.dispatch_command("Target.closeTarget", serde_json::json!({ "targetId": "abc" }), &test_event_sender());
         assert!(result.is_some());
         let response = result.unwrap();
         assert!(response.is_ok());
@@ -652,7 +699,7 @@ mod tests {
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
 
-        let result = registry.dispatch_command("Target.nonExistent", serde_json::json!({}), &NoopEventSender);
+        let result = registry.dispatch_command("Target.nonExistent", serde_json::json!({}), &test_event_sender());
         assert!(result.is_some());
         let err = result.unwrap().unwrap_err();
         assert_eq!(err.code, -32601);

@@ -16,7 +16,7 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 fn test_node_process_env_deep() {
     bao_runtime::install_exit_handler();
     bao_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::new().expect("JsContext");
+    let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bao_runtime::globals::install_all);
 
     let results = eval_string(&mut ctx, r#"

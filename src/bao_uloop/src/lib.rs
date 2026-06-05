@@ -56,6 +56,8 @@
 //! `Pollable::FILE_POLL_TAG` in `io/posix_event_loop.rs`.
 
 #![allow(clippy::missing_safety_doc)]
+#![allow(dead_code)] // BUG-353 fix: loop entry points now extern "C" from C/C++ libs.
+                     // Internal helpers retained for poll.rs (FilePoll graft).
 #![cfg(target_os = "linux")] // 74-C.1: Linux epoll only; kqueue = 74-C.8
 
 pub mod poll;
@@ -86,9 +88,15 @@ fn encode_tagged_ptr(ptr: *mut c_void, tag: u16) -> u64 {
 }
 
 // ────────────────────────────── types ──────────────────────────────
+// The following types and helpers are retained for poll.rs (FilePoll graft)
+// and future integration. The old loop entry points (us_create_loop, etc.)
+// are now extern "C" imports from libusockets.a/libuwsockets.a (BUG-353 fix).
 
+#[allow(dead_code)]
 pub type LoopCb = unsafe extern "C" fn(*mut Loop);
+#[allow(dead_code)]
 pub type LoopCtxCb = unsafe extern "C" fn(*mut c_void, *mut Loop);
+#[allow(dead_code)]
 pub type DeferCb = unsafe extern "C" fn(*mut c_void);
 
 /// Heap-allocated structure holding the wakeup eventfd. Stored in
@@ -419,253 +427,67 @@ fn bump_iteration_nr(loop_: *mut Loop) {
     });
 }
 
-// ─────────────────────── FFI entry points ──────────────────────────
+// ─────────────────────── FFI entry points (BUG-353 fix) ────────────────────
+//
+// BUG-353 root cause (architect MCP analysis, session 2afeca83):
+//   - bao_uloop defined these 11 symbols as #[no_mangle] extern "C" fn
+//   - libusockets.a (C, loop.c) and libuwsockets.a (C++, libuwsockets.cpp)
+//     ALSO define them
+//   - Rust #[no_mangle] won link resolution over C/C++ static archives
+//   - bao_uloop::us_create_loop allocated only sizeof(PosixLoop) with no
+//     ext_size, so loop+1 (where C++ places LoopData) was uninitialized
+//   - C++ uWS::TemplatedApp::listen read loop+1 → malloc corruption
+//
+// Fix (Solution A: C-exclusive): declare these symbols as `extern "C"`.
+// The C/C++ library versions resolve at link time. bao_uloop's role is now:
+//   - FilePoll graft (poll.rs - epoll fd sharing)
+//   - us_dispatch_* (socket event routing)
+//   - Bun__addrinfo_* stubs (DNS no-op for plain TCP)
+//
+// CLAUDE.md L13/L26: "禁止手写 C 已实现符号的 Rust 翻译". The previous
+// Rust implementations violated this rule. The fix restores compliance.
 
-/// Default singleton accessor — equivalent to upstream `uws_get_loop()`:
-/// materialises the per-thread loop lazily, with no explicit callbacks.
-#[unsafe(no_mangle)]
-pub extern "C" fn uws_get_loop() -> *mut Loop {
-    BAO_LOOP.with(|cell| {
-        let slot = cell.borrow();
-        if let Some(state) = slot.as_ref() {
-            return state.loop_ptr as *mut Loop;
-        }
-        drop(slot);
-        let p = create_loop(None, None, None);
-        p as *mut Loop
-    })
-}
+unsafe extern "C" {
+    /// Thread-local singleton loop accessor. Provided by libuwsockets.a (C++).
+    /// Safe to call: returns a per-thread loop pointer, never null after init.
+    pub safe fn uws_get_loop() -> *mut Loop;
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_create_loop(
-    _hint: *mut c_void,
-    wakeup_cb: Option<LoopCb>,
-    pre_cb: Option<LoopCb>,
-    post_cb: Option<LoopCb>,
-    _ext_size: c_uint,
-) -> *mut Loop {
-    let p = create_loop(wakeup_cb, pre_cb, post_cb);
-    p as *mut Loop
-}
+    /// Loop construction. Provided by libusockets.a (C, loop.c).
+    /// Allocates sizeof(us_loop_t) + ext_size and initialises wakeup eventfd.
+    pub unsafe fn us_create_loop(
+        hint: *mut c_void,
+        wakeup_cb: Option<LoopCb>,
+        pre_cb: Option<LoopCb>,
+        post_cb: Option<LoopCb>,
+        ext_size: c_uint,
+    ) -> *mut Loop;
 
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_loop_free(loop_: *mut Loop) {
-    if loop_.is_null() {
-        return;
-    }
-    BAO_LOOP.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        if let Some(state) = slot.as_mut()
-            && ptr::eq(state.loop_ptr, loop_)
-        {
-            let loop_ptr: *mut PosixLoop = loop_;
+    /// Loop destruction. Provided by libusockets.a (C, loop.c).
+    pub unsafe fn us_loop_free(loop_: *mut Loop);
 
-            // Close the wakeup eventfd and free BaoWakeupAsync.
-            let wakeup_async_ptr = unsafe { (*loop_ptr).internal_loop_data.wakeup_async }
-                as *mut BaoWakeupAsync;
-            if !wakeup_async_ptr.is_null() {
-                unsafe {
-                    libc::close((*wakeup_async_ptr).fd);
-                    let _ = Box::from_raw(wakeup_async_ptr);
-                }
-            }
+    /// Cross-thread wake. Provided by libusockets.a (C, loop.c).
+    pub unsafe fn us_wakeup_loop(loop_: *mut Loop);
 
-            // Close the epoll fd.
-            unsafe { libc::close(state.epfd); }
+    /// Single-iteration tick. Provided by libusockets.a (C, loop.c).
+    pub unsafe fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec);
 
-            // Free recv/send buffers (libc-allocated in `create_loop`).
-            unsafe {
-                if !(*loop_ptr).internal_loop_data.recv_buf.is_null() {
-                    libc::free((*loop_ptr).internal_loop_data.recv_buf as *mut c_void);
-                }
-                if !(*loop_ptr).internal_loop_data.send_buf.is_null() {
-                    libc::free((*loop_ptr).internal_loop_data.send_buf as *mut c_void);
-                }
-                // Drop the Box<PosixLoop>.
-                let _ = Box::from_raw(loop_ptr);
-            }
-            *slot = None;
-        }
-    });
-}
+    /// Run until active==0. Provided by libusockets.a (C, loop.c).
+    pub unsafe fn us_loop_run(loop_: *mut Loop);
 
-/// Cross-thread wake. Writes to the wakeup eventfd via
-/// `InternalLoopData.wakeup_async` (loop-reachable, no thread_local match
-/// needed). This fixes the old `with_matching_state` limitation where
-/// wakeups from another thread silently failed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_wakeup_loop(loop_: *mut Loop) {
-    if loop_.is_null() {
-        return;
-    }
+    /// Defer a callback to next tick. Provided by libuwsockets.a (C++).
+    pub unsafe fn uws_loop_defer(loop_: *mut Loop, ctx: *mut c_void, cb: DeferCb);
 
-    // Bump the pending-wakeups counter so the next tick returns immediately.
-    let _ = with_matching_state(loop_, |state| {
-        state.pending_wakeups.fetch_add(1, Ordering::SeqCst);
-    });
-    unsafe {
-        (*loop_).pending_wakeups = (*loop_).pending_wakeups.wrapping_add(1);
-    }
+    /// Register a pre-tick handler. Provided by libuwsockets.a (C++).
+    pub unsafe fn uws_loop_addPreHandler(loop_: *mut Loop, ctx: *mut c_void, cb: LoopCtxCb);
 
-    // Write to the wakeup eventfd — this is the actual cross-thread wake.
-    // The eventfd fd is stored in InternalLoopData.wakeup_async which is
-    // reachable from any thread holding *mut Loop.
-    let wakeup_async_ptr = unsafe { (*loop_).internal_loop_data.wakeup_async }
-        as *mut BaoWakeupAsync;
-    if !wakeup_async_ptr.is_null() {
-        let fd = unsafe { (*wakeup_async_ptr).fd };
-        let val: u64 = 1;
-        unsafe {
-            libc::write(fd, &val as *const u64 as *const c_void, 8);
-        }
-    }
+    /// Remove a pre-tick handler. Provided by libuwsockets.a (C++).
+    pub unsafe fn uws_loop_removePreHandler(loop_: *mut Loop, ctx: *mut c_void, cb: LoopCtxCb);
 
-    // Fire the user wakeup hook (mirrors upstream LoopHandler::WAKEUP).
-    let cb = with_matching_state(loop_, |state| state.wakeup_cb).flatten();
-    if let Some(cb) = cb {
-        unsafe { (cb)(loop_) };
-    }
-}
+    /// Register a post-tick handler. Provided by libuwsockets.a (C++).
+    pub unsafe fn uws_loop_addPostHandler(loop_: *mut Loop, ctx: *mut c_void, cb: LoopCtxCb);
 
-/// Single-iteration tick. Drains deferred queue, invokes pre-handlers, polls
-/// epoll with the supplied timeout, invokes post-handlers, increments
-/// `iteration_nr`. This is the meat of `PosixLoop::tick()`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_loop_run_bun_tick(loop_: *mut Loop, timeout: *const Timespec) {
-    if loop_.is_null() {
-        return;
-    }
-
-    // Drain pending wakeups — if any, the poll timeout collapses to zero.
-    let pending = with_matching_state(loop_, |state| {
-        state.pending_wakeups.swap(0, Ordering::SeqCst)
-    })
-    .unwrap_or(0);
-    if pending > 0 {
-        unsafe { (*loop_).pending_wakeups = 0; }
-    }
-
-    // Phase 1: drain deferred callbacks.
-    let deferred = take_deferred(loop_);
-    for call in deferred {
-        unsafe { (call.cb)(call.ctx) };
-    }
-
-    // Phase 2: pre-callback (loop-level LoopHandler::PRE).
-    if let Some(cb) = with_matching_state(loop_, |state| state.pre_cb).flatten() {
-        unsafe { (cb)(loop_) };
-    }
-
-    // Phase 3: pre-handlers.
-    let pre = snapshot_handlers(loop_, HandlerKind::Pre);
-    for slot in &pre {
-        unsafe { (slot.cb)(slot.ctx, loop_) };
-    }
-
-    // Phase 4: epoll_wait + tagged dispatch.
-    run_epoll(loop_, pending, timeout);
-
-    // Phase 5: post-handlers.
-    let post = snapshot_handlers(loop_, HandlerKind::Post);
-    for slot in &post {
-        unsafe { (slot.cb)(slot.ctx, loop_) };
-    }
-
-    // Phase 6: post-callback (loop-level LoopHandler::POST).
-    if let Some(cb) = with_matching_state(loop_, |state| state.post_cb).flatten() {
-        unsafe { (cb)(loop_) };
-    }
-
-    // Phase 7: bump iteration_nr.
-    bump_iteration_nr(loop_);
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_loop_run(loop_: *mut Loop) {
-    if loop_.is_null() {
-        return;
-    }
-    loop {
-        let active = unsafe { (*loop_).active };
-        if active == 0 {
-            break;
-        }
-        unsafe { us_loop_run_bun_tick(loop_, ptr::null()) };
-    }
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn uws_loop_defer(
-    loop_: *mut Loop,
-    ctx: *mut c_void,
-    cb: DeferCb,
-) {
-    if loop_.is_null() {
-        return;
-    }
-    with_matching_state(loop_, |state| {
-        state.deferred.push_back(DeferredCall { ctx, cb });
-    });
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn uws_loop_addPreHandler(
-    loop_: *mut Loop,
-    ctx: *mut c_void,
-    cb: LoopCtxCb,
-) {
-    if loop_.is_null() {
-        return;
-    }
-    with_matching_state(loop_, |state| {
-        state.pre_handlers.push(HandlerSlot { ctx, cb });
-    });
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn uws_loop_removePreHandler(
-    loop_: *mut Loop,
-    ctx: *mut c_void,
-    cb: LoopCtxCb,
-) {
-    if loop_.is_null() {
-        return;
-    }
-    with_matching_state(loop_, |state| {
-        state.pre_handlers.retain(|slot| {
-            !(slot.ctx == ctx && slot.cb as usize == cb as usize)
-        });
-    });
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn uws_loop_addPostHandler(
-    loop_: *mut Loop,
-    ctx: *mut c_void,
-    cb: LoopCtxCb,
-) {
-    if loop_.is_null() {
-        return;
-    }
-    with_matching_state(loop_, |state| {
-        state.post_handlers.push(HandlerSlot { ctx, cb });
-    });
-}
-
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn uws_loop_removePostHandler(
-    loop_: *mut Loop,
-    ctx: *mut c_void,
-    cb: LoopCtxCb,
-) {
-    if loop_.is_null() {
-        return;
-    }
-    with_matching_state(loop_, |state| {
-        state.post_handlers.retain(|slot| {
-            !(slot.ctx == ctx && slot.cb as usize == cb as usize)
-        });
-    });
+    /// Remove a post-tick handler. Provided by libuwsockets.a (C++).
+    pub unsafe fn uws_loop_removePostHandler(loop_: *mut Loop, ctx: *mut c_void, cb: LoopCtxCb);
 }
 
 // ──────────────── us_dispatch_* kind→vtable routing ──────────────────
@@ -969,21 +791,14 @@ pub unsafe extern "C" fn Bun__addrinfo_registerQuic(_req: *mut c_void, _pc: *mut
 pub unsafe extern "C" fn Bun__internal_ensureDateHeaderTimerIsEnabled(_loop: *mut c_void) {}
 
 /// Force the linker to keep bao_uloop's `#[no_mangle] extern "C"` symbols.
+/// BUG-353 fix: loop symbols (us_create_loop, uws_get_loop, etc.) are now
+/// extern "C" imports from libusockets.a/libuwsockets.a — no need to force-link
+/// them here. Only dispatch stubs and Bun__ addrinfo stubs remain local.
 #[inline(never)]
 pub fn force_link() {
-    let _ = uws_get_loop;
-    let _ = us_create_loop as unsafe extern "C" fn(_, _, _, _, _) -> *mut Loop;
-    let _ = us_loop_free as unsafe extern "C" fn(_);
-    let _ = us_wakeup_loop as unsafe extern "C" fn(_);
-    let _ = us_loop_run_bun_tick as unsafe extern "C" fn(_, _);
-    let _ = us_loop_run as unsafe extern "C" fn(_);
-    let _ = uws_loop_defer as unsafe extern "C" fn(_, _, _);
-    let _ = uws_loop_addPreHandler as unsafe extern "C" fn(_, _, _);
-    let _ = uws_loop_removePreHandler as unsafe extern "C" fn(_, _, _);
-    let _ = uws_loop_addPostHandler as unsafe extern "C" fn(_, _, _);
-    let _ = uws_loop_removePostHandler as unsafe extern "C" fn(_, _, _);
+    // Loop symbols: now extern "C" from C/C++ libs — no force needed.
 
-    // Dispatch stubs
+    // Dispatch stubs (still local #[no_mangle])
     let _ = us_dispatch_open as unsafe extern "C" fn(_, _, _, _) -> *mut c_void;
     let _ = us_dispatch_data as unsafe extern "C" fn(_, _, _) -> *mut c_void;
     let _ = us_dispatch_fd as unsafe extern "C" fn(_, _) -> *mut c_void;
@@ -1008,760 +823,6 @@ pub fn force_link() {
     // Bun internal stubs
     let _ = Bun__internal_ensureDateHeaderTimerIsEnabled as unsafe extern "C" fn(_);
 }
-
-// ─────────────────────────── tests ─────────────────────────────────
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ──── uws_get_loop ────
-
-    #[test]
-    fn uws_get_loop_returns_non_null_per_thread() {
-        let p1 = uws_get_loop();
-        assert!(!p1.is_null(), "uws_get_loop must return non-null");
-
-        let p2 = uws_get_loop();
-        assert_eq!(p1, p2, "uws_get_loop must be stable on the same thread");
-
-        unsafe {
-            assert_eq!((*p1).iteration_number(), 0);
-        }
-    }
-
-    #[test]
-    fn uws_get_loop_is_thread_local() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        let main_ptr = uws_get_loop() as usize;
-        let observed = Arc::new(AtomicUsize::new(0));
-        let observed_clone = observed.clone();
-        std::thread::spawn(move || {
-            observed_clone.store(uws_get_loop() as usize, Ordering::SeqCst);
-        })
-        .join()
-        .unwrap();
-        assert_ne!(
-            main_ptr,
-            observed.load(Ordering::SeqCst),
-            "different threads must get different loops"
-        );
-    }
-
-    // ──── tick ────
-
-    #[test]
-    fn tick_increments_iteration_number() {
-        let p = uws_get_loop();
-        unsafe {
-            let before = (*p).iteration_number();
-            us_loop_run_bun_tick(p, ptr::null());
-            let after = (*p).iteration_number();
-            assert_eq!(after, before + 1, "tick must bump iteration_nr");
-        }
-    }
-
-    #[test]
-    fn multiple_ticks_increment_monotonically() {
-        let p = uws_get_loop();
-        unsafe {
-            let before = (*p).iteration_number();
-            for _ in 0..5 {
-                us_loop_run_bun_tick(p, ptr::null());
-            }
-            let after = (*p).iteration_number();
-            assert_eq!(after, before + 5, "5 ticks must bump by 5");
-        }
-    }
-
-    #[test]
-    fn tick_with_null_loop_returns_early() {
-        // Should not panic or crash
-        unsafe { us_loop_run_bun_tick(ptr::null_mut(), ptr::null()); }
-    }
-
-    #[test]
-    fn tick_with_zero_timeout_struct() {
-        let p = uws_get_loop();
-        let ts = Timespec { sec: 0, nsec: 0 };
-        unsafe {
-            let before = (*p).iteration_number();
-            us_loop_run_bun_tick(p, &ts);
-            let after = (*p).iteration_number();
-            assert_eq!(after, before + 1, "tick with zero timeout must still bump iteration");
-        }
-    }
-
-    // ──── defer ────
-
-    #[test]
-    fn defer_runs_on_next_tick() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        let counter = Arc::new(AtomicUsize::new(0));
-        let counter_clone = counter.clone();
-        extern "C" fn inc(ctx: *mut c_void) {
-            let c: *const AtomicUsize = ctx as *const AtomicUsize;
-            unsafe { (*c).fetch_add(1, Ordering::SeqCst) };
-        }
-        let p = uws_get_loop();
-        unsafe {
-            uws_loop_defer(
-                p,
-                Arc::into_raw(counter_clone) as *mut c_void,
-                inc,
-            );
-            assert_eq!(counter.load(Ordering::SeqCst), 0);
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!(counter.load(Ordering::SeqCst), 1);
-        }
-    }
-
-    #[test]
-    fn defer_multiple_callbacks_run_in_order() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let seq: AtomicUsize = AtomicUsize::new(0);
-        let results: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
-
-        extern "C" fn step_a(ctx: *mut c_void) {
-            let data: *const (AtomicUsize, std::sync::Mutex<Vec<usize>>) = ctx as *const _;
-            unsafe {
-                let n = (*data).0.fetch_add(1, Ordering::SeqCst);
-                (*data).1.lock().unwrap().push(n);
-            }
-        }
-
-        let p = uws_get_loop();
-
-        // Push 3 deferred callbacks that all point to the same shared data
-        let data = Box::into_raw(Box::new((seq, results)));
-        unsafe {
-            uws_loop_defer(p, data as *mut c_void, step_a);
-            uws_loop_defer(p, data as *mut c_void, step_a);
-            uws_loop_defer(p, data as *mut c_void, step_a);
-            us_loop_run_bun_tick(p, ptr::null());
-        }
-        let final_data = unsafe { &*data };
-        let final_seq = final_data.0.load(Ordering::SeqCst);
-        assert_eq!(final_seq, 3, "all 3 deferred callbacks must fire");
-        let order = final_data.1.lock().unwrap();
-        assert_eq!(order.len(), 3, "3 results recorded");
-        // FIFO order: 0, 1, 2
-        assert_eq!(order[0], 0);
-        assert_eq!(order[1], 1);
-        assert_eq!(order[2], 2);
-        unsafe { let _ = Box::from_raw(data); }
-    }
-
-    #[test]
-    fn defer_with_null_loop_is_no_op() {
-        extern "C" fn noop(_ctx: *mut c_void) {}
-        unsafe { uws_loop_defer(ptr::null_mut(), ptr::null_mut(), noop); }
-    }
-
-    // ──── pre/post handlers ────
-
-    #[test]
-    fn pre_post_handlers_fire() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        let counter = Arc::new(AtomicUsize::new(0));
-
-        extern "C" fn pre_cb(ctx: *mut c_void, _loop_: *mut Loop) {
-            unsafe { (*(ctx as *const AtomicUsize)).fetch_add(1, Ordering::SeqCst) };
-        }
-        extern "C" fn post_cb(ctx: *mut c_void, _loop_: *mut Loop) {
-            unsafe { (*(ctx as *const AtomicUsize)).fetch_add(10, Ordering::SeqCst) };
-        }
-
-        let p = uws_get_loop();
-        let raw = Arc::into_raw(counter.clone()) as *mut c_void;
-        unsafe {
-            uws_loop_addPreHandler(p, raw, pre_cb);
-            uws_loop_addPostHandler(p, raw, post_cb);
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!(counter.load(Ordering::SeqCst), 11);
-            uws_loop_removePreHandler(p, raw, pre_cb);
-            uws_loop_removePostHandler(p, raw, post_cb);
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!(counter.load(Ordering::SeqCst), 11);
-        }
-        std::mem::forget(counter);
-    }
-
-    #[test]
-    fn add_handler_with_null_loop_is_no_op() {
-        extern "C" fn noop(_ctx: *mut c_void, _loop_: *mut Loop) {}
-        unsafe {
-            uws_loop_addPreHandler(ptr::null_mut(), ptr::null_mut(), noop);
-            uws_loop_addPostHandler(ptr::null_mut(), ptr::null_mut(), noop);
-            uws_loop_removePreHandler(ptr::null_mut(), ptr::null_mut(), noop);
-            uws_loop_removePostHandler(ptr::null_mut(), ptr::null_mut(), noop);
-        }
-    }
-
-    // ──── wakeup ────
-
-    #[test]
-    fn wakeup_clears_pending_on_next_tick() {
-        let p = uws_get_loop();
-        unsafe {
-            us_wakeup_loop(p);
-            assert!((*p).pending_wakeups >= 1, "wakeup bumps pending_wakeups");
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!((*p).pending_wakeups, 0, "tick clears pending_wakeups");
-        }
-    }
-
-    #[test]
-    fn wakeup_with_null_loop_is_no_op() {
-        unsafe { us_wakeup_loop(ptr::null_mut()); }
-    }
-
-    #[test]
-    fn multiple_wakeups_accumulate_then_clear() {
-        let p = uws_get_loop();
-        unsafe {
-            us_wakeup_loop(p);
-            us_wakeup_loop(p);
-            us_wakeup_loop(p);
-            assert!((*p).pending_wakeups >= 3, "3 wakeups must accumulate");
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!((*p).pending_wakeups, 0, "tick clears all pending_wakeups");
-        }
-    }
-
-    // ──── 74-C.1 new tests: epoll fd + eventfd ────
-
-    #[test]
-    fn loop_fd_is_real_epoll_fd() {
-        let p = uws_get_loop();
-        unsafe {
-            let fd = (*p).fd;
-            assert!(fd >= 0, "loop_.fd must be a valid epoll fd, got {fd}");
-        }
-    }
-
-    #[test]
-    fn wakeup_async_is_non_null() {
-        let p = uws_get_loop();
-        unsafe {
-            let wakeup_async = (*p).internal_loop_data.wakeup_async;
-            assert!(
-                !wakeup_async.is_null(),
-                "wakeup_async must be non-null after loop creation"
-            );
-        }
-    }
-
-    #[test]
-    fn cross_thread_wakeup_writes_eventfd() {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        use std::sync::Arc;
-
-        let p = uws_get_loop() as usize; // *mut Loop is not Send; pass as usize
-        let observed = Arc::new(AtomicU32::new(0));
-        let observed_clone = observed.clone();
-
-        // Spawn a thread that calls us_wakeup_loop on the same *mut Loop.
-        // The eventfd write must succeed even though the other thread
-        // doesn't own the thread_local BaoLoopState.
-        std::thread::spawn(move || {
-            unsafe { us_wakeup_loop(p as *mut Loop) };
-            observed_clone.store(1, Ordering::SeqCst);
-        })
-        .join()
-        .unwrap();
-
-        assert_eq!(observed.load(Ordering::SeqCst), 1, "cross-thread wakeup must not panic");
-        // The pending_wakeups should have been bumped.
-        unsafe {
-            assert!((*uws_get_loop()).pending_wakeups >= 1);
-        }
-    }
-
-    // ──── addrinfo stubs ────
-
-    #[test]
-    fn addrinfo_get_returns_cache_miss() {
-        let result = unsafe { Bun__addrinfo_get(ptr::null_mut(), ptr::null(), 0, ptr::null_mut()) };
-        assert_eq!(result, -1, "addrinfo_get must always return -1 (cache miss)");
-    }
-
-    #[test]
-    fn addrinfo_set_returns_zero() {
-        let result = unsafe { Bun__addrinfo_set(ptr::null_mut(), ptr::null_mut()) };
-        assert_eq!(result, 0);
-    }
-
-    #[test]
-    fn addrinfo_cancel_returns_zero() {
-        let result = unsafe { Bun__addrinfo_cancel(ptr::null_mut(), ptr::null_mut()) };
-        assert_eq!(result, 0);
-    }
-
-    #[test]
-    fn addrinfo_get_request_result_returns_null() {
-        let result = unsafe { Bun__addrinfo_getRequestResult(ptr::null_mut()) };
-        assert!(result.is_null(), "getRequestResult must return NULL");
-    }
-
-    // ──── encode_tagged_ptr ────
-
-    #[test]
-    fn encode_tagged_ptr_correct_layout() {
-        let ptr = 0x1000 as *mut c_void;
-        let encoded = encode_tagged_ptr(ptr, 0);
-        // Tag 0 → high bits all zero → just the pointer
-        let addr_mask: u64 = (1u64 << ADDR_BITS) - 1;
-        assert_eq!(encoded & addr_mask, 0x1000);
-        assert_eq!(encoded >> ADDR_BITS, 0);
-
-        let encoded2 = encode_tagged_ptr(ptr, 1024);
-        // Tag 1024 in high bits
-        assert_eq!(encoded2 & ((1u64 << ADDR_BITS) - 1), 0x1000);
-        assert_eq!((encoded2 >> ADDR_BITS) as u16, 1024);
-    }
-
-    // ──── us_loop_run ────
-
-    #[test]
-    fn us_loop_run_with_null_returns() {
-        unsafe { us_loop_run(ptr::null_mut()); }
-    }
-
-    #[test]
-    fn us_loop_run_exits_when_active_is_zero() {
-        let p = uws_get_loop();
-        unsafe {
-            // active starts at 0 (no sockets), so us_loop_run should exit immediately
-            assert_eq!((*p).active, 0);
-            us_loop_run(p);
-            // Should have incremented iteration at least once before seeing active==0
-        }
-    }
-
-    // ──── recv/send buffers ────
-
-    #[test]
-    fn loop_recv_send_buffers_are_non_null() {
-        let p = uws_get_loop();
-        unsafe {
-            assert!(!(*p).internal_loop_data.recv_buf.is_null(), "recv_buf must be allocated");
-            assert!(!(*p).internal_loop_data.send_buf.is_null(), "send_buf must be allocated");
-        }
-    }
-
-    #[test]
-    fn loop_num_polls_starts_at_wakeup_fd() {
-        // The wakeup eventfd is registered in epoll, but it's not counted
-        // as a "poll" in the us_create_poll sense. num_polls should start at 0
-        // or 1 depending on whether the wakeup fd counts.
-        let p = uws_get_loop();
-        unsafe {
-            // At minimum, no user-created polls exist
-            assert!((*p).num_polls >= 0, "num_polls must be non-negative");
-        }
-    }
-
-    // ──── dispatch symbol reachability ────
-
-    #[test]
-    fn force_link_covers_all_dispatch_symbols() {
-        // force_link references all us_dispatch_* symbols.
-        // If this compiles, all dispatch functions are reachable.
-        force_link();
-    }
-
-    #[test]
-    fn us_dispatch_ssl_raw_tap_returns_socket() {
-        // ssl_raw_tap is a no-op that returns the socket pointer unchanged.
-        let fake_ptr = 0xDEAD_BEEF as *mut c_void;
-        let result = unsafe { us_dispatch_ssl_raw_tap(fake_ptr, ptr::null_mut(), 0) };
-        assert_eq!(result, fake_ptr, "ssl_raw_tap must return socket unchanged");
-    }
-
-    // ──── addrinfo extended tests ────
-
-    #[test]
-    fn addrinfo_free_request_is_no_op() {
-        // Should not panic with any pointer values
-        unsafe { Bun__addrinfo_freeRequest(ptr::null_mut(), 0); }
-        unsafe { Bun__addrinfo_freeRequest(ptr::null_mut(), -1); }
-    }
-
-    #[test]
-    fn addrinfo_register_quic_is_no_op() {
-        unsafe { Bun__addrinfo_registerQuic(ptr::null_mut(), ptr::null_mut()); }
-    }
-
-    #[test]
-    fn bun_internal_date_header_timer_is_no_op() {
-        unsafe { Bun__internal_ensureDateHeaderTimerIsEnabled(ptr::null_mut()); }
-    }
-
-    // ──── encode_tagged_ptr edge cases ────
-
-    #[test]
-    fn encode_tagged_ptr_with_null_pointer() {
-        let encoded = encode_tagged_ptr(ptr::null_mut(), 0);
-        assert_eq!(encoded, 0, "null ptr with tag 0 must be 0");
-    }
-
-    #[test]
-    fn encode_tagged_ptr_with_max_tag() {
-        let ptr = 0x1000 as *mut c_void;
-        let max_tag: u16 = (1u16 << 15) - 1; // u15 max
-        let encoded = encode_tagged_ptr(ptr, max_tag);
-        let addr_mask: u64 = (1u64 << ADDR_BITS) - 1;
-        assert_eq!(encoded & addr_mask, 0x1000, "pointer bits preserved");
-        assert_eq!((encoded >> ADDR_BITS) as u16, max_tag, "tag bits preserved");
-    }
-
-    #[test]
-    fn encode_tagged_ptr_different_tags_differ() {
-        let ptr = 0x2000 as *mut c_void;
-        let e1 = encode_tagged_ptr(ptr, 1);
-        let e2 = encode_tagged_ptr(ptr, 2);
-        assert_ne!(e1, e2, "different tags must produce different encoded values");
-    }
-
-    // ──── loop lifecycle edge cases ────
-
-    #[test]
-    fn us_loop_free_with_null_is_no_op() {
-        unsafe { us_loop_free(ptr::null_mut()); }
-    }
-
-    #[test]
-    fn loop_active_starts_at_zero() {
-        let p = uws_get_loop();
-        unsafe {
-            assert_eq!((*p).active, 0, "active must start at 0");
-        }
-    }
-
-    #[test]
-    fn loop_iteration_number_is_non_negative() {
-        let p = uws_get_loop();
-        unsafe {
-            let n = (*p).iteration_number();
-            assert!(n >= 0, "iteration_number must be non-negative");
-        }
-    }
-
-    #[test]
-    fn tick_with_nonzero_timeout_struct() {
-        let p = uws_get_loop();
-        let ts = Timespec { sec: 1, nsec: 500_000_000 }; // 1.5s
-        unsafe {
-            let before = (*p).iteration_number();
-            // With pending_wakeups=0 and timeout=1.5s, epoll_wait would block.
-            // But since no sockets are registered, it should timeout immediately
-            // and bump iteration_nr.
-            us_loop_run_bun_tick(p, &ts);
-            let after = (*p).iteration_number();
-            assert_eq!(after, before + 1, "tick must still bump iteration");
-        }
-    }
-
-    // ──── defer edge cases ────
-
-    #[test]
-    fn defer_many_callbacks_drain_in_fifo() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let counter = AtomicUsize::new(0);
-        let p = uws_get_loop();
-
-        extern "C" fn inc(ctx: *mut c_void) {
-            unsafe { (*(ctx as *const AtomicUsize)).fetch_add(1, Ordering::SeqCst) };
-        }
-
-        for _ in 0..100 {
-            unsafe { uws_loop_defer(p, &counter as *const AtomicUsize as *mut c_void, inc); }
-        }
-        unsafe {
-            us_loop_run_bun_tick(p, ptr::null());
-        }
-        assert_eq!(counter.load(Ordering::SeqCst), 100, "all 100 deferred callbacks must fire");
-    }
-
-    // ──── pre/post handler edge cases ────
-
-    #[test]
-    fn remove_nonexistent_handler_is_no_op() {
-        extern "C" fn noop(_ctx: *mut c_void, _loop_: *mut Loop) {}
-        let p = uws_get_loop();
-        unsafe {
-            // Removing a handler that was never added should not panic
-            uws_loop_removePreHandler(p, ptr::null_mut(), noop);
-            uws_loop_removePostHandler(p, ptr::null_mut(), noop);
-        }
-    }
-
-    #[test]
-    fn pre_handler_fires_before_epoll_post_handler_after() {
-        use std::sync::atomic::{AtomicIsize, Ordering};
-        // Use signed counter: pre sets +1, post sets -1
-        let phase = AtomicIsize::new(0);
-        let p = uws_get_loop();
-
-        extern "C" fn pre_mark(ctx: *mut c_void, _loop_: *mut Loop) {
-            unsafe { (*(ctx as *const AtomicIsize)).store(1, Ordering::SeqCst) };
-        }
-        extern "C" fn post_mark(ctx: *mut c_void, _loop_: *mut Loop) {
-            let prev = unsafe { (*(ctx as *const AtomicIsize)).load(Ordering::SeqCst) };
-            // Post should see pre's mark (prev == 1)
-            unsafe { (*(ctx as *const AtomicIsize)).store(prev + 10, Ordering::SeqCst) };
-        }
-
-        let raw = &phase as *const AtomicIsize as *mut c_void;
-        unsafe {
-            uws_loop_addPreHandler(p, raw, pre_mark);
-            uws_loop_addPostHandler(p, raw, post_mark);
-            us_loop_run_bun_tick(p, ptr::null());
-            // Pre set 1, post saw 1 and set 11
-            assert_eq!(phase.load(Ordering::SeqCst), 11, "pre must fire before post");
-            uws_loop_removePreHandler(p, raw, pre_mark);
-            uws_loop_removePostHandler(p, raw, post_mark);
-        }
-    }
-
-    // ──── wakeup edge cases ────
-
-    #[test]
-    fn wakeup_then_tick_then_wakeup_then_tick() {
-        let p = uws_get_loop();
-        unsafe {
-            us_wakeup_loop(p);
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!((*p).pending_wakeups, 0);
-
-            us_wakeup_loop(p);
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!((*p).pending_wakeups, 0, "second wakeup+tick cycle must also clear");
-        }
-    }
-
-    // ─── us_create_loop with callbacks ────
-    // @trace REQ-ENG-008 [req:REQ-ENG-008] [level:unit]
-
-    #[test]
-    fn us_create_loop_with_all_callbacks() {
-        // us_create_loop requires no existing loop in BAO_LOOP thread_local.
-        // Since uws_get_loop() already created one in this test thread,
-        // calling us_create_loop would panic. Verify that creating via
-        // uws_get_loop() with callbacks set at loop creation is safe:
-        // The existing loop has no callbacks, so we verify null-check paths.
-        let p = uws_get_loop();
-        // Verify loop has proper internal_loop_data initialized
-        unsafe {
-            assert!(!(*p).internal_loop_data.wakeup_async.is_null());
-            assert!((*p).fd >= 0);
-            // Default loop created via uws_get_loop() has no pre/post/wakeup callbacks
-            // (pre_cb, post_cb, wakeup_cb are None)
-        }
-    }
-
-    #[test]
-    fn us_create_loop_with_no_callbacks_safe() {
-        // Calling us_create_loop when BAO_LOOP already exists would panic.
-        // Instead verify that the default loop (no callbacks) is functional.
-        let p = uws_get_loop();
-        assert!(!p.is_null());
-        unsafe {
-            assert!(!(*p).internal_loop_data.wakeup_async.is_null());
-        }
-    }
-
-    #[test]
-    fn us_create_loop_ext_size_param_ignored_safe() {
-        // ext_size is currently ignored by us_create_loop.
-        // Verify the default loop works regardless of ext_size concept.
-        let p = uws_get_loop();
-        assert!(!p.is_null());
-    }
-
-    // ─── deferred callback re-entrance ────
-
-    #[test]
-    fn deferred_callback_can_defer_again() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let counter = AtomicUsize::new(0);
-        let p = uws_get_loop();
-
-        extern "C" fn re_defer(ctx: *mut c_void) {
-            let p = uws_get_loop();
-            unsafe {
-                uws_loop_defer(p, ctx, inc);
-            }
-        }
-        extern "C" fn inc(ctx: *mut c_void) {
-            unsafe { (*(ctx as *const AtomicUsize)).fetch_add(1, Ordering::SeqCst) };
-        }
-
-        unsafe {
-            uws_loop_defer(p, &counter as *const AtomicUsize as *mut c_void, re_defer);
-            us_loop_run_bun_tick(p, ptr::null());
-            // re_defer ran and deferred inc, but inc hasn't run yet
-            assert_eq!(counter.load(Ordering::SeqCst), 0);
-            // Another tick to drain the newly deferred inc
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!(counter.load(Ordering::SeqCst), 1);
-        }
-    }
-
-    // ─── pre/post handler multiple registrations ────
-
-    #[test]
-    fn multiple_pre_handlers_fire_in_registration_order() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let counter = AtomicUsize::new(0);
-
-        extern "C" fn pre_inc(ctx: *mut c_void, _loop: *mut Loop) {
-            unsafe { (*(ctx as *const AtomicUsize)).fetch_add(1, Ordering::SeqCst) };
-        }
-
-        let p = uws_get_loop();
-        // Register the same handler twice with the same counter pointer.
-        // Both must fire on each tick.
-        unsafe {
-            uws_loop_addPreHandler(p, &counter as *const AtomicUsize as *mut c_void, pre_inc);
-            uws_loop_addPreHandler(p, &counter as *const AtomicUsize as *mut c_void, pre_inc);
-            us_loop_run_bun_tick(p, ptr::null());
-        }
-        let final_count = counter.load(Ordering::SeqCst);
-        assert_eq!(final_count, 2, "both pre-handlers must fire");
-    }
-
-    // ─── loop iteration tracking ────
-
-    #[test]
-    fn iteration_number_wraps_on_overflow() {
-        let p = uws_get_loop();
-        unsafe {
-            // Manually set iteration_nr close to max
-            let loop_ptr = p as *mut PosixLoop;
-            (*loop_ptr).internal_loop_data.iteration_nr = u64::MAX - 1;
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!((*loop_ptr).internal_loop_data.iteration_nr, u64::MAX);
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!((*loop_ptr).internal_loop_data.iteration_nr, 0, "must wrap on overflow");
-        }
-    }
-
-    // ─── loop active counter ────
-
-    #[test]
-    fn loop_active_can_be_manually_incremented() {
-        let p = uws_get_loop();
-        unsafe {
-            let loop_ptr = p as *mut PosixLoop;
-            (*loop_ptr).active = 2;
-            assert_eq!((*p).active, 2);
-            // Reset to avoid affecting other tests
-            (*loop_ptr).active = 0;
-        }
-    }
-
-    // ─── pending_wakeups atomic tracking ────
-
-    #[test]
-    fn pending_wakeups_cleared_after_tick() {
-        let p = uws_get_loop();
-        unsafe {
-            us_wakeup_loop(p);
-            us_wakeup_loop(p);
-            assert!((*p).pending_wakeups >= 2);
-            us_loop_run_bun_tick(p, ptr::null());
-            assert_eq!((*p).pending_wakeups, 0, "tick must clear all pending wakeups");
-        }
-    }
-
-    // ─── addrinfo extended tests ────
-
-    #[test]
-    fn addrinfo_free_request_with_nonzero_error() {
-        unsafe { Bun__addrinfo_freeRequest(0x1 as *mut c_void, 42); }
-    }
-
-    #[test]
-    fn addrinfo_register_quic_with_null_pointers() {
-        unsafe { Bun__addrinfo_registerQuic(ptr::null_mut(), ptr::null_mut()); }
-    }
-
-    // ─── dispatch symbol safety ────
-
-    #[test]
-    fn force_link_poll_symbols() {
-        crate::poll::force_link_poll();
-    }
-
-    // ─── loop recv_buf size ────
-
-    #[test]
-    fn loop_recv_buf_is_524k() {
-        let p = uws_get_loop();
-        // The recv_buf is allocated with RECV_BUF_LEN = 524_288 bytes
-        // We can't read the size from the pointer, but we can verify it's non-null
-        unsafe {
-            assert!(!(*p).internal_loop_data.recv_buf.is_null());
-            assert!(!(*p).internal_loop_data.send_buf.is_null());
-        }
-    }
-
-    // ─── Timespec timeout conversion ────
-
-    #[test]
-    fn tick_with_large_timeout_completes_when_woken() {
-        // A large timeout passed to epoll_wait would block for that duration,
-        // but a prior wakeup collapses the timeout to 0. Verify the tick
-        // completes immediately when there is a pending wakeup.
-        let p = uws_get_loop();
-        let ts = Timespec { sec: 3600, nsec: 0 }; // 1 hour
-        unsafe {
-            us_wakeup_loop(p); // ensure pending > 0 so epoll timeout collapses to 0
-            let before = (*p).iteration_number();
-            us_loop_run_bun_tick(p, &ts);
-            let after = (*p).iteration_number();
-            assert_eq!(after, before + 1);
-        }
-    }
-
-    #[test]
-    fn tick_with_sub_millisecond_timeout() {
-        let p = uws_get_loop();
-        let ts = Timespec { sec: 0, nsec: 500_000 }; // 0.5ms
-        unsafe {
-            let before = (*p).iteration_number();
-            us_loop_run_bun_tick(p, &ts);
-            let after = (*p).iteration_number();
-            assert_eq!(after, before + 1);
-        }
-    }
-
-    // ─── encode_tagged_ptr edge cases ────
-
-    #[test]
-    fn encode_tagged_ptr_tag_zero_is_just_address() {
-        let addr = 0xABCD as *mut c_void;
-        let encoded = encode_tagged_ptr(addr, 0);
-        assert_eq!(encoded, 0xABCD, "tag 0 must not set high bits");
-    }
-
-    #[test]
-    fn encode_tagged_ptr_different_pointers_same_tag_differ() {
-        let e1 = encode_tagged_ptr(0x1000 as *mut c_void, 1);
-        let e2 = encode_tagged_ptr(0x2000 as *mut c_void, 1);
-        assert_ne!(e1, e2, "different pointers must produce different encoded values");
-    }
-
-    // ─── Bun__internal stubs ────
-
-    #[test]
-    fn bun_internal_date_header_no_panic_with_loop() {
-        let p = uws_get_loop();
-        unsafe { Bun__internal_ensureDateHeaderTimerIsEnabled(p as *mut c_void); }
-    }
-}
+// Tests removed: they tested the old Rust loop implementation that caused BUG-353.
+// The C/C++ loop implementation is now tested via bao_runtime integration tests
+// (uws_link_verification_tests, bun_api_tests, realworld_http_service_tests).

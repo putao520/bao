@@ -161,6 +161,154 @@ impl TlsFingerprint {
     pub fn tls12_suites(&self) -> Vec<u16> {
         self.cipher_suites.iter().copied().filter(|s| !self.is_tls13_suite(*s)).collect()
     }
+
+    /// Convert TLS 1.2 cipher suite IDs to BoringSSL OpenSSL name string
+    /// (colon-separated, e.g. "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256")
+    pub fn tls12_cipher_list_string(&self) -> String {
+        self.tls12_suites()
+            .iter()
+            .filter_map(|&id| cipher_suite_openssl_name(id))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
+    /// Convert TLS 1.3 cipher suite IDs to BoringSSL name string
+    /// (colon-separated, e.g. "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384")
+    pub fn tls13_cipher_suites_string(&self) -> String {
+        self.tls13_suites()
+            .iter()
+            .filter_map(|&id| cipher_suite_openssl_name(id))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
+    /// Convert supported group IDs to BoringSSL curves list string
+    /// (colon-separated, e.g. "X25519:P-256:P-384")
+    pub fn curves_list_string(&self) -> String {
+        self.supported_groups
+            .iter()
+            .filter_map(|&id| group_openssl_name(id))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+
+    /// Convert signature algorithm IDs to BoringSSL sigalgs list string
+    /// (colon-separated, e.g. "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256")
+    pub fn sigalgs_list_string(&self) -> String {
+        self.signature_algorithms
+            .iter()
+            .filter_map(|&id| sigalg_openssl_name(id))
+            .collect::<Vec<_>>()
+            .join(":")
+    }
+}
+
+/// Map IANA cipher suite ID to BoringSSL OpenSSL name.
+/// Covers TLS 1.3 + common TLS 1.2 suites used in browser fingerprints.
+fn cipher_suite_openssl_name(id: u16) -> Option<&'static str> {
+    match id {
+        // TLS 1.3
+        0x1301 => Some("TLS_AES_128_GCM_SHA256"),
+        0x1302 => Some("TLS_AES_256_GCM_SHA384"),
+        0x1303 => Some("TLS_CHACHA20_POLY1305_SHA256"),
+        // TLS 1.2 ECDHE
+        0xC02B => Some("ECDHE-ECDSA-AES128-GCM-SHA256"),
+        0xC02F => Some("ECDHE-RSA-AES128-GCM-SHA256"),
+        0xC02C => Some("ECDHE-ECDSA-AES256-GCM-SHA384"),
+        0xC030 => Some("ECDHE-RSA-AES256-GCM-SHA384"),
+        // TLS 1.2 DHE
+        0x009E => Some("DHE-RSA-AES128-GCM-SHA256"),
+        0x009C => Some("DHE-RSA-AES256-GCM-SHA384"),
+        // TLS 1.2 ECDHE CBC
+        0xCCA9 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"),
+        0xCCA8 => Some("ECDHE-RSA-CHACHA20-POLY1305"),
+        // TLS 1.2 legacy CBC
+        0xC013 => Some("ECDHE-RSA-AES128-SHA"),
+        0xC009 => Some("ECDHE-ECDSA-AES128-SHA"),
+        0x0033 => Some("DHE-RSA-AES128-SHA"),
+        0x0067 => Some("DHE-RSA-AES256-SHA256"),
+        _ => None,
+    }
+}
+
+/// Map IANA supported group ID to BoringSSL group name.
+fn group_openssl_name(id: u16) -> Option<&'static str> {
+    match id {
+        0x001D => Some("X25519"),
+        0x0017 => Some("P-256"),
+        0x0018 => Some("P-384"),
+        0x0019 => Some("P-521"),
+        0x0100 => Some("ffdhe2048"),
+        0x0101 => Some("ffdhe3072"),
+        _ => None,
+    }
+}
+
+/// Map IANA signature algorithm ID to BoringSSL sigalg name.
+fn sigalg_openssl_name(id: u16) -> Option<&'static str> {
+    match id {
+        0x0403 => Some("ecdsa_secp256r1_sha256"),
+        0x0503 => Some("ecdsa_secp384r1_sha384"),
+        0x0603 => Some("ecdsa_secp521r1_sha512"),
+        0x0804 => Some("rsa_pss_rsae_sha256"),
+        0x0805 => Some("rsa_pss_rsae_sha384"),
+        0x0806 => Some("rsa_pss_rsae_sha512"),
+        0x0401 => Some("rsa_pkcs1_sha256"),
+        0x0501 => Some("rsa_pkcs1_sha384"),
+        0x0601 => Some("rsa_pkcs1_sha512"),
+        0x0203 => Some("ecdsa_sha1"),
+        0x0201 => Some("rsa_pkcs1_sha1"),
+        _ => None,
+    }
+}
+
+/// Pre-computed BoringSSL configuration strings derived from a [`TlsFingerprint`].
+///
+/// This is an intermediate representation that bridges `bao_stealth::TlsFingerprint`
+/// (IANA u16 IDs) to `bun_http::ssl_config::SSLConfig` (C string pointers for
+/// BoringSSL API calls). Created once per profile, then used to populate
+/// `SSLConfig` fields before TLS handshake.
+///
+/// Usage:
+/// ```ignore
+/// let config = TlsFingerprintConfig::from_fingerprint(&stealth_profile.tls);
+/// // Then in bao_runtime, write config.tls12_cipher_list into SSLConfig
+/// ```
+#[derive(Debug, Clone)]
+pub struct TlsFingerprintConfig {
+    /// TLS 1.2 cipher list in OpenSSL format (colon-separated).
+    /// e.g. "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+    pub tls12_cipher_list: String,
+    /// TLS 1.3 cipher suites (colon-separated).
+    /// e.g. "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256"
+    pub tls13_cipher_suites: String,
+    /// Supported groups/curves (colon-separated).
+    /// e.g. "X25519:P-256:P-384"
+    pub curves_list: String,
+    /// Signature algorithms (colon-separated).
+    /// e.g. "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256"
+    pub sigalgs_list: String,
+}
+
+impl TlsFingerprintConfig {
+    /// Build from a [`TlsFingerprint`] by converting IANA u16 IDs to BoringSSL
+    /// OpenSSL name strings.
+    pub fn from_fingerprint(fp: &TlsFingerprint) -> Self {
+        TlsFingerprintConfig {
+            tls12_cipher_list: fp.tls12_cipher_list_string(),
+            tls13_cipher_suites: fp.tls13_cipher_suites_string(),
+            curves_list: fp.curves_list_string(),
+            sigalgs_list: fp.sigalgs_list_string(),
+        }
+    }
+
+    /// Whether any TLS fingerprint fields are non-empty.
+    pub fn has_fingerprint(&self) -> bool {
+        !self.tls12_cipher_list.is_empty()
+            || !self.tls13_cipher_suites.is_empty()
+            || !self.curves_list.is_empty()
+            || !self.sigalgs_list.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -413,5 +561,200 @@ mod tests {
         let ch_latest = TlsFingerprint::chrome_latest();
         // Chrome latest adds extensions 0x001C (delegated_credentials) and 0x0039
         assert!(ch_latest.extensions.len() > ch120.extensions.len());
+    }
+
+    // ─── BoringSSL string conversion ──────────────────────────────────
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+
+    #[test]
+    fn test_tls12_cipher_list_firefox_nonempty() {
+        let fp = TlsFingerprint::firefox();
+        let list = fp.tls12_cipher_list_string();
+        assert!(!list.is_empty(), "TLS 1.2 cipher list should not be empty");
+        assert!(list.contains("ECDHE"), "Should contain ECDHE suites");
+    }
+
+    #[test]
+    fn test_tls12_cipher_list_chrome_nonempty() {
+        let fp = TlsFingerprint::chrome();
+        let list = fp.tls12_cipher_list_string();
+        assert!(!list.is_empty());
+    }
+
+    #[test]
+    fn test_tls13_cipher_suites_firefox() {
+        let fp = TlsFingerprint::firefox();
+        let list = fp.tls13_cipher_suites_string();
+        assert!(list.contains("TLS_AES_128_GCM_SHA256"), "Should contain TLS 1.3 AES-128");
+        assert!(list.contains("TLS_AES_256_GCM_SHA384"), "Should contain TLS 1.3 AES-256");
+        assert!(list.contains("TLS_CHACHA20_POLY1305_SHA256"), "Should contain TLS 1.3 ChaCha20");
+    }
+
+    #[test]
+    fn test_tls13_cipher_suites_chrome() {
+        let fp = TlsFingerprint::chrome();
+        let list = fp.tls13_cipher_suites_string();
+        assert!(list.contains("TLS_AES_128_GCM_SHA256"));
+    }
+
+    #[test]
+    fn test_curves_list_firefox() {
+        let fp = TlsFingerprint::firefox();
+        let list = fp.curves_list_string();
+        assert!(list.contains("X25519"), "Should contain X25519");
+        assert!(list.contains("P-256"), "Should contain P-256");
+    }
+
+    #[test]
+    fn test_curves_list_chrome() {
+        let fp = TlsFingerprint::chrome();
+        let list = fp.curves_list_string();
+        assert!(list.contains("X25519"));
+        assert!(list.contains("P-256"));
+    }
+
+    #[test]
+    fn test_sigalgs_list_firefox() {
+        let fp = TlsFingerprint::firefox();
+        let list = fp.sigalgs_list_string();
+        assert!(list.contains("ecdsa_secp256r1_sha256"), "Should contain ECDSA P-256");
+        assert!(list.contains("rsa_pss_rsae_sha256"), "Should contain RSA-PSS");
+    }
+
+    #[test]
+    fn test_sigalgs_list_chrome() {
+        let fp = TlsFingerprint::chrome();
+        let list = fp.sigalgs_list_string();
+        assert!(list.contains("ecdsa_secp256r1_sha256"));
+    }
+
+    #[test]
+    fn test_tls12_cipher_list_colon_separated() {
+        let fp = TlsFingerprint::firefox();
+        let list = fp.tls12_cipher_list_string();
+        // Should be colon-separated with no leading/trailing colons
+        assert!(!list.starts_with(':'), "No leading colon");
+        assert!(!list.ends_with(':'), "No trailing colon");
+        assert!(!list.contains("::"), "No double colons");
+    }
+
+    #[test]
+    fn test_curves_list_colon_separated() {
+        let fp = TlsFingerprint::firefox();
+        let list = fp.curves_list_string();
+        assert!(!list.starts_with(':'));
+        assert!(!list.ends_with(':'));
+    }
+
+    #[test]
+    fn test_sigalgs_list_colon_separated() {
+        let fp = TlsFingerprint::firefox();
+        let list = fp.sigalgs_list_string();
+        assert!(!list.starts_with(':'));
+        assert!(!list.ends_with(':'));
+    }
+
+    #[test]
+    fn test_firefox_chrome_different_tls12_cipher_lists() {
+        let ff = TlsFingerprint::firefox();
+        let ch = TlsFingerprint::chrome();
+        // Firefox has more TLS 1.2 suites than Chrome
+        assert_ne!(ff.tls12_cipher_list_string(), ch.tls12_cipher_list_string());
+    }
+
+    #[test]
+    fn test_cipher_suite_openssl_name_known_ids() {
+        assert_eq!(cipher_suite_openssl_name(0x1301), Some("TLS_AES_128_GCM_SHA256"));
+        assert_eq!(cipher_suite_openssl_name(0xC02B), Some("ECDHE-ECDSA-AES128-GCM-SHA256"));
+        assert_eq!(cipher_suite_openssl_name(0xFFFF), None);
+    }
+
+    #[test]
+    fn test_group_openssl_name_known_ids() {
+        assert_eq!(group_openssl_name(0x001D), Some("X25519"));
+        assert_eq!(group_openssl_name(0x0017), Some("P-256"));
+        assert_eq!(group_openssl_name(0xFFFF), None);
+    }
+
+    #[test]
+    fn test_sigalg_openssl_name_known_ids() {
+        assert_eq!(sigalg_openssl_name(0x0403), Some("ecdsa_secp256r1_sha256"));
+        assert_eq!(sigalg_openssl_name(0x0804), Some("rsa_pss_rsae_sha256"));
+        assert_eq!(sigalg_openssl_name(0xFFFF), None);
+    }
+
+    // ─── TlsFingerprintConfig ───────────────────────────────────────
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+
+    #[test]
+    fn test_fingerprint_config_from_firefox() {
+        let fp = TlsFingerprint::firefox();
+        let config = TlsFingerprintConfig::from_fingerprint(&fp);
+        assert!(!config.tls12_cipher_list.is_empty());
+        assert!(!config.tls13_cipher_suites.is_empty());
+        assert!(!config.curves_list.is_empty());
+        assert!(!config.sigalgs_list.is_empty());
+    }
+
+    #[test]
+    fn test_fingerprint_config_from_chrome() {
+        let fp = TlsFingerprint::chrome();
+        let config = TlsFingerprintConfig::from_fingerprint(&fp);
+        assert!(!config.tls12_cipher_list.is_empty());
+        assert!(!config.tls13_cipher_suites.is_empty());
+        assert!(!config.curves_list.is_empty());
+        assert!(!config.sigalgs_list.is_empty());
+    }
+
+    #[test]
+    fn test_fingerprint_config_from_chrome_latest() {
+        let fp = TlsFingerprint::chrome_latest();
+        let config = TlsFingerprintConfig::from_fingerprint(&fp);
+        assert!(config.has_fingerprint());
+    }
+
+    #[test]
+    fn test_fingerprint_config_has_fingerprint_true() {
+        let fp = TlsFingerprint::firefox();
+        let config = TlsFingerprintConfig::from_fingerprint(&fp);
+        assert!(config.has_fingerprint());
+    }
+
+    #[test]
+    fn test_fingerprint_config_has_fingerprint_false() {
+        let config = TlsFingerprintConfig {
+            tls12_cipher_list: String::new(),
+            tls13_cipher_suites: String::new(),
+            curves_list: String::new(),
+            sigalgs_list: String::new(),
+        };
+        assert!(!config.has_fingerprint());
+    }
+
+    #[test]
+    fn test_fingerprint_config_firefox_chrome_different() {
+        let ff_config = TlsFingerprintConfig::from_fingerprint(&TlsFingerprint::firefox());
+        let ch_config = TlsFingerprintConfig::from_fingerprint(&TlsFingerprint::chrome());
+        assert_ne!(ff_config.tls12_cipher_list, ch_config.tls12_cipher_list);
+    }
+
+    #[test]
+    fn test_fingerprint_config_clone() {
+        let fp = TlsFingerprint::firefox();
+        let config = TlsFingerprintConfig::from_fingerprint(&fp);
+        let cloned = config.clone();
+        assert_eq!(config.tls12_cipher_list, cloned.tls12_cipher_list);
+        assert_eq!(config.tls13_cipher_suites, cloned.tls13_cipher_suites);
+        assert_eq!(config.curves_list, cloned.curves_list);
+        assert_eq!(config.sigalgs_list, cloned.sigalgs_list);
+    }
+
+    #[test]
+    fn test_fingerprint_config_debug() {
+        let fp = TlsFingerprint::firefox();
+        let config = TlsFingerprintConfig::from_fingerprint(&fp);
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("TlsFingerprintConfig"));
+        assert!(debug_str.contains("tls12_cipher_list"));
     }
 }

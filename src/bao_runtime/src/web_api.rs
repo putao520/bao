@@ -770,4 +770,78 @@ mod tests {
         assert_eq!(port, 80);
         assert_eq!(path, "/");
     }
+
+    #[test]
+    fn parse_ws_url_ipv4_with_port() {
+        let (host, port, path) = parse_ws_url("ws://127.0.0.1:9222/json").unwrap();
+        assert_eq!(host, "127.0.0.1");
+        assert_eq!(port, 9222);
+        assert_eq!(path, "/json");
+    }
+
+    #[test]
+    fn parse_ws_url_query_string() {
+        let (host, port, path) = parse_ws_url("ws://example.com/ws?token=abc").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 80);
+        assert!(path.starts_with("/ws"));
+    }
+
+    #[test]
+    fn parse_ws_url_deep_path() {
+        let (host, _, path) = parse_ws_url("ws://host/a/b/c/d").unwrap();
+        assert_eq!(host, "host");
+        assert_eq!(path, "/a/b/c/d");
+    }
+
+    #[test]
+    fn write_masked_payload_empty() {
+        let mut frame = Vec::new();
+        write_masked_payload(&mut frame, b"");
+        // Empty payload: 1 byte opcode+length + 4 bytes mask key
+        assert_eq!(frame.len(), 5);
+        assert_eq!(frame[0] & 0x7F, 0); // length = 0
+    }
+
+    #[test]
+    fn write_masked_payload_short() {
+        let mut frame = Vec::new();
+        let payload = b"hello";
+        write_masked_payload(&mut frame, payload);
+        // 1 byte opcode+length + 4 bytes mask key + 5 bytes masked data
+        assert_eq!(frame.len(), 10);
+        assert_eq!(frame[0] & 0x7F, 5); // length = 5
+    }
+
+    #[test]
+    fn write_masked_payload_medium() {
+        let mut frame = Vec::new();
+        let payload = vec![0u8; 200];
+        write_masked_payload(&mut frame, &payload);
+        // 1 byte + 2 bytes extended length + 4 bytes mask key + 200 bytes data
+        assert_eq!(frame.len(), 207);
+        assert_eq!(frame[0] & 0x7F, 126); // 126 signals 16-bit length
+        let ext_len = u16::from_be_bytes([frame[1], frame[2]]);
+        assert_eq!(ext_len, 200);
+    }
+
+    #[test]
+    fn write_masked_payload_large() {
+        let mut frame = Vec::new();
+        let payload = vec![0u8; 70000];
+        write_masked_payload(&mut frame, &payload);
+        // 1 byte + 8 bytes extended length + 4 bytes mask key + 70000 bytes data
+        assert_eq!(frame.len(), 70013);
+        assert_eq!(frame[0] & 0x7F, 127); // 127 signals 64-bit length
+    }
+
+    #[test]
+    fn ws_message_debug_variants() {
+        let text = WsMessage::Text("hello".to_string());
+        let binary = WsMessage::Binary(vec![1, 2, 3]);
+        let close = WsMessage::Close;
+        assert!(format!("{:?}", text).contains("Text"));
+        assert!(format!("{:?}", binary).contains("Binary"));
+        assert!(format!("{:?}", close).contains("Close"));
+    }
 }

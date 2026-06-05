@@ -221,20 +221,6 @@ fn test_engine_all_components_accessible() {
     assert!(engine.canvas_noise().seed() > 0);
 }
 
-#[test]
-fn test_engine_js_injection_not_empty() {
-    let chrome = StealthEngine::new(StealthProfile::chrome_default());
-    let firefox = StealthEngine::new(StealthProfile::firefox_default());
-
-    let chrome_js = chrome.inject_navigator_js();
-    let firefox_js = firefox.inject_navigator_js();
-
-    assert!(!chrome_js.is_empty());
-    assert!(!firefox_js.is_empty());
-    assert!(chrome_js.len() > 20);
-    assert!(firefox_js.len() > 20);
-}
-
 // ---- Cross-profile consistency ----
 
 #[test]

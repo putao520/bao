@@ -8,7 +8,6 @@
 // across all sub-tests.
 
 use bao_engine::context::JsContext;
-use bao_engine::value::JsValue;
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
@@ -170,7 +169,7 @@ fn test_09_post_eval_hook(ctx: &mut JsContext) {
 }
 
 fn test_10_cx_mut(ctx: &mut JsContext) {
-    let _cx = ctx.cx_mut();
+    let _cx = ctx.cx();
     let result = ctx.eval("'cx_ok'", "cx_test.js");
     assert!(result.is_ok());
     assert_eq!(result.unwrap().as_string().unwrap(), "cx_ok");
@@ -198,8 +197,8 @@ fn test_extra_eval_isolation(ctx: &mut JsContext) {
 
 #[test]
 fn job_queue_and_context_integration() {
-    // (5) JsContext::new() succeeds
-    let mut ctx = JsContext::new().expect("JsContext::new() should succeed");
+    // (5) JsContext::for_test() succeeds
+    let mut ctx = JsContext::for_test().expect("JsContext::for_test() should succeed");
 
     // Run all sub-tests in order on the shared context
     test_01_job_queue_init_empty_state(&mut ctx);

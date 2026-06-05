@@ -19,7 +19,7 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 #[test]
 fn test_node_fs_all() {
     bao_runtime::bun_api::init_process_start();
-    let mut ctx = JsContext::new().expect("Failed to create JSContext");
+    let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
     ctx.set_global_setup(bao_runtime::globals::install_all);
 
     let tmp = ::std::env::temp_dir();

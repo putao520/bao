@@ -50,7 +50,7 @@ fn resource_exhaustion() {
     // ====================================================================
     // @trace TEST-EXH-001
     run!("JobQueue: 100K promise jobs", {
-        let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new: {e}"))?;
+        let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         let js = r#"
             for (var i = 0; i < 100000; i++) {
                 Promise.resolve().then(function(){});
@@ -71,7 +71,7 @@ fn resource_exhaustion() {
     // ====================================================================
     // @trace TEST-EXH-002
     run!("JobQueue: 1KB×10K payloads", {
-        let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new: {e}"))?;
+        let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         let js = r#"
             var payload = "x".repeat(1024);
             for (var i = 0; i < 10000; i++) {
@@ -88,7 +88,7 @@ fn resource_exhaustion() {
     // ====================================================================
     // @trace TEST-EXH-003
     run!("Repeated eval: 1000 cycles", {
-        let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new: {e}"))?;
+        let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         for i in 0..1000 {
             ctx.eval(&format!("1 + {}", i), "repeated.js")
                 .map_err(|e| format!("eval #{}: {e}", i))?;
@@ -101,7 +101,7 @@ fn resource_exhaustion() {
     // ====================================================================
     // @trace TEST-EXH-004
     run!("Deep recursion: 10000 frames", {
-        let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new: {e}"))?;
+        let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         // Non-tail recursion to guarantee stack growth
         let js = r#"
             (function f(x) { if (x <= 0) return 0; return 1 + f(x - 1); })(10000)
@@ -133,7 +133,7 @@ fn resource_exhaustion() {
     // ====================================================================
     // @trace TEST-EXH-005
     run!("Large string: 10 MB eval", {
-        let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new: {e}"))?;
+        let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         let js = r#""a".repeat(10 * 1024 * 1024)"#;
         let result = ctx.eval(js, "large_string.js").map_err(|e| format!("eval: {e}"))?;
         let s = result.to_display_string();
@@ -148,7 +148,7 @@ fn resource_exhaustion() {
     // ====================================================================
     // @trace TEST-EXH-006
     run!("Many allocations: 10000 objects", {
-        let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new: {e}"))?;
+        let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         let js = r#"
             var arr = [];
             for (var i = 0; i < 10000; i++) {
@@ -169,7 +169,7 @@ fn resource_exhaustion() {
     // ====================================================================
     // @trace TEST-EXH-007
     run!("Deep JsError chain: 1000 frames", {
-        let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new: {e}"))?;
+        let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         // Error thrown at depth 1000, propagates up through catch blocks
         let js = r#"
             (function chain(d) {
@@ -203,7 +203,7 @@ fn resource_exhaustion() {
     // @trace TEST-EXH-008
     //
     // NOTE: mem::forget of a JsContext (leaked Runtime) causes subsequent
-    // JsContext::new() to **hang** (SpiderMonkey internal state shared across
+    // JsContext::for_test() to **hang** (SpiderMonkey internal state shared across
     // runtimes). Using std::mem::forget to skip cleanup is not safe with the
     // current mozjs bindings — the Runtime destructor must run to release
     // per-runtime resources before a new Runtime can be created.
@@ -211,7 +211,7 @@ fn resource_exhaustion() {
         // Create and drop multiple contexts in sequence to verify
         // no resource leak in the normal path
         for i in 0..10 {
-            let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new #{}: {e}", i))?;
+            let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new #{}: {e}", i))?;
             ctx.eval(&format!("1 + {}", i), "seq.js")
                 .map_err(|e| format!("eval #{}: {e}", i))?;
         } // each ctx drops here — Runtime::drop runs each time
@@ -229,7 +229,7 @@ fn resource_exhaustion() {
     // move a JsContext to another thread is a compile-time error.
     //
     // Verification: the following line fails to compile if uncommented:
-    //   let ctx = JsContext::new().unwrap();
+    //   let ctx = JsContext::for_test().unwrap();
     //   std::thread::spawn(move || { ctx.eval("1", "t.js"); });
     //   ↑ error: `Send` is not satisfied
     //
@@ -239,7 +239,7 @@ fn resource_exhaustion() {
     run!("!Send constraint: documented", {
         // Runtime check: verify that a fresh context works correctly
         // (i.e., the per-thread init path is sound)
-        let mut ctx = JsContext::new().map_err(|e| format!("JsContext::new: {e}"))?;
+        let mut ctx = JsContext::for_test().map_err(|e| format!("JsContext::new: {e}"))?;
         let result = ctx.eval("42", "check.js").map_err(|e| format!("eval: {e}"))?;
         let n = result.to_display_string();
         if n != "42" {

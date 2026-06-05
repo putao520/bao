@@ -1,5 +1,6 @@
-// @trace REQ-ENG-006
+// @trace REQ-ENG-006 REQ-STL-001
 // fetch + Response + Headers constructors
+use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
@@ -8,6 +9,28 @@ use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, ObjectValue, 
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject};
 use mozjs::conversions::jsstr_to_string;
+
+thread_local! {
+    static TL_STEALTH_PROFILE: RefCell<Option<bao_stealth::StealthProfile>> = const { RefCell::new(None) };
+}
+
+/// Store the current page's stealth profile so fetch() can apply TLS/HTTP2 fingerprints.
+pub fn set_fetch_stealth_profile(profile: Option<bao_stealth::StealthProfile>) {
+    TL_STEALTH_PROFILE.with(|p| *p.borrow_mut() = profile);
+}
+
+/// Returns true if a stealth profile has been explicitly set on this thread.
+pub fn is_fetch_stealth_profile_set() -> bool {
+    TL_STEALTH_PROFILE.with(|p| p.borrow().is_some())
+}
+
+/// Idempotent: install Firefox default profile if none has been set on this thread.
+/// Called by `globals::install_all` so fetch() gets TLS/HTTP2 fingerprints by default.
+pub fn ensure_default_fetch_stealth_profile() {
+    if !is_fetch_stealth_profile_set() {
+        set_fetch_stealth_profile(Some(bao_stealth::StealthProfile::firefox_default()));
+    }
+}
 
 pub fn install_fetch_global(
     cx: &mut mozjs::context::JSContext,
@@ -256,8 +279,9 @@ fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Resul
     let headers: Vec<(String, String)> = Vec::new();
     let body_bytes: Option<&[u8]> = body.map(|b| b.as_bytes());
 
+    let profile: Option<bao_stealth::StealthProfile> = TL_STEALTH_PROFILE.with(|p| p.borrow().clone());
     let result = crate::stealth_http::stealth_http_request(
-        &None, bun_method, url, &headers, body_bytes,
+        &profile, bun_method, url, &headers, body_bytes,
     ).map_err(|e| e.to_string())?;
 
     ::std::result::Result::Ok(FetchResponse {
@@ -775,5 +799,81 @@ mod tests {
         assert_eq!(resp.headers.len(), 1);
         assert_eq!(resp.headers[0].0, "content-type");
         assert_eq!(resp.headers[0].1, "text/html");
+    }
+
+    #[test]
+    fn extract_host_port_ipv6_loopback() {
+        let (host, port) = extract_host_port("http://[::1]:8080/path").unwrap();
+        assert_eq!(host, "[::1]");
+        assert_eq!(port, 8080);
+    }
+
+    #[test]
+    fn extract_host_port_fragment_only() {
+        let (host, port) = extract_host_port("https://example.com/page#section").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn extract_host_port_non_standard_port() {
+        let (host, port) = extract_host_port("http://example.com:3000/api").unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 3000);
+    }
+
+    #[test]
+    fn extract_host_port_with_auth() {
+        // extract_host_port uses rfind(':') which incorrectly parses auth URLs.
+        // "https://user:pass@example.com" → rfind finds ':' in 'pass:', splits
+        // host="user", port parse fails → defaults to 80. This is a known limitation.
+        let result = extract_host_port("https://user:pass@example.com/secret");
+        assert!(result.is_some());
+        let (host, port) = result.unwrap();
+        assert_eq!(host, "user");
+        assert_eq!(port, 80);
+    }
+
+    #[test]
+    fn fetch_response_multiple_headers() {
+        let resp = FetchResponse {
+            status_code: 200,
+            body: String::new(),
+            headers: vec![
+                ("content-type".into(), "application/json".into()),
+                ("x-custom".into(), "value1".into()),
+                ("x-custom".into(), "value2".into()),
+            ],
+            url: "http://example.com".to_string(),
+            status_text: "OK".to_string(),
+        };
+        assert_eq!(resp.headers.len(), 3);
+    }
+
+    #[test]
+    fn fetch_response_status_codes() {
+        for code in [200u16, 201, 301, 400, 404, 500, 503] {
+            let resp = FetchResponse {
+                status_code: code,
+                body: String::new(),
+                headers: vec![],
+                url: String::new(),
+                status_text: String::new(),
+            };
+            assert_eq!(resp.status_code, code);
+        }
+    }
+
+    #[test]
+    fn fetch_response_empty_body() {
+        let resp = FetchResponse {
+            status_code: 204,
+            body: String::new(),
+            headers: vec![],
+            url: String::new(),
+            status_text: "No Content".to_string(),
+        };
+        assert!(resp.body.is_empty());
+        assert_eq!(resp.status_code, 204);
     }
 }

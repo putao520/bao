@@ -151,6 +151,17 @@ fn main() {
     // pthread is needed for bsd.c (pthread_atfork in some code paths)
     println!("cargo:rustc-link-lib=pthread");
 
+    // SPEC (CLAUDE.md L13): libuwsockets.a (C++ wrapper) depends on libusockets.a
+    // (C core). For static archives, the linker resolves undefined symbols only
+    // from libraries listed AFTER the reference. cc::compile emits
+    // `cargo:rustc-link-lib=static=usockets` BEFORE
+    // `cargo:rustc-link-lib=static=uwsockets`, which puts usockets first in the
+    // link line — but uwsockets (compiled later) references symbols in usockets,
+    // so usockets must come AFTER uwsockets. Re-declare usockets LAST to fix the
+    // order (Cargo dedupes link libs in dep-graph order, so this becomes the
+    // effective position).
+    println!("cargo:rustc-link-lib=static=usockets");
+
     // ── Rebuild hints ─────────────────────────────────────────────────────
     // Rebuild if any C source changes
     println!("cargo:rerun-if-changed={}", usockets_src.join("bsd.c").display());

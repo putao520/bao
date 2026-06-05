@@ -21,7 +21,7 @@ impl DomainHandler for PageHandler {
         &self,
         command: &str,
         params: Value,
-        _event_sender: &dyn EventSender,
+        event_sender: &dyn EventSender,
     ) -> Result<Value, CdpError> {
         match command {
             "Page.enable" | "Page.disable" => Ok(json!({})),
@@ -29,6 +29,9 @@ impl DomainHandler for PageHandler {
                 let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
                 bridge_send(&self.bridge, BridgeCommand::Navigate { url: url.to_string() })?;
                 let loader_id = format!("{:016x}", url.len() as u64);
+                event_sender.send_event("Page.frameNavigated", json!({
+                    "frame": { "id": "0", "url": url, "loaderId": loader_id, "mimeType": "text/html" }
+                }));
                 Ok(json!({ "frameId": "0", "loaderId": loader_id }))
             }
             "Page.reload" => {

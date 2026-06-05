@@ -44,6 +44,21 @@ pub struct SSLConfig {
     pub requires_custom_request_ctx: bool,
     pub is_using_default_ciphers: bool,
     pub low_memory_mode: bool,
+    /// TLS fingerprint: cipher suites for TLS 1.2 (OpenSSL format string).
+    /// When set, overrides `ssl_ciphers` for TLS 1.2 cipher selection.
+    pub tls12_cipher_list: CStrPtr,
+    /// TLS fingerprint: cipher suites for TLS 1.3 (colon-separated names).
+    pub tls13_cipher_suites: CStrPtr,
+    /// TLS fingerprint: supported groups/curves (colon-separated, e.g. "X25519:P-256").
+    pub tls_curves_list: CStrPtr,
+    /// TLS fingerprint: signature algorithms (colon-separated, e.g. "ecdsa_secp256r1_sha256").
+    pub tls_sigalgs_list: CStrPtr,
+    /// HTTP/2 fingerprint: SETTINGS frame payload (wire format, 6 bytes per setting).
+    /// When set, overrides the default SETTINGS in write_preface().
+    pub h2_settings_payload: Option<Box<[u8]>>,
+    /// HTTP/2 fingerprint: initial window size for WINDOW_UPDATE after SETTINGS.
+    /// When 0, uses default LOCAL_INITIAL_WINDOW_SIZE.
+    pub h2_initial_window_size: u32,
     /// Memoized `content_hash()`. Interior-mutable because it's lazily filled
     /// through `Arc<SSLConfig>` (shared ref) by the intern registry's hash
     /// context. Zig used a plain `u64` mutated via `*SSLConfig` (Zig pointers
@@ -119,6 +134,12 @@ impl SSLConfig {
         requires_custom_request_ctx: false,
         is_using_default_ciphers: true,
         low_memory_mode: false,
+        tls12_cipher_list: core::ptr::null(),
+        tls13_cipher_suites: core::ptr::null(),
+        tls_curves_list: core::ptr::null(),
+        tls_sigalgs_list: core::ptr::null(),
+        h2_settings_payload: None,
+        h2_initial_window_size: 0,
         cached_hash: AtomicU64::new(0),
     };
 
@@ -294,6 +315,25 @@ impl SSLConfig {
         if self.low_memory_mode != other.low_memory_mode {
             return false;
         }
+        eq_cstr!(tls12_cipher_list);
+        eq_cstr!(tls13_cipher_suites);
+        eq_cstr!(tls_curves_list);
+        eq_cstr!(tls_sigalgs_list);
+        match (&self.h2_settings_payload, &other.h2_settings_payload) {
+            (Some(a), Some(b)) => {
+                if a.len() != b.len() {
+                    return false;
+                }
+                if a != b {
+                    return false;
+                }
+            }
+            (None, None) => {}
+            _ => return false,
+        }
+        if self.h2_initial_window_size != other.h2_initial_window_size {
+            return false;
+        }
         true
     }
 
@@ -344,6 +384,14 @@ impl SSLConfig {
         hasher.update(&[u8::from(self.requires_custom_request_ctx)]);
         hasher.update(&[u8::from(self.is_using_default_ciphers)]);
         hasher.update(&[u8::from(self.low_memory_mode)]);
+        hash_cstr!(tls12_cipher_list);
+        hash_cstr!(tls13_cipher_suites);
+        hash_cstr!(tls_curves_list);
+        hash_cstr!(tls_sigalgs_list);
+        if let Some(ref payload) = self.h2_settings_payload {
+            hasher.update(payload);
+        }
+        hasher.update(&self.h2_initial_window_size.to_ne_bytes());
         let hash = hasher.final_();
         // Avoid 0 since it's the sentinel for "not computed"
         let hash = if hash == 0 { 1 } else { hash };
@@ -373,6 +421,11 @@ impl SSLConfig {
         free_strings(&mut self.ca);
         free_string(&mut self.ssl_ciphers);
         free_string(&mut self.protos);
+        free_string(&mut self.tls12_cipher_list);
+        free_string(&mut self.tls13_cipher_suites);
+        free_string(&mut self.tls_curves_list);
+        free_string(&mut self.tls_sigalgs_list);
+        self.h2_settings_payload = None;
     }
 
     pub fn take_protos(&mut self) -> Option<Box<[u8]>> {
@@ -432,6 +485,12 @@ impl Clone for SSLConfig {
             requires_custom_request_ctx: self.requires_custom_request_ctx,
             is_using_default_ciphers: self.is_using_default_ciphers,
             low_memory_mode: self.low_memory_mode,
+            tls12_cipher_list: clone_string(self.tls12_cipher_list),
+            tls13_cipher_suites: clone_string(self.tls13_cipher_suites),
+            tls_curves_list: clone_string(self.tls_curves_list),
+            tls_sigalgs_list: clone_string(self.tls_sigalgs_list),
+            h2_settings_payload: self.h2_settings_payload.clone(),
+            h2_initial_window_size: self.h2_initial_window_size,
             cached_hash: AtomicU64::new(0),
         }
     }

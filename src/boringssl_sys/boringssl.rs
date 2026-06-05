@@ -690,6 +690,14 @@ unsafe extern "C" {
     pub fn SSL_set_ex_data(ssl: *mut SSL, idx: c_int, data: *mut c_void) -> c_int;
     pub fn SSL_set_tlsext_host_name(ssl: *mut SSL, name: *const c_char) -> c_int;
     pub fn SSL_set_alpn_protos(ssl: *mut SSL, protos: *const u8, protos_len: usize) -> c_int;
+    /// TLS 1.2 cipher list (OpenSSL format string, e.g. "ECDHE-ECDSA-AES128-GCM-SHA256:...")
+    pub fn SSL_set_cipher_list(ssl: *mut SSL, str: *const c_char) -> c_int;
+    /// TLS 1.3 cipher suites (colon-separated, e.g. "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384")
+    pub fn SSL_set_ciphersuites(ssl: *mut SSL, str: *const c_char) -> c_int;
+    /// Supported groups/curves (colon-separated, e.g. "X25519:P-256:P-384")
+    pub fn SSL_set1_curves_list(ssl: *mut SSL, curves: *const c_char) -> c_int;
+    /// Signature algorithms (colon-separated, e.g. "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256")
+    pub fn SSL_set1_sigalgs_list(ssl: *mut SSL, str: *const c_char) -> c_int;
     pub fn SSL_get0_alpn_selected(ssl: *const SSL, out_data: *mut *const u8, out_len: *mut c_uint);
     pub fn SSL_set_options(ssl: *mut SSL, options: u32) -> u32;
     pub fn SSL_clear_options(ssl: *mut SSL, options: u32) -> u32;
