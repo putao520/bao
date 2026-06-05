@@ -321,6 +321,35 @@ const ZERO_META: FieldMeta = FieldMeta {
     align: 1,
 };
 
+/// Extract the byte size of a *primitive* type from its `TypeKind`.
+///
+/// For compound types (Struct, Enum, Union, Tuple, Array, etc.) this
+/// returns `None` because the current `type_info` MVP does not expose a
+/// `.size()` method on those variants. The caller must fall back to
+/// offset-delta computation for those.
+///
+/// Handles fat pointers (`&[T]`, `&str`, `&dyn Trait`) as 16 bytes
+/// (data ptr + metadata on 64-bit).
+const fn primitive_size(kind: &TypeKind) -> Option<usize> {
+    match kind {
+        TypeKind::Bool(_) => Some(1),
+        TypeKind::Char(_) => Some(4),
+        TypeKind::Int(i) => Some(i.bits as usize / 8),
+        TypeKind::Float(f) => Some(f.bits as usize / 8),
+        TypeKind::FnPtr(_) => Some(8),
+        // Thin pointers: &T where T: Sized
+        TypeKind::Pointer(p) => match p.pointee.info().kind {
+            TypeKind::Slice(_) | TypeKind::Str(_) | TypeKind::DynTrait(_) => Some(16),
+            _ => Some(8),
+        },
+        TypeKind::Reference(r) => match r.pointee.info().kind {
+            TypeKind::Slice(_) | TypeKind::Str(_) | TypeKind::DynTrait(_) => Some(16),
+            _ => Some(8),
+        },
+        _ => None,
+    }
+}
+
 /// Per-`T` reflected layout, fully const-evaluated.
 struct Reflected<T>(PhantomData<T>);
 
@@ -333,7 +362,7 @@ impl<T> Reflected<T> {
     /// `*const F` yields a valid (non-null, aligned) zero-length-slice base.
     const DANGLING: NonNull<u8> = NonNull::<T>::dangling().cast::<u8>();
 
-    /// `[FieldMeta; COUNT]` sorted by offset ascending.
+    /// `[FieldMeta; COUNT]` in declaration order.
     const META: [FieldMeta; MAX_FIELDS] = {
         let fields = fields_of::<T>();
         let n = fields.len();
@@ -341,39 +370,45 @@ impl<T> Reflected<T> {
             n <= MAX_FIELDS,
             "MultiArrayList: too many fields (raise MAX_FIELDS)",
         );
-        // Extract offsets into a sortable array (Field is not Copy)
-        let mut offsets: [usize; MAX_FIELDS] = [0; MAX_FIELDS];
-        let mut oi = 0;
-        while oi < n {
-            offsets[oi] = fields[oi].offset;
-            oi += 1;
-        }
-        // Insertion sort by offset (const fn, small N)
-        let mut i = 1;
-        while i < n {
-            let mut j = i;
-            while j > 0 && offsets[j] < offsets[j - 1] {
-                let tmp = offsets[j];
-                offsets[j] = offsets[j - 1];
-                offsets[j - 1] = tmp;
-                j -= 1;
-            }
-            i += 1;
-        }
         let mut out = [ZERO_META; MAX_FIELDS];
         let struct_align = core::mem::align_of::<T>();
+        let total_size = core::mem::size_of::<T>();
         let mut i = 0;
         while i < n {
-            let off = offsets[i];
-            let size = if i + 1 < n {
-                offsets[i + 1] - off
-            } else {
-                core::mem::size_of::<T>() - off
+            let f = &fields[i];
+            // Compute size: try precise primitive size first; fall back to
+            // offset-delta (includes trailing padding, which is safe for
+            // SoA column stride). For the last field, use total_size - offset.
+            let precise = primitive_size(&f.ty.info().kind);
+            let size = match precise {
+                Some(s) => s,
+                None => {
+                    // Fields may be reordered by the compiler, so the next
+                    // field in declaration order does NOT necessarily have a
+                    // larger offset.  Find the smallest offset strictly greater
+                    // than `f.offset` across *all* fields; the delta is the
+                    // usable span (includes inter-field padding, which is safe
+                    // for SoA column stride).
+                    let mut next_offset = total_size;
+                    let mut j = 0;
+                    while j < n {
+                        let o = fields[j].offset;
+                        if o > f.offset && o < next_offset {
+                            next_offset = o;
+                        }
+                        j += 1;
+                    }
+                    if f.offset < next_offset {
+                        next_offset - f.offset
+                    } else {
+                        0 // ZST field at the end
+                    }
+                }
             };
             let align = align_sort_key(size, struct_align);
             out[i] = FieldMeta {
                 size,
-                offset: off,
+                offset: f.offset,
                 align,
             };
             i += 1;

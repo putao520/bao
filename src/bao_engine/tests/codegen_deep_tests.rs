@@ -177,7 +177,7 @@ fn test_bindings_js_class_def_format() {
     let bindings = generate_bindings(&class);
     assert!(bindings.js_class_def.contains("static Buffer_Class: JSClass"));
     assert!(bindings.js_class_def.contains("c\"Buffer\""));
-    assert!(bindings.js_class_def.contains("JSCLASS_FOREGROUND_FINALIZE_PROHIBITED"));
+    assert!(bindings.js_class_def.contains("JSCLASS_FOREGROUND_FINALIZE"));
 }
 
 #[test]
@@ -198,7 +198,9 @@ fn test_bindings_constructor_fn_signature() {
     assert!(ctor.contains("cx: *mut JSContext"));
     assert!(ctor.contains("argc: u32"));
     assert!(ctor.contains("vp: *mut JS::Value"));
-    assert!(ctor.contains("JS_ConstructorStub"));
+    assert!(ctor.contains("JS_NewObjectForConstructor"));
+    assert!(ctor.contains("JS_SetReservedSlot"));
+    assert!(ctor.contains("PrivateValue"));
 }
 
 #[test]
@@ -216,7 +218,10 @@ fn test_bindings_finalize_fn_signature() {
     let bindings = generate_bindings(&class);
     let fin = bindings.finalize_fn.unwrap();
     assert!(fin.contains("unsafe extern \"C\" fn Resource_finalize"));
-    assert!(fin.contains("opaque: *mut std::os::raw::c_void"));
+    assert!(fin.contains("gcx: *mut GCContext"));
+    assert!(fin.contains("obj: *mut JSObject"));
+    assert!(fin.contains("JS_GetReservedSlot"));
+    assert!(fin.contains("Box::from_raw"));
 }
 
 #[test]

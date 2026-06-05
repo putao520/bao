@@ -21,7 +21,7 @@ pub use page::{PageHandle, PageState};
 pub use page_pool::PagePool;
 pub use permission::{Permission, PermissionDenied, PermissionGuard};
 pub use screenshot::{encode_image, ScreenshotFormat};
-pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, RuntimeBridge};
+pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, EvaluateResult, RuntimeBridge};
 
 use std::rc::Rc;
 use std::time::Duration;
@@ -75,6 +75,13 @@ impl BaoRuntime {
 
     pub fn create_page(&self, config: &PageConfig) -> Result<PageHandle, BrowserError> {
         let page = self.page_pool.create_page(config)?;
+
+        // Drive servo's event loop until the WebView pipeline is ready.
+        // Without this, inject_all_with_profile() → drain_callbacks() → evaluate_js_web()
+        // will SIGSEGV because servo's script thread hasn't finished setting up
+        // the pipeline for this WebView.
+        page.wait_for_pipeline_ready(Duration::from_secs(5))?;
+
         runtime_bridge::inject_all_with_profile(&page, &config.stealth_profile)?;
         Ok(page)
     }

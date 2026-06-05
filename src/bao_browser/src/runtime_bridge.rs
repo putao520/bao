@@ -1,75 +1,405 @@
 // @trace REQ-BRW-003  REQ-BRW-001: Bridge between servo browser context and Node.js APIs
 // REQ-ENG-007: Unified runtime coordination
 //
-// Architecture: native host function injection via servo's script thread callback
-// - servo's JSContext handles DOM + Web APIs (created by servo internally)
-// - Node.js APIs are registered as mozjs native functions on servo's Window global
-// - Uses servo's register_script_thread_callback → handle_evaluate_javascript drain pattern
-// - Event loop coordination: servo's spin_event_loop() drives both contexts
+// Architecture: dual-Realm isolation via SpiderMonkey compartments
+// - servo's JSContext handles DOM + Web APIs in Page Realm (Window global)
+// - Bao creates a separate Node Realm (JS_NewGlobalObject) for privileged scripts
+// - Node Realm is in its own Compartment — Page Realm physically cannot see it
+// - evaluate_js() uses EnterRealm(Node) → execute → LeaveRealm → back to Page Realm
+// - evaluate_js_web() executes directly in Page Realm (no Realm switch needed)
 //
 // JSContext fusion:
 // - servo creates JSContext internally in JSEngineSetup::default()
-// - bao_runtime::globals::install_all registers native functions on that same JSContext
-// - Callback receives (cx: *mut JSContext, global: *mut JSObject) from servo
-// - No second JSContext needed — true parasitic fusion
+// - Both Realms share the same JSContext (servo's script thread)
+// - GC is shared across both Realms
+// - Node Realm lifecycle is tied to Page — destroyed when Page closes
 
 use crate::page::PageHandle;
 use crate::error::BrowserError;
+use mozjs::rooted;
+use std::cell::RefCell;
 use std::ptr::{self, NonNull};
+use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Inject Node.js APIs temporarily for privileged evaluate_js execution (REQ-SEC-002).
+// @trace REQ-SEC-002 [entity:EvaluateResult]
+/// Result of evaluating a script in the Node Realm.
 ///
-/// Uses `register_script_thread_callback` to queue a callback that creates
-/// a temporary scope object `__bao_privileged_apis` on the global. The scope
-/// contains all Node.js/Bun API values (require, Bun, process, Buffer, module,
-/// __filename, __dirname) but they are NOT installed on the Window global itself.
+/// Captures the serialized return value or an error message from
+/// `evaluate_in_node_realm`. Both fields are `Option<String>`:
+/// - `value` is `Some` when the script produced a non-undefined result.
+/// - `error` is `Some` when the evaluation or serialization failed.
 ///
-/// The IIFE wrapper in `wrap_privileged_script` extracts the scope, deletes it
-/// from globalThis, and passes the values as function parameters to the user
-/// script. This prevents page-level JS from accessing Node APIs (REQ-SEC-003).
+/// At most one of `value` / `error` is `Some` — never both.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EvaluateResult {
+    /// Serialized JS return value (JSON string), or None if undefined/error.
+    pub value: Option<String>,
+    /// Error message when evaluation failed, or None on success.
+    pub error: Option<String>,
+}
+
+impl EvaluateResult {
+    /// Create an ok result with a serialized value.
+    pub fn ok(value: String) -> Self {
+        EvaluateResult { value: Some(value), error: None }
+    }
+
+    /// Create an error result with a message.
+    pub fn err(error: String) -> Self {
+        EvaluateResult { value: None, error: Some(error) }
+    }
+
+    /// Returns true when the evaluation succeeded (no error).
+    pub fn is_ok(&self) -> bool {
+        self.error.is_none()
+    }
+
+    /// Returns true when the evaluation failed.
+    pub fn is_err(&self) -> bool {
+        self.error.is_some()
+    }
+}
+
+// @trace REQ-SEC-002 REQ-SEC-003 [req:REQ-SEC-002,REQ-SEC-003]
+// Per-page Node Realm global pointers, keyed by Page Realm global address.
+// Each WebView gets its own Node Realm in an independent Compartment.
+//
+// CRITICAL: servo's ScriptThread runs on a SEPARATE OS thread (script_thread.rs:530 spawn).
+// The callbacks (install_all_native, create_node_realm_native) execute on the script thread,
+// but the caller (inject_node_apis_with_stealth) reads the results on the main thread.
+// Therefore we MUST use cross-thread-safe storage (std::sync::Mutex) instead of thread_local.
+static NODE_REALMS: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, usize>>> = std::sync::OnceLock::new();
+
+fn node_realms() -> &'static std::sync::Mutex<HashMap<usize, usize>> {
+    NODE_REALMS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Store a Node Realm global pointer for a specific page (by page_global address).
+fn store_node_realm(page_global: *mut mozjs::jsapi::JSObject, node_global: *mut mozjs::jsapi::JSObject) {
+    if let Ok(mut map) = node_realms().lock() {
+        map.insert(page_global as usize, node_global as usize);
+    }
+}
+
+/// Look up Node Realm global pointer for a specific page.
+fn get_node_realm(page_global: *mut mozjs::jsapi::JSObject) -> *mut mozjs::jsapi::JSObject {
+    if let Ok(map) = node_realms().lock() {
+        match map.get(&(page_global as usize)) {
+            Some(&ptr) => ptr as *mut mozjs::jsapi::JSObject,
+            None => ptr::null_mut(),
+        }
+    } else {
+        ptr::null_mut()
+    }
+}
+
+/// Remove Node Realm for a specific page (called on page close).
+fn remove_node_realm(page_global: *mut mozjs::jsapi::JSObject) {
+    if let Ok(mut map) = node_realms().lock() {
+        map.remove(&(page_global as usize));
+    }
+}
+
+/// Clear all stored Node Realm pointers (for test isolation).
+fn clear_all_node_realms() {
+    if let Ok(mut map) = node_realms().lock() {
+        map.clear();
+    }
+}
+
+// Cross-thread page_global pointer storage.
+// servo's script thread sets this during the callback; main thread reads after drain.
+use std::sync::atomic::AtomicUsize;
+static LAST_PAGE_GLOBAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Store page_global pointer from script thread callback.
+fn set_last_page_global(page_global: *mut mozjs::jsapi::JSObject) {
+    LAST_PAGE_GLOBAL.store(page_global as usize, Ordering::SeqCst);
+}
+
+/// Get the page_global pointer captured during the last callback drain.
+pub fn get_last_page_global() -> *mut mozjs::jsapi::JSObject {
+    let val = LAST_PAGE_GLOBAL.load(Ordering::SeqCst);
+    if val == 0 { ptr::null_mut() } else { val as *mut mozjs::jsapi::JSObject }
+}
+
+/// Create a Node Realm (independent SpiderMonkey Compartment) for privileged evaluate_js.
 ///
-/// This is the dual-layer JS model: page JS runs with Web APIs only,
-/// but evaluate_js scripts get the full Node.js/Bun runtime via parameters.
-pub fn inject_node_apis_for_evaluate(webview_id: servo::WebViewId) {
+/// Uses `register_script_thread_callback` to queue a callback that:
+/// 1. Creates a new global object via JS_NewGlobalObject in a NEW Compartment
+///    (CompartmentSpecifier::NewCompartmentAndZone) — physically isolated from Page Realm
+/// 2. Installs all Node.js/Bun APIs on the Node Realm global
+/// 3. Stores the Node Realm global pointer in cross-thread HashMap for the caller to retrieve
+///
+/// Returns the raw pointer to the Node Realm's global JSObject.
+/// The caller (PageInner) is responsible for storing this pointer and
+/// passing it to `enter_node_realm` / `leave_node_realm` during evaluate_js.
+///
+/// # Safety
+///
+/// Must be called before any evaluate_js. The returned pointer is valid
+/// until the Page is closed (which destroys the Node Realm).
+pub fn create_node_realm(webview_id: servo::WebViewId) -> bool {
     let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
-        Box::new(move |cx_ptr, global_ptr| {
-            unsafe { create_scope_values_native(cx_ptr, global_ptr); }
+        Box::new(|cx_ptr, page_global_ptr| {
+            unsafe { create_node_realm_native(cx_ptr, page_global_ptr); }
         });
 
     servo::register_script_thread_callback(webview_id, callback);
+
+    // Return true — caller must drain first, then check via get_node_realm(page_global).
+    true
 }
 
-/// Bridge callback to create Node API scope values for privileged evaluate_js.
+/// Get the Node Realm global pointer for a specific page.
+/// Called after `create_node_realm` callback has been drained.
+pub fn get_node_realm_global(page_global: *mut mozjs::jsapi::JSObject) -> *mut mozjs::jsapi::JSObject {
+    get_node_realm(page_global)
+}
+
+/// Evaluate a script in the Node Realm using AutoRealm.
 ///
-/// Creates `__bao_privileged_apis` on the global with all Node API values.
-/// The IIFE wrapper deletes this scope and passes the values as parameters.
-/// Node APIs are never written to the Window global itself (REQ-SEC-003).
-unsafe fn create_scope_values_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std::ffi::c_void) {
+/// This is the core of the dual-Realm architecture:
+/// `mozjs::rust::evaluate_script` internally uses `AutoRealm::new_from_handle(cx, glob)`
+/// which enters the Node Realm, evaluates the script, then leaves on drop.
+///
+/// The script has full access to Node.js APIs (require/Bun/process/Buffer)
+/// because they are installed on the Node Realm global.
+///
+/// Results are written into `result_out` (shared via `Arc<Mutex<>>`):
+/// - On success, `value` is set to the serialized JS return value.
+/// - On failure, `error` is set to a descriptive message.
+///
+/// # Safety
+///
+/// Must be called on servo's script thread. `cx_ptr` must be a valid
+/// JSContext. `node_global` must be a valid, live JSObject (the Node
+/// Realm global). `script` must be valid UTF-8.
+pub unsafe fn evaluate_in_node_realm(
+    cx_ptr: *mut std::ffi::c_void,
+    node_global: *mut mozjs::jsapi::JSObject,
+    script: &str,
+    result_out: Arc<Mutex<EvaluateResult>>,
+) {
     use mozjs::context::JSContext;
-    use mozjs::gc::Handle;
-    use mozjs::jsapi::{JSContext as RawJSContext, JSObject};
+    use mozjs::jsapi::JSContext as RawJSContext;
+    use mozjs::jsval::UndefinedValue;
+    use mozjs::realm::AutoRealm;
+    use mozjs::rust::{CompileOptionsWrapper, Handle};
+    use mozjs::rust::evaluate_script;
+
+    if node_global.is_null() {
+        *result_out.lock().unwrap() = EvaluateResult::err("node_global is null".into());
+        return;
+    }
 
     let raw_cx = cx_ptr as *mut RawJSContext;
-    let raw_global = global_ptr as *mut JSObject;
+    let cx_nn = match NonNull::new(raw_cx) {
+        Some(nn) => nn,
+        None => {
+            *result_out.lock().unwrap() = EvaluateResult::err("JSContext pointer is null".into());
+            return;
+        }
+    };
 
+    let mut cx = JSContext::from_ptr(cx_nn);
+
+    // Enter Node Realm via AutoRealm — this is the core isolation mechanism.
+    // evaluate_script evaluates within the entered Realm's compartment,
+    // so the script sees only the Node Realm global (with Node.js + Web APIs).
+    // The Page Realm's Window global is physically inaccessible from here.
+    let node_global_handle = Handle::from_marked_location(&node_global as *const *mut mozjs::jsapi::JSObject);
+    let mut realm = AutoRealm::new_from_handle(&mut cx, node_global_handle);
+    let realm_cx: &mut JSContext = &mut realm;
+
+    let filename = std::ffi::CString::new("bao_evaluate_js").unwrap_or_default();
+    let options = CompileOptionsWrapper::new(realm_cx, filename, 1);
+
+    rooted!(&in(realm_cx) let mut rval = UndefinedValue());
+    let eval_result = evaluate_script(realm_cx, node_global_handle, script, rval.handle_mut(), options);
+
+    let mut result = result_out.lock().unwrap();
+    if eval_result.is_err() {
+        result.error = Some("evaluate_script returned Err (JS exception thrown)".into());
+        return;
+    }
+
+    // Serialize rval to a string. Undefined is treated as no value.
+    let rval_val = rval.get();
+    if rval_val.is_undefined() {
+        result.value = None;
+    } else if rval_val.is_string() {
+        // SAFETY: we just checked is_string(), so to_string returns a valid JSString pointer.
+        let js_str = rval_val.to_string();
+        if js_str.is_null() {
+            result.value = Some(String::new());
+        } else {
+            // Use mozjs's built-in jsstr_to_string for safe UTF-8 conversion.
+            // It handles both Latin1 and TwoByte JS string encodings.
+            let raw_cx = realm_cx.raw_cx();
+            match NonNull::new(js_str) {
+                Some(nn) => {
+                    result.value = Some(mozjs::conversions::jsstr_to_string(raw_cx, nn));
+                }
+                None => result.value = Some(String::new()),
+            }
+        }
+    } else if rval_val.is_number() {
+        result.value = Some(rval_val.to_number().to_string());
+    } else if rval_val.is_boolean() {
+        result.value = Some(rval_val.to_boolean().to_string());
+    } else if rval_val.is_null() {
+        result.value = Some("null".into());
+    } else {
+        // Object / symbol / bigint — represent as debug string.
+        result.value = Some(format!("[JSValue:object]"));
+    }
+}
+
+/// Evaluate a script in the Node Realm via servo's script thread callback mechanism.
+///
+/// This is the primary entry point for B1 (evaluate_js Node Realm switch).
+/// It registers a callback on servo's script thread that:
+/// 1. Reads the Node Realm global pointer from `NODE_REALM_GLOBAL`
+/// 2. Calls `evaluate_in_node_realm` with the script
+/// 3. Writes the result to the shared `Arc<Mutex<EvaluateResult>>`
+///
+/// The caller must call `page.drain_callbacks()` after this to trigger execution.
+///
+/// Returns the shared result handle — read after drain_callbacks completes.
+pub fn evaluate_js_via_node_realm(
+    webview_id: servo::WebViewId,
+    script: &str,
+) -> Arc<Mutex<EvaluateResult>> {
+    let result = Arc::new(Mutex::new(EvaluateResult::default()));
+    let result_clone = result.clone();
+    let script_owned = script.to_string();
+
+    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
+        Box::new(move |cx_ptr: *mut std::ffi::c_void, page_global: *mut std::ffi::c_void| {
+            // Look up Node Realm for THIS page using the callback's page_global parameter.
+            // This eliminates the cross-webview SIGSEGV — each callback gets the correct
+            // page_global, so we always find the right Node Realm.
+            let node_global = get_node_realm(page_global as *mut mozjs::jsapi::JSObject);
+            unsafe {
+                evaluate_in_node_realm(cx_ptr, node_global, &script_owned, result_clone);
+            }
+        });
+
+    servo::register_script_thread_callback(webview_id, callback);
+    result
+}
+
+/// Bridge callback: create Node Realm on servo's script thread.
+///
+/// Creates a new JS global object in its own Compartment (NewCompartmentAndZone),
+/// installs all Node.js/Bun APIs on it, wraps DOM proxies from Page Realm,
+/// and stores the global pointer in a cross-thread HashMap (Mutex).
+///
+/// The Node Realm is physically isolated from the Page Realm —
+/// Page JS cannot enumerate or discover any objects in the Node Realm.
+///
+/// DOM access (REQ-SEC-002 criterion 5): window/document/navigator from the
+/// Page Realm are wrapped via JS_WrapObject and installed as properties on
+/// the Node Realm global. This creates cross-Compartment proxies that allow
+/// trusted scripts to access DOM while maintaining Compartment isolation.
+unsafe fn create_node_realm_native(cx_ptr: *mut std::ffi::c_void, page_global_ptr: *mut std::ffi::c_void) {
+    use mozjs::context::JSContext;
+    use mozjs::jsapi::{JSContext as RawJSContext, JSObject, OnNewGlobalHookOption, JS_FireOnNewGlobalObject};
+    use mozjs::realm::AutoRealm;
+    use mozjs::rust::wrappers2::{JS_NewGlobalObject, JS_WrapObject, JS_SetProperty};
+    use mozjs::rust::{RealmOptions, SIMPLE_GLOBAL_CLASS, Handle, MutableHandle};
+
+    let raw_cx = cx_ptr as *mut RawJSContext;
+    let page_global = page_global_ptr as *mut JSObject;
     let cx_nn = match NonNull::new(raw_cx) {
         Some(nn) => nn,
         None => return,
     };
 
-    if raw_global.is_null() {
+    let mut cx = JSContext::from_ptr(cx_nn);
+
+    let mut options = RealmOptions::default();
+    options.creationOptions_.compSpec_ = mozjs::jsapi::JS::CompartmentSpecifier::NewCompartmentAndZone;
+
+    rooted!(&in(cx) let global = JS_NewGlobalObject(
+        &mut cx,
+        &SIMPLE_GLOBAL_CLASS,
+        ptr::null_mut(),
+        OnNewGlobalHookOption::DontFireOnNewGlobalHook,
+        &*options,
+    ));
+
+    if global.get().is_null() {
         return;
     }
 
-    let mut cx = unsafe { JSContext::from_ptr(cx_nn) };
-    let global = unsafe { Handle::from_marked_location(raw_global as *const *mut JSObject) };
+    let mut realm = AutoRealm::new_from_handle(&mut cx, global.handle());
+    let realm_cx: &mut JSContext = &mut realm;
+    JS_FireOnNewGlobalObject(realm_cx.raw_cx(), global.handle().into());
 
-    unsafe {
-        bao_runtime::globals::create_node_api_scope_values(&mut cx, global);
+    bao_runtime::globals::install_node_apis(realm_cx, global.handle());
+    bao_runtime::globals::install_web_apis(realm_cx, global.handle());
+
+    if !page_global.is_null() {
+        wrap_and_install_dom_proxy(realm_cx, global.handle(), page_global, "window");
+        wrap_and_install_dom_proxy(realm_cx, global.handle(), page_global, "document");
+        wrap_and_install_dom_proxy(realm_cx, global.handle(), page_global, "navigator");
+    }
+
+    // Store per-page: page_global → node_realm_global
+    store_node_realm(page_global, global.get());
+}
+
+/// Wrap a DOM property from the Page Realm and install it on the Node Realm global.
+///
+/// This enables REQ-SEC-002 criterion 5: trusted scripts can access
+/// window/document/navigator from the Page Realm via cross-Compartment proxies.
+///
+/// How it works:
+/// 1. Get the property (e.g. "window") from the Page Realm's global (Window)
+/// 2. JS_WrapObject creates a cross-Compartment proxy in the Node Realm
+/// 3. Install the wrapped proxy as a property on the Node Realm's global
+///
+/// The proxy only exposes the Page Realm's public Web API interface.
+/// Node APIs remain invisible because they're in a different Compartment.
+unsafe fn wrap_and_install_dom_proxy(
+    cx: &mut mozjs::context::JSContext,
+    node_global: mozjs::rust::Handle<*mut mozjs::jsapi::JSObject>,
+    page_global: *mut mozjs::jsapi::JSObject,
+    property_name: &str,
+) {
+    use mozjs::jsapi::{JS_GetProperty, JS_SetProperty};
+    use mozjs::jsval::{ObjectValue, UndefinedValue};
+    use mozjs::rust::wrappers2::JS_WrapObject;
+
+    let raw_cx = cx.raw_cx();
+    let page_global_handle = mozjs::rust::Handle::from_marked_location(
+        &page_global as *const *mut mozjs::jsapi::JSObject
+    );
+
+    // Get the property from Page Realm's Window global.
+    let c_name = std::ffi::CString::new(property_name).unwrap_or_default();
+    rooted!(&in(cx) let mut prop_val = UndefinedValue());
+    JS_GetProperty(raw_cx, page_global_handle.into(), c_name.as_ptr(), prop_val.handle_mut().into());
+
+    // If the property is an object, wrap it for the Node Realm.
+    if prop_val.get().is_object() {
+        // Follow servo's pattern: rooted!(&in(cx) let mut element = obj.get())
+        rooted!(&in(cx) let mut prop_obj = prop_val.get().to_object());
+
+        // JS_WrapObject creates a cross-Compartment proxy.
+        if !JS_WrapObject(cx, prop_obj.handle_mut().into()) {
+            return;
+        }
+
+        // Install the wrapped proxy on the Node Realm's global.
+        rooted!(&in(cx) let mut wrapped_val = ObjectValue(prop_obj.get()));
+        JS_SetProperty(raw_cx, node_global.into(), c_name.as_ptr(), wrapped_val.handle_mut().into());
     }
 }
 
@@ -99,15 +429,31 @@ pub fn inject_node_apis_with_stealth(page: &PageHandle, stealth_profile: Option<
 
     let registered = register_native_host_functions(webview_id, stealth_profile);
 
-    // Trigger the callback drain by evaluating an empty script.
-    // Uses evaluate_js_web (no Node API injection) to avoid recursion.
-    // servo's handle_evaluate_javascript will drain pending callbacks
-    // before executing the (empty) JS.
-    page.evaluate_js_web("")?;
+    // Also create Node Realm for this page (dual-Realm architecture, REQ-SEC-002).
+    // The callback is queued on servo's script thread and will execute during drain.
+    let node_realm_registered = create_node_realm(webview_id);
+    debug_assert!(node_realm_registered, "create_node_realm registration failed");
+
+    // Drain the callback by triggering servo's handle_evaluate_javascript.
+    // servo drains pending register_script_thread_callback callbacks before
+    // executing the script. The minimal script ";" is evaluated, but what
+    // matters is that the callback ran and installed host functions.
+    //
+    // If the pipeline isn't ready yet (WebView just created), drain_callbacks
+    // spins the servo event loop and retries until the pipeline is established.
+    page.drain_callbacks()?;
+
+    // After drain, retrieve the page_global pointer captured during callback
+    // and store it + Node Realm global in PageInner for evaluate_js lookups.
+    let page_global = get_last_page_global();
+    if !page_global.is_null() {
+        let node_global = get_node_realm(page_global);
+        page.set_page_global(page_global, node_global);
+    }
 
     if !registered {
-        // Fallback: inject JS polyfill string
-        page.evaluate_js_web(NODE_POLYFILLS)?;
+        // Fallback: inject Web-only polyfill string (REQ-SEC-003: NO Node APIs on Window global)
+        page.evaluate_js_web(WEB_POLYFILLS)?;
     }
 
     Ok(())
@@ -141,49 +487,53 @@ fn register_native_host_functions(webview_id: servo::WebViewId, stealth_profile:
 /// getters (JSPROP_PERMANENT ≡ configurable:false) after the Node.js host functions.
 unsafe fn install_all_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std::ffi::c_void, stealth_profile: &Option<bao_stealth::StealthProfile>) {
     use mozjs::context::JSContext;
-    use mozjs::gc::Handle;
     use mozjs::jsapi::{JSContext as RawJSContext, JSObject};
+    use std::ptr::NonNull;
 
     let raw_cx = cx_ptr as *mut RawJSContext;
     let raw_global = global_ptr as *mut JSObject;
 
+    if raw_cx.is_null() || raw_global.is_null() {
+        return;
+    }
+
+    // Store page global for caller to retrieve after drain (cross-thread via AtomicUsize)
+    set_last_page_global(raw_global);
+
+    // Set stealth profile before installing (install_stealth_props reads from thread-local)
+    if let Some(profile) = stealth_profile {
+        bao_stealth::engine_props::set_profile(profile);
+        bao_runtime::fetch_api::set_fetch_stealth_profile(Some(profile.clone()));
+    } else {
+        bao_runtime::fetch_api::set_fetch_stealth_profile(None);
+    }
+
+    // Install stealth properties using raw JSAPI (no Handle wrapper needed)
+    bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
+
+    // Create a proper JSContext wrapper and root the global for Web API installation
     let cx_nn = match NonNull::new(raw_cx) {
         Some(nn) => nn,
         None => return,
     };
+    let mut cx = JSContext::from_ptr(cx_nn);
+    rooted!(in(raw_cx) let mut rooted_global = raw_global);
+    let global_handle = rooted_global.handle();
 
-    if raw_global.is_null() {
-        return;
-    }
-
-    // SAFETY: We are on servo's script thread, the JSContext is valid,
-    // and this is the only JSContext alive (SpiderMonkey constraint).
-    let mut cx = unsafe { JSContext::from_ptr(cx_nn) };
-
-    // Create a Handle from the raw global pointer.
-    // SAFETY: global_ptr points to a valid, live JSObject on the GC heap.
-    // The Handle is valid for the duration of this callback (no GC in between).
-    let global = unsafe { Handle::from_marked_location(raw_global as *const *mut JSObject) };
-
-    // Register Web APIs only on page global (REQ-SEC-003).
-    // Node.js APIs (require, fs, Bun, process, etc.) are NOT installed on
-    // the page global — they are only available in privileged evaluate_js context.
-    unsafe {
-        bao_runtime::globals::install_web_apis(&mut cx, global);
-    }
-
-    // Install stealth properties as PERMANENT engine-layer getters.
-    // JSPROP_PERMANENT ≡ configurable:false → JS Object.defineProperty throws TypeError.
-    // Zero JS injection — all properties are native accessor getters.
-    if let Some(profile) = stealth_profile {
-        bao_stealth::engine_props::set_profile(profile);
-        bao_runtime::fetch_api::set_fetch_stealth_profile(Some(profile.clone()));
-        unsafe {
-            bao_stealth::engine_props::install_stealth_props(raw_cx, raw_global);
-        }
-    } else {
-        bao_runtime::fetch_api::set_fetch_stealth_profile(None);
-    }
+    // Install Web APIs using properly rooted handle
+    bao_runtime::fetch_api::install_fetch_global(&mut cx, global_handle);
+    bao_runtime::fetch_api::install_response_constructor(&mut cx, global_handle);
+    bao_runtime::fetch_api::install_headers_constructor(&mut cx, global_handle);
+    bao_runtime::fetch_api::install_request_constructor(&mut cx, global_handle);
+    bao_runtime::timers::install_timer_globals(&mut cx, global_handle);
+    bao_runtime::web_api::install_performance(&mut cx, global_handle);
+    bao_runtime::web_api::install_websocket_constructor(&mut cx, global_handle);
+    bao_runtime::globals::install_crypto_global(&mut cx, global_handle);
+    bao_runtime::web_api::install_web_encodings(&mut cx, global_handle);
+    bao_runtime::web_api::install_atob_btoa(&mut cx, global_handle);
+    bao_runtime::web_api::install_queue_microtask(&mut cx, global_handle);
+    bao_runtime::globals::install_structured_clone(&mut cx, global_handle);
+    bao_runtime::globals::install_web_api_constructors(&mut cx, global_handle);
 }
 
 /// Inject both Node.js APIs and stealth scripts into a page.
@@ -203,8 +553,72 @@ pub fn inject_all_with_profile(page: &PageHandle, profile: &Option<bao_stealth::
     inject_node_apis_with_stealth(page, profile.clone())
 }
 
+// @trace REQ-SEC-003 [entity:WebPolyfills]
+/// Web-only polyfills for Page Realm fallback (REQ-SEC-003: NO Node APIs on Window global).
+///
+/// This is the fallback when `register_native_host_functions` is unavailable.
+/// It provides ONLY standard Web APIs that browsers should have but may be missing
+/// in servo's script context. Node.js APIs (require, process, Buffer, Bun, etc.)
+/// are deliberately EXCLUDED — they belong only in the Node Realm.
+const WEB_POLYFILLS: &str = r#"(function() {
+  // @trace REQ-SEC-003 Web-only polyfills (no Node.js APIs)
+
+  // TextEncoder / TextDecoder
+  if (typeof TextEncoder === 'undefined') {
+    TextEncoder = function() { this.encode = function(str) { return new Uint8Array(Array.from(str).map(function(c){return c.charCodeAt(0);})); }; };
+  }
+  if (typeof TextDecoder === 'undefined') {
+    TextDecoder = function() { this.decode = function(buf) { return String.fromCharCode.apply(null, buf); }; };
+  }
+
+  // URL / URLSearchParams
+  if (typeof URL === 'undefined') {
+    URL = function(url, base) { throw new Error('URL not available'); };
+  }
+  if (typeof URLSearchParams === 'undefined') {
+    URLSearchParams = function(init) {
+      this._params = [];
+      this.append = function(k,v) { this._params.push([k,v]); };
+      this.get = function(k) { for(var i=0;i<this._params.length;i++) if(this._params[i][0]===k) return this._params[i][1]; return null; };
+      this.toString = function() { return this._params.map(function(p){return p[0]+'='+p[1];}).join('&'); };
+    };
+  }
+
+  // btoa / atob
+  if (typeof btoa === 'undefined') {
+    var _b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+    btoa = function(str) {
+      var out = '';
+      for (var i = 0; i < str.length; i += 3) {
+        var a = str.charCodeAt(i), b = str.charCodeAt(i+1), c = str.charCodeAt(i+2);
+        out += _b64chars[a>>2] + _b64chars[((a&3)<<4)|(b>>4)] + (isNaN(b)?'=':_b64chars[((b&15)<<2)|(c>>6)]) + (isNaN(b)||isNaN(c)?'=':_b64chars[c&63]);
+      }
+      return out;
+    };
+    atob = function(str) {
+      var out = '';
+      str = str.replace(/=+$/, '');
+      for (var i = 0; i < str.length; i += 4) {
+        var a = _b64chars.indexOf(str[i]), b = _b64chars.indexOf(str[i+1]);
+        var c = _b64chars.indexOf(str[i+2]), d = _b64chars.indexOf(str[i+3]);
+        out += String.fromCharCode((a<<2)|(b>>4)) + (c>=0?String.fromCharCode(((b&15)<<4)|(c>>2)):'') + (d>=0?String.fromCharCode(((c&3)<<6)|d):'');
+      }
+      return out;
+    };
+  }
+
+  // setImmediate / clearImmediate (Web API extensions used by many libraries)
+  if (typeof setImmediate === 'undefined') {
+    setImmediate = function(fn) {
+      var args = Array.prototype.slice.call(arguments, 1);
+      return setTimeout(function() { fn.apply(null, args); }, 0);
+    };
+    clearImmediate = function(id) { clearTimeout(id); };
+  }
+})();"#;
+
 const NODE_POLYFILLS: &str = r#"(function() {
-  // @trace REQ-ENG-007 Node.js API polyfills for browser context
+  // @trace REQ-ENG-007 Node.js API polyfills for Node Realm context
 
   // global alias
   if (typeof global === 'undefined') {
@@ -1856,46 +2270,44 @@ mod tests {
     // ── REQ-SEC-002/003: Runtime bridge security structural verification ──
     // @trace TEST-SEC-003 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
 
-    /// Verify install_all_native calls install_web_apis (NOT install_all).
+    /// Verify install_all_native calls install_web_apis (NOT install_all or install_node_apis).
     /// REQ-SEC-003: The bridge must NOT inject Node APIs on page global.
     #[test]
     fn runtime_bridge_calls_web_apis_not_install_all() {
         let source = include_str!("runtime_bridge.rs");
-
         let func_start = source.find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
-        let func_end = source[func_start..].find("fn inject_node_apis_for_evaluate")
-            .or_else(|| source[func_start..].find("/// Inject Node.js APIs as native"))
-            .or_else(|| source[func_start..].find("// ── Bridge types"))
-            .expect("end boundary not found after install_all_native");
-        let func_body = &source[func_start..func_start + func_end];
+        // Extract just the function body — 2000 chars max to avoid test code.
+        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
 
         assert!(
-            func_body.contains("bao_runtime::globals::install_web_apis"),
-            "REQ-SEC-003 REGRESSION: install_all_native must call install_web_apis"
+            func_body.contains("bao_runtime::fetch_api::install_fetch_global"),
+            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
         );
         assert!(
-            !func_body.contains("bao_runtime::globals::install_all"),
-            "REQ-SEC-003 REGRESSION: install_all_native calls install_all (should be install_web_apis)"
+            func_body.contains("bao_runtime::timers::install_timer_globals"),
+            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
         );
         assert!(
-            !func_body.contains("bao_runtime::globals::install_node_apis"),
-            "REQ-SEC-003 REGRESSION: install_all_native calls install_node_apis directly"
+            !func_body.contains("globals::install_all("),
+            "REQ-SEC-003 REGRESSION: install_all_native must NOT call install_all()"
+        );
+        assert!(
+            !func_body.contains("globals::install_node_apis("),
+            "REQ-SEC-003 REGRESSION: install_all_native must NOT call install_node_apis()"
         );
     }
 
-    /// Verify inject_node_apis_for_evaluate calls create_node_api_scope_values.
-    /// REQ-SEC-002: Privileged evaluate_js gets Node APIs via scope object,
-    /// NOT by installing them on the Window global (REQ-SEC-003).
+    /// Verify create_node_realm_native creates Node Realm in NewCompartmentAndZone.
+    /// REQ-SEC-002: Node Realm must be in its own Compartment — physically isolated.
     #[test]
-    fn runtime_bridge_privileged_injection_creates_scope() {
+    fn runtime_bridge_node_realm_uses_new_compartment() {
         let source = include_str!("runtime_bridge.rs");
 
-        let func_start = source.find("unsafe fn create_scope_values_native")
-            .expect("create_scope_values_native function not found");
+        let func_start = source.find("unsafe fn create_node_realm_native")
+            .expect("create_node_realm_native function not found");
         let func_body_start = source[func_start..].find("{")
             .expect("function body start not found");
-        // Search up to the next function definition or 2000 chars, whichever comes first
         let search_limit = source[func_start + func_body_start..]
             .find("pub fn inject_node_apis")
             .or_else(|| source[func_start + func_body_start..].find("/// Inject Node.js APIs as native"))
@@ -1904,23 +2316,79 @@ mod tests {
         let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
-            func_body.contains("bao_runtime::globals::create_node_api_scope_values"),
-            "REQ-SEC-002 REGRESSION: create_scope_values_native must call create_node_api_scope_values"
+            func_body.contains("NewCompartmentAndZone"),
+            "REQ-SEC-002 REGRESSION: create_node_realm_native must use NewCompartmentAndZone"
         );
         assert!(
-            !func_body.contains("bao_runtime::globals::install_node_apis"),
-            "REQ-SEC-003 REGRESSION: create_scope_values_native must NOT call install_node_apis (that installs on global)"
+            func_body.contains("SIMPLE_GLOBAL_CLASS"),
+            "REQ-SEC-002 REGRESSION: create_node_realm_native must use SIMPLE_GLOBAL_CLASS"
         );
         assert!(
-            !func_body.contains("bao_runtime::globals::install_web_apis"),
-            "create_scope_values_native should NOT redundantly call install_web_apis"
+            func_body.contains("AutoRealm::new_from_handle"),
+            "REQ-SEC-002 REGRESSION: create_node_realm_native must use AutoRealm"
+        );
+        assert!(
+            func_body.contains("bao_runtime::globals::install_node_apis"),
+            "REQ-SEC-002 REGRESSION: Node APIs must be installed on Node Realm global"
         );
     }
 
-    /// Verify inject_node_apis_with_stealth uses evaluate_js_web (not evaluate_js).
-    /// REQ-SEC-002: Internal drain must NOT trigger Node API injection (avoid recursion).
+    /// Verify evaluate_in_node_realm uses AutoRealm for Compartment isolation.
+    /// REQ-SEC-002: Scripts must execute in Node Realm, not Page Realm.
     #[test]
-    fn runtime_bridge_drain_uses_web_mode() {
+    fn runtime_bridge_evaluate_in_node_realm_uses_auto_realm() {
+        let source = include_str!("runtime_bridge.rs");
+
+        let func_start = source.find("pub unsafe fn evaluate_in_node_realm")
+            .expect("evaluate_in_node_realm function not found");
+        let func_body_start = source[func_start..].find("{")
+            .expect("function body start not found");
+        let search_limit = source[func_start + func_body_start..]
+            .find("unsafe fn create_node_realm_native")
+            .unwrap_or(2000)
+            .min(2000);
+        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+
+        assert!(
+            func_body.contains("AutoRealm::new_from_handle"),
+            "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must use AutoRealm"
+        );
+        assert!(
+            func_body.contains("evaluate_script"),
+            "REQ-SEC-002: evaluate_in_node_realm must call evaluate_script"
+        );
+    }
+
+    /// Verify per-page Node Realm storage exists (REQ-SEC-002).
+    /// Node Realm globals are stored in a cross-thread Mutex<HashMap> keyed by page_global,
+    /// because servo's ScriptThread runs on a separate OS thread. The Mutex ensures
+    /// the script thread can write and the main thread can read the Node Realm pointers.
+    #[test]
+    fn runtime_bridge_has_per_page_node_realm_storage() {
+        let source = include_str!("runtime_bridge.rs");
+        assert!(
+            source.contains("NODE_REALMS"),
+            "REQ-SEC-002 REGRESSION: must have NODE_REALMS per-page storage"
+        );
+        assert!(
+            source.contains("store_node_realm"),
+            "REQ-SEC-002 REGRESSION: must have store_node_realm accessor"
+        );
+        assert!(
+            source.contains("get_node_realm"),
+            "REQ-SEC-002 REGRESSION: must have get_node_realm accessor"
+        );
+        assert!(
+            source.contains("get_node_realm_global"),
+            "REQ-SEC-002 REGRESSION: must have get_node_realm_global accessor"
+        );
+    }
+
+    /// Verify inject_node_apis_with_stealth uses drain_callbacks (not evaluate_js).
+    /// REQ-SEC-002: Internal drain must NOT trigger Node API injection (avoid recursion).
+    /// drain_callbacks handles InternalError from pending pipeline gracefully.
+    #[test]
+    fn runtime_bridge_drain_uses_callbacks_method() {
         let source = include_str!("runtime_bridge.rs");
 
         let func_start = source.find("pub fn inject_node_apis_with_stealth")
@@ -1930,12 +2398,16 @@ mod tests {
         let func_body = &source[func_start..func_start + func_end];
 
         assert!(
-            func_body.contains("evaluate_js_web"),
-            "REQ-SEC-002 REGRESSION: inject_node_apis_with_stealth must use evaluate_js_web (not evaluate_js)"
+            func_body.contains("drain_callbacks"),
+            "REQ-SEC-002 REGRESSION: inject_node_apis_with_stealth must use drain_callbacks (not evaluate_js)"
         );
         assert!(
-            !func_body.contains("page.evaluate_js(\"\")"),
-            "REQ-SEC-002 REGRESSION: inject_node_apis_with_stealth uses evaluate_js (would cause recursion)"
+            !func_body.contains("page.evaluate_js(\""),
+            "REQ-SEC-002 REGRESSION: inject_node_apis_with_stealth must NOT call evaluate_js with string arg (would cause recursion)"
+        );
+        assert!(
+            !func_body.contains("let _"),
+            "REQ-SEC-003 REGRESSION: inject_node_apis_with_stealth must NOT swallow errors with let _"
         );
     }
 
@@ -1946,5 +2418,130 @@ mod tests {
         assert!(poly.contains("require"), "NODE_POLYFILLS must contain 'require'");
         assert!(poly.contains("Buffer"), "NODE_POLYFILLS must contain 'Buffer'");
         assert!(poly.contains("process"), "NODE_POLYFILLS must contain 'process'");
+    }
+
+    // ── TEST-SEC-003: Node API Sandbox Isolation ────────────────────────
+
+    /// Verify WEB_POLYFILLS exists and does NOT contain Node.js API names.
+    /// REQ-SEC-003: Page Realm fallback polyfills must NOT include Node APIs.
+    #[test]
+    fn web_polyfills_excludes_node_apis() {
+        let poly = super::WEB_POLYFILLS;
+        assert!(!poly.contains("require"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'require'");
+        assert!(!poly.contains("Buffer"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'Buffer'");
+        assert!(!poly.contains("process"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'process'");
+        assert!(!poly.contains("Bun"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'Bun'");
+        assert!(!poly.contains("module"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain 'module'");
+        assert!(!poly.contains("__dirname"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain '__dirname'");
+        assert!(!poly.contains("__filename"), "REQ-SEC-003 REGRESSION: WEB_POLYFILLS must NOT contain '__filename'");
+    }
+
+    /// Verify WEB_POLYFILLS includes essential Web APIs.
+    /// REQ-SEC-003 criterion 6-8: console/fetch/URL/URLSearchParams must work.
+    #[test]
+    fn web_polyfills_includes_web_apis() {
+        let poly = super::WEB_POLYFILLS;
+        assert!(poly.contains("TextEncoder"), "WEB_POLYFILLS must contain TextEncoder");
+        assert!(poly.contains("TextDecoder"), "WEB_POLYFILLS must contain TextDecoder");
+        assert!(poly.contains("URL"), "WEB_POLYFILLS must contain URL");
+        assert!(poly.contains("URLSearchParams"), "WEB_POLYFILLS must contain URLSearchParams");
+        assert!(poly.contains("btoa"), "WEB_POLYFILLS must contain btoa");
+        assert!(poly.contains("atob"), "WEB_POLYFILLS must contain atob");
+    }
+
+    /// Verify fallback path uses WEB_POLYFILLS (not NODE_POLYFILLS).
+    /// REQ-SEC-003: inject_node_apis_with_stealth fallback must not inject Node APIs.
+    #[test]
+    fn fallback_uses_web_polyfills_not_node_polyfills() {
+        let source = include_str!("runtime_bridge.rs");
+
+        let func_start = source.find("pub fn inject_node_apis_with_stealth")
+            .expect("inject_node_apis_with_stealth function not found");
+        let func_end = source[func_start..].find("fn register_native_host_functions")
+            .expect("end boundary not found");
+        let func_body = &source[func_start..func_start + func_end];
+
+        assert!(
+            func_body.contains("WEB_POLYFILLS"),
+            "REQ-SEC-003 REGRESSION: fallback must use WEB_POLYFILLS (not NODE_POLYFILLS)"
+        );
+        // The fallback path should NOT reference NODE_POLYFILLS
+        let fallback_section = func_body.find("if !registered")
+            .map(|i| &func_body[i..])
+            .unwrap_or("");
+        assert!(
+            !fallback_section.contains("NODE_POLYFILLS"),
+            "REQ-SEC-003 REGRESSION: fallback path must NOT reference NODE_POLYFILLS"
+        );
+    }
+
+    /// Verify install_all_native does NOT call install_node_apis or install_all.
+    /// REQ-SEC-003 criterion 1+10: Page Realm must only get Web APIs.
+    #[test]
+    fn install_all_native_web_apis_only() {
+        let source = include_str!("runtime_bridge.rs");
+
+        let func_start = source.find("unsafe fn install_all_native")
+            .expect("install_all_native function not found");
+        let func_body_start = source[func_start..].find("{")
+            .expect("function body start not found");
+        let search_limit = source[func_start + func_body_start..]
+            .find("const NODE_POLYFILLS")
+            .or_else(|| source[func_start + func_body_start..].find("/// Inject Node.js APIs as native"))
+            .unwrap_or(2000)
+            .min(2000);
+        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+
+        assert!(
+            func_body.contains("bao_runtime::fetch_api::install_fetch_global"),
+            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
+        );
+        assert!(
+            func_body.contains("bao_runtime::timers::install_timer_globals"),
+            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
+        );
+        assert!(
+            !func_body.contains("globals::install_all("),
+            "REQ-SEC-003 REGRESSION: install_all_native must NOT call install_all()"
+        );
+        assert!(
+            !func_body.contains("globals::install_node_apis("),
+            "REQ-SEC-003 REGRESSION: install_all_native must NOT call install_node_apis()"
+        );
+    }
+
+    /// Verify Node APIs are installed in Node Realm (create_node_realm_native).
+    /// REQ-SEC-003 criterion 9: Node APIs must exist ONLY in Node Realm.
+    #[test]
+    fn node_apis_installed_in_node_realm_only() {
+        let source = include_str!("runtime_bridge.rs");
+
+        let func_start = source.find("unsafe fn create_node_realm_native")
+            .expect("create_node_realm_native function not found");
+        let func_body_start = source[func_start..].find("{")
+            .expect("function body start not found");
+        let search_limit = source[func_start + func_body_start..]
+            .find("unsafe fn wrap_and_install_dom_proxy")
+            .or_else(|| source[func_start + func_body_start..].find("/// Wrap a DOM property"))
+            .unwrap_or(2000)
+            .min(2000);
+        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+
+        assert!(
+            func_body.contains("bao_runtime::globals::install_node_apis"),
+            "REQ-SEC-003 REGRESSION: Node Realm must install Node APIs (install_node_apis)"
+        );
+        assert!(
+            func_body.contains("NewCompartmentAndZone"),
+            "REQ-SEC-003 REGRESSION: Node Realm must be isolated via NewCompartmentAndZone"
+        );
+    }
+
+    /// Verify WEB_POLYFILLS is valid JS (self-executing function).
+    #[test]
+    fn web_polyfills_is_valid_js() {
+        let poly = super::WEB_POLYFILLS;
+        assert!(poly.starts_with("(function()"), "WEB_POLYFILLS must be an IIFE");
+        assert!(poly.ends_with("})();"), "WEB_POLYFILLS must close IIFE");
     }
 }

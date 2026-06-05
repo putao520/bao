@@ -6,7 +6,10 @@ mod network;
 mod debugger;
 mod input;
 mod emulation;
-mod stub;
+mod css;
+mod overlay;
+mod log_domain;
+mod fetch_domain;
 mod target;
 
 use cdp_server::DomainRegistry;
@@ -31,10 +34,10 @@ pub fn register_all_domains_into(bridge: BridgeSender, registry: &DomainRegistry
     registry.register(Box::new(debugger::DebuggerHandler)).expect("register Debugger");
     registry.register(Box::new(input::InputHandler::new(bridge.clone()))).expect("register Input");
     registry.register(Box::new(emulation::EmulationHandler::new(bridge.clone()))).expect("register Emulation");
-    registry.register(Box::new(stub::CssHandler)).expect("register CSS");
-    registry.register(Box::new(stub::OverlayHandler)).expect("register Overlay");
-    registry.register(Box::new(stub::LogHandler)).expect("register Log");
-    registry.register(Box::new(stub::FetchHandler)).expect("register Fetch");
+    registry.register(Box::new(css::CssHandler::new(bridge.clone()))).expect("register CSS");
+    registry.register(Box::new(overlay::OverlayHandler::new(bridge.clone()))).expect("register Overlay");
+    registry.register(Box::new(log_domain::LogHandler::new())).expect("register Log");
+    registry.register(Box::new(fetch_domain::FetchHandler::new(bridge))).expect("register Fetch");
 }
 
 /// Register all 12 CDP domain handlers (including Target) into a DomainRegistry.
@@ -124,9 +127,9 @@ mod tests {
         assert!(response.get("contentSize").is_some());
     }
 
-    // 4. CSS stub domain returns static responses
+    // 4. CSS domain returns computedStyle structure (bridge returns error, but structure present)
     #[test]
-    fn css_stub_returns_static_responses() {
+    fn css_domain_returns_computed_style_structure() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
         let registry = DomainRegistry::new();
         register_all_domains_into(bridge, &registry);
@@ -134,36 +137,45 @@ mod tests {
         let result = registry.dispatch_command("CSS.getComputedStyleForNode", json!({ "nodeId": 1 }), &NoopSender);
         assert!(result.is_some());
         let response = result.unwrap().unwrap();
-        assert!(response.get("computedStyle").is_some());
+        assert!(response.get("computedStyle").is_some(), "CSS should return computedStyle field");
     }
 
-    // 5. Overlay stub domain returns empty responses
+    // 5. Overlay domain returns highlight result structure
     #[test]
-    fn overlay_stub_returns_empty_responses() {
+    fn overlay_domain_returns_highlight_structure() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
         let registry = DomainRegistry::new();
         register_all_domains_into(bridge, &registry);
 
-        let result = registry.dispatch_command("Overlay.highlightNode", json!({}), &NoopSender);
+        let result = registry.dispatch_command("Overlay.highlightNode", json!({ "nodeId": 1 }), &NoopSender);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().unwrap(), json!({}));
+        let response = result.unwrap().unwrap();
+        assert!(response.get("highlighted").is_some(), "Overlay should return highlighted field");
     }
 
-    // 6. Log stub domain handles clear command
+    // 6. Log domain handles enable/disable/clear
     #[test]
-    fn log_stub_handles_clear_command() {
+    fn log_domain_handles_enable_disable_clear() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
         let registry = DomainRegistry::new();
         register_all_domains_into(bridge, &registry);
+
+        let result = registry.dispatch_command("Log.enable", json!({}), &NoopSender);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
 
         let result = registry.dispatch_command("Log.clear", json!({}), &NoopSender);
         assert!(result.is_some());
-        assert_eq!(result.unwrap().unwrap(), json!({}));
+        assert!(result.unwrap().is_ok());
+
+        let result = registry.dispatch_command("Log.disable", json!({}), &NoopSender);
+        assert!(result.is_some());
+        assert!(result.unwrap().is_ok());
     }
 
-    // 7. Fetch stub domain handles enable with patterns
+    // 7. Fetch domain handles enable with patterns
     #[test]
-    fn fetch_stub_handles_enable_with_patterns() {
+    fn fetch_domain_handles_enable_with_patterns() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
         let registry = DomainRegistry::new();
         register_all_domains_into(bridge, &registry);

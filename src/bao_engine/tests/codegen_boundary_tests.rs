@@ -237,7 +237,9 @@ fn test_generate_bindings_with_constructor() {
     assert!(bindings.constructor_fn.is_some());
     let ctor = bindings.constructor_fn.unwrap();
     assert!(ctor.contains("WithCtor_constructor"));
-    assert!(ctor.contains("JS_ConstructorStub"));
+    assert!(ctor.contains("JS_NewObjectForConstructor"));
+    assert!(ctor.contains("JS_SetReservedSlot"));
+    assert!(ctor.contains("PrivateValue"));
 }
 
 #[test]

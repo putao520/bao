@@ -197,6 +197,7 @@ fn extract_number_value(source: &str, key: &str) -> u32 {
 pub struct GeneratedBindings {
     pub class_name: String,
     pub js_class_def: String,
+    pub class_ops_def: Option<String>,
     pub constructor_fn: Option<String>,
     pub finalize_fn: Option<String>,
     pub init_class_fn: String,
@@ -210,36 +211,84 @@ pub struct GeneratedBindings {
 pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
     let class_name = &class_def.name;
     let js_name = format!("{}_Class", class_name);
+    let ops_name = format!("{}_ClassOps", class_name);
+
+    // Generate class ops with finalizer when finalize is enabled
+    let (class_ops_def, finalize_fn, js_class_flags, c_ops_ref) = if class_def.finalize {
+        let ops = format!(
+            r#"static {ops_name}: JSClassOps = JSClassOps {{
+    addProperty: None,
+    delProperty: None,
+    enumerate: None,
+    newEnumerate: None,
+    resolve: None,
+    mayResolve: None,
+    finalize: Some({class_name}_finalize),
+    call: None,
+    construct: None,
+    trace: None,
+}};"#,
+            ops_name = ops_name,
+            class_name = class_name,
+        );
+        let fin = format!(
+            r#"unsafe extern "C" fn {class_name}_finalize(gcx: *mut GCContext, obj: *mut JSObject) {{
+    let mut slot = UndefinedValue();
+    JS_GetReservedSlot(obj, 0, &mut slot);
+    let ptr = slot.to_private() as *mut std::ffi::c_void;
+    if !ptr.is_null() {{
+        let _ = Box::from_raw(ptr);
+    }}
+    let _ = gcx;
+}}"#,
+            class_name = class_name,
+        );
+        (
+            Some(ops),
+            Some(fin),
+            "JSCLASS_FOREGROUND_FINALIZE as u32",
+            format!("&{ops_name} as *const JSClassOps"),
+        )
+    } else {
+        (
+            None,
+            None,
+            "0u32",
+            "std::ptr::null()".to_owned(),
+        )
+    };
 
     let js_class_def = format!(
         r#"static {js_name}: JSClass = JSClass {{
     name: c"{class_name}".as_ptr(),
-    flags: JSCLASS_FOREGROUND_FINALIZE_PROHIBITED as u32,
+    flags: {flags},
+    cOps: {c_ops},
     ..Default::default()
 }};"#,
         js_name = js_name,
         class_name = class_name,
+        flags = js_class_flags,
+        c_ops = c_ops_ref,
     );
 
+    // Slot 0 is used for native data; slot 1 reserved for future use
     let constructor_fn = if class_def.construct && !class_def.no_constructor {
         Some(format!(
             r#"unsafe extern "C" fn {class_name}_constructor(cx: *mut JSContext, argc: u32, vp: *mut JS::Value) -> bool {{
-    // TODO: implement {class_name} constructor
-    JS_ConstructorStub(cx, argc, vp)
+    let args = CallArgs::from_vp(vp, argc);
+    let obj = JS_NewObjectForConstructor(cx, &{js_name}, &args);
+    if obj.is_null() {{
+        return false;
+    }}
+    let native: Box<std::ffi::c_void> = Box::new(std::ffi::c_void::new(0));
+    let ptr = Box::into_raw(native) as *const std::ffi::c_void;
+    let private_val = PrivateValue(ptr);
+    JS_SetReservedSlot(obj, 0, &private_val);
+    args.rval().set(ObjectValue(obj));
+    true
 }}"#,
             class_name = class_name,
-        ))
-    } else {
-        None
-    };
-
-    let finalize_fn = if class_def.finalize {
-        Some(format!(
-            r#"unsafe extern "C" fn {class_name}_finalize(opaque: *mut std::os::raw::c_void) {{
-    // TODO: implement {class_name} finalizer — drop Rust native data
-    let _ = opaque;
-}}"#,
-            class_name = class_name,
+            js_name = js_name,
         ))
     } else {
         None
@@ -285,6 +334,7 @@ pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
     GeneratedBindings {
         class_name: class_name.clone(),
         js_class_def,
+        class_ops_def,
         constructor_fn,
         finalize_fn,
         init_class_fn,
@@ -389,13 +439,20 @@ pub fn generate_module(bindings: &[GeneratedBindings], module_name: &str) -> Str
 
     for b in bindings {
         out.push_str(&format!("// ---- {} ----\n\n", b.class_name));
-        out.push_str(&b.js_class_def);
-        out.push_str("\n\n");
+
+        if let Some(ref class_ops) = b.class_ops_def {
+            out.push_str(class_ops);
+            out.push_str("\n\n");
+        }
 
         if let Some(ref finalize) = b.finalize_fn {
             out.push_str(finalize);
             out.push_str("\n\n");
         }
+
+        out.push_str(&b.js_class_def);
+        out.push_str("\n\n");
+
         if let Some(ref ctor) = b.constructor_fn {
             out.push_str(ctor);
             out.push_str("\n\n");
@@ -770,11 +827,22 @@ define({
         assert!(bindings.constructor_fn.is_some());
         let ctor = bindings.constructor_fn.unwrap();
         assert!(ctor.contains("Buffer_constructor"));
-        assert!(ctor.contains("JS_ConstructorStub"));
+        assert!(ctor.contains("JS_NewObjectForConstructor"));
+        assert!(ctor.contains("JS_SetReservedSlot"));
+        assert!(ctor.contains("PrivateValue"));
 
         assert!(bindings.finalize_fn.is_some());
         let fin = bindings.finalize_fn.unwrap();
         assert!(fin.contains("Buffer_finalize"));
+        assert!(fin.contains("GCContext"));
+        assert!(fin.contains("JS_GetReservedSlot"));
+        assert!(fin.contains("Box::from_raw"));
+
+        assert!(bindings.class_ops_def.is_some());
+        let ops = bindings.class_ops_def.unwrap();
+        assert!(ops.contains("Buffer_ClassOps"));
+        assert!(ops.contains("Some(Buffer_finalize)"));
+        assert!(bindings.js_class_def.contains("JSCLASS_FOREGROUND_FINALIZE"));
 
         assert!(bindings.init_class_fn.contains("init_Buffer"));
         assert!(bindings.init_class_fn.contains("Some(Buffer_constructor)"));
@@ -847,6 +915,7 @@ define({
         assert!(module.contains("// @trace REQ-ENG-002"));
         assert!(module.contains("use mozjs::jsapi::*"));
         assert!(module.contains("Resource_Class"));
+        assert!(module.contains("Resource_ClassOps"));
         assert!(module.contains("Resource_constructor"));
         assert!(module.contains("Resource_finalize"));
         assert!(module.contains("Resource_proto_specs"));
@@ -890,8 +959,10 @@ define({
         assert!(module.contains("init_all"));
         assert!(module.contains("File_constructor"));
         assert!(module.contains("File_finalize"));
+        assert!(module.contains("File_ClassOps"));
         assert!(module.contains("Dir_constructor"));
         assert!(module.contains("Dir_finalize") == false, "Dir has no finalize");
+        assert!(module.contains("Dir_ClassOps") == false, "Dir has no ClassOps");
     }
 
     #[test]

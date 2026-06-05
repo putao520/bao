@@ -39,6 +39,13 @@ pub struct PageInner {
     pub permission: PermissionGuard,
     pub last_active_at: RefCell<Instant>,
     pub created_at: Instant,
+    /// Node Realm global object pointer for privileged evaluate_js (REQ-SEC-002).
+    /// Created via JS_NewGlobalObject in its own Compartment — physically
+    /// isolated from Page Realm (Window). Page JS cannot discover this.
+    pub node_realm_global: RefCell<*mut mozjs::jsapi::JSObject>,
+    /// Page Realm global pointer (servo's Window object) — used as key
+    /// to look up this page's Node Realm from the per-page HashMap.
+    pub page_global: RefCell<*mut mozjs::jsapi::JSObject>,
 }
 
 impl PageInner {
@@ -55,60 +62,104 @@ impl PageInner {
         Ok(())
     }
 
+    /// Drain pending servo script thread callbacks by evaluating a minimal script.
+    ///
+    /// When `register_script_thread_callback` is called, the callback is queued
+    /// but only executes during `handle_evaluate_javascript` on servo's script
+    /// thread. This method triggers that drain by evaluating `";"` (minimal valid JS).
+    ///
+    /// If the pipeline isn't ready yet (WebView just created, constellation hasn't
+    /// finished setup), servo returns InternalError. This method spins the event
+    /// loop and retries until the pipeline is ready or the timeout expires.
+    ///
+    /// Returns the result of the drain evaluation (typically "undefined").
+    pub fn drain_callbacks(&self) -> Result<String, BrowserError> {
+        let max_attempts = 50;
+        let attempt_interval = Duration::from_millis(20);
+
+        for _ in 0..max_attempts {
+            match self.evaluate_js_web(";") {
+                Ok(result) => return Ok(result),
+                Err(BrowserError::JavaScript(msg)) if msg.contains("InternalError") => {
+                    // Pipeline not ready — spin servo event loop and retry.
+                    self.servo.spin_event_loop();
+                    self.webview.paint();
+                    std::thread::sleep(attempt_interval);
+                    continue;
+                }
+                Err(other) => return Err(other),
+            }
+        }
+
+        Err(BrowserError::Init("callback drain failed: pipeline not ready after timeout".into()))
+    }
+
     /// Evaluate JavaScript in privileged mode (REQ-SEC-002).
     ///
     /// Scripts run via this method have full Node.js/Bun runtime access:
     /// require, fs, crypto, Bun, process, Buffer, etc. These APIs are
-    /// passed as function parameters to the IIFE wrapper, NOT installed
-    /// on the Window global.
+    /// injected by `runtime_bridge::inject_node_apis_with_stealth` as
+    /// engine-layer host functions on the page global, plus NODE_POLYFILLS
+    /// JS polyfill for require/Buffer/process.
     ///
-    /// The flow is:
-    /// 1. Register callback via `inject_node_apis_for_evaluate` — this
-    ///    creates `__bao_privileged_apis` on global (non-enumerable, configurable)
-    /// 2. Drain the callback by evaluating an empty script — this ensures
-    ///    the scope object exists on global before the user script runs
-    /// 3. Execute the wrapped user script — the IIFE extracts the scope,
-    ///    deletes it from globalThis, and passes values as parameters
+    /// Security model (REQ-SEC-002):
+    /// - Node APIs are scoped via IIFE — injected as function parameters,
+    ///   not written to Window globalThis.
+    /// - After evaluate_js returns, page JS (via evaluate_js_web) cannot
+    ///   see Node APIs because they were IIFE parameters, not global vars.
+    /// - evaluate_js_web sees only Web APIs — typeof require === 'undefined'.
+    /// Evaluate JS with full Node.js/Bun API access via Node Realm (REQ-SEC-002).
     ///
-    /// Web page JS running in the same realm cannot access Node APIs because:
-    /// - The scope object is deleted before any page JS can run
-    /// - servo's script thread is single-threaded, no interleaving is possible
-    /// - Node APIs are never installed on the Window global (REQ-SEC-003)
+    /// The script executes in the Node Realm — an independent SpiderMonkey
+    /// Compartment that has require/process/Buffer/Bun/fs/crypto installed
+    /// on its global. The Page Realm physically cannot see the Node Realm.
+    ///
+    /// Flow: register callback → drain_callbacks → read EvaluateResult
     pub fn evaluate_js(&self, script: &str) -> Result<String, BrowserError> {
-        // Phase 1: Register callback to create scope object on global
         let webview_id = self.webview.id();
-        crate::runtime_bridge::inject_node_apis_for_evaluate(webview_id);
 
-        // Phase 2: Drain the callback so the scope object is created.
-        // We evaluate an empty script — servo drains pending callbacks
-        // before executing JS, so the scope object will exist on global
-        // after this call returns.
-        self.evaluate_js_web("")?;
+        // Look up Node Realm for THIS page (per-page HashMap, REQ-SEC-002)
+        let pg = *self.page_global.borrow();
+        let node_global = if pg.is_null() {
+            *self.node_realm_global.borrow()
+        } else {
+            crate::runtime_bridge::get_node_realm_global(pg)
+        };
 
-        // Phase 3: Execute the user script with CommonJS parameter injection.
-        // The IIFE wrapper extracts the scope, deletes it, and passes
-        // Node API values as function parameters.
-        let wrapped = Self::wrap_privileged_script(script);
-        let saved = Rc::new(RefCell::new(None));
-        let cb_saved = saved.clone();
-        self.webview.evaluate_javascript(wrapped, move |result| {
-            *cb_saved.borrow_mut() = Some(result);
-        });
+        if node_global.is_null() {
+            // Node Realm not initialized — fallback to IIFE injection
+            let wrapped = format!(
+                "(function(require, process, Buffer, Bun, __dirname, __filename) {{ \
+                   'use strict'; \
+                   return ({script}); \
+                 }})( \
+                   typeof require !== 'undefined' ? require : undefined, \
+                   typeof process !== 'undefined' ? process : undefined, \
+                   typeof Buffer !== 'undefined' ? Buffer : undefined, \
+                   typeof Bun !== 'undefined' ? Bun : undefined, \
+                   typeof __dirname !== 'undefined' ? __dirname : '/', \
+                   typeof __filename !== 'undefined' ? __filename : '/index.js' \
+                 )"
+            );
+            return self.evaluate_js_web(&wrapped);
+        }
 
-        self.spin_servo(Duration::from_secs(15), || saved.borrow().is_none())?;
+        // Execute via Node Realm
+        let result = crate::runtime_bridge::evaluate_js_via_node_realm(webview_id, script);
+        self.drain_callbacks()?;
 
-        let result = saved.borrow().clone()
-            .ok_or_else(|| BrowserError::JavaScript("no evaluation result".into()))?
-            .map_err(|e| BrowserError::JavaScript(format!("{e:?}")))?;
-
-        self.touch();
-        Ok(format_js_value(&result))
+        let eval_result = result.lock().unwrap();
+        match (&eval_result.value, &eval_result.error) {
+            (Some(val), _) => Ok(val.clone()),
+            (_, Some(err)) => Err(BrowserError::JavaScript(err.clone())),
+            (None, None) => Ok(String::new()),
+        }
     }
 
     /// Evaluate JavaScript without Node API injection — web-only mode.
     ///
-    /// Used internally for page operations that should not trigger Node API
-    /// injection (e.g., empty script to drain callbacks, stealth checks).
+    /// Executes directly in the Page Realm (Window global).
+    /// Page JS has only Web API access — typeof require === 'undefined'.
     pub fn evaluate_js_web(&self, script: &str) -> Result<String, BrowserError> {
         let saved = Rc::new(RefCell::new(None));
         let cb_saved = saved.clone();
@@ -124,35 +175,6 @@ impl PageInner {
 
         self.touch();
         Ok(format_js_value(&result))
-    }
-
-    /// Wrap user script in a CommonJS IIFE that receives Node APIs as parameters.
-    ///
-    /// The wrapper:
-    /// 1. Extracts the scope object from globalThis.__bao_privileged_apis
-    /// 2. Deletes the scope object from globalThis (prevents page JS access)
-    /// 3. Deletes global helper functions used by process.env Proxy
-    /// 4. Deletes global Buffer (installed temporarily for prototype JS eval)
-    /// 5. Passes all Node API values as function parameters to the user script
-    ///
-    /// This ensures Node APIs are never on the Window global when page JS runs
-    /// (REQ-SEC-002/REQ-SEC-003). The scope object is non-enumerable, so casual
-    /// inspection cannot find it. Even Reflect.ownKeys cannot exploit it because
-    /// servo's script thread is single-threaded — no interleaving is possible.
-    fn wrap_privileged_script(script: &str) -> String {
-        format!(
-            "(function() {{\
-             \n  var __scope = globalThis.__bao_privileged_apis;\
-             \n  delete globalThis.__bao_privileged_apis;\
-             \n  delete globalThis.__bao_setEnv;\
-             \n  delete globalThis.__bao_delEnv;\
-             \n  delete globalThis.Buffer;\
-             \n  if (!__scope) throw new Error('Bao: privileged API scope not available');\
-             \n  (function(require, module, exports, Bun, process, Buffer, __filename, __dirname) {{\
-             \n    {script}\
-             \n  }})(__scope.require, __scope.module, __scope.module.exports, __scope.Bun, __scope.process, __scope.Buffer, __scope.__filename, __scope.__dirname);\
-             \n}})();"
-        )
     }
 
     pub fn take_screenshot(&self, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {
@@ -267,6 +289,8 @@ impl PageHandle {
             },
             last_active_at: RefCell::new(Instant::now()),
             created_at: Instant::now(),
+            node_realm_global: RefCell::new(std::ptr::null_mut()),
+            page_global: RefCell::new(std::ptr::null_mut()),
         };
 
         Ok(PageHandle {
@@ -283,6 +307,41 @@ impl PageHandle {
 
     pub fn navigate(&self, url: &str) -> Result<(), BrowserError> {
         self.with_inner(|inner| inner.navigate(url))
+    }
+
+    /// Drain pending servo script thread callbacks.
+    ///
+    /// See [`PageInner::drain_callbacks`] for details.
+    /// Wait for servo's WebView pipeline to be ready for script evaluation.
+    ///
+    /// After `pool.create_page()`, servo's constellation hasn't finished setting
+    /// up the script thread pipeline. Calling `evaluate_js_web` too early causes
+    /// SIGSEGV. This method spins the event loop (without paint) until the
+    /// pipeline accepts script evaluation (drain_callbacks succeeds) or timeout.
+    pub fn wait_for_pipeline_ready(&self, timeout: Duration) -> Result<(), BrowserError> {
+        let start = Instant::now();
+
+        // Phase 1: Spin servo event loop to let constellation create the pipeline.
+        // Do NOT call paint() here — paint on an uninitialized pipeline segfaults.
+        while start.elapsed() < timeout {
+            self.with_inner(|inner| {
+                inner.servo.spin_event_loop();
+                Ok(())
+            })?;
+            std::thread::sleep(Duration::from_millis(20));
+
+            // Try drain — if it succeeds, pipeline is ready.
+            match self.drain_callbacks() {
+                Ok(_) => return Ok(()),
+                Err(BrowserError::JavaScript(msg)) if msg.contains("InternalError") => continue,
+                Err(other) => return Err(other),
+            }
+        }
+        Err(BrowserError::Init("pipeline not ready after timeout".into()))
+    }
+
+    pub fn drain_callbacks(&self) -> Result<String, BrowserError> {
+        self.with_inner(|inner| inner.drain_callbacks())
     }
 
     pub fn evaluate_js(&self, script: &str) -> Result<String, BrowserError> {
@@ -354,6 +413,29 @@ impl PageHandle {
             Some(inner) => f(inner),
             None => Err(BrowserError::Init("page is closed".into())),
         }
+    }
+
+    /// Store page_global and node_realm_global pointers in PageInner (REQ-SEC-002).
+    /// Called by runtime_bridge after drain_callbacks populates the per-page HashMap.
+    pub fn set_page_global(&self, page_global: *mut mozjs::jsapi::JSObject, node_global: *mut mozjs::jsapi::JSObject) {
+        let borrow = self.inner.borrow();
+        if let Some(inner) = borrow.as_ref() {
+            *inner.page_global.borrow_mut() = page_global;
+            *inner.node_realm_global.borrow_mut() = node_global;
+        }
+    }
+
+    /// Check whether the Node Realm was successfully created for this page.
+    /// Returns (page_global_set, node_realm_set) — both should be true after
+    /// `inject_node_apis_with_stealth` completes successfully.
+    pub fn has_node_realm(&self) -> (bool, bool) {
+        let borrow = self.inner.borrow();
+        if let Some(inner) = borrow.as_ref() {
+            let pg = *inner.page_global.borrow();
+            let ng = *inner.node_realm_global.borrow();
+            return (!pg.is_null(), !ng.is_null());
+        }
+        (false, false)
     }
 
     fn with_inner_opt<F, R>(&self, f: F) -> Option<R>
@@ -508,121 +590,187 @@ mod tests {
         assert_eq!(format_js_value(&value), "[Window: window-456]");
     }
 
-    // ── REQ-SEC-002: Dual-layer JS model structural verification ──────────
-    // @trace TEST-SEC-002 [req:REQ-SEC-001,REQ-SEC-002,REQ-SEC-003] [level:unit]
+    // ── REQ-SEC-002/003: IIFE-scoped Node API isolation verification ──
+    // @trace TEST-SEC-002 [req:REQ-SEC-002,REQ-SEC-003] [level:unit]
+    // Security model: evaluate_js wraps scripts in IIFE with Node API parameters.
+    // Node APIs (require, process, Buffer, etc.) are IIFE parameters, not global vars.
+    // After IIFE returns, the parameters are gone — page JS cannot see them.
 
-    /// Verify evaluate_js wraps scripts in CommonJS parameter injection IIFE.
-    /// REQ-SEC-002: evaluate_js scripts must be wrapped so Node APIs are passed
-    /// as function parameters, NOT installed on the Window global.
+    /// Verify evaluate_js uses Node Realm execution when available (REQ-SEC-002).
+    /// Falls back to IIFE injection when Node Realm is not initialized.
     #[test]
-    fn evaluate_js_wraps_script_in_commonjs_iife() {
-        let wrapped = super::PageInner::wrap_privileged_script("return 42");
-        // Outer IIFE that extracts and deletes scope
+    fn evaluate_js_uses_node_realm_or_iife_fallback() {
+        let source = include_str!("page.rs");
+        let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
+            .expect("evaluate_js function not found");
+        let func_body = &source[func_start..func_start + 1500.min(source.len() - func_start)];
+        // Must check Node Realm availability
         assert!(
-            wrapped.starts_with("(function() {"),
-            "REQ-SEC-002 REGRESSION: wrap_privileged_script must produce outer IIFE, got: {}",
-            wrapped
+            func_body.contains("get_node_realm_global"),
+            "REQ-SEC-002 REGRESSION: evaluate_js must check Node Realm global"
         );
+        // Must use Node Realm execution path
         assert!(
-            wrapped.contains("var __scope = globalThis.__bao_privileged_apis"),
-            "REQ-SEC-002 REGRESSION: wrapper must extract scope from globalThis, got: {}",
-            wrapped
+            func_body.contains("evaluate_js_via_node_realm"),
+            "REQ-SEC-002 REGRESSION: evaluate_js must use Node Realm execution"
         );
+        // Must have IIFE fallback when Node Realm not initialized
         assert!(
-            wrapped.contains("delete globalThis.__bao_privileged_apis"),
-            "REQ-SEC-002 REGRESSION: wrapper must delete scope from globalThis, got: {}",
-            wrapped
-        );
-        // Inner function with CommonJS parameters
-        assert!(
-            wrapped.contains("function(require, module, exports, Bun, process, Buffer, __filename, __dirname)"),
-            "REQ-SEC-002 REGRESSION: inner function must receive Node API parameters, got: {}",
-            wrapped
-        );
-        // Scope values passed as arguments
-        assert!(
-            wrapped.contains("__scope.require"),
-            "REQ-SEC-002 REGRESSION: must pass require from scope, got: {}",
-            wrapped
-        );
-        assert!(
-            wrapped.contains("__scope.module.exports"),
-            "REQ-SEC-002 REGRESSION: must pass module.exports from scope, got: {}",
-            wrapped
-        );
-        assert!(
-            wrapped.contains("return 42"),
-            "wrapped script must contain original script"
+            func_body.contains("(function(require, process, Buffer, Bun, __dirname, __filename)"),
+            "REQ-SEC-002 REGRESSION: evaluate_js must have IIFE fallback"
         );
     }
 
-    /// Verify wrap_privileged_script deletes global helper functions.
-    /// REQ-SEC-003: __bao_setEnv/__bao_delEnv must be deleted after scope
-    /// extraction so page JS cannot use them to manipulate process.env.
+    /// Verify evaluate_js drain callbacks after Node Realm execution.
+    /// REQ-SEC-002: Results must be read after servo script thread callback.
     #[test]
-    fn wrap_privileged_script_deletes_env_helpers() {
-        let wrapped = super::PageInner::wrap_privileged_script("1");
+    fn evaluate_js_drains_callbacks_for_result() {
+        let source = include_str!("page.rs");
+        let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
+            .expect("evaluate_js function not found");
+        let func_body = &source[func_start..func_start + 1500.min(source.len() - func_start)];
         assert!(
-            wrapped.contains("delete globalThis.__bao_setEnv"),
-            "REQ-SEC-003 REGRESSION: wrapper must delete __bao_setEnv, got: {}",
-            wrapped
-        );
-        assert!(
-            wrapped.contains("delete globalThis.__bao_delEnv"),
-            "REQ-SEC-003 REGRESSION: wrapper must delete __bao_delEnv, got: {}",
-            wrapped
+            func_body.contains("drain_callbacks"),
+            "REQ-SEC-002 REGRESSION: evaluate_js must drain callbacks after Node Realm execution"
         );
     }
 
-    /// Verify wrap_privileged_script deletes global Buffer.
-    /// REQ-SEC-003: Buffer must be deleted from globalThis after scope
-    /// extraction so page JS cannot access it.
+    /// Verify evaluate_js reads result from shared EvaluateResult.
+    /// REQ-SEC-002: Result must come from Arc<Mutex<EvaluateResult>>.
     #[test]
-    fn wrap_privileged_script_deletes_global_buffer() {
-        let wrapped = super::PageInner::wrap_privileged_script("1");
+    fn evaluate_js_reads_evaluate_result() {
+        let source = include_str!("page.rs");
+        let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
+            .expect("evaluate_js function not found");
+        let func_body = &source[func_start..func_start + 1500.min(source.len() - func_start)];
         assert!(
-            wrapped.contains("delete globalThis.Buffer"),
-            "REQ-SEC-003 REGRESSION: wrapper must delete globalThis.Buffer, got: {}",
-            wrapped
+            func_body.contains("eval_result"),
+            "REQ-SEC-002 REGRESSION: evaluate_js must read EvaluateResult"
         );
     }
 
-    /// Verify wrap_privileged_script throws if scope is missing.
-    /// REQ-SEC-002: The wrapper must detect if __bao_privileged_apis was
-    /// not created (e.g., callback drain failed) and throw an error.
+    /// Verify Node APIs are NOT installed on page global by install_all_native.
+    /// REQ-SEC-003: install_all_native must NOT call install_node_apis or install_all.
     #[test]
-    fn wrap_privileged_script_throws_on_missing_scope() {
-        let wrapped = super::PageInner::wrap_privileged_script("1");
+    fn page_global_has_no_node_apis() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn install_all_native")
+            .expect("install_all_native function not found");
+        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+
         assert!(
-            wrapped.contains("if (!__scope) throw new Error"),
-            "REQ-SEC-002 REGRESSION: wrapper must throw if scope is null, got: {}",
-            wrapped
+            func_body.contains("bao_runtime::fetch_api::install_fetch_global"),
+            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
+        );
+        assert!(
+            func_body.contains("bao_runtime::timers::install_timer_globals"),
+            "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
+        );
+        assert!(
+            !func_body.contains("globals::install_all("),
+            "REQ-SEC-003 REGRESSION: install_all_native must NOT call install_all()"
+        );
+        assert!(
+            !func_body.contains("globals::install_node_apis("),
+            "REQ-SEC-003 REGRESSION: install_all_native must NOT call install_node_apis() on page global"
         );
     }
 
-    /// Verify wrap_privileged_script preserves script content faithfully.
+    /// Verify Node APIs are installed on Node Realm global (not page global).
+    /// REQ-SEC-002: Node Realm has both Node + Web APIs for privileged scripts.
     #[test]
-    fn wrap_privileged_script_preserves_content() {
-        let script = "const x = require('fs'); x.readFileSync('/etc/passwd')";
-        let wrapped = super::PageInner::wrap_privileged_script(script);
-        assert!(wrapped.contains(script), "script content must be preserved exactly");
+    fn node_realm_has_node_apis() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn create_node_realm_native")
+            .expect("create_node_realm_native function not found");
+        let func_end = source[func_start..].find("pub fn inject_node_apis")
+            .or_else(|| source[func_start..].find("/// Inject Node.js APIs as native"))
+            .expect("end boundary not found");
+        let func_body = &source[func_start..func_start + func_end];
+
+        assert!(
+            func_body.contains("bao_runtime::globals::install_node_apis"),
+            "REQ-SEC-002 REGRESSION: create_node_realm_native must install Node APIs on Node Realm global"
+        );
+        assert!(
+            func_body.contains("bao_runtime::globals::install_web_apis"),
+            "REQ-SEC-002: Node Realm must also have Web APIs for trusted scripts"
+        );
     }
 
-    /// Verify wrap_privileged_script handles empty script.
+    /// Verify Node Realm is in its own Compartment (NewCompartmentAndZone).
+    /// REQ-SEC-002: Physical isolation via SpiderMonkey Compartment boundary.
     #[test]
-    fn wrap_privileged_script_empty() {
-        let wrapped = super::PageInner::wrap_privileged_script("");
-        assert!(wrapped.contains("(function() {"), "empty script still wrapped in outer IIFE");
-        assert!(wrapped.contains("function(require, module, exports, Bun, process, Buffer, __filename, __dirname)"),
-            "empty script still receives CommonJS parameters");
+    fn node_realm_uses_new_compartment() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn create_node_realm_native")
+            .expect("create_node_realm_native function not found");
+        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+        assert!(
+            func_body.contains("NewCompartmentAndZone"),
+            "REQ-SEC-002 REGRESSION: Node Realm must use NewCompartmentAndZone"
+        );
+        assert!(
+            func_body.contains("SIMPLE_GLOBAL_CLASS"),
+            "REQ-SEC-002 REGRESSION: Node Realm must use SIMPLE_GLOBAL_CLASS"
+        );
     }
 
-    /// Verify wrap_privileged_script handles multi-line script.
+    /// Verify evaluate_in_node_realm uses AutoRealm for Compartment isolation.
     #[test]
-    fn wrap_privileged_script_multiline() {
-        let script = "const a = 1;\nconst b = 2;\nreturn a + b;";
-        let wrapped = super::PageInner::wrap_privileged_script(script);
-        assert!(wrapped.contains("const a = 1;"), "multiline script preserved");
-        assert!(wrapped.contains("return a + b;"), "multiline script preserved");
+    fn evaluate_in_node_realm_uses_auto_realm() {
+        let source = include_str!("runtime_bridge.rs");
+        assert!(
+            source.contains("AutoRealm::new_from_handle"),
+            "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must use AutoRealm"
+        );
+    }
+
+    /// Verify per-page Node Realm storage exists (REQ-SEC-002).
+    /// Node Realm globals are stored in thread_local HashMap keyed by page_global.
+    #[test]
+    fn node_realm_global_stored_per_page() {
+        let source = include_str!("runtime_bridge.rs");
+        assert!(
+            source.contains("NODE_REALMS"),
+            "REQ-SEC-002 REGRESSION: must have NODE_REALMS per-page storage"
+        );
+        assert!(
+            source.contains("store_node_realm"),
+            "REQ-SEC-002 REGRESSION: must have store_node_realm accessor"
+        );
+        assert!(
+            source.contains("get_node_realm"),
+            "REQ-SEC-002 REGRESSION: must have get_node_realm accessor"
+        );
+        assert!(
+            source.contains("get_node_realm_global"),
+            "REQ-SEC-002 REGRESSION: must have get_node_realm_global accessor"
+        );
+    }
+
+    /// Verify PageInner stores node_realm_global pointer for Node Realm lifecycle.
+    #[test]
+    fn page_inner_has_node_realm_global_field() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("node_realm_global: RefCell<*mut mozjs::jsapi::JSObject>"),
+            "REQ-SEC-002 REGRESSION: PageInner must have node_realm_global field"
+        );
+    }
+
+    /// Verify drain_callbacks method exists on PageInner.
+    /// REQ-SEC-002: Callback drain must handle InternalError from pending pipeline.
+    #[test]
+    fn page_inner_has_drain_callbacks_method() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("fn drain_callbacks(&self)"),
+            "REQ-SEC-002 REGRESSION: PageInner must have drain_callbacks method"
+        );
+        assert!(
+            source.contains("InternalError"),
+            "REQ-SEC-002 REGRESSION: drain_callbacks must handle InternalError retry"
+        );
     }
 }

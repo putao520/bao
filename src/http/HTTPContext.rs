@@ -58,7 +58,7 @@ pub struct HTTPContext<const SSL: bool> {
     // TODO(port): lifetime — owned Box<PendingConnect>; `pc.deinit()` in Drop.
     // The `Box` is load-bearing: `client.pending_h2` holds `NonNull<PendingConnect>`
     // into the box interior; unboxing would dangle it on `Vec` realloc.
-    #[allow(clippy::vec_box)]
+    #[expect(clippy::vec_box)]
     pub pending_h2_connects: Vec<Box<h2::PendingConnect>>,
 }
 

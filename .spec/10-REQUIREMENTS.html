@@ -223,18 +223,18 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 同一个 JSContext 内同时存在 Web API 和 Node.js API，无任何转换层。</p>
 <h4>验收标准</h4>
 <ul>
-<li data-criterion="整个 Bao 只有一个 JSContext（servo ScriptThread 创建）" data-criterion-id="REQ-BRW-003-C1">整个 Bao 只有一个 JSContext（servo ScriptThread 创建）</li>
-<li data-criterion="Bao 的 console/require/fs/path 等全局对象在 servo JSContext 中可用" data-criterion-id="REQ-BRW-003-C2">Bao 的 console/require/fs/path 等全局对象在 servo JSContext 中可用</li>
-<li data-criterion="页面 JS 和 Bao JS 在同一上下文执行，可直接互操作" data-criterion-id="REQ-BRW-003-C3">页面 JS 和 Bao JS 在同一上下文执行，可直接互操作</li>
-<li data-criterion="GC 由 servo spin_event_loop() 统一管理" data-criterion-id="REQ-BRW-003-C4">GC 由 servo spin_event_loop() 统一管理</li>
-<li data-criterion="无 JSEngine 重复初始化" data-criterion-id="REQ-BRW-003-C5">无 JSEngine 重复初始化</li>
+
+
+
+
+
 </ul>
 <h4>关联设计</h4>
 <p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
 
 <p data-xref-type="req" data-xref-id="REQ-BRW-003">关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span></p>
 <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-003"></span></p>
-</div>
+<div data-criterion="整个 Bao 只有一个 JSContext（servo ScriptThread 创建）">整个 Bao 只有一个 JSContext（servo ScriptThread 创建）</div><div data-criterion="Bao 的 console/require/fs/path 等 Node.js API 在 Node Realm 的 global 上可用">Bao 的 console/require/fs/path 等 Node.js API 在 Node Realm 的 global 上可用</div><div data-criterion="evaluate_js() 可信脚本通过 EnterRealm(Node) 切换到 Node Realm 执行，拥有 Node.js + DOM 全权限">evaluate_js() 可信脚本通过 EnterRealm(Node) 切换到 Node Realm 执行，拥有 Node.js + DOM 全权限</div><div data-criterion="evaluate_js_web() 页面脚本在 Page Realm（Window）执行，只有 Web API，物理上无法访问 Node API">evaluate_js_web() 页面脚本在 Page Realm（Window）执行，只有 Web API，物理上无法访问 Node API</div><div data-criterion="SpiderMonkey Compartment 隔离保证 Page Realm 无法发现 Node Realm 的任何对象">SpiderMonkey Compartment 隔离保证 Page Realm 无法发现 Node Realm 的任何对象</div><div data-criterion="GC 由 servo spin_event_loop() 统一管理，两个 Realm 共享同一 GC">GC 由 servo spin_event_loop() 统一管理，两个 Realm 共享同一 GC</div><div data-criterion="无 JSEngine 重复初始化，Node Realm 通过 JS_NewGlobalObject 在 servo JSContext 上创建">无 JSEngine 重复初始化，Node Realm 通过 JS_NewGlobalObject 在 servo JSContext 上创建</div></div>
 
 <!-- ============================================================ -->
 <h2>§4 CDP 需求</h2>

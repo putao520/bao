@@ -91,9 +91,11 @@ fn test_minimal_event_loop_multiple_ticks() {
     force_uloop_link();
     let mut loop_ = MiniEventLoop::init();
 
-    // Multiple ticks on an empty loop must be safe (no tasks, no timers).
+    // tick_once on an empty loop enters epoll_wait which blocks indefinitely.
+    // Use tick_without_idle instead, which only drains concurrent+task queues
+    // without entering the OS event loop, making it safe to call on empty loops.
     for _ in 0..10 {
-        loop_.tick_once(core::ptr::null_mut());
+        loop_.tick_without_idle(core::ptr::null_mut());
     }
     assert_eq!(loop_.tasks.readable_length(), 0);
 }

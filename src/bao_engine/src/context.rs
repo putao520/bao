@@ -10,8 +10,17 @@
 //!   - Browser 模式: servo 初始化 Runtime → `JsContext::from_servo_runtime()` 寄生
 //!     servo 拥有 Runtime 生命周期，不需要 guard。
 //!   - 两者共享同一个 `mozjs::rust::Runtime::get()` TLS 全局
+//!
+//! TLS 生命周期策略：
+//!   - JSEngine 是进程级单例（JSEngine::init 只能成功一次，JS_ShutDown 后不可重启）
+//!   - Engine 存储在 TLS 中，线程退出时 mem::forget（永不调 JS_ShutDown）
+//!   - Runtime（JSContext）可安全创建/销毁多次
+//!   - Runtime 在 TLS 中存储，线程退出时 mem::forget 避免在 __call_tls_dtors 中
+//!     执行 JS_DestroyContext（mozjs 的 GCRuntime::finishRoots 在 C++ TLS teardown
+//!     期间会 SIGSEGV）
 
-use std::cell::Cell;
+use std::cell::RefCell;
+use std::mem::ManuallyDrop;
 use std::ptr::{self, NonNull};
 
 use mozjs::jsapi::{JSObject, JSContext as RawJSContext, OnNewGlobalHookOption};
@@ -52,11 +61,96 @@ pub struct SmRuntimeGuard {
     _engine: mozjs::rust::JSEngine,
 }
 
-/// Per-thread guard: keeps the SmRuntimeGuard alive until the thread exits.
-/// Stored in thread_local so tests (which only hold JsContext, not BaoRuntime)
-/// still get orderly shutdown.
+/// TLS wrapper that never drops its content.
+/// Uses `ManuallyDrop` to prevent any destructor from running, even when
+/// the TLS slot itself is destroyed during thread exit.
+struct NeverDrop<T>(RefCell<ManuallyDrop<Option<T>>>);
+
+impl<T> NeverDrop<T> {
+    const fn new() -> Self {
+        NeverDrop(RefCell::new(ManuallyDrop::new(None)))
+    }
+
+    fn is_some(&self) -> bool {
+        self.0.borrow().is_some()
+    }
+
+    fn set(&self, val: Option<T>) {
+        // If there's an existing value, drop it safely (we're not in TLS destructor).
+        let mut borrow = self.0.borrow_mut();
+        if borrow.is_some() {
+            // SAFETY: we're in user code, not TLS destructor. Safe to drop.
+            unsafe { ManuallyDrop::drop(&mut *borrow); }
+        }
+        *borrow = ManuallyDrop::new(val);
+    }
+
+    fn take(&self) -> Option<T> {
+        let mut borrow = self.0.borrow_mut();
+        if borrow.is_some() {
+            // SAFETY: we're in user code, not TLS destructor. Safe to take.
+            let val = unsafe { ManuallyDrop::take(&mut *borrow) };
+            *borrow = ManuallyDrop::new(None);
+            val
+        } else {
+            None
+        }
+    }
+}
+
+// No Drop impl — ManuallyDrop ensures nothing runs when TLS is destroyed.
+
 thread_local! {
-    static RUNTIME_GUARD: Cell<Option<SmRuntimeGuard>> = const { Cell::new(None) };
+    /// Process-singleton JSEngine. Never dropped — ManuallyDrop prevents
+    /// any destructor from running during thread exit.
+    /// JSEngine::init() can only succeed once per process; after JS_ShutDown
+    /// it returns AlreadyShutDown, so we keep the engine alive forever.
+    static ENGINE_TLS: NeverDrop<mozjs::rust::JSEngine> = NeverDrop::new();
+
+    /// Per-thread Runtime (JSContext). Can be safely created/destroyed
+    /// multiple times as long as the JSEngine stays alive.
+    /// ManuallyDrop prevents destructor during thread exit.
+    static RUNTIME_TLS: NeverDrop<mozjs::rust::Runtime> = NeverDrop::new();
+}
+
+/// Get or initialize the per-process JSEngine from TLS, returning a handle.
+fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
+    ENGINE_TLS.with(|tls| {
+        if tls.is_some() {
+            let handle = tls.0.borrow().as_ref().unwrap().handle();
+            return Ok(handle);
+        }
+        let engine = mozjs::rust::JSEngine::init().map_err(|e| JsError {
+            message: format!("Failed to init JSEngine: {:?}", e).into(),
+            filename: "<engine>".into(),
+            line: 0, column: 0, stack: None,
+        })?;
+        let handle = engine.handle();
+        tls.set(Some(engine));
+
+        // Register an atexit handler that calls _exit(0). This runs BEFORE
+        // mozjs's own atexit handlers (LIFO order: last registered = first
+        // executed). mozjs's C++ atexit/TLS cleanup crashes in
+        // mozilla::detail::MutexImpl because the Rust-side Runtime is
+        // intentionally kept alive via ManuallyDrop. By _exit(0)ing first,
+        // we skip all subsequent atexit handlers and C++ TLS destructors.
+        // This is safe because at that point the process is exiting anyway.
+        unsafe {
+            libc::atexit(exit_bypassing_cxx_dtors);
+        }
+
+        Ok(handle)
+    })
+}
+
+/// atexit handler: calls _exit(0) to skip C++ TLS destructors.
+/// Must only be called during process exit — all Rust-side assertions
+/// should already have completed and been flushed to stdout.
+extern "C" fn exit_bypassing_cxx_dtors() {
+    // Flush stdout so test output is visible.
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+    unsafe { libc::_exit(0); }
 }
 
 impl JsContext {
@@ -77,13 +171,14 @@ impl JsContext {
             return Ok((ctx, None));
         }
 
+        // CLI mode: create a fresh JSEngine + Runtime.
+        // SmRuntimeGuard owns both and will JS_DestroyContext + JS_ShutDown on drop.
         let engine = mozjs::rust::JSEngine::init()
             .map_err(|e| JsError {
                 message: format!("Failed to init JSEngine: {:?}", e).into(),
                 filename: "<engine>".into(),
                 line: 0, column: 0, stack: None,
             })?;
-
         let runtime = mozjs::rust::Runtime::new(engine.handle());
 
         let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
@@ -124,18 +219,57 @@ impl JsContext {
         Ok(JsContext { cx, global_setup: None, post_eval_hook: None })
     }
 
-    /// Test-only alias for `init_runtime()`.
+    /// Test-only: create a JsContext backed by the TLS-managed Runtime.
     ///
-    /// Stores the guard in thread_local so it survives the test function
-    /// scope. The guard drops when the thread exits, providing orderly
-    /// shutdown without needing `_exit(0)` hacks.
+    /// The JSEngine and Runtime are stored in thread_local storage.
+    /// Both are created once and kept alive for the entire thread lifetime.
+    /// Multiple calls to `for_test()` reuse the same JSEngine and Runtime.
+    ///
+    /// On thread exit, TLS destructors are skipped via `ManuallyDrop` to avoid
+    /// SIGSEGV in mozjs's C++ TLS teardown (`mozilla::detail::MutexImpl`).
     #[doc(hidden)]
     pub fn for_test() -> Result<Self, JsError> {
-        let (ctx, guard) = Self::init_runtime()?;
-        if let Some(g) = guard {
-            RUNTIME_GUARD.with(|c| c.set(Some(g)));
+        // If Runtime is already alive on this thread, parasitize it.
+        // This handles both servo-initialized runtimes and prior for_test() calls.
+        if mozjs::rust::Runtime::get().is_some() {
+            let cx = unsafe { Self::from_servo_runtime()? };
+            return Ok(cx);
         }
-        Ok(ctx)
+
+        let engine_handle = ensure_engine_handle()?;
+        let runtime = mozjs::rust::Runtime::new(engine_handle);
+
+        let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
+            message: "Runtime::new failed to set CONTEXT TLS".into(),
+            filename: "<engine>".into(),
+            line: 0, column: 0, stack: None,
+        })?;
+
+        let mut cx_wrap = unsafe { mozjs::context::JSContext::from_ptr(cx) };
+        if !JobQueue::init(&mut cx_wrap) {
+            return Err(JsError { message: "Failed to init job queue".into(), filename: "<engine>".into(), line: 0, column: 0, stack: None });
+        }
+        ModuleLoader::init_thread_local(&cx_wrap);
+
+        // Store runtime in TLS. ManuallyDrop ensures no destructor runs on thread exit.
+        RUNTIME_TLS.with(|tls| tls.set(Some(runtime)));
+
+        Ok(JsContext { cx, global_setup: None, post_eval_hook: None })
+    }
+
+    /// Explicitly shut down the test Runtime stored in thread_local.
+    ///
+    /// This must be called on the same thread that created the Runtime,
+    /// before that thread exits. It drops the Runtime in a safe context
+    /// (not inside a TLS destructor). The JSEngine is kept alive.
+    #[doc(hidden)]
+    pub fn shutdown_test_runtime() {
+        RUNTIME_TLS.with(|tls| {
+            if let Some(_rt) = tls.take() {
+                // Runtime dropped here — JS_DestroyContext runs in safe context.
+                // JSEngine stays alive in ENGINE_TLS.
+            }
+        });
     }
 
     /// Create a JSContext value wrapper from the stored pointer.

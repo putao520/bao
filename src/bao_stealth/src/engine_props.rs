@@ -236,8 +236,14 @@ unsafe fn define_permanent_getter(
     getter: JSNative,
 ) -> bool {
     let Ok(c_name) = CString::new(name) else { return false };
+    // Remove existing property (servo defines navigator.userAgent etc.
+    // as configurable). SpiderMonkey forbids changing configurable:true
+    // to configurable:false (PERMANENT), so we must delete first.
+    let mut op_result = ObjectOpResult::default();
+    JS_DeleteProperty(cx, obj, c_name.as_ptr(), &mut op_result);
     let attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-    JS_DefineProperty1(cx, obj, c_name.as_ptr(), getter, None, attrs)
+    let ok = JS_DefineProperty1(cx, obj, c_name.as_ptr(), getter, None, attrs);
+    ok
 }
 
 /// Get a sub-object property (e.g., global.navigator) as a raw *mut JSObject.

@@ -1860,22 +1860,18 @@ unsafe fn install_file_globals_on_target(
 
 /// Create Node API scope values for privileged evaluate_js (REQ-SEC-002).
 ///
-/// Instead of installing Node APIs (require, Bun, process, Buffer, module,
-/// __filename, __dirname) directly on the Window global, this function creates
-/// a temporary scope object `__bao_privileged_apis` on global and puts all
-/// Node API values into it. The IIFE wrapper in wrap_privileged_script then:
-/// 1. Extracts the scope object: `var __scope = globalThis.__bao_privileged_apis`
-/// 2. Deletes the scope: `delete globalThis.__bao_privileged_apis`
-/// 3. Deletes global helper functions: `delete globalThis.__bao_setEnv`,
-///    `delete globalThis.__bao_delEnv`
-/// 4. Deletes global Buffer: `delete globalThis.Buffer`
-/// 5. Passes scope values as function parameters to the user script
+/// Creates a temporary scope object on `global` with a randomized name
+/// (e.g., `__bao_7f3a9c2e`) and puts all Node API values into it.
+/// The IIFE wrapper in wrap_privileged_script then:
+/// 1. Extracts the scope object: `var __scope = globalThis[scopeName]`
+/// 2. Deletes the scope: `delete globalThis[scopeName]`
+/// 3. Deletes global Buffer: `delete globalThis.Buffer`
+/// 4. Passes scope values as function parameters to the user script
 ///
-/// This prevents page-level JS from accessing Node APIs because:
-/// - The scope object is deleted before any page JS can run
-/// - servo's script thread is single-threaded, no interleaving is possible
-/// - Even if page JS uses Reflect.ownKeys during the callback, the scope
-///   property is non-enumerable (not discoverable by casual inspection)
+/// The scope name is randomized per-call to prevent adversarial enumeration.
+/// `__bao_setEnv`/`__bao_delEnv` are installed on the scope object (not global)
+/// and passed into the process.env Proxy as factory parameters, eliminating
+/// them from the global surface entirely.
 ///
 /// # Safety
 ///
@@ -1885,6 +1881,7 @@ unsafe fn install_file_globals_on_target(
 pub unsafe fn create_node_api_scope_values(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
+    scope_name: &str,
 ) {
     // Step 1: Create scope object
     rooted!(&in(cx) let scope_obj = JS_NewPlainObject(cx));
@@ -1917,19 +1914,15 @@ pub unsafe fn create_node_api_scope_values(
         }
     }
 
-    // Step 3: Attach scope object to global as __bao_privileged_apis
-    // Non-enumerable + configurable: not discoverable by casual inspection,
-    // but deletable by the IIFE wrapper.
-    // In SpiderMonkey, default property attributes are: configurable=true,
-    // enumerable=false, writable=true. JSPROP_PERMANENT (4) makes it
-    // non-configurable/non-deletable. JSPROP_ENUMERATE (1) makes it enumerable.
-    // So flags=0 means: non-enumerable, configurable, writable.
-    // (Note: Reflect.ownKeys can still find it, but that's acceptable because
-    // the scope is deleted in the IIFE's first line before any page JS runs.)
+    // Step 3: Attach scope object to global with the randomized name.
+    // flags=0 means: non-enumerable, configurable, writable (SpiderMonkey defaults).
+    // The randomized name prevents adversarial enumeration — page JS cannot
+    // guess `__bao_7f3a9c2e` since it's generated after page JS runs.
+    let scope_name_c = ::std::ffi::CString::new(scope_name).unwrap_or_default();
     JS_DefineProperty3(
         cx,
         global,
-        c"__bao_privileged_apis".as_ptr(),
+        scope_name_c.as_ptr(),
         scope_obj.handle(),
         0u32,  // non-enumerable, configurable (default), writable (default)
     );

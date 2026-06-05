@@ -292,7 +292,7 @@ fn scenario_form_interaction(
     // Set value via JS (real client would dispatch input event too).
     let set_script =
         "(function(){ var el = document.getElementById('input'); el.value = 'Bao'; \
-         el.dispatchEvent(new Event('input', { bubbles: true })); 'set-ok'; })()";
+         el.dispatchEvent(new Event('input', { bubbles: true })); return 'set-ok'; })()";
     match page.evaluate_js(set_script) {
         Ok(s) if s == "set-ok" => report.pass(&format!("{}::set_value", name)),
         Ok(other) => report.fail(&format!("{}::set_value", name), &format!("got '{other}'")),

@@ -201,9 +201,9 @@ pub fn install_bun_global(
 /// instead of `global`. Used by `create_node_api_scope_values` to build
 /// the temporary scope object for privileged evaluate_js.
 ///
-/// `global` is still required because `__bao_setEnv`/`__bao_delEnv` helper
-/// functions must be defined on global for the process.env Proxy traps to work.
-/// The IIFE wrapper deletes these global helpers after extracting the scope.
+/// `global` is no longer required for env helper functions — they are
+/// installed on `target` (the scope object) instead, eliminating them
+/// from the global surface entirely (REQ-SEC-003 hardening).
 ///
 /// # Safety
 ///
@@ -220,7 +220,7 @@ pub unsafe fn install_process_on_target(
         return;
     }
 
-    populate_process_object(cx, proc_obj.handle(), global);
+    populate_process_object(cx, proc_obj.handle(), target, global);
 
     JS_DefineProperty3(cx, target, c"process".as_ptr(), proc_obj.handle(), JSPROP_ENUMERATE as u32);
 }
@@ -229,11 +229,13 @@ pub unsafe fn install_process_on_target(
 ///
 /// Shared between `install_process_global` and `install_process_on_target`.
 ///
-/// `global` is needed to install `__bao_setEnv`/`__bao_delEnv` helper
-/// functions that the process.env Proxy trap closures reference.
+/// `target` is the scope object where `__bao_setEnv`/`__bao_delEnv` helper
+/// functions are installed (not on global — eliminates global surface leak).
+/// `global` is used only for Buffer reference retrieval.
 unsafe fn populate_process_object(
     cx: &mut mozjs::context::JSContext,
     proc_obj: mozjs::rust::Handle<*mut JSObject>,
+    target: mozjs::rust::Handle<*mut JSObject>,
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     // process.arch
@@ -276,10 +278,13 @@ unsafe fn populate_process_object(
     }
 
     // process.env — Proxy-backed for set/delete propagation to std::env
+    // __bao_setEnv/__bao_delEnv are installed on `target` (the scope object),
+    // NOT on `global`. The Proxy factory receives them as parameters, so
+    // they never appear on the Window global (REQ-SEC-003 hardening).
     {
-        JS_DefineFunction(cx, global, c"__bao_setEnv".as_ptr(),
+        JS_DefineFunction(cx, target, c"__bao_setEnv".as_ptr(),
             Some(set_env_fn), 2, 0);
-        JS_DefineFunction(cx, global, c"__bao_delEnv".as_ptr(),
+        JS_DefineFunction(cx, target, c"__bao_delEnv".as_ptr(),
             Some(del_env_fn), 1, 0);
 
         rooted!(&in(cx) let env_target = JS_NewPlainObject(cx));
@@ -294,7 +299,9 @@ unsafe fn populate_process_object(
                 }
             }
 
-            let proxy_src = r#"__bao_envTarget=>new Proxy(__bao_envTarget,{
+            // Proxy factory receives setEnv/delEnv as parameters — they are
+            // NOT looked up from globalThis, eliminating the global surface leak.
+            let proxy_src = r#"(__bao_envTarget,__bao_setEnv,__bao_delEnv)=>new Proxy(__bao_envTarget,{
                 set(t,k,v){t[k]=v;try{__bao_setEnv(String(k),String(v))}catch(e){}return true},
                 deleteProperty(t,k){delete t[k];try{__bao_delEnv(String(k))}catch(e){}return true},
                 get(t,k){const v=t[k];return typeof v==='string'?v:undefined},
@@ -312,11 +319,24 @@ unsafe fn populate_process_object(
                 if ok && rval.is_object() {
                     let handler_fn = rval.to_object();
                     rooted!(&in(cx) let fn_val = ObjectValue(handler_fn));
+
+                    // Build 3-argument array: (env_target, __bao_setEnv, __bao_delEnv)
+                    // __bao_setEnv and __bao_delEnv are on `target` (scope object),
+                    // NOT on global — eliminating the global surface leak.
+                    let mut set_env_val = UndefinedValue();
+                    let set_env_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut set_env_val };
+                    JS_GetProperty(cx.raw_cx(), target.into(), c"__bao_setEnv".as_ptr(), set_env_h);
+
+                    let mut del_env_val = UndefinedValue();
+                    let del_env_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut del_env_val };
+                    JS_GetProperty(cx.raw_cx(), target.into(), c"__bao_delEnv".as_ptr(), del_env_h);
+
                     rooted!(&in(cx) let args_val = ObjectValue(env_target.get()));
+                    let args = [args_val.get(), set_env_val, del_env_val];
+                    let args_arr = HandleValueArray { length_: 3, elements_: args.as_ptr() };
+                    let null_obj = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut::<JSObject>() };
                     let mut ret = UndefinedValue();
                     let ret_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ret };
-                    let args_arr = HandleValueArray { length_: 1, elements_: &args_val.get() };
-                    let null_obj = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut::<JSObject>() };
                     let ok2 = JS_CallFunctionValue(cx.raw_cx(), null_obj, fn_val.handle().into(), &args_arr, ret_h);
                     if ok2 && ret.is_object() {
                         rooted!(&in(cx) let env_proxy = ret.to_object());
@@ -578,7 +598,10 @@ pub fn install_process_global(
             return;
         }
 
-        populate_process_object(cx, proc_obj.handle(), global);
+        // When installing on global directly (CLI mode), target = global.
+        // __bao_setEnv/__bao_delEnv will be on global in this case,
+        // which is acceptable since CLI mode has no page JS sandbox concern.
+        populate_process_object(cx, proc_obj.handle(), global, global);
 
         JS_DefineProperty3(cx, global, c"process".as_ptr(), proc_obj.handle(), JSPROP_ENUMERATE as u32);
     }

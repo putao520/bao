@@ -330,10 +330,13 @@ pub fn force_c_lib_stubs() {
     // (via bun_uws_sys build.rs). No need to touch them here.
 
     // Loop symbols come from bao_uloop. Keep the call chain alive.
-    unsafe {
-        bao_uloop::us_loop_run_bun_tick(core::ptr::null_mut(), core::ptr::null());
-        bao_uloop::us_wakeup_loop(core::ptr::null_mut());
-    }
+    // NOTE: Do NOT call these with null pointers — they dereference the loop
+    // struct immediately (e.g. loop->num_polls). Reference the function
+    // directly so the linker keeps the symbol without triggering a SIGSEGV
+    // from a null deref. The `as usize` cast forces a symbol reference
+    // without invoking the function body.
+    let _ = bao_uloop::us_loop_run_bun_tick as *const () as usize;
+    let _ = bao_uloop::us_wakeup_loop as *const () as usize;
 
     let _ = us_ssl_ctx_from_options(core::ptr::null(), core::ptr::null());
     let _ = us_ssl_socket_verify_error_from_ssl(core::ptr::null());
