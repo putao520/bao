@@ -111,6 +111,84 @@ fn clear_all_node_realms() {
     }
 }
 
+/// Re-key a Node Realm entry after navigation (old page_global → new page_global).
+///
+/// When servo navigates, the Window global pointer may change. This function
+/// moves the Node Realm mapping from the old key to the new key, keeping the
+/// Node Realm itself alive (user JS state preserved).
+pub fn rekey_node_realm(old_page_global: *mut mozjs::jsapi::JSObject, new_page_global: *mut mozjs::jsapi::JSObject) {
+    if old_page_global.is_null() || new_page_global.is_null() {
+        return;
+    }
+    if let Ok(mut map) = node_realms().lock() {
+        if let Some(node_global) = map.remove(&(old_page_global as usize)) {
+            map.insert(new_page_global as usize, node_global);
+        }
+    }
+}
+
+/// Register a callback to refresh DOM proxies in the Node Realm after navigation.
+///
+/// After page navigation, servo may replace the Window/Document/Navigator objects.
+/// This function registers a script thread callback that:
+/// 1. Re-wraps window/document/navigator from the NEW Page Realm into Node Realm
+/// 2. Updates LAST_PAGE_GLOBAL so the caller can retrieve the new page_global
+/// 3. Returns the new page_global via AtomicUsize for the caller to pick up
+pub fn register_refresh_dom_proxies(webview_id: servo::WebViewId, old_page_global: *mut mozjs::jsapi::JSObject) {
+    let old_pg_key = old_page_global as usize;
+    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
+        Box::new(move |cx_ptr, new_page_global_ptr| {
+            unsafe { refresh_dom_proxies_native(cx_ptr, new_page_global_ptr, old_pg_key as *mut mozjs::jsapi::JSObject); }
+        });
+
+    servo::register_script_thread_callback(webview_id, callback);
+}
+
+/// Native implementation: refresh DOM proxies after navigation.
+///
+/// Called on servo's script thread with the NEW page_global.
+/// Re-wraps window/document/navigator from the new Page Realm into the existing Node Realm.
+unsafe fn refresh_dom_proxies_native(
+    cx_ptr: *mut std::ffi::c_void,
+    new_page_global_ptr: *mut std::ffi::c_void,
+    old_page_global: *mut mozjs::jsapi::JSObject,
+) {
+    use mozjs::context::JSContext;
+    use mozjs::jsapi::{JSContext as RawJSContext, JSObject};
+    use std::ptr::NonNull;
+
+    let raw_cx = cx_ptr as *mut RawJSContext;
+    let new_page_global = new_page_global_ptr as *mut JSObject;
+
+    if raw_cx.is_null() || new_page_global.is_null() {
+        return;
+    }
+
+    // Look up Node Realm using the OLD page_global (before re-key)
+    let node_global = get_node_realm(old_page_global);
+    if node_global.is_null() {
+        return;
+    }
+
+    let cx_nn = match NonNull::new(raw_cx) {
+        Some(nn) => nn,
+        None => return,
+    };
+    let mut cx = JSContext::from_ptr(cx_nn);
+
+    // Re-wrap DOM proxies from the new Page Realm into Node Realm
+    rooted!(&in(cx) let node_global_handle = node_global);
+    wrap_and_install_dom_proxy(&mut cx, node_global_handle.handle(), new_page_global, "window");
+    wrap_and_install_dom_proxy(&mut cx, node_global_handle.handle(), new_page_global, "document");
+    wrap_and_install_dom_proxy(&mut cx, node_global_handle.handle(), new_page_global, "navigator");
+
+    // Re-key the HashMap: old page_global → new page_global
+    rekey_node_realm(old_page_global, new_page_global);
+
+    // Update LAST_PAGE_GLOBAL so caller can retrieve the new page_global
+    set_last_page_global(new_page_global);
+}
+
 // Cross-thread page_global pointer storage.
 // servo's script thread sets this during the callback; main thread reads after drain.
 // SAFETY: servo's script thread is single-threaded — callbacks drain serially,
@@ -2618,5 +2696,67 @@ mod tests {
 
         assert!(super::get_node_realm(pg1).is_null(), "pg1 cleared");
         assert!(super::get_node_realm(pg2).is_null(), "pg2 cleared");
+    }
+
+    /// REQ-SEC-002: rekey_node_realm moves Node Realm mapping to new page_global.
+    #[test]
+    fn rekey_node_realm_moves_entry() {
+        let old_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_1000 as *mut _;
+        let new_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_2000 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_1000 as *mut _;
+
+        super::store_node_realm(old_pg, ng);
+        assert_eq!(super::get_node_realm(old_pg), ng, "old key maps to node_global");
+        assert!(super::get_node_realm(new_pg).is_null(), "new key not yet mapped");
+
+        super::rekey_node_realm(old_pg, new_pg);
+
+        assert!(super::get_node_realm(old_pg).is_null(), "old key removed after rekey");
+        assert_eq!(super::get_node_realm(new_pg), ng, "new key maps to same node_global");
+    }
+
+    /// REQ-SEC-002: rekey_node_realm with null pointers is a no-op.
+    #[test]
+    fn rekey_node_realm_null_safe() {
+        let pg: *mut mozjs::jsapi::JSObject = 0xDEAD_3000 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_3000 as *mut _;
+
+        super::store_node_realm(pg, ng);
+        super::rekey_node_realm(std::ptr::null_mut(), pg);
+        super::rekey_node_realm(pg, std::ptr::null_mut());
+
+        // Original entry unchanged — null inputs didn't corrupt state.
+        assert_eq!(super::get_node_realm(pg), ng, "entry untouched after null rekey");
+    }
+
+    /// REQ-SEC-002: rekey_node_realm with unknown old key is a no-op.
+    #[test]
+    fn rekey_node_realm_unknown_old_key() {
+        let unknown_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_4000 as *mut _;
+        let new_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_5000 as *mut _;
+
+        super::rekey_node_realm(unknown_pg, new_pg);
+        assert!(super::get_node_realm(new_pg).is_null(), "no entry created for unknown old key");
+    }
+
+    /// REQ-SEC-002: rekey preserves Node Realm state across simulated navigation.
+    #[test]
+    fn rekey_simulates_navigation_cycle() {
+        let pg_before_nav: *mut mozjs::jsapi::JSObject = 0xDEAD_6000 as *mut _;
+        let pg_after_nav: *mut mozjs::jsapi::JSObject = 0xDEAD_7000 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_6000 as *mut _;
+
+        // Initial state: page_global → node_global
+        super::store_node_realm(pg_before_nav, ng);
+        assert_eq!(super::get_node_realm(pg_before_nav), ng);
+
+        // Navigation: old page_global → new page_global
+        super::rekey_node_realm(pg_before_nav, pg_after_nav);
+        assert!(super::get_node_realm(pg_before_nav).is_null());
+        assert_eq!(super::get_node_realm(pg_after_nav), ng, "Node Realm survived navigation");
+
+        // Cleanup: page close removes the entry
+        super::remove_node_realm(pg_after_nav);
+        assert!(super::get_node_realm(pg_after_nav).is_null());
     }
 }

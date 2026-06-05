@@ -118,6 +118,25 @@ impl PageInner {
     pub fn evaluate_js(&self, script: &str) -> Result<String, BrowserError> {
         let webview_id = self.webview.id();
 
+        // Refresh stale DOM proxies after navigation (REQ-SEC-002 safety).
+        // servo replaces Window/Document/Navigator on navigation; Node Realm's
+        // cross-Compartment proxies must be refreshed to avoid use-after-free.
+        if self.webview_state.borrow().dom_proxies_dirty {
+            let old_pg = *self.page_global.borrow();
+            if !old_pg.is_null() {
+                crate::runtime_bridge::register_refresh_dom_proxies(webview_id, old_pg);
+                self.drain_callbacks()?;
+                // After drain, LAST_PAGE_GLOBAL holds the new page_global
+                let new_pg = crate::runtime_bridge::get_last_page_global();
+                if !new_pg.is_null() {
+                    let new_node = crate::runtime_bridge::get_node_realm_global(new_pg);
+                    *self.page_global.borrow_mut() = new_pg;
+                    *self.node_realm_global.borrow_mut() = new_node;
+                }
+            }
+            self.webview_state.borrow_mut().dom_proxies_dirty = false;
+        }
+
         // Look up Node Realm for THIS page (per-page HashMap, REQ-SEC-002)
         let pg = *self.page_global.borrow();
         let node_global = if pg.is_null() {
@@ -607,7 +626,7 @@ mod tests {
         let source = include_str!("page.rs");
         let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
             .expect("evaluate_js function not found");
-        let func_body = &source[func_start..func_start + 1500.min(source.len() - func_start)];
+        let func_body = &source[func_start..func_start + 2800.min(source.len() - func_start)];
         // Must check Node Realm availability
         assert!(
             func_body.contains("get_node_realm_global"),
@@ -632,7 +651,7 @@ mod tests {
         let source = include_str!("page.rs");
         let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
             .expect("evaluate_js function not found");
-        let func_body = &source[func_start..func_start + 1500.min(source.len() - func_start)];
+        let func_body = &source[func_start..func_start + 2800.min(source.len() - func_start)];
         assert!(
             func_body.contains("drain_callbacks"),
             "REQ-SEC-002 REGRESSION: evaluate_js must drain callbacks after Node Realm execution"
@@ -646,7 +665,7 @@ mod tests {
         let source = include_str!("page.rs");
         let func_start = source.find("pub fn evaluate_js(&self, script: &str)")
             .expect("evaluate_js function not found");
-        let func_body = &source[func_start..func_start + 1500.min(source.len() - func_start)];
+        let func_body = &source[func_start..func_start + 2800.min(source.len() - func_start)];
         assert!(
             func_body.contains("eval_result"),
             "REQ-SEC-002 REGRESSION: evaluate_js must read EvaluateResult"

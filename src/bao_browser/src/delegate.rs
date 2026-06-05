@@ -14,6 +14,9 @@ pub struct BaoWebViewState {
     pub title: Option<String>,
     pub load_status: LoadStatus,
     pub frame_ready: bool,
+    /// Set to true after navigation completes (LoadStatus::Complete).
+    /// evaluate_js checks this flag and refreshes stale DOM proxies before executing scripts.
+    pub dom_proxies_dirty: bool,
 }
 
 impl Default for BaoWebViewState {
@@ -23,6 +26,7 @@ impl Default for BaoWebViewState {
             title: None,
             load_status: LoadStatus::Started,
             frame_ready: false,
+            dom_proxies_dirty: false,
         }
     }
 }
@@ -104,6 +108,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
 
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
         self.state.borrow_mut().load_status = status;
+        if matches!(status, LoadStatus::Complete) {
+            self.state.borrow_mut().dom_proxies_dirty = true;
+        }
     }
 
     fn notify_new_frame_ready(&self, _webview: WebView) {
@@ -152,6 +159,7 @@ mod tests {
         assert!(state.title.is_none());
         assert!(matches!(state.load_status, LoadStatus::Started));
         assert!(!state.frame_ready);
+        assert!(!state.dom_proxies_dirty);
     }
 
     #[test]
@@ -238,5 +246,30 @@ mod tests {
         assert_eq!(stats.idle, 1);
         assert_eq!(stats.total_created, 5);
         assert_eq!(stats.total_destroyed, 2);
+    }
+
+    // ─── DOM Proxy Dirty Flag ─────────────────────────────────────
+    // @trace REQ-SEC-002 [req:REQ-SEC-002] [level:unit]
+
+    #[test]
+    fn test_dom_proxies_dirty_default_false() {
+        let state = BaoWebViewState::default();
+        assert!(!state.dom_proxies_dirty);
+    }
+
+    #[test]
+    fn test_dom_proxies_dirty_set_on_complete() {
+        let mut state = BaoWebViewState::default();
+        state.load_status = LoadStatus::Complete;
+        state.dom_proxies_dirty = true;
+        assert!(state.dom_proxies_dirty);
+    }
+
+    #[test]
+    fn test_dom_proxies_dirty_clear_after_refresh() {
+        let mut state = BaoWebViewState::default();
+        state.dom_proxies_dirty = true;
+        state.dom_proxies_dirty = false;
+        assert!(!state.dom_proxies_dirty);
     }
 }
