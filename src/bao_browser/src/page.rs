@@ -398,6 +398,10 @@ impl PageHandle {
     pub fn close(&self) -> Result<(), BrowserError> {
         let mut borrow = self.inner.borrow_mut();
         if let Some(inner) = borrow.take() {
+            let pg = *inner.page_global.borrow();
+            if !pg.is_null() {
+                crate::runtime_bridge::remove_node_realm(pg);
+            }
             *inner.state.borrow_mut() = PageState::Closed;
             drop(inner);
         }

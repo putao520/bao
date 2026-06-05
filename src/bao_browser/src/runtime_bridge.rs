@@ -98,7 +98,7 @@ fn get_node_realm(page_global: *mut mozjs::jsapi::JSObject) -> *mut mozjs::jsapi
 }
 
 /// Remove Node Realm for a specific page (called on page close).
-fn remove_node_realm(page_global: *mut mozjs::jsapi::JSObject) {
+pub fn remove_node_realm(page_global: *mut mozjs::jsapi::JSObject) {
     if let Ok(mut map) = node_realms().lock() {
         map.remove(&(page_global as usize));
     }
@@ -113,6 +113,9 @@ fn clear_all_node_realms() {
 
 // Cross-thread page_global pointer storage.
 // servo's script thread sets this during the callback; main thread reads after drain.
+// SAFETY: servo's script thread is single-threaded — callbacks drain serially,
+// so set_last_page_global is never called concurrently. The main thread reads
+// after drain completes, establishing a happens-before relationship.
 use std::sync::atomic::AtomicUsize;
 static LAST_PAGE_GLOBAL: AtomicUsize = AtomicUsize::new(0);
 
@@ -2543,5 +2546,77 @@ mod tests {
         let poly = super::WEB_POLYFILLS;
         assert!(poly.starts_with("(function()"), "WEB_POLYFILLS must be an IIFE");
         assert!(poly.ends_with("})();"), "WEB_POLYFILLS must close IIFE");
+    }
+
+    /// REQ-SEC-002: remove_node_realm must be pub so page.rs close() can call it.
+    #[test]
+    fn remove_node_realm_is_accessible_from_page_module() {
+        use std::ptr;
+        // Verify the function is callable (pub visibility).
+        // Passing null should not panic — the function handles null gracefully.
+        super::remove_node_realm(ptr::null_mut());
+    }
+
+    /// REQ-SEC-002: store_node_realm → get_node_realm → remove_node_realm round-trip.
+    #[test]
+    fn node_realm_store_get_remove_round_trip() {
+        use std::ptr;
+        // Use sentinel values (non-null) to verify HashMap CRUD.
+        let page_global: *mut mozjs::jsapi::JSObject = 0xDEAD_0001 as *mut _;
+        let node_global: *mut mozjs::jsapi::JSObject = 0xBEEF_0001 as *mut _;
+
+        // Store
+        super::store_node_realm(page_global, node_global);
+
+        // Get
+        let retrieved = super::get_node_realm(page_global);
+        assert_eq!(retrieved, node_global, "get_node_realm should return stored pointer");
+
+        // Remove
+        super::remove_node_realm(page_global);
+        let after_remove = super::get_node_realm(page_global);
+        assert!(after_remove.is_null(), "get_node_realm should return null after remove");
+
+        // Cleanup
+        super::remove_node_realm(page_global);
+    }
+
+    /// REQ-SEC-002: Multiple pages can have independent Node Realms.
+    #[test]
+    fn node_realm_per_page_isolation() {
+        let pg1: *mut mozjs::jsapi::JSObject = 0xDEAD_0001 as *mut _;
+        let ng1: *mut mozjs::jsapi::JSObject = 0xBEEF_0001 as *mut _;
+        let pg2: *mut mozjs::jsapi::JSObject = 0xDEAD_0002 as *mut _;
+        let ng2: *mut mozjs::jsapi::JSObject = 0xBEEF_0002 as *mut _;
+
+        super::store_node_realm(pg1, ng1);
+        super::store_node_realm(pg2, ng2);
+
+        assert_eq!(super::get_node_realm(pg1), ng1, "Page 1 Realm");
+        assert_eq!(super::get_node_realm(pg2), ng2, "Page 2 Realm");
+
+        // Closing page 1 should NOT affect page 2
+        super::remove_node_realm(pg1);
+        assert!(super::get_node_realm(pg1).is_null(), "Page 1 removed");
+        assert_eq!(super::get_node_realm(pg2), ng2, "Page 2 still intact");
+
+        // Cleanup
+        super::remove_node_realm(pg2);
+    }
+
+    /// REQ-SEC-002: clear_all_node_realms removes everything.
+    #[test]
+    fn clear_all_removes_all_entries() {
+        let pg1: *mut mozjs::jsapi::JSObject = 0xDEAD_0011 as *mut _;
+        let ng1: *mut mozjs::jsapi::JSObject = 0xBEEF_0011 as *mut _;
+        let pg2: *mut mozjs::jsapi::JSObject = 0xDEAD_0022 as *mut _;
+        let ng2: *mut mozjs::jsapi::JSObject = 0xBEEF_0022 as *mut _;
+
+        super::store_node_realm(pg1, ng1);
+        super::store_node_realm(pg2, ng2);
+        super::clear_all_node_realms();
+
+        assert!(super::get_node_realm(pg1).is_null(), "pg1 cleared");
+        assert!(super::get_node_realm(pg2).is_null(), "pg2 cleared");
     }
 }
