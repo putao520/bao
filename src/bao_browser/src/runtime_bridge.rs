@@ -78,37 +78,57 @@ fn node_realms() -> &'static std::sync::Mutex<HashMap<usize, usize>> {
     NODE_REALMS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
 }
 
+// Reverse mapping: node_global → page_global. Used by lazy getters to find the Page Realm.
+static PAGE_GLOBALS: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, usize>>> = std::sync::OnceLock::new();
+
+fn page_globals() -> &'static std::sync::Mutex<HashMap<usize, usize>> {
+    PAGE_GLOBALS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Lock a Mutex with poison recovery — never silently swallows errors.
+/// If a previous thread panicked while holding the lock, we recover the
+/// intact data and continue rather than silently returning.
+fn lock_recover<K, V>(mutex: &std::sync::Mutex<HashMap<K, V>>) -> std::sync::MutexGuard<'_, HashMap<K, V>> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 /// Store a Node Realm global pointer for a specific page (by page_global address).
 fn store_node_realm(page_global: *mut mozjs::jsapi::JSObject, node_global: *mut mozjs::jsapi::JSObject) {
-    if let Ok(mut map) = node_realms().lock() {
-        map.insert(page_global as usize, node_global as usize);
-    }
+    lock_recover(node_realms()).insert(page_global as usize, node_global as usize);
+    lock_recover(page_globals()).insert(node_global as usize, page_global as usize);
 }
 
 /// Look up Node Realm global pointer for a specific page.
 fn get_node_realm(page_global: *mut mozjs::jsapi::JSObject) -> *mut mozjs::jsapi::JSObject {
-    if let Ok(map) = node_realms().lock() {
-        match map.get(&(page_global as usize)) {
-            Some(&ptr) => ptr as *mut mozjs::jsapi::JSObject,
-            None => ptr::null_mut(),
-        }
-    } else {
-        ptr::null_mut()
+    match lock_recover(node_realms()).get(&(page_global as usize)) {
+        Some(&ptr) => ptr as *mut mozjs::jsapi::JSObject,
+        None => ptr::null_mut(),
+    }
+}
+
+/// Look up Page Realm global pointer for a Node Realm (reverse mapping for lazy getters).
+fn get_page_global_for_node(node_global: *mut mozjs::jsapi::JSObject) -> *mut mozjs::jsapi::JSObject {
+    match lock_recover(page_globals()).get(&(node_global as usize)) {
+        Some(&ptr) => ptr as *mut mozjs::jsapi::JSObject,
+        None => ptr::null_mut(),
     }
 }
 
 /// Remove Node Realm for a specific page (called on page close).
 pub fn remove_node_realm(page_global: *mut mozjs::jsapi::JSObject) {
-    if let Ok(mut map) = node_realms().lock() {
-        map.remove(&(page_global as usize));
+    let mut nr = lock_recover(node_realms());
+    if let Some(node_global) = nr.remove(&(page_global as usize)) {
+        lock_recover(page_globals()).remove(&node_global);
     }
 }
 
 /// Clear all stored Node Realm pointers (for test isolation).
 fn clear_all_node_realms() {
-    if let Ok(mut map) = node_realms().lock() {
-        map.clear();
-    }
+    lock_recover(node_realms()).clear();
+    lock_recover(page_globals()).clear();
 }
 
 /// Re-key a Node Realm entry after navigation (old page_global → new page_global).
@@ -120,10 +140,10 @@ pub fn rekey_node_realm(old_page_global: *mut mozjs::jsapi::JSObject, new_page_g
     if old_page_global.is_null() || new_page_global.is_null() {
         return;
     }
-    if let Ok(mut map) = node_realms().lock() {
-        if let Some(node_global) = map.remove(&(old_page_global as usize)) {
-            map.insert(new_page_global as usize, node_global);
-        }
+    let mut nr = lock_recover(node_realms());
+    if let Some(node_global) = nr.remove(&(old_page_global as usize)) {
+        nr.insert(new_page_global as usize, node_global);
+        lock_recover(page_globals()).insert(node_global, new_page_global as usize);
     }
 }
 
@@ -144,45 +164,26 @@ pub fn register_refresh_dom_proxies(webview_id: servo::WebViewId, old_page_globa
     servo::register_script_thread_callback(webview_id, callback);
 }
 
-/// Native implementation: refresh DOM proxies after navigation.
+/// Native implementation: refresh Node Realm mappings after navigation.
 ///
 /// Called on servo's script thread with the NEW page_global.
-/// Re-wraps window/document/navigator from the new Page Realm into the existing Node Realm.
+/// Re-keys the HashMap so lazy getters find the correct Page Realm.
+/// No need to re-wrap DOM proxies — lazy getters fetch dynamically.
 unsafe fn refresh_dom_proxies_native(
-    cx_ptr: *mut std::ffi::c_void,
+    _cx_ptr: *mut std::ffi::c_void,
     new_page_global_ptr: *mut std::ffi::c_void,
     old_page_global: *mut mozjs::jsapi::JSObject,
 ) {
-    use mozjs::context::JSContext;
-    use mozjs::jsapi::{JSContext as RawJSContext, JSObject};
-    use std::ptr::NonNull;
+    use mozjs::jsapi::JSObject;
 
-    let raw_cx = cx_ptr as *mut RawJSContext;
     let new_page_global = new_page_global_ptr as *mut JSObject;
 
-    if raw_cx.is_null() || new_page_global.is_null() {
+    if new_page_global.is_null() {
         return;
     }
-
-    // Look up Node Realm using the OLD page_global (before re-key)
-    let node_global = get_node_realm(old_page_global);
-    if node_global.is_null() {
-        return;
-    }
-
-    let cx_nn = match NonNull::new(raw_cx) {
-        Some(nn) => nn,
-        None => return,
-    };
-    let mut cx = JSContext::from_ptr(cx_nn);
-
-    // Re-wrap DOM proxies from the new Page Realm into Node Realm
-    rooted!(&in(cx) let node_global_handle = node_global);
-    wrap_and_install_dom_proxy(&mut cx, node_global_handle.handle(), new_page_global, "window");
-    wrap_and_install_dom_proxy(&mut cx, node_global_handle.handle(), new_page_global, "document");
-    wrap_and_install_dom_proxy(&mut cx, node_global_handle.handle(), new_page_global, "navigator");
 
     // Re-key the HashMap: old page_global → new page_global
+    // Lazy getters will automatically fetch from the new Page Realm
     rekey_node_realm(old_page_global, new_page_global);
 
     // Update LAST_PAGE_GLOBAL so caller can retrieve the new page_global
@@ -427,9 +428,9 @@ unsafe fn create_node_realm_native(cx_ptr: *mut std::ffi::c_void, page_global_pt
     bao_runtime::globals::install_web_apis(realm_cx, global.handle());
 
     if !page_global.is_null() {
-        wrap_and_install_dom_proxy(realm_cx, global.handle(), page_global, "window");
-        wrap_and_install_dom_proxy(realm_cx, global.handle(), page_global, "document");
-        wrap_and_install_dom_proxy(realm_cx, global.handle(), page_global, "navigator");
+        // Install lazy getters that dynamically fetch from Page Realm on every access.
+        // This ensures DOM proxies never go stale after navigation (scheme C).
+        install_lazy_dom_getters(realm_cx, global.handle());
     }
 
     // Store per-page: page_global → node_realm_global
@@ -482,6 +483,132 @@ unsafe fn wrap_and_install_dom_proxy(
         rooted!(&in(cx) let mut wrapped_val = ObjectValue(prop_obj.get()));
         JS_SetProperty(raw_cx, node_global.into(), c_name.as_ptr(), wrapped_val.handle_mut().into());
     }
+}
+
+/// Install lazy getter properties for window/document/navigator on Node Realm global.
+///
+/// Unlike `wrap_and_install_dom_proxy` which creates a static cross-Compartment proxy
+/// at creation time, lazy getters dynamically fetch the latest DOM object from the
+/// Page Realm on every access. This ensures proxies never go stale after navigation.
+///
+/// Uses JS_DefineProperty1 with a JSNative getter and no setter (JSPROP_READONLY).
+unsafe fn install_lazy_dom_getters(
+    cx: &mut mozjs::context::JSContext,
+    node_global: mozjs::rust::Handle<*mut mozjs::jsapi::JSObject>,
+) {
+    use mozjs::jsapi::JS_DefineProperty1;
+    use mozjs::jsval::UndefinedValue;
+
+    let raw_cx = cx.raw_cx();
+
+    let attrs = (mozjs::jsapi::JSPROP_ENUMERATE | mozjs::jsapi::JSPROP_READONLY) as u32;
+
+    let getters: &[(&std::ffi::CStr, mozjs::jsapi::JSNative)] = &[
+        (c"window", Some(lazy_dom_getter_window)),
+        (c"document", Some(lazy_dom_getter_document)),
+        (c"navigator", Some(lazy_dom_getter_navigator)),
+    ];
+    for &(name, getter) in getters {
+        JS_DefineProperty1(raw_cx, node_global.into(), name.as_ptr(), getter, None, attrs);
+    }
+}
+
+/// Lazy getter for `window` property on Node Realm global.
+///
+/// Dynamically fetches the Window object from the Page Realm and wraps it
+/// as a cross-Compartment proxy for the Node Realm. This always returns
+/// the CURRENT window, even after navigation.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn lazy_dom_getter_window(
+    cx: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut mozjs::jsval::JSVal,
+) -> bool {
+    lazy_dom_getter_impl(cx, argc, vp, "window")
+}
+
+/// Lazy getter for `document` property on Node Realm global.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn lazy_dom_getter_document(
+    cx: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut mozjs::jsval::JSVal,
+) -> bool {
+    lazy_dom_getter_impl(cx, argc, vp, "document")
+}
+
+/// Lazy getter for `navigator` property on Node Realm global.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn lazy_dom_getter_navigator(
+    cx: *mut mozjs::jsapi::JSContext,
+    argc: u32,
+    vp: *mut mozjs::jsval::JSVal,
+) -> bool {
+    lazy_dom_getter_impl(cx, argc, vp, "navigator")
+}
+
+/// Shared implementation for all lazy DOM getters.
+///
+/// 1. Get the current global (Node Realm global) via JS_CurrentGlobalOrNull
+/// 2. Look up the corresponding Page Realm global via reverse mapping
+/// 3. Get the DOM property (window/document/navigator) from Page Realm
+/// 4. Wrap it as a cross-Compartment proxy for the Node Realm
+/// 5. Return the wrapped value
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn lazy_dom_getter_impl(
+    raw_cx: *mut mozjs::jsapi::JSContext,
+    _argc: u32,
+    vp: *mut mozjs::jsval::JSVal,
+    property_name: &str,
+) -> bool {
+    use mozjs::context::JSContext;
+    use mozjs::jsapi::{JS_GetProperty, JSObject};
+    use mozjs::jsval::{ObjectValue, UndefinedValue};
+    use mozjs::rust::wrappers2::JS_WrapObject;
+    use std::ptr::NonNull;
+
+    let args = mozjs::jsapi::CallArgs::from_vp(vp, 0);
+    args.rval().set(UndefinedValue());
+
+    let node_global = mozjs::jsapi::CurrentGlobalOrNull(raw_cx);
+    if node_global.is_null() {
+        return true;
+    }
+
+    // Look up Page Realm global via reverse mapping
+    let page_global = get_page_global_for_node(node_global);
+    if page_global.is_null() {
+        return true;
+    }
+
+    // Wrap raw_cx in JSContext for rooted! and JS_WrapObject
+    let cx_nn = match NonNull::new(raw_cx) {
+        Some(nn) => nn,
+        None => return true,
+    };
+    let mut cx = JSContext::from_ptr(cx_nn);
+
+    // Get the DOM property from Page Realm
+    let page_global_handle = mozjs::rust::Handle::from_marked_location(
+        &page_global as *const *mut JSObject
+    );
+
+    let c_name = std::ffi::CString::new(property_name).unwrap_or_default();
+    rooted!(&in(cx) let mut prop_val = UndefinedValue());
+    JS_GetProperty(raw_cx, page_global_handle.into(), c_name.as_ptr(), prop_val.handle_mut().into());
+
+    if !prop_val.get().is_object() {
+        return true;
+    }
+
+    // Wrap the DOM object for the current Realm (Node Realm)
+    rooted!(&in(cx) let mut prop_obj = prop_val.get().to_object());
+    if !JS_WrapObject(&mut cx, prop_obj.handle_mut().into()) {
+        return true;
+    }
+
+    args.rval().set(ObjectValue(prop_obj.get()));
+    true
 }
 
 /// Inject Node.js APIs as native mozjs host functions on servo's Window global.
@@ -2758,5 +2885,73 @@ mod tests {
         // Cleanup: page close removes the entry
         super::remove_node_realm(pg_after_nav);
         assert!(super::get_node_realm(pg_after_nav).is_null());
+    }
+
+    /// REQ-SEC-002: reverse mapping (node_global → page_global) works correctly.
+    #[test]
+    fn reverse_mapping_page_global_for_node() {
+        let pg: *mut mozjs::jsapi::JSObject = 0xDEAD_8001 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_8001 as *mut _;
+
+        super::store_node_realm(pg, ng);
+
+        // Forward: page → node
+        assert_eq!(super::get_node_realm(pg), ng);
+        // Reverse: node → page
+        assert_eq!(super::get_page_global_for_node(ng), pg);
+        // Unknown returns null
+        assert!(super::get_page_global_for_node(0x1234 as *mut _).is_null());
+    }
+
+    /// REQ-SEC-002: reverse mapping cleaned up on page close.
+    #[test]
+    fn reverse_mapping_cleaned_on_remove() {
+        let pg: *mut mozjs::jsapi::JSObject = 0xDEAD_9001 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_9001 as *mut _;
+
+        super::store_node_realm(pg, ng);
+        assert_eq!(super::get_page_global_for_node(ng), pg);
+
+        super::remove_node_realm(pg);
+        assert!(super::get_page_global_for_node(ng).is_null(), "reverse mapping removed");
+        assert!(super::get_node_realm(pg).is_null(), "forward mapping removed");
+    }
+
+    /// REQ-SEC-002: reverse mapping updated on rekey.
+    #[test]
+    fn reverse_mapping_updated_on_rekey() {
+        let old_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_A001 as *mut _;
+        let new_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_A002 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_A001 as *mut _;
+
+        super::store_node_realm(old_pg, ng);
+        assert_eq!(super::get_page_global_for_node(ng), old_pg);
+
+        super::rekey_node_realm(old_pg, new_pg);
+        assert_eq!(super::get_page_global_for_node(ng), new_pg, "reverse mapping points to new page_global");
+        assert!(super::get_node_realm(old_pg).is_null());
+        assert_eq!(super::get_node_realm(new_pg), ng);
+    }
+
+    /// REQ-SEC-002: clear_all cleans both forward and reverse mappings.
+    #[test]
+    fn clear_all_cleans_reverse_mapping() {
+        let pg: *mut mozjs::jsapi::JSObject = 0xDEAD_B001 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_B001 as *mut _;
+
+        super::store_node_realm(pg, ng);
+        super::clear_all_node_realms();
+
+        assert!(super::get_node_realm(pg).is_null());
+        assert!(super::get_page_global_for_node(ng).is_null());
+    }
+
+    /// REQ-SEC-002: lazy getter functions exist and have correct ABI.
+    #[test]
+    fn lazy_dom_getters_are_valid_jsnative() {
+        // Verify the functions can be cast to JSNative (Option<extern "C" fn>).
+        let _: mozjs::jsapi::JSNative = Some(super::lazy_dom_getter_window);
+        let _: mozjs::jsapi::JSNative = Some(super::lazy_dom_getter_document);
+        let _: mozjs::jsapi::JSNative = Some(super::lazy_dom_getter_navigator);
     }
 }
