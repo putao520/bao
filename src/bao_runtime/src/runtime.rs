@@ -19,6 +19,10 @@ pub struct BaoRuntime {
 impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
         Self::init_env_aliases();
+        // Initialize bun_core output subsystem before any background thread
+        // (e.g. fetch() worker) calls configure_thread() and hits the
+        // STDOUT_STREAM_SET debug_assert.
+        bun_core::output::init_test();
         crate::resolver_bridge::install();
         crate::bun_api::init_process_start();
         let (mut ctx, guard) = JsContext::init_runtime()?;
