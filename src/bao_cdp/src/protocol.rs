@@ -163,7 +163,7 @@ fn handle_page(command: &str, params: &Option<Value>, bridge: Option<&BridgeSend
                 .frame_id("0".into())
                 .loader_id(Some(loader_id))
                 .build()
-                .unwrap();
+                .expect("NavigateReturnObject build: frame_id is always set");
             Ok(serde_json::to_value(resp).unwrap_or_default())
         }
         "reload" => {
