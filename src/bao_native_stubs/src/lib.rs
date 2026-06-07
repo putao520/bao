@@ -14,7 +14,7 @@
 //! - bun_cpu_features: real CPU feature detection
 //! - is_executable_file: real stat + permission check
 //! - BunString__fromBytes / Bun__WTFStringImpl__destroy: real alloc/dealloc
-//! - WTF__base64URLEncode: real base64 encoding
+//! - WTF__base64URLEncode: moved to bun_base64 (simdutf pure Rust)
 //! - posix_spawn_bun: real process spawning via posix_spawnp
 //! - Signal forwarding: real signal registration + delivery
 //! - WTF__DumpStackTrace: real backtrace output
@@ -30,7 +30,6 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use base64::Engine;
 use core::ffi::{c_char, c_int, c_short, c_uint, c_void};
 
 mod c_lib_stubs;
@@ -80,9 +79,6 @@ pub fn force_link() {
         let _ = BunString__fromBytes(core::ptr::null(), 0);
         Bun__WTFStringImpl__destroy(core::ptr::null());
 
-        WTF__base64URLEncode(core::ptr::null(), 0, core::ptr::null_mut(), core::ptr::null_mut());
-
-        // UpgradedDuplex link-time dispatch stubs (referenced by bun_uws_sys)
         let _ = UpgradedDuplex__is_established as *const () as usize;
 
         // URL FFI fallback (referenced by bun_url)
@@ -526,31 +522,9 @@ pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic
 pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
 
 // ──────────────────────────────────────────────────────────────
-// WTF base64
+// WTF base64 — now replaced by simdutf pure Rust implementation
+// in bun_base64::encode_url_safe(). No stub needed.
 // ──────────────────────────────────────────────────────────────
-
-/// WTF__base64URLEncode: URL-safe base64 encoding
-/// Original: WTF library function from WebKit.
-/// Bao: use base64 crate.
-#[no_mangle]
-pub extern "C" fn WTF__base64URLEncode(
-    data: *const u8,
-    len: usize,
-    out: *mut u8,
-    out_len: *mut usize,
-) {
-    if data.is_null() || out.is_null() || out_len.is_null() {
-        return;
-    }
-    unsafe {
-        let slice = core::slice::from_raw_parts(data, len);
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(slice);
-        let bytes = encoded.as_bytes();
-        let copy_len = bytes.len().min(*out_len);
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, copy_len);
-        *out_len = bytes.len();
-    }
-}
 
 // ──────────────────────────────────────────────────────────────
 // Brotli decoder — now provided by compiled C library (bun_brotli_sys build.rs).

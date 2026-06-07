@@ -200,21 +200,8 @@ pub const fn url_safe_encode_len(source: &[u8]) -> usize {
     url_safe_encode_len_from_size(source.len())
 }
 
-// TODO(port): move to base64_sys
-unsafe extern "C" {
-    fn WTF__base64URLEncode(
-        input: *const u8,
-        input_len: usize,
-        output: *mut u8,
-        output_len: usize,
-    ) -> usize;
-}
-
 pub fn encode_url_safe(dest: &mut [u8], source: &[u8]) -> usize {
-    // TODO(port): bun.jsc.markBinding(@src()) — debug-only binding marker, no Rust equivalent yet
-    // SAFETY: WTF__base64URLEncode reads `input_len` bytes from `input` and writes at most
-    // `output_len` bytes to `output`; both slices are valid for those lengths.
-    unsafe { WTF__base64URLEncode(source.as_ptr(), source.len(), dest.as_mut_ptr(), dest.len()) }
+    simdutf::base64::encode(source, dest, true)
 }
 
 // ──────────────────────────────────────────────────────────────────────────

@@ -7,7 +7,6 @@ license = "MIT"
 
 [dependencies]
 libc = "0.2"
-base64 = "0.22"
 bun_io = { path = "../io" }
 # Wave 74-LOOP-A: mio-backed loop core now lives in bao_uloop. Making it
 # a normal dep means any crate that pulls in bao_native_stubs (most test
