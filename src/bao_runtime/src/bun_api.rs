@@ -236,7 +236,7 @@ unsafe fn populate_process_object(
     cx: &mut mozjs::context::JSContext,
     proc_obj: mozjs::rust::Handle<*mut JSObject>,
     target: mozjs::rust::Handle<*mut JSObject>,
-    global: mozjs::rust::Handle<*mut JSObject>,
+    _global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     // process.arch
     let arch_cstr = ::std::ffi::CString::new(::std::env::consts::ARCH).unwrap_or_default();

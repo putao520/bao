@@ -653,10 +653,10 @@ fn strip_typescript(source: &str, path: &Path) -> String {
 fn strip_ts_impl(source: &str) -> String {
     let mut result = String::with_capacity(source.len());
     let lines = source.lines();
-    let mut in_interface = false;
-    let mut in_type_alias = false;
-    let mut in_enum = false;
-    let mut brace_depth: i32 = 0;
+    let _in_interface = false;
+    let _in_type_alias = false;
+    let _in_enum = false;
+    let _brace_depth: i32 = 0;
     let mut skip_depth: i32 = 0;
 
     for line in lines {
@@ -1020,7 +1020,7 @@ fn strip_implements(s: &str) -> String {
     if let Some(pos) = s.find(" implements ") {
         let after = &s[pos + 12..];
         // Find where the implements clause ends (at `{`)
-        if let Some(brace) = after.find('{') {
+        if let Some(_brace) = after.find('{') {
             return format!("{} {{", &s[..pos]);
         }
     }

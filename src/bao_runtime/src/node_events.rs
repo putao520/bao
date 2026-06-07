@@ -23,6 +23,7 @@ struct EmitterState {
 /// Uses \x00 prefix so it's invisible to JS property enumeration.
 const STATE_PROP: &[u8] = b"\x00__ee_state\0";
 
+#[allow(dead_code)]
 const SLOT_STATE: u32 = 0;
 
 static EMITTER_CLASS: JSClass = JSClass {

@@ -64,7 +64,6 @@ pub mod poll;
 
 use core::ffi::{c_char, c_int, c_uint, c_void};
 use core::ptr;
-use core::sync::atomic::Ordering;
 
 use bun_uws_sys::{InternalLoopData, Loop, PosixLoop, Timespec};
 

@@ -57,6 +57,7 @@ pub struct JsContext {
 /// engine 后 drop（断言 outstanding_handles==0 通过 → JS_ShutDown）。
 /// 反序即 panic。Rust 保证 struct 字段按声明顺序析构。
 pub struct SmRuntimeGuard {
+    #[allow(dead_code)]
     runtime: mozjs::rust::Runtime,
     _engine: mozjs::rust::JSEngine,
 }

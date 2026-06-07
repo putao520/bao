@@ -161,7 +161,7 @@ pub extern "C" fn UpgradedDuplex__close(_: *mut c_void) {}
 /// tag=0 = Dead, tag=3 = Latin1, tag=5 = UTF16, tag=7 = WTFStringImpl pointer.
 #[repr(C, align(8))]
 #[derive(Clone, Copy)]
-struct BunStringValue {
+pub struct BunStringValue {
     tag: u64,
     _impl: [u64; 2],
 }

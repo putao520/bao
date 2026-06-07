@@ -446,7 +446,7 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
 /// - `cdc_adoQpoasnfa76pfcZLmcfl_Promise` — ChromeDriver internal variable
 /// - `cdc_adoQpoasnfa76pfcZLmcfl_Symbol` — ChromeDriver internal variable
 unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject) -> bool {
-    let mut all_ok = true;
+    let all_ok = true;
     let mut op_result = ObjectOpResult::default();
 
     // Delete chrome.runtime — ChromeDriver exposes chrome.runtime on window
