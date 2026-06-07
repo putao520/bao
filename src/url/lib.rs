@@ -70,9 +70,7 @@ pub mod whatwg {
         safe fn URL__port(url: &URL) -> u32;
         safe fn URL__deinit(url: &mut URL);
         safe fn URL__pathname(url: &URL) -> String;
-        safe fn URL__getHref(input: &mut String) -> String;
         safe fn URL__getFileURLString(input: &mut String) -> String;
-        safe fn URL__getHrefJoin(base: &mut String, relative: &mut String) -> String;
         safe fn URL__pathFromFileURL(input: &mut String) -> String;
         safe fn URL__hash(url: &URL) -> String;
         safe fn URL__fragmentIdentifier(url: &URL) -> String;
@@ -87,16 +85,54 @@ pub mod whatwg {
     // (`BunString::toWTFString() const`) does not mutate, but the local-copy form is
     // sound regardless.
 
-    /// Percent-encodes the URL, punycode-encodes the hostname, and returns the normalized
-    /// href. If parsing fails, the returned String's tag is `Dead`.
+    /// Validates the URL and returns the href. If parsing fails, returns `Dead`.
     pub fn href_from_string(str: &String) -> String {
-        let mut input = *str;
-        URL__getHref(&mut input)
+        let utf8 = str.to_utf8();
+        let bytes = utf8.slice();
+        if bytes.is_empty() {
+            return String::dead();
+        }
+        let url = super::URL::parse(bytes);
+        if url.protocol.is_empty() {
+            return String::dead();
+        }
+        drop(utf8);
+        *str
     }
+
+    /// Resolves `relative` against `base` and returns the joined href.
+    /// Returns `Dead` if base is invalid.
     pub fn join(base: &String, relative: &String) -> String {
-        let mut base_str = *base;
-        let mut relative_str = *relative;
-        URL__getHrefJoin(&mut base_str, &mut relative_str)
+        let base_utf8 = base.to_utf8();
+        let base_bytes = base_utf8.slice();
+        if base_bytes.is_empty() {
+            return String::dead();
+        }
+        let base_url = super::URL::parse(base_bytes);
+        if base_url.protocol.is_empty() {
+            return String::dead();
+        }
+        let rel_utf8 = relative.to_utf8();
+        let rel_bytes = rel_utf8.slice();
+        if rel_bytes.is_empty() {
+            return *base;
+        }
+        // Absolute URL — return as-is
+        let rel_url = super::URL::parse(rel_bytes);
+        if !rel_url.protocol.is_empty() {
+            return *relative;
+        }
+        // Resolve relative against base origin
+        let origin = base_url.origin;
+        let mut buf: Vec<u8> = Vec::with_capacity(origin.len() + 1 + rel_bytes.len());
+        buf.extend_from_slice(origin);
+        if !rel_bytes.starts_with(b"/") {
+            let dir = base_url.pathname;
+            let dir_end = dir.iter().rposition(|&c| c == b'/').map_or(0, |i| i + 1);
+            buf.extend_from_slice(&dir[..dir_end]);
+        }
+        buf.extend_from_slice(rel_bytes);
+        String::from_bytes(&buf)
     }
     pub fn file_url_from_string(str: &String) -> String {
         let mut input = *str;
