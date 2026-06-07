@@ -40,6 +40,7 @@ bun_sys = { path = "../sys" }
 bun_opaque = { path = "../opaque" }
 bun_picohttp = { path = "../picohttp" }
 bun_resolver = { path = "../resolver" }
+bun_ast = { path = "../ast" }
 bun_event_loop = { path = "../event_loop" }
 bun_dns = { path = "../dns" }
 bun_io = { path = "../io" }

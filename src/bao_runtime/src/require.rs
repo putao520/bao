@@ -333,6 +333,11 @@ unsafe fn load_cjs_module(
 }
 
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
+    // External resolver (bun_resolver via bao_engine hook) takes priority
+    if let Some(result) = bao_engine::module_loader::try_external_resolve(specifier, base_dir) {
+        return Some(result);
+    }
+
     let path = Path::new(specifier);
 
     if path.is_absolute() {

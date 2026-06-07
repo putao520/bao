@@ -509,6 +509,7 @@ dependencies = [
  "bao_native_stubs",
  "bao_stealth",
  "bao_uloop",
+ "bun_ast",
  "bun_base64",
  "bun_core",
  "bun_dns",

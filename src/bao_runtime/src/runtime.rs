@@ -19,6 +19,7 @@ pub struct BaoRuntime {
 impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
         Self::init_env_aliases();
+        crate::resolver_bridge::install();
         crate::bun_api::init_process_start();
         let (mut ctx, guard) = JsContext::init_runtime()?;
         ctx.set_global_setup(globals::install_all);

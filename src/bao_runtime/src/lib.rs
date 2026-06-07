@@ -50,8 +50,7 @@ pub mod require;
 pub mod runtime;
 pub mod timers;
 pub mod http_client;
-// resolver_bridge: P1-D 阶段实现，依赖 bun_ast + bao_engine::set_resolver 尚未就绪
-// pub mod resolver_bridge;
+pub mod resolver_bridge;
 pub mod stealth_http;
 
 pub use runtime::BaoRuntime;

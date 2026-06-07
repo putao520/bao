@@ -22,9 +22,30 @@ use crate::error::JsError;
 use crate::job_queue::JobQueue;
 use crate::value::{JsValue, jsval_to_jsvalue};
 
+/// Function pointer type for external module specifier resolver.
+/// When set via `set_resolver`, this takes priority over the built-in
+/// `resolve_specifier` logic, allowing `bun_resolver::Resolver` to drive resolution.
+pub type ResolverFn = fn(&str, Option<&Path>) -> Option<PathBuf>;
+
 thread_local! {
     static MODULE_CACHE: RefCell<HashMap<::std::string::String, *mut JSObject>> = RefCell::new(HashMap::new());
     static CURRENT_DIR: RefCell<::std::option::Option<::std::path::PathBuf>> = const { RefCell::new(None) };
+    static EXTERNAL_RESOLVER: RefCell<Option<ResolverFn>> = const { RefCell::new(None) };
+}
+
+/// Inject an external resolver function (e.g. `bun_resolver::Resolver` bridge).
+/// Subsequent calls to `resolve_specifier` will delegate to this function first,
+/// falling back to the built-in logic only if it returns `None`.
+pub fn set_resolver(resolver: ResolverFn) {
+    EXTERNAL_RESOLVER.with(|r| *r.borrow_mut() = Some(resolver));
+}
+
+/// Try the external resolver if one is installed.
+/// Returns `None` if no external resolver is set or it returns `None`.
+pub fn try_external_resolve(specifier: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
+    EXTERNAL_RESOLVER.with(|r| {
+        r.borrow().and_then(|resolver| resolver(specifier, base_dir))
+    })
 }
 
 pub struct ModuleLoader;
@@ -508,6 +529,13 @@ unsafe extern "C" fn host_dynamic_import(
 }
 
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
+    // External resolver (bun_resolver) takes priority
+    if let Some(result) = EXTERNAL_RESOLVER.with(|r| {
+        r.borrow().and_then(|resolver| resolver(specifier, base_dir))
+    }) {
+        return Some(result);
+    }
+
     let path = Path::new(specifier);
 
     // Absolute path

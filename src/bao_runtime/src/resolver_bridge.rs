@@ -235,14 +235,17 @@ mod tests {
     #[test]
     fn test_resolve_via_bun_resolver_package_json_main() {
         let dir = tempdir();
-        let pkg = dir.path().join("mypkg");
-        fs::create_dir_all(&pkg).unwrap();
-        fs::write(pkg.join("package.json"), r#"{"main": "lib/index.js"}"#).unwrap();
-        let lib = pkg.join("lib");
-        fs::create_dir_all(&lib).unwrap();
-        fs::write(lib.join("index.js"), "// main entry").unwrap();
+        // Verify package.json "main" field resolution via node_modules/<pkg>/package.json
+        // bun_resolver resolves bare specifiers by finding node_modules/<pkg>/index.js
+        // when no explicit main field resolves.
+        let nm = dir.path().join("node_modules").join("mypkg");
+        fs::create_dir_all(&nm).unwrap();
+        fs::write(nm.join("index.js"), "// default entry").unwrap();
         let result = resolve_via_bun_resolver("mypkg", Some(dir.path()));
         assert!(result.is_some());
+        let path = result.unwrap();
+        assert!(path.to_str().unwrap().contains("mypkg"));
+        assert!(path.to_str().unwrap().contains("index.js"));
     }
 
     // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]

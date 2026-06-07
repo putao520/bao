@@ -104,6 +104,14 @@ pub fn force_link() {
         // SSL extension stubs (not yet in compiled BoringSSL)
         let _ = SSL_set_ciphersuites as *const () as usize;
 
+        // bun_perf / bun_resolver / bun_core dependency chain
+        let _ = Bun__linux_trace_init();
+        Bun__linux_trace_emit(0, core::ptr::null(), core::ptr::null(), 0, 0, 0, 0, core::ptr::null());
+        let _ = Bun__StackCheck__getMaxStack();
+        let _ = __bun_resolver_init_package_manager(
+            core::ptr::null(), core::ptr::null(), core::ptr::null(),
+        );
+
         // Force-link all c_lib_stubs symbols
         c_lib_stubs::force_c_lib_stubs();
 }
@@ -290,11 +298,11 @@ pub extern "C" fn on_before_reload_process_linux() {
 // (extern "Rust" linkage, not extern "C"). No stub needed here.
 
 // ──────────────────────────────────────────────────────────────
-// Symbols truly no longer needed (not referenced by any crate)
+// Symbols referenced by bun_resolver/bun_perf/bun_ast dependency chain
 // ──────────────────────────────────────────────────────────────
-//   - Bun__linux_trace_*      — not referenced
-//   - __bun_resolver_init_package_manager — not referenced
-//   - Bun__addrinfo_registerQuic — not referenced
+// Bun__linux_trace_init/emit — provided above (no-op stubs)
+// __bun_resolver_init_package_manager — provided above (no-op stub)
+// Bun__StackCheck__getMaxStack — provided above
 
 // ──────────────────────────────────────────────────────────────
 // bun_spawn / bun_core stubs
@@ -567,7 +575,61 @@ pub extern "C" fn WTF__base64URLEncode(
 pub extern "C" fn __bun_crash_handler_out_of_memory() -> *mut c_void { unsafe { libc::abort() } }
 
 // ──────────────────────────────────────────────────────────────
-// Highway SIMD string ops: now provided by compiled C++ library (bun_highway).
+// bun_perf Linux trace — no-op stubs (Bao uses log crate instead)
+// ──────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn Bun__linux_trace_init() -> bool { false }
+
+#[no_mangle]
+pub extern "C" fn Bun__linux_trace_emit(
+    _id: u32,
+    _name: *const c_char,
+    _cat: *const c_char,
+    _phase: u8,
+    _ts: u64,
+    _pid: u32,
+    _tid: u32,
+    _extra: *const c_char,
+) {}
+
+// ──────────────────────────────────────────────────────────────
+// bun_core::StackCheck — returns stack end pointer
+// ──────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
+    unsafe {
+        let mut attr: libc::pthread_attr_t = core::mem::zeroed();
+        if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) == 0 {
+            let mut stack_addr: *mut c_void = core::ptr::null_mut();
+            let mut stack_size: usize = 0;
+            if libc::pthread_attr_getstack(&attr, &mut stack_addr, &mut stack_size) == 0 {
+                libc::pthread_attr_destroy(&mut attr);
+                return (stack_addr as usize + stack_size) as *mut c_void;
+            }
+            libc::pthread_attr_destroy(&mut attr);
+        }
+        // Fallback: 8MB from current stack frame
+        let marker: usize = 0;
+        (marker as *const usize as usize + 8 * 1024 * 1024) as *mut c_void
+    }
+}
+
+// ──────────────────────────────────────────────────────────────
+// bun_resolver package manager init — no-op stub
+// Bao does not auto-install packages at resolve time.
+// ──────────────────────────────────────────────────────────────
+
+#[no_mangle]
+pub extern "C" fn __bun_resolver_init_package_manager(
+    _log: *const c_void,
+    _install: *const c_void,
+    _env: *const c_void,
+) -> *mut c_void {
+    // Return null — no package manager available (auto-install disabled)
+    core::ptr::null_mut()
+}
 // All highway_* symbols resolved by libhighway.a + libhighway_strings.a at link time.
 // ──────────────────────────────────────────────────────────────
 
