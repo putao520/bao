@@ -488,7 +488,6 @@ name = "bao_native_stubs"
 version = "0.1.0"
 dependencies = [
  "bao_uloop",
- "base64",
  "bun_boringssl_sys",
  "bun_brotli_sys",
  "bun_highway",
