@@ -23,3 +23,6 @@ bitflags.workspace = true
 
 
 thiserror.workspace = true
+
+[build-dependencies]
+cc = "1"

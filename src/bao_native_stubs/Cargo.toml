@@ -8,9 +8,6 @@ license = "MIT"
 [dependencies]
 libc = "0.2"
 base64 = "0.22"
-brotli = "7"
-zstd = "0.13"
-libdeflater = "1"
 bun_io = { path = "../io" }
 # Wave 74-LOOP-A: mio-backed loop core now lives in bao_uloop. Making it
 # a normal dep means any crate that pulls in bao_native_stubs (most test
@@ -18,3 +15,19 @@ bun_io = { path = "../io" }
 # `#[no_mangle]` loop symbols, replacing the old safe no-op stubs that
 # used to live here.
 bao_uloop = { path = "../bao_uloop" }
+# Wave 74-A: compiled lshpack C library provides real HPACK encode/decode.
+bun_lshpack_sys = { path = "../lshpack_sys" }
+# Wave 74-B: compiled BoringSSL C++ library provides real TLS/crypto.
+bun_boringssl_sys = { path = "../boringssl_sys" }
+# Wave 74-C: compiled lsquic C library provides real QUIC/HTTP3 transport.
+bun_lsquic_sys = { path = "../lsquic_sys" }
+# Wave 75: compiled mimalloc C library provides real mi_* allocator symbols.
+bun_mimalloc_sys = { path = "../mimalloc_sys" }
+# Wave 75b: compiled highway SIMD library provides real highway_* string ops.
+bun_highway = { path = "../highway" }
+# Wave 75c: compiled zstd C library provides real ZSTD_* compression symbols.
+bun_zstd = { path = "../zstd" }
+# Wave 76: compiled brotli C library provides real BrotliDecoder* symbols.
+bun_brotli_sys = { path = "../brotli_sys" }
+# Wave 76b: compiled libdeflate C library provides real libdeflate_* symbols.
+bun_libdeflate_sys = { path = "../libdeflate_sys" }

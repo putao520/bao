@@ -1,6 +1,11 @@
 #![warn(unused_must_use)]
 use core::ffi::{c_ulonglong, c_void};
 
+/// No-op function that forces cargo to propagate the native link dependency
+/// (`libzstd.a`) to any crate that depends on `bun_zstd`.
+#[inline(never)]
+pub fn force_link() {}
+
 use bun_core::ZStr;
 
 // ─── FFI bindings ─────────────────────────────────────────────────────────

@@ -21,3 +21,6 @@ enumset.workspace = true
 libc.workspace = true
 bitflags.workspace = true
 bun_alloc.workspace = true
+
+[build-dependencies]
+cc = "1"
