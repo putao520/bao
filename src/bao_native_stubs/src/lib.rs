@@ -1,10 +1,28 @@
 // @trace REQ-ENG-001
-//! Pure Rust implementations of symbols originally provided by Zig-compiled C/Zig code
-//! in upstream Bun. Eliminates Zig build dependency entirely.
+//! Rust implementations and C library link bridges for symbols originally provided
+//! by Zig-compiled C/Zig code in upstream Bun.
 //!
-//! Strategy:
-//! - mi_* symbols: provided by compiled mimalloc C library (bun_mimalloc_sys)
-//! - Bun__/WTF__/bun_* symbols: minimal no-op or functional stubs for test linking
+//! ## Compiled C libraries (real implementations, no stubs)
+//! - mimalloc → libmimalloc.a (bun_mimalloc_sys)
+//! - highway SIMD → libhighway.a + libhighway_strings.a (bun_highway)
+//! - zstd → libzstd.a (bun_zstd)
+//! - brotli → libbrotli.a (bun_brotli_sys)
+//! - libdeflate → liblibdeflate.a (bun_libdeflate_sys)
+//!
+//! ## Functional Rust implementations (not stubs)
+//! - ares_inet_pton: real IPv4/IPv6 parsing
+//! - bun_cpu_features: real CPU feature detection
+//! - is_executable_file: real stat + permission check
+//! - BunString__fromBytes / Bun__WTFStringImpl__destroy: real alloc/dealloc
+//! - WTF__base64URLEncode: real base64 encoding
+//! - posix_spawn_bun: real process spawning via posix_spawnp
+//! - Signal forwarding: real signal registration + delivery
+//! - WTF__DumpStackTrace: real backtrace output
+//!
+//! ## Remaining no-op stubs (require architecture work)
+//! - UpgradedDuplex (10): needs real TLS pipeline
+//! - URL (2): needs bun_url integration
+//! - SSL_set_ciphersuites (1): needs full BoringSSL SSL API
 //!
 //! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load time,
 //! so integration tests don't need explicit force_link() calls.
