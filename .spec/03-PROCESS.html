@@ -208,12 +208,12 @@ WebSocket Client (Playwright)
   ]
 }
 </script>
-<p>关联实体: <span data-xref-type="entity" data-xref-id="PageHandle">PageHandle</span>,
-<span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>,
-<span data-xref-type="entity" data-xref-id="BrowserContext">BrowserContext</span>,
-<span data-xref-type="entity" data-xref-id="Viewport">Viewport</span>,
-<span data-xref-type="entity" data-xref-id="PixelBuffer">PixelBuffer</span>,
-<span data-xref-type="entity" data-xref-id="JsCallback">JsCallback</span></p>
+<p>关联实体: <span data-xref-id="PageHandle" data-xref-type="entity">PageHandle</span>,
+<span data-xref-id="PagePool" data-xref-type="entity">PagePool</span>,
+<span data-xref-id="BrowserContext" data-xref-type="entity">BrowserContext</span>,
+<span data-xref-id="Viewport" data-xref-type="entity">Viewport</span>,
+<span data-xref-id="PixelBuffer" data-xref-type="entity">PixelBuffer</span>,
+<span data-xref-id="JsCallback" data-xref-type="entity">JsCallback</span></p>
 </div>
 
 <!-- ============================================================ -->
@@ -295,7 +295,7 @@ WebSocket Client (Playwright)
 <h2>§7 时序约束</h2>
 <!-- ============================================================ -->
 
-<section data-req-domain="CDP" data-req-status="approved" data-req-category="business" data-api-ref="CDP.*" data-timing-constraint="max_latency_ms" data-timing="CDPResponseTime" data-req-ref="REQ-CDP-001" data-req="REQ-CDP-001" id="tmg-cdp-1">
+<section id="tmg-cdp-1" data-api-ref="CDP.*" data-req="REQ-CDP-001" data-req-category="business" data-req-domain="CDP" data-req-ref="REQ-CDP-001" data-req-status="approved" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms">
 <h3>TMG-CDP-001: CDP 命令响应时序</h3>
 <script type="application/ld+json">
 {
@@ -341,7 +341,7 @@ WebSocket Client (Playwright)
 </script>
 </section>
 
-<section data-req-domain="ENG" data-req-status="approved" data-req-category="business" data-api-ref="EventLoop.tick" data-timing-constraint="max_interval_ms" data-timing="EventLoopTick" data-req-ref="REQ-ENG-004" data-req="REQ-ENG-004" id="tmg-loop-1">
+<section id="tmg-loop-1" data-api-ref="EventLoop.tick" data-req="REQ-ENG-004" data-req-category="business" data-req-domain="ENG" data-req-ref="REQ-ENG-004" data-req-status="approved" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms">
 <h3>TMG-LOOP-001: Event Loop Tick 时序</h3>
 <script type="application/ld+json">
 {
