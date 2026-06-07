@@ -117,9 +117,9 @@ pub fn force_link() {
 // UpgradedDuplex — link-time dispatch stubs
 // ──────────────────────────────────────────────────────────────
 // bun_uws_sys/lib.rs declares these as `extern "C"` and bun_http calls them
-// through the UpgradedDuplex opaque handle. Until bao_runtime provides real
-// implementations with #[no_mangle], these stubs satisfy the linker.
-// Uses raw pointers to avoid a circular dependency on bun_uws_sys.
+// through the UpgradedDuplex opaque handle. Real implementations exist in
+// bun_runtime (Bun's runtime) but Bao hasn't ported the TLS socket path yet.
+// These stubs satisfy the linker until the TLS pipeline is wired.
 
 #[no_mangle]
 pub extern "C" fn UpgradedDuplex__ssl_error(_: *const c_void) -> c_int { 0 }
