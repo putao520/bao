@@ -460,6 +460,7 @@ version = "0.1.0"
 dependencies = [
  "bao_engine_macros",
  "bao_native_stubs",
+ "bao_runtime",
  "bun_collections",
  "bun_core",
  "bun_crash_handler",

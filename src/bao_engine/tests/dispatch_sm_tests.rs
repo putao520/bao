@@ -31,6 +31,15 @@ fn _force_native_stubs_link() {
 #[used]
 static NATIVE_STUBS_LINKER_ANCHOR: fn() = _force_native_stubs_link;
 
+// Force bao_runtime's __bun_run_file_poll (extern "Rust") into the link graph.
+// bun_io::FilePoll::on_update references this symbol; without bao_runtime linked,
+// the test binary gets "undefined symbol: __bun_run_file_poll".
+fn _force_runtime_dispatch_link() {
+    let _ = bao_runtime::dispatch::__bun_run_file_poll as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
+}
+#[used]
+static RUNTIME_DISPATCH_LINKER_ANCHOR: fn() = _force_runtime_dispatch_link;
+
 use bao_engine::dispatch_sm::BaoEventLoop;
 
 #[test]

@@ -83,6 +83,7 @@ impl<T> NeverDrop<T> {
         *borrow = ManuallyDrop::new(val);
     }
 
+    #[allow(dead_code)]
     fn take(&self) -> Option<T> {
         let mut borrow = self.0.borrow_mut();
         if borrow.is_some() {

@@ -26,3 +26,5 @@ bun_collections = { path = "../collections" }
 [dev-dependencies]
 # Wave 73-G: tests need bao_native_stubs to pull in C-library stubs (uSockets uws_get_loop, etc.)
 bao_native_stubs = { path = "../bao_native_stubs" }
+# bao_runtime provides __bun_run_file_poll (extern "Rust") referenced by bun_io::FilePoll::on_update.
+bao_runtime = { path = "../bao_runtime" }
