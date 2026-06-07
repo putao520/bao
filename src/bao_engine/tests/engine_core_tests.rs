@@ -165,5 +165,5 @@ fn test_bao_engine_core_all() {
     assert_eq!(err.column, 5);
     assert!(err.stack.is_some());
 
-    std::mem::forget(ctx);
+    bao_engine::context::JsContext::shutdown_thread_sm();
 }

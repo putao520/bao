@@ -3346,6 +3346,15 @@ mod spawn_process_body {
             {
                 for (idx, &memfd) in process.memfds[1..].iter().enumerate() {
                     if memfd {
+                        // Reset offset: the child wrote to the memfd via dup2'd
+                        // stdout/stderr which shares the same file description
+                        // (and thus the same offset). After the child exits the
+                        // offset is past all written data — seek back to 0 so
+                        // read_to_end sees the content.
+                        // SAFETY: valid memfd, SEEK_SET cannot fail.
+                        unsafe {
+                            libc::lseek(out_fds[idx].native(), 0, libc::SEEK_SET);
+                        }
                         // `out_fds[idx]` is closed by `cleanup_spawn_posix` below;
                         // borrow a non-owning `File` view so the temporary doesn't
                         // close it on drop (which would double-close).

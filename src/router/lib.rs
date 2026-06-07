@@ -2000,6 +2000,7 @@ pub use pattern::Pattern;
 // ──────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(dead_code, unreachable_pub)]
 mod tests {
     use super::*;
 
@@ -2078,7 +2079,7 @@ mod tests {
     fn make_test(cwd_path: &[u8], data: &[(&str, &str)]) -> Result<(), bun_core::Error> {
         // PORT NOTE: Zig used comptime field iteration over an anonymous struct.
         // Ported as runtime slice of (path, content) pairs.
-        Output::init_test();
+        bun_core::output::init_test();
         debug_assert!(cwd_path.len() > 1 && cwd_path != b"/" && !cwd_path.ends_with(b"bun"));
         // const bun_tests_dir = try std.fs.cwd().makeOpenPath("bun-test-scratch", .{});
         let bun_tests_dir = bun_sys::Dir::cwd()
@@ -2138,11 +2139,11 @@ mod tests {
             test_name: &'static str,
             data: &[(&str, &str)],
         ) -> Result<Routes, bun_core::Error> {
-            Output::init_test();
+            bun_core::output::init_test();
             make_test(test_name.as_bytes(), data)?;
             bun_ast::initialize_store();
             // const fs = try FileSystem.init(null);
-            let _ = bun_resolver::fs::FileSystem::init(None)?;
+            let fs = bun_resolver::fs::FileSystem::init(None)?;
             let top_level_dir = bun_resolver::fs::FileSystem::get().top_level_dir;
 
             // var pages_parts = [_]string{ top_level_dir, "pages" };
@@ -2171,7 +2172,7 @@ mod tests {
             // still flushes diagnostics on early-return for parity.
             let _err_dump = scopeguard::guard(core::ptr::from_mut(&mut log), |log| {
                 // SAFETY: pointer to a stack local that outlives this guard.
-                let _ = unsafe { &*log }.print(bun_core::output::error_writer());
+                let _ = unsafe { &*log }.print(bun_core::output::error_writer() as *mut _);
             });
 
             // const opts = Options.BundleOptions{ .target = .browser, ... };
@@ -2218,7 +2219,7 @@ mod tests {
             make_test(test_name.as_bytes(), data)?;
             bun_ast::initialize_store();
             // const fs = try FileSystem.initWithForce(null, true);
-            let _ = bun_resolver::fs::FileSystem::init_with_force::<true>(None)?;
+            let fs = bun_resolver::fs::FileSystem::init_with_force::<true>(None)?;
             let top_level_dir = bun_resolver::fs::FileSystem::get().top_level_dir;
 
             let pages_parts: [&[u8]; 2] = [top_level_dir, b"pages"];
@@ -2242,7 +2243,7 @@ mod tests {
             let mut log = bun_ast::Log::init();
             let _err_dump = scopeguard::guard(core::ptr::from_mut(&mut log), |log| {
                 // SAFETY: pointer to a stack local that outlives this guard.
-                let _ = unsafe { &*log }.print(bun_core::output::error_writer());
+                let _ = unsafe { &*log }.print(bun_core::output::error_writer() as *mut _);
             });
 
             let opts = bun_resolver::options::BundleOptions {

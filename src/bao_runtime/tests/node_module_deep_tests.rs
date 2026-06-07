@@ -199,5 +199,5 @@ fn test_node_module_deep() {
     assert_eq!(fail, 0, "node_module deep tests had {} failures", fail);
     assert!(pass >= 20, "Expected at least 20 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

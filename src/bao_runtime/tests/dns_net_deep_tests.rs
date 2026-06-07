@@ -219,5 +219,5 @@ fn test_dns_net_deep() {
         typeof sock.on === 'function' && typeof sock.emit === 'function'
     "#), "Socket should have on/emit (EventEmitter)");
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

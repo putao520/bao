@@ -46,7 +46,7 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
             result: Ok(json!({ "data": "iVBORw0KGgo=" })),
         },
         BridgeCommand::EvaluateJs { .. } => BridgeResponse {
-            result: Ok(json!({ "result": { "type": "string", "value": "ok" } })),
+            result: Ok(json!("")),
         },
         BridgeCommand::GetOuterHtml { .. } => BridgeResponse {
             result: Ok(json!({ "outerHTML": "<html><body></body></html>" })),

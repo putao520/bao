@@ -1,0 +1,314 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic [ref=e3]:
+      - link "美团官网" [ref=e11] [cursor=pointer]:
+        - /url: /
+        - img [ref=e13]
+      - navigation [ref=e15]:
+        - link [ref=e16] [cursor=pointer]:
+          - /url: /
+          - img [ref=e18]
+        - generic [ref=e21]:
+          - list [ref=e23]:
+            - listitem [ref=e24]:
+              - link "首页" [ref=e25] [cursor=pointer]:
+                - /url: /
+                - generic [ref=e26]: 首页
+            - listitem [ref=e27]:
+              - link "和美团合作" [ref=e28] [cursor=pointer]:
+                - /url: https://123.meituan.com/v3/biz-coop/win-together?source=mtgw
+                - generic [ref=e29]: 和美团合作
+            - listitem [ref=e30]:
+              - link "我们的科技" [ref=e31] [cursor=pointer]:
+                - /url: /technology
+                - generic [ref=e32]: 我们的科技
+            - listitem [ref=e33]:
+              - link "企业社会责任" [ref=e34] [cursor=pointer]:
+                - /url: /csr
+                - generic [ref=e35]: 企业社会责任
+                - img [ref=e37]
+              - generic [ref=e39]:
+                - heading "企业社会责任" [level=2] [ref=e40]:
+                  - img [ref=e42]
+                  - generic [ref=e44]: 企业社会责任
+                - generic [ref=e45]:
+                  - heading "个体" [level=6] [ref=e46]
+                  - list [ref=e47]:
+                    - listitem [ref=e48]:
+                      - link "便利用户生活" [ref=e49] [cursor=pointer]:
+                        - /url: /csr/people/user-rights
+                    - listitem [ref=e50]:
+                      - link "骑手关怀与发展" [ref=e51] [cursor=pointer]:
+                        - /url: /csr/people/couriers-development
+                    - listitem [ref=e52]:
+                      - link "涌现新职业" [ref=e53] [cursor=pointer]:
+                        - /url: /csr/people/new-professions
+                  - heading "产业" [level=6] [ref=e54]
+                  - list [ref=e55]:
+                    - listitem [ref=e56]:
+                      - link "助力市场繁荣" [ref=e57] [cursor=pointer]:
+                        - /url: /csr/industry/market
+                    - listitem [ref=e58]:
+                      - link "支持小商户发展" [ref=e59] [cursor=pointer]:
+                        - /url: /csr/industry/small-businesses
+                    - listitem [ref=e60]:
+                      - link "助力商家经营成长" [ref=e61] [cursor=pointer]:
+                        - /url: https://daxue.meituan.com/web?mtdxSource=llq_m1wdfa
+                        - generic [ref=e62]: 助力商家经营成长
+                        - img [ref=e63]
+                    - listitem [ref=e65]:
+                      - link "中华老字号支持计划" [ref=e66] [cursor=pointer]:
+                        - /url: /csr/industry/time-honored
+                  - heading "社会" [level=6] [ref=e67]
+                  - list [ref=e68]:
+                    - listitem [ref=e69]:
+                      - link "推动绿色消费" [ref=e70] [cursor=pointer]:
+                        - /url: /csr/society/environment
+                    - listitem [ref=e71]:
+                      - link "支持乡村振兴" [ref=e72] [cursor=pointer]:
+                        - /url: /csr/society/rural
+                    - listitem [ref=e73]:
+                      - link "参与应急救灾" [ref=e74] [cursor=pointer]:
+                        - /url: /csr/society/disaster-relief
+                  - link "下载中心" [ref=e76] [cursor=pointer]:
+                    - /url: /csr/report
+            - listitem [ref=e77]:
+              - link "美团公益" [ref=e78] [cursor=pointer]:
+                - /url: /public-welfare
+                - generic [ref=e79]: 美团公益
+                - img [ref=e81]
+              - generic [ref=e83]:
+                - heading "美团公益" [level=2] [ref=e84]:
+                  - img [ref=e86]
+                  - generic [ref=e88]: 美团公益
+                - generic [ref=e89]:
+                  - heading [level=6]
+                  - list [ref=e90]:
+                    - listitem [ref=e91]:
+                      - link "美团乡村儿童操场" [ref=e92] [cursor=pointer]:
+                        - /url: /public-welfare/playground
+                    - listitem [ref=e93]:
+                      - link "美团公益基金会" [ref=e94] [cursor=pointer]:
+                        - /url: https://www.meituan.org.cn
+                        - generic [ref=e95]: 美团公益基金会
+                        - img [ref=e96]
+                    - listitem [ref=e98]:
+                      - link "青山科技基金" [ref=e99] [cursor=pointer]:
+                        - /url: https://greentech.meituan.com/h5
+                        - generic [ref=e100]: 青山科技基金
+                        - img [ref=e101]
+            - listitem [ref=e103]:
+              - link "信息公开" [ref=e104] [cursor=pointer]:
+                - /url: /newsroom/algorithm-transparency
+                - generic [ref=e105]: 信息公开
+                - img [ref=e107]
+              - generic [ref=e109]:
+                - heading "信息公开" [level=2] [ref=e110]:
+                  - img [ref=e112]
+                  - generic [ref=e114]: 信息公开
+                - generic [ref=e115]:
+                  - heading [level=6]
+                  - list [ref=e116]:
+                    - listitem [ref=e117]:
+                      - link "骑手保障" [ref=e118] [cursor=pointer]:
+                        - /url: /newsroom/couriers-protection
+                    - listitem [ref=e119]:
+                      - link "商家生态" [ref=e120] [cursor=pointer]:
+                        - /url: /newsroom/merchants-ecology
+                    - listitem [ref=e121]:
+                      - link "食品安全" [ref=e122] [cursor=pointer]:
+                        - /url: /newsroom/food-safety
+                    - listitem [ref=e123]:
+                      - link "算法公开" [ref=e124] [cursor=pointer]:
+                        - /url: /newsroom/algorithm-transparency
+                    - listitem [ref=e125]:
+                      - link "辟谣公告" [ref=e126] [cursor=pointer]:
+                        - /url: /newsroom/refute-rumors
+            - listitem [ref=e127]:
+              - link "投资者关系" [ref=e128] [cursor=pointer]:
+                - /url: /investor-relations
+                - generic [ref=e129]: 投资者关系
+            - listitem [ref=e130]:
+              - link "加入我们" [ref=e131] [cursor=pointer]:
+                - /url: https://career.meituan.com?source=mtgw
+                - generic [ref=e132]: 加入我们
+          - generic [ref=e134]:
+            - heading "下载和关注" [level=3] [ref=e135]
+            - list [ref=e136]:
+              - listitem [ref=e137]:
+                - link [ref=e138] [cursor=pointer]:
+                  - /url: https://i.meituan.com/c/OThhYWM2N2Qt
+                  - img [ref=e140]
+              - listitem [ref=e142]:
+                - link [ref=e143] [cursor=pointer]:
+                  - /url: https://w.dianping.com/cube/evoke/waimai.html
+                  - img [ref=e145]
+              - listitem [ref=e147]:
+                - link [ref=e148] [cursor=pointer]:
+                  - /url: https://w.dianping.com/cube/evoke/dianping.html
+                  - img [ref=e150]
+            - list [ref=e152]:
+              - listitem [ref=e153]:
+                - link [ref=e154] [cursor=pointer]:
+                  - /url: https://weibo.com/meituan?topnav=1&wvr=6&topsug=1
+                  - img [ref=e156]
+              - listitem [ref=e158]:
+                - img [ref=e160]
+              - listitem [ref=e162]:
+                - img [ref=e164]
+            - generic [ref=e166]:
+              - generic [ref=e167]: 简体中文 / 繁體中文
+              - link "English Version" [ref=e169] [cursor=pointer]:
+                - /url: /en-US/about-us
+                - generic [ref=e170]: English Version
+                - img [ref=e172]
+    - generic [ref=e174]:
+      - generic [ref=e177]:
+        - heading "美团是一家科技零售公司" [level=1] [ref=e178]
+        - generic [ref=e179]:
+          - generic [ref=e180]: 美团以“零售 + 科技”的战略
+          - generic [ref=e181]: 践行“帮大家吃得更好，生活更好”的公司使命。
+        - generic [ref=e182]:
+          - generic [ref=e183]: 了解更多
+          - img [ref=e185]
+      - generic [ref=e188]:
+        - generic [ref=e190]:
+          - heading "最新动态" [level=2] [ref=e191]
+          - link "查看全部" [ref=e192] [cursor=pointer]:
+            - /url: /news
+            - generic [ref=e193]: 查看全部
+            - img [ref=e195]
+        - generic [ref=e198]:
+          - link "美团 美团2026年Q1财报：营收910亿元，研发投入同比增长22% 美团实现营收910亿元，研发投入同比增长22%至70亿元。 2026-06-01" [ref=e199] [cursor=pointer]:
+            - /url: /news/NN260601238004976
+            - generic [ref=e200]:
+              - img "美团" [ref=e205]
+              - generic [ref=e206]:
+                - heading "美团2026年Q1财报：营收910亿元，研发投入同比增长22%" [level=6] [ref=e207]
+                - generic [ref=e208]: 美团实现营收910亿元，研发投入同比增长22%至70亿元。
+                - time [ref=e209]: 2026-06-01
+          - link "美团 美团坚决落实《网络餐饮服务经营者落实食品安全主体责任监督管理规定》 美团将严格落实各项要求，持续完善平台食品安全治理体系，切实履行平台主体责任，当好外卖食品安全的“守门员”。 2026-06-01" [ref=e210] [cursor=pointer]:
+            - /url: /news/NN26052919100317X
+            - generic [ref=e211]:
+              - img "美团" [ref=e216]
+              - generic [ref=e217]:
+                - heading "美团坚决落实《网络餐饮服务经营者落实食品安全主体责任监督管理规定》" [level=6] [ref=e218]
+                - generic [ref=e219]: 美团将严格落实各项要求，持续完善平台食品安全治理体系，切实履行平台主体责任，当好外卖食品安全的“守门员”。
+                - time [ref=e220]: 2026-06-01
+        - generic [ref=e222]:
+          - link "美团 重庆江北机场候机点外卖，机器人给你送达 4月29日，美团“小黄蜂”室内外智能配送机器人正式在重庆江北国际机场T3航站楼投用，这也是其首次落地西南地区大型航空枢纽。 2026-04-30" [ref=e223] [cursor=pointer]:
+            - /url: /news/NN260430172006675
+            - generic [ref=e224]:
+              - img "美团" [ref=e229]
+              - generic [ref=e230]:
+                - heading "重庆江北机场候机点外卖，机器人给你送达" [level=6] [ref=e231]
+                - generic [ref=e232]: 4月29日，美团“小黄蜂”室内外智能配送机器人正式在重庆江北国际机场T3航站楼投用，这也是其首次落地西南地区大型航空枢纽。
+                - time [ref=e233]: 2026-04-30
+          - link "美团 放下外卖箱就去救人——全国多地骑手见义勇为故事背后的平台激励机制 美团表彰会嘉奖全国好人好事骑手代表，一季度发放数百万元专项激励。 2026-04-28" [ref=e234] [cursor=pointer]:
+            - /url: /news/NN260506220004998
+            - generic [ref=e235]:
+              - img "美团" [ref=e240]
+              - generic [ref=e241]:
+                - heading "放下外卖箱就去救人——全国多地骑手见义勇为故事背后的平台激励机制" [level=6] [ref=e242]
+                - generic [ref=e243]: 美团表彰会嘉奖全国好人好事骑手代表，一季度发放数百万元专项激励。
+                - time [ref=e244]: 2026-04-28
+          - link "美团 全国五一劳动奖表彰大会在京召开，美团骑手池崇注作为代表发言 8名来自美团的劳动者获得“全国五一劳动奖章”，1个美团外卖配送团队获得“全国工人先锋号”荣誉称号。 2026-04-28" [ref=e245] [cursor=pointer]:
+            - /url: /news/NN260430216004596
+            - generic [ref=e246]:
+              - img "美团" [ref=e251]
+              - generic [ref=e252]:
+                - heading "全国五一劳动奖表彰大会在京召开，美团骑手池崇注作为代表发言" [level=6] [ref=e253]
+                - generic [ref=e254]: 8名来自美团的劳动者获得“全国五一劳动奖章”，1个美团外卖配送团队获得“全国工人先锋号”荣誉称号。
+                - time [ref=e255]: 2026-04-28
+          - link "美团 美团将新增连续多日跑单疲劳提醒 4月23日，美团在北京召开骑手恳谈会，邀请政府有关部门、骑手、专家等社会各界就“防疲劳”机制改进建言献策。 2026-04-24" [ref=e256] [cursor=pointer]:
+            - /url: /news/NN260426212004860
+            - generic [ref=e257]:
+              - img "美团" [ref=e262]
+              - generic [ref=e263]:
+                - heading "美团将新增连续多日跑单疲劳提醒" [level=6] [ref=e264]
+                - generic [ref=e265]: 4月23日，美团在北京召开骑手恳谈会，邀请政府有关部门、骑手、专家等社会各界就“防疲劳”机制改进建言献策。
+                - time [ref=e266]: 2026-04-24
+          - link "美团 深入三大环节推出十大举措，美团升级“放心外卖”治理体系 美团将继续深入探索，为消费者打造放心外卖消费体验。 2026-04-17" [ref=e267] [cursor=pointer]:
+            - /url: /news/NN260417173010929
+            - generic [ref=e268]:
+              - img "美团" [ref=e273]
+              - generic [ref=e274]:
+                - heading "深入三大环节推出十大举措，美团升级“放心外卖”治理体系" [level=6] [ref=e275]
+                - generic [ref=e276]: 美团将继续深入探索，为消费者打造放心外卖消费体验。
+                - time [ref=e277]: 2026-04-17
+          - link "美团 美团AI健康管家“小团健康管家”正式发布 打造家庭健康管理新入口 美团医药健康正式发布AI家庭健康管家“小团健康管家”和“健康卡”付费会员服务。 2026-04-14" [ref=e278] [cursor=pointer]:
+            - /url: /news/NN260415165008559
+            - generic [ref=e279]:
+              - img "美团" [ref=e284]
+              - generic [ref=e285]:
+                - heading "美团AI健康管家“小团健康管家”正式发布 打造家庭健康管理新入口" [level=6] [ref=e286]
+                - generic [ref=e287]: 美团医药健康正式发布AI家庭健康管家“小团健康管家”和“健康卡”付费会员服务。
+                - time [ref=e288]: 2026-04-14
+        - link "查看全部" [ref=e291] [cursor=pointer]:
+          - /url: /news
+          - generic [ref=e292]: 查看全部
+          - img [ref=e294]
+      - generic [ref=e297]:
+        - generic [ref=e298]: 请设置您的 Cookie 偏好
+        - generic [ref=e299]:
+          - generic [ref=e300]: 欢迎来到美团企业官网。
+          - generic [ref=e301]:
+            - text: 我们希望在本网站上使用 Cookie，以便保障本网站的安全、高效运转及服务优化，有关我们使用 Cookie 的更多信息，点击
+            - link "查看" [ref=e302] [cursor=pointer]:
+              - /url: https://rules-center.meituan.com/rules-detail/2
+            - text: 了解更多
+        - generic [ref=e303]:
+          - generic [ref=e304] [cursor=pointer]: 接受 Cookies
+          - generic [ref=e305] [cursor=pointer]: 拒绝 Cookies
+    - contentinfo [ref=e306]:
+      - generic [ref=e307]:
+        - generic [ref=e308]:
+          - generic [ref=e309]:
+            - generic [ref=e311]:
+              - heading "了解更多" [level=6] [ref=e312]
+              - img [ref=e314]
+            - generic [ref=e320]:
+              - heading "加入我们" [level=6] [ref=e321]
+              - img [ref=e323]
+            - generic [ref=e329]:
+              - heading "联系我们" [level=6] [ref=e330]
+              - img [ref=e332]
+          - generic [ref=e337]:
+            - heading "下载和关注" [level=2] [ref=e338]
+            - generic [ref=e339]:
+              - link [ref=e341] [cursor=pointer]:
+                - /url: https://i.meituan.com/c/OThhYWM2N2Qt
+                - img [ref=e342]
+              - link [ref=e345] [cursor=pointer]:
+                - /url: https://w.dianping.com/cube/evoke/waimai.html
+                - img [ref=e346]
+              - link [ref=e349] [cursor=pointer]:
+                - /url: https://w.dianping.com/cube/evoke/dianping.html
+                - img [ref=e350]
+              - link [ref=e353] [cursor=pointer]:
+                - /url: https://weibo.com/meituan?topnav=1&wvr=6&topsug=1
+                - img [ref=e354]
+              - img [ref=e357]
+              - img [ref=e360]
+        - link [ref=e363] [cursor=pointer]:
+          - /url: /
+          - img [ref=e365]
+      - generic [ref=e368]:
+        - generic [ref=e369]:
+          - paragraph [ref=e370]: 违法和不良信息投诉电话：4006018900，投诉邮箱：tousu@meituan.com
+          - paragraph [ref=e371]: 以上渠道可投诉：互联网违法和不良信息，涉及未成年人保护、互联网算法推荐、谣言类信息。
+        - generic [ref=e373]:
+          - generic [ref=e374]: ©2026 美团版权所有
+          - generic [ref=e375]:
+            - link "京ICP备10211739号" [ref=e376] [cursor=pointer]:
+              - /url: https://beian.miit.gov.cn/
+            - link "京公网安备 11000002002052号" [ref=e377] [cursor=pointer]:
+              - /url: http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11000002002052
+              - generic [ref=e378]: 京公网安备 11000002002052号
+          - generic [ref=e379]:
+            - link "隐私政策" [ref=e380] [cursor=pointer]:
+              - /url: https://rules-center.meituan.com/m/detail/guize/2
+            - link "规则中心" [ref=e381] [cursor=pointer]:
+              - /url: https://rules-center.meituan.com/
+        - generic [ref=e383]: 药品医疗器械网络信息服务备案 (京)网药械信息备字（2022）第00228号 药品网络交易第三方平台备案 （京）网药平台备字〔2023〕第000013号 医疗器械网络交易第三方平台 （京）网械平台备字（2018）第00004号 京网文〔2024〕2449-120号
+  - alert [ref=e384]

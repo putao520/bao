@@ -392,6 +392,8 @@ pub mod web_socket;
 
 #[path = "socket.rs"]
 pub mod socket;
+#[path = "src/c_hooks.rs"]
+pub mod c_hooks;
 pub use socket::{
     AnySocket, ConnectError, InternalSocket, NewSocketHandler, SocketHandler, SocketTCP, SocketTLS,
     SocketTcp, SocketTls,

@@ -55,8 +55,8 @@ fn setup_registry_with_all_domains() -> DomainRegistry {
     registry.register(Box::new(PageHandler::new(bridge.clone()))).unwrap();
     registry.register(Box::new(RuntimeHandler::new(bridge.clone()))).unwrap();
     registry.register(Box::new(DomHandler::new(bridge.clone()))).unwrap();
-    registry.register(Box::new(NetworkHandler)).unwrap();
-    registry.register(Box::new(DebuggerHandler)).unwrap();
+    registry.register(Box::new(NetworkHandler::new(bridge.clone()))).unwrap();
+    registry.register(Box::new(DebuggerHandler::new(bridge.clone()))).unwrap();
     registry.register(Box::new(InputHandler::new(bridge.clone()))).unwrap();
     registry.register(Box::new(EmulationHandler::new(bridge.clone()))).unwrap();
     registry.register(Box::new(TargetHandler::new(bridge, "test-target-id".to_string()))).unwrap();
@@ -88,21 +88,14 @@ fn runtime_enable_broadcasts_execution_context_created() {
 }
 
 #[test]
-fn debugger_enable_broadcasts_script_parsed() {
+fn debugger_enable_no_fabricated_event() {
     let registry = setup_registry_with_all_domains();
     let (sender, cmd_rx) = make_event_sender();
     let result = registry.dispatch_command("Debugger.enable", json!({}), &sender);
     assert!(result.is_some());
-    let cmd = cmd_rx.try_recv().unwrap();
-    match cmd {
-        CDPCommand::SendEvent(ev) => {
-            assert_eq!(ev.method, "Debugger.scriptParsed");
-            let params = ev.params.unwrap();
-            assert_eq!(params["scriptId"], "1");
-            assert_eq!(params["executionContextId"], 1);
-        }
-        _ => panic!("Expected SendEvent"),
-    }
+    assert!(result.unwrap().is_ok());
+    // Debugger.enable injects SpiderMonkey Debugger setup via bridge, NOT fabricated events
+    assert!(cmd_rx.try_recv().is_err(), "Debugger.enable must NOT emit fabricated scriptParsed");
 }
 
 #[test]
@@ -141,16 +134,14 @@ fn target_set_discover_targets_false_no_event() {
 }
 
 #[test]
-fn network_enable_broadcasts_request_will_be_sent() {
+fn network_enable_no_fabricated_event() {
     let registry = setup_registry_with_all_domains();
     let (sender, cmd_rx) = make_event_sender();
     let result = registry.dispatch_command("Network.enable", json!({}), &sender);
     assert!(result.is_some());
-    let cmd = cmd_rx.try_recv().unwrap();
-    match cmd {
-        CDPCommand::SendEvent(ev) => assert_eq!(ev.method, "Network.requestWillBeSent"),
-        _ => panic!("Expected SendEvent"),
-    }
+    assert!(result.unwrap().is_ok());
+    // Network.enable injects JS interceptor via bridge, NOT fabricated events
+    assert!(cmd_rx.try_recv().is_err(), "Network.enable must NOT emit fabricated requestWillBeSent");
 }
 
 #[test]

@@ -14,6 +14,7 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 
 #[test]
 fn test_timers_https_tls_all() {
+    bao_runtime::install_exit_handler();
     bao_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
     ctx.set_global_setup(bao_runtime::globals::install_all);
@@ -72,5 +73,5 @@ fn test_timers_https_tls_all() {
         }
     }
     assert!(all_passed, "All timers/https/tls tests should pass. Results: {}", results);
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

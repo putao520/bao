@@ -3,6 +3,11 @@
 pub mod boringssl;
 pub use boringssl::*;
 
+/// No-op function that forces cargo to propagate the native link dependency
+/// (`libboringssl.a`) to any crate that depends on `bun_boringssl_sys`.
+#[inline(never)]
+pub fn force_link() {}
+
 /// Constant-time byte-slice equality via BoringSSL `CRYPTO_memcmp`.
 ///
 /// Returns `false` when lengths differ (the length comparison itself is NOT

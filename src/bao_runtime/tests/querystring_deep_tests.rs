@@ -120,5 +120,5 @@ fn test_querystring_deep() {
     }
     assert!(all_passed, "All querystring deep tests should pass. Results: {}", results);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

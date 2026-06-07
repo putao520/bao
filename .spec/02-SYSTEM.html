@@ -1092,7 +1092,7 @@ Permission 配置:
 </ul>
 </div>
 
-<section data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-001" id="req-sec-1"><h3>REQ-SEC-001 CORS 安全策略禁用</h3><p>bao 内置浏览器的所有 HTTP 请求不受 CORS（跨域资源共享）限制。修改 servo net 模块的 CORS 检查逻辑，使其在 bao 模式下跳过 CORS 验证。效果等同 Chromium --disable-web-security。页面 JS 和可信脚本的 fetch/XMLHttpRequest 均可自由访问任意域名的响应体。</p><div data-criterion="页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错">页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错</div><div data-criterion="XMLHttpRequest 跨域请求返回完整响应（非 opaque response）">XMLHttpRequest 跨域请求返回完整响应（非 opaque response）</div><div data-criterion="servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证">servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证</div><div data-criterion="CORS preflight (OPTIONS) 请求不再发送">CORS preflight (OPTIONS) 请求不再发送</div><div data-criterion="CORS 缓存 (CorsCache) 不再生效">CORS 缓存 (CorsCache) 不再生效</div><div data-criterion="修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块">修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块</div><a data-xref-id="test-sec-1" data-xref-type="test" href="11-TESTING.html#test-sec-1">TEST-SEC-001</a></section><section data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-002" id="req-sec-2"><h3>REQ-SEC-002 双层 JS 执行模型 — 双 Realm 架构级隔离</h3><p data-req-description="">bao 的 evaluate_js 支持两种执行模式：
+<section data-req-api="POST /fetch" data-req-entity="FetchResponse" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-001" id="req-sec-1"><h3>REQ-SEC-001 CORS 安全策略禁用</h3><p>bao 内置浏览器的所有 HTTP 请求不受 CORS（跨域资源共享）限制。修改 servo net 模块的 CORS 检查逻辑，使其在 bao 模式下跳过 CORS 验证。效果等同 Chromium --disable-web-security。页面 JS 和可信脚本的 fetch/XMLHttpRequest 均可自由访问任意域名的响应体。</p><div data-criterion="页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错">页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错</div><div data-criterion="XMLHttpRequest 跨域请求返回完整响应（非 opaque response）">XMLHttpRequest 跨域请求返回完整响应（非 opaque response）</div><div data-criterion="servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证">servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证</div><div data-criterion="CORS preflight (OPTIONS) 请求不再发送">CORS preflight (OPTIONS) 请求不再发送</div><div data-criterion="CORS 缓存 (CorsCache) 不再生效">CORS 缓存 (CorsCache) 不再生效</div><div data-criterion="修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块">修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块</div></section><section data-req-api="POST /evaluate-js,POST /evaluate-js-web" data-req-entity="BaoRuntime,EvaluateResult" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-002" id="req-sec-2"><h3>REQ-SEC-002 双层 JS 执行模型 — 双 Realm 架构级隔离</h3><p data-req-description="">bao 的 evaluate_js 支持两种执行模式：
 1. 页面模式（受限）：网页自身的 JS 运行在 servo 原生 Window Realm（Page Realm）内，只有前端 API（window/document/navigator/fetch 等），无法访问 Node.js API。SpiderMonkey Compartment 隔离保证物理上不可见。
 2. 可信模式（全权限）：通过 PageHandle.evaluate_js() 执行的脚本运行在独立的 Node Realm 中，拥有完整 Node.js/Bun 运行时权限（require/fs/crypto/Bun.*/process/Buffer），同时通过 JS_WrapObject 跨 Realm proxy 访问当前页面的 DOM（window/document/navigator）。
 
@@ -1105,7 +1105,7 @@ Permission 配置:
 1. 页面模式（受限）：网页自身的 JS 运行在标准 web 安全沙箱内，只有前端 API（window/document/navigator/fetch 等），无法访问 Node.js API
 2. 可信模式（全权限）：通过 PageHandle.evaluate_js() 执行的脚本拥有完整 Node.js/Bun 运行时权限（require/fs/crypto/Bun.*/process/Buffer），同时可访问当前页面的 DOM（window/document/navigator）
 
-实现机制：单 realm + CommonJS 包裹函数。evaluate_js 将用户脚本包装为 (function(require, module, exports, Bun, process, Buffer, __filename, __dirname){ &lt;user_script&gt; })，通过 JS_CallFunction 传入预先创建的 Node API JSValue 作为实参。Node API 从不写入 Window global，页面 JS 物理上无法访问。</p><a data-xref-id="test-sec-2" data-xref-type="test" href="./11-TESTING#test-sec-2">TEST-SEC-002</a><div data-criterion="页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API">页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API</div><div data-criterion="页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时">页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时</div><div data-criterion="可信脚本中 require('fs') 可正常读写文件">可信脚本中 require('fs') 可正常读写文件</div><div data-criterion="可信脚本中 Bun.file() / Bun.write() 可正常工作">可信脚本中 Bun.file() / Bun.write() 可正常工作</div><div data-criterion="可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）">可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）</div><div data-criterion="可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）">可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）</div><div data-criterion="可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容">可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容</div><div data-criterion="Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离">Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离</div><div data-criterion="evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm">evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm</div><div data-criterion="evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换">evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换</div></section><section data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-003" id="req-sec-3"><h3>REQ-SEC-003 Node API 沙箱隔离 — 移除页面全局注入</h3><p data-req-description="">在双 Realm 架构下，Node.js API 的隔离是架构级保证而非代码逻辑保证。
+实现机制：单 realm + CommonJS 包裹函数。evaluate_js 将用户脚本包装为 (function(require, module, exports, Bun, process, Buffer, __filename, __dirname){ &lt;user_script&gt; })，通过 JS_CallFunction 传入预先创建的 Node API JSValue 作为实参。Node API 从不写入 Window global，页面 JS 物理上无法访问。</p><div data-criterion="页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API">页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API</div><div data-criterion="页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时">页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时</div><div data-criterion="可信脚本中 require('fs') 可正常读写文件">可信脚本中 require('fs') 可正常读写文件</div><div data-criterion="可信脚本中 Bun.file() / Bun.write() 可正常工作">可信脚本中 Bun.file() / Bun.write() 可正常工作</div><div data-criterion="可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）">可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）</div><div data-criterion="可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）">可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）</div><div data-criterion="可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容">可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容</div><div data-criterion="Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离">Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离</div><div data-criterion="evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm">evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm</div><div data-criterion="evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换">evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换</div></section><section data-req-api="GET /sandbox-status" data-req-entity="PageHandle" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-003" id="req-sec-3"><h3>REQ-SEC-003 Node API 沙箱隔离 — 移除页面全局注入</h3><p data-req-description="">在双 Realm 架构下，Node.js API 的隔离是架构级保证而非代码逻辑保证。
 
 修复原有安全漏洞：runtime_bridge.rs 中 install_all_native() 将 require/fs/crypto/Bun.* 等 Node.js API 直接挂在 Window global 上。
 
@@ -1121,5 +1121,846 @@ Permission 配置:
 2. 改为按需创建 Node API JSValue 对象（不挂 global），供可信脚本的 CommonJS 包裹函数使用
 3. 页面 JS 仅保留标准 Web API（console/fetch/URL/URLSearchParams/WebSocket 等）
 4. 保留 console 注入（页面 JS 需要 console.log）
-5. 保留 Web 标准 API（fetch/Headers/Request/Response/URL/URLSearchParams）</p><a data-xref-id="test-sec-3" data-xref-type="test" href="./11-TESTING#test-sec-3">TEST-SEC-003</a><div data-criterion="runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global">runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global</div><div data-criterion="页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API">页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API</div><div data-criterion="页面 JS 中 typeof process === 'undefined'">页面 JS 中 typeof process === 'undefined'</div><div data-criterion="页面 JS 中 typeof Buffer === 'undefined'">页面 JS 中 typeof Buffer === 'undefined'</div><div data-criterion="页面 JS 中 typeof Bun === 'undefined'">页面 JS 中 typeof Bun === 'undefined'</div><div data-criterion="页面 JS 中 console.log() 正常工作（console 保留在 global）">页面 JS 中 console.log() 正常工作（console 保留在 global）</div><div data-criterion="页面 JS 中 fetch() 正常工作（Web API 保留在 global）">页面 JS 中 fetch() 正常工作（Web API 保留在 global）</div><div data-criterion="页面 JS 中 URL/URLSearchParams 正常工作">页面 JS 中 URL/URLSearchParams 正常工作</div><div data-criterion="Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹">Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹</div><div data-criterion="install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性">install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性</div></section></main></body>
+5. 保留 Web 标准 API（fetch/Headers/Request/Response/URL/URLSearchParams）</p><div data-criterion="runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global">runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global</div><div data-criterion="页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API">页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API</div><div data-criterion="页面 JS 中 typeof process === 'undefined'">页面 JS 中 typeof process === 'undefined'</div><div data-criterion="页面 JS 中 typeof Buffer === 'undefined'">页面 JS 中 typeof Buffer === 'undefined'</div><div data-criterion="页面 JS 中 typeof Bun === 'undefined'">页面 JS 中 typeof Bun === 'undefined'</div><div data-criterion="页面 JS 中 console.log() 正常工作（console 保留在 global）">页面 JS 中 console.log() 正常工作（console 保留在 global）</div><div data-criterion="页面 JS 中 fetch() 正常工作（Web API 保留在 global）">页面 JS 中 fetch() 正常工作（Web API 保留在 global）</div><div data-criterion="页面 JS 中 URL/URLSearchParams 正常工作">页面 JS 中 URL/URLSearchParams 正常工作</div><div data-criterion="Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹">Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹</div><div data-criterion="install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性">install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性</div></section><section data-api="POST /evaluate-js" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}" id="api-post-evaluate-js"><h4>POST /evaluate-js — 可信脚本执行 — Node Realm (全权限)</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="code"><td>code</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="args"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "value": {
+        "type": "string"
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "code": {
+      "type": "string",
+      "required": true
+    },
+    "args": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /evaluate-js-web" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}" id="api-post-evaluate-js-web"><h4>POST /evaluate-js-web — 页面脚本执行 — Page Realm (仅 Web API)</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="code"><td>code</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "value": {
+        "type": "string"
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "code": {
+      "type": "string",
+      "required": true
+    }
+  }
+}
+</script></section><section data-api="GET /sandbox-status" data-api-response="{&quot;fields&quot;:{&quot;node_api_visible&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm_isolated&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;require_available&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-sandbox-status"><h4>GET /sandbox-status — 安全沙箱状态查询</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "page_realm": {
+        "type": "string"
+      },
+      "node_realm": {
+        "type": "string"
+      },
+      "isolation": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script></section><section data-api="POST /runtime/eval" data-api-request="{&quot;script&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;filename&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}" id="api-post-runtime-eval"><h4>POST /runtime/eval — SpiderMonkey 引擎集成 — JS 执行 API</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="script"><td>script</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="filename"><td>filename</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "string"
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "code": {
+      "type": "string",
+      "required": true
+    },
+    "filename": {
+      "type": "string"
+    }
+  }
+}
+</script></section><section data-api="POST /codegen/generate" data-api-request="{&quot;classes_file&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;output_dir&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;generated_files&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;success&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-codegen-generate"><h4>POST /codegen/generate — 代码生成后端 — SpiderMonkey 绑定生成</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="classes_file"><td>classes_file</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="output_dir"><td>output_dir</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "code": {
+        "type": "string"
+      },
+      "sourcemap": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "input": {
+      "type": "string",
+      "required": true
+    },
+    "target": {
+      "type": "string"
+    }
+  }
+}
+</script></section><section data-api="POST /host-fn/call" data-api-request="{&quot;name&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;callback&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}" id="api-post-host-fn-call"><h4>POST /host-fn/call — host_fn 抽象层 — Rust 安全 JS 调用</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="name"><td>name</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="json" data-param="callback"><td>callback</td><td>json</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="args"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "fn_name": {
+      "type": "string",
+      "required": true
+    },
+    "args": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /event-loop/drain" data-api-request="{&quot;tick&quot;:{&quot;type&quot;:&quot;integer&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;microtask_count&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;macrotask_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-event-loop-drain"><h4>POST /event-loop/drain — Event Loop 桥接 — 事件循环 tick</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-param="tick"><td>tick</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "ticks_executed": {
+        "type": "integer"
+      },
+      "timers_fired": {
+        "type": "integer"
+      }
+    }
+  },
+  "request": {
+    "max_ticks": {
+      "type": "integer"
+    },
+    "timeout_ms": {
+      "type": "integer"
+    }
+  }
+}
+</script></section><section data-api="POST /module/resolve" data-api-request="{&quot;specifier&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;referrer&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;source&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-module-resolve"><h4>POST /module/resolve — Module Loader 桥接 — ESM/CJS 模块解析</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="specifier"><td>specifier</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="string" data-param="referrer"><td>referrer</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "resolved_path": {
+        "type": "string"
+      },
+      "module_type": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "specifier": {
+      "type": "string",
+      "required": true
+    },
+    "referrer": {
+      "type": "string"
+    }
+  }
+}
+</script></section><section data-api="GET /api/bun-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-api-bun-compat"><h4>GET /api/bun-compat — Bun API 适配 — Bun.* 别名兼容</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "compatible": {
+        "type": "boolean"
+      },
+      "apis": {
+        "type": "json"
+      }
+    }
+  }
+}
+</script></section><section data-api="GET /api/node-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-api-node-compat"><h4>GET /api/node-compat — Node.js 兼容层 — require/fs/crypto 适配</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "compatible": {
+        "type": "boolean"
+      },
+      "apis": {
+        "type": "json"
+      }
+    }
+  }
+}
+</script></section><section data-api="POST /cli/exec" data-api-request="{&quot;command&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;exit_code&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stdout&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-cli-exec"><h4>POST /cli/exec — bao CLI 品牌替换 — bao run/test/build/browser</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="command"><td>command</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="args"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "exit_code": {
+        "type": "integer"
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "stderr": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "command": {
+      "type": "string",
+      "required": true
+    },
+    "args": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /cli/browser" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;cdp_port&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stealth&quot;:{&quot;type&quot;:&quot;boolean&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;pid&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;cdp_url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-cli-browser"><h4>POST /cli/browser — bao browser 子命令 — 启动浏览器模式</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="url"><td>url</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="cdp_port"><td>cdp_port</td><td>integer</td><td>否</td><td></td></tr><tr data-required="false" data-type="boolean" data-param="stealth"><td>stealth</td><td>boolean</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "started": {
+        "type": "boolean"
+      },
+      "cdp_url": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "url": {
+      "type": "string"
+    },
+    "cdp_port": {
+      "type": "integer"
+    },
+    "stealth": {
+      "type": "boolean"
+    }
+  }
+}
+</script></section><section data-api="POST /browser/create-page" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;viewport&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;state&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-browser-create-page"><h4>POST /browser/create-page — libservo 集成 — 创建 WebView 页面</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="url"><td>url</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="viewport"><td>viewport</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "page_id": {
+        "type": "string"
+      },
+      "created": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "url": {
+      "type": "string"
+    },
+    "viewport": {
+      "type": "json"
+    },
+    "stealth_profile": {
+      "type": "string"
+    }
+  }
+}
+</script></section><section data-api="POST /browser/screenshot" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;format&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;data&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;width&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;height&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-browser-screenshot"><h4>POST /browser/screenshot — 内存渲染 — 截图输出</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="page_id"><td>page_id</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="string" data-param="format"><td>format</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "data": {
+        "type": "string"
+      },
+      "format": {
+        "type": "string"
+      },
+      "width": {
+        "type": "integer"
+      },
+      "height": {
+        "type": "integer"
+      }
+    }
+  },
+  "request": {
+    "format": {
+      "type": "string"
+    },
+    "full_page": {
+      "type": "boolean"
+    },
+    "selector": {
+      "type": "string"
+    }
+  }
+}
+</script></section><section data-api="POST /browser/jscontext-fuse" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;fused&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-browser-jscontext-fuse"><h4>POST /browser/jscontext-fuse — SpiderMonkey JSContext 融合 — Page/Node 双 Realm</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="page_id"><td>page_id</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "fused": {
+        "type": "boolean"
+      },
+      "jscontext_ptr": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "page_id": {
+      "type": "string",
+      "required": true
+    }
+  }
+}
+</script></section><section data-api="POST /cdp/runtime" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-cdp-runtime"><h4>POST /cdp/runtime — Runtime Domain — JS 执行/控制/Console</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="session_id"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="method"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="params"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /cdp/debugger" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-cdp-debugger"><h4>POST /cdp/debugger — Debugger Domain — 断点/源码/单步调试</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="session_id"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="method"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="params"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /cdp/page" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-cdp-page"><h4>POST /cdp/page — Page Domain — 导航/截图/事件</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="session_id"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="method"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="params"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /cdp/dom" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-cdp-dom"><h4>POST /cdp/dom — DOM Domain — 节点查询/修改/事件</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="session_id"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="method"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="params"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /cdp/network" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-cdp-network"><h4>POST /cdp/network — Network Domain — 请求/响应拦截/Cookie</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="session_id"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="method"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="params"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /cdp/emulation" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-cdp-emulation"><h4>POST /cdp/emulation — CSS/Input/Emulation/Overlay Domain — 设备模拟</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="session_id"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="method"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="params"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /stealth/tls" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;ja3_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;tls_version&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-stealth-tls"><h4>POST /stealth/tls — TLS 指纹模拟 — JA3/JA4 伪造</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="string" data-param="profile_name"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "ja3_hash": {
+        "type": "string"
+      },
+      "configured": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "profile": {
+      "type": "string"
+    },
+    "ja3_override": {
+      "type": "string"
+    }
+  }
+}
+</script></section><section data-api="POST /stealth/http2" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;akamai_fingerprint&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;settings_frame&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-stealth-http2"><h4>POST /stealth/http2 — HTTP/2 指纹匹配 — Akamai 规避</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="string" data-param="profile_name"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "fingerprint": {
+        "type": "string"
+      },
+      "configured": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "profile": {
+      "type": "string"
+    },
+    "settings_override": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /stealth/canvas" data-api-request="{&quot;seed&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;intensity&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;noise_applied&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-stealth-canvas"><h4>POST /stealth/canvas — Canvas 指纹防护 — 像素噪声注入</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-param="seed"><td>seed</td><td>integer</td><td>否</td><td></td></tr><tr data-required="false" data-type="string" data-param="intensity"><td>intensity</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "noise_applied": {
+        "type": "boolean"
+      },
+      "seed": {
+        "type": "integer"
+      }
+    }
+  },
+  "request": {
+    "seed": {
+      "type": "integer"
+    },
+    "noise_level": {
+      "type": "float"
+    }
+  }
+}
+</script></section><section data-api="POST /stealth/navigator" data-api-request="{&quot;ua&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;navigator&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-stealth-navigator"><h4>POST /stealth/navigator — Navigator/Screen 构造 — UA/屏幕模拟</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="string" data-param="ua"><td>ua</td><td>string</td><td>否</td><td></td></tr><tr data-required="false" data-type="json" data-param="screen"><td>screen</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "user_agent": {
+        "type": "string"
+      },
+      "platform": {
+        "type": "string"
+      },
+      "configured": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "user_agent": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "screen": {
+      "type": "json"
+    }
+  }
+}
+</script></section><section data-api="POST /stealth/webgl-audio" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;webgl_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;audio_hash&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-stealth-webgl-audio"><h4>POST /stealth/webgl-audio — WebGL/Audio 指纹防护 — 渲染器/音频指纹伪造</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="string" data-param="profile_name"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "webgl_vendor": {
+        "type": "string"
+      },
+      "audio_noise_applied": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "webgl_vendor": {
+      "type": "string"
+    },
+    "audio_noise": {
+      "type": "boolean"
+    }
+  }
+}
+</script></section><section data-api="POST /stealth/behavior" data-api-request="{&quot;action_type&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;path&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;delays&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-stealth-behavior"><h4>POST /stealth/behavior — 行为模拟 — 鼠标轨迹/打字延迟/滚动</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="action_type"><td>action_type</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="params"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "mouse_path": {
+        "type": "json"
+      },
+      "typing_delays": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "mouse_speed_wpm": {
+      "type": "integer"
+    },
+    "typing_wpm": {
+      "type": "integer"
+    }
+  }
+}
+</script></section><section data-api="GET /stealth/cdp-stealth" data-api-response="{&quot;fields&quot;:{&quot;stealth_active&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;patches_applied&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-stealth-cdp-stealth"><h4>GET /stealth/cdp-stealth — CDP 隐蔽性 — 反检测补丁</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "domains": {
+        "type": "json"
+      }
+    }
+  }
+}
+</script></section><section data-api="POST /pagepool/create" data-api-request="{&quot;config&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-pagepool-create"><h4>POST /pagepool/create — 多页面管理 — PagePool 创建/销毁/复用</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="json" data-param="config"><td>config</td><td>json</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "page_id": {
+        "type": "string"
+      },
+      "pool_size": {
+        "type": "integer"
+      }
+    }
+  },
+  "request": {
+    "url": {
+      "type": "string"
+    },
+    "count": {
+      "type": "integer"
+    }
+  }
+}
+</script></section><section data-api="GET /pagepool/stats" data-api-response="{&quot;fields&quot;:{&quot;active&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;idle&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;max_total&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-pagepool-stats"><h4>GET /pagepool/stats — PagePool 资源管理 — 统计/回收/限制</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "active": {
+        "type": "integer"
+      },
+      "idle": {
+        "type": "integer"
+      },
+      "total": {
+        "type": "integer"
+      }
+    }
+  }
+}
+</script></section><section data-api="POST /permission/set" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;permissions&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;granted&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-post-permission-set"><h4>POST /permission/set — Permission 可选沙箱 — 权限配置与执行</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="page_id"><td>page_id</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="json" data-param="permissions"><td>permissions</td><td>json</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "updated": {
+        "type": "boolean"
+      },
+      "permissions": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "permissions": {
+      "type": "json",
+      "required": true
+    },
+    "mode": {
+      "type": "string"
+    }
+  }
+}
+</script></section><section data-api="GET /impl/phase1-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-impl-phase1-status"><h4>GET /impl/phase1-status — Phase 1 SpiderMonkey 替换 JSC — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script></section><section data-api="GET /impl/phase2-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-impl-phase2-status"><h4>GET /impl/phase2-status — Phase 2 servo 引擎集成 — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script></section><section data-api="GET /impl/phase3-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-impl-phase3-status"><h4>GET /impl/phase3-status — Phase 3 CDP Server — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script></section><section data-api="GET /impl/phase4-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-impl-phase4-status"><h4>GET /impl/phase4-status — Phase 4 Stealth 反指纹 — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script></section><section data-api="GET /impl/phase5-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}" id="api-get-impl-phase5-status"><h4>GET /impl/phase5-status — Phase 5 Headless 多页面库 — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script></section><section data-api="POST /fetch" id="api-post-fetch"><h4>POST /fetch — POST /fetch — CORS 安全策略禁用 — 直接 HTTP 请求</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="url"><td>url</td><td>string</td><td>是</td><td>目标 URL</td></tr><tr data-required="false" data-type="string" data-param="method"><td>method</td><td>string</td><td>否</td><td>HTTP 方法</td></tr><tr data-required="false" data-type="json" data-param="headers"><td>headers</td><td>json</td><td>否</td><td>请求头</td></tr><tr data-required="false" data-type="string" data-param="body"><td>body</td><td>string</td><td>否</td><td>请求体</td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "status_code": {
+        "type": "integer"
+      },
+      "body": {
+        "type": "string"
+      },
+      "headers": {
+        "type": "json"
+      },
+      "url": {
+        "type": "string"
+      },
+      "status_text": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "url": {
+      "type": "string",
+      "required": true
+    },
+    "method": {
+      "type": "string"
+    },
+    "headers": {
+      "type": "json"
+    },
+    "body": {
+      "type": "string"
+    }
+  }
+}
+</script></section></main></body>
 </html>

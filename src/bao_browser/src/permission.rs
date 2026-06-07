@@ -7,6 +7,7 @@ pub struct Permission {
     pub net: Option<Vec<String>>,
     pub env: Option<bool>,
     pub run: Option<bool>,
+    pub sys: Option<bool>,
 }
 
 impl Permission {
@@ -39,6 +40,10 @@ impl Permission {
 
     pub fn is_run_allowed(&self) -> bool {
         self.run.unwrap_or(true)
+    }
+
+    pub fn is_sys_allowed(&self) -> bool {
+        self.sys.unwrap_or(true)
     }
 }
 
@@ -293,6 +298,7 @@ mod tests {
             net: Some(vec!["api.com".into()]),
             env: Some(false),
             run: Some(true),
+            ..Default::default()
         };
         let cloned = perm.clone();
         assert!(cloned.is_read_allowed("/data/file"));
@@ -322,6 +328,7 @@ mod tests {
             net: Some(vec![]),
             env: None,
             run: None,
+            ..Default::default()
         };
         assert!(!perm.is_read_allowed("/any"));
         assert!(!perm.is_write_allowed("/any"));
@@ -416,5 +423,29 @@ mod tests {
         let err = guard.check_run().unwrap_err();
         assert_eq!(err.category, "run");
         assert_eq!(err.resource, "*");
+    }
+
+    #[test]
+    fn sys_default_allows() {
+        let perm = Permission::default();
+        assert!(perm.is_sys_allowed());
+    }
+
+    #[test]
+    fn sys_explicit_true_allows() {
+        let perm = Permission {
+            sys: Some(true),
+            ..Default::default()
+        };
+        assert!(perm.is_sys_allowed());
+    }
+
+    #[test]
+    fn sys_explicit_false_denies() {
+        let perm = Permission {
+            sys: Some(false),
+            ..Default::default()
+        };
+        assert!(!perm.is_sys_allowed());
     }
 }

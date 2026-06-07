@@ -126,5 +126,5 @@ fn test_value_type_boundaries_all() {
     let val = eval_val(&mut ctx, "'hello' + ' ' + 'world'");
     assert_eq!(val.as_string(), Some("hello world"), "string concat");
 
-    std::mem::forget(ctx);
+    bao_engine::context::JsContext::shutdown_thread_sm();
 }

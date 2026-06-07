@@ -409,5 +409,5 @@ fn test_es_advanced_features() {
     "#);
     assert_eq!(result3, "default|default|0|", "Nullish coalescing should only trigger for null/undefined");
 
-    std::mem::forget(ctx);
+    bao_engine::context::JsContext::shutdown_thread_sm();
 }

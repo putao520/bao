@@ -1,0 +1,9 @@
+[    1066ms] [WARNING] A parser-blocking, cross site (i.e. different eTLD+1) script, https://stat-58home.58che.com/ol_58home.js, is invoked via document.write. The network request for this script MAY be blocked by the browser in this or a future page load due to poor network connectivity. If blocked in this page load, it will be confirmed in a subsequent console message. See https://www.chromestatus.com/feature/5718547946799104 for more details. @ https://nj.58.com/:1291
+[    1067ms] [WARNING] A parser-blocking, cross site (i.e. different eTLD+1) script, https://stat-58home.58che.com/ol_58home.js, is invoked via document.write. The network request for this script MAY be blocked by the browser in this or a future page load due to poor network connectivity. If blocked in this page load, it will be confirmed in a subsequent console message. See https://www.chromestatus.com/feature/5718547946799104 for more details. @ https://nj.58.com/:1291
+[    1224ms] [WARNING] document.domain mutation is ignored because the surrounding agent cluster is origin-keyed. @ https://j1.58cdn.com.cn/webim/js/entry.js?v=1780632596986:0
+[    1490ms] Uncaught TypeError: Cannot read properties of null (reading 'city')
+    at success (:0:103511)
+    at window.<computed> (:0:68781)
+    at <anonymous> (https://api.58.com/moji/weathernew/288?source=30f03b10e&api_callback=JSONP_1780632597888:0:0)
+[    2898ms] [LOG] {source: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36…ike Gecko) HeadlessChrome/144.0.0.0 Safari/537.36, browser: Object, os: Object, device: Object} @ https://j1.58cdn.com.cn/git/webrtc/sdk.min_v20230901113648.js:0
+[    3823ms] [LOG] 1780632599690-14097afd-a0e7-4006-bb32-d7ad17a1468e 2223 @ https://j1.58cdn.com.cn/wmda/js/statistic.js?1780632599143:21

@@ -299,5 +299,5 @@ fn test_runtime_deep() {
     assert_eq!(fail, 0, "runtime deep tests had {} failures", fail);
     assert!(pass >= 80, "Expected at least 80 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

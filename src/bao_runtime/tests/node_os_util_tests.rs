@@ -88,5 +88,5 @@ fn test_node_os_util_all() {
         }
     }
     assert!(all_passed, "All os/util tests should pass");
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

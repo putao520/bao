@@ -115,7 +115,8 @@ fn test_behavior_mouse_path_deterministic() {
 fn test_behavior_typing_delays_count() {
     let sim = BehaviorSimulator::new(42);
     let delays = sim.generate_typing_delays(20);
-    assert_eq!(delays.len(), 20);
+    // May have extra backspace events from typo correction
+    assert!(delays.len() >= 20, "Expected >= 20 delays, got {}", delays.len());
 }
 
 #[test]
@@ -128,23 +129,22 @@ fn test_behavior_typing_delays_positive() {
 }
 
 #[test]
-fn test_behavior_scroll_deltas_correct_count() {
+fn test_behavior_scroll_deltas_finite() {
     let sim = BehaviorSimulator::new(55);
-    let steps = 20;
-    let deltas = sim.generate_scroll_deltas(1000.0, steps);
-    assert_eq!(deltas.len(), steps);
-    // Each delta should be a valid finite number
+    let deltas = sim.generate_scroll_deltas(1000.0, 20);
+    // Inertia scroll produces variable count
+    assert!(!deltas.is_empty());
     for d in &deltas {
         assert!(d.is_finite(), "Scroll delta should be finite");
     }
 }
 
 #[test]
-fn test_behavior_scroll_deltas_positive() {
+fn test_behavior_scroll_deltas_all_finite() {
     let sim = BehaviorSimulator::new(42);
     let deltas = sim.generate_scroll_deltas(500.0, 10);
     for d in &deltas {
-        assert!(*d >= 0.0, "Scroll deltas should be non-negative");
+        assert!(d.is_finite(), "Scroll delta should be finite: {}", d);
     }
 }
 

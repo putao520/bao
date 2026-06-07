@@ -7,19 +7,18 @@
   <title>SPEC 设计文档目录</title>
   <script type="application/ld+json">
   { "@context":"https://spec.gsc.local/v1", "@type":"SpecIndex",
-    "generated":"2026-06-05",
-    "stats":{"reqs":39,"entities":26,"apis":8,"tests":89,"bugs":3},
+    "generated":"2026-06-06",
+    "stats":{"reqs":41,"entities":28,"apis":47,"tests":89,"bugs":14},
     "documents":[
       {"id":"00-INDEX","category":"index","title":"SPEC 目录索引"},
       {"id":"01-BUSINESS","category":"4+1-scenario","title":"场景视图：业务架构"},
-      {"id":"02-SYSTEM","category":"4+1-logic","title":"逻辑视图：系统架构","reqs":3,"apis":3},
-      {"id":"03-PROCESS","category":"4+1-process","title":"过程视图：核心流程"},
-      {"id":"04-DATA-MODEL","category":"4+1-develop","title":"开发视图：数据模型","entities":20},
+      {"id":"02-SYSTEM","category":"4+1-logic","title":"逻辑视图：系统架构","reqs":3,"apis":40},
+      {"id":"03-PROCESS","category":"4+1-process","title":"过程视图：核心流程","reqs":2,"apis":2},
+      {"id":"04-DATA-MODEL","category":"4+1-develop","title":"开发视图：数据模型","entities":22},
       {"id":"05-IMPLEMENTATION","category":"other","title":"05-IMPLEMENTATION","reqs":5},
       {"id":"06-CDP-SERVER","category":"other","title":"06-CDP-SERVER","entities":6,"apis":5,"tests":8},
-      {"id":"06-SECURITY-PLAN","category":"other","title":"06-SECURITY-PLAN"},
       {"id":"10-REQUIREMENTS","category":"requirements","title":"需求索引","reqs":31},
-      {"id":"11-TESTING","category":"testing","title":"测试策略","tests":81,"bugs":3}
+      {"id":"11-TESTING","category":"testing","title":"测试策略","tests":81,"bugs":14}
     ]
   }
   </script>
@@ -27,7 +26,7 @@
 <body>
   <header data-spec-header>
     <h1>SPEC 设计文档目录</h1>
-    <p>共 10 个主文件、0 个子文件 | REQ: 39 | Entity: 26 | API: 8 | TEST: 89 | BUG: 3</p>
+    <p>共 9 个主文件、0 个子文件 | REQ: 41 | Entity: 28 | API: 47 | TEST: 89 | BUG: 14</p>
   </header>
   <main data-spec-content>
     <section id="s1">
@@ -43,19 +42,19 @@
         <tr>
   <td><a href="./02-SYSTEM.html" data-xref-type="spec-file">02-SYSTEM</a></td>
   <td>逻辑视图</td>
-  <td>REQ ×3、API ×3、SM ×1</td>
+  <td>REQ ×3、API ×40、SM ×1</td>
   <td>—</td>
 </tr>
         <tr>
   <td><a href="./03-PROCESS.html" data-xref-type="spec-file">03-PROCESS</a></td>
   <td>过程视图</td>
-  <td>SM ×1</td>
+  <td>REQ ×2、API ×2、SM ×1</td>
   <td>—</td>
 </tr>
         <tr>
   <td><a href="./04-DATA-MODEL.html" data-xref-type="spec-file">04-DATA-MODEL</a></td>
   <td>开发视图</td>
-  <td>Entity ×20</td>
+  <td>Entity ×22</td>
   <td>—</td>
 </tr>
       </table>
@@ -77,12 +76,6 @@
   <td>—</td>
 </tr>
         <tr>
-  <td><a href="./06-SECURITY-PLAN.html" data-xref-type="spec-file">06-SECURITY-PLAN</a></td>
-  <td>other</td>
-  <td>—</td>
-  <td>—</td>
-</tr>
-        <tr>
   <td><a href="./10-REQUIREMENTS.html" data-xref-type="spec-file">10-REQUIREMENTS</a></td>
   <td>需求列表</td>
   <td>REQ ×31</td>
@@ -91,14 +84,14 @@
         <tr>
   <td><a href="./11-TESTING.html" data-xref-type="spec-file">11-TESTING</a></td>
   <td>测试策略</td>
-  <td>TEST ×81、BUG ×3</td>
+  <td>TEST ×81、BUG ×14</td>
   <td>—</td>
 </tr>
       </table>
     </section>
   </main>
   <footer data-spec-footer>
-    <p>自动生成于 2026-06-05</p>
+    <p>自动生成于 2026-06-06</p>
   </footer>
 </body>
 </html>

@@ -8,6 +8,7 @@ use crate::error::BrowserError;
 pub enum ScreenshotFormat {
     Png,
     Jpeg,
+    WebP,
 }
 
 pub fn encode_image(image: &RgbaImage, format: ScreenshotFormat) -> Result<Vec<u8>, BrowserError> {
@@ -21,6 +22,9 @@ pub fn encode_image(image: &RgbaImage, format: ScreenshotFormat) -> Result<Vec<u
             rgb.write_to(&mut buf, ImageFormat::Jpeg)
                 .map_err(|e| BrowserError::Rendering(format!("JPEG encode failed: {e}")))?;
         }
+        ScreenshotFormat::WebP => image
+            .write_to(&mut buf, ImageFormat::WebP)
+            .map_err(|e| BrowserError::Rendering(format!("WebP encode failed: {e}")))?,
     }
     Ok(buf.into_inner())
 }
@@ -68,18 +72,38 @@ mod tests {
     }
 
     #[test]
+    fn encode_1x1_webp_returns_nonempty_with_riff_magic() {
+        let img = red_image(1, 1);
+        let out = encode_image(&img, ScreenshotFormat::WebP).unwrap();
+        assert!(!out.is_empty());
+        // WebP files start with "RIFF" header
+        assert_eq!(&out[0..4], b"RIFF");
+    }
+
+    #[test]
+    fn encode_100x100_webp_produces_valid_data() {
+        let img = red_image(100, 100);
+        let out = encode_image(&img, ScreenshotFormat::WebP).unwrap();
+        assert!(!out.is_empty());
+        assert_eq!(&out[0..4], b"RIFF");
+    }
+
+    #[test]
     fn encode_empty_image_no_panic() {
         let img = red_image(0, 0);
         let _ = encode_image(&img, ScreenshotFormat::Png);
         let _ = encode_image(&img, ScreenshotFormat::Jpeg);
+        let _ = encode_image(&img, ScreenshotFormat::WebP);
     }
 
     #[test]
-    fn both_formats_produce_nontrivial_output() {
+    fn all_formats_produce_nontrivial_output() {
         let img = red_image(200, 200);
         let png = encode_image(&img, ScreenshotFormat::Png).unwrap();
         let jpeg = encode_image(&img, ScreenshotFormat::Jpeg).unwrap();
+        let webp = encode_image(&img, ScreenshotFormat::WebP).unwrap();
         assert!(png.len() > 100, "PNG should be nontrivial: {} bytes", png.len());
         assert!(jpeg.len() > 100, "JPEG should be nontrivial: {} bytes", jpeg.len());
+        assert!(webp.len() > 100, "WebP should be nontrivial: {} bytes", webp.len());
     }
 }

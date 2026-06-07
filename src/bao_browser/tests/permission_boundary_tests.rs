@@ -146,6 +146,7 @@ fn test_guard_with_permission_restricts() {
         net: Some(vec!["safe.com".into()]),
         env: Some(false),
         run: Some(false),
+        ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());

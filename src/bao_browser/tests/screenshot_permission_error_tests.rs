@@ -306,6 +306,7 @@ fn test_permission_clone() {
         net: Some(vec!["example.com".into()]),
         env: Some(false),
         run: Some(true),
+        ..Default::default()
     };
     let cloned = perm.clone();
     assert!(cloned.is_read_allowed("/home/user"));

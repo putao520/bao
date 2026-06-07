@@ -207,6 +207,7 @@ fn test_permission_guard_read_only() {
         write: Some(vec![]),
         env: Some(false),
         run: Some(false),
+    ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -226,6 +227,7 @@ fn test_permission_guard_net_whitelist() {
         write: None,
         env: None,
         run: None,
+    ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -245,6 +247,7 @@ fn test_permission_guard_empty_net_blocks_all() {
         write: None,
         env: None,
         run: None,
+    ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -259,6 +262,7 @@ fn test_permission_guard_clone() {
         write: Some(vec![]),
         env: Some(true),
         run: Some(false),
+    ..Default::default()
     };
     let g1 = PermissionGuard::new(perm);
     let g2 = g1.clone();

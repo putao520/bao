@@ -22,9 +22,11 @@ thread_local! {
     static TL_UA: RefCell<String> = RefCell::new(String::new());
     static TL_PLATFORM: RefCell<String> = RefCell::new(String::new());
     static TL_LANGUAGE: RefCell<String> = RefCell::new(String::new());
+    static TL_LANGUAGES: RefCell<Vec<String>> = RefCell::new(vec!["en-US".into(), "en".into()]);
     static TL_HWC: RefCell<u32> = RefCell::new(8);
     static TL_TOUCH: RefCell<u32> = RefCell::new(0);
     static TL_VENDOR: RefCell<String> = RefCell::new(String::new());
+    static TL_DEVICE_MEMORY: RefCell<f64> = RefCell::new(8.0);
     static TL_SCREEN_W: RefCell<u32> = RefCell::new(1920);
     static TL_SCREEN_H: RefCell<u32> = RefCell::new(1080);
     static TL_AVAIL_W: RefCell<u32> = RefCell::new(1920);
@@ -34,6 +36,8 @@ thread_local! {
     // WebGL vendor/renderer for getParameter override
     static TL_WEBGL_VENDOR: RefCell<String> = RefCell::new(String::new());
     static TL_WEBGL_RENDERER: RefCell<String> = RefCell::new(String::new());
+    // WebGL extensions for getSupportedExtensions override
+    static TL_WEBGL_EXTENSIONS: RefCell<Vec<String>> = RefCell::new(vec![]);
 }
 
 /// Store all profile values into thread-local before calling install_stealth_props.
@@ -42,9 +46,11 @@ pub fn set_profile(profile: &StealthProfile) {
     TL_UA.with(|v| *v.borrow_mut() = profile.navigator.user_agent.clone());
     TL_PLATFORM.with(|v| *v.borrow_mut() = profile.navigator.platform.clone());
     TL_LANGUAGE.with(|v| *v.borrow_mut() = profile.navigator.language.clone());
+    TL_LANGUAGES.with(|v| *v.borrow_mut() = profile.navigator.languages.clone());
     TL_HWC.with(|v| *v.borrow_mut() = profile.navigator.hardware_concurrency);
     TL_TOUCH.with(|v| *v.borrow_mut() = profile.navigator.max_touch_points);
     TL_VENDOR.with(|v| *v.borrow_mut() = profile.navigator.vendor.clone());
+    TL_DEVICE_MEMORY.with(|v| *v.borrow_mut() = profile.navigator.device_memory);
     TL_SCREEN_W.with(|v| *v.borrow_mut() = profile.screen.width);
     TL_SCREEN_H.with(|v| *v.borrow_mut() = profile.screen.height);
     TL_AVAIL_W.with(|v| *v.borrow_mut() = profile.screen.avail_width);
@@ -53,6 +59,7 @@ pub fn set_profile(profile: &StealthProfile) {
     TL_DPR.with(|v| *v.borrow_mut() = profile.screen.device_pixel_ratio);
     TL_WEBGL_VENDOR.with(|v| *v.borrow_mut() = profile.webgl.vendor.clone());
     TL_WEBGL_RENDERER.with(|v| *v.borrow_mut() = profile.webgl.renderer.clone());
+    TL_WEBGL_EXTENSIONS.with(|v| *v.borrow_mut() = profile.webgl.extensions.clone());
 }
 
 /// Returns true iff a profile has been explicitly set on this thread
@@ -140,6 +147,40 @@ make_u32_getter!(getter_avail_w, TL_AVAIL_W);
 make_u32_getter!(getter_avail_h, TL_AVAIL_H);
 make_u32_getter!(getter_color_depth, TL_COLOR_DEPTH);
 make_f64_getter!(getter_dpr, TL_DPR);
+make_f64_getter!(getter_device_memory, TL_DEVICE_MEMORY);
+
+/// Getter for navigator.languages — returns a JS array of strings.
+/// Uses JS_DefineProperty with numeric string keys to build an array-like object
+/// since raw-pointer engine_props cannot use the rooted!/wrappers2 API.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn getter_languages(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    TL_LANGUAGES.with(|v| {
+        let langs = v.borrow().clone();
+        // Create array-like plain object and set numeric index properties
+        let obj = JS_NewPlainObject(cx);
+        if obj.is_null() {
+            args.rval().set(UndefinedValue());
+            return;
+        }
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &obj };
+        for (i, lang) in langs.iter().enumerate() {
+            let idx_cstr = format!("{}", i);
+            let Ok(c_idx) = CString::new(idx_cstr.as_str()) else { continue };
+            let Ok(c_lang) = CString::new(lang.as_str()) else { continue };
+            let js_str = JS_NewStringCopyZ(cx, c_lang.as_ptr());
+            if !js_str.is_null() {
+                let str_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(js_str as *mut JSObject) };
+                JS_DefineProperty3(cx, obj_h, c_idx.as_ptr(), str_h, JSPROP_ENUMERATE as u32);
+            }
+        }
+        if let Ok(c_len) = CString::new("length") {
+            JS_DefineProperty1(cx, obj_h, c_len.as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
+        }
+        args.rval().set(ObjectValue(obj));
+    });
+    true
+}
 
 // ---------------------------------------------------------------------------
 // WebGL getParameter override
@@ -220,6 +261,37 @@ unsafe fn emit_tl_string_rval(
         } else {
             rval.set(UndefinedValue());
         }
+    });
+    true
+}
+
+/// Override for WebGLRenderingContext.prototype.getSupportedExtensions().
+/// Returns a JS array of extension name strings from the stealth profile.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn webgl_get_supported_extensions_override(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    TL_WEBGL_EXTENSIONS.with(|v| {
+        let exts = v.borrow().clone();
+        let arr = JS_NewPlainObject(cx);
+        if arr.is_null() {
+            args.rval().set(UndefinedValue());
+            return;
+        }
+        let arr_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &arr };
+        for (i, ext) in exts.iter().enumerate() {
+            let idx_cstr = format!("{}", i);
+            let Ok(c_idx) = CString::new(idx_cstr.as_str()) else { continue };
+            let Ok(c_ext) = CString::new(ext.as_str()) else { continue };
+            let js_str = JS_NewStringCopyZ(cx, c_ext.as_ptr());
+            if !js_str.is_null() {
+                let str_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(js_str as *mut JSObject) };
+                JS_DefineProperty3(cx, arr_h, c_idx.as_ptr(), str_h, JSPROP_ENUMERATE as u32);
+            }
+        }
+        if let Ok(c_len) = CString::new("length") {
+            JS_DefineProperty1(cx, arr_h, c_len.as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
+        }
+        args.rval().set(ObjectValue(arr));
     });
     true
 }
@@ -346,7 +418,71 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
     }
     let fn_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(fn_obj as *mut JSObject) };
     let override_attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-    JS_DefineProperty3(cx, proto_h, c_fn_name.as_ptr(), fn_h, override_attrs)
+    let gp_ok = JS_DefineProperty3(cx, proto_h, c_fn_name.as_ptr(), fn_h, override_attrs);
+
+    // Define override getSupportedExtensions as PERMANENT native function
+    let Ok(c_gse_name) = CString::new("getSupportedExtensions") else { return false };
+    let gse_fn = JS_NewFunction(cx, Some(webgl_get_supported_extensions_override), 0, 0, c_gse_name.as_ptr());
+    if gse_fn.is_null() {
+        return false;
+    }
+    let gse_fn_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(gse_fn as *mut JSObject) };
+    let gse_ok = JS_DefineProperty3(cx, proto_h, c_gse_name.as_ptr(), gse_fn_h, override_attrs);
+
+    gp_ok && gse_ok
+}
+
+// ---------------------------------------------------------------------------
+// CDP stealth: remove automation indicator globals
+// ---------------------------------------------------------------------------
+
+/// Delete known ChromeDriver / CDP leaked properties from the global object.
+/// ChromeDriver injects `chrome.runtime` and `cdc_adoQpoasnfa76pfcZLmcfl_*`
+/// globals that are strong automation indicators.
+///
+/// Known CDP leak patterns:
+/// - `chrome.runtime` — Chrome extension API exposed by ChromeDriver
+/// - `cdc_adoQpoasnfa76pfcZLmcfl_Array` — ChromeDriver internal variable
+/// - `cdc_adoQpoasnfa76pfcZLmcfl_Promise` — ChromeDriver internal variable
+/// - `cdc_adoQpoasnfa76pfcZLmcfl_Symbol` — ChromeDriver internal variable
+unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject) -> bool {
+    let mut all_ok = true;
+    let mut op_result = ObjectOpResult::default();
+
+    // Delete chrome.runtime — ChromeDriver exposes chrome.runtime on window
+    if let Ok(c_chrome) = CString::new("chrome") {
+        let mut has_chrome: bool = false;
+        if JS_HasProperty(cx, global, c_chrome.as_ptr(), &mut has_chrome) && has_chrome {
+            let chrome_obj = get_subobject(cx, global, "chrome");
+            if !chrome_obj.is_null() {
+                let chrome_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &chrome_obj };
+                if let Ok(c_runtime) = CString::new("runtime") {
+                    let mut has_runtime: bool = false;
+                    if JS_HasProperty(cx, chrome_h, c_runtime.as_ptr(), &mut has_runtime) && has_runtime {
+                        JS_DeleteProperty(cx, chrome_h, c_runtime.as_ptr(), &mut op_result);
+                    }
+                }
+            }
+        }
+    }
+
+    // Delete known cdc_ prefix globals — ChromeDriver variable name pattern
+    // The full variable name is: cdc_adoQpoasnfa76pfcZLmcfl_<Type>
+    let cdc_globals = [
+        "cdc_adoQpoasnfa76pfcZLmcfl_Array",
+        "cdc_adoQpoasnfa76pfcZLmcfl_Promise",
+        "cdc_adoQpoasnfa76pfcZLmcfl_Symbol",
+    ];
+    for cdc_name in &cdc_globals {
+        if let Ok(c_name) = CString::new(*cdc_name) {
+            let mut has: bool = false;
+            if JS_HasProperty(cx, global, c_name.as_ptr(), &mut has) && has {
+                JS_DeleteProperty(cx, global, c_name.as_ptr(), &mut op_result);
+            }
+        }
+    }
+
+    all_ok
 }
 
 // ---------------------------------------------------------------------------
@@ -374,6 +510,8 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
         all_ok &= define_permanent_getter(cx, nav_h, "hardwareConcurrency", Some(getter_hwc));
         all_ok &= define_permanent_getter(cx, nav_h, "maxTouchPoints", Some(getter_touch));
         all_ok &= define_permanent_getter(cx, nav_h, "vendor", Some(getter_vendor));
+        all_ok &= define_permanent_getter(cx, nav_h, "languages", Some(getter_languages));
+        all_ok &= define_permanent_getter(cx, nav_h, "deviceMemory", Some(getter_device_memory));
     }
 
     // --- Screen properties ---
@@ -394,6 +532,11 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
     // --- WebGL prototype override ---
     all_ok &= install_webgl_override(cx, global_h);
 
+    // --- CDP stealth: remove chrome.runtime and cdc_* global properties ---
+    // ChromeDriver injects chrome.runtime and cdc_adoQpoasnfa76pfcZLmcfl_* globals
+    // that are strong automation indicators. Delete them if they exist.
+    all_ok &= delete_cdp_leaked_properties(cx, global_h);
+
     all_ok
 }
 
@@ -412,6 +555,8 @@ mod tests {
         TL_HWC.with(|v| assert_eq!(*v.borrow(), profile.navigator.hardware_concurrency));
         TL_TOUCH.with(|v| assert_eq!(*v.borrow(), profile.navigator.max_touch_points));
         TL_VENDOR.with(|v| assert_eq!(*v.borrow(), profile.navigator.vendor));
+        TL_LANGUAGES.with(|v| assert_eq!(*v.borrow(), profile.navigator.languages));
+        TL_DEVICE_MEMORY.with(|v| assert!((*v.borrow() - profile.navigator.device_memory).abs() < f64::EPSILON));
         TL_SCREEN_W.with(|v| assert_eq!(*v.borrow(), profile.screen.width));
         TL_SCREEN_H.with(|v| assert_eq!(*v.borrow(), profile.screen.height));
         TL_AVAIL_W.with(|v| assert_eq!(*v.borrow(), profile.screen.avail_width));
@@ -476,5 +621,49 @@ mod tests {
         set_profile(&profile);
         TL_WEBGL_VENDOR.with(|v| assert!(!v.borrow().is_empty()));
         TL_WEBGL_RENDERER.with(|v| assert!(!v.borrow().is_empty()));
+    }
+
+    // @trace REQ-STL-005 [req:REQ-STL-005] [level:unit]
+    #[test]
+    fn webgl_extensions_stored_chrome() {
+        let profile = StealthProfile::chrome_default();
+        set_profile(&profile);
+        TL_WEBGL_EXTENSIONS.with(|v| {
+            let exts = v.borrow();
+            assert!(!exts.is_empty(), "WebGL extensions must not be empty");
+            assert!(exts.contains(&"WEBGL_debug_renderer_info".to_string()),
+                "Extensions must contain WEBGL_debug_renderer_info");
+            assert_eq!(*exts, profile.webgl.extensions);
+        });
+    }
+
+    // @trace REQ-STL-005 [req:REQ-STL-005] [level:unit]
+    #[test]
+    fn webgl_extensions_stored_firefox() {
+        let profile = StealthProfile::firefox_default();
+        set_profile(&profile);
+        TL_WEBGL_EXTENSIONS.with(|v| {
+            let exts = v.borrow();
+            assert!(!exts.is_empty(), "WebGL extensions must not be empty");
+            assert!(exts.len() > profile.webgl.extensions.len() || exts.len() == profile.webgl.extensions.len());
+            assert_eq!(*exts, profile.webgl.extensions);
+        });
+    }
+
+    // @trace REQ-STL-005 [req:REQ-STL-005] [level:unit]
+    #[test]
+    fn webgl_extensions_differ_between_profiles() {
+        let chrome = StealthProfile::chrome_default();
+        set_profile(&chrome);
+        let ch_exts: Vec<String> = TL_WEBGL_EXTENSIONS.with(|v| v.borrow().clone());
+
+        let firefox = StealthProfile::firefox_default();
+        set_profile(&firefox);
+        let ff_exts: Vec<String> = TL_WEBGL_EXTENSIONS.with(|v| v.borrow().clone());
+
+        assert_ne!(ch_exts.len(), ff_exts.len(),
+            "Chrome and Firefox must have different extension counts");
+        assert!(ff_exts.len() > ch_exts.len(),
+            "Firefox should have more WebGL extensions than Chrome");
     }
 }

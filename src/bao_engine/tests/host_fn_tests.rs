@@ -235,5 +235,5 @@ fn test_host_fn_all() {
     let result = eval_string(&mut ctx, "typeof Reflect");
     assert_eq!(result, "object");
 
-    std::mem::forget(ctx);
+    bao_engine::context::JsContext::shutdown_thread_sm();
 }

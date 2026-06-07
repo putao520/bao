@@ -29,6 +29,7 @@ fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
 
 #[test]
 fn test_child_process_vm_module_zlib_deep() {
+    bao_runtime::install_exit_handler();
     bao_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bao_runtime::globals::install_all);
@@ -311,5 +312,5 @@ fn test_child_process_vm_module_zlib_deep() {
     "#);
     assert_eq!(large_rt, 10000.0, "gzip should preserve large content length, got: {}", large_rt);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

@@ -474,4 +474,9 @@ fn test_realworld_data_pipeline_all() {
 
     // Sanity: ensure the PathBuf is dropped cleanly (no leaked handles).
     let _: PathBuf = dir;
+
+    // Leak the JsContext to avoid mozjs GC/TLS destructor crash on drop.
+    // mozjs's C++ TLS teardown (mozilla::detail::MutexImpl) segfaults if
+    // the Runtime is dropped after JS_ShutDown — intentional skip.
+    bao_runtime::shutdown_thread_sm();
 }

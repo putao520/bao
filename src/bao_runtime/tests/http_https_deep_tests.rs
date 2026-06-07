@@ -185,5 +185,5 @@ fn test_http_https_deep() {
     }
     assert_eq!(fail, 0, "http/https deep tests had {} failures", fail);
     assert!(pass >= 30, "Expected at least 30 passes, got {}", pass);
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

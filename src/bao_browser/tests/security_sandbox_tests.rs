@@ -134,6 +134,9 @@ fn security_sandbox_verification() {
     // Phase 13: Advanced prototype chain / reflection attacks
     scenario_advanced_reflection_cross_realm_attacks(pool, &mut report);
 
+    // Phase 14: REQ-SEC-003 full lifecycle integration (multi-module sandbox verification)
+    scenario_sec003_full_lifecycle_sandbox(&runtime, &mut report);
+
     pool.close_all();
     report.finish();
 
@@ -1720,4 +1723,81 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
     }
 
     let _ = page.close();
+}
+
+// ---------------------------------------------------------------------------
+// REQ-SEC-003 Integration: Full lifecycle Node API sandbox verification
+// @trace TEST-SEC-003 [req:REQ-SEC-003] [level:integration]
+// Tests multi-module collaboration: BaoRuntime → PagePool → PageHandle → evaluate_js/evaluate_js_web
+// ---------------------------------------------------------------------------
+
+fn scenario_sec003_full_lifecycle_sandbox(runtime: &BaoRuntime, report: &mut Report) {
+    let name = "sec003_lifecycle";
+    let pool: &PagePool = runtime.page_pool();
+
+    // Step 1: Create page — Node APIs must NOT appear on page global
+    let page = match pool.create_page(&PageConfig {
+        url: Some("data:text/html,<html><body>sec003-lifecycle</body></html>".into()),
+        ..Default::default()
+    }) {
+        Ok(p) => p,
+        Err(e) => { report.skip(name, &format!("page creation: {e}")); return; }
+    };
+    wait_for_load(&page, 3000);
+
+    for api in ["require", "Buffer", "process", "Bun", "module", "__filename", "__dirname"] {
+        match page.evaluate_js_web(&format!("typeof {}", api)) {
+            Ok(s) if s == "undefined" => report.pass(&format!("{}::page_no_{}", name, api)),
+            Ok(s) => report.fail(&format!("{}::page_no_{}", name, api),
+                &format!("{} leaked to page global: typeof={}", api, s)),
+            Err(e) => report.skip(&format!("{}::page_no_{}", name, api), &format!("eval: {e}")),
+        }
+    }
+
+    // Step 2: evaluate_js (privileged) — Node APIs MUST work
+    match page.evaluate_js("typeof require !== 'undefined' ? 'yes' : 'no'") {
+        Ok(s) if s == "yes" => report.pass(&format!("{}::privileged_require", name)),
+        Ok(s) => report.fail(&format!("{}::privileged_require", name),
+            &format!("privileged context missing require: {}", s)),
+        Err(e) => report.skip(&format!("{}::privileged_require", name), &format!("eval: {e}")),
+    }
+
+    // Step 3: After evaluate_js, page global STILL must not have Node APIs
+    match page.evaluate_js_web("typeof require") {
+        Ok(s) if s == "undefined" => report.pass(&format!("{}::post_privileged_no_leak", name)),
+        Ok(s) => report.fail(&format!("{}::post_privileged_no_leak", name),
+            &format!("require leaked to page after evaluate_js: typeof={}", s)),
+        Err(e) => report.skip(&format!("{}::post_privileged_no_leak", name), &format!("eval: {e}")),
+    }
+
+    // Step 4: Web APIs still available in both contexts
+    for web_api in ["console", "fetch", "URL"] {
+        match page.evaluate_js_web(&format!("typeof {}", web_api)) {
+            Ok(s) if s != "undefined" => report.pass(&format!("{}::web_{}_available", name, web_api)),
+            Ok(_) => report.fail(&format!("{}::web_{}_available", name, web_api),
+                &format!("Web API {} missing from page context", web_api)),
+            Err(e) => report.skip(&format!("{}::web_{}_available", name, web_api), &format!("eval: {e}")),
+        }
+    }
+
+    // Step 5: Multi-page isolation — create second page, verify independent sandboxing
+    let page2 = match pool.create_page(&PageConfig {
+        url: Some("data:text/html,<html><body>page2</body></html>".into()),
+        ..Default::default()
+    }) {
+        Ok(p) => p,
+        Err(e) => { report.skip(&format!("{}::page2", name), &format!("page2 creation: {e}")); return; }
+    };
+    wait_for_load(&page2, 3000);
+
+    // Page 2 page global must not have Node APIs
+    match page2.evaluate_js_web("typeof require") {
+        Ok(s) if s == "undefined" => report.pass(&format!("{}::page2_no_require", name)),
+        Ok(s) => report.fail(&format!("{}::page2_no_require", name),
+            &format!("page2 leaked require: {}", s)),
+        Err(e) => report.skip(&format!("{}::page2_no_require", name), &format!("eval: {e}")),
+    }
+
+    let _ = page.close();
+    let _ = page2.close();
 }

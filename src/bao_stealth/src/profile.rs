@@ -4,7 +4,7 @@ use crate::http2::Http2Fingerprint;
 use crate::canvas::CanvasNoise;
 use crate::navigator::{NavigatorProfile, ScreenProfile};
 use crate::webgl_audio::{WebGLProfile, AudioProfile};
-use crate::behavior::BehaviorSimulator;
+use crate::behavior::{BehaviorConfig, BehaviorSimulator};
 
 #[derive(Debug, Clone)]
 pub struct StealthProfile {
@@ -28,7 +28,7 @@ impl StealthProfile {
             screen: ScreenProfile::default(),
             webgl: WebGLProfile::firefox(),
             audio: AudioProfile::new(42),
-            behavior: BehaviorSimulator::new(42),
+            behavior: BehaviorSimulator::with_config(42, BehaviorConfig::firefox()),
         }
     }
 
@@ -41,7 +41,7 @@ impl StealthProfile {
             screen: ScreenProfile::default(),
             webgl: WebGLProfile::chrome(),
             audio: AudioProfile::new(137),
-            behavior: BehaviorSimulator::new(137),
+            behavior: BehaviorSimulator::with_config(137, BehaviorConfig::chrome()),
         }
     }
 }
@@ -132,5 +132,26 @@ mod tests {
     fn chrome_screen_is_default_width() {
         let profile = StealthProfile::chrome_default();
         assert_eq!(profile.screen.width, 1920);
+    }
+
+    #[test]
+    fn firefox_and_chrome_behavior_produce_different_mouse_paths() {
+        let ff = StealthProfile::firefox_default();
+        let ch = StealthProfile::chrome_default();
+        let ff_path = ff.behavior.generate_human_mouse_path((0.0, 0.0), (200.0, 200.0), 20.0);
+        let ch_path = ch.behavior.generate_human_mouse_path((0.0, 0.0), (200.0, 200.0), 20.0);
+        assert_ne!(ff_path, ch_path, "Firefox and Chrome should produce different mouse paths");
+    }
+
+    #[test]
+    fn firefox_behavior_uses_firefox_config() {
+        let ff = StealthProfile::firefox_default();
+        // Firefox typing base interval = 95ms (higher than Chrome's 85ms)
+        let delays = ff.behavior.generate_typing_delays(50);
+        // Just verify it produces valid results with the Firefox config
+        assert!(!delays.is_empty());
+        for d in &delays {
+            assert!(*d > 0);
+        }
     }
 }

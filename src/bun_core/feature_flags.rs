@@ -67,13 +67,17 @@ pub const HELP_CATCH_MEMORY_ISSUES: bool = env::ENABLE_ASAN || env::IS_DEBUG;
 ///
 /// However, in the simple case, where you do something like
 ///
+/// ```text
 ///     exports.foo = 123;
 ///     exports.bar = 456;
+/// ```
 ///
 /// We can unwrap it into
 ///
+/// ```text
 ///    export const foo = 123;
 ///    export const bar = 456;
+/// ```
 ///
 /// 2) You import a CommonJS module using CommonJS.
 ///

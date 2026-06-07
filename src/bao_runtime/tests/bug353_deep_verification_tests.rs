@@ -100,5 +100,5 @@ fn test_bug354_stop_does_not_crash() {
     "#);
     assert_eq!(t6, "ok", "T6 concurrent servers: {}", t6);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

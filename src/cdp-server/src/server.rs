@@ -25,6 +25,9 @@ pub struct CdpServer {
     target_provider: Option<Arc<dyn TargetProvider>>,
     broadcaster: Arc<EventBroadcaster>,
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<CdpSession>>>>>,
+    /// Receiver for console messages forwarded from servo delegates.
+    /// Each message is (level, text) — e.g. ("info", "hello world").
+    console_rx: Option<std::sync::mpsc::Receiver<(String, String)>>,
 }
 
 impl CdpServer {
@@ -37,6 +40,7 @@ impl CdpServer {
             target_provider: None,
             broadcaster,
             sessions,
+            console_rx: None,
         }
     }
 
@@ -50,6 +54,12 @@ impl CdpServer {
 
     pub fn set_target_provider(&mut self, provider: Arc<dyn TargetProvider>) {
         self.target_provider = Some(provider);
+    }
+
+    /// Set the console message receiver. Messages are (level, text) tuples
+    /// forwarded from servo's show_console_message callbacks.
+    pub fn set_console_receiver(&mut self, rx: std::sync::mpsc::Receiver<(String, String)>) {
+        self.console_rx = Some(rx);
     }
 
     pub fn port(&self) -> u16 {
@@ -113,6 +123,184 @@ impl CdpServer {
                         if let Ok(mut s) = session.lock() {
                             s.finalize();
                         }
+                    }
+                }
+            }
+
+            // Drain console messages from servo delegates and broadcast as CDP events.
+            // Special prefixes are routed to domain-specific events:
+            //   __BAO_FETCH_INTERCEPT__ → Fetch.requestPaused
+            //   __BAO_NETWORK_REQUEST__ → Network.requestWillBeSent
+            //   __BAO_NETWORK_RESPONSE__ → Network.responseReceived
+            //   __BAO_NETWORK_LOADING_FAILED__ → Network.loadingFailed
+            //   __BAO_DEBUGGER_SCRIPT__ → Debugger.scriptParsed
+            // All others → Log.entryAdded
+            if let Some(ref rx) = self.console_rx {
+                while let Ok((level, text)) = rx.try_recv() {
+                    if let Some(payload) = text.strip_prefix("__BAO_FETCH_INTERCEPT__") {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                            self.broadcaster.send_event(
+                                "Fetch.requestPaused",
+                                serde_json::json!({
+                                    "requestId": info["id"],
+                                    "request": {
+                                        "url": info["url"],
+                                        "method": info["method"],
+                                        "headers": info.get("headers").unwrap_or(&serde_json::json!({})),
+                                    },
+                                    "resourceType": info.get("resourceType").unwrap_or(&serde_json::json!("Other")),
+                                    "networkStage": "Request",
+                                }),
+                            );
+                        }
+                    } else if let Some(payload) = text.strip_prefix("__BAO_NETWORK_REQUEST__") {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                            self.broadcaster.send_event(
+                                "Network.requestWillBeSent",
+                                serde_json::json!({
+                                    "requestId": info["id"],
+                                    "request": info.get("request").cloned().unwrap_or(serde_json::json!({
+                                        "url": info["url"],
+                                        "method": info["method"],
+                                    })),
+                                    "timestamp": info.get("timestamp").cloned().unwrap_or(serde_json::json!(0.0)),
+                                    "type": info.get("type").cloned().unwrap_or(serde_json::json!("Other")),
+                                }),
+                            );
+                        }
+                    } else if let Some(payload) = text.strip_prefix("__BAO_NETWORK_RESPONSE__") {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                            self.broadcaster.send_event(
+                                "Network.responseReceived",
+                                serde_json::json!({
+                                    "requestId": info["id"],
+                                    "response": {
+                                        "url": info["url"],
+                                        "status": info["status"],
+                                        "statusText": info["statusText"],
+                                        "headers": info.get("headers").unwrap_or(&serde_json::json!({})),
+                                    },
+                                    "timestamp": info.get("timestamp").cloned().unwrap_or(serde_json::json!(0.0)),
+                                    "type": info.get("type").cloned().unwrap_or(serde_json::json!("Other")),
+                                }),
+                            );
+                            self.broadcaster.send_event(
+                                "Network.loadingFinished",
+                                serde_json::json!({
+                                    "requestId": info["id"],
+                                    "timestamp": info.get("timestamp").cloned().unwrap_or(serde_json::json!(0.0)),
+                                }),
+                            );
+                        }
+                    } else if let Some(payload) = text.strip_prefix("__BAO_NETWORK_LOADING_FAILED__") {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                            self.broadcaster.send_event(
+                                "Network.loadingFailed",
+                                serde_json::json!({
+                                    "requestId": info["id"],
+                                    "type": info.get("type").cloned().unwrap_or(serde_json::json!("Other")),
+                                    "errorText": "Network error",
+                                    "timestamp": info.get("timestamp").cloned().unwrap_or(serde_json::json!(0.0)),
+                                }),
+                            );
+                        }
+                    } else if let Some(payload) = text.strip_prefix("__BAO_DEBUGGER_SCRIPT__") {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                            self.broadcaster.send_event(
+                                "Debugger.scriptParsed",
+                                serde_json::json!({
+                                    "scriptId": info["id"],
+                                    "url": info["url"],
+                                    "startLine": info.get("startLine").unwrap_or(&serde_json::json!(0)),
+                                    "endLine": info.get("endLine").unwrap_or(&serde_json::json!(0)),
+                                }),
+                            );
+                        }
+                    } else if let Some(payload) = text.strip_prefix("__BAO_RUNTIME_EXCEPTION__") {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                            self.broadcaster.send_event(
+                                "Runtime.exceptionThrown",
+                                serde_json::json!({
+                                    "timestamp": info.get("timestamp").unwrap_or(&serde_json::json!(0.0)),
+                                    "exceptionDetails": {
+                                        "text": info.get("text").unwrap_or(&serde_json::json!("")),
+                                        "url": info.get("url").unwrap_or(&serde_json::json!("")),
+                                        "lineNumber": info.get("line").unwrap_or(&serde_json::json!(0)),
+                                        "columnNumber": info.get("column").unwrap_or(&serde_json::json!(0)),
+                                        "stackTrace": info.get("stackTrace").unwrap_or(&serde_json::json!(null)),
+                                    },
+                                }),
+                            );
+                        }
+                    } else if let Some(payload) = text.strip_prefix("__BAO_PAGE_LOAD__") {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                            self.broadcaster.send_event(
+                                "Page.loadEventFired",
+                                serde_json::json!({
+                                    "timestamp": info.get("timestamp").unwrap_or(&serde_json::json!(0.0)),
+                                }),
+                            );
+                        }
+                    } else if let Some(payload) = text.strip_prefix("__BAO_DEBUGGER_PAUSE__") {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                            self.broadcaster.send_event(
+                                "Debugger.paused",
+                                serde_json::json!({
+                                    "callFrames": info.get("callFrames").unwrap_or(&serde_json::json!([])),
+                                    "reason": info.get("reason").unwrap_or(&serde_json::json!("other")),
+                                    "hitBreakpoints": info.get("hitBreakpoints").unwrap_or(&serde_json::json!([])),
+                                }),
+                            );
+                        }
+                    } else if !text.starts_with("__BAO_") {
+                        // Non-prefixed console messages → Runtime.consoleAPICalled
+                        self.broadcaster.send_event(
+                            "Runtime.consoleAPICalled",
+                            serde_json::json!({
+                                "type": match level.as_str() {
+                                    "debug" => "debug",
+                                    "info" => "info",
+                                    "warning" => "warning",
+                                    "error" => "error",
+                                    "verbose" => "verbose",
+                                    _ => "log",
+                                },
+                                "args": [serde_json::json!(text)],
+                                "timestamp": std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis() as f64,
+                            }),
+                        );
+                        self.broadcaster.send_event(
+                            "Log.entryAdded",
+                            serde_json::json!({
+                                "entry": {
+                                    "source": "javascript",
+                                    "level": level,
+                                    "text": text,
+                                    "timestamp": std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as f64,
+                                }
+                            }),
+                        );
+                    } else {
+                        self.broadcaster.send_event(
+                            "Log.entryAdded",
+                            serde_json::json!({
+                                "entry": {
+                                    "source": "javascript",
+                                    "level": level,
+                                    "text": text,
+                                    "timestamp": std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_millis() as f64,
+                                }
+                            }),
+                        );
                     }
                 }
             }
@@ -325,5 +513,105 @@ mod tests {
         let server = CdpServer::new(ServerConfig::default());
         let _registry = server.registry();
         let _broadcaster = server.broadcaster();
+    }
+
+    // --- Console receiver tests (REQ-CDP-007) ---
+
+    #[test]
+    fn cdp_server_default_has_no_console_receiver() {
+        let server = CdpServer::new(ServerConfig::default());
+        assert!(server.console_rx.is_none());
+    }
+
+    #[test]
+    fn cdp_server_set_console_receiver_stores_receiver() {
+        let mut server = CdpServer::new(ServerConfig::default());
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        server.set_console_receiver(rx);
+        assert!(server.console_rx.is_some());
+        // Send a message through the channel
+        tx.send(("info".into(), "hello".into())).unwrap();
+        let (level, text) = server.console_rx.as_ref().unwrap().try_recv().unwrap();
+        assert_eq!(level, "info");
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn cdp_server_console_rx_drain_multiple_messages() {
+        let mut server = CdpServer::new(ServerConfig::default());
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        server.set_console_receiver(rx);
+        tx.send(("info".into(), "msg1".into())).unwrap();
+        tx.send(("error".into(), "msg2".into())).unwrap();
+        tx.send(("warning".into(), "msg3".into())).unwrap();
+        let rx_ref = server.console_rx.as_ref().unwrap();
+        let mut messages = Vec::new();
+        while let Ok((level, text)) = rx_ref.try_recv() {
+            messages.push((level, text));
+        }
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0], ("info".into(), "msg1".into()));
+        assert_eq!(messages[1], ("error".into(), "msg2".into()));
+        assert_eq!(messages[2], ("warning".into(), "msg3".into()));
+    }
+
+    #[test]
+    fn cdp_server_console_rx_runtime_exception_prefix() {
+        let mut server = CdpServer::new(ServerConfig::default());
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        server.set_console_receiver(rx);
+        tx.send(("error".into(), "__BAO_RUNTIME_EXCEPTION__{\"text\":\"TypeError: x is not a function\",\"url\":\"test.js\",\"line\":10,\"column\":5}".into())).unwrap();
+        let rx_ref = server.console_rx.as_ref().unwrap();
+        let (level, text) = rx_ref.try_recv().unwrap();
+        assert!(text.starts_with("__BAO_RUNTIME_EXCEPTION__"));
+    }
+
+    #[test]
+    fn cdp_server_console_rx_page_load_prefix() {
+        let mut server = CdpServer::new(ServerConfig::default());
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        server.set_console_receiver(rx);
+        tx.send(("info".into(), "__BAO_PAGE_LOAD__{\"timestamp\":12345.0}".into())).unwrap();
+        let rx_ref = server.console_rx.as_ref().unwrap();
+        let (level, text) = rx_ref.try_recv().unwrap();
+        assert!(text.starts_with("__BAO_PAGE_LOAD__"));
+    }
+
+    #[test]
+    fn cdp_server_console_rx_debugger_pause_prefix() {
+        let mut server = CdpServer::new(ServerConfig::default());
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        server.set_console_receiver(rx);
+        tx.send(("info".into(), "__BAO_DEBUGGER_PAUSE__{\"reason\":\"breakpoint\",\"callFrames\":[]}".into())).unwrap();
+        let rx_ref = server.console_rx.as_ref().unwrap();
+        let (level, text) = rx_ref.try_recv().unwrap();
+        assert!(text.starts_with("__BAO_DEBUGGER_PAUSE__"));
+    }
+
+    #[test]
+    fn cdp_server_console_rx_known_bao_prefixes_are_recognized() {
+        let mut server = CdpServer::new(ServerConfig::default());
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        server.set_console_receiver(rx);
+        let prefixes = vec![
+            "__BAO_NETWORK_REQUEST__{}",
+            "__BAO_NETWORK_RESPONSE__{}",
+            "__BAO_NETWORK_LOADING_FAILED__{}",
+            "__BAO_FETCH_INTERCEPT__{}",
+            "__BAO_DEBUGGER_SCRIPT__{}",
+            "__BAO_RUNTIME_EXCEPTION__{}",
+            "__BAO_PAGE_LOAD__{}",
+            "__BAO_DEBUGGER_PAUSE__{}",
+        ];
+        for msg in &prefixes {
+            tx.send(("info".into(), msg.to_string())).unwrap();
+        }
+        let rx_ref = server.console_rx.as_ref().unwrap();
+        let mut count = 0;
+        while let Ok((_, text)) = rx_ref.try_recv() {
+            assert!(text.starts_with("__BAO_"));
+            count += 1;
+        }
+        assert_eq!(count, 8);
     }
 }

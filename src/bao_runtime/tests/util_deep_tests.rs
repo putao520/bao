@@ -143,5 +143,5 @@ fn test_util_deep() {
         results
     );
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

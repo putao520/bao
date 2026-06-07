@@ -24,14 +24,18 @@ pub use network::NetworkHandler;
 pub use debugger::DebuggerHandler;
 pub use emulation::EmulationHandler;
 pub use input::InputHandler;
+pub use css::CssHandler;
+pub use overlay::OverlayHandler;
+pub use log_domain::LogHandler;
+pub use fetch_domain::FetchHandler;
 
 /// Register all CDP domain handlers into an existing DomainRegistry.
 pub fn register_all_domains_into(bridge: BridgeSender, registry: &DomainRegistry) {
     registry.register(Box::new(page::PageHandler::new(bridge.clone()))).expect("register Page");
     registry.register(Box::new(runtime::RuntimeHandler::new(bridge.clone()))).expect("register Runtime");
     registry.register(Box::new(dom::DomHandler::new(bridge.clone()))).expect("register DOM");
-    registry.register(Box::new(network::NetworkHandler)).expect("register Network");
-    registry.register(Box::new(debugger::DebuggerHandler)).expect("register Debugger");
+    registry.register(Box::new(network::NetworkHandler::new(bridge.clone()))).expect("register Network");
+    registry.register(Box::new(debugger::DebuggerHandler::new(bridge.clone()))).expect("register Debugger");
     registry.register(Box::new(input::InputHandler::new(bridge.clone()))).expect("register Input");
     registry.register(Box::new(emulation::EmulationHandler::new(bridge.clone()))).expect("register Emulation");
     registry.register(Box::new(css::CssHandler::new(bridge.clone()))).expect("register CSS");

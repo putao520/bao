@@ -61,9 +61,16 @@ use bun_event_loop::MiniEventLoop::MiniEventLoop;
 pub struct BaoEventLoop {
     inner: RefCell<Option<MiniEventLoop<'static>>>,
     /// Reentrancy counter for `enter()` / `exit()` (JSC parity).
-    /// Wave 73-E reads it; 73-G integration may decrement on `exit()` to
-    /// trigger tear-down when depth reaches zero.
     enter_depth: Cell<u32>,
+    /// KeepAlive ref count. When > 0, the event loop has outstanding async work
+    /// and should not exit. Mirrors JSC's `m_pendingRefCount`.
+    pending_unref_count: Cell<u32>,
+    /// Whether auto-tick is enabled. When true, the event loop automatically
+    /// ticks after each JS callback (draining microtasks + polling I/O).
+    auto_tick_enabled: Cell<bool>,
+    /// Registered SpiderMonkey `JSContext*`. Set by `register_js_context()`
+    /// when `JsContext` is created on this thread. Null before registration.
+    js_context: Cell<*mut core::ffi::c_void>,
 }
 
 impl BaoEventLoop {
@@ -73,6 +80,9 @@ impl BaoEventLoop {
         Self {
             inner: const { RefCell::new(None) },
             enter_depth: const { Cell::new(0) },
+            pending_unref_count: const { Cell::new(0) },
+            auto_tick_enabled: const { Cell::new(false) },
+            js_context: const { Cell::new(core::ptr::null_mut()) },
         }
     }
 
@@ -88,6 +98,13 @@ impl BaoEventLoop {
         core::cell::RefMut::map(guard, |opt| {
             opt.as_mut().expect("just initialized")
         })
+    }
+
+    /// Register a SpiderMonkey `JSContext*` on this thread's event loop.
+    /// Called by `JsContext::init_runtime()` / `JsContext::for_test()`.
+    pub fn register_js_context(cx: *mut core::ffi::c_void) {
+        let cell = Self::current();
+        cell.js_context.set(cx);
     }
 
     /// Thread-local accessor matching JSC's `VirtualMachine::get()` semantics.
@@ -138,16 +155,22 @@ bun_io::link_impl_EventLoopCtx! {
             unsafe { MiniEventLoop::file_polls_raw(inner_ptr) }
         },
         increment_pending_unref_counter() => {
+            let cell = BaoEventLoop::current();
+            let count = cell.pending_unref_count.get();
+            cell.pending_unref_count.set(count.saturating_add(1));
             let _ = this;
-            panic!("increment_pending_unref_counter: SpiderMonkey KeepAlive not wired until Wave 73-G");
         },
         ref_concurrently() => {
+            let cell = BaoEventLoop::current();
+            let count = cell.pending_unref_count.get();
+            cell.pending_unref_count.set(count.saturating_add(1));
             let _ = this;
-            panic!("ref_concurrently: SpiderMonkey KeepAlive not wired until Wave 73-G");
         },
         unref_concurrently() => {
+            let cell = BaoEventLoop::current();
+            let count = cell.pending_unref_count.get();
+            cell.pending_unref_count.set(count.saturating_sub(1));
             let _ = this;
-            panic!("unref_concurrently: SpiderMonkey KeepAlive not wired until Wave 73-G");
         },
         after_event_loop_callback() => {
             let cell = BaoEventLoop::current();
@@ -235,29 +258,41 @@ bun_event_loop::link_impl_JsEventLoop! {
         },
         tick() => {
             let cell = BaoEventLoop::current();
+            let cx = cell.js_context.get();
             let mut guard = cell.ensure_inner();
-            // No SpiderMonkey-driven tick callback yet (73-G integration).
-            // Tick the uSockets loop with a null context.
-            guard.tick(core::ptr::null_mut(), |_| false);
+            guard.tick_once(cx);
+            // Drain SpiderMonkey microtasks (Promise callbacks, queueMicrotask).
+            if !cx.is_null() {
+                unsafe {
+                    mozjs::jsapi::js::RunJobs(cx as *mut mozjs::jsapi::JSContext);
+                }
+            }
         },
         auto_tick() => {
+            let cell = BaoEventLoop::current();
+            cell.auto_tick_enabled.set(true);
             let _ = this;
-            // SpiderMonkey auto-tick not wired (73-G integration).
         },
         auto_tick_active() => {
+            let cell = BaoEventLoop::current();
+            cell.auto_tick_enabled.get();
             let _ = this;
-            // No SpiderMonkey auto-tick wiring (73-G integration).
         },
         global_object() => {
-            let _ = this;
-            // SpiderMonkey global object pointer — registered in 73-G when
-            // bao_runtime JsContext wires its global into BaoEventLoop.
-            core::ptr::null_mut()
+            let cell = BaoEventLoop::current();
+            let cx = cell.js_context.get();
+            if cx.is_null() {
+                let _ = this;
+                return core::ptr::null_mut();
+            }
+            unsafe {
+                mozjs::jsapi::JS::CurrentGlobalOrNull(cx as *mut mozjs::jsapi::JSContext)
+                    .cast()
+            }
         },
         bun_vm() => {
-            let _ = this;
-            // SpiderMonkey VM wrapper — registered in 73-G.
-            core::ptr::null_mut()
+            let cell = BaoEventLoop::current();
+            cell.js_context.get().cast()
         },
         stdout() => {
             let cell = BaoEventLoop::current();

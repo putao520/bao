@@ -358,5 +358,5 @@ fn test_child_process_deep() {
     assert!(module_keys.contains("execSync"), "child_process should have execSync, got: {}", module_keys);
     assert!(module_keys.contains("spawnSync"), "child_process should have spawnSync, got: {}", module_keys);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

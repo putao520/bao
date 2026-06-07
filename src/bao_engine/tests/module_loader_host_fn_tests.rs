@@ -802,5 +802,5 @@ fn test_module_loader_host_fn_all() {
     assert_eq!(eval_number(&mut ctx, "sumAll(1, 2, 3)"), 6.0);
     assert_eq!(eval_number(&mut ctx, "sumAll(3, 2, 1)"), 6.0);
 
-    std::mem::forget(ctx);
+    bao_engine::context::JsContext::shutdown_thread_sm();
 }

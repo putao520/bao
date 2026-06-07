@@ -146,21 +146,11 @@ impl PageInner {
         };
 
         if node_global.is_null() {
-            // Node Realm not initialized — fallback to IIFE injection
-            let wrapped = format!(
-                "(function(require, process, Buffer, Bun, __dirname, __filename) {{ \
-                   'use strict'; \
-                   return ({script}); \
-                 }})( \
-                   typeof require !== 'undefined' ? require : undefined, \
-                   typeof process !== 'undefined' ? process : undefined, \
-                   typeof Buffer !== 'undefined' ? Buffer : undefined, \
-                   typeof Bun !== 'undefined' ? Bun : undefined, \
-                   typeof __dirname !== 'undefined' ? __dirname : '/', \
-                   typeof __filename !== 'undefined' ? __filename : '/index.js' \
-                 )"
-            );
-            return self.evaluate_js_web(&wrapped);
+            // Node Realm must be initialized at page creation (PagePool::create_page).
+            // If we reach here, it's a programming error, not a lazy-init scenario.
+            return Err(BrowserError::JavaScript(
+                "Node Realm not initialized — this is a bug, eager init failed".into(),
+            ));
         }
 
         // Execute via Node Realm
@@ -275,6 +265,10 @@ impl PageHandle {
         );
 
         let webview_state = Rc::new(RefCell::new(BaoWebViewState::default()));
+        // Propagate console log channel from servo delegate to per-webview state
+        if let Some(tx) = servo_delegate.console_log_tx() {
+            webview_state.borrow_mut().console_log_tx = Some(tx);
+        }
         let webview_delegate = Rc::new(BaoWebViewDelegate::new(Rc::clone(&webview_state), viewport));
         let state = Rc::new(RefCell::new(PageState::Created));
 
@@ -363,6 +357,8 @@ impl PageHandle {
         self.with_inner(|inner| inner.drain_callbacks())
     }
 
+    /// Evaluate JS with Node API injection (trusted context).
+    /// Node Realm is eagerly initialized at page creation time (REQ-SEC-002).
     pub fn evaluate_js(&self, script: &str) -> Result<String, BrowserError> {
         self.with_inner(|inner| inner.evaluate_js(script))
     }
@@ -637,10 +633,10 @@ mod tests {
             func_body.contains("evaluate_js_via_node_realm"),
             "REQ-SEC-002 REGRESSION: evaluate_js must use Node Realm execution"
         );
-        // Must have IIFE fallback when Node Realm not initialized
+        // Must detect null Node Realm as programming error (eager init at create_page)
         assert!(
-            func_body.contains("(function(require, process, Buffer, Bun, __dirname, __filename)"),
-            "REQ-SEC-002 REGRESSION: evaluate_js must have IIFE fallback"
+            func_body.contains("eager init failed"),
+            "REQ-SEC-002 REGRESSION: evaluate_js must detect uninitialized Node Realm"
         );
     }
 

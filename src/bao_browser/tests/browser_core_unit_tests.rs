@@ -181,6 +181,7 @@ fn test_permission_all_restricted() {
         net: Some(vec![]),
         env: Some(false),
         run: Some(false),
+    ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -199,6 +200,7 @@ fn test_permission_partial_restrictions() {
         net: Some(vec!["api.example.com".into()]),
         env: None,
         run: Some(false),
+    ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -219,6 +221,7 @@ fn test_permission_exact_path_match() {
         net: None,
         env: None,
         run: None,
+    ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.check_read("/exact/path").is_ok());

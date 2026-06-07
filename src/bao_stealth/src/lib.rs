@@ -16,7 +16,7 @@ pub use http2::Http2Fingerprint;
 pub use canvas::CanvasNoise;
 pub use navigator::{NavigatorProfile, ScreenProfile};
 pub use webgl_audio::{WebGLProfile, AudioProfile};
-pub use behavior::BehaviorSimulator;
+pub use behavior::{BehaviorConfig, BehaviorSimulator, ClickEventType, ClickEvent, TypingEvent};
 
 pub struct StealthEngine {
     profile: StealthProfile,

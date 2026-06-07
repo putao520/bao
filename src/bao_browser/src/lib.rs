@@ -90,6 +90,12 @@ impl BaoRuntime {
         self.servo.spin_event_loop();
     }
 
+    /// Set the console log forwarding channel on the servo delegate.
+    /// Console messages from servo will be sent to this channel.
+    pub fn set_console_log_channel(&self, tx: std::sync::mpsc::Sender<(String, String)>) {
+        self.delegate.set_console_log_tx(tx);
+    }
+
     pub fn run(&self) -> Result<(), BrowserError> {
         let max_wait = Duration::from_secs(300);
         let start = std::time::Instant::now();
@@ -161,6 +167,10 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         // Create bridge channel for CDP <-> servo communication
         let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
 
+        // Create console log forwarding channel: servo delegate → CDP Log domain
+        let (console_tx, console_rx) = std::sync::mpsc::channel::<(String, String)>();
+        runtime.set_console_log_channel(console_tx);
+
         let handle = std::thread::spawn(move || {
             let config = ServerConfig::builder()
                 .host("127.0.0.1")
@@ -176,6 +186,7 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
                 ServoTargetProvider::new(bridge_tx, target_id, "127.0.0.1".into(), port)
             );
             server.set_target_provider(provider);
+            server.set_console_receiver(console_rx);
             let _ = server.run();
         });
 

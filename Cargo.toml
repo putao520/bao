@@ -70,6 +70,8 @@ members = [
     "src/paths",
     "src/sys",
     "src/collections",
+    "src/lshpack_sys",
+    "src/lsquic_sys",
 ]
 
 [workspace.package]
@@ -81,6 +83,8 @@ repository = "https://github.com/user/bao"
 [workspace.dependencies]
 mozjs = { path = "../mozjs/mozjs" }
 mozjs_sys = { path = "../mozjs/mozjs-sys" }
+bao_native_stubs = { path = "src/bao_native_stubs" }
+bao_uloop = { path = "src/bao_uloop" }
 
 # ─── External deps (from Bun upstream) ──────────────────────────────────────
 rust-argon2 = "3.0"
@@ -183,6 +187,8 @@ bun_ast_jsc = { path = "src/ast_jsc" }
 bun_boringssl = { path = "src/boringssl" }
 bun_boringssl_sys = { path = "src/boringssl_sys" }
 bun_brotli_sys = { path = "src/brotli_sys" }
+bun_lshpack_sys = { path = "src/lshpack_sys" }
+bun_lsquic_sys = { path = "src/lsquic_sys" }
 bun_bundler_jsc = { path = "src/bundler_jsc" }
 bun_cares_sys = { path = "src/cares_sys" }
 bun_css_jsc = { path = "src/css_jsc" }
@@ -210,6 +216,22 @@ lto = "fat"
 codegen-units = 1
 debug = "line-tables-only"
 strip = "none"
+
+# Debug builds: line-tables-only instead of full DWARF to save disk.
+# Single binary drops from ~1.7GB to ~200MB. Stack traces still work.
+[profile.dev]
+debug = 1
+
+# Test profile: inherit dev's debug=1, strip symbols for test binaries.
+[profile.test]
+debug = 1
+
+# CI / bulk test profile: optimized + stripped for minimal binary size.
+# Usage: cargo test --profile test-ci
+[profile.test-ci]
+inherits = "test"
+opt-level = 2
+strip = true
 
 [workspace.lints.rust]
 # Every rustc warning is an error. Individual lints below can override this

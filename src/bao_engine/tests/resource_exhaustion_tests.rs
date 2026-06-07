@@ -252,4 +252,6 @@ fn resource_exhaustion() {
     let total = passed + failed;
     println!("─── {passed}/{total} passed, {failed}/{total} failed ───");
     assert_eq!(failed, 0, "{failed} test(s) failed out of {total}");
+
+    JsContext::shutdown_thread_sm();
 }

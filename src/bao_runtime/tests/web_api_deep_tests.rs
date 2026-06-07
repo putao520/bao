@@ -572,5 +572,5 @@ fn test_web_api_deep() {
     assert_eq!(fail, 0, "web_api deep tests had {} failures", fail);
     assert!(pass >= 30, "Expected at least 30 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

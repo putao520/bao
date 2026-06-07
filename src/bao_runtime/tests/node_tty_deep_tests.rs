@@ -230,5 +230,5 @@ fn test_node_tty_deep() {
     assert_eq!(fail, 0, "node_tty deep tests had {} failures", fail);
     assert!(pass >= 15, "Expected at least 15 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

@@ -295,8 +295,33 @@ WebSocket Client (Playwright)
 <h2>§7 时序约束</h2>
 <!-- ============================================================ -->
 
-<div id="tmg-cdp-1" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms" data-req-ref="REQ-CDP-001" data-api-ref="CDP.*">
+<section data-req-domain="CDP" data-req-status="approved" data-req-category="business" data-api-ref="CDP.*" data-timing-constraint="max_latency_ms" data-timing="CDPResponseTime" data-req-ref="REQ-CDP-001" data-req="REQ-CDP-001" id="tmg-cdp-1">
 <h3>TMG-CDP-001: CDP 命令响应时序</h3>
+<script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script>
 <script type="application/ld+json">
 {
   "@type": "TimingConstraint",
@@ -314,10 +339,37 @@ WebSocket Client (Playwright)
   }
 }
 </script>
-</div>
+</section>
 
-<div id="tmg-loop-1" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms" data-req-ref="REQ-ENG-004" data-api-ref="EventLoop.tick">
+<section data-req-domain="ENG" data-req-status="approved" data-req-category="business" data-api-ref="EventLoop.tick" data-timing-constraint="max_interval_ms" data-timing="EventLoopTick" data-req-ref="REQ-ENG-004" data-req="REQ-ENG-004" id="tmg-loop-1">
 <h3>TMG-LOOP-001: Event Loop Tick 时序</h3>
+<script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "ticks_executed": {
+        "type": "integer"
+      },
+      "timers_fired": {
+        "type": "integer"
+      },
+      "duration_ms": {
+        "type": "float"
+      }
+    }
+  },
+  "request": {
+    "max_ticks": {
+      "type": "integer"
+    },
+    "timeout_ms": {
+      "type": "integer"
+    }
+  }
+}
+</script>
 <script type="application/ld+json">
 {
   "@type": "TimingConstraint",
@@ -334,7 +386,7 @@ WebSocket Client (Playwright)
   }
 }
 </script>
-</div>
+</section>
 
 <!-- ============================================================ -->
 <h2>§8 线程模型与数据流</h2>

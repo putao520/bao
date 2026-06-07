@@ -40,6 +40,7 @@ unsafe fn install_test_globals(
 
 #[test]
 fn test_promise_async_deep() {
+    bao_runtime::install_exit_handler();
     bao_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(install_test_globals);
@@ -287,5 +288,5 @@ fn test_promise_async_deep() {
             instanceof Promise
     "#), "catch chain should recover");
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

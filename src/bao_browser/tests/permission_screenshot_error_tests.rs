@@ -136,6 +136,7 @@ fn test_permission_clone() {
         net: Some(vec!["h.com".into()]),
         env: Some(false),
         run: Some(false),
+    ..Default::default()
     };
     let cloned = perm.clone();
     assert!(cloned.is_read_allowed("/r/file"));
@@ -221,6 +222,7 @@ fn test_guard_all_restricted() {
         net: Some(vec![]),
         env: Some(false),
         run: Some(false),
+        ..Default::default()
     });
     assert!(guard.check_read("/x").is_err());
     assert!(guard.check_write("/x").is_err());

@@ -11,3 +11,6 @@ license = "MIT"
 [dependencies]
 bun_uws_sys = { path = "../uws_sys" }
 libc = "0.2"
+
+[dev-dependencies]
+bao_native_stubs = { path = "../bao_native_stubs" }

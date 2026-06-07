@@ -66,10 +66,29 @@ impl DomainHandler for PageHandler {
                 bridge_send(&self.bridge, BridgeCommand::TakeScreenshot { format, quality })
             }
             "Page.setContent" | "Page.close" | "Page.bringToFront" => Ok(json!({})),
-            "Page.getLayoutMetrics" => Ok(json!({
-                "contentSize": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
-                "cssContentSize": { "x": 0, "y": 0, "width": 1920, "height": 1080 }
-            })),
+            "Page.getLayoutMetrics" => {
+                let js = r#"(function() { return JSON.stringify({
+                    width: window.innerWidth || document.documentElement.clientWidth || 1920,
+                    height: window.innerHeight || document.documentElement.clientHeight || 1080
+                }); })()"#;
+                let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    expression: js.to_string(),
+                    return_by_value: true,
+                });
+                let (w, h) = resp.result.ok()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .map(|v| {
+                        let w = v["width"].as_f64().unwrap_or(1920.0);
+                        let h = v["height"].as_f64().unwrap_or(1080.0);
+                        (w, h)
+                    })
+                    .unwrap_or((1920.0, 1080.0));
+                Ok(json!({
+                    "contentSize": { "x": 0, "y": 0, "width": w, "height": h },
+                    "cssContentSize": { "x": 0, "y": 0, "width": w, "height": h }
+                }))
+            }
             "Page.addScriptToEvaluateOnNewDocument" => {
                 let source = param_str(&params, "source");
                 if !source.is_empty() {
@@ -121,6 +140,7 @@ mod tests {
                     BridgeCommand::GetUrl => BridgeResponse { result: Ok(json!("https://example.com")) },
                     BridgeCommand::TakeScreenshot { .. } => BridgeResponse { result: Ok(json!({"data": "base64data"})) },
                     BridgeCommand::AddScriptToEvaluateOnNewDocument { .. } => BridgeResponse { result: Ok(json!({})) },
+                    BridgeCommand::EvaluateJs { .. } => BridgeResponse { result: Ok(json!(r#"{"width":1920,"height":1080}"#)) },
                     _ => BridgeResponse { result: Ok(json!({})) },
                 });
                 std::thread::sleep(std::time::Duration::from_millis(5));
@@ -171,12 +191,14 @@ mod tests {
 
     #[test]
     fn get_layout_metrics_returns_dimensions() {
-        let (handler, _rx) = setup();
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
         let result = handler.handle_command("Page.getLayoutMetrics", json!({}), &NoopSender).unwrap();
-        assert_eq!(result["contentSize"]["width"], 1920);
-        assert_eq!(result["contentSize"]["height"], 1080);
-        assert_eq!(result["cssContentSize"]["width"], 1920);
-        assert_eq!(result["cssContentSize"]["height"], 1080);
+        assert_eq!(result["contentSize"]["width"].as_f64().unwrap(), 1920.0);
+        assert_eq!(result["contentSize"]["height"].as_f64().unwrap(), 1080.0);
+        assert_eq!(result["cssContentSize"]["width"].as_f64().unwrap(), 1920.0);
+        assert_eq!(result["cssContentSize"]["height"].as_f64().unwrap(), 1080.0);
+        responder.join().unwrap();
     }
 
     #[test]

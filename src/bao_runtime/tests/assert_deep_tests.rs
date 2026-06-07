@@ -403,5 +403,5 @@ fn test_assert_deep() {
         }
     }
     assert!(all_passed, "All assert deep tests should pass. Results: {}", results);
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

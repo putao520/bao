@@ -338,5 +338,5 @@ fn test_node_async_hooks_deep() {
     assert_eq!(fail, 0, "node async_hooks deep tests had {} failures", fail);
     assert!(pass >= 35, "Expected at least 35 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

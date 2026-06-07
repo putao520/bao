@@ -508,5 +508,5 @@ fn test_bun_test_deep() {
     assert_eq!(fail, 0, "bun_test deep tests had {} failures", fail);
     assert!(pass >= 25, "Expected at least 25 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

@@ -9528,3 +9528,15 @@ mod owned_handle_tests {
         let _ = Dir::open(&tmp).map(|d| d.delete_tree(b"."));
     }
 }
+
+/// Force the linker to include all `#[no_mangle]` dispatch symbols.
+/// Called from dependent crate test harnesses to prevent link GC.
+#[inline(never)]
+pub fn force_link() {
+    // Reference the dispatch symbols through thin pointer casts.
+    // The linker must keep the object files containing them.
+    unsafe extern "C" {
+        fn __bun_dispatch__OutputSink__Sys__stderr(_: *mut core::ffi::c_void) -> bun_core::output::File;
+    }
+    let _ = __bun_dispatch__OutputSink__Sys__stderr as *const () as usize;
+}

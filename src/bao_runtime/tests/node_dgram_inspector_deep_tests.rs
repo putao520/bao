@@ -257,5 +257,5 @@ fn test_node_dgram_inspector_deep() {
     assert_eq!(fail, 0, "node dgram/inspector deep tests had {} failures", fail);
     assert!(pass >= 30, "Expected at least 30 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

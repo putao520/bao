@@ -1,0 +1,2251 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - generic:
+      - generic [ref=e3]:
+        - heading "南京" [level=2] [ref=e4]
+        - generic [ref=e5]:
+          - text: "["
+          - link "切换城市" [ref=e6] [cursor=pointer]:
+            - /url: //www.58.com/changecity.html?fullpath=0
+          - text: "]"
+      - generic [ref=e7]:
+        - generic [ref=e8]:
+          - link "登录" [ref=e9] [cursor=pointer]:
+            - /url: https://passport.58.com/login/?path=https%3A%2F%2Fnj.58.com%2F&source=58-homepage-pc
+          - text: "|"
+          - link "注册" [ref=e10] [cursor=pointer]:
+            - /url: https://passport.58.com/reg/?path=https%3A%2F%2Fnj.58.com%2F&source=58-homepage-pc
+        - link "个人中心" [ref=e12] [cursor=pointer]:
+          - /url: https://my.58.com/index?pp=topbar
+        - link "商家中心" [ref=e15] [cursor=pointer]:
+          - /url: https://vip.58.com/vcenter/myinfo/
+        - link "帮助中心" [ref=e18] [cursor=pointer]:
+          - /url: https://helps.58.com/base/home?siteId=5601&terminal=PC&sourceType=58pc-zz-khbz
+        - link "联系客服" [ref=e21] [cursor=pointer]:
+          - /url: //ai.58.com/pc/#/entry/joinfrom=topbar
+        - generic [ref=e22] [cursor=pointer]: 网站导航
+  - generic [ref=e25]:
+    - generic [ref=e27]:
+      - link "中文专业生活信息门户" [ref=e28] [cursor=pointer]:
+        - /url: //nj.58.com
+        - img "中文专业生活信息门户" [ref=e29]
+      - generic [ref=e30]:
+        - textbox [ref=e33]: 招聘季月薪10000+
+        - button "搜 索" [ref=e35] [cursor=pointer]
+        - generic [ref=e36]:
+          - generic:
+            - link "租房子" [ref=e37] [cursor=pointer]:
+              - /url: http://nj.58.com/zufang/?key=%E7%A7%9F%E6%88%BF%E5%AD%90&cmcskey=%E7%A7%9F%E6%88%BF%E5%AD%90&final=1&jump=1&sourcetype=11
+            - link "兼职" [ref=e38] [cursor=pointer]:
+              - /url: http://nj.58.com/jianzhi/?key=%E5%85%BC%E8%81%8C&cmcskey=%E5%85%BC%E8%81%8C&final=1&jump=1&sourcetype=11
+            - link "合租房" [ref=e39] [cursor=pointer]:
+              - /url: http://nj.58.com/hezu/?key=%E5%90%88%E7%A7%9F%E6%88%BF&cmcskey=%E5%90%88%E7%A7%9F%E6%88%BF&final=1&jump=1&sourcetype=11
+            - link "地铁房" [ref=e40] [cursor=pointer]:
+              - /url: http://nj.58.com/ershoufang/?key=%E5%9C%B0%E9%93%81%E6%88%BF&cmcskey=%E5%9C%B0%E9%93%81%E6%88%BF&final=1&jump=1&sourcetype=11
+            - link "自行车" [ref=e41] [cursor=pointer]:
+              - /url: http://nj.58.com/zixingche/?key=%E8%87%AA%E8%A1%8C%E8%BD%A6&cmcskey=%E8%87%AA%E8%A1%8C%E8%BD%A6&final=1&jump=1&sourcetype=11
+          - generic:
+            - link "招聘推广" [ref=e42] [cursor=pointer]:
+              - /url: https://trade.58.com/orderonline/newJob/orderSave/index?from=10122'
+            - link "个人卖房" [ref=e43] [cursor=pointer]:
+              - /url: /maifang/?from=wubapc-citiao
+            - link "我要招人" [ref=e44] [cursor=pointer]:
+              - /url: https://passport.58.com/login/?path=https://employer.58.com/index?spm=sousuo_zhaoren
+      - link "免费发布信息" [ref=e45] [cursor=pointer]:
+        - /url: //post.58.com/172/
+      - link "修改/删除信息" [ref=e46] [cursor=pointer]:
+        - /url: //help.58.com/maoyonginfo/index/
+    - list [ref=e47]:
+      - listitem [ref=e48]:
+        - link "首页" [ref=e49] [cursor=pointer]:
+          - /url: /
+      - listitem [ref=e50]:
+        - link "58APP" [ref=e51] [cursor=pointer]:
+          - /url: //down.58.com/home.html
+          - text: 58APP
+      - listitem [ref=e54]:
+        - link "商家APP" [ref=e55] [cursor=pointer]:
+          - /url: //zhaoren.58.com/?from=pc_shouye
+          - text: 商家APP
+      - listitem [ref=e57]:
+        - generic [ref=e58]: 58公众号
+      - listitem [ref=e60]:
+        - generic [ref=e61]: 小程序
+      - listitem [ref=e63]:
+        - link "新车" [ref=e64] [cursor=pointer]:
+          - /url: https://www.58che.com/?from=58tc.000439
+      - listitem [ref=e65]:
+        - link "58贷款" [ref=e66] [cursor=pointer]:
+          - /url: https://haojie.58.com/download.html?from=pc_58home
+      - listitem [ref=e67]:
+        - link "安居客" [ref=e68] [cursor=pointer]:
+          - /url: //www.anjuke.com/
+      - listitem [ref=e69]:
+        - link "英才直聘" [ref=e70] [cursor=pointer]:
+          - /url: //www.chinahr.com/
+      - listitem [ref=e71]:
+        - link [ref=e72] [cursor=pointer]:
+          - /url: //e.58.com/?from=90005
+      - listitem [ref=e73]:
+        - link [ref=e74] [cursor=pointer]:
+          - /url: https://h5-cdn.58.com/git/fe-small-collection/checkin/pc-home.html?source_from=3
+  - generic [ref=e76]:
+    - generic [ref=e77]:
+      - list [ref=e78]:
+        - listitem [ref=e79]:
+          - link "涨薪 招聘" [ref=e80] [cursor=pointer]:
+            - /url: /job.shtml
+            - generic [ref=e81]: 涨薪
+            - text: 招聘
+          - emphasis [ref=e82]:
+            - link "全职" [ref=e83] [cursor=pointer]:
+              - /url: /job.shtml
+            - text: /
+            - link "兼职" [ref=e84] [cursor=pointer]:
+              - /url: //bj.58.com/jianzhi/
+            - text: /
+            - link "招人" [ref=e85] [cursor=pointer]:
+              - /url: //passport.58.com/login/?path=https://employer.58.com/index?spm=icon_zhaoren
+        - listitem [ref=e86]:
+          - link "免费发布 房产" [ref=e87] [cursor=pointer]:
+            - /url: /house.shtml
+            - generic [ref=e88]: 免费发布
+            - text: 房产
+          - emphasis [ref=e89]:
+            - link "租房" [ref=e90] [cursor=pointer]:
+              - /url: /chuzu/
+            - text: /
+            - link "二手房" [ref=e91] [cursor=pointer]:
+              - /url: /ershoufang/
+            - text: /
+            - link "公寓" [ref=e92] [cursor=pointer]:
+              - /url: /chuzu/?purerent=1
+        - listitem [ref=e93]:
+          - link "二手车" [ref=e94] [cursor=pointer]:
+            - /url: /ershouche/
+            - text: 二手车
+          - emphasis [ref=e96]:
+            - link "3万内" [ref=e97] [cursor=pointer]:
+              - /url: /ershouche/pve_5864_0_3
+            - text: /
+            - link "SUV" [ref=e98] [cursor=pointer]:
+              - /url: /ershouche/pve_2539_2
+            - text: /
+            - link "货车" [ref=e99] [cursor=pointer]:
+              - /url: /huochec
+        - listitem [ref=e100]:
+          - link "二手市场" [ref=e101] [cursor=pointer]:
+            - /url: /sale.shtml
+            - text: 二手市场
+          - emphasis [ref=e103]:
+            - link "家具" [ref=e104] [cursor=pointer]:
+              - /url: /ershoujiaju/
+            - text: /
+            - link "家电" [ref=e105] [cursor=pointer]:
+              - /url: /jiadian/
+            - text: /
+            - link "摩托车" [ref=e106] [cursor=pointer]:
+              - /url: /danche/
+        - listitem [ref=e107]:
+          - link "二手回收" [ref=e108] [cursor=pointer]:
+            - /url: /huishoujy/
+            - text: 二手回收
+          - emphasis [ref=e110]:
+            - link "空调" [ref=e111] [cursor=pointer]:
+              - /url: /kongtiaohsxin/
+            - text: /
+            - link "冰箱" [ref=e112] [cursor=pointer]:
+              - /url: /bxbghsxin/
+            - text: /
+            - link "家具" [ref=e113] [cursor=pointer]:
+              - /url: /minyongjiajuxin/
+        - listitem [ref=e114]:
+          - link "家政服务" [ref=e115] [cursor=pointer]:
+            - /url: /shenghuo.shtml
+            - text: 家政服务
+          - emphasis [ref=e117]:
+            - link "保洁" [ref=e118] [cursor=pointer]:
+              - /url: /baojie/
+            - text: /
+            - link "搬家" [ref=e119] [cursor=pointer]:
+              - /url: /banjia/
+            - text: /
+            - link "维修" [ref=e120] [cursor=pointer]:
+              - /url: /dianqi/
+        - listitem [ref=e121]:
+          - link "本地服务" [ref=e122] [cursor=pointer]:
+            - /url: /huangye/
+            - text: 本地服务
+          - emphasis [ref=e124]:
+            - link "家装" [ref=e125] [cursor=pointer]:
+              - /url: /jiazhuang/
+            - text: /
+            - link "租车" [ref=e126] [cursor=pointer]:
+              - /url: /zuche/
+            - text: /
+            - link "工商" [ref=e128] [cursor=pointer]:
+              - /url: /zhuce/
+      - generic [ref=e129]:
+        - generic [ref=e130]:
+          - generic [ref=e131]:
+            - heading "南京房产 我要卖房" [level=2] [ref=e132]:
+              - link "南京房产" [ref=e133] [cursor=pointer]:
+                - /url: /house.shtml
+              - link "我要卖房" [ref=e135] [cursor=pointer]:
+                - /url: /maifang/?from=wubapc-fangcard
+            - link "整租" [ref=e137] [cursor=pointer]:
+              - /url: /zufang/
+            - link "合租" [ref=e139] [cursor=pointer]:
+              - /url: /hezu/
+            - link "长租公寓" [ref=e141] [cursor=pointer]:
+              - /url: https://nj.58.com/chuzu/?purerent=1&PGTID=0d100000-001e-31f8-ce06-f451162aab23&ClickID=5
+            - link "个人房源" [ref=e143] [cursor=pointer]:
+              - /url: /chuzu/0/
+            - link "二手房" [ref=e145] [cursor=pointer]:
+              - /url: /ershoufang/
+            - link "安选房源" [ref=e147] [cursor=pointer]:
+              - /url: /ershoufang/?param12175=1
+            - link "新房" [ref=e149] [cursor=pointer]:
+              - /url: //nj.58.com/xinfang/
+            - link "商铺出租" [ref=e150] [cursor=pointer]:
+              - /url: /shangpucz/
+            - link "商铺出售" [ref=e151] [cursor=pointer]:
+              - /url: /shangpucs/
+            - link "生意转让" [ref=e152] [cursor=pointer]:
+              - /url: /shengyizr/
+            - link "实勘铺源" [ref=e154] [cursor=pointer]:
+              - /url: //nj.58.com/shangpucz/?params716=1
+            - link "写字楼出租" [ref=e155] [cursor=pointer]:
+              - /url: /zhaozu/
+            - link "写字楼出售" [ref=e156] [cursor=pointer]:
+              - /url: /zhaozu/pve_1092_2/
+            - link "办公楼盘" [ref=e157] [cursor=pointer]:
+              - /url: //shangban.58.com/nj/xiezilou/?from=home_zbgl
+            - link "联合办公" [ref=e158] [cursor=pointer]:
+              - /url: //shangban.58.com/nj/office/
+            - link "厂房" [ref=e159] [cursor=pointer]:
+              - /url: /changfang/
+            - link "仓库" [ref=e160] [cursor=pointer]:
+              - /url: /cangkucf/
+            - link "土地" [ref=e161] [cursor=pointer]:
+              - /url: /tudi/
+            - link "车位" [ref=e162] [cursor=pointer]:
+              - /url: /cheku/
+          - generic [ref=e163]:
+            - heading "二手车" [level=2] [ref=e164]:
+              - link "二手车" [ref=e165] [cursor=pointer]:
+                - /url: /ershouche/
+            - emphasis [ref=e166]:
+              - link "0-3万" [ref=e167] [cursor=pointer]:
+                - /url: /ershouche/pve_5864_0_3
+              - link "3-5万" [ref=e169] [cursor=pointer]:
+                - /url: /ershouche/pve_5864_3_5
+            - emphasis [ref=e170]:
+              - link "5-8万" [ref=e171] [cursor=pointer]:
+                - /url: /ershouche/pve_5864_5_8
+              - link "8-10万" [ref=e172] [cursor=pointer]:
+                - /url: /ershouche/pve_5864_8_10
+            - emphasis [ref=e173]:
+              - link "10-15万" [ref=e174] [cursor=pointer]:
+                - /url: /ershouche/pve_5864_10_15
+              - link "15-20万" [ref=e175] [cursor=pointer]:
+                - /url: /ershouche/pve_5864_15_20
+              - link ">20万" [ref=e176] [cursor=pointer]:
+                - /url: /ershouche/pve_5864_20_999999
+            - emphasis [ref=e177]:
+              - link "轿车" [ref=e178] [cursor=pointer]:
+                - /url: /ershouche/pve_2539_1
+              - generic [ref=e179]: /
+            - emphasis [ref=e180]:
+              - link "跑车" [ref=e181] [cursor=pointer]:
+                - /url: /ershouche/pve_2539_6
+              - generic [ref=e182]: /
+            - emphasis [ref=e183]:
+              - link "SUV" [ref=e184] [cursor=pointer]:
+                - /url: /ershouche/pve_2539_2
+              - generic [ref=e185]: /
+            - emphasis [ref=e186]:
+              - link "MPV" [ref=e187] [cursor=pointer]:
+                - /url: /ershouche/pve_2539_7
+              - generic [ref=e188]: /
+            - emphasis [ref=e189]:
+              - link "面包车" [ref=e190] [cursor=pointer]:
+                - /url: /ershouche/pve_2539_3
+            - heading "高价卖车" [level=4] [ref=e191]:
+              - link "高价卖车" [ref=e193] [cursor=pointer]:
+                - /url: https://fangxinpai.58.com/58fxp_router/quick_sell_pc?from=sdshouyepc&fromtype=sdshouyepc
+            - emphasis [ref=e194]:
+              - link "大众" [ref=e195] [cursor=pointer]:
+                - /url: /dazhong/
+            - emphasis [ref=e196]:
+              - link "别克" [ref=e197] [cursor=pointer]:
+                - /url: /bieke/
+            - emphasis [ref=e198]:
+              - link "福特" [ref=e199] [cursor=pointer]:
+                - /url: /fute/
+            - emphasis [ref=e200]:
+              - link "标致" [ref=e201] [cursor=pointer]:
+                - /url: /biaozhi/
+            - link "雪佛兰" [ref=e202] [cursor=pointer]:
+              - /url: /xuefulan/
+            - emphasis [ref=e203]:
+              - link "丰田" [ref=e204] [cursor=pointer]:
+                - /url: /fengtian/
+            - emphasis [ref=e205]:
+              - link "本田" [ref=e206] [cursor=pointer]:
+                - /url: /bentian/
+            - emphasis [ref=e207]:
+              - link "现代" [ref=e208] [cursor=pointer]:
+                - /url: /xiandai/
+            - emphasis [ref=e209]:
+              - link "日产" [ref=e210] [cursor=pointer]:
+                - /url: /richan/
+            - link "马自达" [ref=e211] [cursor=pointer]:
+              - /url: /mazida/
+            - emphasis [ref=e212]:
+              - link "五菱" [ref=e213] [cursor=pointer]:
+                - /url: /wulingyou/
+            - emphasis [ref=e214]:
+              - link "吉利" [ref=e215] [cursor=pointer]:
+                - /url: /jili/
+            - emphasis [ref=e216]:
+              - link "奇瑞" [ref=e217] [cursor=pointer]:
+                - /url: /qirui/
+            - emphasis [ref=e218]:
+              - link "长安" [ref=e219] [cursor=pointer]:
+                - /url: /changanche/
+            - link "比亚迪" [ref=e220] [cursor=pointer]:
+              - /url: /biyadi/
+            - emphasis [ref=e221]:
+              - link "奥迪" [ref=e222] [cursor=pointer]:
+                - /url: /aodi/
+            - emphasis [ref=e223]:
+              - link "宝马" [ref=e224] [cursor=pointer]:
+                - /url: /baoma/
+            - emphasis [ref=e225]:
+              - link "奔驰" [ref=e226] [cursor=pointer]:
+                - /url: /benchi/
+            - link "雷克萨斯" [ref=e227] [cursor=pointer]:
+              - /url: /leikesasi/
+            - link "货车" [ref=e228] [cursor=pointer]:
+              - /url: /huochec/
+            - generic [ref=e229]: /
+            - link "东风" [ref=e230] [cursor=pointer]:
+              - /url: /dongfengschefbhcqj/?from=esc_detail_top_logo
+            - generic [ref=e231]: /
+            - link "解放" [ref=e232] [cursor=pointer]:
+              - /url: /yiqijiefangfbqj/?from=esc_detail_top_logo
+            - generic [ref=e233]: /
+            - link "福田" [ref=e234] [cursor=pointer]:
+              - /url: /futianchewagonczhqj/?from=esc_detail_top_logo
+            - generic [ref=e235]: /
+            - link "挂车" [ref=e236] [cursor=pointer]:
+              - /url: //nj.58.com/guache/?from=pc_58index_guache
+            - link "载货车" [ref=e237] [cursor=pointer]:
+              - /url: /zahuockc/?from=esc_detail_top_logo
+            - generic [ref=e238]: /
+            - link "自卸车" [ref=e239] [cursor=pointer]:
+              - /url: /gongchengzxch/?from=esc_detail_top_logo
+            - generic [ref=e240]: /
+            - link "牵引车" [ref=e241] [cursor=pointer]:
+              - /url: /qianyichekc/?from=esc_detail_top_logo
+            - generic [ref=e242]: /
+            - link "客车" [ref=e243] [cursor=pointer]:
+              - /url: /kechec/
+            - emphasis [ref=e244]:
+              - link "工程车" [ref=e245] [cursor=pointer]:
+                - /url: //nj.58.com/cheliangmaimai/?from=pc_shouye_gcc
+              - generic [ref=e246]: /
+              - link "搅拌车" [ref=e247] [cursor=pointer]:
+                - /url: /jianbanysc/
+              - link "洒水车" [ref=e248] [cursor=pointer]:
+                - /url: //nj.58.com/sashuichegc/?from=pc_shouye_gcc
+              - generic [ref=e249]: /
+              - link "挖掘机" [ref=e250] [cursor=pointer]:
+                - /url: //nj.58.com/wajuejixiegc/?
+            - heading "新车" [level=2] [ref=e251]:
+              - link "新车" [ref=e252] [cursor=pointer]:
+                - /url: //www.58che.com?from=58tc.000024
+            - emphasis [ref=e253]:
+              - link "SUV" [ref=e254] [cursor=pointer]:
+                - /url: //car.58che.com/level/8.html?from=58xinche.001179
+              - generic [ref=e255]: /
+              - link "小型车" [ref=e256] [cursor=pointer]:
+                - /url: //car.58che.com/level/2.html?from=58xinche.001180
+              - generic [ref=e257]: /
+              - link "紧凑型车" [ref=e258] [cursor=pointer]:
+                - /url: //car.58che.com/level/3.html?from=58xinche.001181
+              - generic [ref=e259]: /
+              - link "中型车" [ref=e260] [cursor=pointer]:
+                - /url: //car.58che.com/level/4.html?from=58xinche.001182
+              - link "0-5万" [ref=e261] [cursor=pointer]:
+                - /url: //car.58che.com/price/0-5.html?from=58xinche.001183
+              - generic [ref=e262]: /
+              - link "5-10万" [ref=e263] [cursor=pointer]:
+                - /url: //car.58che.com/price/5-10.html?from=58xinche.001184
+              - generic [ref=e264]: /
+              - link "10-15万" [ref=e265] [cursor=pointer]:
+                - /url: //car.58che.com/price/10-15.html?from=58xinche.001185
+              - link "15-20万" [ref=e266] [cursor=pointer]:
+                - /url: //car.58che.com/price/15-20.html?from=58xinche.001186
+              - generic [ref=e267]: /
+              - link "国产车" [ref=e268] [cursor=pointer]:
+                - /url: //car.58che.com/nation/1.html?from=58tc.001438
+              - generic [ref=e269]: /
+              - link "更多新车" [ref=e270] [cursor=pointer]:
+                - /url: //car.58che.com/series/s5.html?from=58tc.001439
+            - heading "汽车服务" [level=2] [ref=e271]:
+              - link "汽车服务" [ref=e272] [cursor=pointer]:
+                - /url: /qichefw.shtml?from=58_shouye_qichefw
+            - emphasis [ref=e273]:
+              - link "租车" [ref=e274] [cursor=pointer]:
+                - /url: /zuche/
+            - link "货车" [ref=e275] [cursor=pointer]:
+              - /url: /zuhuoche/
+            - generic [ref=e276]: /
+            - link "大巴" [ref=e277] [cursor=pointer]:
+              - /url: /dabazc/
+            - generic [ref=e278]: /
+            - link "中巴" [ref=e279] [cursor=pointer]:
+              - /url: /zuzhongba/
+            - generic [ref=e280]: /
+            - link "面包" [ref=e281] [cursor=pointer]:
+              - /url: /zumianbaoche/
+            - emphasis [ref=e282]:
+              - link "买车" [ref=e283] [cursor=pointer]:
+                - /url: /qichefw.shtml
+            - generic [ref=e284]:
+              - link "4S店" [ref=e285] [cursor=pointer]:
+                - /url: /maiche/
+              - generic [ref=e286]: /
+              - link "保险" [ref=e287] [cursor=pointer]:
+                - /url: /qichefuwu/
+              - generic [ref=e288]: /
+              - link "过户验车" [ref=e289] [cursor=pointer]:
+                - /url: /daibanguohu/
+              - link "以租代购" [ref=e290] [cursor=pointer]:
+                - /url: /zuche/
+              - generic [ref=e291]:
+                - generic [ref=e292]: /
+                - link "购买攻略" [ref=e293] [cursor=pointer]:
+                  - /url: //biandang.58.com/nj/goumaigonglve/
+            - emphasis [ref=e294]:
+              - link "用车" [ref=e295] [cursor=pointer]:
+                - /url: /qichefw.shtml
+            - link "改装保护" [ref=e296] [cursor=pointer]:
+              - /url: /gaizhuangfanghu/
+            - generic [ref=e297]: /
+            - link "汽车配件" [ref=e298] [cursor=pointer]:
+              - /url: /peijian/
+            - emphasis [ref=e299]:
+              - link "养车" [ref=e300] [cursor=pointer]:
+                - /url: /qichefw.shtml
+            - link "维修保养" [ref=e301] [cursor=pointer]:
+              - /url: /qichejx/
+            - generic [ref=e302]: /
+            - link "美容装饰" [ref=e303] [cursor=pointer]:
+              - /url: /cheliangfuwu/
+            - emphasis [ref=e304]:
+              - link "学车" [ref=e305] [cursor=pointer]:
+                - /url: //mnks.jxedt.com/?from=58.com_index_qiche_1
+            - generic [ref=e306]:
+              - link "驾校" [ref=e307] [cursor=pointer]:
+                - /url: /jiaxiaopx/
+              - generic [ref=e308]: /
+              - link "代驾·司机外派" [ref=e309] [cursor=pointer]:
+                - /url: /peijia?from=58.com_index_qiche_2
+              - generic [ref=e310]: /
+              - link "陪练" [ref=e311] [cursor=pointer]:
+                - /url: /peilian/
+          - generic [ref=e312]:
+            - heading "教育培训" [level=2] [ref=e313]:
+              - link "教育培训" [ref=e314] [cursor=pointer]:
+                - /url: /jiaoyu.shtml?from=58_shouye_jiaoyu
+            - emphasis [ref=e315]:
+              - link "培训" [ref=e316] [cursor=pointer]:
+                - /url: /zhiyepeix/
+            - link "职业" [ref=e317] [cursor=pointer]:
+              - /url: /zhiyepeix/
+            - generic [ref=e318]: /
+            - link "管理" [ref=e319] [cursor=pointer]:
+              - /url: /mba/
+            - generic [ref=e320]: /
+            - link "设计" [ref=e321] [cursor=pointer]:
+              - /url: /shejipeixun/
+            - generic [ref=e322]: /
+            - link "IT" [ref=e323] [cursor=pointer]:
+              - /url: /jisuanji/
+            - emphasis
+            - link "艺术" [ref=e324] [cursor=pointer]:
+              - /url: /techang/
+            - generic [ref=e325]: /
+            - link "体育" [ref=e326] [cursor=pointer]:
+              - /url: /tiyu/
+            - generic [ref=e327]: /
+            - link "语言" [ref=e328] [cursor=pointer]:
+              - /url: /waiyu/
+            - emphasis
+            - link "美容" [ref=e329] [cursor=pointer]:
+              - /url: /miermeifa/
+            - generic [ref=e330]: /
+            - link "餐饮" [ref=e331] [cursor=pointer]:
+              - /url: /chuyipeixun/
+            - generic [ref=e332]: /
+            - link "技工" [ref=e333] [cursor=pointer]:
+              - /url: /jishupeixun/
+            - generic [ref=e334]: /
+            - link "会计" [ref=e335] [cursor=pointer]:
+              - /url: /kuaijipeixun/
+            - emphasis [ref=e336]:
+              - link "学历" [ref=e337] [cursor=pointer]:
+                - /url: /xueli/
+            - link "成考" [ref=e338] [cursor=pointer]:
+              - /url: /chengrengaokao/
+            - generic [ref=e339]: /
+            - link "自考" [ref=e340] [cursor=pointer]:
+              - /url: /zikao/
+            - generic [ref=e341]: /
+            - link "考研" [ref=e342] [cursor=pointer]:
+              - /url: /kaoyan/
+            - generic [ref=e343]: /
+            - link "考博" [ref=e344] [cursor=pointer]:
+              - /url: /kaobo/
+            - emphasis [ref=e345]:
+              - link "留学" [ref=e346] [cursor=pointer]:
+                - /url: /liuxue/
+            - link "美国" [ref=e347] [cursor=pointer]:
+              - /url: /meiguoliuxue/
+            - generic [ref=e348]: /
+            - link "日本" [ref=e349] [cursor=pointer]:
+              - /url: /ribenliuxue/
+            - generic [ref=e350]: /
+            - link "英国" [ref=e351] [cursor=pointer]:
+              - /url: /yingguoliuxue/
+            - emphasis [ref=e352]:
+              - link "移民" [ref=e353] [cursor=pointer]:
+                - /url: /yimin/
+            - link "美国" [ref=e354] [cursor=pointer]:
+              - /url: /meiguoyimin/
+            - generic [ref=e355]: /
+            - link "加拿大" [ref=e356] [cursor=pointer]:
+              - /url: /jndyimin/
+            - generic [ref=e357]: /
+            - link "澳洲" [ref=e358] [cursor=pointer]:
+              - /url: /adlyyimin/
+          - generic [ref=e359]:
+            - heading "便民服务" [level=2] [ref=e360]:
+              - link "便民服务" [ref=e361] [cursor=pointer]:
+                - /url: //biandang.58.com/nj/?from=pc_home_bm_area_icon_bianmin
+            - emphasis [ref=e362]:
+              - link "58问卷" [ref=e363] [cursor=pointer]:
+                - /url: //wenjuan.58.com
+              - generic [ref=e364]: /
+              - link "医院挂号" [ref=e365] [cursor=pointer]:
+                - /url: //58.guahao.com/?from=pc_home_icon_yiyuanguahao
+              - link "保姆/钟点工" [ref=e366] [cursor=pointer]:
+                - /url: https://jiazheng.58.com/cfe/demandPc?displayCityId=172&source=1777
+        - generic [ref=e367]:
+          - generic [ref=e368]:
+            - heading "二手回收 金属 家具 礼品 服装" [level=2] [ref=e369]:
+              - link "二手回收" [ref=e370] [cursor=pointer]:
+                - /url: /huishoujy/
+              - link "金属" [ref=e372] [cursor=pointer]:
+                - /url: /jinshuhuishou/
+              - link "家具" [ref=e374] [cursor=pointer]:
+                - /url: /jiajuhuishou/
+              - link "礼品" [ref=e376] [cursor=pointer]:
+                - /url: /lipinhuishou/
+              - link "服装" [ref=e378] [cursor=pointer]:
+                - /url: /fuzhuangweihuofeijiuwuzi/
+            - emphasis [ref=e379]:
+              - link "家电" [ref=e380] [cursor=pointer]:
+                - /url: /dianqihuishouxin/
+            - link "空调" [ref=e381] [cursor=pointer]:
+              - /url: /kongtiaohsxin/
+            - generic [ref=e382]: /
+            - link "冰箱" [ref=e383] [cursor=pointer]:
+              - /url: /bxbghsxin/
+            - generic [ref=e384]: /
+            - link "洗衣机" [ref=e385] [cursor=pointer]:
+              - /url: /xiyijihsxin/
+            - emphasis
+            - link "电视" [ref=e386] [cursor=pointer]:
+              - /url: /dianshihsxin/
+            - generic [ref=e387]: /
+            - link "音响" [ref=e388] [cursor=pointer]:
+              - /url: /yxgfhsxin/
+            - generic [ref=e389]: /
+            - link "热水器" [ref=e390] [cursor=pointer]:
+              - /url: /reshuiqihsxin/
+            - emphasis [ref=e391]:
+              - link "家具" [ref=e392] [cursor=pointer]:
+                - /url: /minyongjiajuxin/
+            - link "衣柜" [ref=e393] [cursor=pointer]:
+              - /url: /yiguihsxin/
+            - generic [ref=e394]: /
+            - link "沙发" [ref=e395] [cursor=pointer]:
+              - /url: /shafahsxin/
+            - generic [ref=e396]: /
+            - link "桌子" [ref=e397] [cursor=pointer]:
+              - /url: /zhuozihsxin/
+            - emphasis
+            - link "床" [ref=e398] [cursor=pointer]:
+              - /url: /chuangrcxin/
+            - generic [ref=e399]: /
+            - link "椅子凳子" [ref=e400] [cursor=pointer]:
+              - /url: /yizihsxin/
+            - generic [ref=e401]: /
+            - link "茶几" [ref=e402] [cursor=pointer]:
+              - /url: /chajihsxin/
+            - emphasis [ref=e403]:
+              - link "电脑/配件" [ref=e404] [cursor=pointer]:
+                - /url: /diannaohuishouxin/
+            - link "笔记本" [ref=e405] [cursor=pointer]:
+              - /url: /bijibenhsxin/
+            - generic [ref=e406]: /
+            - link "平板" [ref=e407] [cursor=pointer]:
+              - /url: /pbdnhsxin/
+            - generic [ref=e408]: /
+            - link "显示器" [ref=e409] [cursor=pointer]:
+              - /url: /xianshiqihsxin/
+            - emphasis [ref=e410]:
+              - link "机械/设备" [ref=e411] [cursor=pointer]:
+                - /url: /huishoushebeixin/
+            - link "工厂" [ref=e412] [cursor=pointer]:
+              - /url: /gcsbhsxin/
+            - generic [ref=e413]: /
+            - link "机械" [ref=e414] [cursor=pointer]:
+              - /url: /jxsbhsxin/
+            - generic [ref=e415]: /
+            - link "发电机" [ref=e416] [cursor=pointer]:
+              - /url: /fadianjihsxin/
+            - emphasis [ref=e417]:
+              - link "工业物资" [ref=e418] [cursor=pointer]:
+                - /url: /gongyewuzihuishou/
+            - link "废纸" [ref=e419] [cursor=pointer]:
+              - /url: /zhihsxin/
+            - generic [ref=e420]: /
+            - link "金属" [ref=e421] [cursor=pointer]:
+              - /url: /jinshuhuishouxin/
+            - generic [ref=e422]: /
+            - link "建筑废料" [ref=e423] [cursor=pointer]:
+              - /url: /feijiuhuishouxin/
+            - emphasis
+            - link "塑料" [ref=e424] [cursor=pointer]:
+              - /url: /suliaohuishouxin/
+            - generic [ref=e425]: /
+            - link "库存积压" [ref=e426] [cursor=pointer]:
+              - /url: /jiyapinhsxin/
+            - generic [ref=e427]: /
+            - link "玻璃" [ref=e428] [cursor=pointer]:
+              - /url: /bolihuishouxin/
+            - emphasis
+            - link "电池" [ref=e429] [cursor=pointer]:
+              - /url: /dianchihuishouxin/
+            - generic [ref=e430]: /
+            - link "纺织皮革" [ref=e431] [cursor=pointer]:
+              - /url: /fangzhipigexin/
+            - generic [ref=e432]: /
+            - link "电子" [ref=e433] [cursor=pointer]:
+              - /url: /dianzihsxin/
+            - emphasis [ref=e434]:
+              - link "奢侈品" [ref=e435] [cursor=pointer]:
+                - /url: /shechiphsxin/
+            - link "金银" [ref=e436] [cursor=pointer]:
+              - /url: /guijinshuhsxin/
+            - generic [ref=e437]: /
+            - link "礼品" [ref=e438] [cursor=pointer]:
+              - /url: /lipinhuishouxin/
+            - generic [ref=e439]: /
+            - link "艺术品" [ref=e440] [cursor=pointer]:
+              - /url: /yishupinhsxin/
+            - emphasis [ref=e441]:
+              - link "办公用品" [ref=e442] [cursor=pointer]:
+                - /url: /bangonghuishouxin/
+            - link "打印机" [ref=e443] [cursor=pointer]:
+              - /url: /dayinjihsxin/
+            - generic [ref=e444]: /
+            - link "复印机" [ref=e445] [cursor=pointer]:
+              - /url: /fuyinjihsxin/
+            - generic [ref=e446]: /
+            - link "墨盒" [ref=e447] [cursor=pointer]:
+              - /url: /xgmhhsxin/
+            - emphasis [ref=e448]:
+              - link "酒店/厨房" [ref=e449] [cursor=pointer]:
+                - /url: /jiudianchufangxin/
+            - link "厨房设备" [ref=e450] [cursor=pointer]:
+              - /url: /cfsbhsxin/
+            - generic [ref=e451]: /
+            - link "酒店设备" [ref=e452] [cursor=pointer]:
+              - /url: /jdsbhsxin/
+            - emphasis [ref=e453]:
+              - link "文体用品" [ref=e454] [cursor=pointer]:
+                - /url: /wentihsxin/
+            - link "钢琴" [ref=e455] [cursor=pointer]:
+              - /url: /gangqinxin/
+            - generic [ref=e456]: /
+            - link "图书" [ref=e457] [cursor=pointer]:
+              - /url: /tshsxin/
+            - generic [ref=e458]: /
+            - link "桌球" [ref=e459] [cursor=pointer]:
+              - /url: /zhuoqiuxin/
+            - emphasis [ref=e460]:
+              - link "办公家具" [ref=e461] [cursor=pointer]:
+                - /url: /bangongjiajuhuishou/
+            - link "老板台" [ref=e462] [cursor=pointer]:
+              - /url: /laobanthsxin/
+            - generic [ref=e463]: /
+            - link "文件柜" [ref=e464] [cursor=pointer]:
+              - /url: /wenjianguihsxin/
+            - generic [ref=e465]: /
+            - link "桌椅" [ref=e466] [cursor=pointer]:
+              - /url: /bangongzhuoyixin/
+          - generic [ref=e467]:
+            - heading "跳蚤市场 特惠九成新家具" [level=2] [ref=e468]:
+              - link "跳蚤市场" [ref=e469] [cursor=pointer]:
+                - /url: /sale.shtml
+              - link "特惠九成新家具" [ref=e471] [cursor=pointer]:
+                - /url: /ershoujiaju/?from=pc_home_hy_essc_thjcxjj
+            - generic [ref=e472]:
+              - emphasis [ref=e473]:
+                - link "摩托车" [ref=e474] [cursor=pointer]:
+                  - /url: /danche/
+              - link "雅马哈" [ref=e475] [cursor=pointer]:
+                - /url: /yamaha/
+              - generic [ref=e476]: /
+              - link "本田" [ref=e477] [cursor=pointer]:
+                - /url: /bentianmoto/
+              - emphasis [ref=e478]:
+                - link "电动车" [ref=e479] [cursor=pointer]:
+                  - /url: /diandongche/
+              - link "自行车" [ref=e480] [cursor=pointer]:
+                - /url: /fzixingche/
+              - generic [ref=e481]: /
+              - link "三轮车" [ref=e482] [cursor=pointer]:
+                - /url: /sanlunche/
+            - generic [ref=e484]:
+              - emphasis [ref=e485]:
+                - link "二手家电" [ref=e486] [cursor=pointer]:
+                  - /url: /jiadian/
+              - link "空调" [ref=e487] [cursor=pointer]:
+                - /url: /ershoukongtiao/
+              - generic [ref=e488]: /
+              - link "电视" [ref=e489] [cursor=pointer]:
+                - /url: /dianshiji/
+              - generic [ref=e490]: /
+              - link "冰箱" [ref=e491] [cursor=pointer]:
+                - /url: /bingxiang/
+              - emphasis [ref=e492]:
+                - link "二手家具" [ref=e493] [cursor=pointer]:
+                  - /url: /ershoujiaju/
+              - link "沙发" [ref=e494] [cursor=pointer]:
+                - /url: /jiajushafa/
+              - generic [ref=e495]: /
+              - link "床" [ref=e496] [cursor=pointer]:
+                - /url: /chuang/
+              - generic [ref=e497]: /
+              - link "桌椅" [ref=e498] [cursor=pointer]:
+                - /url: /zhuolei/
+              - emphasis [ref=e499]:
+                - link "办公设备" [ref=e500] [cursor=pointer]:
+                  - /url: /bangong/
+              - link "办公家具" [ref=e501] [cursor=pointer]:
+                - /url: /bangongjiaju/
+              - generic [ref=e502]: /
+              - link "桌" [ref=e503] [cursor=pointer]:
+                - /url: /bangongzhuoyi/
+              - generic [ref=e504]: /
+              - link "椅" [ref=e505] [cursor=pointer]:
+                - /url: /bangongyi/
+              - emphasis [ref=e506]:
+                - link "家居日用" [ref=e507] [cursor=pointer]:
+                  - /url: /jujia/
+              - link "厨具" [ref=e508] [cursor=pointer]:
+                - /url: /guozaochuju/
+              - generic [ref=e509]: /
+              - link "灯具" [ref=e510] [cursor=pointer]:
+                - /url: /dengjuzhaoming/
+              - generic [ref=e511]: /
+              - link "床品" [ref=e512] [cursor=pointer]:
+                - /url: /chuangshangyongpin/
+              - emphasis [ref=e513]:
+                - link "母婴用品" [ref=e514] [cursor=pointer]:
+                  - /url: /yingyou/
+              - link "婴幼服" [ref=e515] [cursor=pointer]:
+                - /url: /yingyoufushi/
+              - generic [ref=e516]: /
+              - link "床" [ref=e517] [cursor=pointer]:
+                - /url: /muyingtongchuang/
+              - generic [ref=e518]: /
+              - link "玩具" [ref=e519] [cursor=pointer]:
+                - /url: /ertongyongpin/
+              - emphasis [ref=e520]:
+                - link "服装箱包" [ref=e521] [cursor=pointer]:
+                  - /url: /fushi/
+              - link "手表" [ref=e522] [cursor=pointer]:
+                - /url: /fuzhuangshoubiao/
+              - generic [ref=e523]: /
+              - link "箱包" [ref=e524] [cursor=pointer]:
+                - /url: /xiangbao/
+              - generic [ref=e525]: /
+              - link "服饰" [ref=e526] [cursor=pointer]:
+                - /url: /nanzhuang/
+            - emphasis [ref=e527]:
+              - link "设备买卖" [ref=e528] [cursor=pointer]:
+                - /url: /ershoushebei/
+            - emphasis [ref=e529]:
+              - link "艺术收藏" [ref=e530] [cursor=pointer]:
+                - /url: /yishu/
+            - link "古玩" [ref=e531] [cursor=pointer]:
+              - /url: /gudongguwan/
+            - generic [ref=e532]: /
+            - link "把件" [ref=e533] [cursor=pointer]:
+              - /url: /bawanwujian/
+            - emphasis [ref=e534]:
+              - link "成人用品" [ref=e535] [cursor=pointer]:
+                - /url: /chengren/
+            - link "美容保健" [ref=e536] [cursor=pointer]:
+              - /url: /meirong/
+            - emphasis [ref=e538]:
+              - link "文体户外" [ref=e539] [cursor=pointer]:
+                - /url: /wenti/
+            - link "健身" [ref=e540] [cursor=pointer]:
+              - /url: /jianshenqixie/
+            - generic [ref=e541]: /
+            - link "钢琴" [ref=e542] [cursor=pointer]:
+              - /url: /gangqin/
+            - generic [ref=e543]: /
+            - link "麻将" [ref=e544] [cursor=pointer]:
+              - /url: /qipai/
+            - emphasis [ref=e545]:
+              - link "图书音像" [ref=e546] [cursor=pointer]:
+                - /url: /tushu/
+            - emphasis [ref=e547]:
+              - link "通讯业务" [ref=e548] [cursor=pointer]:
+                - /url: /tongxunyw/
+            - link "二手求购" [ref=e549] [cursor=pointer]:
+              - /url: /ershouqiugou/
+            - emphasis [ref=e550]:
+              - link "物品交换" [ref=e551] [cursor=pointer]:
+                - /url: /huanwu/
+            - link "其他二手" [ref=e552] [cursor=pointer]:
+              - /url: /tiaozao/
+            - generic [ref=e553]: /
+            - link "更多" [ref=e554] [cursor=pointer]:
+              - /url: /ershoujiaoyi.shtml
+            - generic [ref=e556]:
+              - emphasis [ref=e557]:
+                - link "二手手机" [ref=e558] [cursor=pointer]:
+                  - /url: /shouji/
+              - link "苹果" [ref=e559] [cursor=pointer]:
+                - /url: /iphonesj/
+              - generic [ref=e560]: /
+              - link "三星" [ref=e561] [cursor=pointer]:
+                - /url: /sanxing/
+              - generic [ref=e562]: /
+              - link "小米" [ref=e563] [cursor=pointer]:
+                - /url: /xiaomi/
+              - emphasis [ref=e564]:
+                - link "台式电脑" [ref=e565] [cursor=pointer]:
+                  - /url: /diannao/
+              - link "台式机" [ref=e566] [cursor=pointer]:
+                - /url: /taishiji/
+              - generic [ref=e567]: /
+              - link "硬件" [ref=e568] [cursor=pointer]:
+                - /url: /diannaopeijian/
+              - emphasis [ref=e569]:
+                - link "笔记本" [ref=e570] [cursor=pointer]:
+                  - /url: /bijiben/
+              - link "苹果" [ref=e571] [cursor=pointer]:
+                - /url: /apple/
+              - generic [ref=e572]: /
+              - link "联想" [ref=e573] [cursor=pointer]:
+                - /url: /lenovo/
+              - emphasis [ref=e574]:
+                - link "平板电脑" [ref=e575] [cursor=pointer]:
+                  - /url: /pbdn/
+              - link "三星" [ref=e576] [cursor=pointer]:
+                - /url: /pbdnsanxing/
+              - generic [ref=e577]: /
+              - link "iPad" [ref=e578] [cursor=pointer]:
+                - /url: /pbdnipad/
+              - emphasis [ref=e579]:
+                - link "数码产品" [ref=e580] [cursor=pointer]:
+                  - /url: /shuma/
+              - link "相机" [ref=e581] [cursor=pointer]:
+                - /url: /shumaxiangji/
+              - generic [ref=e582]: /
+              - link "游戏机" [ref=e583] [cursor=pointer]:
+                - /url: /youxiji/
+              - emphasis [ref=e584]:
+                - link "二手设备" [ref=e585] [cursor=pointer]:
+                  - /url: /ershoushebei/
+              - link "机床" [ref=e586] [cursor=pointer]:
+                - /url: /kuangye/
+              - generic [ref=e587]: /
+              - link "化工" [ref=e588] [cursor=pointer]:
+                - /url: /huagong/
+              - generic [ref=e589]: /
+              - link "箱房" [ref=e590] [cursor=pointer]:
+                - /url: /jizhuangxiang1/
+          - generic [ref=e591]:
+            - heading "宠物/宠物用品 寄养" [level=2] [ref=e592]:
+              - link "宠物/宠物用品" [ref=e593] [cursor=pointer]:
+                - /url: /pets.shtml
+              - link "寄养" [ref=e595] [cursor=pointer]:
+                - /url: /chongwujiyang/
+            - emphasis [ref=e596]:
+              - link "狗狗" [ref=e597] [cursor=pointer]:
+                - /url: /dog/
+            - link "泰迪" [ref=e598] [cursor=pointer]:
+              - /url: /ditaixiong/
+            - generic [ref=e599]: /
+            - link "柯基" [ref=e600] [cursor=pointer]:
+              - /url: /kejiquan/
+            - generic [ref=e601]: /
+            - link "拉布拉多" [ref=e602] [cursor=pointer]:
+              - /url: /labuladuo/
+            - emphasis
+            - link "哈士奇" [ref=e603] [cursor=pointer]:
+              - /url: /hashiqi/
+            - generic [ref=e604]: /
+            - link "金毛" [ref=e605] [cursor=pointer]:
+              - /url: /jianmao/
+            - generic [ref=e606]: /
+            - link "阿拉斯加" [ref=e607] [cursor=pointer]:
+              - /url: /alasijia/
+            - emphasis
+            - link "斗牛犬" [ref=e608] [cursor=pointer]:
+              - /url: /douniuquan/
+            - generic [ref=e609]: /
+            - link "博美" [ref=e610] [cursor=pointer]:
+              - /url: /bomei/
+            - generic [ref=e611]: /
+            - link "萨摩耶" [ref=e612] [cursor=pointer]:
+              - /url: /samoye/
+            - emphasis [ref=e613]:
+              - link "猫猫" [ref=e614] [cursor=pointer]:
+                - /url: /cat/
+            - link "短毛猫" [ref=e615] [cursor=pointer]:
+              - /url: /duanmaomao/
+            - generic [ref=e616]: /
+            - link "加菲猫" [ref=e617] [cursor=pointer]:
+              - /url: /jiafeimao/
+            - generic [ref=e618]: /
+            - link "蓝猫" [ref=e619] [cursor=pointer]:
+              - /url: /lanmao/
+            - emphasis
+            - link "鱼" [ref=e620] [cursor=pointer]:
+              - /url: /guanshangyu/
+            - generic [ref=e621]: /
+            - link "花" [ref=e622] [cursor=pointer]:
+              - /url: /qishipenjing/
+            - generic [ref=e623]: /
+            - emphasis [ref=e624]:
+              - link "用品" [ref=e625] [cursor=pointer]:
+                - /url: /shipin/
+            - link "服务" [ref=e626] [cursor=pointer]:
+              - /url: /chongwu/
+            - generic [ref=e627]: /
+            - link "鱼缸" [ref=e628] [cursor=pointer]:
+              - /url: /yugang/
+            - generic [ref=e629]: /
+            - link "宠物寄养" [ref=e630] [cursor=pointer]:
+              - /url: /chongwujiyang/
+        - generic [ref=e631]:
+          - generic [ref=e632]:
+            - heading "南京招聘 南京求职简历 招聘会员 校园招聘" [level=2] [ref=e633]:
+              - link "南京招聘" [ref=e634] [cursor=pointer]:
+                - /url: /job.shtml
+              - link "南京求职简历" [ref=e636] [cursor=pointer]:
+                - /url: /searchjob.shtml
+              - link "招聘会员" [ref=e638] [cursor=pointer]:
+                - /url: https://trade.58.com/orderonline/newJob/orderSave/index?from=10133
+              - link "校园招聘" [ref=e640] [cursor=pointer]:
+                - /url: https://www.chinahr.com
+            - generic [ref=e641]:
+              - emphasis [ref=e642]:
+                - link "包吃包住" [ref=e643] [cursor=pointer]:
+                  - /url: //nj.58.com/job/?param6693=8|10
+              - emphasis [ref=e644]:
+                - link "周末双休" [ref=e645] [cursor=pointer]:
+                  - /url: //nj.58.com/job/?param6693=6
+              - link "学习培训" [ref=e646] [cursor=pointer]:
+                - /url: //nj.58.com/zpzhiyepeixun
+              - emphasis [ref=e647]:
+                - link "超燃招聘季" [ref=e648] [cursor=pointer]:
+                  - /url: https://chrcampus.chinahr.com/news/super-invite/
+              - emphasis
+              - link "我要招人" [ref=e649] [cursor=pointer]:
+                - /url: https://passport.58.com/login/?path=https://employer.58.com/index?spm=city_zhaoren
+              - emphasis
+              - emphasis
+            - generic [ref=e650]:
+              - heading "求职神器 央企国企热招" [level=4] [ref=e651]:
+                - link "求职神器" [ref=e652] [cursor=pointer]:
+                  - /url: //my.58.com/pro/myjob/index/
+                - link "央企国企热招" [ref=e653] [cursor=pointer]:
+                  - /url: //h5-cdn.58.com/git/hrg-fe/zp-wuba/pc-government-special-list/index.html?from=pc_index_tag
+              - emphasis [ref=e654]:
+                - link "求职金卡" [ref=e655] [cursor=pointer]:
+                  - /url: //cvip.58.com/view/pc?from=pc-shouye
+              - emphasis [ref=e656]:
+                - link "简历置顶" [ref=e657] [cursor=pointer]:
+                  - /url: //my.58.com/pro/myjob/index/?autoshowtop=1
+              - emphasis [ref=e658]:
+                - link "快速求职" [ref=e659] [cursor=pointer]:
+                  - /url: //my.58.com/pro/myseekjob/11/
+            - generic [ref=e660]:
+              - heading "热招职位" [level=4] [ref=e661]:
+                - link "热招职位" [ref=e662] [cursor=pointer]:
+                  - /url: /job/
+              - emphasis [ref=e663]:
+                - link "司机/物流" [ref=e664] [cursor=pointer]:
+                  - /url: /sijiwl/
+              - link "送餐员/外卖骑手" [ref=e665] [cursor=pointer]:
+                - /url: /songcany/
+              - generic [ref=e666]: /
+              - link "货运司机" [ref=e667] [cursor=pointer]:
+                - /url: /huoyunsj/
+              - generic [ref=e668]: /
+              - link "商务司机" [ref=e669] [cursor=pointer]:
+                - /url: /shangwusj/
+              - emphasis [ref=e670]:
+                - link "销售" [ref=e671] [cursor=pointer]:
+                  - /url: /nxiaoshou/
+              - link "销售专员" [ref=e672] [cursor=pointer]:
+                - /url: /xiaoshouzhy/
+              - generic [ref=e673]: /
+              - link "电话销售" [ref=e674] [cursor=pointer]:
+                - /url: /dianhuaxsh/
+              - generic [ref=e675]: /
+              - link "网络销售" [ref=e676] [cursor=pointer]:
+                - /url: /wangluoxsh/
+              - generic [ref=e677]: /
+              - link "汽车销售" [ref=e678] [cursor=pointer]:
+                - /url: /qichexshd/
+              - emphasis [ref=e679]:
+                - link "普工/技工" [ref=e680] [cursor=pointer]:
+                  - /url: /pugongjg/
+              - link "普工/操作工" [ref=e681] [cursor=pointer]:
+                - /url: /pugongczg/
+              - generic [ref=e682]: /
+              - link "装卸/搬运工" [ref=e683] [cursor=pointer]:
+                - /url: /banyung/
+              - generic [ref=e684]: /
+              - link "焊工" [ref=e685] [cursor=pointer]:
+                - /url: /hangong/
+              - generic [ref=e686]: /
+              - link "车床工" [ref=e687] [cursor=pointer]:
+                - /url: /chechuangg/
+              - emphasis [ref=e688]:
+                - link "人事/行政" [ref=e689] [cursor=pointer]:
+                  - /url: /renshixzhcw/
+              - link "文员" [ref=e690] [cursor=pointer]:
+                - /url: /wenyuan/
+              - generic [ref=e691]: /
+              - link "前台/接待" [ref=e692] [cursor=pointer]:
+                - /url: /qiantaijd/
+              - generic [ref=e693]: /
+              - link "人事专员/助理" [ref=e694] [cursor=pointer]:
+                - /url: /renshizhyzhl/
+              - generic [ref=e695]: /
+              - link "会计" [ref=e696] [cursor=pointer]:
+                - /url: /nkuaiji/
+              - emphasis [ref=e697]:
+                - link "餐饮" [ref=e698] [cursor=pointer]:
+                  - /url: /ncanyin/
+              - link "服务员" [ref=e699] [cursor=pointer]:
+                - /url: /nfuwuyd/
+              - generic [ref=e700]: /
+              - link "后厨" [ref=e701] [cursor=pointer]:
+                - /url: /houchud/
+              - generic [ref=e702]: /
+              - link "厨师" [ref=e703] [cursor=pointer]:
+                - /url: /nchushid/
+              - generic [ref=e704]: /
+              - link "配菜/打荷" [ref=e705] [cursor=pointer]:
+                - /url: /peicaidh/
+              - generic [ref=e706]: /
+              - link "厨师长" [ref=e707] [cursor=pointer]:
+                - /url: /chushich/
+              - emphasis [ref=e708]:
+                - link "服务业" [ref=e709] [cursor=pointer]:
+                  - /url: /fuwuy/
+              - link "保洁" [ref=e710] [cursor=pointer]:
+                - /url: /nbaojie/
+              - generic [ref=e711]: /
+              - link "健身教练" [ref=e712] [cursor=pointer]:
+                - /url: /njianshenjl/
+              - generic [ref=e713]: /
+              - link "汽车维修" [ref=e714] [cursor=pointer]:
+                - /url: /nqichewx/
+              - generic [ref=e715]: /
+              - link "月嫂" [ref=e716] [cursor=pointer]:
+                - /url: /nyuesao/
+              - emphasis [ref=e717]:
+                - link "美发/美容" [ref=e718] [cursor=pointer]:
+                  - /url: /meifamrbj/
+              - link "美容师" [ref=e719] [cursor=pointer]:
+                - /url: /meirongsh/
+              - generic [ref=e720]: /
+              - link "足疗师" [ref=e721] [cursor=pointer]:
+                - /url: /zuliaosh/
+              - generic [ref=e722]: /
+              - link "按摩师" [ref=e723] [cursor=pointer]:
+                - /url: /anmosh/
+              - generic [ref=e724]: /
+              - link "美甲师" [ref=e725] [cursor=pointer]:
+                - /url: /meijiash/
+              - emphasis [ref=e726]:
+                - link "门店/零售" [ref=e727] [cursor=pointer]:
+                  - /url: /mendianlsh/
+              - link "店员/营业员" [ref=e728] [cursor=pointer]:
+                - /url: /dianyuanyyy/
+              - generic [ref=e729]: /
+              - link "收银员" [ref=e730] [cursor=pointer]:
+                - /url: /shouyiny/
+              - generic [ref=e731]: /
+              - link "促销/导购员" [ref=e732] [cursor=pointer]:
+                - /url: /cuxiaodgy/
+              - emphasis [ref=e733]:
+                - link "运营/客服" [ref=e734] [cursor=pointer]:
+                  - /url: /yunyingkf/
+              - link "客服专员/助理" [ref=e735] [cursor=pointer]:
+                - /url: /kefuzhyzhl/
+              - generic [ref=e736]: /
+              - link "电话客服" [ref=e737] [cursor=pointer]:
+                - /url: /dianhuakf/
+              - generic [ref=e738]: /
+              - link "售后客服" [ref=e739] [cursor=pointer]:
+                - /url: /shouhoukf/
+              - emphasis [ref=e740]:
+                - link "传媒/影视" [ref=e741] [cursor=pointer]:
+                  - /url: /nchuanmei/
+              - link "模特" [ref=e742] [cursor=pointer]:
+                - /url: /nmote/
+              - generic [ref=e743]: /
+              - link "演员" [ref=e744] [cursor=pointer]:
+                - /url: /yanyuan/
+              - generic [ref=e745]: /
+              - link "带货主播" [ref=e746] [cursor=pointer]:
+                - /url: /daihuozhb/
+              - generic [ref=e747]: /
+              - link "娱乐主播" [ref=e748] [cursor=pointer]:
+                - /url: /yulezhb/
+              - emphasis [ref=e749]:
+                - link "生产制造" [ref=e750] [cursor=pointer]:
+                  - /url: /shengchanzhz/
+              - link "质量管理/测试" [ref=e751] [cursor=pointer]:
+                - /url: /zhiliangglcsh/
+              - generic [ref=e752]: /
+              - link "缝纫工" [ref=e753] [cursor=pointer]:
+                - /url: /fengreng/
+              - generic [ref=e754]: /
+              - link "电气工程师" [ref=e755] [cursor=pointer]:
+                - /url: /dianqigchsh/
+              - emphasis [ref=e756]:
+                - link "房地产建筑" [ref=e757] [cursor=pointer]:
+                  - /url: /fangdichanjzh/
+              - link "工程资料员" [ref=e758] [cursor=pointer]:
+                - /url: /ngongchengzly/
+              - generic [ref=e759]: /
+              - link "工程项目管理" [ref=e760] [cursor=pointer]:
+                - /url: /gongchengxmgl/
+              - generic [ref=e761]: /
+              - link "木工" [ref=e762] [cursor=pointer]:
+                - /url: /nmugong/
+              - emphasis [ref=e763]:
+                - link "安保消防" [ref=e764] [cursor=pointer]:
+                  - /url: /anbaoxf/
+              - link "保安" [ref=e765] [cursor=pointer]:
+                - /url: /nbaoan/
+              - generic [ref=e766]: /
+              - link "安检员" [ref=e767] [cursor=pointer]:
+                - /url: /anjiany/
+              - generic [ref=e768]: /
+              - link "安全消防" [ref=e769] [cursor=pointer]:
+                - /url: /anquanxfd/
+              - generic [ref=e770]: /
+              - link "门卫" [ref=e771] [cursor=pointer]:
+                - /url: /menwei/
+              - generic [ref=e772]: /
+              - link "更多»" [ref=e773] [cursor=pointer]:
+                - /url: /job.shtml
+            - generic [ref=e774]:
+              - heading "南京兼职" [level=2] [ref=e775]:
+                - link "南京兼职" [ref=e776] [cursor=pointer]:
+                  - /url: /jianzhi.shtml?PGTID=0d100000-0000-1a87-22e7-88073a9a465e&ClickID=1
+              - emphasis [ref=e777]:
+                - link "假期兼职" [ref=e778] [cursor=pointer]:
+                  - /url: /jianzhi/
+              - link "学生兼职" [ref=e779] [cursor=pointer]:
+                - /url: /xueshengjianzhi1/
+              - generic [ref=e780]: /
+              - link "寒暑假工" [ref=e781] [cursor=pointer]:
+                - /url: /hanshujiagong/
+              - generic [ref=e782]: /
+              - link "服务员" [ref=e783] [cursor=pointer]:
+                - /url: /jzfwy/
+              - generic [ref=e784]: /
+              - link "传单派发" [ref=e785] [cursor=pointer]:
+                - /url: /jzcdpf/
+              - emphasis [ref=e786]:
+                - link "简单兼职" [ref=e787] [cursor=pointer]:
+                  - /url: /jianzhi/
+              - link "钟点工" [ref=e788] [cursor=pointer]:
+                - /url: /zhongdiangong1/
+              - generic [ref=e789]: /
+              - link "包装工" [ref=e790] [cursor=pointer]:
+                - /url: /jzbaozhuanggong/
+              - generic [ref=e791]: /
+              - link "店员|营业员" [ref=e792] [cursor=pointer]:
+                - /url: /jzdyyyy/
+              - generic [ref=e793]: /
+              - link "收银员" [ref=e794] [cursor=pointer]:
+                - /url: /jzshyy/
+              - emphasis [ref=e795]:
+                - link "技能零工" [ref=e796] [cursor=pointer]:
+                  - /url: /jianzhi/
+              - link "技工" [ref=e797] [cursor=pointer]:
+                - /url: /jzjg/
+              - generic [ref=e798]: /
+              - link "水电工" [ref=e799] [cursor=pointer]:
+                - /url: /jzshuidiangong/
+              - generic [ref=e800]: /
+              - link "水电维修" [ref=e801] [cursor=pointer]:
+                - /url: /jzsdwx/
+              - generic [ref=e802]: /
+              - link "物业维修" [ref=e803] [cursor=pointer]:
+                - /url: /jzwuyeweixiu/
+              - emphasis [ref=e804]:
+                - link "蓝领零工" [ref=e805] [cursor=pointer]:
+                  - /url: /jianzhi/
+              - link "普工|操作工" [ref=e806] [cursor=pointer]:
+                - /url: /jzpugongcaozuogong/
+              - generic [ref=e807]: /
+              - link "快递员" [ref=e808] [cursor=pointer]:
+                - /url: /jzkdy/
+              - generic [ref=e809]: /
+              - link "更多>>" [ref=e810] [cursor=pointer]:
+                - /url: /jianzhi/
+            - generic [ref=e811]:
+              - heading "热门行业|场所 企业推广" [level=2] [ref=e812]:
+                - text: 热门行业|场所
+                - link "企业推广" [ref=e814] [cursor=pointer]:
+                  - /url: https://trade.58.com/orderonline/newJob/orderSave/index?from=10134
+              - emphasis [ref=e815]:
+                - link "服务业" [ref=e816] [cursor=pointer]:
+                  - /url: //zp.58.com/backv1/htmlpage/875554629641854976
+              - link "客服" [ref=e817] [cursor=pointer]:
+                - /url: /kefuzhuanyuan/
+              - generic [ref=e818]: /
+              - link "保安" [ref=e819] [cursor=pointer]:
+                - /url: /baoanl/
+              - generic [ref=e820]: /
+              - link "服务员" [ref=e821] [cursor=pointer]:
+                - /url: /cantfwy/
+              - generic [ref=e822]: /
+              - link "外贸" [ref=e823] [cursor=pointer]:
+                - /url: /waimaozhuanyuan/
+              - generic [ref=e824]: /
+              - link "送餐员" [ref=e825] [cursor=pointer]:
+                - /url: /songcanyuan/
+              - emphasis [ref=e826]:
+                - link "IT|互联网" [ref=e827] [cursor=pointer]:
+                  - /url: //zp.58.com/backv1/htmlpage/879638386078408704
+              - link "淘宝美工" [ref=e828] [cursor=pointer]:
+                - /url: /zptaobaomeigong/
+              - generic [ref=e829]: /
+              - link "淘宝客服" [ref=e830] [cursor=pointer]:
+                - /url: /zptaobaokefu/
+              - generic [ref=e831]: /
+              - link "网络销售" [ref=e832] [cursor=pointer]:
+                - /url: /wangluoxiaoshouyuan/
+              - generic [ref=e833]: /
+              - link "程序员" [ref=e834] [cursor=pointer]:
+                - /url: /chengxuyuan/
+              - emphasis [ref=e835]:
+                - link "汽车|制造" [ref=e836] [cursor=pointer]:
+                  - /url: //zp.58.com/backv1/htmlpage/879550839641890816
+              - link "商务司机" [ref=e837] [cursor=pointer]:
+                - /url: /shangwujiaochesiji/
+              - generic [ref=e838]: /
+              - link "汽车销售" [ref=e839] [cursor=pointer]:
+                - /url: /qichexiaoshou/
+              - generic [ref=e840]: /
+              - link "叉车司机" [ref=e841] [cursor=pointer]:
+                - /url: /chachegong/
+              - generic [ref=e842]: /
+              - link "货运司机" [ref=e843] [cursor=pointer]:
+                - /url: /sonhuosiji/
+              - emphasis [ref=e844]:
+                - link "金融|会计" [ref=e845] [cursor=pointer]:
+                  - /url: //zp.58.com/backv1/htmlpage/879261705123692544
+              - link "会计" [ref=e846] [cursor=pointer]:
+                - /url: /caiwu/
+              - generic [ref=e847]: /
+              - link "外汇" [ref=e848] [cursor=pointer]:
+                - /url: /waihuijingli/
+              - generic [ref=e849]: /
+              - link "金融" [ref=e850] [cursor=pointer]:
+                - /url: /jinrongtouzi/
+              - generic [ref=e851]: /
+              - link "出纳" [ref=e852] [cursor=pointer]:
+                - /url: /chuna/
+              - generic [ref=e853]: /
+              - link "投资" [ref=e854] [cursor=pointer]:
+                - /url: /jinrong/
+              - emphasis [ref=e855]:
+                - link "写字楼" [ref=e856] [cursor=pointer]:
+                  - /url: /renli/
+              - link "文员" [ref=e857] [cursor=pointer]:
+                - /url: /wenziluru/
+              - generic [ref=e858]: /
+              - link "设计师" [ref=e859] [cursor=pointer]:
+                - /url: /sheji/
+              - generic [ref=e860]: /
+              - link "前台" [ref=e861] [cursor=pointer]:
+                - /url: /qiantai/
+              - generic [ref=e862]: /
+              - link "销售代表" [ref=e863] [cursor=pointer]:
+                - /url: /xiaoshouyuan/
+              - generic [ref=e864]: /
+              - link "电话销售" [ref=e865] [cursor=pointer]:
+                - /url: /dianhuaxiaoshou/
+              - emphasis [ref=e866]:
+                - link "商场超市" [ref=e867] [cursor=pointer]:
+                  - /url: /chaoshishangye/
+              - link "收银员" [ref=e868] [cursor=pointer]:
+                - /url: /shouying/
+              - generic [ref=e869]: /
+              - link "促销导购" [ref=e870] [cursor=pointer]:
+                - /url: /cuxiao/
+              - generic [ref=e871]: /
+              - link "卖场经理" [ref=e872] [cursor=pointer]:
+                - /url: /dianzhang/
+              - generic [ref=e873]: /
+              - link "更多»" [ref=e874] [cursor=pointer]:
+                - /url: /job.shtml
+            - generic [ref=e875]:
+              - heading "求职简历 超值简历套餐" [level=2] [ref=e876]:
+                - link "求职简历" [ref=e877] [cursor=pointer]:
+                  - /url: //jls.58.com/index.shtml
+                - link "超值简历套餐" [ref=e879] [cursor=pointer]:
+                  - /url: https://trade.58.com/orderonline/newJob/orderSave/index?from=10139#/?initialTabIndex=0
+              - emphasis [ref=e880]:
+                - link "销售" [ref=e881] [cursor=pointer]:
+                  - /url: /qzyewu/
+              - emphasis [ref=e882]:
+                - link "导购" [ref=e883] [cursor=pointer]:
+                  - /url: /qzcuxiao/
+              - emphasis [ref=e884]:
+                - link "厨师" [ref=e885] [cursor=pointer]:
+                  - /url: /qzcanguan/
+              - link "房产经纪" [ref=e886] [cursor=pointer]:
+                - /url: /qzfangdichan/
+              - emphasis [ref=e887]:
+                - link "文员" [ref=e888] [cursor=pointer]:
+                  - /url: /qzwenziluru/
+              - emphasis [ref=e889]:
+                - link "收银" [ref=e890] [cursor=pointer]:
+                  - /url: /qzshouying/
+              - emphasis [ref=e891]:
+                - link "配菜" [ref=e892] [cursor=pointer]:
+                  - /url: /qzchufangqiepei/
+              - link "保险经纪" [ref=e893] [cursor=pointer]:
+                - /url: /qzbaoxian/
+              - emphasis [ref=e894]:
+                - link "前台" [ref=e895] [cursor=pointer]:
+                  - /url: /qzqiantai/
+              - emphasis [ref=e896]:
+                - link "营业员" [ref=e897] [cursor=pointer]:
+                  - /url: /qzyingyeyuan/
+              - emphasis [ref=e898]:
+                - link "服务员" [ref=e899] [cursor=pointer]:
+                  - /url: /qzcantfwy/
+              - link "人事/行政" [ref=e900] [cursor=pointer]:
+                - /url: /qzrenli/
+              - emphasis [ref=e901]:
+                - link "客服" [ref=e902] [cursor=pointer]:
+                  - /url: /qzkefu/
+              - emphasis [ref=e903]:
+                - link "保安" [ref=e904] [cursor=pointer]:
+                  - /url: /qzbaoanl/
+              - emphasis [ref=e905]:
+                - link "洗碗工" [ref=e906] [cursor=pointer]:
+                  - /url: /qzxiwangong/
+              - link "平面设计" [ref=e907] [cursor=pointer]:
+                - /url: /qzsheji/
+              - emphasis [ref=e908]:
+                - link "会计" [ref=e909] [cursor=pointer]:
+                  - /url: /qzcaiwu/
+              - emphasis [ref=e910]:
+                - link "电工" [ref=e911] [cursor=pointer]:
+                  - /url: /qzdianzi/
+              - emphasis [ref=e912]:
+                - link "迎宾" [ref=e913] [cursor=pointer]:
+                  - /url: /qzqiantjd/
+              - link "仓库管理" [ref=e914] [cursor=pointer]:
+                - /url: /qzcangku/
+          - generic [ref=e915]:
+            - heading "票务/卡券" [level=2] [ref=e916]:
+              - link "票务/卡券" [ref=e917] [cursor=pointer]:
+                - /url: /piaowu.shtml
+            - emphasis [ref=e918]:
+              - link "网购卡" [ref=e919] [cursor=pointer]:
+                - /url: /wanggouka/
+            - link "电影票卡" [ref=e920] [cursor=pointer]:
+              - /url: /dianyingpiao/
+            - generic [ref=e921]: /
+            - link "手机充值卡" [ref=e922] [cursor=pointer]:
+              - /url: "/chongzhika/ "
+            - generic [ref=e923]: /
+            - link "游乐园景点" [ref=e924] [cursor=pointer]:
+              - /url: /youle/
+            - emphasis [ref=e925]:
+              - link "购物卡" [ref=e926] [cursor=pointer]:
+                - /url: /gouwuka/
+            - link "健身卡" [ref=e927] [cursor=pointer]:
+              - /url: /jianshenka/
+            - generic [ref=e928]: /
+            - link "游泳卡" [ref=e929] [cursor=pointer]:
+              - /url: /youyongka/
+            - generic [ref=e930]: /
+            - link "其他票务" [ref=e931] [cursor=pointer]:
+              - /url: /qtpiaowu/
+            - emphasis [ref=e932]:
+              - link "特价机票" [ref=e933] [cursor=pointer]:
+                - /url: /jipiao/
+            - link "优惠券/代金券" [ref=e934] [cursor=pointer]:
+              - /url: /xiaofeika/
+          - generic [ref=e935]:
+            - heading "到家精选专区" [level=2] [ref=e936]:
+              - link "到家精选专区" [ref=e937] [cursor=pointer]:
+                - /url: //fangxin.58.com/nj?from=pc_fxbjzq_juheye&source=fxfw_juheye_pc
+            - generic [ref=e939]:
+              - link "品质装修" [ref=e940] [cursor=pointer]:
+                - /url: //fangxin.58.com/demand/form/quickpost?cateid=4063&from=pc_fangxin_zhuangxiu_cssyzq
+              - generic [ref=e941]: "|"
+              - link "无忧保洁" [ref=e942] [cursor=pointer]:
+                - /url: //fangxin.58.com/demand/form/show?cateid=4273&source=fangxin_baojie_biaodan&from=pc_fangxin_baojie_cssyzq
+              - generic [ref=e943]: "|"
+              - link "租车" [ref=e944] [cursor=pointer]:
+                - /url: //fangxin.58.com/demand/form/show?cateid=5196&source=fangxin_zuche_biaodan&from=pc_fangxin_zuche_cssyzq
+              - link "工商注册" [ref=e945] [cursor=pointer]:
+                - /url: //fangxin.58.com/demand/form/show?cateid=4065&source=fangxin_gongshangzhuce_biaodan&from=pc_fangxin_gongshangzhuce_cssyzq
+              - generic [ref=e946]: "|"
+              - link "金牌保姆" [ref=e947] [cursor=pointer]:
+                - /url: //jiazheng.58.com/cfe/demandPc?displayCityId=172&source=pc_shouye_djjxlm_baomu&PGTID=0d100000-000a-ccc1-9a89-f28ac85f8724
+              - generic [ref=e948]: "|"
+              - link "宠物" [ref=e949] [cursor=pointer]:
+                - /url: //hyop.58.com/zt/chongwugouFangpianpc?source=zhaobiao_chongwu_pc_fxfwzq&from=pc_chongwu_fxfwzq&fxhome=chongwu
+          - generic [ref=e950]:
+            - heading "休闲娱乐" [level=2] [ref=e951]:
+              - link "休闲娱乐" [ref=e952] [cursor=pointer]:
+                - /url: /xiuxianyl.shtml?from=58_shouye_xiuxianyl
+            - emphasis [ref=e953]:
+              - link "游泳馆" [ref=e954] [cursor=pointer]:
+                - /url: /youyongguan/
+              - generic [ref=e955]: /
+              - link "篮球场" [ref=e956] [cursor=pointer]:
+                - /url: /lanqc/
+            - emphasis [ref=e957]:
+              - link "健身" [ref=e958] [cursor=pointer]:
+                - /url: /jianshen/
+              - generic [ref=e959]: /
+              - link "户外" [ref=e960] [cursor=pointer]:
+                - /url: /huwaiyundong/
+              - generic [ref=e961]: /
+              - link "桌游" [ref=e962] [cursor=pointer]:
+                - /url: /zhuoyouba/
+            - emphasis [ref=e963]:
+              - link "咖啡厅" [ref=e964] [cursor=pointer]:
+                - /url: /kafeit/
+              - generic [ref=e965]: /
+              - link "手工坊" [ref=e966] [cursor=pointer]:
+                - /url: /diysgf/
+    - generic [ref=e967]:
+      - generic [ref=e969]:
+        - heading "到家服务" [level=2] [ref=e970]:
+          - link "到家服务" [ref=e971] [cursor=pointer]:
+            - /url: https://nj.58.com/shenghuo.shtml
+            - text: 到家服务
+            - img [ref=e972]
+        - list [ref=e973]:
+          - listitem [ref=e974] [cursor=pointer]
+          - listitem [ref=e975] [cursor=pointer]
+        - generic [ref=e976]:
+          - emphasis [ref=e977]:
+            - link "家庭保洁" [ref=e978] [cursor=pointer]:
+              - /url: /baojie/?from=58_shouye_icon
+          - emphasis [ref=e979]:
+            - link "家电维修" [ref=e980] [cursor=pointer]:
+              - /url: /dianqi/?from=58_shouye_icon
+          - emphasis [ref=e981]:
+            - link "搬家" [ref=e982] [cursor=pointer]:
+              - /url: /banjia/?from=58_shouye_icon
+          - emphasis [ref=e983]:
+            - link "保姆月嫂" [ref=e984] [cursor=pointer]:
+              - /url: https://jiazheng.58.com/cfe/demandPc?source=pc_shouye_icon_baomu
+          - emphasis [ref=e985]:
+            - link "手机维修" [ref=e986] [cursor=pointer]:
+              - /url: /shoujiweixiu/?from=58_shouye_icon
+          - emphasis [ref=e987]:
+            - link "管道疏通" [ref=e988] [cursor=pointer]:
+              - /url: /shutong/?from=58_shouye_icon
+          - emphasis [ref=e989]:
+            - link "家具维修" [ref=e990] [cursor=pointer]:
+              - /url: /jiajuweixiu/?from=58_shouye_icon
+          - emphasis [ref=e991]:
+            - link "房屋维修" [ref=e992] [cursor=pointer]:
+              - /url: /fangweixiu/?from=58_shouye_icon
+          - emphasis [ref=e993]:
+            - link "生活配送" [ref=e994] [cursor=pointer]:
+              - /url: /songshui/?from=58_shouye_icon
+          - emphasis [ref=e995]:
+            - link "全部服务" [ref=e996] [cursor=pointer]:
+              - /url: https://nj.58.com/huangye
+      - generic [ref=e998]:
+        - generic [ref=e999]:
+          - heading "热门服务" [level=2] [ref=e1000]:
+            - link "热门服务" [ref=e1001] [cursor=pointer]:
+              - /url: /huangye/?from=58_shouye_huangye
+          - list [ref=e1002]:
+            - listitem [ref=e1003]:
+              - text: 热门
+              - link "钟点工" [ref=e1004] [cursor=pointer]:
+                - /url: https://jiazheng.58.com/cfe/demandPc?source=1945&PGTID=0d100000-000a-ccc1-9a89-f28ac85f8724
+            - listitem [ref=e1005]:
+              - text: 热门
+              - link "法律咨询" [ref=e1006] [cursor=pointer]:
+                - /url: /lvshi/
+            - listitem [ref=e1007]:
+              - text: 热门
+              - link "货运物流" [ref=e1008] [cursor=pointer]:
+                - /url: /huoyun/
+            - listitem [ref=e1009]:
+              - text: 热门
+              - link "家具维修" [ref=e1010] [cursor=pointer]:
+                - /url: /jiajuweixiu/
+            - listitem [ref=e1011]:
+              - link "网络布线" [ref=e1012] [cursor=pointer]:
+                - /url: /xitong/
+            - listitem [ref=e1013]:
+              - link "喷绘招牌" [ref=e1014] [cursor=pointer]:
+                - /url: /penhui/
+            - listitem [ref=e1015]:
+              - link "汽车保养" [ref=e1016] [cursor=pointer]:
+                - /url: /qichejx/
+            - listitem [ref=e1017]:
+              - link "二手回收" [ref=e1018] [cursor=pointer]:
+                - /url: /huishoujy/
+            - listitem [ref=e1019]:
+              - link "租车" [ref=e1020] [cursor=pointer]:
+                - /url: /zuche/
+            - listitem [ref=e1021]:
+              - link "工商注册" [ref=e1022] [cursor=pointer]:
+                - /url: /zhuce/
+            - listitem [ref=e1023]:
+              - link "家装服务" [ref=e1024] [cursor=pointer]:
+                - /url: /jiazhuang/
+            - listitem [ref=e1025]:
+              - link "建材" [ref=e1026] [cursor=pointer]:
+                - /url: /jiancai/
+            - listitem [ref=e1027]:
+              - link "技能培训" [ref=e1028] [cursor=pointer]:
+                - /url: /zhiyepeix/
+            - listitem [ref=e1029]:
+              - link "接送孩子" [ref=e1030] [cursor=pointer]:
+                - /url: https://jiazheng.58.com/cfe/demandPc?source=1946&PGTID=0d100000-000a-ccc1-9a89-f28ac85f8724
+            - listitem [ref=e1031]:
+              - link "做饭阿姨" [ref=e1032] [cursor=pointer]:
+                - /url: https://jiazheng.58.com/cfe/demandPc?source=1947&PGTID=0d100000-000a-ccc1-9a89-f28ac85f8724
+        - generic [ref=e1033]:
+          - heading "南京本地服务" [level=2] [ref=e1034]:
+            - link "南京本地服务" [ref=e1035] [cursor=pointer]:
+              - /url: /huangye/?from=58_shouye_huangye
+          - emphasis [ref=e1036]:
+            - link "灵活用工服务" [ref=e1037] [cursor=pointer]:
+              - /url: https://bj.58.com/caishui/54996963653044x.shtml?page_from=sou_list&classpolicy=classify_D%2Cuuid_sGX8cfdYBiAEdniNCAyJKH7zaMp6wSWD&search_uuid=sGX8cfdYBiAEdniNCAyJKH7zaMp6wSWD
+          - emphasis
+          - emphasis
+          - emphasis
+        - generic [ref=e1038]:
+          - heading "家政服务" [level=2] [ref=e1039]:
+            - link "家政服务" [ref=e1040] [cursor=pointer]:
+              - /url: /shenghuo.shtml?from=58_shouye_shenghuo
+          - emphasis [ref=e1041]:
+            - link "搬家" [ref=e1042] [cursor=pointer]:
+              - /url: /banjia/
+          - link "居民" [ref=e1043] [cursor=pointer]:
+            - /url: /juminbj/
+          - generic [ref=e1044]: /
+          - link "公司" [ref=e1045] [cursor=pointer]:
+            - /url: /gongsibanjia/
+          - generic [ref=e1046]: /
+          - link "小型" [ref=e1047] [cursor=pointer]:
+            - /url: /xiaoxingbanjia/
+          - generic [ref=e1048]: /
+          - link "长途" [ref=e1049] [cursor=pointer]:
+            - /url: /changtubanjia/
+          - generic [ref=e1050]: /
+          - link "空调移机" [ref=e1051] [cursor=pointer]:
+            - /url: /kongtiaochaizhuang/
+          - generic [ref=e1052]: /
+          - link "设备" [ref=e1053] [cursor=pointer]:
+            - /url: /shebeibanqian/
+          - emphasis [ref=e1054]:
+            - link "保姆" [ref=e1055] [cursor=pointer]:
+              - /url: /baomu/
+          - link "月嫂" [ref=e1056] [cursor=pointer]:
+            - /url: /yuesao/
+          - generic [ref=e1057]: /
+          - link "育儿嫂" [ref=e1058] [cursor=pointer]:
+            - /url: /yuyingshi/
+          - generic [ref=e1059]: /
+          - link "钟点工" [ref=e1060] [cursor=pointer]:
+            - /url: /zhongdiangong/
+          - generic [ref=e1061]: /
+          - link "催乳师" [ref=e1062] [cursor=pointer]:
+            - /url: /cuirushi/
+          - generic [ref=e1063]: /
+          - link "保姆" [ref=e1064] [cursor=pointer]:
+            - /url: /bmu/
+          - emphasis [ref=e1065]:
+            - link "保洁" [ref=e1066] [cursor=pointer]:
+              - /url: /baojie/
+          - link "家庭保洁" [ref=e1067] [cursor=pointer]:
+            - /url: /jiatingbaojie/
+          - generic [ref=e1068]: /
+          - link "开荒" [ref=e1069] [cursor=pointer]:
+            - /url: /kaihuangbaojie/
+          - generic [ref=e1070]: /
+          - link "空气净化" [ref=e1071] [cursor=pointer]:
+            - /url: /kongqijinghua/
+          - emphasis [ref=e1072]:
+            - link "家务" [ref=e1073] [cursor=pointer]:
+              - /url: /shenghuo.shtml?
+          - link "回收" [ref=e1074] [cursor=pointer]:
+            - /url: /huishoujy/
+          - generic [ref=e1075]: /
+          - link "疏通" [ref=e1076] [cursor=pointer]:
+            - /url: /shutong/
+          - generic [ref=e1077]: /
+          - link "配送" [ref=e1078] [cursor=pointer]:
+            - /url: /songshui/
+          - generic [ref=e1079]: /
+          - link "开锁" [ref=e1080] [cursor=pointer]:
+            - /url: /kaisuo/
+          - generic [ref=e1081]: /
+          - link "鲜花" [ref=e1082] [cursor=pointer]:
+            - /url: /lipinxianhua/
+          - generic [ref=e1083]: /
+          - link "干洗" [ref=e1084] [cursor=pointer]:
+            - /url: /ganxi/
+          - generic [ref=e1085]: /
+          - link "白事" [ref=e1086] [cursor=pointer]:
+            - /url: /binzang/
+          - emphasis [ref=e1087]:
+            - link "维修" [ref=e1088] [cursor=pointer]:
+              - /url: /shenghuo.shtml?
+          - link "家电" [ref=e1089] [cursor=pointer]:
+            - /url: /dianqi/
+          - generic [ref=e1090]: /
+          - link "房屋" [ref=e1091] [cursor=pointer]:
+            - /url: /fangweixiu/
+          - generic [ref=e1092]: /
+          - link "家具" [ref=e1093] [cursor=pointer]:
+            - /url: /jiajuweixiu/
+          - generic [ref=e1094]: /
+          - link "电脑" [ref=e1095] [cursor=pointer]:
+            - /url: /weixiu/
+          - generic [ref=e1096]: /
+          - link "手机" [ref=e1097] [cursor=pointer]:
+            - /url: /shoujiweixiu/
+          - generic [ref=e1098]: /
+          - link "空调" [ref=e1099] [cursor=pointer]:
+            - /url: /kongtiao/
+          - generic [ref=e1100]: /
+          - link "数码" [ref=e1101] [cursor=pointer]:
+            - /url: /shumaweixiu/
+          - heading "装修建材" [level=2] [ref=e1102]:
+            - link "装修建材" [ref=e1103] [cursor=pointer]:
+              - /url: /zhuangxiujc.shtml?from=58_shouye_zhuangxiujc
+          - emphasis [ref=e1104]:
+            - link "家装" [ref=e1105] [cursor=pointer]:
+              - /url: /jiazhuang/
+          - link "装修" [ref=e1106] [cursor=pointer]:
+            - /url: /zhuangxiugs/
+          - generic [ref=e1107]: /
+          - link "设计" [ref=e1108] [cursor=pointer]:
+            - /url: /zhuangxiu/
+          - generic [ref=e1109]: /
+          - link "找散工" [ref=e1110] [cursor=pointer]:
+            - /url: //nj.58.com/shineizx
+          - link "建材" [ref=e1111] [cursor=pointer]:
+            - /url: /jiancai/
+          - generic [ref=e1112]: /
+          - link "家具" [ref=e1113] [cursor=pointer]:
+            - /url: /jiajusp/
+          - generic [ref=e1114]: /
+          - link "家纺" [ref=e1115] [cursor=pointer]:
+            - /url: /jiajuzs/
+          - emphasis [ref=e1116]:
+            - link "公装" [ref=e1117] [cursor=pointer]:
+              - /url: /gongzhuang/
+          - link "办公室" [ref=e1118] [cursor=pointer]:
+            - /url: /zshi/
+          - generic [ref=e1119]: /
+          - link "店铺" [ref=e1120] [cursor=pointer]:
+            - /url: /dianpuzx/
+          - generic [ref=e1121]: /
+          - link "厂房" [ref=e1122] [cursor=pointer]:
+            - /url: /changfzx/
+          - generic [ref=e1123]: /
+          - link "餐厅" [ref=e1124] [cursor=pointer]:
+            - /url: /canyinylzx/
+          - generic [ref=e1125]: /
+          - link "酒店" [ref=e1126] [cursor=pointer]:
+            - /url: /jdzhuangxiu/
+          - generic [ref=e1127]: /
+          - link "自建房" [ref=e1128] [cursor=pointer]:
+            - /url: /zijiangaizao/
+          - heading "商务服务" [level=2] [ref=e1129]:
+            - link "商务服务" [ref=e1130] [cursor=pointer]:
+              - /url: /shangwu.shtml?from=58_shouye_shangwu
+          - emphasis [ref=e1131]:
+            - link "开业" [ref=e1132] [cursor=pointer]:
+              - /url: /zhuce/
+          - link "工商注册" [ref=e1133] [cursor=pointer]:
+            - /url: /zhuce/
+          - generic [ref=e1134]: /
+          - link "资料变更" [ref=e1135] [cursor=pointer]:
+            - /url: /yanzikaihu/
+          - generic [ref=e1136]: /
+          - link "商标专利" [ref=e1137] [cursor=pointer]:
+            - /url: /shangbiaozhli/
+          - generic [ref=e1138]: /
+          - link "起名" [ref=e1139] [cursor=pointer]:
+            - /url: /qimingfengshui/
+          - emphasis [ref=e1140]:
+            - link "财务" [ref=e1141] [cursor=pointer]:
+              - /url: /caishui/
+          - link "投资担保" [ref=e1142] [cursor=pointer]:
+            - /url: /danbaobaoxiantouzi/
+          - generic [ref=e1143]: /
+          - link "财务会计" [ref=e1144] [cursor=pointer]:
+            - /url: /caishui/
+          - generic [ref=e1145]: /
+          - link "保险" [ref=e1146] [cursor=pointer]:
+            - /url: /baoxianfuwu/
+          - generic [ref=e1147]: /
+          - link "咨询" [ref=e1148] [cursor=pointer]:
+            - /url: /zixunzhongjie/
+          - generic [ref=e1149]: /
+          - link "法律" [ref=e1150] [cursor=pointer]:
+            - /url: /lvshi/
+          - emphasis [ref=e1151]:
+            - link "物流" [ref=e1152] [cursor=pointer]:
+              - /url: /huoyun/
+          - link "货运物流" [ref=e1153] [cursor=pointer]:
+            - /url: /huoyun/
+          - generic [ref=e1154]: /
+          - link "快递" [ref=e1155] [cursor=pointer]:
+            - /url: /kuaidi/
+          - generic [ref=e1156]: /
+          - link "货运专线" [ref=e1157] [cursor=pointer]:
+            - /url: /wuliu/
+          - generic [ref=e1158]: /
+          - link "货架" [ref=e1159] [cursor=pointer]:
+            - /url: /huojiasheb/
+          - emphasis [ref=e1160]:
+            - link "营销" [ref=e1161] [cursor=pointer]:
+              - /url: /shangwu.shtml?
+          - link "广告" [ref=e1162] [cursor=pointer]:
+            - /url: /chuanmei/
+          - generic [ref=e1163]: /
+          - link "设计策划" [ref=e1164] [cursor=pointer]:
+            - /url: /pingmian/
+          - generic [ref=e1165]: /
+          - link "印刷包装" [ref=e1166] [cursor=pointer]:
+            - /url: /yinshua/
+          - generic [ref=e1167]: /
+          - link "喷绘招牌" [ref=e1168] [cursor=pointer]:
+            - /url: /penhui/
+          - emphasis
+          - link "礼品定制" [ref=e1169] [cursor=pointer]:
+            - /url: /lipindingzhi/
+          - generic [ref=e1170]: /
+          - link "展会服务" [ref=e1171] [cursor=pointer]:
+            - /url: /zhanhuifuwu/
+          - generic [ref=e1172]: /
+          - link "翻译速记" [ref=e1173] [cursor=pointer]:
+            - /url: /fanyi/
+          - generic [ref=e1174]: /
+          - link "制卡" [ref=e1175] [cursor=pointer]:
+            - /url: /allzhika/
+          - emphasis [ref=e1176]:
+            - link "IT" [ref=e1177] [cursor=pointer]:
+              - /url: /wangzhan/
+          - link "建网站" [ref=e1178] [cursor=pointer]:
+            - /url: /wangzhan/
+          - generic [ref=e1179]: /
+          - link "网络布线" [ref=e1180] [cursor=pointer]:
+            - /url: /xitong/
+          - generic [ref=e1181]: /
+          - link "app开发" [ref=e1182] [cursor=pointer]:
+            - /url: /appkaifa/
+          - generic [ref=e1183]: /
+          - link "网站推广" [ref=e1184] [cursor=pointer]:
+            - /url: /wangzhantg/
+          - emphasis [ref=e1185]:
+            - link "基建" [ref=e1186] [cursor=pointer]:
+              - /url: /jianzhuweixiu/
+          - link "租赁" [ref=e1187] [cursor=pointer]:
+            - /url: /zulin/
+          - generic [ref=e1188]: /
+          - link "机械维修" [ref=e1189] [cursor=pointer]:
+            - /url: /jixieweixiu/
+          - generic [ref=e1190]: /
+          - link "办公维修" [ref=e1191] [cursor=pointer]:
+            - /url: /bgsbwx/
+          - generic [ref=e1192]: /
+          - link "建筑维修" [ref=e1193] [cursor=pointer]:
+            - /url: /jianzhuweixiu/
+          - heading "招商加盟" [level=2] [ref=e1194]:
+            - link "招商加盟" [ref=e1195] [cursor=pointer]:
+              - /url: /zhaoshang.shtml
+          - emphasis [ref=e1196]:
+            - link "小本开店" [ref=e1197] [cursor=pointer]:
+              - /url: /canyinjia/
+          - link "餐饮" [ref=e1198] [cursor=pointer]:
+            - /url: /canyinjia/
+          - generic [ref=e1199]: /
+          - link "服装" [ref=e1200] [cursor=pointer]:
+            - /url: /fuzhuangjia/
+          - generic [ref=e1201]: /
+          - link "网店" [ref=e1202] [cursor=pointer]:
+            - /url: /wanbbajm/
+          - generic [ref=e1203]: /
+          - link "快递" [ref=e1204] [cursor=pointer]:
+            - /url: /kuaidijm/
+          - generic [ref=e1205]: /
+          - link "礼品" [ref=e1206] [cursor=pointer]:
+            - /url: /lipinshipin/
+          - generic [ref=e1207]: /
+          - link "小吃店" [ref=e1208] [cursor=pointer]:
+            - /url: /jingdianxiaochi/
+          - emphasis [ref=e1209]:
+            - link "加盟即赚" [ref=e1210] [cursor=pointer]:
+              - /url: /zhaoshang.shtml/
+          - link "特色" [ref=e1211] [cursor=pointer]:
+            - /url: /qitajiameng/
+          - generic [ref=e1212]: /
+          - link "美容" [ref=e1213] [cursor=pointer]:
+            - /url: /meirongbaojain/
+          - generic [ref=e1214]: /
+          - link "建材" [ref=e1215] [cursor=pointer]:
+            - /url: /jiancaijm/
+          - generic [ref=e1216]: /
+          - link "家居" [ref=e1217] [cursor=pointer]:
+            - /url: /jiajuhuanbao/
+          - generic [ref=e1218]: /
+          - link "教育" [ref=e1219] [cursor=pointer]:
+            - /url: /jiaoyuertong/
+          - generic [ref=e1220]: /
+          - link "车服务" [ref=e1221] [cursor=pointer]:
+            - /url: /qczsjm/
+        - generic [ref=e1223]:
+          - heading "婚庆摄影" [level=2] [ref=e1224]:
+            - link "婚庆摄影" [ref=e1225] [cursor=pointer]:
+              - /url: /hunjiehunqing.shtml?from=58_shouye_hunjiehunqing
+          - emphasis [ref=e1226]:
+            - link "结婚" [ref=e1227] [cursor=pointer]:
+              - /url: /hunqing/
+          - link "婚庆" [ref=e1228] [cursor=pointer]:
+            - /url: /hunqinggongsi/
+          - generic [ref=e1229]: /
+          - link "婚车" [ref=e1230] [cursor=pointer]:
+            - /url: /hunqingzuche/
+          - generic [ref=e1231]: /
+          - link "婚宴" [ref=e1232] [cursor=pointer]:
+            - /url: /hunqingjiudian/
+          - generic [ref=e1233]: /
+          - link "司仪" [ref=e1234] [cursor=pointer]:
+            - /url: /hunqingsiyi/
+          - generic [ref=e1235]: /
+          - link "彩妆" [ref=e1236] [cursor=pointer]:
+            - /url: /xinnianggenzhuang/
+          - generic [ref=e1237]: /
+          - link "用品" [ref=e1238] [cursor=pointer]:
+            - /url: /hunqingyongpin/
+          - generic [ref=e1239]: /
+          - link "跟拍" [ref=e1240] [cursor=pointer]:
+            - /url: /hunligenpai/
+          - emphasis [ref=e1241]:
+            - link "摄影" [ref=e1242] [cursor=pointer]:
+              - /url: /hunsha/
+          - link "婚纱" [ref=e1243] [cursor=pointer]:
+            - /url: /hunshasy/
+          - generic [ref=e1244]: /
+          - link "儿童" [ref=e1245] [cursor=pointer]:
+            - /url: /ertongsheying/
+          - generic [ref=e1246]: /
+          - link "写真" [ref=e1247] [cursor=pointer]:
+            - /url: /gerenxiezhen/
+          - generic [ref=e1248]: /
+          - link "摄像" [ref=e1249] [cursor=pointer]:
+            - /url: /hunsha/
+          - generic [ref=e1250]: /
+          - link "庆典" [ref=e1251] [cursor=pointer]:
+            - /url: /huizhan/
+          - generic [ref=e1252]: /
+          - link "演出" [ref=e1253] [cursor=pointer]:
+            - /url: /ydyc/
+          - generic [ref=e1254]: /
+          - link "场地" [ref=e1255] [cursor=pointer]:
+            - /url: /changdidajian/
+          - heading "旅游酒店" [level=2] [ref=e1256]:
+            - link "旅游酒店" [ref=e1257] [cursor=pointer]:
+              - /url: /lvyouxiuxian.shtml?from=58_shouye_lvyouxiuxian
+          - emphasis [ref=e1258]:
+            - link "周边" [ref=e1259] [cursor=pointer]:
+              - /url: /zhoubianyou/
+          - link "农家乐" [ref=e1260] [cursor=pointer]:
+            - /url: /nongjiale/
+          - generic [ref=e1261]: /
+          - link "烧烤" [ref=e1262] [cursor=pointer]:
+            - /url: /shaokaoy/
+          - generic [ref=e1263]: /
+          - link "度假村" [ref=e1264] [cursor=pointer]:
+            - /url: /dujia/
+          - generic [ref=e1265]: /
+          - link "采摘" [ref=e1266] [cursor=pointer]:
+            - /url: /caizhai/
+          - generic [ref=e1267]: /
+          - link "漂流" [ref=e1268] [cursor=pointer]:
+            - /url: /piaoliuq/
+          - emphasis [ref=e1269]:
+            - link "国内" [ref=e1270] [cursor=pointer]:
+              - /url: /lvyouxianlu/
+          - link "酒店" [ref=e1271] [cursor=pointer]:
+            - /url: /jdyd/
+          - generic [ref=e1272]: /
+          - link "自驾游" [ref=e1273] [cursor=pointer]:
+            - /url: /lvyouxianlu/pve_5500_2/
+          - generic [ref=e1274]: /
+          - link "旅行社" [ref=e1275] [cursor=pointer]:
+            - /url: /lvyou/
+          - link "出境" [ref=e1276] [cursor=pointer]:
+            - /url: /guojilvyou/
+          - link "签证" [ref=e1277] [cursor=pointer]:
+            - /url: /visa/
+          - generic [ref=e1278]: /
+          - link "跟团" [ref=e1279] [cursor=pointer]:
+            - /url: /guojilvyou/pve_7455_552265/
+        - generic [ref=e1280]:
+          - generic [ref=e1281]:
+            - heading "餐饮美食" [level=2] [ref=e1282]:
+              - link "餐饮美食" [ref=e1283] [cursor=pointer]:
+                - /url: /canyin.shtml?from=58_shouye_canyin
+            - link "外卖" [ref=e1284] [cursor=pointer]:
+              - /url: /waimai/
+            - link "快餐" [ref=e1286] [cursor=pointer]:
+              - /url: /kuaican/
+            - link "宴会" [ref=e1288] [cursor=pointer]:
+              - /url: /yanhuican/
+            - link "蛋糕" [ref=e1290] [cursor=pointer]:
+              - /url: /dangao/
+            - link "美食" [ref=e1291] [cursor=pointer]:
+              - /url: /zhongcanyin/
+            - link "西餐" [ref=e1293] [cursor=pointer]:
+              - /url: /xican/
+            - link "火锅" [ref=e1295] [cursor=pointer]:
+              - /url: /huoguo/
+            - link "自助" [ref=e1297] [cursor=pointer]:
+              - /url: /zizhu/
+          - generic [ref=e1298]:
+            - heading "丽人" [level=2] [ref=e1299]:
+              - link "丽人" [ref=e1300] [cursor=pointer]:
+                - /url: /liren.shtml?from=58_shouye_liren
+            - link "美容" [ref=e1301] [cursor=pointer]:
+              - /url: /mianbumeir/
+            - generic [ref=e1302]: /
+            - link "祛斑" [ref=e1303] [cursor=pointer]:
+              - /url: /quban/
+            - generic [ref=e1304]: /
+            - link "美发" [ref=e1305] [cursor=pointer]:
+              - /url: /ssmeifa/
+            - generic [ref=e1306]: /
+            - link "美甲" [ref=e1307] [cursor=pointer]:
+              - /url: /mrmeijia/
+            - link "纹身" [ref=e1308] [cursor=pointer]:
+              - /url: /wenshen/
+            - generic [ref=e1309]: /
+            - link "瘦身" [ref=e1310] [cursor=pointer]:
+              - /url: /meitishou/
+            - generic [ref=e1311]: /
+            - link "舞蹈" [ref=e1312] [cursor=pointer]:
+              - /url: /jianshenwudao/
+            - generic [ref=e1313]: /
+            - link "瑜伽" [ref=e1314] [cursor=pointer]:
+              - /url: /yujia/
+            - link "产后修复" [ref=e1315] [cursor=pointer]:
+              - /url: https://jiazheng.58.com/cfe/demandPc?displayCityId=172&source=1775
+        - generic [ref=e1316]:
+          - generic [ref=e1317]:
+            - heading "农林牧副渔" [level=2] [ref=e1318]:
+              - link "农林牧副渔" [ref=e1319] [cursor=pointer]:
+                - /url: /nonglinmy.shtml?from=58_shouye_nonglinmy
+            - link "农作物" [ref=e1320] [cursor=pointer]:
+              - /url: /nongzuowu/
+            - generic [ref=e1321]: /
+            - link "农用车" [ref=e1322] [cursor=pointer]:
+              - /url: /nongyongchegc/
+            - generic [ref=e1323]: /
+            - link "种苗" [ref=e1324] [cursor=pointer]:
+              - /url: /zhongmiao/
+            - link "畜禽" [ref=e1325] [cursor=pointer]:
+              - /url: /xumuye/
+            - generic [ref=e1326]: /
+            - link "饲料" [ref=e1327] [cursor=pointer]:
+              - /url: /siliaoshouyao/
+            - generic [ref=e1328]: /
+            - link "园林花卉" [ref=e1329] [cursor=pointer]:
+              - /url: /yuanlinye/
+          - generic [ref=e1330]:
+            - heading "批发采购" [level=2] [ref=e1331]:
+              - link "批发采购" [ref=e1332] [cursor=pointer]:
+                - /url: /shop.shtml?from=58_shouye_pifa_nj
+            - link "化妆品" [ref=e1333] [cursor=pointer]:
+              - /url: /huazhuangp/
+            - generic [ref=e1334]: /
+            - link "服装" [ref=e1335] [cursor=pointer]:
+              - /url: /fushixm/
+            - generic [ref=e1336]: /
+            - link "运动用品" [ref=e1337] [cursor=pointer]:
+              - /url: /huwaiyd/
+            - link "食品" [ref=e1338] [cursor=pointer]:
+              - /url: /shipinlei/
+            - generic [ref=e1339]: /
+            - link "礼品" [ref=e1340] [cursor=pointer]:
+              - /url: /xianhuasudi/
+            - generic [ref=e1341]: /
+            - link "商超" [ref=e1342] [cursor=pointer]:
+              - /url: /shangchaoshb/
+            - generic [ref=e1343]: /
+            - link "安防" [ref=e1344] [cursor=pointer]:
+              - /url: /anfangsheb/
+        - generic [ref=e1346]:
+          - heading "健康生活" [level=2] [ref=e1347]:
+            - link "健康生活" [ref=e1348] [cursor=pointer]:
+              - /url: /liren.shtml
+          - link "美发" [ref=e1349] [cursor=pointer]:
+            - /url: /ssmeifa/
+          - generic [ref=e1350]: /
+          - link "美容" [ref=e1351] [cursor=pointer]:
+            - /url: /mianbumeir/
+          - generic [ref=e1352]: /
+          - link "瘦身" [ref=e1353] [cursor=pointer]:
+            - /url: /meitishou/
+          - link "产后修复" [ref=e1354] [cursor=pointer]:
+            - /url: https://jiazheng.58.com/cfe/demandPc?displayCityId=172&source=1776
+          - text: /
+          - link "舞蹈瑜伽" [ref=e1355] [cursor=pointer]:
+            - /url: /jianshenwudao/
+          - generic [ref=e1356]: /
+          - link "口腔护理" [ref=e1357] [cursor=pointer]:
+            - /url: /kouqiang/
+        - link "社保医疗" [ref=e1358] [cursor=pointer]:
+          - /url: //biandang.58.com/nj/shebao_home/?from=pc_home_bm_area_banzheng_tab7
+        - link "社保卡" [ref=e1359] [cursor=pointer]:
+          - /url: //biandang.58.com/nj/shebaoka/?from=pc_home_bm_area_banzheng_tab8
+        - generic [ref=e1360]: /
+        - link "公积金" [ref=e1361] [cursor=pointer]:
+          - /url: //biandang.58.com/nj/gongjijin/?from=pc_home_bm_area_banzheng_tab9
+        - generic [ref=e1362]: /
+        - link "医疗" [ref=e1363] [cursor=pointer]:
+          - /url: //biandang.58.com/nj/yiliaobaoxian/?from=pc_home_bm_area_banzheng_tab10
+        - generic [ref=e1364]: /
+        - link "挂号技巧" [ref=e1365] [cursor=pointer]:
+          - /url: //biandang.58.com/nj/guahaojiqiao/?from=pc_home_bm_area_banzheng_tab11
+        - generic [ref=e1366]: /
+        - link "低保" [ref=e1367] [cursor=pointer]:
+          - /url: //biandang.58.com/nj/dibao/?from=pc_home_bm_area_banzheng_tab12
+  - generic [ref=e1368]:
+    - generic [ref=e1369]:
+      - link "中文专业生活信息门户" [ref=e1370] [cursor=pointer]:
+        - /url: /
+        - img "中文专业生活信息门户" [ref=e1371]
+      - list [ref=e1372]:
+        - listitem [ref=e1373]: 集团成员
+        - listitem [ref=e1374]:
+          - link "安居客" [ref=e1375] [cursor=pointer]:
+            - /url: //www.anjuke.com/
+        - listitem [ref=e1376]:
+          - link "驾校一点通" [ref=e1377] [cursor=pointer]:
+            - /url: //www.jxedt.com/?from=58
+        - listitem [ref=e1378]:
+          - link "英才直聘" [ref=e1379] [cursor=pointer]:
+            - /url: //www.chinahr.com/
+        - listitem [ref=e1380]:
+          - link "58到家" [ref=e1381] [cursor=pointer]:
+            - /url: //daojiajx.58.com/app/brand/value/brandPic?PGTID=0d100000-0000-1695-a778-4cb6b8ccab51&ClickID=5
+        - listitem [ref=e1382]:
+          - link "考试宝" [ref=e1383] [cursor=pointer]:
+            - /url: //www.kaoshibao.com/
+      - list [ref=e1384]:
+        - listitem [ref=e1385]: 帮助中心
+        - listitem [ref=e1386]:
+          - link "常见问题" [ref=e1387] [cursor=pointer]:
+            - /url: //helps.58.com/base/question?categoryId=0&siteId=5601&sourceType=58pc-zz-khbz&terminal=PC
+        - listitem [ref=e1388]:
+          - link "更多帮助" [ref=e1389] [cursor=pointer]:
+            - /url: //helps.58.com/base/home?siteId=5601&terminal=PC&sourceType=58pc-zz-khbz
+        - listitem [ref=e1390]:
+          - link "意见反馈" [ref=e1391] [cursor=pointer]:
+            - /url: //helps.58.com/base/feedback?siteId=5601&templateId=9501&terminal=PC&sourceType=58pc-zz-jyfk
+        - listitem [ref=e1392]:
+          - link "隐私政策" [ref=e1393] [cursor=pointer]:
+            - /url: //helps.58.com/rules/detail?siteId=5502&terminal=PC&contentId=302337&sourceType=58pc-zz-khfw-khbzqt&spReturn=1
+      - list [ref=e1394]:
+        - listitem [ref=e1395]: 关注我们
+        - listitem [ref=e1396]:
+          - link "新浪微博" [ref=e1397] [cursor=pointer]:
+            - /url: //weibo.com/58tongcheng
+        - listitem [ref=e1398]: 官网微信
+      - list [ref=e1399]:
+        - listitem [ref=e1400]: 关于58同城
+        - listitem [ref=e1401]:
+          - link "了解58同城" [ref=e1402] [cursor=pointer]:
+            - /url: https://about.58.com/official/HomePage?title=0
+        - listitem [ref=e1403]:
+          - link "加入58同城" [ref=e1404] [cursor=pointer]:
+            - /url: //career.58.com/
+        - listitem [ref=e1405]:
+          - link "协议及规则公示专区" [ref=e1406] [cursor=pointer]:
+            - /url: //helps.58.com/base/question?from=1&siteId=5601&sourceType=58pc-zz-khbz&terminal=PC
+      - list [ref=e1407]:
+        - listitem [ref=e1408]: 服务支持
+        - listitem [ref=e1409]:
+          - link "推广服务" [ref=e1410] [cursor=pointer]:
+            - /url: //e.58.com
+        - listitem [ref=e1411]:
+          - link "渠道招商" [ref=e1412] [cursor=pointer]:
+            - /url: //biz.58.com
+        - listitem [ref=e1413]:
+          - link "商家推广" [ref=e1414] [cursor=pointer]:
+            - /url: //wbactivity.58.com/pc/adIndex?source=3
+        - listitem [ref=e1415]:
+          - link "维权中心" [ref=e1416] [cursor=pointer]:
+            - /url: https://weiquan.58.com/home?terminal=PC&centerId=9981&type=all&sourceType=58pc1
+        - listitem [ref=e1417]:
+          - link "举报平台" [ref=e1418] [cursor=pointer]:
+            - /url: //110.58.com
+      - list [ref=e1419]:
+        - listitem [ref=e1420]: 会员服务
+        - listitem [ref=e1421]:
+          - link "会员介绍" [ref=e1422] [cursor=pointer]:
+            - /url: //e.58.com/?from=90007
+        - listitem [ref=e1423]:
+          - link "推广热线" [ref=e1424] [cursor=pointer]:
+            - /url: //e.58.com/contact.html?from=90008
+        - listitem [ref=e1425]:
+          - link "开通招聘会员" [ref=e1426] [cursor=pointer]:
+            - /url: https://zhaopin.58.com/?from=10178#/?_q
+    - generic [ref=e1427]:
+      - generic [ref=e1428]:
+        - link "常见问题" [ref=e1429] [cursor=pointer]:
+          - /url: https://helps.58.com/base/question?categoryId=0&siteId=5601&sourceType=58pc-zz-khbz&terminal=PC
+        - text: "|"
+        - link "帮助中心" [ref=e1430] [cursor=pointer]:
+          - /url: https://helps.58.com/base/home?siteId=5601&terminal=PC&sourceType=58pc-zz-khbz
+        - text: "|"
+        - link "意见反馈" [ref=e1431] [cursor=pointer]:
+          - /url: https://helps.58.com/base/feedback?siteId=5601&templateId=9501&terminal=PC&sourceType=58pc-zz-jyfk
+        - text: "|"
+        - link "了解58同城" [ref=e1432] [cursor=pointer]:
+          - /url: //about.58.com/
+        - text: "|"
+        - link "加入58同城" [ref=e1433] [cursor=pointer]:
+          - /url: //career.58.com/
+        - text: "|"
+        - link "反欺诈联盟" [ref=e1434] [cursor=pointer]:
+          - /url: //fanqizha.58.com
+        - text: "|"
+        - link "报案平台" [ref=e1435] [cursor=pointer]:
+          - /url: //weiquan.58.com/home?terminal=PC&centerId=9981&type=all&sourceType=58pc2
+        - text: "|"
+        - link "推广服务" [ref=e1436] [cursor=pointer]:
+          - /url: //e.58.com
+        - text: "|"
+        - link "渠道招商" [ref=e1437] [cursor=pointer]:
+          - /url: //biz.58.com
+        - text: "|"
+        - link "商家推广" [ref=e1438] [cursor=pointer]:
+          - /url: https://wbactivity.58.com/pc/adIndex?source=4
+        - text: "|"
+        - link "维权中心" [ref=e1439] [cursor=pointer]:
+          - /url: //weiquan.58.com/home?terminal=PC&centerId=9981&type=all&sourceType=58pc1
+        - text: "|"
+        - link "知识产权投诉" [ref=e1440] [cursor=pointer]:
+          - /url: https://helps.58.com/base/rules/detail?contentId=301624&from=2&siteId=5601&sourceType=58pc-zz-khbz&terminal=PC
+      - generic [ref=e1441]:
+        - generic [ref=e1442]:
+          - emphasis [ref=e1443]: 2005-2028 58.com版权所有
+          - text: "|"
+          - link "京公网备案信息11010502000809" [ref=e1444] [cursor=pointer]:
+            - /url: http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11010502000809
+          - text: "|"
+          - link "京ICP证060405" [ref=e1445] [cursor=pointer]:
+            - /url: //j1.58cdn.com.cn/arthurupload/arthurlocalpush/ysk/icpbeian6page.jpg
+          - text: "|"
+          - link "京ICP备10012705号-2" [ref=e1446] [cursor=pointer]:
+            - /url: http://beian.miit.gov.cn
+          - text: "|"
+          - link "津网文（2025）0237-002号" [ref=e1447] [cursor=pointer]:
+            - /url: //j1.58cdn.com.cn/arthurupload/zhiyou/wwxkz.jpg
+          - text: "|"
+          - link "乙测资字11513278" [ref=e1448] [cursor=pointer]:
+            - /url: https://j1.58cdn.com.cn/arthurupload/arthurlocalpush/ysk/cehui.jpg
+          - text: "|"
+          - link "联系我们" [ref=e1449] [cursor=pointer]:
+            - /url: //ai.58.com/pc/#/entry/joinfrom=footer
+        - generic [ref=e1450]:
+          - link "人力资源服务许可证" [ref=e1451] [cursor=pointer]:
+            - /url: //j1.58cdn.com.cn/arthurupload/arthurlocalpush/ysk/renlifuwuxukezheng.jpg
+          - text: "|"
+          - link "广播电视节目制作经营许可证" [ref=e1452] [cursor=pointer]:
+            - /url: //j1.58cdn.com.cn/arthurupload/arthurlocalpush/ysk/guangbodianshi.jpg
+          - text: "|"
+          - emphasis [ref=e1453]: 违法信息/未成年人举报：4008135858 jubao@58ganji.com
+          - text: "|"
+          - emphasis [ref=e1454]: 员工舞弊举报：wb@58.com
+          - text: "|"
+          - link "代理记账许可证" [ref=e1455] [cursor=pointer]:
+            - /url: //j1.58cdn.com.cn/arthurupload/zhiyou/mrs/account.jpg
+          - text: "|"
+          - link "算法备案" [ref=e1456] [cursor=pointer]:
+            - /url: https://helps.58.com/rules/detail?siteId=5502&terminal=PC&contentId=333972&sourceType=58pc-zz-khbz&spReturn=1
+      - generic [ref=e1457]: 公司主体：北京五八信息技术有限公司官方客服：10105858
+      - generic [ref=e1458]:
+        - link [ref=e1459] [cursor=pointer]:
+          - /url: //helps.58.com/train/detail?siteId=5502&terminal=PC&contentId=200197&sourceType=58pc-jfsc-gw-fqz&spReturn=1
+        - link [ref=e1460] [cursor=pointer]:
+          - /url: http://www.12377.cn/
+        - link [ref=e1461] [cursor=pointer]:
+          - /url: http://www.12377.cn/node_548446.htm
+        - link "可信网站" [ref=e1462] [cursor=pointer]:
+          - /url: https://ss.knet.cn/verifyseal.dll?sn=e1712291101057117841gx000000&ct=df&a=1&pa=0.15447335778858573
+          - img "可信网站" [ref=e1463]
+        - link [ref=e1464] [cursor=pointer]:
+          - /url: https://j1.58cdn.com.cn//arthurupload/ysk/qiyegongshixinxi.png
+        - link [ref=e1465] [cursor=pointer]:
+          - /url: //about.58.com/fqz/index.html
+  - iframe
+  - generic [ref=e1468] [cursor=pointer]: ×
+  - generic [ref=e1471]:
+    - img [ref=e1472]
+    - img [ref=e1473]
+    - generic [ref=e1474]: ×

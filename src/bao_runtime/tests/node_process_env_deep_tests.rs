@@ -417,5 +417,5 @@ fn test_node_process_env_deep() {
     assert_eq!(fail, 0, "node process.env deep tests had {} failures", fail);
     assert!(pass >= 55, "Expected at least 55 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

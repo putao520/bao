@@ -186,5 +186,5 @@ fn test_zlib_deep() {
     }
     assert_eq!(fail, 0, "zlib deep tests had {} failures", fail);
     assert!(pass >= 25, "Expected at least 25 passes, got {}", pass);
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

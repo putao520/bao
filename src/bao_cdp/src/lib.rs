@@ -610,8 +610,8 @@ mod tests {
         let result = registry.dispatch_command("Page.getLayoutMetrics", serde_json::json!({}), &test_event_sender());
         assert!(result.is_some());
         let response = result.unwrap().unwrap();
-        assert_eq!(response["contentSize"]["width"], 1920);
-        assert_eq!(response["contentSize"]["height"], 1080);
+        assert_eq!(response["contentSize"]["width"].as_f64().unwrap(), 1920.0);
+        assert_eq!(response["contentSize"]["height"].as_f64().unwrap(), 1080.0);
     }
 
     #[test]

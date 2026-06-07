@@ -98,5 +98,5 @@ fn test_path_deep() {
     }
     assert!(all_passed, "All path deep tests should pass. Results: {}", results);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

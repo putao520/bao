@@ -86,6 +86,11 @@ impl PagePool {
             id,
         )?;
 
+        // Eager Node Realm init — REQ-SEC-002: eliminate lazy init path
+        page.wait_for_pipeline_ready(Duration::from_secs(10))?;
+        let stealth = config.stealth_profile.is_some();
+        crate::runtime_bridge::inject_all(&page, stealth)?;
+
         self.active_pages.borrow_mut().insert(id, page.clone());
         *self.total_created.borrow_mut() += 1;
 

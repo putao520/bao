@@ -68,6 +68,7 @@ fn test_permission_guard_restricts_net() {
         write: None,
         env: None,
         run: None,
+    ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());

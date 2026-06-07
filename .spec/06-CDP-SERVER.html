@@ -531,7 +531,7 @@
 <span data-xref-type="req" data-xref-id="REQ-CDS-005">REQ-CDS-005</span></p>
 </div>
 
-<div id="entity-cdp-target" data-entity="CdpTarget" data-field-id="string;required;Target 唯一标识" data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型" data-field-title="string;required;页面标题" data-field-url="string;required;页面 URL" data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL">
+<div data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL" data-field-url="string;required;页面 URL" data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型" data-field-title="string;required;页面标题" data-field-id="string;required;Target 唯一标识" data-entity="CdpTarget" id="entity-cdp-target">
 <h3>CdpTarget 实体 — CDP 浏览器 Target</h3>
 <script type="application/ld+json">
 {
@@ -582,7 +582,7 @@
 <span data-xref-type="req" data-xref-id="REQ-CDS-006">REQ-CDS-006</span></p>
 </div>
 
-<div id="entity-event-subscription" data-entity="EventSubscription" data-field-session_id="string;required;Session ID" data-field-domain="string;required;订阅的 Domain 名" data-field-created_at="datetime;required;订阅创建时间（Domain.enable 调用时间）">
+<div data-field-session_id="string;required;Session ID" data-field-domain="string;required;订阅的 Domain 名" data-field-created_at="datetime;required;订阅创建时间（Domain.enable 调用时间）" data-entity="EventSubscription" id="entity-event-subscription">
 <h3>EventSubscription 实体 — 事件订阅关系</h3>
 <script type="application/ld+json">
 {
@@ -606,7 +606,7 @@
 <p data-xref-type="entity" data-xref-id="EventSubscription">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDS-005">REQ-CDS-005</span></p>
 </div>
 
-<div id="entity-server-config" data-entity="ServerConfig" data-field-host="string;required;监听地址" data-field-port="integer;required;监听端口" data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数" data-field-max_sessions="integer;required;最大并发 Session 数" data-field-browser_name="string;required;浏览器名称（/json/version 返回）" data-field-protocol_version="string;required;CDP 协议版本" data-field-user_agent="string;optional;用户代理字符串" data-field-v8_version="string;optional;JS 引擎版本标识" data-field-webkit_version="string;optional;渲染引擎版本标识">
+<div data-field-webkit_version="string;optional;渲染引擎版本标识" data-field-v8_version="string;optional;JS 引擎版本标识" data-field-user_agent="string;optional;用户代理字符串" data-field-protocol_version="string;required;CDP 协议版本" data-field-port="integer;required;监听端口" data-field-max_sessions="integer;required;最大并发 Session 数" data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数" data-field-host="string;required;监听地址" data-field-browser_name="string;required;浏览器名称（/json/version 返回）" data-entity="ServerConfig" id="entity-server-config">
 <h3>ServerConfig 实体 — 服务器配置</h3>
 <script type="application/ld+json">
 {
@@ -738,7 +738,7 @@ bao_cdp/
 <h2>§12 测试策略</h2>
 <!-- ============================================================ -->
 
-<div data-test="TEST-CDS-001" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
+<section id="test-cds-001" data-test="TEST-CDS-001" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
 <h3>TEST-CDS-001: HTTP 发现端点</h3>
 <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-001">REQ-CDS-001</span>
 <span data-xref-type="req" data-xref-id="REQ-CDS-008">REQ-CDS-008</span></p>
@@ -756,9 +756,9 @@ bao_cdp/
 <li>所有端点返回正确格式的 JSON</li>
 <li>HTTP Content-Type 为 application/json</li>
 </ul>
-</div>
+</section>
 
-<div data-test="TEST-CDS-002" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
+<section id="test-cds-002" data-test="TEST-CDS-002" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
 <h3>TEST-CDS-002: WebSocket 握手与消息收发</h3>
 <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-001">REQ-CDS-001</span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -775,9 +775,9 @@ bao_cdp/
 <li>WebSocket 握手成功</li>
 <li>JSON-RPC 2.0 编解码正确</li>
 </ul>
-</div>
+</section>
 
-<div data-test="TEST-CDS-003" data-req-ref="REQ-CDP-002" data-test-categories="unit,positive" data-test-level="unit">
+<section id="test-cds-003" data-test="TEST-CDS-003" data-req-ref="REQ-CDP-002" data-test-categories="unit,positive" data-test-level="unit">
 <h3>TEST-CDS-003: DomainHandler 注册与分发</h3>
 <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-004">REQ-CDS-004</span>
 <span data-xref-type="req" data-xref-id="REQ-CDS-006">REQ-CDS-006</span></p>
@@ -795,9 +795,9 @@ bao_cdp/
 <li>DomainHandler 正确注册和查找</li>
 <li>命令分发到正确的 handler</li>
 </ul>
-</div>
+</section>
 
-<div data-test="TEST-CDS-004" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
+<section id="test-cds-004" data-test="TEST-CDS-004" data-req-ref="REQ-CDP-001" data-test-categories="unit,positive" data-test-level="unit">
 <h3>TEST-CDS-004: Session 创建与销毁</h3>
 <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-003">REQ-CDS-003</span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -814,9 +814,9 @@ bao_cdp/
 <li>Session 生命周期状态机正确转换</li>
 <li>enabled_domains 正确更新</li>
 </ul>
-</div>
+</section>
 
-<div data-test="TEST-CDS-005" data-req-ref="REQ-CDP-006" data-test-categories="unit,positive" data-test-level="unit">
+<section id="test-cds-005" data-test="TEST-CDS-005" data-req-ref="REQ-CDP-006" data-test-categories="unit,positive" data-test-level="unit">
 <h3>TEST-CDS-005: 事件广播与过滤</h3>
 <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-005">REQ-CDS-005</span></p>
 <p><strong>测试类型</strong>: 正向测试</p>
@@ -834,9 +834,9 @@ bao_cdp/
 <li>仅已启用 Page domain 的 Session 收到事件</li>
 <li>事件消息不含 id 字段</li>
 </ul>
-</div>
+</section>
 
-<div data-test="TEST-CDS-006" data-req-ref="REQ-CDP-001" data-test-categories="integration,positive" data-test-level="integration">
+<section id="test-cds-006" data-test="TEST-CDS-006" data-req-ref="REQ-CDP-001" data-test-categories="integration,positive" data-test-level="integration">
 <h3>TEST-CDS-006: Playwright 端到端连接</h3>
 <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-001">REQ-CDS-001</span>
 <span data-xref-type="req" data-xref-id="REQ-CDS-004">REQ-CDS-004</span></p>
@@ -853,9 +853,9 @@ bao_cdp/
 <ul>
 <li>Playwright 标准流程完整通过</li>
 </ul>
-</div>
+</section>
 
-<div data-test="TEST-CDS-007" data-req-ref="REQ-CDP-008" data-test-categories="integration,positive" data-test-level="integration">
+<section id="test-cds-007" data-test="TEST-CDS-007" data-req-ref="REQ-CDP-008" data-test-categories="integration,positive" data-test-level="integration">
 <h3>TEST-CDS-007: 多 Session 并发</h3>
 <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-007">REQ-CDS-007</span></p>
 <p><strong>测试类型</strong>: 集成测试</p>
@@ -871,9 +871,9 @@ bao_cdp/
 <li>所有命令正确路由，无交叉</li>
 <li>无 panic / deadlock</li>
 </ul>
-</div>
+</section>
 
-<div data-test="TEST-CDS-008" data-req-ref="REQ-CDP-008" data-test-categories="integration,positive" data-test-level="integration">
+<section id="test-cds-008" data-test="TEST-CDS-008" data-req-ref="REQ-CDP-008" data-test-categories="integration,positive" data-test-level="integration">
 <h3>TEST-CDS-008: Target 创建/关闭/列表</h3>
 <p><strong>关联需求</strong>: <span data-xref-type="req" data-xref-id="REQ-CDS-002">REQ-CDS-002</span></p>
 <p><strong>测试类型</strong>: 集成测试</p>
@@ -892,7 +892,7 @@ bao_cdp/
 <li>Target 创建/关闭/列表操作正确</li>
 <li>关闭 Target 时关联 Session 自动销毁</li>
 </ul>
-</div>
+</section>
 
 </main></body>
 </html>

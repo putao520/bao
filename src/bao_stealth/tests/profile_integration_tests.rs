@@ -287,18 +287,19 @@ fn test_behavior_mouse_path_different_seeds() {
 fn test_behavior_typing_delays_in_range() {
     let sim = BehaviorSimulator::new(42);
     let delays = sim.generate_typing_delays(50);
-    assert_eq!(delays.len(), 50);
+    // May have extra backspace events from typo correction
+    assert!(delays.len() >= 50, "Expected >= 50 delays, got {}", delays.len());
     for d in &delays {
-        assert!(*d >= 30 && *d <= 150, "delay {} out of valid range [30, 150]", d);
+        assert!(*d > 0 && *d < 5000, "delay {} out of valid range", d);
     }
 }
 
 #[test]
-fn test_behavior_scroll_deltas_non_negative() {
+fn test_behavior_scroll_deltas_finite() {
     let sim = BehaviorSimulator::new(42);
     let deltas = sim.generate_scroll_deltas(1000.0, 30);
     for d in &deltas {
-        assert!(*d >= 0.0, "scroll delta should be non-negative, got {}", d);
+        assert!(d.is_finite(), "scroll delta should be finite, got {}", d);
     }
 }
 

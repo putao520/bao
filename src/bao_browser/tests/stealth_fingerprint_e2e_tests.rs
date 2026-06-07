@@ -663,4 +663,6 @@ fn test_stealth_props_injected_all() {
         _ => true,
     };
     assert!(!webdriver, "navigator.webdriver must be false");
+
+    JsContext::shutdown_thread_sm();
 }

@@ -249,6 +249,7 @@ fn test_guard_new_all_restricted() {
         net: Some(vec!["safe.com".into()]),
         env: Some(false),
         run: Some(false),
+    ..Default::default()
     };
     let g = PermissionGuard::new(perm);
     assert!(g.check_read("/r/file").is_ok());

@@ -202,5 +202,5 @@ fn test_url_util_os_deep() {
     }
     assert_eq!(fail, 0, "url/util/os deep tests had {} failures", fail);
     assert!(pass >= 40, "Expected at least 40 passes, got {}", pass);
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

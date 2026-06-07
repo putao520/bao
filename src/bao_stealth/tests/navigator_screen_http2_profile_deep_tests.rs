@@ -152,6 +152,7 @@ fn test_nav_custom() {
         user_agent: "CustomBot/1.0".into(),
         platform: "Win32".into(),
         language: "ja-JP".into(),
+        languages: vec!["ja-JP".into(), "ja".into(), "en".into()],
         hardware_concurrency: 16,
         max_touch_points: 10,
         vendor: "CustomVendor".into(),
@@ -159,6 +160,7 @@ fn test_nav_custom() {
         oscpu: None,
         build_id: None,
         product_sub: "custom".into(),
+        device_memory: 16.0,
     };
     assert_eq!(nav.user_agent, "CustomBot/1.0");
     assert_eq!(nav.hardware_concurrency, 16);

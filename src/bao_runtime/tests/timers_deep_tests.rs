@@ -112,5 +112,5 @@ fn test_timers_deep() {
         "All deep timers tests should pass. Results: {}",
         results
     );
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

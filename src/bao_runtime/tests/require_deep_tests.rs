@@ -101,5 +101,5 @@ fn test_require_deep() {
     }
     assert!(all_passed, "All require deep tests should pass. Results: {}", results);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

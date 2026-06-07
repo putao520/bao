@@ -31,7 +31,7 @@ impl TlsFingerprint {
             ],
             supported_groups: vec![0x001D, 0x0017, 0x0018, 0x0019, 0x0100, 0x0101],
             alpn_protocols: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-            ja3_hash: "771,4865-4866-4867-49195-49199-49196-49200-159-158-52393-52392-49188-49192-107-106-103-64,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0",
+            ja3_hash: "771,4865-4867-4866-49195-49199-49196-49200-158-156-52393-52392-49171-49161-51-103,0-5-10-11-13-18-21-22-23-27-35-43-45-51-65037-16-0,29-23-24-25-256-257,1027-2052-1025-1283-2053-1281-2054-1537-515-513",
             tls_version: "771",
             record_size_limit: None,
             compress_certificate_algos: vec![],
@@ -61,7 +61,7 @@ impl TlsFingerprint {
             ],
             supported_groups: vec![0x001D, 0x0017, 0x0018],
             alpn_protocols: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-            ja3_hash: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49188-49192-107-106-103-64,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24,0",
+            ja3_hash: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49161-51-103,0-5-10-11-13-18-21-22-23-27-35-43-45-51-65037-16-0,29-23-24,1027-2052-1025-1283-2053-1281-2054-1537-515-513",
             tls_version: "771",
             record_size_limit: None,
             compress_certificate_algos: vec![],
@@ -87,7 +87,7 @@ impl TlsFingerprint {
             ],
             supported_groups: vec![0x001D, 0x0017, 0x0018],
             alpn_protocols: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-            ja3_hash: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49188-49192-107-106-103-64,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21-28-57,29-23-24,0",
+            ja3_hash: "771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49161-51-103,0-5-10-11-13-18-21-22-23-27-35-43-45-51-65037-16-0-28-57,29-23-24,1027-2052-1025-1283-2053-1281-2054-1537-515-513",
             tls_version: "771",
             record_size_limit: Some(0x4001),
             compress_certificate_algos: vec![0x0002, 0x0001],
@@ -112,6 +112,8 @@ impl TlsFingerprint {
     /// JA4 fingerprint: <tls_version><num_suites><num_exts><alpn_hash>
     /// where alpn_hash is first 12 chars of SHA256 of sorted ALPN values
     pub fn compute_ja4(&self) -> String {
+        use sha2::{Sha256, Digest};
+
         let num_suites = self.cipher_suites.len();
         let num_exts = self.extensions.len();
 
@@ -127,11 +129,10 @@ impl TlsFingerprint {
         alpn_sorted.sort();
         let alpn_joined = alpn_sorted.join(",");
         let alpn_hash = {
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            alpn_joined.hash(&mut hasher);
-            format!("{:012x}", hasher.finish())
+            let mut hasher = Sha256::new();
+            hasher.update(alpn_joined.as_bytes());
+            let result = hasher.finalize();
+            format!("{:x}", result)
         };
 
         format!(
@@ -387,6 +388,34 @@ mod tests {
         assert!(ja3.starts_with("771,"));
     }
 
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+    // compute_ja3() must produce output matching stored ja3_hash
+    #[test]
+    fn test_compute_ja3_matches_stored_hash_firefox() {
+        let fp = TlsFingerprint::firefox();
+        let computed = fp.compute_ja3();
+        assert_eq!(computed, fp.ja3_hash,
+            "compute_ja3() must equal stored ja3_hash for Firefox — computed: {}", computed);
+    }
+
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+    #[test]
+    fn test_compute_ja3_matches_stored_hash_chrome() {
+        let fp = TlsFingerprint::chrome();
+        let computed = fp.compute_ja3();
+        assert_eq!(computed, fp.ja3_hash,
+            "compute_ja3() must equal stored ja3_hash for Chrome — computed: {}", computed);
+    }
+
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+    #[test]
+    fn test_compute_ja3_matches_stored_hash_chrome_latest() {
+        let fp = TlsFingerprint::chrome_latest();
+        let computed = fp.compute_ja3();
+        assert_eq!(computed, fp.ja3_hash,
+            "compute_ja3() must equal stored ja3_hash for Chrome latest — computed: {}", computed);
+    }
+
     #[test]
     fn test_compute_ja3_firefox_consistent() {
         let fp = TlsFingerprint::firefox();
@@ -435,6 +464,40 @@ mod tests {
         let fp = TlsFingerprint::firefox();
         let ja4 = fp.compute_ja4();
         assert!(ja4.starts_with("t13d"), "JA4: {}", ja4);
+    }
+
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+    // JA4 must be deterministic — same fingerprint produces same JA4
+    #[test]
+    fn test_compute_ja4_deterministic() {
+        let fp = TlsFingerprint::firefox();
+        let ja4_a = fp.compute_ja4();
+        let ja4_b = fp.compute_ja4();
+        assert_eq!(ja4_a, ja4_b, "JA4 must be deterministic");
+    }
+
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+    // JA4 alpn_hash portion must be valid hex (SHA256 output)
+    #[test]
+    fn test_compute_ja4_alpn_hash_is_hex() {
+        let fp = TlsFingerprint::firefox();
+        let ja4 = fp.compute_ja4();
+        let parts: Vec<&str> = ja4.split('_').collect();
+        assert!(parts.len() >= 2, "JA4 should have underscore separator: {}", ja4);
+        let hash_part = parts.last().unwrap();
+        assert!(hash_part.len() >= 12, "ALPN hash part should be at least 12 chars: {}", hash_part);
+        assert!(hash_part.chars().all(|c| c.is_ascii_hexdigit()),
+            "ALPN hash must be valid hex: {}", hash_part);
+    }
+
+    // @trace REQ-STL-001 [req:REQ-STL-001] [level:unit]
+    // JA4 must differ between Firefox and Chrome profiles
+    #[test]
+    fn test_compute_ja4_differs_between_profiles() {
+        let ff = TlsFingerprint::firefox();
+        let ch = TlsFingerprint::chrome();
+        assert_ne!(ff.compute_ja4(), ch.compute_ja4(),
+            "Firefox and Chrome must produce different JA4 fingerprints");
     }
 
     #[test]

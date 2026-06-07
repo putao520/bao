@@ -18,7 +18,7 @@ fn main() {
     let usockets_dir = packages_dir.join("bun-usockets");
     let usockets_src = usockets_dir.join("src");
 
-    let with_tls = env::var("BAO_UWS_WITH_TLS").is_ok();
+    let with_tls = env::var("BAO_UWS_WITH_TLS").as_deref() != Ok("0");
 
     // ── C compilation: uSockets core ──────────────────────────────────────
     let mut c_build = cc::Build::new();
@@ -53,11 +53,19 @@ fn main() {
     }
 
     // Include paths
+    let lsquic_dir = workspace_dir.join("vendor").join("lsquic");
+    let lsqpack_dir = workspace_dir.join("vendor").join("lsqpack");
+    let lshpack_dir = workspace_dir.join("vendor").join("lshpack");
+
     c_build
         .include(&usockets_dir)          // for #include "libusockets.h"
         .include(&usockets_src)          // for #include "internal/internal.h"
         .include(usockets_src.join("internal"))  // for internal/ sub-includes
-        .include(usockets_src.join("internal/networking"));  // for bsd.h
+        .include(usockets_src.join("internal/networking"))  // for bsd.h
+        .include(lsquic_dir.join("include"))  // for #include "lsquic.h" (quic.c)
+        .include(lsquic_dir.join("src").join("liblsquic"))  // for lsquic internal headers
+        .include(&lsqpack_dir)           // for #include "lsxpack_header.h" (quic.c)
+        .include(&lshpack_dir);          // for #include "lshpack.h" (quic.c → lsxpack)
 
     // C source files (uSockets core — platform-independent)
     let core_sources = [
@@ -65,6 +73,8 @@ fn main() {
         "context.c",
         "loop.c",
         "socket.c",
+        "udp.c",
+        "quic.c",
     ];
 
     for src in &core_sources {
@@ -90,7 +100,8 @@ fn main() {
     // SSL: stubs or real OpenSSL
     if with_tls {
         c_build.file(usockets_src.join("crypto/openssl.c"));
-        // TODO: add BoringSSL include paths and link flags (Wave 74-TLS)
+        let boringssl_dir = workspace_dir.join("vendor/boringssl");
+        c_build.include(boringssl_dir.join("include"));
     } else {
         c_build.file(usockets_src.join("crypto/ssl_stubs.c"));
     }
@@ -99,6 +110,34 @@ fn main() {
     // Skip libuv eventing backend (we use epoll/kqueue)
 
     c_build.compile("usockets");
+
+    // ── C++ compilation: TLS crypto helpers (sni_tree + root_certs) ────────
+    // These are C++ files that openssl.c calls into; compiled separately
+    // because the main uSockets build uses the C compiler.
+    if with_tls {
+        let boringssl_dir = workspace_dir.join("vendor/boringssl");
+        let mut tls_cpp = cc::Build::new();
+        tls_cpp.compiler("clang++");
+        tls_cpp.cpp(true);
+        tls_cpp.opt_level(1);
+        tls_cpp
+            .flag("-std=c++17")
+            .flag("-fno-exceptions")
+            .flag("-fno-rtti")
+            .flag("-DBORINGSSL_IMPLEMENTATION=1")
+            .include(boringssl_dir.join("include"))
+            .include(&usockets_dir)
+            .include(&usockets_src)
+            .include(usockets_src.join("internal"));
+        tls_cpp.file(usockets_src.join("crypto/sni_tree.cpp"));
+        tls_cpp.file(usockets_src.join("crypto/root_certs.cpp"));
+        // Platform-specific system certificate loading
+        #[cfg(target_os = "linux")]
+        {
+            tls_cpp.file(usockets_src.join("crypto/root_certs_linux.cpp"));
+        }
+        tls_cpp.compile("usockets_tls");
+    }
 
     // ── C++ compilation: uWS C-ABI wrapper (libuwsockets.cpp) ────────────
     // Provides uws_app_*, uws_res_*, uws_req_* symbols that Rust FFI calls.
@@ -130,6 +169,8 @@ fn main() {
             .flag("-DLIBUS_USE_OPENSSL=1")
             .flag("-DLIBUS_USE_BORINGSSL=1")
             .flag("-DWITH_BORINGSSL=1");
+        let boringssl_dir = workspace_dir.join("vendor/boringssl");
+        cpp_build.include(boringssl_dir.join("include"));
     }
 
     // Include paths for uWS C++ headers + uSockets internals
@@ -150,6 +191,10 @@ fn main() {
     // ── Link dependencies ─────────────────────────────────────────────────
     // pthread is needed for bsd.c (pthread_atfork in some code paths)
     println!("cargo:rustc-link-lib=pthread");
+    // zlib for HTTP content-encoding (gzip/deflate) in libuwsockets.cpp
+    println!("cargo:rustc-link-lib=z");
+    // libdeflate for fast compression/decompression in libuwsockets.cpp
+    println!("cargo:rustc-link-lib=deflate");
 
     // SPEC (CLAUDE.md L13): libuwsockets.a (C++ wrapper) depends on libusockets.a
     // (C core). For static archives, the linker resolves undefined symbols only
@@ -168,6 +213,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", usockets_src.join("context.c").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("loop.c").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("socket.c").display());
+    println!("cargo:rerun-if-changed={}", usockets_src.join("udp.c").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("crypto/ssl_stubs.c").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("eventing/epoll_kqueue.c").display());
     println!("cargo:rerun-if-changed={}", usockets_src.join("internal/internal.h").display());

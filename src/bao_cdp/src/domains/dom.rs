@@ -37,7 +37,26 @@ impl DomainHandler for DomHandler {
             "DOM.getDocument" => {
                 bridge_send(&self.bridge, BridgeCommand::GetDocument)
             }
-            "DOM.describeNode" => Ok(json!({ "node": { "nodeId": 1, "nodeType": 1, "nodeName": "HTML" } })),
+            "DOM.describeNode" => {
+                let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(1);
+                // Query real node info via JS reflection
+                let js = format!(
+                    r#"(function() {{ try {{ var el = document.querySelector('[data-bao-node-id="{}"]') || document.documentElement; return JSON.stringify({{ nodeId: {}, nodeType: el.nodeType, nodeName: el.nodeName, localName: el.localName || '', childNodeCount: el.childNodes.length, attributes: Array.from(el.attributes || []).map(function(a) {{ return [a.name, a.value]; }}).flat() }}); }} catch(e) {{ return JSON.stringify({{ nodeId: {}, nodeType: 1, nodeName: 'HTML' }}); }} }})()"#,
+                    node_id, node_id, node_id
+                );
+                let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    expression: js,
+                    return_by_value: true,
+                });
+                match resp.result {
+                    Ok(v) => {
+                        let info_str = v.as_str().unwrap_or("{}");
+                        let node: Value = serde_json::from_str(info_str).unwrap_or_else(|_| json!({"nodeId": node_id, "nodeType": 1, "nodeName": "HTML"}));
+                        Ok(json!({ "node": node }))
+                    }
+                    Err(_) => Ok(json!({ "node": { "nodeId": node_id, "nodeType": 1, "nodeName": "HTML" } })),
+                }
+            }
             "DOM.querySelector" => {
                 let selector = ps(&params, "selector");
                 if !selector.is_empty() {
@@ -54,9 +73,26 @@ impl DomainHandler for DomHandler {
                     Ok(json!({ "nodeIds": [] }))
                 }
             }
-            "DOM.getBoxModel" => Ok(json!({
-                "model": { "width": 1920, "height": 1080, "content": [0, 0, 1920, 0, 1920, 1080, 0, 1080] }
-            })),
+            "DOM.getBoxModel" => {
+                let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
+                // Query real box model via getBoundingClientRect
+                let js = format!(
+                    r#"(function() {{ try {{ var el = document.querySelector('[data-bao-node-id="{}"]') || document.documentElement; var r = el.getBoundingClientRect(); return JSON.stringify({{ width: r.width, height: r.height, content: [r.left, r.top, r.right, r.top, r.right, r.bottom, r.left, r.bottom] }}); }} catch(e) {{ return JSON.stringify({{ width: 0, height: 0, content: [0,0,0,0,0,0,0,0] }}); }} }})()"#,
+                    node_id
+                );
+                let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    expression: js,
+                    return_by_value: true,
+                });
+                match resp.result {
+                    Ok(v) => {
+                        let model_str = v.as_str().unwrap_or("{}");
+                        let model: Value = serde_json::from_str(model_str).unwrap_or_else(|_| json!({"width": 0, "height": 0, "content": [0,0,0,0,0,0,0,0]}));
+                        Ok(json!({ "model": model }))
+                    }
+                    Err(_) => Ok(json!({ "model": { "width": 0, "height": 0, "content": [0,0,0,0,0,0,0,0] } })),
+                }
+            }
             "DOM.setAttributeValue" => {
                 let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
                 let name = ps(&params, "name");
@@ -68,7 +104,22 @@ impl DomainHandler for DomHandler {
                 let node_id = params.get("nodeId").and_then(|v| v.as_i64());
                 bridge_send(&self.bridge, BridgeCommand::GetOuterHtml { node_id })
             }
-            "DOM.resolveNode" => Ok(json!({ "object": { "type": "node" } })),
+            "DOM.resolveNode" => {
+                let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
+                let js = format!(
+                    r#"(function() {{ try {{ var el = document.querySelector('[data-bao-node-id="{}"]') || document.documentElement; return JSON.stringify({{ type: typeof el, subtype: 'node', className: el.constructor.name }}); }} catch(e) {{ return JSON.stringify({{ type: "object" }}); }} }})()"#,
+                    node_id
+                );
+                let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    expression: js,
+                    return_by_value: true,
+                });
+                let obj = resp.result.ok()
+                    .and_then(|v| v.as_str().map(|s| s.to_string()))
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_else(|| json!({"type": "object"}));
+                Ok(json!({ "object": obj }))
+            }
             "DOM.pushNodesByBackendIdsToFrontend" => Ok(json!({ "nodeIds": [] })),
             _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", command) }),
         }
@@ -104,6 +155,15 @@ mod tests {
                     BridgeCommand::QuerySelectorAll { .. } => BridgeResponse { result: Ok(json!({"nodeIds": [1, 2, 3]})) },
                     BridgeCommand::SetAttributeValue { .. } => BridgeResponse { result: Ok(json!({})) },
                     BridgeCommand::GetOuterHtml { .. } => BridgeResponse { result: Ok(json!({"outerHTML": "<html></html>"})) },
+                    BridgeCommand::EvaluateJs { ref expression, .. } => {
+                        if expression.contains("getBoundingClientRect") {
+                            BridgeResponse { result: Ok(json!(r#"{"width":800,"height":600,"content":[0,0,800,0,800,600,0,600]}"#)) }
+                        } else if expression.contains("constructor.name") {
+                            BridgeResponse { result: Ok(json!(r#"{"type":"object","subtype":"node","className":"HTMLHtmlElement"}"#)) }
+                        } else {
+                            BridgeResponse { result: Ok(json!(r#"{"nodeId":1,"nodeType":1,"nodeName":"HTML","localName":"html","childNodeCount":2,"attributes":[]}"#)) }
+                        }
+                    }
                     _ => BridgeResponse { result: Ok(json!({})) },
                 });
                 std::thread::sleep(std::time::Duration::from_millis(5));
@@ -131,11 +191,13 @@ mod tests {
 
     #[test]
     fn describe_node_returns_node_info() {
-        let (handler, _rx) = setup();
-        let result = handler.handle_command("DOM.describeNode", json!({}), &NoopSender).unwrap();
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
+        let result = handler.handle_command("DOM.describeNode", json!({"nodeId": 1}), &NoopSender).unwrap();
         assert_eq!(result["node"]["nodeId"], 1);
         assert_eq!(result["node"]["nodeType"], 1);
         assert_eq!(result["node"]["nodeName"], "HTML");
+        responder.join().unwrap();
     }
 
     #[test]
@@ -161,10 +223,12 @@ mod tests {
 
     #[test]
     fn get_box_model_returns_dimensions() {
-        let (handler, _rx) = setup();
-        let result = handler.handle_command("DOM.getBoxModel", json!({}), &NoopSender).unwrap();
-        assert_eq!(result["model"]["width"], 1920);
-        assert_eq!(result["model"]["height"], 1080);
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
+        let result = handler.handle_command("DOM.getBoxModel", json!({"nodeId": 1}), &NoopSender).unwrap();
+        assert!(result.get("model").is_some());
+        assert!(result["model"]["content"].is_array());
+        responder.join().unwrap();
     }
 
     #[test]
@@ -193,9 +257,12 @@ mod tests {
 
     #[test]
     fn resolve_node_returns_object() {
-        let (handler, _rx) = setup();
-        let result = handler.handle_command("DOM.resolveNode", json!({}), &NoopSender).unwrap();
-        assert_eq!(result["object"]["type"], "node");
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
+        let result = handler.handle_command("DOM.resolveNode", json!({"nodeId": 1}), &NoopSender).unwrap();
+        assert!(result.get("object").is_some());
+        assert_eq!(result["object"]["type"], "object");
+        responder.join().unwrap();
     }
 
     #[test]

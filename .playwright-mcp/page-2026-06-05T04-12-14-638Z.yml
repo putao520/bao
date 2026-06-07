@@ -1,0 +1,27 @@
+- generic [ref=e2]:
+  - generic [ref=e3]:
+    - img "logo-pic" [ref=e5]
+    - generic [ref=e6]:
+      - img "nothing-found-pic" [ref=e7]
+      - generic [ref=e9]:
+        - text: 请求中含有危险内容，已被拦截
+        - generic [ref=e10]:
+          - text: "本次请求 request_id : [ c0a2c416b1c69f58a889c2a3864afaee11888 ]"
+          - text: 如有疑问，请联系信息安全并补充 request_id 信息：
+          - link "edp.waf@meituan.com" [ref=e11] [cursor=pointer]:
+            - /url: " mailto:edp.waf@meituan.com"
+  - generic [ref=e12]:
+    - generic [ref=e13]: 或者试试下面的链接：
+    - list [ref=e14]:
+      - listitem [ref=e15]:
+        - link "meituan-pic" [ref=e16] [cursor=pointer]:
+          - /url: http://www.meituan.com
+          - img "meituan-pic" [ref=e17]
+      - listitem [ref=e18]:
+        - link "meituan-waimai-pic" [ref=e19] [cursor=pointer]:
+          - /url: http://waimai.meituan.com
+          - img "meituan-waimai-pic" [ref=e20]
+      - listitem [ref=e21]:
+        - link "maoyan-pic" [ref=e22] [cursor=pointer]:
+          - /url: http://bi-mall.meituan.com
+          - img "maoyan-pic" [ref=e23]

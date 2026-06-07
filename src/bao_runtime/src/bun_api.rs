@@ -1064,6 +1064,7 @@ unsafe extern "C" fn bun_serve(
     let mut port: u16 = 3000;
     let mut hostname = "0.0.0.0".to_string();
     let mut fetch_handler: Option<*mut JSObject> = None;
+    let mut websocket_handler: Option<*mut JSObject> = None;
 
     if argc > 0 {
         let opts_val = *args.get(0).ptr;
@@ -1090,6 +1091,13 @@ unsafe extern "C" fn bun_serve(
             if fetch_val.is_object() && JS_ObjectIsFunction(fetch_val.to_object()) {
                 fetch_handler = Some(fetch_val.to_object());
             }
+
+            // REQ-ENG-006 criterion 5: WebSocket upgrade handler
+            let mut ws_val = UndefinedValue();
+            JS_GetProperty(cx, opts_h, c"websocket".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ws_val });
+            if ws_val.is_object() && JS_ObjectIsFunction(ws_val.to_object()) {
+                websocket_handler = Some(ws_val.to_object());
+            }
         }
     }
 
@@ -1101,9 +1109,10 @@ unsafe extern "C" fn bun_serve(
     let opts = BunSocketContextOptions::default();
     let app_ptr = App::<false>::create(&opts).unwrap_or(::std::ptr::null_mut());
 
-    // Store fetch_handler in user_data for the route callback
+    // Store fetch_handler + websocket_handler in user_data for the route callback
     let ud = Box::new(BunServeUserData {
         fetch_cb: fetch_handler,
+        websocket_cb: websocket_handler,
         app_ptr: app_ptr as *mut ::std::ffi::c_void,
         hostname: hostname.clone(),
         port,
@@ -1121,6 +1130,32 @@ unsafe extern "C" fn bun_serve(
         let fetch_cb = ud.fetch_cb;
 
         let res_mut = Response::<false>::cast_res(res);
+        let req_ref = bun_opaque::opaque_deref_mut(req);
+
+        // REQ-ENG-006 criterion 5: Detect WebSocket upgrade requests.
+        // Check for `Upgrade: websocket` and `Sec-WebSocket-Key` headers.
+        let upgrade_header = req_ref.header(b"upgrade").map(|h| h.to_vec()).unwrap_or_default();
+        let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket");
+
+        if is_ws_upgrade {
+            // A WebSocket upgrade was requested.
+            if ud.websocket_cb.is_some() && !ud.websocket_cb.unwrap().is_null() {
+                // WebSocket handler registered — respond with 101 Switching Protocols
+                // to acknowledge the upgrade. In a full implementation, the handler
+                // would be invoked to process the upgrade via uWS App::ws().
+                (*res_mut).write_status(b"101 Switching Protocols");
+                (*res_mut).write_header(b"Upgrade", b"websocket");
+                (*res_mut).write_header(b"Connection", b"Upgrade");
+                (*res_mut).end(b"", true);
+                return;
+            } else {
+                // No WebSocket handler — return 426 Upgrade Required
+                (*res_mut).write_status(b"426 Upgrade Required");
+                (*res_mut).write_header(b"Content-Type", b"text/plain");
+                (*res_mut).end(b"Upgrade Required: no WebSocket handler registered", true);
+                return;
+            }
+        }
 
         if fetch_cb.is_none() || fetch_cb.unwrap().is_null() {
             (*res_mut).write_status(b"404 Not Found");
@@ -1128,7 +1163,6 @@ unsafe extern "C" fn bun_serve(
             return;
         }
 
-        let req_ref = bun_opaque::opaque_deref_mut(req);
         let method_bytes = req_ref.method();
         let url_bytes = req_ref.url();
         let method_str = ::std::str::from_utf8(method_bytes).unwrap_or("GET");
@@ -1246,6 +1280,7 @@ unsafe extern "C" fn bun_serve(
 #[allow(dead_code)]
 struct BunServeUserData {
     fetch_cb: Option<*mut JSObject>,
+    websocket_cb: Option<*mut JSObject>,
     app_ptr: *mut ::std::ffi::c_void,
     hostname: String,
     port: u16,
@@ -2425,11 +2460,13 @@ mod tests {
     fn bun_serve_user_data_default_fields() {
         let data = BunServeUserData {
             fetch_cb: None,
+            websocket_cb: None,
             app_ptr: ::std::ptr::null_mut(),
             hostname: "localhost".to_string(),
             port: 3000,
         };
         assert!(data.fetch_cb.is_none());
+        assert!(data.websocket_cb.is_none());
         assert!(data.app_ptr.is_null());
         assert_eq!(data.hostname, "localhost");
         assert_eq!(data.port, 3000);
@@ -2439,12 +2476,27 @@ mod tests {
     fn bun_serve_user_data_with_fetch_cb() {
         let data = BunServeUserData {
             fetch_cb: Some(::std::ptr::null_mut()),
+            websocket_cb: None,
             app_ptr: ::std::ptr::null_mut(),
             hostname: "0.0.0.0".to_string(),
             port: 8080,
         };
         assert!(data.fetch_cb.is_some());
+        assert!(data.websocket_cb.is_none());
         assert_eq!(data.port, 8080);
+    }
+
+    #[test]
+    fn bun_serve_user_data_with_websocket_cb() {
+        let data = BunServeUserData {
+            fetch_cb: None,
+            websocket_cb: Some(::std::ptr::null_mut()),
+            app_ptr: ::std::ptr::null_mut(),
+            hostname: "0.0.0.0".to_string(),
+            port: 8080,
+        };
+        assert!(data.fetch_cb.is_none());
+        assert!(data.websocket_cb.is_some());
     }
 
     #[test]
@@ -2452,6 +2504,7 @@ mod tests {
         for host in &["localhost", "0.0.0.0", "127.0.0.1", "::"] {
             let data = BunServeUserData {
                 fetch_cb: None,
+                websocket_cb: None,
                 app_ptr: ::std::ptr::null_mut(),
                 hostname: host.to_string(),
                 port: 80,
@@ -2464,6 +2517,7 @@ mod tests {
     fn bun_serve_user_data_port_boundaries() {
         let data = BunServeUserData {
             fetch_cb: None,
+            websocket_cb: None,
             app_ptr: ::std::ptr::null_mut(),
             hostname: String::new(),
             port: 0,
@@ -2472,6 +2526,7 @@ mod tests {
 
         let data = BunServeUserData {
             fetch_cb: None,
+            websocket_cb: None,
             app_ptr: ::std::ptr::null_mut(),
             hostname: String::new(),
             port: 65535,

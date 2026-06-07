@@ -344,5 +344,5 @@ fn test_node_string_decoder_deep() {
     assert_eq!(fail, 0, "node_string_decoder deep tests had {} failures", fail);
     assert!(pass >= 10, "Expected at least 10 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

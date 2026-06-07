@@ -1,0 +1,7 @@
+[    3100ms] TypeError: Failed to execute 'sendBeacon' on 'Navigator': 1 argument required, but only 0 present.
+    at https://bot.sannysoft.com/:157:40
+[    3102ms] TypeError: Failed to execute 'getUserMedia' on 'Navigator': 3 arguments required, but only 0 present.
+    at https://bot.sannysoft.com/:205:40
+[    3156ms] [ERROR] Failed to load resource: net::ERR_CONNECTION_CLOSED @ https://mc.yandex.ru/metrika/tag.js:0
+[    4009ms] [ERROR] WebSocket connection to 'wss://bot.sannysoft.com/itsgonnafail' failed: Error during WebSocket handshake: Unexpected response code: 404 @ https://bot.sannysoft.com/fpCollect.min.js:272
+[    5540ms] [ERROR] Failed to load resource: the server responded with a status of 404 () @ https://bot.sannysoft.com/favicon.ico:0

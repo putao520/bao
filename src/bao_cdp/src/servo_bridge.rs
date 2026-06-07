@@ -116,6 +116,21 @@ impl BridgeSender {
 
 impl BridgeReceiver {
     /// Try to receive and process a pending command. Returns true if a command was processed.
+    /// Block until a command arrives or timeout, then process it.
+    pub fn recv_and_process<F>(&self, timeout: Duration, handler: F) -> bool
+    where
+        F: FnOnce(BridgeCommand) -> BridgeResponse,
+    {
+        match self.rx.recv_timeout(timeout) {
+            Ok(request) => {
+                let response = handler(request.command);
+                let _ = request.responder.send(response);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     pub fn try_process<F>(&self, handler: F) -> bool
     where
         F: FnOnce(BridgeCommand) -> BridgeResponse,
@@ -269,7 +284,28 @@ mod tests {
         assert!(!processed);
     }
 
-    // 10. BridgeResponse result Ok with Value
+    // 10. BridgeReceiver::recv_and_process blocks until command arrives
+    #[test]
+    fn recv_and_process_receives_command() {
+        let (sender, receiver) = bridge_channel(TIMEOUT);
+        let sender_thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            sender.send_fire_and_forget(BridgeCommand::GetTitle);
+        });
+        let processed = receiver.recv_and_process(TIMEOUT, |_| ok_response(Value::Bool(true)));
+        assert!(processed, "recv_and_process should receive the command");
+        sender_thread.join().unwrap();
+    }
+
+    // 11. BridgeReceiver::recv_and_process returns false on timeout
+    #[test]
+    fn recv_and_process_returns_false_on_timeout() {
+        let (_sender, receiver) = bridge_channel(Duration::from_millis(50));
+        let processed = receiver.recv_and_process(Duration::from_millis(50), noop_handler);
+        assert!(!processed, "recv_and_process should return false on timeout");
+    }
+
+    // 12. BridgeResponse result Ok with Value
     #[test]
     fn bridge_response_ok_with_value() {
         let resp = ok_response(Value::Number(42.into()));

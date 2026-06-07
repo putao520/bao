@@ -372,5 +372,5 @@ fn test_permission_bridge_deep() {
     // Cleanup
     bao_runtime::permission_bridge::set_permission(None);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

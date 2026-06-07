@@ -541,3 +541,8 @@ impl XxHash64State {
 }
 
 // ported from: src/highway/highway.zig
+
+/// No-op function that forces cargo to propagate the native link dependency
+/// (`libhighway.a` + `libhighway_strings.a`) to any crate that depends on `bun_highway`.
+#[inline(never)]
+pub fn force_link() {}

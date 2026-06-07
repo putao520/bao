@@ -135,6 +135,7 @@ fn test_permission_guard_restricted() {
         write: Some(vec![]),
         env: Some(false),
         run: Some(false),
+    ..Default::default()
     };
     let guard = PermissionGuard::new(perm);
     assert!(guard.is_restricted());
@@ -211,6 +212,7 @@ fn test_bao_runtime_cross_crate_all() {
         write: Some(vec![]),
         env: Some(false),
         run: Some(false),
+    ..Default::default()
     };
     let restricted = runtime.page_pool().create_page(&PageConfig {
         permission: Some(perm),

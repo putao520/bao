@@ -1,0 +1,117 @@
+- generic [ref=e3]:
+  - generic:
+    - generic [ref=e6]:
+      - link "新闻" [ref=e7] [cursor=pointer]:
+        - /url: http://news.baidu.com
+      - link "hao123" [ref=e8] [cursor=pointer]:
+        - /url: https://www.hao123.com?src=from_pc
+      - link "地图" [ref=e9] [cursor=pointer]:
+        - /url: http://map.baidu.com
+      - link "贴吧" [ref=e10] [cursor=pointer]:
+        - /url: http://tieba.baidu.com/
+      - link "视频" [ref=e11] [cursor=pointer]:
+        - /url: https://haokan.baidu.com/?sfrom=baidu-top
+      - link "图片" [ref=e12] [cursor=pointer]:
+        - /url: http://image.baidu.com/
+      - link "网盘" [ref=e13] [cursor=pointer]:
+        - /url: https://pan.baidu.com?from=1026962h
+      - link "文库" [ref=e14] [cursor=pointer]:
+        - /url: https://wenku.baidu.com/?fr=bdpcindex
+      - link "文心" [ref=e15] [cursor=pointer]:
+        - /url: https://chat.baidu.com/search?isShowHello=1&pd=csaitab&setype=csaitab&extParamsJson=%7B%22enter_type%22%3A%22home_tab%22%7D
+      - link "搭子DuMate" [ref=e16] [cursor=pointer]:
+        - /url: https://dumate.cn?track=bdsy
+      - link "更多" [ref=e18] [cursor=pointer]:
+        - /url: http://www.baidu.com/more/
+    - generic [ref=e19]:
+      - generic [ref=e20] [cursor=pointer]: 设置
+      - link "登录" [ref=e21] [cursor=pointer]:
+        - /url: https://passport.baidu.com/v2/?login&tpl=mn&u=http%3A%2F%2Fwww.baidu.com%2F&sms=5
+  - generic [ref=e24]:
+    - generic [ref=e25]:
+      - img [ref=e26]
+      - generic:
+        - link "点击一下，了解更多":
+          - /url: //www.baidu.com/s?wd=%E7%99%BE%E5%BA%A6%E7%83%AD%E6%90%9C&sa=ire_dl_gh_logo_texing&rsv_dl=igh_logo_pcs
+    - generic [ref=e31]:
+      - generic [ref=e34]:
+        - textbox "张杰谢娜一家五口逛街" [active] [ref=e36]
+        - generic [ref=e38]:
+          - generic [ref=e39]:
+            - img [ref=e47] [cursor=pointer]
+            - generic [ref=e50]:
+              - img [ref=e54] [cursor=pointer]
+              - img [ref=e59] [cursor=pointer]
+          - button "百度一下" [ref=e63] [cursor=pointer]
+      - link "复杂问题就找文心助手，深入思考回答更优 " [ref=e67] [cursor=pointer]:
+        - /url: https://chat.baidu.com/search?extParams=%7B%22enter_type%22%3A%22home_operate%22%7D&isShowHello=1
+        - img [ref=e68]
+        - generic [ref=e69]:
+          - generic [ref=e70]: 复杂问题就找文心助手，深入思考回答更优
+          - generic [ref=e71]: 
+    - generic [ref=e74]:
+      - generic [ref=e75]:
+        - link "百度热搜":
+          - /url: https://top.baidu.com/board?platform=pc&sa=pcindex_entry
+          - generic "百度热搜" [ref=e76] [cursor=pointer]: 
+        - generic [ref=e77] [cursor=pointer]:
+          - generic [ref=e78]: 
+          - text: 换一换
+      - list:
+        - listitem [ref=e79]:
+          - link " 总书记的人民情怀" [ref=e80] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E6%80%BB%E4%B9%A6%E8%AE%B0%E7%9A%84%E4%BA%BA%E6%B0%91%E6%83%85%E6%80%80&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e81]: 
+            - text: 总书记的人民情怀
+        - listitem [ref=e83]:
+          - link "5 医保个人账户跨省共济来了" [ref=e84] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E5%8C%BB%E4%BF%9D%E4%B8%AA%E4%BA%BA%E8%B4%A6%E6%88%B7%E8%B7%A8%E7%9C%81%E5%85%B1%E6%B5%8E%E6%9D%A5%E4%BA%86&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e85]: "5"
+            - text: 医保个人账户跨省共济来了
+          - generic [ref=e86]: 新
+        - listitem [ref=e87]:
+          - link "1 习近平将访问朝鲜" [ref=e88] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E4%B9%A0%E8%BF%91%E5%B9%B3%E5%B0%86%E8%AE%BF%E9%97%AE%E6%9C%9D%E9%B2%9C&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e89]: "1"
+            - text: 习近平将访问朝鲜
+          - generic [ref=e90]: 热
+        - listitem [ref=e91]:
+          - link "6 游客海上漂了7天6夜 生吃螃蟹求生" [ref=e92] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E6%B8%B8%E5%AE%A2%E6%B5%B7%E4%B8%8A%E6%BC%82%E4%BA%867%E5%A4%A96%E5%A4%9C+%E7%94%9F%E5%90%83%E8%9E%83%E8%9F%B9%E6%B1%82%E7%94%9F&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e93]: "6"
+            - text: 游客海上漂了7天6夜 生吃螃蟹求生
+          - generic [ref=e94]: 热
+        - listitem [ref=e95]:
+          - link "2 世界杯两大夺冠热门热身赛同时翻车" [ref=e96] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E4%B8%96%E7%95%8C%E6%9D%AF%E4%B8%A4%E5%A4%A7%E5%A4%BA%E5%86%A0%E7%83%AD%E9%97%A8%E7%83%AD%E8%BA%AB%E8%B5%9B%E5%90%8C%E6%97%B6%E7%BF%BB%E8%BD%A6&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e97]: "2"
+            - text: 世界杯两大夺冠热门热身赛同时翻车
+          - generic [ref=e98]: 热
+        - listitem [ref=e99]:
+          - link "7 泽连斯基公开致信普京" [ref=e100] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E6%B3%BD%E8%BF%9E%E6%96%AF%E5%9F%BA%E5%85%AC%E5%BC%80%E8%87%B4%E4%BF%A1%E6%99%AE%E4%BA%AC&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e101]: "7"
+            - text: 泽连斯基公开致信普京
+          - generic [ref=e102]: 热
+        - listitem [ref=e103]:
+          - link "3 高考安检新变化 多地提醒" [ref=e104] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E9%AB%98%E8%80%83%E5%AE%89%E6%A3%80%E6%96%B0%E5%8F%98%E5%8C%96+%E5%A4%9A%E5%9C%B0%E6%8F%90%E9%86%92&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e105]: "3"
+            - text: 高考安检新变化 多地提醒
+        - listitem [ref=e107]:
+          - link "8 燃油车价格大幅跳水" [ref=e108] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E7%87%83%E6%B2%B9%E8%BD%A6%E4%BB%B7%E6%A0%BC%E5%A4%A7%E5%B9%85%E8%B7%B3%E6%B0%B4&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e109]: "8"
+            - text: 燃油车价格大幅跳水
+          - generic [ref=e110]: 热
+        - listitem [ref=e111]:
+          - link "4 未成年女孩遭直播公司“围猎”" [ref=e112] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E6%9C%AA%E6%88%90%E5%B9%B4%E5%A5%B3%E5%AD%A9%E9%81%AD%E7%9B%B4%E6%92%AD%E5%85%AC%E5%8F%B8%E2%80%9C%E5%9B%B4%E7%8C%8E%E2%80%9D&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e113]: "4"
+            - text: 未成年女孩遭直播公司“围猎”
+          - generic [ref=e114]: 新
+        - listitem [ref=e115]:
+          - link "9 中国小电驴在英国卖爆了" [ref=e116] [cursor=pointer]:
+            - /url: https://www.baidu.com/s?wd=%E4%B8%AD%E5%9B%BD%E5%B0%8F%E7%94%B5%E9%A9%B4%E5%9C%A8%E8%8B%B1%E5%9B%BD%E5%8D%96%E7%88%86%E4%BA%86&sa=fyb_n_homepage&rsv_dl=fyb_n_homepage&from=super&cl=3&tn=baidutop10&fr=top1000&rsv_idx=2&hisfilter=1
+            - generic [ref=e117]: "9"
+            - text: 中国小电驴在英国卖爆了

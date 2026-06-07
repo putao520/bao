@@ -123,6 +123,7 @@ fn test_navigator_custom() {
         user_agent: "Custom/1.0".into(),
         platform: "Test".into(),
         language: "ja".into(),
+        languages: vec!["ja".into(), "en".into()],
         hardware_concurrency: 16,
         max_touch_points: 5,
         vendor: "TestCorp".into(),
@@ -130,6 +131,7 @@ fn test_navigator_custom() {
         oscpu: None,
         build_id: None,
         product_sub: "custom".into(),
+        device_memory: 4.0,
     };
     assert_eq!(nav.user_agent, "Custom/1.0");
     assert_eq!(nav.hardware_concurrency, 16);

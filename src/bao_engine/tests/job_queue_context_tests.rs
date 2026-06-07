@@ -217,5 +217,5 @@ fn job_queue_and_context_integration() {
 
     // Leak ctx to avoid SpiderMonkey thread-local cleanup segfault on process exit.
     // The test passes functionally; this only affects teardown.
-    std::mem::forget(ctx);
+    bao_engine::context::JsContext::shutdown_thread_sm();
 }

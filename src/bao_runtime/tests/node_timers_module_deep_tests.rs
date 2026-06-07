@@ -177,5 +177,5 @@ fn test_node_timers_module_deep() {
     assert_eq!(fail, 0, "timers module deep tests had {} failures", fail);
     assert!(pass >= 40, "Expected at least 40 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

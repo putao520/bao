@@ -143,5 +143,5 @@ fn test_http_client_deep() {
         typeof fetch === 'function' && fetch.length >= 1
     "#), "fetch should be a function with at least 1 parameter");
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

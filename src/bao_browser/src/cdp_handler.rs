@@ -86,6 +86,7 @@ fn cmd_evaluate(page: &PageHandle, expression: &str, return_by_value: bool) -> R
 fn cmd_screenshot(page: &PageHandle, format: &str) -> Result<Value, String> {
     let fmt = match format {
         "jpeg" => ScreenshotFormat::Jpeg,
+        "webp" => ScreenshotFormat::WebP,
         _ => ScreenshotFormat::Png,
     };
     let bytes = page.take_screenshot(fmt).map_err(to_browser_error)?;
@@ -538,11 +539,22 @@ mod tests {
 
     #[test]
     fn cmd_screenshot_format_unknown_defaults_to_png() {
-        let fmt = match "webp" {
+        let fmt = match "bmp" {
             "jpeg" => "Jpeg",
+            "webp" => "WebP",
             _ => "Png",
         };
         assert_eq!(fmt, "Png");
+    }
+
+    #[test]
+    fn cmd_screenshot_format_webp_mapping() {
+        let fmt = match "webp" {
+            "jpeg" => "Jpeg",
+            "webp" => "WebP",
+            _ => "Png",
+        };
+        assert_eq!(fmt, "WebP");
     }
 
     #[test]

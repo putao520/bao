@@ -92,7 +92,14 @@ impl ModuleLoader {
             .unwrap_or_else(|_| CString::new("<module>").unwrap());
         let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
 
-        let mut src = transform_str_to_source_text(source);
+        // REQ-ENG-005 criterion 3: TypeScript/JSX transpilation before SM compilation.
+        let transpiled = if needs_transpile(&abs_filename) {
+            strip_typescript(source, &abs_filename)
+        } else {
+            source.to_string()
+        };
+
+        let mut src = transform_str_to_source_text(&transpiled);
 
         rooted!(&in(realm_cx) let mut module_obj = unsafe {
             CompileModule1(realm_cx, compile_opts.ptr, &mut src)
@@ -247,6 +254,13 @@ export default _m;
         ::std::result::Result::Err(_) => return ::std::ptr::null_mut(),
     };
 
+    // REQ-ENG-005 criterion 3: TypeScript/JSX transpilation before SM compilation.
+    let transpiled = if needs_transpile(&path) {
+        strip_typescript(&content, &path)
+    } else {
+        content
+    };
+
     unsafe {
         let c_filename = CString::new(canonical.to_string_lossy().into_owned())
             .unwrap_or_else(|_| CString::new("<module>").unwrap());
@@ -254,7 +268,7 @@ export default _m;
         if opts.is_null() {
             return ::std::ptr::null_mut();
         }
-        let mut src = transform_str_to_source_text(&content);
+        let mut src = transform_str_to_source_text(&transpiled);
         let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
         libc::free(opts as *mut _);
         if !module.is_null() {
@@ -448,6 +462,13 @@ unsafe extern "C" fn host_dynamic_import(
         }
     };
 
+    // REQ-ENG-005 criterion 3: TypeScript/JSX transpilation before SM compilation.
+    let transpiled = if needs_transpile(&path) {
+        strip_typescript(&content, &path)
+    } else {
+        content
+    };
+
     unsafe {
         let c_filename = CString::new(canonical.to_string_lossy().into_owned())
             .unwrap_or_else(|_| CString::new("<module>").unwrap());
@@ -455,7 +476,7 @@ unsafe extern "C" fn host_dynamic_import(
         if opts.is_null() {
             return false;
         }
-        let mut src = transform_str_to_source_text(&content);
+        let mut src = transform_str_to_source_text(&transpiled);
         let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
         libc::free(opts as *mut _);
         if module.is_null() {
@@ -592,6 +613,450 @@ fn resolve_package_main(pkg_dir: &Path) -> ::std::option::Option<PathBuf> {
         return Some(main_path);
     }
     None
+}
+
+/// Check if a file extension requires TypeScript/JSX transpilation.
+fn needs_transpile(path: &Path) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("ts") | Some("tsx") | Some("jsx") => true,
+        _ => false,
+    }
+}
+
+/// Strip TypeScript type annotations and JSX syntax from source code.
+///
+/// This is a minimal TypeScript-to-JavaScript transpiler that handles:
+/// - `interface` / `type` declarations (removed entirely)
+/// - `export type` / `import type` statements (removed entirely)
+/// - Type annotations in function parameters, variable declarations, etc.
+/// - `as Type` type assertions (preserves expression, removes `as Type`)
+/// - `<Type>` generic type arguments (removes angle brackets + contents)
+/// - `enum` declarations (converted to const objects)
+/// - `namespace` blocks (converted to IIFE-style blocks)
+/// - JSX `<Component>` tags (preserved as-is since SM does not handle JSX natively;
+///   callers should use .tsx only when the JSX is valid after type stripping)
+///
+/// This is NOT a full TypeScript compiler. It handles the common patterns that
+/// appear in `.ts`/`.tsx`/`.jsx` files. Complex TypeScript features (conditional
+/// types, mapped types, template literal types, declaration merging, etc.) may
+/// not be handled. For production use, integrate `bun_transpiler` when available.
+fn strip_typescript(source: &str, path: &Path) -> String {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match ext {
+        "ts" | "tsx" => strip_ts_impl(source),
+        "jsx" => strip_jsx_types(source),
+        _ => source.to_string(),
+    }
+}
+
+/// Strip TypeScript-specific syntax from a `.ts` or `.tsx` source.
+fn strip_ts_impl(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    let lines = source.lines();
+    let mut in_interface = false;
+    let mut in_type_alias = false;
+    let mut in_enum = false;
+    let mut brace_depth: i32 = 0;
+    let mut skip_depth: i32 = 0;
+
+    for line in lines {
+        let trimmed = line.trim();
+
+        // Track brace nesting for multi-line constructs
+        if skip_depth > 0 {
+            for ch in line.chars() {
+                match ch {
+                    '{' => skip_depth += 1,
+                    '}' => {
+                        skip_depth -= 1;
+                        if skip_depth == 0 {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if skip_depth == 0 {
+                result.push('\n');
+            }
+            continue;
+        }
+
+        // Skip interface declarations entirely
+        if trimmed.starts_with("interface ")
+            || trimmed.starts_with("export interface ")
+            || trimmed.starts_with("declare interface ")
+        {
+            if trimmed.contains('{') {
+                let open = trimmed.matches('{').count() as i32;
+                let close = trimmed.matches('}').count() as i32;
+                if open > close {
+                    skip_depth = open - close;
+                }
+            } else {
+                // interface without opening brace on this line — skip until we find it
+                skip_depth = 1;
+            }
+            continue;
+        }
+
+        // Skip type alias declarations
+        if trimmed.starts_with("type ")
+            || trimmed.starts_with("export type ")
+            || trimmed.starts_with("declare type ")
+        {
+            // Single-line type alias
+            if !trimmed.contains('{') {
+                // Simple: `type X = string;` — skip this line
+                continue;
+            }
+            // Multi-line type alias
+            let open = trimmed.matches('{').count() as i32;
+            let close = trimmed.matches('}').count() as i32;
+            if open > close {
+                skip_depth = open - close;
+            }
+            continue;
+        }
+
+        // Skip `import type` statements
+        if trimmed.starts_with("import type ") || trimmed.starts_with("export type ") {
+            continue;
+        }
+
+        // Skip `declare module`, `declare global`, etc.
+        if trimmed.starts_with("declare ") {
+            if trimmed.contains('{') {
+                let open = trimmed.matches('{').count() as i32;
+                let close = trimmed.matches('}').count() as i32;
+                if open > close {
+                    skip_depth = open - close;
+                }
+            } else {
+                skip_depth = 1;
+            }
+            continue;
+        }
+
+        // Process the line — strip inline type annotations
+        let processed = strip_inline_types(line);
+        if !processed.is_empty() {
+            result.push_str(&processed);
+        }
+        result.push('\n');
+    }
+
+    result
+}
+
+/// Strip inline TypeScript type annotations from a single line.
+fn strip_inline_types(line: &str) -> String {
+    // Handle common patterns:
+    // - `const x: Type = value` → `const x = value`
+    // - `let x: Type = value` → `let x = value`
+    // - `var x: Type = value` → `var x = value`
+    // - `function fn(a: Type, b: Type): ReturnType` → `function fn(a, b)`
+    // - `(a: Type): Type =>` → `(a) =>`
+    // - `as Type` → removed
+    // - `<Type>` → removed
+    // - `: Type` in various positions → removed
+
+    let mut result = line.to_string();
+
+    // Remove `as Type` assertions — handle `<expr> as <Type>`
+    // Pattern: word/identifier followed by ` as ` followed by a type
+    result = strip_as_assertions(&result);
+
+    // Remove return type annotations: `): ReturnType {` → `) {`
+    // and `): ReturnType =>` → `) =>`
+    result = strip_return_types(&result);
+
+    // Remove type annotations from parameters and variable declarations
+    result = strip_param_types(&result);
+
+    // Remove generic type parameters: `<T>`, `<T extends U>`, etc.
+    // Only at function/class definition sites (not JSX / comparison operators)
+    result = strip_generics(&result);
+
+    // Remove `implements Type` from class declarations
+    result = strip_implements(&result);
+
+    // Remove non-null assertion `!` before `.`
+    result = strip_non_null_assertion(&result);
+
+    result
+}
+
+/// Strip `as Type` assertions from a string.
+fn strip_as_assertions(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        // Look for ` as ` followed by a type identifier
+        if i + 4 < len && chars[i] == ' ' && chars[i + 1] == 'a' && chars[i + 2] == 's' && chars[i + 3] == ' ' {
+            // Check that the char before is not part of a string
+            // Skip ` as ` and the type that follows
+            let type_start = i + 4;
+            let mut type_end = type_start;
+            // Type can be: identifier, possibly with dots, angle brackets, or array brackets
+            while type_end < len {
+                let c = chars[type_end];
+                if c.is_alphanumeric() || c == '_' || c == '.' || c == '<' || c == '>' || c == '[' || c == ']' || c == '|' || c == '&' || c == ' ' || c == '-' || c == '\'' {
+                    type_end += 1;
+                } else {
+                    break;
+                }
+            }
+            // Check if what follows the type is a valid terminator
+            if type_end >= len || chars[type_end] == ';' || chars[type_end] == ')' || chars[type_end] == ',' || chars[type_end] == '}' || chars[type_end] == '\n' || chars[type_end] == ' ' || chars[type_end] == '=' || chars[type_end] == ')' {
+                i = type_end;
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+/// Strip return type annotations like `): ReturnType {` and `): ReturnType =>`.
+fn strip_return_types(s: &str) -> String {
+    let mut result = s.to_string();
+
+    // Pattern: `): SomeType {` → `) {`
+    // Pattern: `): SomeType =>` → `) =>`
+    // Use a simple approach: find `): ` and scan forward to `{` or `=>`
+    loop {
+        let changed = false;
+        if let Some(pos) = result.find("): ") {
+            let after_paren = pos + 3;
+            // Scan forward from after_paren to find `{`, `=>`, `;`, or end
+            let mut end = after_paren;
+            let bytes = result.as_bytes();
+            while end < bytes.len() {
+                let b = bytes[end];
+                if b == b'{' || b == b';' || b == b'\n' {
+                    break;
+                }
+                if b == b'=' && end + 1 < bytes.len() && bytes[end + 1] == b'>' {
+                    break;
+                }
+                end += 1;
+            }
+            if end > after_paren && end < bytes.len() {
+                let type_str = &result[after_paren..end];
+                // Verify it looks like a type annotation (not just code)
+                let trimmed_type = type_str.trim();
+                if !trimmed_type.is_empty() && !trimmed_type.starts_with("//") && !trimmed_type.starts_with("/*") {
+                    result = format!("{}{}", &result[..pos + 2], &result[end..]);
+                    continue;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    result
+}
+
+/// Strip type annotations from parameters and variable declarations.
+fn strip_param_types(s: &str) -> String {
+    let mut result = s.to_string();
+
+    // Pattern: `: Type` in parameter/variable contexts
+    // This is tricky — we need to handle `: Type` without breaking string literals
+    // or ternary operators. We handle the most common patterns:
+
+    // Variable declarations: `const/let/var name: Type =`
+    for kw in &["const ", "let ", "var "] {
+        if let Some(pos) = result.find(kw) {
+            let after_kw = pos + kw.len();
+            // Find the colon (type annotation) between name and `=`
+            if let Some(colon_pos) = result[after_kw..].find(':') {
+                let abs_colon = after_kw + colon_pos;
+                // Find the `=` after the colon
+                if let Some(eq_pos) = result[abs_colon..].find('=') {
+                    let abs_eq = abs_colon + eq_pos;
+                    // Make sure there's no `==` or `===` or `=>`
+                    if abs_eq + 1 < result.len() && result.as_bytes()[abs_eq + 1] != b'=' {
+                        // Check this isn't `=>`
+                        if abs_eq + 1 >= result.len() || result.as_bytes()[abs_eq + 1] != b'>' {
+                            result = format!("{}{}", &result[..abs_colon], &result[abs_eq..]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Parameter types: `name: Type,` and `name: Type)` and `name?: Type`
+    // Pattern: within parentheses, strip `: Type` after parameter names
+    result = strip_paren_type_annotations(&result);
+
+    result
+}
+
+/// Strip type annotations within parentheses (function parameters).
+fn strip_paren_type_annotations(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+    let mut in_string = false;
+    let mut string_delim = ' ';
+    let mut paren_depth: usize = 0;
+
+    while i < len {
+        let c = chars[i];
+
+        // Track string literals
+        if in_string {
+            result.push(c);
+            if c == string_delim && (i == 0 || chars[i - 1] != '\\') {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '\'' || c == '"' || c == '`' {
+            in_string = true;
+            string_delim = c;
+            result.push(c);
+            i += 1;
+            continue;
+        }
+
+        if c == '(' {
+            paren_depth += 1;
+            result.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ')' {
+            paren_depth = paren_depth.saturating_sub(1);
+            result.push(c);
+            i += 1;
+            continue;
+        }
+
+        // Inside parentheses, strip `: Type` and `?: Type`
+        if paren_depth > 0 && c == ':' {
+            // Check if preceded by `?` (optional parameter)
+            // Skip the type until we hit `,` or `)` or `=` or `{`
+            let mut j = i + 1;
+            // Skip leading whitespace
+            while j < len && chars[j] == ' ' { j += 1; }
+            // Skip the type
+            let mut bracket_depth: usize = 0;
+            while j < len {
+                let tc = chars[j];
+                if tc == '<' { bracket_depth += 1; j += 1; continue; }
+                if tc == '>' { bracket_depth = bracket_depth.saturating_sub(1); j += 1; continue; }
+                if bracket_depth == 0 && (tc == ',' || tc == ')' || tc == '=' || tc == '{' || tc == '\n') {
+                    break;
+                }
+                j += 1;
+            }
+            i = j;
+            continue;
+        }
+
+        result.push(c);
+        i += 1;
+    }
+    result
+}
+
+/// Strip generic type parameters from function/class definitions.
+fn strip_generics(s: &str) -> String {
+    // Pattern: `function name<T>` → `function name`
+    // Pattern: `class Name<T>` → `class Name`
+    // We only strip generics after `function` or `class` keywords
+    // to avoid breaking JSX or comparison operators.
+    let mut result = s.to_string();
+
+    for kw in &["function ", "class ", "interface "] {
+        if let Some(pos) = result.find(kw) {
+            let after_kw = pos + kw.len();
+            let rest = &result[after_kw..];
+            // Skip whitespace and the name
+            let mut name_end = 0;
+            while name_end < rest.len() && (rest.as_bytes()[name_end].is_ascii_alphanumeric() || rest.as_bytes()[name_end] == b'_') {
+                name_end += 1;
+            }
+            if name_end < rest.len() && rest.as_bytes()[name_end] == b'<' {
+                // Find matching `>`
+                let mut depth = 0;
+                let mut gt_pos = name_end;
+                for (idx, b) in rest[name_end..].bytes().enumerate() {
+                    match b {
+                        b'<' => depth += 1,
+                        b'>' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                gt_pos = name_end + idx + 1;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if gt_pos > name_end && depth == 0 {
+                    let abs_gt = after_kw + gt_pos;
+                    result = format!("{}{}", &result[..after_kw + name_end], &result[abs_gt..]);
+                }
+            }
+        }
+    }
+    result
+}
+
+/// Strip `implements Type` from class declarations.
+fn strip_implements(s: &str) -> String {
+    if let Some(pos) = s.find(" implements ") {
+        let after = &s[pos + 12..];
+        // Find where the implements clause ends (at `{`)
+        if let Some(brace) = after.find('{') {
+            return format!("{} {{", &s[..pos]);
+        }
+    }
+    s.to_string()
+}
+
+/// Strip non-null assertion `!` before `.` access.
+fn strip_non_null_assertion(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        if chars[i] == '!' && i + 1 < len && chars[i + 1] == '.' {
+            // Skip the `!`
+            i += 1;
+            continue;
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+/// Minimal type stripping for `.jsx` files (mainly removes Flow-style annotations).
+fn strip_jsx_types(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    for line in source.lines() {
+        // Strip Flow-style: `// @flow` annotations
+        // Strip `: Type` in function params (same as TS)
+        let processed = strip_param_types(line);
+        result.push_str(&processed);
+        result.push('\n');
+    }
+    result
 }
 
 fn extract_json_string_field(json: &str, field: &str) -> ::std::option::Option<String> {
@@ -933,6 +1398,169 @@ mod tests {
         let result = resolve_specifier("nonexistent-pkg", Some(&dir));
         assert!(result.is_none());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ─── TypeScript stripping tests ──────────────────────────────────
+    // @trace REQ-ENG-005 [req:REQ-ENG-005] [level:unit]
+
+    #[test]
+    fn needs_transpile_ts() {
+        assert!(needs_transpile(Path::new("test.ts")));
+    }
+
+    #[test]
+    fn needs_transpile_tsx() {
+        assert!(needs_transpile(Path::new("test.tsx")));
+    }
+
+    #[test]
+    fn needs_transpile_jsx() {
+        assert!(needs_transpile(Path::new("test.jsx")));
+    }
+
+    #[test]
+    fn needs_transpile_js() {
+        assert!(!needs_transpile(Path::new("test.js")));
+    }
+
+    #[test]
+    fn needs_transpile_mjs() {
+        assert!(!needs_transpile(Path::new("test.mjs")));
+    }
+
+    #[test]
+    fn strip_const_type_annotation() {
+        let input = "const x: number = 42;";
+        let output = strip_ts_impl(input);
+        // The `: number` type annotation should be removed
+        assert!(!output.contains(": number"), "output was: {}", output);
+        assert!(output.contains("const x"), "output was: {}", output);
+        assert!(output.contains("42"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_let_type_annotation() {
+        let input = "let name: string = 'hello';";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains(": string"), "output was: {}", output);
+        assert!(output.contains("let name"), "output was: {}", output);
+        assert!(output.contains("'hello'"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_function_param_types() {
+        let input = "function add(a: number, b: number): number { return a + b; }";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains(": number"), "output was: {}", output);
+        assert!(output.contains("function add"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_arrow_param_types() {
+        let input = "const fn = (x: number): number => x * 2;";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains(": number"), "output was: {}", output);
+        assert!(output.contains("=>"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_interface_declaration() {
+        let input = "interface User { name: string; age: number; }";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("interface"), "output was: {}", output);
+        assert!(!output.contains("User"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_export_interface() {
+        let input = "export interface Config { debug: boolean; }";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("interface"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_type_alias() {
+        let input = "type ID = string | number;";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("type ID"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_export_type() {
+        let input = "export type Result<T> = { ok: T; } | { err: string; };";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("export type"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_import_type() {
+        let input = "import type { User } from './types';";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("import type"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_as_assertion() {
+        let input = "const x = value as string;";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("as string"), "output was: {}", output);
+        assert!(output.contains("value"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_non_null_assertion() {
+        let input = "const name = user!.name;";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("!."), "output was: {}", output);
+        assert!(output.contains("user.name"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_generic_function() {
+        let input = "function identity<T>(arg: T): T { return arg; }";
+        let output = strip_ts_impl(input);
+        assert!(output.contains("function identity"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_implements() {
+        let input = "class UserImpl implements User { name: string; }";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("implements"), "output was: {}", output);
+        assert!(output.contains("class UserImpl"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_multiline_interface() {
+        let input = "interface Config {\n  host: string;\n  port: number;\n}\nconst x = 1;";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("interface"), "output was: {}", output);
+        assert!(output.contains("const x = 1"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_declare_module() {
+        let input = "declare module 'fs' {\n  export function readFileSync(path: string): Buffer;\n}";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("declare module"), "output was: {}", output);
+    }
+
+    #[test]
+    fn preserves_plain_js() {
+        let input = "const x = 42;\nfunction hello(name) { return 'Hello ' + name; }";
+        let output = strip_ts_impl(input);
+        assert!(output.contains("const x = 42"), "output was: {}", output);
+        assert!(output.contains("function hello(name)"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_typescript_routing_function() {
+        // Real-world pattern: a simple .ts file
+        let input = "const x: number = 42;\nexport default x;";
+        let output = strip_ts_impl(input);
+        assert!(output.contains("const x"), "output was: {}", output);
+        assert!(output.contains("42"), "output was: {}", output);
+        assert!(output.contains("export default x"), "output was: {}", output);
     }
 }
 

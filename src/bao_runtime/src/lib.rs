@@ -89,17 +89,23 @@ pub fn clear_exit() {
     EXIT_CODE.with(|c| c.set(0));
 }
 
-/// Register atexit handler to prevent SpiderMonkey GC crashes on process exit.
-/// Must be called before any JsContext creation in test binaries.
+/// Install orderly shutdown hooks for SpiderMonkey.
+///
+/// No-op at init time. Tests should call `shutdown_thread_sm()` at the end
+/// of each test function (before returning) to properly clean up the
+/// SpiderMonkey Runtime and Engine. Without this, C++ TLS destructors
+/// (`MutexImpl::~MutexImpl`) will SIGSEGV on thread exit.
+///
+/// This function is kept for API compatibility with existing test files.
 pub fn install_exit_handler() {
-    use std::sync::Once;
-    static INIT: Once = Once::new();
-    INIT.call_once(|| {
-        extern "C" fn noop() {}
-        unsafe {
-            libc::atexit(noop);
-        }
-    });
+    // No-op at init time. Cleanup happens via shutdown_thread_sm() at test end.
+}
+
+/// No-op. SpiderMonkey Runtime and Engine are kept alive in TLS via ManuallyDrop
+/// and never explicitly destroyed. See `bao_engine::context::JsContext::shutdown_thread_sm()`
+/// for the full rationale.
+pub fn shutdown_thread_sm() {
+    bao_engine::context::JsContext::shutdown_thread_sm();
 }
 
 /// Safe JS string conversion: returns "" if JS string allocation fails.

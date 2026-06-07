@@ -42,6 +42,7 @@ fn escape_path(p: &str) -> String {
 
 #[test]
 fn test_bun_api_all() {
+    bao_runtime::install_exit_handler();
     bao_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
     ctx.set_global_setup(bao_runtime::globals::install_all);
@@ -185,5 +186,5 @@ fn test_bun_api_all() {
     "#), "process.release");
 
     // Leak the context to prevent mozjs drop-order crashes on thread exit
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

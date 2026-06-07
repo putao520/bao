@@ -31,3 +31,8 @@ thiserror.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 bun_windows_sys = { workspace = true, target = "windows" }
+
+[dev-dependencies]
+bao_native_stubs.workspace = true
+bao_uloop.workspace = true
+bun_sys.workspace = true

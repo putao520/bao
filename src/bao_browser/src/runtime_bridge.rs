@@ -131,6 +131,15 @@ fn clear_all_node_realms() {
     lock_recover(page_globals()).clear();
 }
 
+/// Test serialization lock for NODE_REALMS operations.
+/// cargo test runs tests in parallel by default; tests that share NODE_REALMS
+/// must be serialized to prevent data races (store from test A cleared by test B).
+static TEST_SERIAL_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+fn test_serial_lock() -> &'static std::sync::Mutex<()> {
+    TEST_SERIAL_LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
 /// Re-key a Node Realm entry after navigation (old page_global → new page_global).
 ///
 /// When servo navigates, the Window global pointer may change. This function
@@ -742,6 +751,26 @@ unsafe fn install_all_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std
     bao_runtime::web_api::install_queue_microtask(&mut cx, global_handle);
     bao_runtime::globals::install_structured_clone(&mut cx, global_handle);
     bao_runtime::globals::install_web_api_constructors(&mut cx, global_handle);
+
+    // REQ-ENG-001 criterion 5: Ensure WebAssembly global is available.
+    // SpiderMonkey provides WebAssembly as a standard global class. It is lazily
+    // resolved via JS_ResolveStandardClass (the resolve hook on SIMPLE_GLOBAL_CLASS).
+    // We explicitly trigger resolution by evaluating `typeof WebAssembly` so that
+    // the global is populated immediately rather than on first access.
+    {
+        use mozjs::rust::CompileOptionsWrapper;
+        let wasm_check = r#"(function(){ try { return typeof WebAssembly; } catch(e) { return 'undefined'; } })()"#;
+        let c_filename = std::ffi::CString::new("<wasm-init>").unwrap_or_default();
+        let options = CompileOptionsWrapper::new(&mut cx, c_filename, 1);
+        rooted!(&in(cx) let mut wasm_rval = mozjs::jsval::UndefinedValue());
+        let _ = mozjs::rust::evaluate_script(
+            &mut cx,
+            global_handle,
+            wasm_check,
+            wasm_rval.handle_mut(),
+            options,
+        );
+    }
 }
 
 /// Inject both Node.js APIs and stealth scripts into a page.
@@ -2766,6 +2795,8 @@ mod tests {
     #[test]
     fn node_realm_store_get_remove_round_trip() {
         use std::ptr;
+        let _guard = super::test_serial_lock().lock().unwrap();
+        super::clear_all_node_realms();
         // Use sentinel values (non-null) to verify HashMap CRUD.
         let page_global: *mut mozjs::jsapi::JSObject = 0xDEAD_0001 as *mut _;
         let node_global: *mut mozjs::jsapi::JSObject = 0xBEEF_0001 as *mut _;
@@ -2789,6 +2820,8 @@ mod tests {
     /// REQ-SEC-002: Multiple pages can have independent Node Realms.
     #[test]
     fn node_realm_per_page_isolation() {
+        let _guard = super::test_serial_lock().lock().unwrap();
+        super::clear_all_node_realms();
         let pg1: *mut mozjs::jsapi::JSObject = 0xDEAD_0001 as *mut _;
         let ng1: *mut mozjs::jsapi::JSObject = 0xBEEF_0001 as *mut _;
         let pg2: *mut mozjs::jsapi::JSObject = 0xDEAD_0002 as *mut _;
@@ -2812,6 +2845,7 @@ mod tests {
     /// REQ-SEC-002: clear_all_node_realms removes everything.
     #[test]
     fn clear_all_removes_all_entries() {
+        let _guard = super::test_serial_lock().lock().unwrap();
         let pg1: *mut mozjs::jsapi::JSObject = 0xDEAD_0011 as *mut _;
         let ng1: *mut mozjs::jsapi::JSObject = 0xBEEF_0011 as *mut _;
         let pg2: *mut mozjs::jsapi::JSObject = 0xDEAD_0022 as *mut _;
@@ -2828,6 +2862,8 @@ mod tests {
     /// REQ-SEC-002: rekey_node_realm moves Node Realm mapping to new page_global.
     #[test]
     fn rekey_node_realm_moves_entry() {
+        let _guard = super::test_serial_lock().lock().unwrap();
+        super::clear_all_node_realms();
         let old_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_1000 as *mut _;
         let new_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_2000 as *mut _;
         let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_1000 as *mut _;
@@ -2845,6 +2881,8 @@ mod tests {
     /// REQ-SEC-002: rekey_node_realm with null pointers is a no-op.
     #[test]
     fn rekey_node_realm_null_safe() {
+        let _guard = super::test_serial_lock().lock().unwrap();
+        super::clear_all_node_realms();
         let pg: *mut mozjs::jsapi::JSObject = 0xDEAD_3000 as *mut _;
         let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_3000 as *mut _;
 
@@ -2859,6 +2897,8 @@ mod tests {
     /// REQ-SEC-002: rekey_node_realm with unknown old key is a no-op.
     #[test]
     fn rekey_node_realm_unknown_old_key() {
+        let _guard = super::test_serial_lock().lock().unwrap();
+        super::clear_all_node_realms();
         let unknown_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_4000 as *mut _;
         let new_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_5000 as *mut _;
 
@@ -2869,6 +2909,7 @@ mod tests {
     /// REQ-SEC-002: rekey preserves Node Realm state across simulated navigation.
     #[test]
     fn rekey_simulates_navigation_cycle() {
+        let _guard = super::test_serial_lock().lock().unwrap();
         let pg_before_nav: *mut mozjs::jsapi::JSObject = 0xDEAD_6000 as *mut _;
         let pg_after_nav: *mut mozjs::jsapi::JSObject = 0xDEAD_7000 as *mut _;
         let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_6000 as *mut _;
@@ -2890,6 +2931,7 @@ mod tests {
     /// REQ-SEC-002: reverse mapping (node_global → page_global) works correctly.
     #[test]
     fn reverse_mapping_page_global_for_node() {
+        let _guard = super::test_serial_lock().lock().unwrap();
         let pg: *mut mozjs::jsapi::JSObject = 0xDEAD_8001 as *mut _;
         let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_8001 as *mut _;
 
@@ -2906,6 +2948,7 @@ mod tests {
     /// REQ-SEC-002: reverse mapping cleaned up on page close.
     #[test]
     fn reverse_mapping_cleaned_on_remove() {
+        let _guard = super::test_serial_lock().lock().unwrap();
         let pg: *mut mozjs::jsapi::JSObject = 0xDEAD_9001 as *mut _;
         let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_9001 as *mut _;
 
@@ -2920,6 +2963,7 @@ mod tests {
     /// REQ-SEC-002: reverse mapping updated on rekey.
     #[test]
     fn reverse_mapping_updated_on_rekey() {
+        let _guard = super::test_serial_lock().lock().unwrap();
         let old_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_A001 as *mut _;
         let new_pg: *mut mozjs::jsapi::JSObject = 0xDEAD_A002 as *mut _;
         let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_A001 as *mut _;
@@ -2936,6 +2980,7 @@ mod tests {
     /// REQ-SEC-002: clear_all cleans both forward and reverse mappings.
     #[test]
     fn clear_all_cleans_reverse_mapping() {
+        let _guard = super::test_serial_lock().lock().unwrap();
         let pg: *mut mozjs::jsapi::JSObject = 0xDEAD_B001 as *mut _;
         let ng: *mut mozjs::jsapi::JSObject = 0xBEEF_B001 as *mut _;
 

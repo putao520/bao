@@ -113,5 +113,5 @@ fn test_stealth_http_deep() {
     let ff_ja3_val = bao_runtime::stealth_http::ja3_hash(&Some(ff_profile.clone()));
     assert_ne!(chrome_ja3_val, ff_ja3_val, "Chrome and Firefox must produce different JA3");
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

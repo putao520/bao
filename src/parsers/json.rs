@@ -1370,6 +1370,7 @@ mod tests {
     // appearing in the main dep graph.
     use bun_js_printer as js_printer;
 
+    #[allow(dead_code)]
     fn expect_printed_json(_contents: &[u8], expected: &[u8]) -> Result<(), bun_core::Error> {
         // Zig: Expr.Data.Store.create(); Stmt.Data.Store.create(); defer { ..reset() }.
         // RAII: `StoreResetGuard` resets both thread-local AST stores on every
@@ -1381,14 +1382,13 @@ mod tests {
         *contents.last_mut().unwrap() = b';';
         let mut log = bun_ast::Log::init();
 
-        let source = bun_ast::Source::init_path_string("source.json", &contents);
+        let source = bun_ast::Source::init_path_string("source.json", &contents[..]);
         let bump = Bump::new();
         let expr = parse::<false>(&source, &mut log, &bump)?;
 
         if !log.msgs.is_empty() {
             bun_core::Output::panic(format_args!(
-                "--FAIL--\nExpr {:?}\nLog: {}\n--FAIL--",
-                expr,
+                "--FAIL--\nLog: {}\n--FAIL--",
                 bstr::BStr::new(&log.msgs[0].data.text)
             ));
         }
@@ -1400,11 +1400,13 @@ mod tests {
             expr,
             &source,
             js_printer::PrintJsonOptions {
+                indent: Default::default(),
                 mangled_props: None,
+                minify_whitespace: false,
             },
         )?;
         // TODO(port): Zig accessed writer.ctx.buffer.list.items.ptr[0..written+1].
-        let buf = writer.ctx.buffer.as_slice();
+        let buf = &writer.ctx.buffer.list;
         let mut js = &buf[0..written + 1];
 
         if js.len() > 1 {

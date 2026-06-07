@@ -219,6 +219,7 @@ fn test_permission_clone() {
         net: Some(vec!["b.com".into()]),
         env: Some(true),
         run: Some(false),
+        ..Default::default()
     };
     let cloned = perm.clone();
     assert_eq!(perm.read, cloned.read);

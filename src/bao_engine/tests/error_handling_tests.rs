@@ -254,5 +254,5 @@ fn test_error_handling_deep() {
     "#);
     assert_eq!(result, "a_b");
 
-    std::mem::forget(ctx);
+    bao_engine::context::JsContext::shutdown_thread_sm();
 }

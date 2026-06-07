@@ -50,6 +50,7 @@ fn test_page_config_with_permission() {
         net: Some(vec!["example.com".into()]),
         env: Some(false),
         run: Some(false),
+        ..Default::default()
     };
     let mut pc = PageConfig::default();
     pc.permission = Some(perm.clone());

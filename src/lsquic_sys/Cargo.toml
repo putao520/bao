@@ -1,0 +1,15 @@
+[package]
+name = "bun_lsquic_sys"
+version = "0.1.0"
+description = "Compiled lsquic C library (LiteSpeed QUIC/HTTP3) with lsqpack"
+edition = "2021"
+license = "MIT"
+
+[build-dependencies]
+cc = "1"
+
+[dependencies]
+# lsquic depends on BoringSSL for TLS and lshpack for HPACK headers.
+# These are regular deps so cargo propagates their native link artifacts.
+bun_boringssl_sys = { path = "../boringssl_sys" }
+bun_lshpack_sys = { path = "../lshpack_sys" }

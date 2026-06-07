@@ -3260,3 +3260,12 @@ pub fn return_address() -> usize {
         0
     }
 }
+
+#[cfg(test)]
+mod test_link {
+    #[test]
+    fn _force_link_deps() {
+        bao_native_stubs::force_link();
+        bun_sys::force_link();
+    }
+}

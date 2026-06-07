@@ -1,0 +1,13 @@
+[package]
+name = "bun_lshpack_sys"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[build-dependencies]
+cc = "1"
+
+[lints]
+workspace = true

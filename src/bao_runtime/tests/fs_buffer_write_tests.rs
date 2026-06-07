@@ -115,5 +115,5 @@ fn test_fs_write_buffer_bytes_preserved() {
     assert!(pass >= 7, "Expected 7 passes, got {}", pass);
 
     let _ = ::std::fs::remove_dir_all(&dir);
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

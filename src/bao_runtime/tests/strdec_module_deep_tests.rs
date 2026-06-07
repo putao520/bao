@@ -216,5 +216,5 @@ fn test_string_decoder_module_deep() {
     }
     assert_eq!(fail, 0, "string_decoder + module deep tests had {} failures", fail);
     assert!(pass >= 30, "Expected at least 30 passes, got {}", pass);
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

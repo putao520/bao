@@ -8,7 +8,7 @@ servo = { path = "../../../servo/components/servo", default-features = false, fe
 servo-url = { path = "../../../servo/components/url" }
 dpi = "0.1"
 url = "2"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 base64 = "0.22"
 serde_json = "1"
 bao_cdp = { path = "../bao_cdp" }

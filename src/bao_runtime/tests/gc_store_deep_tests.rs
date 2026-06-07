@@ -325,5 +325,5 @@ fn test_gc_store_deep() {
     assert_eq!(fail, 0, "gc_store deep tests had {} failures", fail);
     assert!(pass >= 15, "Expected at least 15 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

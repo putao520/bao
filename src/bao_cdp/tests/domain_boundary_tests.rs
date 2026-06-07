@@ -1,7 +1,7 @@
 // @trace TEST-CDP-001~008-BND [req:REQ-CDP-001~008] [level:unit]
 // CDP domain handler boundary tests: enable/disable lifecycle, unknown commands, error codes
 
-use bao_cdp::servo_bridge::bridge_channel;
+use bao_cdp::servo_bridge::{bridge_channel, BridgeResponse};
 use bao_cdp::domains::register_all_domains_into;
 use cdp_server::{CdpError, DomainRegistry, EventSender};
 use serde_json::{json, Value};
@@ -14,8 +14,27 @@ impl EventSender for NoopSender {
 
 fn make_registry() -> DomainRegistry {
     let mut reg = DomainRegistry::new();
-    let (tx, _rx) = bridge_channel(Duration::from_secs(5));
+    let (tx, rx) = bridge_channel(Duration::from_secs(5));
     register_all_domains_into(tx, &mut reg);
+    // Background thread drains bridge commands with generic OK responses
+    std::thread::spawn(move || {
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            let count = rx.drain(|_cmd| BridgeResponse { result: Ok(json!({})) });
+            if count == 0 {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    });
+    reg
+}
+
+/// Registry with no bridge responder — used to test bridge timeout error propagation.
+fn make_registry_no_responder() -> DomainRegistry {
+    let mut reg = DomainRegistry::new();
+    let (tx, _rx) = bridge_channel(Duration::from_millis(50));
+    register_all_domains_into(tx, &mut reg);
+    // _rx is dropped — bridge commands will timeout
     reg
 }
 
@@ -207,24 +226,24 @@ fn test_no_dot_returns_none() {
 
 #[test]
 fn test_page_needs_bridge_for_navigate() {
-    let reg = make_registry();
-    // Page.navigate requires active bridge; without servo it returns -32603
+    let reg = make_registry_no_responder();
+    // Page.navigate requires active bridge; without responder it returns -32603
     let err = err_cmd(&reg, "Page.navigate", json!({"url": "https://example.com"}));
     assert_eq!(err.code, -32603, "bridge command should return internal error without servo");
 }
 
 #[test]
 fn test_runtime_needs_bridge_for_evaluate() {
-    let reg = make_registry();
-    // Runtime.evaluate requires active bridge; returns -32603 without servo
+    let reg = make_registry_no_responder();
+    // Runtime.evaluate requires active bridge; returns -32603 without responder
     let err = err_cmd(&reg, "Runtime.evaluate", json!({"expression": "1+1"}));
     assert_eq!(err.code, -32603, "bridge command should return internal error without servo");
 }
 
 #[test]
 fn test_dom_needs_bridge_for_get_document() {
-    let reg = make_registry();
-    // DOM.getDocument requires active bridge; returns -32603 without servo
+    let reg = make_registry_no_responder();
+    // DOM.getDocument requires active bridge; returns -32603 without responder
     let err = err_cmd(&reg, "DOM.getDocument", json!({}));
     assert_eq!(err.code, -32603, "bridge command should return internal error without servo");
 }

@@ -105,5 +105,5 @@ fn test_node_stream_qs_all() {
         }
     }
     assert!(all_passed, "All stream/qs tests should pass");
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

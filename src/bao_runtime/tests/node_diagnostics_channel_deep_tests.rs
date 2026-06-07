@@ -358,5 +358,5 @@ fn test_node_diagnostics_channel_deep() {
     assert_eq!(fail, 0, "node diagnostics_channel deep tests had {} failures", fail);
     assert!(pass >= 35, "Expected at least 35 passes, got {}", pass);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

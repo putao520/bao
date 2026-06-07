@@ -4,6 +4,7 @@ pub struct NavigatorProfile {
     pub user_agent: String,
     pub platform: String,
     pub language: String,
+    pub languages: Vec<String>,
     pub hardware_concurrency: u32,
     pub max_touch_points: u32,
     pub vendor: String,
@@ -11,6 +12,7 @@ pub struct NavigatorProfile {
     pub oscpu: Option<String>,
     pub build_id: Option<String>,
     pub product_sub: String,
+    pub device_memory: f64,
 }
 
 impl NavigatorProfile {
@@ -19,6 +21,7 @@ impl NavigatorProfile {
             user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0".into(),
             platform: "Linux x86_64".into(),
             language: "en-US".into(),
+            languages: vec!["en-US".into(), "en".into()],
             hardware_concurrency: 8,
             max_touch_points: 0,
             vendor: "".into(),
@@ -26,6 +29,7 @@ impl NavigatorProfile {
             oscpu: Some("Linux x86_64".into()),
             build_id: Some("20240701150000".into()),
             product_sub: "20100101".into(),
+            device_memory: 8.0,
         }
     }
 
@@ -34,6 +38,7 @@ impl NavigatorProfile {
             user_agent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36".into(),
             platform: "Linux x86_64".into(),
             language: "en-US".into(),
+            languages: vec!["en-US".into(), "en".into()],
             hardware_concurrency: 8,
             max_touch_points: 0,
             vendor: "Google Inc.".into(),
@@ -41,6 +46,7 @@ impl NavigatorProfile {
             oscpu: None,
             build_id: None,
             product_sub: "20030107".into(),
+            device_memory: 8.0,
         }
     }
 }
@@ -186,5 +192,42 @@ mod tests {
         assert_eq!(cloned.width, screen.width);
         assert_eq!(cloned.height, screen.height);
         assert_eq!(cloned.device_pixel_ratio, screen.device_pixel_ratio);
+    }
+
+    #[test]
+    fn firefox_languages_contains_en_us() {
+        let profile = NavigatorProfile::firefox();
+        assert!(profile.languages.contains(&"en-US".to_string()));
+        assert!(!profile.languages.is_empty());
+    }
+
+    #[test]
+    fn chrome_languages_contains_en_us() {
+        let profile = NavigatorProfile::chrome();
+        assert!(profile.languages.contains(&"en-US".to_string()));
+    }
+
+    #[test]
+    fn firefox_device_memory_is_positive() {
+        let profile = NavigatorProfile::firefox();
+        assert!(profile.device_memory > 0.0);
+    }
+
+    #[test]
+    fn chrome_device_memory_is_positive() {
+        let profile = NavigatorProfile::chrome();
+        assert!(profile.device_memory > 0.0);
+    }
+
+    #[test]
+    fn firefox_language_matches_languages_first() {
+        let profile = NavigatorProfile::firefox();
+        assert_eq!(profile.language, profile.languages[0]);
+    }
+
+    #[test]
+    fn chrome_language_matches_languages_first() {
+        let profile = NavigatorProfile::chrome();
+        assert_eq!(profile.language, profile.languages[0]);
     }
 }

@@ -372,5 +372,5 @@ fn test_fs_deep() {
     // Cleanup
     let _ = ::std::fs::remove_dir_all(&dir);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

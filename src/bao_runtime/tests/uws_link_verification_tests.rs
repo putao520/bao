@@ -76,5 +76,5 @@ fn test_uws_link_smoke() {
     };
 
     assert!(result, "http.createServer + server.listen must be callable");
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

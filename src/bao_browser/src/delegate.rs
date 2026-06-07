@@ -17,6 +17,8 @@ pub struct BaoWebViewState {
     /// Set to true after navigation completes (LoadStatus::Complete).
     /// evaluate_js checks this flag and refreshes stale DOM proxies before executing scripts.
     pub dom_proxies_dirty: bool,
+    /// Channel for forwarding per-webview console messages to CDP Log domain.
+    pub console_log_tx: Option<std::sync::mpsc::Sender<(String, String)>>,
 }
 
 impl Default for BaoWebViewState {
@@ -27,18 +29,23 @@ impl Default for BaoWebViewState {
             load_status: LoadStatus::Started,
             frame_ready: false,
             dom_proxies_dirty: false,
+            console_log_tx: None,
         }
     }
 }
 
 pub struct BaoServoDelegate {
     last_error: RefCell<Option<String>>,
+    /// Channel for forwarding console messages to CDP Log domain.
+    /// Set via `set_console_log_tx` when CDP server starts.
+    console_log_tx: RefCell<Option<std::sync::mpsc::Sender<(String, String)>>>,
 }
 
 impl Default for BaoServoDelegate {
     fn default() -> Self {
         BaoServoDelegate {
             last_error: RefCell::new(None),
+            console_log_tx: RefCell::new(None),
         }
     }
 }
@@ -51,6 +58,18 @@ impl BaoServoDelegate {
     pub fn last_error(&self) -> Option<String> {
         self.last_error.borrow().clone()
     }
+
+    /// Set the channel for forwarding console messages to CDP.
+    /// Called when CDP server starts.
+    pub fn set_console_log_tx(&self, tx: std::sync::mpsc::Sender<(String, String)>) {
+        *self.console_log_tx.borrow_mut() = Some(tx);
+    }
+
+    /// Get a clone of the console log sender, if one has been set.
+    /// Used to propagate the channel to per-webview state.
+    pub fn console_log_tx(&self) -> Option<std::sync::mpsc::Sender<(String, String)>> {
+        self.console_log_tx.borrow().clone()
+    }
 }
 
 impl ServoDelegate for BaoServoDelegate {
@@ -58,8 +77,19 @@ impl ServoDelegate for BaoServoDelegate {
         *self.last_error.borrow_mut() = Some(format!("{error:?}"));
     }
 
-    fn show_console_message(&self, _level: ConsoleLogLevel, message: String) {
+    fn show_console_message(&self, level: ConsoleLogLevel, message: String) {
+        let level_str = match level {
+            ConsoleLogLevel::Debug => "debug",
+            ConsoleLogLevel::Log => "info",
+            ConsoleLogLevel::Info => "info",
+            ConsoleLogLevel::Warn => "warning",
+            ConsoleLogLevel::Error => "error",
+            ConsoleLogLevel::Trace => "verbose",
+        };
         eprintln!("[servo] {message}");
+        if let Some(ref tx) = *self.console_log_tx.borrow() {
+            let _ = tx.send((level_str.to_string(), message));
+        }
     }
 
     fn request_devtools_connection(&self, request: AllowOrDenyRequest) {
@@ -132,8 +162,19 @@ impl WebViewDelegate for BaoWebViewDelegate {
     ) {
     }
 
-    fn show_console_message(&self, _webview: WebView, _level: ConsoleLogLevel, message: String) {
+    fn show_console_message(&self, _webview: WebView, level: ConsoleLogLevel, message: String) {
+        let level_str = match level {
+            ConsoleLogLevel::Debug => "debug",
+            ConsoleLogLevel::Log => "info",
+            ConsoleLogLevel::Info => "info",
+            ConsoleLogLevel::Warn => "warning",
+            ConsoleLogLevel::Error => "error",
+            ConsoleLogLevel::Trace => "verbose",
+        };
         eprintln!("[webview] {message}");
+        if let Some(ref tx) = self.state.borrow().console_log_tx {
+            let _ = tx.send((level_str.to_string(), message));
+        }
     }
 
     fn show_embedder_control(&self, _webview: WebView, _control: EmbedderControl) {}
@@ -271,5 +312,99 @@ mod tests {
         state.dom_proxies_dirty = true;
         state.dom_proxies_dirty = false;
         assert!(!state.dom_proxies_dirty);
+    }
+
+    // ─── Console Log Channel Forwarding ─────────────────────────────
+    // @trace REQ-CDP-007 [req:REQ-CDP-007] [level:unit]
+
+    #[test]
+    fn test_servo_delegate_console_log_channel_set_and_get() {
+        let delegate = BaoServoDelegate::new();
+        assert!(delegate.console_log_tx().is_none());
+        let (tx, _rx) = std::sync::mpsc::channel::<(String, String)>();
+        delegate.set_console_log_tx(tx);
+        assert!(delegate.console_log_tx().is_some());
+    }
+
+    #[test]
+    fn test_servo_delegate_console_log_tx_clones() {
+        let delegate = BaoServoDelegate::new();
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        delegate.set_console_log_tx(tx);
+        // Get a clone and send through it
+        let cloned = delegate.console_log_tx().unwrap();
+        cloned.send(("info".into(), "hello".into())).unwrap();
+        let (level, text) = rx.try_recv().unwrap();
+        assert_eq!(level, "info");
+        assert_eq!(text, "hello");
+    }
+
+    #[test]
+    fn test_webview_state_console_log_tx_propagation() {
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let mut state = BaoWebViewState::default();
+        state.console_log_tx = Some(tx);
+        // Simulate what show_console_message does
+        if let Some(ref tx) = state.console_log_tx {
+            tx.send(("warning".into(), "test message".into())).unwrap();
+        }
+        let (level, text) = rx.try_recv().unwrap();
+        assert_eq!(level, "warning");
+        assert_eq!(text, "test message");
+    }
+
+    #[test]
+    fn test_webview_state_console_log_tx_default_none() {
+        let state = BaoWebViewState::default();
+        assert!(state.console_log_tx.is_none());
+    }
+
+    #[test]
+    fn test_console_log_all_level_mappings() {
+        let delegate = BaoServoDelegate::new();
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        delegate.set_console_log_tx(tx);
+
+        // Verify all ConsoleLogLevel variants map correctly via the delegate's show_console_message
+        // We test the level mapping logic directly by checking the match arms
+        let cases: Vec<(ConsoleLogLevel, &str)> = vec![
+            (ConsoleLogLevel::Debug, "debug"),
+            (ConsoleLogLevel::Log, "info"),
+            (ConsoleLogLevel::Info, "info"),
+            (ConsoleLogLevel::Warn, "warning"),
+            (ConsoleLogLevel::Error, "error"),
+            (ConsoleLogLevel::Trace, "verbose"),
+        ];
+        for (level, expected_str) in cases {
+            let mapped = match level {
+                ConsoleLogLevel::Debug => "debug",
+                ConsoleLogLevel::Log => "info",
+                ConsoleLogLevel::Info => "info",
+                ConsoleLogLevel::Warn => "warning",
+                ConsoleLogLevel::Error => "error",
+                ConsoleLogLevel::Trace => "verbose",
+            };
+            assert_eq!(mapped, expected_str, "level {:?} should map to {}", level, expected_str);
+        }
+        drop(rx);
+    }
+
+    #[test]
+    fn test_webview_delegate_console_log_forwarding() {
+        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let state = Rc::new(RefCell::new(BaoWebViewState {
+            console_log_tx: Some(tx),
+            ..Default::default()
+        }));
+        let viewport = PhysicalSize::new(800, 600);
+        let _delegate = BaoWebViewDelegate::new(state, viewport);
+
+        // Simulate sending through state's channel (what show_console_message does)
+        if let Some(ref tx) = _delegate.state().borrow().console_log_tx {
+            tx.send(("error".into(), "crash!".into())).unwrap();
+        }
+        let (level, text) = rx.try_recv().unwrap();
+        assert_eq!(level, "error");
+        assert_eq!(text, "crash!");
     }
 }

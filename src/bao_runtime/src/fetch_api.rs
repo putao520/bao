@@ -876,4 +876,101 @@ mod tests {
         assert!(resp.body.is_empty());
         assert_eq!(resp.status_code, 204);
     }
+
+    // ── REQ-SEC-001: CORS Bypass Unit Tests ──────────────────────────────
+    // @trace TEST-SEC-001 [req:REQ-SEC-001] [level:unit]
+
+    /// REQ-SEC-001: do_fetch performs direct HTTP requests without CORS middleware.
+    /// Verify the fetch path has NO CORS-related headers or preflight logic.
+    #[test]
+    fn cors_bypass_no_preflight_code_in_do_fetch() {
+        let source = include_str!("fetch_api.rs");
+        let func_start = source.find("fn do_fetch(").expect("do_fetch function not found");
+        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+
+        assert!(
+            !func_body.contains("cors_check"),
+            "REQ-SEC-001 REGRESSION: do_fetch must NOT contain cors_check"
+        );
+        assert!(
+            !func_body.contains("Access-Control-Request-Method"),
+            "REQ-SEC-001 REGRESSION: do_fetch must NOT send CORS preflight headers"
+        );
+        assert!(
+            !func_body.contains("Origin"),
+            "REQ-SEC-001 REGRESSION: do_fetch must NOT set Origin header for CORS"
+        );
+        assert!(
+            !func_body.contains("preflight"),
+            "REQ-SEC-001 REGRESSION: do_fetch must NOT contain preflight logic"
+        );
+    }
+
+    /// REQ-SEC-001: stealth HTTP request path has no CORS enforcement.
+    #[test]
+    fn cors_bypass_stealth_http_no_cors() {
+        let source = include_str!("fetch_api.rs");
+        let func_start = source.find("fn do_fetch(").expect("do_fetch not found");
+        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+
+        assert!(
+            func_body.contains("stealth_http_request"),
+            "REQ-SEC-001: do_fetch must use stealth_http_request for direct HTTP"
+        );
+        assert!(
+            !func_body.contains("CorsCache"),
+            "REQ-SEC-001 REGRESSION: must not reference CorsCache"
+        );
+        assert!(
+            !func_body.contains("opaque"),
+            "REQ-SEC-001 REGRESSION: must not produce opaque responses"
+        );
+    }
+
+    /// REQ-SEC-001: FetchResponse contains full response body (never opaque).
+    #[test]
+    fn cors_bypass_fetch_response_is_transparent() {
+        let resp = FetchResponse {
+            status_code: 200,
+            body: "{\"data\":\"full access\"}".to_string(),
+            headers: vec![("content-type".into(), "application/json".into())],
+            url: "https://other-domain.com/api".to_string(),
+            status_text: "OK".to_string(),
+        };
+        assert_eq!(resp.status_code, 200, "REQ-SEC-001: cross-origin response must be 200");
+        assert!(
+            resp.body.contains("full access"),
+            "REQ-SEC-001: response body must be fully readable (not opaque)"
+        );
+        assert!(
+            !resp.body.is_empty(),
+            "REQ-SEC-001: response body must not be empty (opaque responses have empty body)"
+        );
+    }
+
+    /// REQ-SEC-001: fetch global is installed on page realm via install_all_native.
+    #[test]
+    fn cors_bypass_fetch_global_installed_for_page() {
+        let source = include_str!("fetch_api.rs");
+        assert!(
+            source.contains("pub fn install_fetch_global"),
+            "REQ-SEC-001: install_fetch_global must be pub for page realm installation"
+        );
+    }
+
+    /// REQ-SEC-001: extract_host_port handles cross-origin URLs correctly.
+    #[test]
+    fn cors_bypass_cross_origin_url_parsing() {
+        let cases = [
+            ("https://api.other-domain.com/v1/data", ("api.other-domain.com", 443u16)),
+            ("http://localhost:3000/api/cors-test", ("localhost", 3000u16)),
+            ("https://cdn.example.com:8443/assets/file.js", ("cdn.example.com", 8443u16)),
+        ];
+        for (url, (expected_host, expected_port)) in cases {
+            let (host, port) = extract_host_port(url)
+                .unwrap_or_else(|| panic!("REQ-SEC-001: failed to parse cross-origin URL: {}", url));
+            assert_eq!(host, expected_host, "host mismatch for {}", url);
+            assert_eq!(port, expected_port, "port mismatch for {}", url);
+        }
+    }
 }

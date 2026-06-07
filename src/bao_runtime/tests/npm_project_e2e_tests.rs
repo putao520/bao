@@ -31,6 +31,7 @@ fn eval_ok(ctx: &mut JsContext, source: &str) -> bool {
 // All tests in a single #[test] function — mozjs Runtime is per-thread singleton.
 #[test]
 fn test_npm_project_e2e_all() {
+    bao_runtime::install_exit_handler();
     bao_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bao_runtime::globals::install_all);
@@ -337,4 +338,7 @@ fn test_npm_project_e2e_all() {
     // Syntax error
     let syntax_err = ctx.eval("var x = ;", "<test>");
     assert!(syntax_err.is_err(), "Syntax error must propagate as Err");
+
+    // Leak the JsContext to avoid mozjs GC/TLS destructor crash on drop.
+    bao_runtime::shutdown_thread_sm();
 }

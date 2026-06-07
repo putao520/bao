@@ -496,5 +496,5 @@ fn test_realworld_crypto_workflows() {
     assert!(random.contains("SCENARIO_5_PASSED"),
         "scenario 5 complete: {}", random);
 
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }

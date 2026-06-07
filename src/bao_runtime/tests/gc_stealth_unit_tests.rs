@@ -63,6 +63,7 @@ fn test_stealth_http_firefox_profile() {
 
 #[test]
 fn test_gc_store_via_require() {
+    bao_runtime::install_exit_handler();
     bao_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(bao_runtime::globals::install_all);
@@ -110,5 +111,5 @@ fn test_gc_store_via_require() {
         }
     }
     assert!(all_passed, "GC store / require caching tests should pass. Results: {}", result);
-    std::mem::forget(ctx);
+    bao_runtime::shutdown_thread_sm();
 }
