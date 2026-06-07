@@ -181,8 +181,16 @@ unsafe extern "C" fn require_fn(
     let cached = gc_store::gc_store_get(cx, &cache_key);
     if let Some(existing) = cached
         && !existing.is_null() {
-            let exports_val = mozjs::jsval::ObjectValue(existing);
-            args.rval().set(exports_val);
+            // Check if this is a primitive wrapper {__primitive__: val}
+            let existing_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &existing };
+            let mut prim_check = mozjs::jsval::UndefinedValue();
+            let prim_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut prim_check };
+            unsafe { JS_GetProperty(cx, existing_h, c"__primitive__".as_ptr(), prim_h); }
+            if !prim_check.is_undefined() {
+                args.rval().set(prim_check);
+            } else {
+                args.rval().set(mozjs::jsval::ObjectValue(existing));
+            }
             return true;
         }
 
@@ -196,21 +204,44 @@ unsafe extern "C" fn require_fn(
         }
     };
 
-    let exports_obj = if resolved.extension().is_some_and(|e| e == "json") {
-        load_json_module(cx, &content, &specifier)
+    let exports_val = if resolved.extension().is_some_and(|e| e == "json") {
+        let obj = load_json_module(cx, &content, &specifier);
+        if obj.is_null() {
+            let msg = format!("Failed to parse JSON module '{}'", specifier);
+            let c_msg = CString::new(msg).unwrap_or_default();
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+        mozjs::jsval::ObjectValue(obj)
     } else {
-        load_cjs_module(cx, &content, &resolved, base_dir.as_deref())
+        match load_cjs_module(cx, &content, &resolved, base_dir.as_deref()) {
+            Some(val) => val,
+            None => {
+                let msg = format!("Failed to load module '{}'", specifier);
+                let c_msg = CString::new(msg).unwrap_or_default();
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                return false;
+            }
+        }
     };
 
-    if exports_obj.is_null() {
-        let msg = format!("Failed to load module '{}'", specifier);
-        let c_msg = CString::new(msg).unwrap_or_default();
-        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
-        return false;
+    // Cache: for objects, store directly; for primitives, wrap in {__primitive__: val}
+    let cache_obj = if exports_val.is_object() {
+        exports_val.to_object()
+    } else {
+        let wrapper = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+        if !wrapper.is_null() {
+            let wrapper_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &wrapper };
+            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &exports_val };
+            JS_DefineProperty(cx, wrapper_h, c"__primitive__".as_ptr(), val_h, 0);
+        }
+        wrapper
+    };
+    if !cache_obj.is_null() {
+        gc_store::gc_store_insert(cx, &cache_key, cache_obj);
     }
 
-    gc_store::gc_store_insert(cx, &cache_key, exports_obj);
-    args.rval().set(mozjs::jsval::ObjectValue(exports_obj));
+    args.rval().set(exports_val);
     true
 }
 
@@ -234,21 +265,43 @@ unsafe fn load_json_module(cx: *mut JSContext, content: &str, specifier: &str) -
     ptr::null_mut()
 }
 
+/// Helper: read a property from a JS object as Value.
+/// Returns UndefinedValue if anything goes wrong.
+#[inline]
+unsafe fn get_prop(cx: *mut JSContext, obj: *mut JSObject, name: *const i8) -> Value {
+    let mut val = UndefinedValue();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let val_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
+    JS_GetProperty(cx, obj_h, name, val_h);
+    val
+}
+
+/// Helper: read a property from a JS object stored in a Value.
+/// Returns UndefinedValue if the Value is not an object.
+#[inline]
+unsafe fn get_prop_from_val(cx: *mut JSContext, val: Value, name: *const i8) -> Value {
+    if !val.is_object() {
+        return UndefinedValue();
+    }
+    get_prop(cx, val.to_object(), name)
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn load_cjs_module(
     cx: *mut JSContext,
     source: &str,
     path: &Path,
     _base_dir: Option<&Path>,
-) -> *mut JSObject {
-    let exports_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+) -> Option<Value> {
+    // Create exports object and set on global immediately (roots via global's property table).
+    let exports_obj = JS_NewPlainObject(cx);
     if exports_obj.is_null() {
-        return ptr::null_mut();
+        return None;
     }
 
     let dir = match path.parent() {
         Some(d) => d,
-        None => return exports_obj,
+        None => return Some(mozjs::jsval::ObjectValue(exports_obj)),
     };
 
     let saved_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
@@ -257,79 +310,106 @@ unsafe fn load_cjs_module(
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
         REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
-        return ptr::null_mut();
+        return None;
     }
 
-    let global_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
 
-    let mut old_exports = UndefinedValue();
-    let old_exports_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut old_exports };
-    JS_GetProperty(cx, global_handle, c"exports".as_ptr(), old_exports_h);
-    let mut old_module = UndefinedValue();
-    let old_module_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut old_module };
-    JS_GetProperty(cx, global_handle, c"module".as_ptr(), old_module_h);
+    // Save old globals so we can restore them after evaluation.
+    let old_exports = get_prop(cx, global, c"exports".as_ptr());
+    let old_module = get_prop(cx, global, c"module".as_ptr());
 
-    let exports_val = mozjs::jsval::ObjectValue(exports_obj);
-    let exports_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &exports_val };
-    JS_SetProperty(cx, global_handle, c"exports".as_ptr(), exports_h);
-
-    let module_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-    if !module_obj.is_null() {
-        let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module_obj };
-        let mod_val = mozjs::jsval::ObjectValue(module_obj);
-        let mod_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_val };
-        JS_SetProperty(cx, global_handle, c"module".as_ptr(), mod_h);
-        JS_DefineProperty(cx, module_h, c"exports".as_ptr(), exports_h, JSPROP_ENUMERATE as u32);
+    // Set exports on global — this makes it GC-reachable via global's property table.
+    {
+        let ev = mozjs::jsval::ObjectValue(exports_obj);
+        let ev_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ev };
+        JS_SetProperty(cx, global_h, c"exports".as_ptr(), ev_h);
     }
 
+    // Create module object — JS_NewPlainObject CAN trigger GC.
+    // exports is safe because it's reachable from global, and SpiderMonkey updates
+    // all heap pointers (property values) when objects move.
+    {
+        let module_obj = JS_NewPlainObject(cx);
+        if !module_obj.is_null() {
+            let mv = mozjs::jsval::ObjectValue(module_obj);
+            let mv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mv };
+            JS_SetProperty(cx, global_h, c"module".as_ptr(), mv_h);
+
+            // Re-read exports from global to get a fresh pointer after potential GC.
+            // GC updates global.exports if the object moved; raw local `exports_obj` is stale.
+            let fresh_exports = get_prop(cx, global, c"exports".as_ptr());
+            if fresh_exports.is_object() {
+                let fresh_exp_obj = fresh_exports.to_object();
+                let fev = mozjs::jsval::ObjectValue(fresh_exp_obj);
+                let fev_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fev };
+                // Re-read module from global for the same reason.
+                let fresh_module = get_prop(cx, global, c"module".as_ptr());
+                if fresh_module.is_object() {
+                    let fm_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &fresh_module.to_object() };
+                    JS_DefineProperty(cx, fm_h, c"exports".as_ptr(), fev_h, JSPROP_ENUMERATE as u32);
+                }
+            }
+        }
+    }
+
+    // Compile and evaluate the module source.
     let filename_str = path.to_string_lossy().into_owned();
     let c_filename = CString::new(filename_str)
         .unwrap_or_else(|_| CString::new("<module>").unwrap());
     let opts = NewCompileOptions(cx, c_filename.as_ptr(), 1);
     if opts.is_null() {
-        JS_DeleteProperty1(cx, global_handle, c"exports".as_ptr());
-        JS_DeleteProperty1(cx, global_handle, c"module".as_ptr());
+        JS_DeleteProperty1(cx, global_h, c"exports".as_ptr());
+        JS_DeleteProperty1(cx, global_h, c"module".as_ptr());
         REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
-        return ptr::null_mut();
+        return None;
     }
 
     let mut src = mozjs::rust::transform_str_to_source_text(source);
     let mut rval = UndefinedValue();
-    let rval_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_handle);
+    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h);
     libc::free(opts as *mut _);
 
-    JS_DeleteProperty1(cx, global_handle, c"exports".as_ptr());
-    JS_DeleteProperty1(cx, global_handle, c"module".as_ptr());
+    // IMPORTANT: read module.exports BEFORE restoring old globals.
+    // After Evaluate2 (which can trigger GC), re-read from global to get fresh pointers.
+    let module_after_eval = get_prop(cx, global, c"module".as_ptr());
+    let final_exports = get_prop_from_val(cx, module_after_eval, c"exports".as_ptr());
+
+    // Restore old globals.
+    JS_DeleteProperty1(cx, global_h, c"exports".as_ptr());
+    JS_DeleteProperty1(cx, global_h, c"module".as_ptr());
     if !old_exports.is_undefined() {
         let restore_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &old_exports };
-        JS_SetProperty(cx, global_handle, c"exports".as_ptr(), restore_h);
+        JS_SetProperty(cx, global_h, c"exports".as_ptr(), restore_h);
     }
     if !old_module.is_undefined() {
         let restore_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &old_module };
-        JS_SetProperty(cx, global_handle, c"module".as_ptr(), restore_h);
+        JS_SetProperty(cx, global_h, c"module".as_ptr(), restore_h);
     }
 
     if !ok {
         JS_ClearPendingException(cx);
         REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
-        return ptr::null_mut();
+        return None;
     }
 
     mozjs_sys::jsapi::js::RunJobs(cx);
     REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
 
-    // Read module.exports in case the module reassigned it
-    let mut final_exports = UndefinedValue();
-    let final_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut final_exports };
-    if !module_obj.is_null() {
-        let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module_obj };
-        JS_GetProperty(cx, module_h, c"exports".as_ptr(), final_h);
-        if final_exports.is_object() {
-            return final_exports.to_object();
-        }
+    // module.exports was set (possibly to a primitive) — return it.
+    if !final_exports.is_undefined() {
+        return Some(final_exports);
     }
-    exports_obj
+
+    // Fallback: re-read exports from global (in case module.exports was never set
+    // but the module modified `exports.x = ...` via the global reference).
+    let fallback = get_prop(cx, global, c"exports".as_ptr());
+    if !fallback.is_undefined() {
+        return Some(fallback);
+    }
+
+    Some(mozjs::jsval::UndefinedValue())
 }
 
 fn resolve_specifier(specifier: &str, base_dir: Option<&Path>) -> ::std::option::Option<PathBuf> {
