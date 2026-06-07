@@ -3,7 +3,7 @@
 // BackendKind exhaustiveness, CdpRouter send_command error paths,
 // multiple sessions, session IDs uniqueness, detach_session errors.
 
-use bao_cdp::{CdpRouter, CdpSession, ExternalBrowser, BackendKind};
+use bao_cdp::{CdpRouter, ExternalBrowser, BackendKind};
 use serde_json::json;
 
 // ============================================================================

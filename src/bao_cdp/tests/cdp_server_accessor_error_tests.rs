@@ -98,7 +98,7 @@ fn test_domain_registry_register_and_has_domain() {
 
     let reg = cdp_server::DomainRegistry::new();
     assert!(!reg.has_domain("TestDomain"));
-    reg.register(Box::new(TestHandler));
+    let _ = reg.register(Box::new(TestHandler));
     assert!(reg.has_domain("TestDomain"));
     assert!(!reg.has_domain("OtherDomain"));
 }
@@ -120,8 +120,8 @@ fn test_domain_registry_multiple_domains() {
     }
 
     let reg = cdp_server::DomainRegistry::new();
-    reg.register(Box::new(DomainA));
-    reg.register(Box::new(DomainB));
+    let _ = reg.register(Box::new(DomainA));
+    let _ = reg.register(Box::new(DomainB));
     assert!(reg.has_domain("A"));
     assert!(reg.has_domain("B"));
     assert!(!reg.has_domain("C"));

@@ -174,6 +174,7 @@ impl DomainHandler for NetworkHandler {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
     use crate::servo_bridge::bridge_channel;

@@ -14,7 +14,12 @@
 // emission) rather than the underlying loop's behavior. Tests that would
 // require a live loop are marked with the `WAVE_74_B` cfg gate.
 
-#![allow(clippy::missing_panics_doc)]
+#![allow(
+    clippy::missing_panics_doc,
+    clippy::fn_null_comparison,
+    unexpected_cfgs,
+    unpredictable_function_pointer_comparisons
+)]
 #![cfg_attr(not(feature = "live_uws_loop"), allow(unused_imports))]
 
 // Pull in C-library stubs (uSockets uws_get_loop, SSL, etc.) so the test

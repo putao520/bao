@@ -2039,9 +2039,9 @@ mod tests {
     /// REQ-SEC-003: install_all must call BOTH functions for CLI mode.
     #[test]
     fn install_all_is_distinct_from_sub_functions() {
-        let all_ptr = install_all as usize;
-        let web_ptr = install_web_apis as usize;
-        let node_ptr = install_node_apis as usize;
+        let all_ptr = install_all as *const () as usize;
+        let web_ptr = install_web_apis as *const () as usize;
+        let node_ptr = install_node_apis as *const () as usize;
         assert_ne!(all_ptr, web_ptr, "install_all must not be aliased to install_web_apis");
         assert_ne!(all_ptr, node_ptr, "install_all must not be aliased to install_node_apis");
     }

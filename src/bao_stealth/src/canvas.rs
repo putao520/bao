@@ -86,8 +86,8 @@ mod tests {
     fn apply_to_pixel_different_seeds_different_results() {
         let noise1 = CanvasNoise::new(100);
         let noise2 = CanvasNoise::new(200);
-        let (r1, g1, b1, a1) = noise1.apply_to_pixel(128, 64, 32, 255, 10, 20);
-        let (r2, g2, b2, a2) = noise2.apply_to_pixel(128, 64, 32, 255, 10, 20);
+        let (r1, g1, b1, _a1) = noise1.apply_to_pixel(128, 64, 32, 255, 10, 20);
+        let (r2, g2, b2, _a2) = noise2.apply_to_pixel(128, 64, 32, 255, 10, 20);
         assert_ne!((r1, g1, b1), (r2, g2, b2));
     }
 
@@ -128,9 +128,9 @@ mod tests {
         // White pixel (255,255,255) — noise amplitude is small, should stay near white
         let noise = CanvasNoise::new(42);
         let (r, g, b, a) = noise.apply_to_pixel(255, 255, 255, 255, 5, 5);
-        assert!(r >= 253 && r <= 255);
-        assert!(g >= 253 && g <= 255);
-        assert!(b >= 253 && b <= 255);
+        assert!(r >= 253);
+        assert!(g >= 253);
+        assert!(b >= 253);
         assert_eq!(a, 255);
     }
 
@@ -138,10 +138,7 @@ mod tests {
     fn apply_to_pixel_large_coordinates() {
         // Large x/y values — deterministic noise must still produce valid u8
         let noise = CanvasNoise::new(123);
-        let (r, g, b, a) = noise.apply_to_pixel(100, 100, 100, 128, 1000000, 1000000);
-        assert!(r <= 255);
-        assert!(g <= 255);
-        assert!(b <= 255);
+        let (_r, _g, _b, a) = noise.apply_to_pixel(100, 100, 100, 128, 1000000, 1000000);
         assert_eq!(a, 128);
     }
 
@@ -149,9 +146,9 @@ mod tests {
     fn apply_to_pixel_zero_coordinates() {
         let noise = CanvasNoise::new(55);
         let (r, g, b, a) = noise.apply_to_pixel(50, 50, 50, 255, 0, 0);
-        assert!(r > 0 && r <= 255);
-        assert!(g > 0 && g <= 255);
-        assert!(b > 0 && b <= 255);
+        assert!(r > 0);
+        assert!(g > 0);
+        assert!(b > 0);
         assert_eq!(a, 255);
     }
 

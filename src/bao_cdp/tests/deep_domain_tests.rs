@@ -23,20 +23,6 @@ impl EventSender for NoopEventSender {
 static NOOP_ES: NoopEventSender = NoopEventSender;
 fn noop_es() -> &'static dyn EventSender { &NOOP_ES }
 
-/// Process a single bridge command: verify the command via `check`,
-/// then return a generic OK response.
-fn process_one(rx: &bao_cdp::servo_bridge::BridgeReceiver, check: impl FnOnce(&BridgeCommand)) {
-    rx.recv_and_process(Duration::from_secs(5), |cmd| {
-        check(&cmd);
-        BridgeResponse { result: Ok(json!({})) }
-    });
-}
-
-/// Process a single bridge command with a custom response.
-fn process_one_with(rx: &bao_cdp::servo_bridge::BridgeReceiver, resp: BridgeResponse) {
-    rx.recv_and_process(Duration::from_secs(5), |_cmd| resp);
-}
-
 /// Shared bridge + background processor: spawn a thread that drains
 /// bridge commands for the test lifetime.
 struct TestBridge {
@@ -52,13 +38,6 @@ impl TestBridge {
             sender: tx,
             receiver: Arc::new(Mutex::new(rx)),
         }
-    }
-
-    /// Run `f` with the receiver lock, giving test code access to recv_and_process.
-    fn with_rx<F, R>(&self, f: F) -> R
-    where F: FnOnce(&bao_cdp::servo_bridge::BridgeReceiver) -> R {
-        let guard = self.receiver.lock().unwrap();
-        f(&guard)
     }
 }
 
@@ -214,7 +193,7 @@ fn test_overlay_unknown_command() {
 
 #[test]
 fn test_log_enable_disable_clear() {
-    let b = TestBridge::new();
+    let _b = TestBridge::new();
     let h = LogHandler::new();
     assert!(h.handle_command("Log.enable", json!({}), noop_es()).is_ok());
     assert!(h.handle_command("Log.clear", json!({}), noop_es()).is_ok());
@@ -223,7 +202,7 @@ fn test_log_enable_disable_clear() {
 
 #[test]
 fn test_log_violations_report() {
-    let b = TestBridge::new();
+    let _b = TestBridge::new();
     let h = LogHandler::new();
     assert!(h.handle_command("Log.startViolationsReport", json!({"config": [{"name": "longTask"}]}), noop_es()).is_ok());
     assert!(h.handle_command("Log.stopViolationsReport", json!({}), noop_es()).is_ok());
@@ -231,7 +210,7 @@ fn test_log_violations_report() {
 
 #[test]
 fn test_log_unknown_command() {
-    let b = TestBridge::new();
+    let _b = TestBridge::new();
     let h = LogHandler::new();
     assert_eq!(h.handle_command("Log.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }

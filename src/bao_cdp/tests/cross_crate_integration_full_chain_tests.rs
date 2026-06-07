@@ -3,12 +3,10 @@
 // Full CDP command lifecycle exercising all 11 domains through both internal and cdp-server paths.
 
 use bao_cdp::CdpRouter;
-use bao_cdp::CdpSession;
 use bao_cdp::BackendKind;
-use bao_cdp::{CDPMessage, CDPResponse, CDPError, CDPEvent};
+use bao_cdp::{CDPResponse, CDPError, CDPEvent};
 use bao_cdp::{parse_message, serialize_response, serialize_event};
-use bao_cdp::{BridgeSender, BridgeReceiver, BridgeResponse, bridge_channel};
-use bao_cdp::domains::ServoTargetProvider;
+use bao_cdp::{BridgeResponse, bridge_channel};
 use cdp_server::{CdpServer, ServerConfig, DomainRegistry, EventBroadcaster, TargetInfo};
 use serde_json::json;
 use std::time::Duration;

@@ -1,3 +1,4 @@
+#![allow(unused_comparisons, unused_variables)]
 // @trace TEST-STL-050 [req:REQ-STL-003,REQ-STL-004,REQ-STL-005,REQ-STL-007] [level:unit]
 // WebGLProfile firefox/chrome field exhaustive verification, AudioProfile construction
 // + noise properties + deterministic reproducibility, CanvasNoise pixel application
@@ -358,9 +359,6 @@ fn test_canvas_apply_pixel_white() {
     let c = CanvasNoise::new(42);
     let (r, g, b, _) = c.apply_to_pixel(255, 255, 255, 255, 5, 5);
     // Should be clamped to <= 255
-    assert!(r <= 255);
-    assert!(g <= 255);
-    assert!(b <= 255);
 }
 
 #[test]
@@ -466,7 +464,6 @@ fn test_stealth_firefox_audio_apply_noise() {
 #[test]
 fn test_stealth_firefox_canvas_apply_pixel() {
     let p = StealthProfile::firefox_default();
-    let (r, g, b, a) = p.canvas.apply_to_pixel(128, 128, 128, 255, 5, 5);
-    assert!(r <= 255);
+    let (r, _g, _b, a) = p.canvas.apply_to_pixel(128, 128, 128, 255, 5, 5);
     assert_eq!(a, 255);
 }

@@ -1784,7 +1784,7 @@ mod tests {
         let (channel, receiver) = super::BridgeChannel::new();
         // send() blocks until response — we need a worker thread
         let worker = std::thread::spawn(move || {
-            let (cmd, responder) = receiver.recv().unwrap();
+            let (_cmd, responder) = receiver.recv().unwrap();
             if let Some(resp_tx) = responder {
                 resp_tx.send(super::BridgeResponse::Value("title".into())).unwrap();
             }

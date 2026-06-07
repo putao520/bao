@@ -1,3 +1,4 @@
+#![allow(unused_comparisons, unused_variables)]
 // @trace TEST-STL-015 [req:REQ-STL-003] [level:unit]
 // @trace TEST-STL-016 [req:REQ-STL-004] [level:unit]
 // Canvas noise pixel manipulation, NavigatorProfile presets, ScreenProfile
@@ -100,7 +101,7 @@ fn test_apply_to_pixel_clamps_low() {
 #[test]
 fn test_apply_to_pixel_clamps_high() {
     let cn = CanvasNoise::new(42);
-    let (r, g, b, _) = cn.apply_to_pixel(255, 255, 255, 255, 0, 0);
+    let (r, _g, _b, _) = cn.apply_to_pixel(255, 255, 255, 255, 0, 0);
     assert!(r >= 250, "Red should be near max, got {}", r);
 }
 
@@ -137,9 +138,6 @@ fn test_apply_to_pixel_large_coords() {
     let cn = CanvasNoise::new(42);
     let (r, g, b, a) = cn.apply_to_pixel(128, 128, 128, 255, u32::MAX, u32::MAX);
     // Should not panic, values should be valid
-    assert!(r <= 255);
-    assert!(g <= 255);
-    assert!(b <= 255);
     assert_eq!(a, 255);
 }
 
@@ -147,7 +145,6 @@ fn test_apply_to_pixel_large_coords() {
 fn test_apply_to_pixel_zero_coords() {
     let cn = CanvasNoise::new(42);
     let p = cn.apply_to_pixel(128, 128, 128, 255, 0, 0);
-    assert!(p.0 <= 255 && p.1 <= 255 && p.2 <= 255);
 }
 
 #[test]
@@ -358,7 +355,6 @@ fn test_firefox_default_profile_navigator_matches_firefox_preset() {
 fn test_canvas_noise_via_profile() {
     let profile = StealthProfile::firefox_default();
     let p = profile.canvas.apply_to_pixel(100, 100, 100, 255, 10, 10);
-    assert!(p.0 <= 255 && p.1 <= 255 && p.2 <= 255);
     assert_eq!(p.3, 255);
 }
 

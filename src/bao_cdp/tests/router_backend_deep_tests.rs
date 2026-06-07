@@ -4,7 +4,7 @@
 // CdpSession lifecycle, detach, event handler registration, InternalBackend
 // command routing, error paths, clone/debug.
 
-use bao_cdp::{CdpRouter, CdpSession, BackendKind, CDPError, CDPMessage, handle_command, bridge_channel};
+use bao_cdp::{CdpRouter, BackendKind, CDPError, CDPMessage, handle_command, bridge_channel};
 use serde_json::json;
 
 // ---- CdpRouter construction ----

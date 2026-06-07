@@ -494,8 +494,8 @@ fn browserleaks_canvas_different_profiles_different_fingerprint() {
     let firefox = StealthProfile::firefox_default();
     let chrome = StealthProfile::chrome_default();
 
-    let ff_pixel = firefox.canvas.apply_to_pixel(200, 100, 50, 255, 50, 50);
-    let ch_pixel = chrome.canvas.apply_to_pixel(200, 100, 50, 255, 50, 50);
+    let _ff_pixel = firefox.canvas.apply_to_pixel(200, 100, 50, 255, 50, 50);
+    let _ch_pixel = chrome.canvas.apply_to_pixel(200, 100, 50, 255, 50, 50);
     // Noise amplitude is 0.001 — may round to same u8 for some pixels.
     // Check multiple positions to find at least one difference.
     let mut any_different = false;

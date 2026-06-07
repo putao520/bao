@@ -1,3 +1,4 @@
+#![allow(unused_comparisons, unused_variables)]
 // @trace TEST-STL-DEEP [req:REQ-STL-001~007] [level:unit]
 // Stealth deep tests: TlsFingerprint chrome variants, cross-profile uniqueness, boundary conditions
 
@@ -90,7 +91,7 @@ fn test_http2_ordered_headers_single() {
 #[test]
 fn test_canvas_noise_boundary_zero_alpha() {
     let cn = CanvasNoise::new(42);
-    let (r, g, b, a) = cn.apply_to_pixel(128, 128, 128, 0, 10, 10);
+    let (r, _g, _b, a) = cn.apply_to_pixel(128, 128, 128, 0, 10, 10);
     assert_eq!(a, 0, "zero alpha should be preserved");
     assert_eq!(r, 128);
 }
@@ -99,7 +100,6 @@ fn test_canvas_noise_boundary_zero_alpha() {
 fn test_canvas_noise_boundary_max_values() {
     let cn = CanvasNoise::new(42);
     let (r, g, b, a) = cn.apply_to_pixel(255, 255, 255, 255, 0, 0);
-    assert!(r <= 255 && g <= 255 && b <= 255 && a <= 255);
 }
 
 #[test]

@@ -1,11 +1,12 @@
+#![allow(unused_comparisons, unused_variables)]
 // @trace TEST-STL-020 [req:REQ-STL-007] [level:unit]
 // StealthEngine cross-profile consistency: engine construction, profile accessor
 // validation, engine-layer property injection, default engine, custom
 // profile assembly, clone/debug, profile component independence.
 
 use bao_stealth::{
-    StealthEngine, StealthProfile, TlsFingerprint, Http2Fingerprint,
-    CanvasNoise, NavigatorProfile, ScreenProfile, WebGLProfile, AudioProfile,
+    StealthEngine, StealthProfile,
+    CanvasNoise, ScreenProfile, WebGLProfile,
 };
 
 // ---- StealthEngine construction ----
@@ -153,7 +154,6 @@ fn test_canvas_noise_independent_of_tls() {
     let canvas_val = engine.canvas_noise().apply_to_pixel(100, 100, 100, 255, 5, 5);
     // Canvas noise doesn't depend on TLS cipher suites
     let _ = engine.tls_config().cipher_suites.len();
-    assert!(canvas_val.0 >= 0 && canvas_val.0 <= 255);
 }
 
 #[test]
@@ -223,7 +223,6 @@ fn test_engine_with_custom_canvas_noise() {
     let _default_val = default_engine.canvas_noise().apply_to_pixel(200, 200, 200, 255, 10, 10);
     // Most likely different (not guaranteed for all coords, but highly probable)
     // Just check the custom seed produces valid values
-    assert!(val.0 >= 0 && val.0 <= 255);
 }
 
 // ---- StealthProfile debug ----
@@ -265,11 +264,7 @@ fn test_canvas_noise_produces_valid_rgba() {
     for x in 0..10u32 {
         for y in 0..10u32 {
             let (r, g, b, a) = engine.canvas_noise().apply_to_pixel(128, 128, 128, 255, x, y);
-            assert!(r <= 255);
-            assert!(g <= 255);
-            assert!(b <= 255);
-            assert!(a <= 255);
-        }
+                                        }
     }
 }
 

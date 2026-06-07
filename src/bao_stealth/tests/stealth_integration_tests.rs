@@ -1,3 +1,4 @@
+#![allow(unused_comparisons, unused_variables)]
 // @trace TEST-STL-001~007-INT [req:REQ-STL-001~007] [level:unit]
 // Stealth integration tests: JS injection content validation, profile cross-consistency,
 // fingerprint computation determinism
@@ -142,8 +143,7 @@ fn test_canvas_noise_bounded() {
     for x in 0..10 {
         for y in 0..10 {
             let (r, g, b, a) = cn.apply_to_pixel(128, 128, 128, 255, x, y);
-            assert!(r <= 255 && g <= 255 && b <= 255 && a <= 255,
-                "pixel values should be <= 255 at ({}, {})", x, y);
+            // u8 always valid:                 "pixel values should be <= 255 at ({}, {})", x, y);
         }
     }
 }

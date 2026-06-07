@@ -2,7 +2,7 @@
 // CdpRouter lifecycle + CdpSession + BackendKind + bridge channel integration tests
 
 use bao_cdp::{
-    CdpRouter, CdpSession, BackendKind, CDPServer, CDPServerError,
+    CdpRouter, BackendKind, CDPServer, CDPServerError,
     bridge_channel, BridgeCommand, BridgeResponse,
 };
 use serde_json::json;

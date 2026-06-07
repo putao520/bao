@@ -1343,7 +1343,7 @@ fn scenario_error_stack_realm_leaks(pool: &PagePool, report: &mut Report) {
         "try { require('fs'); } catch(e) { (e.message || '') + ' | ' + (e.stack || '') }"
     ) {
         Ok(s) => {
-            let has_clean_error = s.contains("not defined") || s.contains("ReferenceError")
+            let _has_clean_error = s.contains("not defined") || s.contains("ReferenceError")
                 || s.contains("require");
             let has_node_leak = s.contains("bao_runtime") || s.contains("bao_engine")
                 || s.contains("node_modules") || s.contains("NativeModule");
@@ -1678,7 +1678,7 @@ fn scenario_advanced_reflection_cross_realm_attacks(pool: &PagePool, report: &mu
             }
         }
         Ok(s) => report.skip(&format!("{}::dynamic_import", name), &format!("result: {}", s)),
-        Err(e) => {
+        Err(_e) => {
             // CompilationFailure means import() is not available in eval context — secure
             report.pass(&format!("{}::dynamic_import_unavailable", name));
         }

@@ -24,13 +24,6 @@ fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
     }
 }
 
-fn eval_number(ctx: &mut JsContext, source: &str) -> f64 {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::Number(n)) => n,
-        _ => f64::NAN,
-    }
-}
-
 unsafe fn install_test_globals(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut mozjs::jsapi::JSObject>,

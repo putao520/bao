@@ -64,7 +64,7 @@ fn str_eval(ctx: &mut JsContext, code: &str) -> String {
 fn num_eval(ctx: &mut JsContext, code: &str) -> f64 {
     match ctx.eval(code, "<anti-crawl>") {
         Ok(JsValue::Number(n)) => n,
-        other => f64::NAN,
+        _other => f64::NAN,
     }
 }
 

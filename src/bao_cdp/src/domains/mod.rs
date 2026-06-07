@@ -55,7 +55,7 @@ pub fn register_all_domains_with_target(bridge: BridgeSender, target_id: String,
 mod tests {
     use super::*;
     use crate::servo_bridge::bridge_channel;
-    use cdp_server::{EventSender, CdpError};
+    use cdp_server::EventSender;
     use serde_json::{json, Value};
     use std::time::Duration;
 

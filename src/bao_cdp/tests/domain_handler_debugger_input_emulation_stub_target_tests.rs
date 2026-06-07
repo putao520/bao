@@ -2,11 +2,8 @@
 // DebuggerHandler, InputHandler, EmulationHandler, CssHandler, OverlayHandler,
 // LogHandler, FetchHandler, ServoTargetProvider command routing and field verification.
 
-use bao_cdp::domains::{
-    PageHandler, RuntimeHandler, DomHandler, NetworkHandler,
-};
 use bao_cdp::{BridgeCommand, BridgeResponse, BridgeSender, BridgeReceiver, bridge_channel};
-use cdp_server::{CdpError, DomainHandler, EventSender, TargetProvider};
+use cdp_server::{CdpError, EventSender, TargetProvider};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -28,20 +25,6 @@ fn bridge(timeout_ms: u64) -> (BridgeSender, BridgeReceiver) {
 fn dispatch_cmd(registry: &cdp_server::DomainRegistry, cmd: &str, params: Value) -> Result<Value, CdpError> {
     registry.dispatch_command(cmd, params, noop_es())
         .unwrap_or(Err(CdpError { code: -32601, message: format!("Domain not found for '{}'", cmd) }))
-}
-
-// Helper: spawn thread to process one bridge command
-fn spawn_bridge_ok(rx: BridgeReceiver, check: fn(BridgeCommand) -> bool) -> std::sync::Arc<std::sync::Mutex<BridgeReceiver>> {
-    let rx = std::sync::Arc::new(std::sync::Mutex::new(rx));
-    let rx2 = rx.clone();
-    std::thread::spawn(move || {
-        let rx = rx2.lock().unwrap();
-        rx.try_process(|cmd| {
-            assert!(check(cmd), "bridge command check failed");
-            BridgeResponse { result: Ok(json!({})) }
-        });
-    });
-    rx
 }
 
 // ============================================================================

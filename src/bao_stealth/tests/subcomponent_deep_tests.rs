@@ -5,7 +5,7 @@
 
 use bao_stealth::{
     NavigatorProfile, ScreenProfile, CanvasNoise, WebGLProfile, AudioProfile,
-    BehaviorSimulator, Http2Fingerprint, TlsFingerprint, StealthProfile, StealthEngine,
+    BehaviorSimulator, Http2Fingerprint,
 };
 
 // ---- NavigatorProfile ----
@@ -234,9 +234,8 @@ fn test_canvas_apply_clamps_zero() {
 fn test_canvas_apply_clamps_max() {
     let cn = CanvasNoise::new(42);
     let p = cn.apply_to_pixel(255, 255, 255, 255, 0, 0);
-    assert!(p.0 <= 255);
-    assert!(p.1 <= 255);
-    assert!(p.2 <= 255);
+    // u8 always <= 255 — just verify no panic
+    let _ = p;
 }
 
 #[test]

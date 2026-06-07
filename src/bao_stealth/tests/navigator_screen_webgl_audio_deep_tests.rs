@@ -5,7 +5,6 @@
 
 use bao_stealth::{
     NavigatorProfile, ScreenProfile, WebGLProfile, AudioProfile,
-    StealthProfile, StealthEngine,
 };
 
 // ---- NavigatorProfile presets ----

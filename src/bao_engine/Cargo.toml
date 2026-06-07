@@ -28,3 +28,6 @@ bun_collections = { path = "../collections" }
 bao_native_stubs = { path = "../bao_native_stubs" }
 # bao_runtime provides __bun_run_file_poll (extern "Rust") referenced by bun_io::FilePoll::on_update.
 bao_runtime = { path = "../bao_runtime" }
+
+[features]
+live_uws_loop = []

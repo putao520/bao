@@ -259,6 +259,7 @@ fn test_generate_bindings_no_constructor_when_flag_off() {
 }
 
 #[test]
+#[allow(non_snake_case)]
 fn test_generate_bindings_no_constructor_when_noConstructor() {
     let class_def = ClassDef {
         name: "NoCtor2".into(),

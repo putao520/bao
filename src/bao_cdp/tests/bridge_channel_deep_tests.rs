@@ -326,7 +326,7 @@ fn test_send_delete_cookie() {
     thread::spawn(move || {
         rx.try_process(|cmd| {
             match cmd {
-                BridgeCommand::DeleteCookie { name, url } => {
+                BridgeCommand::DeleteCookie { name, url: _ } => {
                     assert_eq!(name, "session");
                     BridgeResponse { result: Ok(json!({})) }
                 }

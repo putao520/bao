@@ -4,7 +4,7 @@
 
 use std::time::Duration;
 
-use bao_cdp::{BridgeSender, BridgeReceiver, BridgeCommand, BridgeResponse, bridge_channel};
+use bao_cdp::{BridgeCommand, BridgeResponse, bridge_channel};
 use serde_json::json;
 
 // ---- bridge_channel creation ----
@@ -28,7 +28,7 @@ fn test_bridge_channel_long_timeout() {
 
 #[test]
 fn test_send_and_process_navigate() {
-    let (tx, rx) = bridge_channel(Duration::from_secs(5));
+    let (tx, _rx) = bridge_channel(Duration::from_secs(5));
     let response = tx.send(BridgeCommand::Navigate { url: "http://test".into() });
     // No handler running, so this will timeout
     assert!(response.result.is_err());
@@ -37,7 +37,7 @@ fn test_send_and_process_navigate() {
 
 #[test]
 fn test_send_with_handler() {
-    let (tx, rx) = bridge_channel(Duration::from_secs(5));
+    let (_tx, rx) = bridge_channel(Duration::from_secs(5));
 
     // Start handler thread
     let handler = std::thread::spawn(move || {
@@ -67,7 +67,7 @@ fn test_send_and_recv_success() {
     let handler = std::thread::spawn(move || {
         // Block until a request arrives
         loop {
-            let processed = rx.try_process(|cmd| {
+            let processed = rx.try_process(|_cmd| {
                 BridgeResponse { result: Ok(json!({"handled": true})) }
             });
             if processed { break; }
@@ -140,7 +140,7 @@ fn test_drain_empty() {
 #[test]
 fn test_drain_multiple() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    for i in 0..10 {
+    for _i in 0..10 {
         tx.send_fire_and_forget(BridgeCommand::GetTitle);
     }
     let count = rx.drain(|_cmd| BridgeResponse { result: Ok(json!({})) });

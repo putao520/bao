@@ -2,7 +2,7 @@
 // CdpRouter session lifecycle: create/send/detach, CdpSession accessors,
 // BackendKind, ExternalBrowser, multi-session, domain tracking.
 
-use bao_cdp::{CdpRouter, CdpSession, BackendKind};
+use bao_cdp::{CdpRouter, BackendKind};
 
 // ---- CdpRouter construction ----
 

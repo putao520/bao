@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse, bridge_channel};
-use bao_cdp::{handle_command, serialize_response, CDPMessage, CDPResponse, CDPError};
+use bao_cdp::{handle_command, CDPMessage, CDPResponse};
 use serde_json::json;
 
 // ---- InternalBackend indirect tests (via handle_command) ----
@@ -391,7 +391,7 @@ fn test_channel_sender_clone_shared() {
 
     let handle = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(50));
-        receiver.drain(|cmd| {
+        receiver.drain(|_cmd| {
             counter_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             BridgeResponse { result: Ok(json!({})) }
         });

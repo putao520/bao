@@ -3,8 +3,8 @@
 // JS injection output validation, profile switching.
 
 use bao_stealth::{
-    StealthProfile, StealthEngine, TlsFingerprint, Http2Fingerprint,
-    CanvasNoise, NavigatorProfile, ScreenProfile, WebGLProfile, AudioProfile,
+    StealthProfile, StealthEngine,
+    CanvasNoise,
     BehaviorSimulator,
 };
 

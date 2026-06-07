@@ -183,6 +183,7 @@ fn as_u64_safe(v: &Value) -> Option<u64> {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
     use crate::servo_bridge::bridge_channel;

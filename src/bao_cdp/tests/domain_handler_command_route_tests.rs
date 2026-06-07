@@ -21,16 +21,6 @@ fn bridge(timeout_ms: u64) -> (BridgeSender, BridgeReceiver) {
     bridge_channel(Duration::from_millis(timeout_ms))
 }
 
-// Helper: process one command from bridge and return a canned response
-fn process_bridge(rx: &BridgeReceiver, response: Value) {
-    rx.try_process(|_cmd| BridgeResponse { result: Ok(response) });
-}
-
-// Helper: process one command and return error
-fn process_bridge_err(rx: &BridgeReceiver, msg: &str) {
-    rx.try_process(|_cmd| BridgeResponse { result: Err(msg.to_string()) });
-}
-
 // ============================================================================
 // PageHandler
 // ============================================================================

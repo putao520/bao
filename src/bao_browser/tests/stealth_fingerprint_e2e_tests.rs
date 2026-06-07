@@ -635,25 +635,25 @@ fn test_stealth_props_injected_all() {
 
     let hwc = match ctx.eval("navigator.hardwareConcurrency", "<stealth-test>") {
         Ok(JsValue::Number(n)) => n as i32,
-        other => -1,
+        _other => -1,
     };
     assert_eq!(hwc, 8, "navigator.hardwareConcurrency must be 8: {}", hwc);
 
     let w = match ctx.eval("screen.width", "<stealth-test>") {
         Ok(JsValue::Number(n)) => n as i32,
-        other => -1,
+        _other => -1,
     };
     assert_eq!(w, 1920, "screen.width must be 1920: {}", w);
 
     let h = match ctx.eval("screen.height", "<stealth-test>") {
         Ok(JsValue::Number(n)) => n as i32,
-        other => -1,
+        _other => -1,
     };
     assert_eq!(h, 1080, "screen.height must be 1080: {}", h);
 
     let cd = match ctx.eval("screen.colorDepth", "<stealth-test>") {
         Ok(JsValue::Number(n)) => n as i32,
-        other => -1,
+        _other => -1,
     };
     assert_eq!(cd, 24, "screen.colorDepth must be 24: {}", cd);
 

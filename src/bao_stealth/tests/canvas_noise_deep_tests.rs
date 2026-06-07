@@ -55,11 +55,10 @@ fn test_apply_to_pixel_different_seeds_differ() {
     // where the hash avalanche causes more variation across many pixels.
     let cn1 = CanvasNoise::new(1);
     let cn2 = CanvasNoise::new(2);
-    let mut any_different = false;
     for x in 0..10000u32 {
         let p1 = cn1.apply_to_pixel(128, 128, 128, 255, x, 0);
         let p2 = cn2.apply_to_pixel(128, 128, 128, 255, x, 0);
-        if p1 != p2 { any_different = true; break; }
+        if p1 != p2 { break; }
     }
     // With amplitude 0.001, may not produce different u8 values for all coords.
     // At minimum, verify they don't panic and produce valid results.
@@ -71,8 +70,8 @@ fn test_apply_to_pixel_different_seeds_differ() {
 fn test_apply_to_pixel_different_coords_same_output() {
     // With amplitude 0.001, noise rounds to same u8 for most pixels.
     let cn = CanvasNoise::new(42);
-    let p1 = cn.apply_to_pixel(128, 128, 128, 255, 0, 0);
-    let p2 = cn.apply_to_pixel(128, 128, 128, 255, 100, 100);
+    let _p1 = cn.apply_to_pixel(128, 128, 128, 255, 0, 0);
+    let _p2 = cn.apply_to_pixel(128, 128, 128, 255, 100, 100);
     // Both produce valid pixels (may be equal due to tiny amplitude)
 }
 

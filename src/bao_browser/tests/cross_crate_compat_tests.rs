@@ -13,8 +13,8 @@ use bao_cdp::{
 };
 use bao_stealth::StealthProfile;
 use cdp_server::{
-    CdpMessage, CdpError, CdpResponse, CdpEvent, SessionState,
-    DomainRegistry, ServerConfig, TargetInfo,
+    CdpMessage, CdpError, SessionState,
+    DomainRegistry, TargetInfo,
 };
 use serde_json::json;
 
@@ -128,7 +128,7 @@ fn test_target_info_cross_crate() {
 struct CrossDomain;
 impl cdp_server::DomainHandler for CrossDomain {
     fn domain_name(&self) -> &'static str { "Cross" }
-    fn handle_command(&self, cmd: &str, params: serde_json::Value, _: &dyn cdp_server::EventSender) -> Result<serde_json::Value, CdpError> {
+    fn handle_command(&self, cmd: &str, _params: serde_json::Value, _: &dyn cdp_server::EventSender) -> Result<serde_json::Value, CdpError> {
         match cmd {
             "Cross.ping" => Ok(json!({"pong": true})),
             _ => Err(CdpError { code: -32601, message: format!("'{}' not found", cmd) }),

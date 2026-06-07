@@ -20,6 +20,7 @@ use bao_browser::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse};
 
 /// Compile-time proof that `BridgeChannel` is `Send`.
 const _: () = {
+    #[allow(dead_code)]
     fn assert_send<T: Send>() {}
     fn _proof() {
         assert_send::<BridgeChannel>();
@@ -28,6 +29,7 @@ const _: () = {
 
 /// Compile-time proof that `BridgeChannel` is `Sync`.
 const _: () = {
+    #[allow(dead_code)]
     fn assert_sync<T: Sync>() {}
     fn _proof() {
         assert_sync::<BridgeChannel>();
@@ -36,6 +38,7 @@ const _: () = {
 
 /// Compile-time proof that `BridgeReceiver` is `Send`.
 const _: () = {
+    #[allow(dead_code)]
     fn assert_send<T: Send>() {}
     fn _proof() {
         assert_send::<BridgeReceiver>();

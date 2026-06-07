@@ -16,18 +16,6 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
     }
 }
 
-fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
-    match ctx.eval(source, "<test>") {
-        Ok(JsValue::Bool(b)) => b,
-        Ok(JsValue::String(s)) => s == "true",
-        _ => false,
-    }
-}
-
-fn eval_ok(ctx: &mut JsContext, source: &str) -> bool {
-    ctx.eval(source, "<test>").is_ok()
-}
-
 // All tests in a single #[test] function — mozjs Runtime is per-thread singleton.
 #[test]
 fn test_npm_project_e2e_all() {

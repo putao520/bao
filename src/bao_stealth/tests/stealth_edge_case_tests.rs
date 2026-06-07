@@ -1,3 +1,4 @@
+#![allow(unused_comparisons, unused_variables)]
 // @trace TEST-STL-009-EDGE [req:REQ-STL-001~007] [level:unit]
 // Stealth edge cases: extreme parameters, boundary values, cross-profile validation
 
@@ -10,7 +11,7 @@ fn test_canvas_noise_seed_1() {
     let noise = CanvasNoise::new(1);
     assert_eq!(noise.seed(), 1);
     let (r, g, b, a) = noise.apply_to_pixel(128, 128, 128, 255, 0, 0);
-    assert!(r <= 255 && g <= 255 && b <= 255 && a == 255);
+    assert!(a == 255);
 }
 
 #[test]
@@ -18,7 +19,6 @@ fn test_canvas_noise_large_seed() {
     let noise = CanvasNoise::new(u64::MAX);
     assert_eq!(noise.seed(), u64::MAX);
     let (r, g, b, a) = noise.apply_to_pixel(128, 128, 128, 255, 500, 500);
-    assert!(r <= 255 && g <= 255 && b <= 255 && a <= 255);
 }
 
 #[test]
@@ -30,22 +30,20 @@ fn test_canvas_noise_seed_zero_panics() {
 #[test]
 fn test_canvas_noise_pixel_boundary_zero() {
     let noise = CanvasNoise::new(42);
-    let (r, g, b, a) = noise.apply_to_pixel(0, 0, 0, 0, 100, 200);
-    assert!(r <= 255 && g <= 255 && b <= 255);
+    let (r, g, b, _a) = noise.apply_to_pixel(0, 0, 0, 0, 100, 200);
 }
 
 #[test]
 fn test_canvas_noise_pixel_boundary_max() {
     let noise = CanvasNoise::new(42);
     let (r, g, b, a) = noise.apply_to_pixel(255, 255, 255, 255, 100, 200);
-    assert!(r <= 255 && g <= 255 && b <= 255 && a == 255);
+    assert!(a == 255);
 }
 
 #[test]
 fn test_canvas_noise_large_coordinates() {
     let noise = CanvasNoise::new(42);
-    let (r, g, b, a) = noise.apply_to_pixel(128, 128, 128, 255, u32::MAX, u32::MAX);
-    assert!(r <= 255 && g <= 255 && b <= 255);
+    let (r, g, b, _a) = noise.apply_to_pixel(128, 128, 128, 255, u32::MAX, u32::MAX);
 }
 
 #[test]
@@ -68,8 +66,8 @@ fn test_canvas_noise_different_seeds_different_noise() {
     let n1 = CanvasNoise::new(42);
     let n2 = CanvasNoise::new(999);
     // Use low pixel values where noise is more visible
-    let p1 = n1.apply_to_pixel(10, 10, 10, 255, 10, 20);
-    let p2 = n2.apply_to_pixel(10, 10, 10, 255, 10, 20);
+    let _p1 = n1.apply_to_pixel(10, 10, 10, 255, 10, 20);
+    let _p2 = n2.apply_to_pixel(10, 10, 10, 255, 10, 20);
     // Due to very small amplitude, results might be identical
     // Verify at least that deterministic noise values differ internally
     // by checking multiple positions
@@ -193,7 +191,7 @@ fn test_scroll_deltas_finite() {
 #[test]
 fn test_stealth_profile_clone_independence() {
     let p1 = StealthProfile::chrome_default();
-    let mut p2 = p1.clone();
+    let p2 = p1.clone();
 
     // Modify clone's canvas seed (would need pub access)
     // Just verify they're equal after clone

@@ -6,7 +6,7 @@
 use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeSender, BridgeResponse};
 use bao_cdp::domains::register_all_domains_into;
 use bao_cdp::DomainRegistry;
-use cdp_server::{DomainHandler, EventSender, CdpError};
+use cdp_server::{EventSender, CdpError};
 use serde_json::{json, Value};
 use std::time::Duration;
 use std::thread;
@@ -338,7 +338,7 @@ fn test_target_provider_list_targets() {
 
     // list_targets calls bridge.send() synchronously, so we need a thread
     // that's already listening when we call it.
-    let responder = thread::spawn(move || {
+    let _responder = thread::spawn(move || {
         loop {
             if !rx.try_process(|cmd| default_bridge_response(cmd)) {
                 thread::sleep(Duration::from_millis(1));

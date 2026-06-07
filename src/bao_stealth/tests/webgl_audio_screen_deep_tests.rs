@@ -1,3 +1,4 @@
+#![allow(unused_comparisons, unused_variables)]
 // @trace TEST-STL-014-WEBGL-AUDIO-SCREEN [req:REQ-STL-003,REQ-STL-004,REQ-STL-005,REQ-STL-006] [level:unit]
 // WebGL/Audio/Screen/Canvas deep validation: profile differentiation,
 // noise determinism, boundary conditions, cross-profile consistency.
@@ -262,9 +263,9 @@ fn test_canvas_noise_different_seeds_differ() {
 fn test_canvas_noise_white_pixel_stays_near_white() {
     let cn = CanvasNoise::new(42);
     let (r, g, b, _) = cn.apply_to_pixel(255, 255, 255, 255, 100, 100);
-    assert!(r >= 250 && r <= 255);
-    assert!(g >= 250 && g <= 255);
-    assert!(b >= 250 && b <= 255);
+    assert!(r >= 250);
+    assert!(g >= 250);
+    assert!(b >= 250);
 }
 
 #[test]
@@ -282,10 +283,7 @@ fn test_canvas_noise_many_pixels_dont_clamp_midrange() {
     for x in 0..50u32 {
         for y in 0..50u32 {
             let (r, g, b, a) = cn.apply_to_pixel(128, 128, 128, 255, x, y);
-            assert!(r <= 255);
-            assert!(g <= 255);
-            assert!(b <= 255);
-            assert_eq!(a, 255);
+                                    assert_eq!(a, 255);
         }
     }
 }

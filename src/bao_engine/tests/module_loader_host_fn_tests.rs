@@ -20,7 +20,7 @@
 // All assertions in a single test to avoid mozjs per-thread single-init issue.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use bao_engine::context::JsContext;
 use bao_engine::module_loader::ModuleLoader;
@@ -76,10 +76,6 @@ impl TempDir {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create temp dir");
         TempDir(dir)
-    }
-
-    fn path(&self) -> &Path {
-        &self.0
     }
 
     fn create_file(&self, rel: &str, content: &str) -> PathBuf {
@@ -185,14 +181,14 @@ unsafe fn install_test_globals(
     });
 
     // ArgReader: get_raw / get_value roundtrip
-    define_host_fn!(cx, global, c"identityValue", 1, |cx, args| {
+    define_host_fn!(cx, global, c"identityValue", 1, |_cx, args| {
         let v = args.get_value(0);
         args.return_value(v);
         true
     });
 
     // ArgReader: throw error from host function
-    define_host_fn!(cx, global, c"throwHostError", 0, |cx, args| {
+    define_host_fn!(cx, global, c"throwHostError", 0, |_cx, args| {
         args.throw("test error from host function")
     });
 
