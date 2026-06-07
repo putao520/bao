@@ -23,6 +23,14 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Lock a Mutex, recovering from poison instead of panicking.
+/// Mutex poison means a thread panicked while holding the lock — the data
+/// may be inconsistent but for our use cases (result channels) it's safe to proceed.
+fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 use std::time::Duration;
 
 // @trace REQ-SEC-002 [entity:EvaluateResult]
@@ -284,7 +292,7 @@ pub unsafe fn evaluate_in_node_realm(
     use mozjs::rust::evaluate_script;
 
     if node_global.is_null() {
-        *result_out.lock().unwrap() = EvaluateResult::err("node_global is null".into());
+        *lock_or_recover(&result_out) = EvaluateResult::err("node_global is null".into());
         return;
     }
 
@@ -292,7 +300,7 @@ pub unsafe fn evaluate_in_node_realm(
     let cx_nn = match NonNull::new(raw_cx) {
         Some(nn) => nn,
         None => {
-            *result_out.lock().unwrap() = EvaluateResult::err("JSContext pointer is null".into());
+            *lock_or_recover(&result_out) = EvaluateResult::err("JSContext pointer is null".into());
             return;
         }
     };
@@ -313,7 +321,7 @@ pub unsafe fn evaluate_in_node_realm(
     rooted!(&in(realm_cx) let mut rval = UndefinedValue());
     let eval_result = evaluate_script(realm_cx, node_global_handle, script, rval.handle_mut(), options);
 
-    let mut result = result_out.lock().unwrap();
+    let mut result = lock_or_recover(&result_out);
     if eval_result.is_err() {
         result.error = Some("evaluate_script returned Err (JS exception thrown)".into());
         return;

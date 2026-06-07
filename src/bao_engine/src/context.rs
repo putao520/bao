@@ -135,7 +135,7 @@ thread_local! {
 fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
     ENGINE_TLS.with(|tls| {
         if tls.is_some() {
-            let handle = tls.0.borrow().as_ref().unwrap().handle();
+            let handle = tls.0.borrow().as_ref().expect("ENGINE_TLS is Some but inner is None").handle();
             return Ok(handle);
         }
         let engine = mozjs::rust::JSEngine::init().map_err(|e| JsError {
