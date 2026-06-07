@@ -68,8 +68,10 @@ pub fn force_link() {
         let _ = UpgradedDuplex__is_established as *const () as usize;
 
         // URL FFI fallback (referenced by bun_url)
-        URL__getHref(core::ptr::null(), core::ptr::null_mut());
-        URL__getHrefJoin(core::ptr::null(), core::ptr::null(), core::ptr::null_mut());
+        let mut url_a = BunStringValue { tag: 0, _impl: [0, 0] };
+        let mut url_b = BunStringValue { tag: 0, _impl: [0, 0] };
+        let _ = URL__getHref(&mut url_a);
+        let _ = URL__getHrefJoin(&mut url_a, &mut url_b);
 
         // bun_core references
         bun_restore_stdio();
@@ -131,15 +133,35 @@ pub extern "C" fn UpgradedDuplex__close(_: *mut c_void) {}
 // ──────────────────────────────────────────────────────────────
 // URL — referenced by bun_url (C FFI fallback path)
 // ──────────────────────────────────────────────────────────────
+// bun_url declares these as `safe fn URL__getHref(&mut String) -> String`
+// where String is bun_core::String (24 bytes, #[repr(C)]).
+// Since bao_native_stubs cannot depend on bun_core (circular dep),
+// we use a byte-identical #[repr(C)] struct for ABI compatibility.
+// These are fallback stubs — bun_url's own code handles the real parsing.
 
-/// bun_url's whatwg module calls URL__getHref via extern "C" as a fallback.
-/// In Bun this is implemented in C++; in Bao, bun_url's pure Rust path
-/// handles URL resolution, but the FFI symbol must exist for linking.
-#[no_mangle]
-pub extern "C" fn URL__getHref(_url: *const c_void, _out: *mut c_void) {}
+/// ABI-compatible mirror of `bun_core::String` (24 bytes, 8-aligned).
+/// tag=0 = Dead, tag=3 = Latin1, tag=5 = UTF16, tag=7 = WTFStringImpl pointer.
+#[repr(C, align(8))]
+#[derive(Clone, Copy)]
+struct BunStringValue {
+    tag: u64,
+    _impl: [u64; 2],
+}
 
 #[no_mangle]
-pub extern "C" fn URL__getHrefJoin(_base: *const c_void, _query: *const c_void, _out: *mut c_void) {}
+pub extern "C" fn URL__getHref(_input: &mut BunStringValue) -> BunStringValue {
+    // Return input unchanged — bun_url's callers handle the dead-tag fallback.
+    *_input
+}
+
+#[no_mangle]
+pub extern "C" fn URL__getHrefJoin(
+    _base: &mut BunStringValue,
+    _relative: &mut BunStringValue,
+) -> BunStringValue {
+    // Return dead (tag=0) — join requires a full URL parser.
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
 
 // ──────────────────────────────────────────────────────────────
 // bun_restore_stdio — referenced by bun_core::output::stdio
