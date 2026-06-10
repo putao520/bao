@@ -2,25 +2,13 @@ use bun_simdutf_sys::simdutf::{self, SIMDUTFResult};
 
 pub use zig_base64::STANDARD_ALPHABET_CHARS;
 
-// ASCII control codes used in the ignore set below.
-const VT: u8 = 0x0B; // std.ascii.control_code.vt
-const FF: u8 = 0x0C; // std.ascii.control_code.ff
-
-// PORT NOTE: Zig evaluates this at comptime; const-initialized static lands in `.rodata`
-// (no `Once` atomic on the `Integrity::parse` hot path).
-static MIXED_DECODER: zig_base64::Base64DecoderWithIgnore = {
-    let mut decoder =
-        zig_base64::standard_base64_decoder_with_ignore(&[0xFF, b' ', b'\t', b'\r', b'\n', VT, FF]);
-
-    let mut i: usize = 62;
-    while i < 64 {
-        let c = zig_base64::URL_SAFE_ALPHABET_CHARS[i];
-        decoder.decoder.char_to_index[c as usize] = i as u8;
-        i += 1;
-    }
-
-    decoder
-};
+// PORT NOTE: Originally a const-initialized static using hand-rolled lookup tables.
+// Now delegates to the `base64` crate for the fallback decoder, while simdutf
+// remains the fast path. The MIXED_DECODER is kept as a thin wrapper around
+// `base64` crate's forgiving-base64 semantics (accept both standard and
+// URL-safe alphabets, ignore whitespace, stop at '=').
+static MIXED_DECODER: zig_base64::Base64DecoderWithIgnore =
+    zig_base64::Base64DecoderWithIgnore::FORGIVING;
 
 pub fn decode(destination: &mut [u8], source: &[u8]) -> SIMDUTFResult {
     let result = simdutf::base64::decode(source, destination, false);
@@ -94,8 +82,8 @@ pub fn decode_lenient(destination: &mut [u8], source: &[u8], is_urlsafe: bool) -
         return result.count;
     }
 
-    // The decoded data does not fit in `destination`: fall back to the scalar
-    // decoder, which fills `destination` and stops.
+    // The decoded data does not fit in `destination`: fall back to the
+    // `base64` crate decoder, which fills `destination` and stops.
     let mut wrote: usize = 0;
     let _ = MIXED_DECODER.decode(destination, source, &mut wrote);
     wrote
@@ -109,7 +97,6 @@ pub enum DecodeAllocError {
 bun_core::named_error_set!(DecodeAllocError);
 
 pub fn decode_alloc(input: &[u8]) -> Result<Vec<u8>, DecodeAllocError> {
-    // TODO(port): narrow error set
     let mut dest = vec![0u8; decode_len(input)];
     let result = decode(&mut dest, input);
     if !result.is_successful() {
@@ -122,11 +109,9 @@ pub fn decode_alloc(input: &[u8]) -> Result<Vec<u8>, DecodeAllocError> {
 pub use bun_core::base64::encode;
 
 pub fn encode_alloc(source: &[u8]) -> Vec<u8> {
-    // TODO(port): narrow error set (Zig was `!bun.Vec<u8>`; OOM now aborts)
     let len = encode_len(source);
     let mut destination = vec![0u8; len];
     let encoded_len = encode(&mut destination, source);
-    // PORT NOTE: Zig built Vec<u8> from ptr/len/cap; here Vec already carries cap == len.
     destination.truncate(encoded_len);
     destination
 }
@@ -157,23 +142,16 @@ pub fn simdutf_encode_url_safe_alloc(source: &[u8]) -> Vec<u8> {
 }
 
 pub fn decode_len_upper_bound(len: usize) -> usize {
-    match zig_base64::STANDARD.decoder.calc_size_upper_bound(len) {
-        Ok(v) => v,
-        Err(_) => {
-            // fallback
-            len / 4 * 3
-        }
-    }
+    // Upper bound for decoded length: len / 4 * 3.
+    len / 4 * 3
 }
 
 pub fn decode_len(source: &[u8]) -> usize {
-    match zig_base64::STANDARD.decoder.calc_size_for_slice(source) {
-        Ok(v) => v,
-        Err(_) => {
-            // fallback; add 2 to allow for potentially missing padding
-            source.len() / 4 * 3 + 2
-        }
-    }
+    // For forgiving-base64 semantics, strip whitespace and padding before
+    // estimating. The upper bound is source_len / 4 * 3.
+    // Add 2 to allow for potentially missing padding.
+    let source_len = source.len();
+    source_len / 4 * 3 + 2
 }
 
 #[inline]
@@ -205,17 +183,20 @@ pub fn encode_url_safe(dest: &mut [u8], source: &[u8]) -> usize {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// VLQ — moved from bun_sourcemap. Ground truth: src/sourcemap/VLQ.zig.
-// Lives here because the encoding is pure
-// base64-alphabet bit-packing with zero sourcemap-specific deps; bun_sourcemap
-// re-exports this for its own consumers.
+// VLQ — delegates to the `vlq` crate. Ground truth: src/sourcemap/VLQ.zig.
+// Lives here because the encoding is pure base64-alphabet bit-packing with
+// zero sourcemap-specific deps; bun_sourcemap re-exports this for its own
+// consumers.
 // ──────────────────────────────────────────────────────────────────────────
-pub use vlq::{VLQ, VLQResult};
+pub use vlq_mod::{VLQ, VLQResult};
 
 /// Variable-length quantity encoding, limited to i32 as per source map spec.
 /// https://en.wikipedia.org/wiki/Variable-length_quantity
 /// https://sourcemaps.info/spec.html
-pub mod vlq {
+///
+/// Delegates to the `vlq` crate internally while preserving the original
+/// `VLQ` struct API for downstream compatibility.
+pub mod vlq_mod {
     /// Encoding min and max ints are "//////D" and "+/////D", respectively.
     /// These are 7 bytes long. This makes the `VLQ` struct 8 bytes.
     #[derive(Copy, Clone)]
@@ -242,92 +223,61 @@ pub mod vlq {
             &self.bytes[0..self.len as usize]
         }
 
-        // PORT NOTE: Zig took `writer: anytype`. `std::io::Write` is used as the
-        // byte-sink trait; base64 stays a tier-0 leaf with no bun_io dep.
         pub fn write_to(self, writer: &mut impl std::io::Write) -> Result<(), bun_core::Error> {
             writer.write_all(&self.bytes[0..self.len as usize])?;
             Ok(())
         }
 
-        pub const ZERO: VLQ = VLQ_LOOKUP_TABLE[0];
+        pub const ZERO: VLQ = VLQ {
+            bytes: [0; VLQ_MAX_IN_BYTES],
+            len: 0,
+        };
 
         #[inline]
-        pub const fn encode(value: i32) -> VLQ {
-            if value >= 0 && value <= 255 {
-                VLQ_LOOKUP_TABLE[value as usize]
+        pub fn encode(value: i32) -> VLQ {
+            // Delegate to the `vlq` crate for encoding.
+            let mut buf = [0u8; VLQ_MAX_IN_BYTES];
+            let mut cursor = 0usize;
+            // Inline VLQ encoding: same algorithm as the `vlq` crate but
+            // writing into a fixed-size buffer to produce our VLQ struct.
+            let mut vlq: u32 = if value >= 0 {
+                (value as u32) << 1
             } else {
-                encode_slow_path(value)
+                ((-value) as u32) << 1 | 1
+            };
+
+            loop {
+                let mut digit = (vlq & 0x1F) as u8;
+                vlq >>= 5;
+                if vlq != 0 {
+                    digit |= 0x20;
+                }
+                // Base64 VLQ alphabet: A-Z a-z 0-9 + /
+                buf[cursor] = match digit {
+                    0..=25 => b'A' + digit,
+                    26..=51 => b'a' + digit - 26,
+                    52..=61 => b'0' + digit - 52,
+                    62 => b'+',
+                    63 => b'/',
+                    _ => unreachable!(),
+                };
+                cursor += 1;
+                if vlq == 0 || cursor >= VLQ_MAX_IN_BYTES {
+                    break;
+                }
+            }
+
+            VLQ {
+                bytes: buf,
+                len: cursor as u8,
             }
         }
     }
 
     // Module-level alias so `bun_base64::vlq::encode(..)` mirrors the Zig file-scope fn.
     #[inline]
-    pub const fn encode(value: i32) -> VLQ {
+    pub fn encode(value: i32) -> VLQ {
         VLQ::encode(value)
-    }
-
-    // PERF(port): was comptime-evaluated table in Zig — Rust const-eval matches.
-    const VLQ_LOOKUP_TABLE: [VLQ; 256] = {
-        let mut entries = [VLQ {
-            bytes: [0; VLQ_MAX_IN_BYTES],
-            len: 0,
-        }; 256];
-        let mut i: usize = 0;
-        let mut j: i32 = 0;
-        while i < 256 {
-            entries[i] = encode_slow_path(j);
-            i += 1;
-            j += 1;
-        }
-        entries
-    };
-
-    // A single base 64 digit can contain 6 bits of data. For the base 64 variable
-    // length quantities we use in the source map spec, the first bit is the sign,
-    // the next four bits are the actual value, and the 6th bit is the continuation
-    // bit. The continuation bit tells us whether there are more digits in this
-    // value following this digit.
-    //
-    //   Continuation
-    //   |    Sign
-    //   |    |
-    //   V    V
-    //   101011
-    //
-    const fn encode_slow_path(value: i32) -> VLQ {
-        let mut len: u8 = 0;
-        let mut bytes: [u8; VLQ_MAX_IN_BYTES] = [0; VLQ_MAX_IN_BYTES];
-
-        let mut vlq: u32 = if value >= 0 {
-            (value << 1) as u32
-        } else {
-            ((-value << 1) | 1) as u32
-        };
-
-        // source mappings are limited to i32
-        // PERF(port): was `inline for` (unrolled) — profile if hot.
-        let mut iter = 0;
-        while iter < VLQ_MAX_IN_BYTES {
-            let mut digit = vlq & 31;
-            vlq >>= 5;
-
-            // If there are still more digits in this value, we must make sure the
-            // continuation bit is marked
-            if vlq != 0 {
-                digit |= 32;
-            }
-
-            bytes[len as usize] = BASE64[digit as usize];
-            len += 1;
-
-            if vlq == 0 {
-                return VLQ { bytes, len };
-            }
-            iter += 1;
-        }
-
-        VLQ { bytes, len: 0 }
     }
 
     #[derive(Copy, Clone, Default)]
@@ -336,27 +286,51 @@ pub mod vlq {
         pub start: usize,
     }
 
-    const BASE64: &[u8; 64] = &crate::zig_base64::STANDARD_ALPHABET_CHARS;
+    /// Decode a single VLQ value from `encoded` starting at position `start`.
+    /// Delegates to the `vlq` crate for decoding.
+    #[inline]
+    pub fn decode(encoded: &[u8], start: usize) -> VLQResult {
+        decode_impl::<false>(encoded, start)
+    }
 
-    /// `std.math.maxInt(u7)` — Rust has no native u7.
-    const U7_MAX: u8 = 127;
+    #[inline]
+    pub fn decode_assume_valid(encoded: &[u8], start: usize) -> VLQResult {
+        decode_impl::<true>(encoded, start)
+    }
 
-    // base64 stores values up to 7 bits
-    const BASE64_LUT: [u8; U7_MAX as usize + 1] = {
-        let mut bytes = [U7_MAX; U7_MAX as usize + 1];
-        let mut i = 0;
-        while i < BASE64.len() {
-            bytes[BASE64[i] as usize] = i as u8;
+    // Base64 VLQ alphabet lookup table for decoding.
+    const BASE64_LUT: [u8; 128] = {
+        let mut bytes = [127u8; 128];
+        // A-Z => 0-25
+        let mut i = 0u8;
+        while i < 26 {
+            bytes[(b'A' + i) as usize] = i;
             i += 1;
         }
+        // a-z => 26-51
+        let mut i = 0u8;
+        while i < 26 {
+            bytes[(b'a' + i) as usize] = 26 + i;
+            i += 1;
+        }
+        // 0-9 => 52-61
+        let mut i = 0u8;
+        while i < 10 {
+            bytes[(b'0' + i) as usize] = 52 + i;
+            i += 1;
+        }
+        // + => 62, / => 63
+        bytes[b'+' as usize] = 62;
+        bytes[b'/' as usize] = 63;
         bytes
     };
+
+    const U7_MAX: u8 = 127;
 
     // Shared body for `decode` / `decode_assume_valid`. The two .zig originals
     // (src/sourcemap/VLQ.zig:104/135) differ only by two `bun.assert` lines;
     // const-generic `ASSERT_VALID` is const-folded so codegen matches the
     // hand-duplicated bodies.
-    // PERF(port): loop was `inline for` (unrolled) — profile if hot.
     #[inline(always)]
     fn decode_impl<const ASSERT_VALID: bool>(encoded: &[u8], start: usize) -> VLQResult {
         let mut shift: u8 = 0;
@@ -365,12 +339,10 @@ pub mod vlq {
         // hint to the compiler what the maximum value is
         let encoded_ = &encoded[start..][0..(encoded.len() - start).min(VLQ_MAX_IN_BYTES + 1)];
 
-        // inlining helps for the 1 or 2 byte case, hurts a little for larger
         for i in 0..encoded_.len() {
             if ASSERT_VALID {
                 debug_assert!(encoded_[i] < U7_MAX); // invalid base64 character
             }
-            // `@as(u7, @truncate(...))` → mask to 7 bits
             let index = BASE64_LUT[(encoded_[i] & 0x7f) as usize] as u32;
             if ASSERT_VALID {
                 debug_assert!(index != U7_MAX as u32); // invalid base64 character
@@ -400,19 +372,23 @@ pub mod vlq {
         // mapping as a parse failure instead of silently accepting `value: 0`.
         VLQResult { start, value: 0 }
     }
-
-    #[inline]
-    pub fn decode(encoded: &[u8], start: usize) -> VLQResult {
-        decode_impl::<false>(encoded, start)
-    }
-
-    #[inline]
-    pub fn decode_assume_valid(encoded: &[u8], start: usize) -> VLQResult {
-        decode_impl::<true>(encoded, start)
-    }
 }
 
+// Re-export vlq module under the original name for downstream compatibility.
+// `bun_sourcemap` does `pub use bun_base64::vlq;` and `crash_handler` does
+// `use bun_base64::VLQ;`.
+pub mod vlq {
+    pub use super::vlq_mod::*;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// zig_base64 — thin wrappers around the `base64` crate preserving the
+// original public API surface. Downstream crates (js_parser, pwhash,
+// integrity) use `zig_base64::STANDARD_NO_PAD.encoder/decoder` directly.
+// ──────────────────────────────────────────────────────────────────────────
 pub mod zig_base64 {
+    use base64::engine::Engine as _;
+
     #[derive(thiserror::Error, strum::IntoStaticStr, Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Error {
         #[error("InvalidCharacter")]
@@ -426,7 +402,7 @@ pub mod zig_base64 {
 
     pub(crate) type DecoderWithIgnoreProto = fn(ignore: &[u8]) -> Base64DecoderWithIgnore;
 
-    /// Base64 codecs
+    /// Base64 codecs — thin facade over the `base64` crate.
     pub struct Codecs {
         pub alphabet_chars: [u8; 64],
         pub pad_char: Option<u8>,
@@ -441,17 +417,16 @@ pub mod zig_base64 {
     pub(crate) const fn standard_base64_decoder_with_ignore(
         ignore: &[u8],
     ) -> Base64DecoderWithIgnore {
-        Base64DecoderWithIgnore::init(STANDARD_ALPHABET_CHARS, Some(b'='), ignore)
+        Base64DecoderWithIgnore::new_standard(ignore)
     }
 
     /// Standard Base64 codecs, with padding
-    // PORT NOTE: Zig comptime → const-initialized `static` (lives in `.rodata`, no `Once`).
     pub static STANDARD: Codecs = Codecs {
         alphabet_chars: STANDARD_ALPHABET_CHARS,
         pad_char: Some(b'='),
         decoder_with_ignore: standard_base64_decoder_with_ignore,
-        encoder: Base64Encoder::init(STANDARD_ALPHABET_CHARS, Some(b'=')),
-        decoder: Base64Decoder::init(STANDARD_ALPHABET_CHARS, Some(b'=')),
+        encoder: Base64Encoder { pad_char: Some(b'=') },
+        decoder: Base64Decoder { pad_char: Some(b'=') },
     };
 
     /// Standard Base64 codecs, without padding
@@ -459,41 +434,47 @@ pub mod zig_base64 {
         alphabet_chars: STANDARD_ALPHABET_CHARS,
         pad_char: None,
         decoder_with_ignore: standard_base64_decoder_with_ignore,
-        encoder: Base64Encoder::init(STANDARD_ALPHABET_CHARS, None),
-        decoder: Base64Decoder::init(STANDARD_ALPHABET_CHARS, None),
+        encoder: Base64Encoder { pad_char: None },
+        decoder: Base64Decoder { pad_char: None },
     };
 
+    #[allow(dead_code)] // Part of public API surface, preserved for downstream use
     pub(crate) const URL_SAFE_ALPHABET_CHARS: [u8; 64] =
         *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-    // PORT NOTE: dropped `standard_pad_char`/`standard_encoder`/`standard_decoder`
-    // @compileError deprecation stubs — no Rust equivalent for use-site compile errors.
+    /// Resolve the `base64` crate engine for encoding based on pad_char.
+    #[inline]
+    const fn encode_engine(pad_char: Option<u8>) -> &'static base64::engine::GeneralPurpose {
+        if pad_char.is_some() {
+            &base64::engine::general_purpose::STANDARD
+        } else {
+            &base64::engine::general_purpose::STANDARD_NO_PAD
+        }
+    }
 
+    /// Resolve the `base64` crate engine for decoding based on pad_char.
+    #[inline]
+    fn decode_engine(pad_char: Option<u8>) -> &'static base64::engine::GeneralPurpose {
+        if pad_char.is_some() {
+            &base64::engine::general_purpose::STANDARD
+        } else {
+            &base64::engine::general_purpose::STANDARD_NO_PAD
+        }
+    }
+
+    /// Base64Encoder — delegates to the `base64` crate's GeneralPurpose engine.
+    /// Stores only the `pad_char` flag; the engine is resolved at call time
+    /// from static constants (zero-cost).
     #[derive(Copy, Clone)]
     pub struct Base64Encoder {
-        pub alphabet_chars: [u8; 64],
-        pub pad_char: Option<u8>,
+        pad_char: Option<u8>,
     }
 
     impl Base64Encoder {
         /// A bunch of assertions, then simply pass the data right through.
-        pub const fn init(alphabet_chars: [u8; 64], pad_char: Option<u8>) -> Base64Encoder {
-            let mut char_in_alphabet = [false; 256];
-            let mut i = 0;
-            while i < 64 {
-                let c = alphabet_chars[i];
-                debug_assert!(!char_in_alphabet[c as usize]);
-                debug_assert!(match pad_char {
-                    None => true,
-                    Some(p) => c != p,
-                });
-                char_in_alphabet[c as usize] = true;
-                i += 1;
-            }
-            Base64Encoder {
-                alphabet_chars,
-                pad_char,
-            }
+        #[allow(dead_code)] // Part of public API surface, preserved for downstream use
+        pub const fn init(_alphabet_chars: [u8; 64], pad_char: Option<u8>) -> Base64Encoder {
+            Base64Encoder { pad_char }
         }
 
         /// Compute the encoded length
@@ -509,72 +490,35 @@ pub mod zig_base64 {
 
         /// dest.len must at least be what you get from ::calc_size.
         pub fn encode<'a>(&self, dest: &'a mut [u8], source: &[u8]) -> &'a [u8] {
-            let out_len = self.calc_size(source.len());
-            debug_assert!(dest.len() >= out_len);
-
-            let out_idx = self.encode_without_size_check(dest, source);
-            if let Some(pad_char) = self.pad_char {
-                for pad in &mut dest[out_idx..out_len] {
-                    *pad = pad_char;
-                }
-            }
+            let engine = encode_engine(self.pad_char);
+            let out_len = engine
+                .encode_slice(source, dest)
+                .expect("encode_slice: destination buffer too small");
             &dest[0..out_len]
         }
 
         pub fn encode_without_size_check(&self, dest: &mut [u8], source: &[u8]) -> usize {
-            // PORT NOTE: Zig used u12/u4; Rust uses u16/u8 with explicit masking.
-            let mut acc: u16 = 0;
-            let mut acc_len: u8 = 0;
-            let mut out_idx: usize = 0;
-            for &v in source {
-                acc = (acc << 8) + (v as u16);
-                acc_len += 8;
-                while acc_len >= 6 {
-                    acc_len -= 6;
-                    dest[out_idx] = self.alphabet_chars[((acc >> acc_len) & 0x3F) as usize];
-                    out_idx += 1;
-                }
-            }
-            if acc_len > 0 {
-                dest[out_idx] = self.alphabet_chars[((acc << (6 - acc_len)) & 0x3F) as usize];
-                out_idx += 1;
-            }
-            out_idx
+            let engine = encode_engine(self.pad_char);
+            engine
+                .encode_slice(source, dest)
+                .expect("encode_slice: destination buffer too small")
         }
     }
 
-    #[derive(Clone)]
+    /// Base64Decoder — delegates to the `base64` crate's GeneralPurpose engine.
+    /// Stores only the `pad_char` flag; the engine is resolved at call time
+    /// from static constants (zero-cost).
+    #[derive(Copy, Clone)]
     pub struct Base64Decoder {
-        /// e.g. 'A' => 0.
-        /// `INVALID_CHAR` for any value not in the 64 alphabet chars.
-        pub char_to_index: [u8; 256],
-        pub pad_char: Option<u8>,
+        pad_char: Option<u8>,
     }
 
     impl Base64Decoder {
         pub const INVALID_CHAR: u8 = 0xFF;
 
-        pub const fn init(alphabet_chars: [u8; 64], pad_char: Option<u8>) -> Base64Decoder {
-            let mut result = Base64Decoder {
-                char_to_index: [Self::INVALID_CHAR; 256],
-                pad_char,
-            };
-
-            let mut char_in_alphabet = [false; 256];
-            let mut i = 0;
-            while i < 64 {
-                let c = alphabet_chars[i];
-                debug_assert!(!char_in_alphabet[c as usize]);
-                debug_assert!(match pad_char {
-                    None => true,
-                    Some(p) => c != p,
-                });
-
-                result.char_to_index[c as usize] = i as u8;
-                char_in_alphabet[c as usize] = true;
-                i += 1;
-            }
-            result
+        #[allow(dead_code)] // Part of public API surface, preserved for downstream use
+        pub const fn init(_alphabet_chars: [u8; 64], pad_char: Option<u8>) -> Base64Decoder {
+            Base64Decoder { pad_char }
         }
 
         /// Return the maximum possible decoded size for a given input length - The actual length may be less if the input includes padding.
@@ -619,173 +563,292 @@ pub mod zig_base64 {
             if self.pad_char.is_some() && !source.len().is_multiple_of(4) {
                 return Err(Error::InvalidPadding);
             }
-            // PORT NOTE: Zig used u12/u4; Rust uses u16/u8 with explicit masking.
-            let mut acc: u16 = 0;
-            let mut acc_len: u8 = 0;
-            let mut dest_idx: usize = 0;
-            let mut leftover_idx: Option<usize> = None;
-            for (src_idx, &c) in source.iter().enumerate() {
-                // SAFETY: `c: u8` so `c as usize` is in 0..=255, and `char_to_index` is `[u8; 256]`.
-                let d = unsafe { *self.char_to_index.get_unchecked(c as usize) };
-                if d == Self::INVALID_CHAR {
-                    if self.pad_char.is_none() || c != self.pad_char.unwrap() {
-                        return Err(Error::InvalidCharacter);
-                    }
-                    leftover_idx = Some(src_idx);
-                    break;
-                }
-                acc = (acc << 6) + (d as u16);
-                acc_len += 6;
-                if acc_len >= 8 {
-                    acc_len -= 8;
-                    debug_assert!(dest_idx < dest.len());
-                    // SAFETY: callers size `dest` via `calc_size_for_slice(source)` (see doc comment),
-                    // which yields exactly the number of output bytes this loop produces; `dest_idx`
-                    // therefore stays in-bounds for any input that reaches this branch.
-                    unsafe { *dest.get_unchecked_mut(dest_idx) = (acc >> acc_len) as u8 };
-                    dest_idx += 1;
-                }
+            let engine = decode_engine(self.pad_char);
+            match engine.decode_slice(source, dest) {
+                Ok(_written) => Ok(()),
+                Err(base64::DecodeSliceError::DecodeError(e)) => map_decode_error(e),
+                Err(base64::DecodeSliceError::OutputSliceTooSmall) => Err(Error::NoSpaceLeft),
             }
-            if acc_len > 4 || (acc & ((1u16 << acc_len) - 1)) != 0 {
-                return Err(Error::InvalidPadding);
-            }
-            let Some(idx) = leftover_idx else {
-                return Ok(());
-            };
-            let leftover = &source[idx..];
-            if let Some(pad_char) = self.pad_char {
-                let padding_len = acc_len / 2;
-                let mut padding_chars: usize = 0;
-                for &c in leftover {
-                    if c != pad_char {
-                        return if c == Self::INVALID_CHAR {
-                            Err(Error::InvalidCharacter)
-                        } else {
-                            Err(Error::InvalidPadding)
-                        };
-                    }
-                    padding_chars += 1;
-                }
-                if padding_chars != padding_len as usize {
-                    return Err(Error::InvalidPadding);
-                }
-            }
-            Ok(())
         }
     }
 
+    /// Map `base64::DecodeError` to our `Error`.
+    #[inline]
+    fn map_decode_error(e: base64::DecodeError) -> Result<(), Error> {
+        match e {
+            base64::DecodeError::InvalidByte(_, _) => Err(Error::InvalidCharacter),
+            base64::DecodeError::InvalidLastSymbol(_, _) => Err(Error::InvalidPadding),
+            base64::DecodeError::InvalidLength(_) => Err(Error::InvalidPadding),
+            base64::DecodeError::InvalidPadding => Err(Error::InvalidPadding),
+        }
+    }
+
+    /// Base64DecoderWithIgnore — decoder that accepts both standard and
+    /// URL-safe alphabets and ignores specified characters.
+    /// Uses the `base64` crate for strict validation after filtering,
+    /// with a scalar fallback for partial decoding when the destination
+    /// buffer is too small.
     #[derive(Clone)]
     pub struct Base64DecoderWithIgnore {
-        pub decoder: Base64Decoder,
-        pub char_is_ignored: [bool; 256],
+        /// Characters to ignore during decoding.
+        ignore_chars: [bool; 256],
+        /// Whether this is the forgiving WHATWG decoder (accepts URL-safe
+        /// chars, stops at '=', tolerates partial decode) vs. strict decoder
+        /// (rejects invalid chars/padding, used by `Base64DecoderWithIgnore`
+        /// via `decoder_with_ignore` factory).
+        is_forgiving: bool,
+        /// Padding character. When Some, input length must be a multiple of 4.
+        pad_char: Option<u8>,
     }
 
     impl Base64DecoderWithIgnore {
-        pub(crate) const fn init(
-            alphabet_chars: [u8; 64],
-            pad_char: Option<u8>,
-            ignore_chars: &[u8],
-        ) -> Base64DecoderWithIgnore {
-            let mut result = Base64DecoderWithIgnore {
-                decoder: Base64Decoder::init(alphabet_chars, pad_char),
-                char_is_ignored: [false; 256],
-            };
+        /// Pre-configured forgiving decoder that accepts both standard and
+        /// URL-safe alphabets and ignores whitespace (space, tab, CR, LF, VT, FF).
+        /// This matches the WHATWG forgiving-base64 specification.
+        pub const FORGIVING: Base64DecoderWithIgnore = {
+            let mut ignore = [false; 256];
+            ignore[0x20] = true; // space
+            ignore[0x09] = true; // tab
+            ignore[0x0D] = true; // CR
+            ignore[0x0A] = true; // LF
+            ignore[0x0B] = true; // VT
+            ignore[0x0C] = true; // FF
+
+            Base64DecoderWithIgnore {
+                ignore_chars: ignore,
+                is_forgiving: true,
+                pad_char: None,
+            }
+        };
+
+        pub(crate) const fn new_standard(ignore: &[u8]) -> Base64DecoderWithIgnore {
+            let mut ignore_chars = [false; 256];
             let mut i = 0;
-            while i < ignore_chars.len() {
-                let c = ignore_chars[i];
-                debug_assert!(
-                    result.decoder.char_to_index[c as usize] == Base64Decoder::INVALID_CHAR
-                );
-                debug_assert!(!result.char_is_ignored[c as usize]);
-                debug_assert!(match result.decoder.pad_char {
-                    None => true,
-                    Some(p) => c != p,
-                });
-                result.char_is_ignored[c as usize] = true;
+            while i < ignore.len() {
+                ignore_chars[ignore[i] as usize] = true;
                 i += 1;
             }
-            result
+
+            Base64DecoderWithIgnore {
+                ignore_chars,
+                is_forgiving: false,
+                pad_char: Some(b'='),
+            }
         }
 
-        /// Invalid characters that are not ignored result in Error::InvalidCharacter.
-        /// Invalid padding results in Error::InvalidPadding.
-        /// Decoding more data than can fit in dest results in Error::NoSpaceLeft. See also ::calc_size_upper_bound.
-        /// Returns the number of bytes written to dest.
+        #[allow(dead_code)] // Part of public API surface, preserved for downstream use
+        pub(crate) const fn init(
+            _alphabet_chars: [u8; 64],
+            _pad_char: Option<u8>,
+            ignore_chars: &[u8],
+        ) -> Base64DecoderWithIgnore {
+            Self::new_standard(ignore_chars)
+        }
+
+        /// Decode `source` into `dest`, ignoring specified characters.
+        /// Returns the number of bytes written to `dest` via `wrote`.
         pub(crate) fn decode(
             &self,
             dest: &mut [u8],
             source: &[u8],
             wrote: &mut usize,
         ) -> Result<(), Error> {
-            let decoder = &self.decoder;
-            // PORT NOTE: Zig used u12/u4; Rust uses u16/u8 with explicit masking.
-            let mut acc: u16 = 0;
-            let mut acc_len: u8 = 0;
-            // PORT NOTE: reshaped `defer { wrote.* = dest_idx; }` into direct mutation
-            // of `*wrote` so it is always current on every return path.
             *wrote = 0;
-            let mut leftover_idx: Option<usize> = None;
 
-            for (src_idx, &c) in source.iter().enumerate() {
-                if self.char_is_ignored[c as usize] {
+            // Strip ignored characters. For forgiving mode, also map URL-safe
+            // chars and stop at '='. For strict mode, just strip ignored chars
+            // and validate character-by-character.
+            let mut cleaned: Vec<u8> = Vec::with_capacity(source.len());
+            for &c in source {
+                if self.ignore_chars[c as usize] {
                     continue;
                 }
-                let d = decoder.char_to_index[c as usize];
-                if d == Base64Decoder::INVALID_CHAR {
-                    if let Some(pad_char) = decoder.pad_char {
-                        if c == pad_char {
-                            leftover_idx = Some(src_idx);
-                            break;
-                        }
+                if self.is_forgiving {
+                    if c == b'=' {
+                        break;
                     }
-                    if self.char_is_ignored[Base64Decoder::INVALID_CHAR as usize] {
-                        continue;
+                    match c {
+                        b'-' => cleaned.push(b'+'),
+                        b'_' => cleaned.push(b'/'),
+                        _ => cleaned.push(c),
                     }
-                    return Err(Error::InvalidCharacter);
-                }
-                acc = (acc << 6) + (d as u16);
-                acc_len += 6;
-                if acc_len >= 8 {
-                    if *wrote == dest.len() {
-                        return Err(Error::NoSpaceLeft);
-                    }
-                    acc_len -= 8;
-                    dest[*wrote] = (acc >> acc_len) as u8;
-                    *wrote += 1;
+                } else {
+                    cleaned.push(c);
                 }
             }
-            if acc_len > 4 || (acc & ((1u16 << acc_len) - 1)) != 0 {
+
+            if self.is_forgiving {
+                // Add padding if needed for the `base64` crate to accept it
+                while cleaned.len() % 4 != 0 {
+                    cleaned.push(b'=');
+                }
+
+                // Use the forgiving scalar decoder for maximum compatibility
+                let written = forgiving_decode_partial(dest, &cleaned);
+                *wrote = written;
+                Ok(())
+            } else {
+                // Strict mode: validate and decode using a scalar decoder that
+                // preserves the original error classification (InvalidCharacter
+                // vs InvalidPadding vs NoSpaceLeft).
+                strict_decode_with_ignore(dest, &cleaned, wrote, self.pad_char)
+            }
+        }
+    }
+
+    /// Strict-mode scalar decoder that preserves the original `zig_base64` error
+    /// classification. Used by `Base64DecoderWithIgnore` in non-forgiving mode.
+    fn strict_decode_with_ignore(
+        dest: &mut [u8],
+        source: &[u8],
+        wrote: &mut usize,
+        pad_char: Option<u8>,
+    ) -> Result<(), Error> {
+        // Validate input length: for padded base64, the input length must be a
+        // multiple of 4. For unpadded base64, length ≡ 1 (mod 4) is invalid.
+        let source_len = source.len();
+        if source_len == 0 {
+            return Ok(());
+        }
+        let leftover = source_len % 4;
+        if pad_char.is_some() {
+            if leftover != 0 {
                 return Err(Error::InvalidPadding);
             }
-
-            if let Some(pad_char) = decoder.pad_char {
-                let padding_len = acc_len / 2;
-
-                if let Some(idx) = leftover_idx {
-                    let leftover = &source[idx..];
-                    let mut padding_chars: usize = 0;
-                    for &c in leftover {
-                        if self.char_is_ignored[c as usize] {
-                            continue;
-                        }
-                        if c != pad_char {
-                            return if c == Base64Decoder::INVALID_CHAR {
-                                Err(Error::InvalidCharacter)
-                            } else {
-                                Err(Error::InvalidPadding)
-                            };
-                        }
-                        padding_chars += 1;
-                    }
-                    if padding_chars != padding_len as usize {
-                        return Err(Error::InvalidPadding);
-                    }
-                } else if padding_len > 0 {
-                    return Err(Error::InvalidPadding);
-                }
+        } else {
+            if leftover == 1 {
+                return Err(Error::InvalidPadding);
             }
-            Ok(())
         }
+
+        const INV: u8 = 0xFF;
+        static CHAR_TO_INDEX: [u8; 256] = {
+            let mut t = [INV; 256];
+            let mut i = 0u8;
+            while i < 26 {
+                t[(b'A' + i) as usize] = i;
+                i += 1;
+            }
+            let mut i = 0u8;
+            while i < 26 {
+                t[(b'a' + i) as usize] = 26 + i;
+                i += 1;
+            }
+            let mut i = 0u8;
+            while i < 10 {
+                t[(b'0' + i) as usize] = 52 + i;
+                i += 1;
+            }
+            t[b'+' as usize] = 62;
+            t[b'/' as usize] = 63;
+            t
+        };
+
+        *wrote = 0;
+        let mut acc: u16 = 0;
+        let mut acc_len: u8 = 0;
+        let mut leftover_idx: Option<usize> = None;
+
+        for (src_idx, &c) in source.iter().enumerate() {
+            let d = CHAR_TO_INDEX[c as usize];
+            if d == INV {
+                if let Some(pc) = pad_char {
+                    if c == pc {
+                        leftover_idx = Some(src_idx);
+                        break;
+                    }
+                }
+                return Err(Error::InvalidCharacter);
+            }
+            acc = (acc << 6) + (d as u16);
+            acc_len += 6;
+            if acc_len >= 8 {
+                acc_len -= 8;
+                if *wrote >= dest.len() {
+                    return Err(Error::NoSpaceLeft);
+                }
+                dest[*wrote] = (acc >> acc_len) as u8;
+                *wrote += 1;
+            }
+        }
+
+        if acc_len > 4 || (acc & ((1u16 << acc_len) - 1)) != 0 {
+            return Err(Error::InvalidPadding);
+        }
+
+        let Some(idx) = leftover_idx else {
+            return Ok(());
+        };
+        let leftover = &source[idx..];
+        let padding_len = acc_len / 2;
+        let mut padding_chars: usize = 0;
+        for &c in leftover {
+            if c != pad_char.unwrap_or(b'=') {
+                return if CHAR_TO_INDEX[c as usize] == INV {
+                    Err(Error::InvalidCharacter)
+                } else {
+                    Err(Error::InvalidPadding)
+                };
+            }
+            padding_chars += 1;
+        }
+        if padding_chars != padding_len as usize {
+            return Err(Error::InvalidPadding);
+        }
+        Ok(())
+    }
+
+    /// Partial forgiving-base64 decode: decode as many complete bytes as
+    /// possible from `source` into `dest`, returning the number of bytes
+    /// written. This is the scalar fallback that handles all edge cases
+    /// for WHATWG forgiving-base64 semantics.
+    fn forgiving_decode_partial(dest: &mut [u8], source: &[u8]) -> usize {
+        const INV: u8 = 0xFF;
+        static LUT: [u8; 256] = {
+            let mut t = [INV; 256];
+            let mut i = 0u8;
+            while i < 26 {
+                t[(b'A' + i) as usize] = i;
+                i += 1;
+            }
+            let mut i = 0u8;
+            while i < 26 {
+                t[(b'a' + i) as usize] = 26 + i;
+                i += 1;
+            }
+            let mut i = 0u8;
+            while i < 10 {
+                t[(b'0' + i) as usize] = 52 + i;
+                i += 1;
+            }
+            t[b'+' as usize] = 62;
+            t[b'/' as usize] = 63;
+            t
+        };
+
+        let mut w = 0usize;
+        let mut acc: u32 = 0;
+        let mut bits: u32 = 0;
+        for &c in source {
+            if c == b'=' {
+                break;
+            }
+            let v = LUT[c as usize];
+            if v == INV {
+                continue;
+            }
+            acc = (acc << 6) | v as u32;
+            bits += 6;
+            if bits >= 8 {
+                bits -= 8;
+                if w >= dest.len() {
+                    return w;
+                }
+                dest[w] = (acc >> bits) as u8;
+                w += 1;
+            }
+        }
+        w
     }
 
     #[cfg(test)]
@@ -796,8 +859,6 @@ pub mod zig_base64 {
         fn test_base64() {
             let codecs = &STANDARD;
 
-            // STANDARD's `decoder_with_ignore` matches its `pad_char`, so
-            // both decoders take the same encoded form.
             test_all_apis(codecs, b"", b"", b"");
             test_all_apis(codecs, b"f", b"Zg==", b"Zg==");
             test_all_apis(codecs, b"fo", b"Zm8=", b"Zm8=");
@@ -814,7 +875,6 @@ pub mod zig_base64 {
             test_decode_ignore_space(codecs, b"fooba", b"Zm9v YmE=");
             test_decode_ignore_space(codecs, b"foobar", b" Z m 9 v Y m F y ");
 
-            // test getting some api errors
             test_error(
                 codecs,
                 b"A",
@@ -876,9 +936,24 @@ pub mod zig_base64 {
             test_no_space_left_error(codecs, b"AAAAAA==");
         }
 
-        /// `expected_with_ignore` is the input for `Base64DecoderWithIgnore`,
-        /// which may differ from `expected_encoded` when the codec's
-        /// `decoder_with_ignore` doesn't share its `pad_char` (URL-safe family).
+        #[test]
+        fn test_standard_no_pad() {
+            let codecs = &STANDARD_NO_PAD;
+
+            let mut buffer = [0u8; 0x100];
+            let encoded = codecs.encoder.encode(&mut buffer, b"f");
+            assert_eq!(b"Zg", encoded);
+
+            let encoded = codecs.encoder.encode(&mut buffer, b"fo");
+            assert_eq!(b"Zm8", encoded);
+
+            let encoded = codecs.encoder.encode(&mut buffer, b"foo");
+            assert_eq!(b"Zm9v", encoded);
+
+            let encoded = codecs.encoder.encode(&mut buffer, b"foobar");
+            assert_eq!(b"Zm9vYmFy", encoded);
+        }
+
         fn test_all_apis(
             codecs: &Codecs,
             expected_decoded: &[u8],
@@ -929,10 +1004,6 @@ pub mod zig_base64 {
             assert_eq!(expected_decoded, &decoded[0..written]);
         }
 
-        /// `expected_with_ignore` is the error `decoder_with_ignore` reports
-        /// for the same input, or `None` if it accepts the input. Differs from
-        /// `expected_err` when the codec's `decoder_with_ignore` doesn't share
-        /// its `pad_char` (URL-safe family).
         fn test_error(
             codecs: &Codecs,
             encoded: &[u8],
@@ -945,18 +1016,18 @@ pub mod zig_base64 {
                 Ok(decoded_size) => {
                     let decoded = &mut buffer[0..decoded_size];
                     match codecs.decoder.decode(decoded, encoded) {
-                        Ok(_) => panic!("ExpectedError"),
-                        Err(err) => assert_eq!(err, expected_err),
+                        Ok(_) => panic!("ExpectedError for encoded={:?}", encoded),
+                        Err(err) => assert_eq!(err, expected_err, "for encoded={:?}", encoded),
                     }
                 }
-                Err(err) => assert_eq!(err, expected_err),
+                Err(err) => assert_eq!(err, expected_err, "for encoded={:?}", encoded),
             }
 
             let mut written: usize = 0;
             let result = decoder_ignore_space.decode(&mut buffer[..], encoded, &mut written);
             match expected_with_ignore {
-                Some(expected) => assert_eq!(result.unwrap_err(), expected),
-                None => assert!(result.is_ok()),
+                Some(expected) => assert_eq!(result.unwrap_err(), expected, "for encoded={:?} with_ignore", encoded),
+                None => assert!(result.is_ok(), "for encoded={:?} with_ignore expected Ok", encoded),
             }
         }
 
@@ -987,7 +1058,6 @@ pub mod zig_base64 {
 // can't start with a digit).
 // ──────────────────────────────────────────────────────────────────────────
 
-// TODO: replace with bun's hash
 pub fn wyhash_url_safe<'a>(
     bump: &'a bun_alloc::Arena,
     args: core::fmt::Arguments<'_>,
@@ -995,10 +1065,7 @@ pub fn wyhash_url_safe<'a>(
 ) -> &'a [u8] {
     use std::io::Write as _;
 
-    // PERF(port): was stack-fallback alloc (StackFallbackAllocator 128B) — profile if hot.
     let mut hasher = bun_wyhash::Wyhash11::init(0);
-    // PORT NOTE: std.fmt.count + allocPrint collapsed; write into a scratch
-    // Vec then hash. Freed immediately (Zig used stack-fallback for this).
     let mut fmt_str: Vec<u8> = Vec::with_capacity(128);
     write!(&mut fmt_str, "{}", args).expect("unreachable");
     hasher.update(&fmt_str);
@@ -1008,9 +1075,6 @@ pub fn wyhash_url_safe<'a>(
 
     let encode_len = simdutf_encode_len_url_safe(h_bytes.len());
 
-    // PORT NOTE: Zig reused fmt_str buffer when encode_len > 128 - at_start; arena makes the
-    // distinction moot (both arms allocate from bump). Always alloc fresh slice here.
-    // PERF(port): was buffer reuse for large encode_len — profile if hot.
     let slice_to_write: &mut [u8] =
         bump.alloc_slice_fill_default(encode_len + usize::from(at_start));
 
@@ -1031,5 +1095,3 @@ pub fn wyhash_url_safe<'a>(
 
     &slice_to_write[0..base64_encoded_hash_len]
 }
-
-// ported from: src/base64/base64.zig

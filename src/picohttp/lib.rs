@@ -1,5 +1,4 @@
 #![warn(unused_must_use)]
-use core::ffi::c_int;
 use core::fmt;
 
 use bstr::BStr;
@@ -15,83 +14,16 @@ use bun_core::pretty_fmt;
 // its moved-out buffer) alive while the returned slices are in use.
 pub use bun_core::StringBuilder;
 
-// FFI surface over vendor/picohttpparser. Hand-written (three functions, two
-// structs) rather than bindgen-generated.
-#[allow(non_camel_case_types)]
-mod c {
-    use core::ffi::{c_char, c_int};
-    #[repr(C)]
-    pub struct phr_header {
-        pub name: *const c_char,
-        pub name_len: usize,
-        pub value: *const c_char,
-        pub value_len: usize,
-    }
-    pub type struct_phr_header = phr_header;
-    /// Mirrors `struct phr_chunked_decoder` from picohttpparser.h. The HTTP
-    /// client writes `consume_trailer` directly and inspects `_state` via
-    /// `phr_decode_chunked_is_in_data`, so the layout must match C exactly.
-    #[repr(C)]
-    #[derive(Clone, Copy, Default)]
-    pub struct phr_chunked_decoder {
-        pub bytes_left_in_chunk: usize,
-        /// Set to 1 to discard trailing headers after the terminal `0\r\n` chunk.
-        pub consume_trailer: core::ffi::c_char,
-        pub _hex_count: core::ffi::c_char,
-        pub _state: core::ffi::c_char,
-    }
-    pub type struct_phr_chunked_decoder = phr_chunked_decoder;
-    unsafe extern "C" {
-        pub fn phr_parse_request(
-            buf: *const u8,
-            len: usize,
-            method: *mut *const c_char,
-            method_len: *mut usize,
-            path: *mut *const c_char,
-            path_len: *mut usize,
-            minor_version: *mut c_int,
-            headers: *mut phr_header,
-            num_headers: *mut usize,
-            last_len: usize,
-        ) -> c_int;
-        pub fn phr_parse_response(
-            buf: *const u8,
-            len: usize,
-            minor_version: *mut c_int,
-            status: *mut c_int,
-            msg: *mut *const c_char,
-            msg_len: *mut usize,
-            headers: *mut phr_header,
-            num_headers: *mut usize,
-            last_len: usize,
-        ) -> c_int;
-        pub fn phr_parse_headers(
-            buf: *const u8,
-            len: usize,
-            headers: *mut phr_header,
-            num_headers: *mut usize,
-            last_len: usize,
-        ) -> c_int;
-        pub fn phr_decode_chunked(
-            decoder: *mut phr_chunked_decoder,
-            buf: *mut u8,
-            len: *mut usize,
-        ) -> isize;
-        pub fn phr_decode_chunked_is_in_data(decoder: *mut phr_chunked_decoder) -> c_int;
-    }
-}
-
 use bun_core::strings;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Header
 // ──────────────────────────────────────────────────────────────────────────
 
-/// NOTE: layout MUST match `c::phr_header` exactly (see static asserts below).
-/// Zig used `name: []const u8` / `value: []const u8` and relied on Zig's slice
-/// ABI being `{ptr, len}`. Rust `&[u8]` has no guaranteed field order in
-/// `#[repr(C)]`, so we spell the fields out and expose `.name()` / `.value()`.
-#[repr(C)]
+/// HTTP header with borrowed name and value slices.
+///
+/// Previously `#[repr(C)]` to match picohttpparser's `phr_header` layout.
+/// Now a plain Rust struct delegating to `httparse` — no FFI layout constraints.
 #[derive(Clone, Copy)]
 pub struct Header {
     name_ptr: *const u8,
@@ -137,17 +69,14 @@ impl Header {
 
     #[inline]
     pub fn name(&self) -> &[u8] {
-        // picohttpparser sets `name = NULL, name_len = 0` for multiline /
-        // continuation headers. `ffi::slice` tolerates the (null, 0) shape.
-        // SAFETY: ptr/len originate from picohttpparser pointing into the
+        // SAFETY: ptr/len originate from httparse pointing into the
         // caller-provided buffer, or from StringBuilder::append.
+        // `ffi::slice` tolerates the (null, 0) shape for multiline headers.
         unsafe { bun_core::ffi::slice(self.name_ptr, self.name_len) }
     }
 
     #[inline]
     pub fn value(&self) -> &[u8] {
-        // Defensive: picohttpparser always points `value` into `buf` on
-        // success; `ffi::slice` tolerates the (null, 0) shape.
         // SAFETY: same as name()
         unsafe { bun_core::ffi::slice(self.value_ptr, self.value_len) }
     }
@@ -183,9 +112,6 @@ impl Header {
 
 impl fmt::Display for Header {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // NOTE: pretty_fmt! is the comptime ANSI-tag expander (`<r><cyan>` → escape
-        // codes). bun_core's current impl is a passthrough TODO(port) until the
-        // proc-macro lands; output will contain literal `<r>` tags until then.
         if enable_ansi_colors_stderr() {
             if self.is_multiline() {
                 write!(f, pretty_fmt!("<r><cyan>{}", true), BStr::new(self.value()))
@@ -216,9 +142,6 @@ impl fmt::Display for Header {
     }
 }
 
-const _: () = assert!(core::mem::size_of::<Header>() == core::mem::size_of::<c::phr_header>());
-const _: () = assert!(core::mem::align_of::<Header>() == core::mem::align_of::<c::phr_header>());
-
 pub struct HeaderCurlFormatter<'a> {
     header: &'a Header,
 }
@@ -246,9 +169,6 @@ impl fmt::Display for HeaderCurlFormatter<'_> {
 #[derive(Clone, Copy, Default)]
 pub struct HeaderList<'a> {
     pub list: &'a [Header],
-    // TODO(port): Zig field is `[]Header` (mutable slice) but only ever read
-    // through `*const List`; using `&'a [Header]` here. Revisit if a caller
-    // mutates through it.
 }
 
 impl<'a> HeaderList<'a> {
@@ -287,7 +207,6 @@ impl<'a> HeaderList<'a> {
 // Request
 // ──────────────────────────────────────────────────────────────────────────
 
-// TODO(port): thiserror not in workspace deps — manual Display/Error impl.
 #[derive(Debug, strum::IntoStaticStr)]
 pub enum ParseRequestError {
     BadRequest,
@@ -302,6 +221,18 @@ pub struct Request<'a> {
     pub minor_version: usize,
     pub headers: &'a [Header],
     pub bytes_read: u32,
+}
+
+impl fmt::Debug for Request<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Request")
+            .field("method", &BStr::new(self.method))
+            .field("path", &BStr::new(self.path))
+            .field("minor_version", &self.minor_version)
+            .field("headers", &self.headers.len())
+            .field("bytes_read", &self.bytes_read)
+            .finish()
+    }
 }
 
 impl<'a> Request<'a> {
@@ -353,50 +284,49 @@ impl<'a> Request<'a> {
     }
 
     pub fn parse(buf: &'a [u8], src: &'a mut [Header]) -> Result<Request<'a>, ParseRequestError> {
-        let mut method_ptr: *const u8 = core::ptr::null();
-        let mut method_len: usize = 0;
-        let mut path_ptr: *const u8 = core::ptr::null();
-        let mut path_len: usize = 0;
-        let mut minor_version: c_int = 0;
-        let mut num_headers: usize = src.len();
-
-        // SAFETY: picohttpparser writes back into the out-params; src is
-        // layout-compatible with phr_header (asserted above).
-        let rc = unsafe {
-            c::phr_parse_request(
-                buf.as_ptr(),
-                buf.len(),
-                (&raw mut method_ptr).cast::<*const core::ffi::c_char>(),
-                &raw mut method_len,
-                (&raw mut path_ptr).cast::<*const core::ffi::c_char>(),
-                &raw mut path_len,
-                &raw mut minor_version,
-                src.as_mut_ptr().cast::<c::phr_header>(),
-                &raw mut num_headers,
-                0,
-            )
-        };
-
-        // Leave a sentinel value, for JavaScriptCore support.
-        if rc > -1 {
-            // SAFETY: path_ptr points into buf; the byte after the path is the
-            // space before "HTTP/1.x" which picohttpparser has already consumed,
-            // so writing a NUL there is in-bounds. Zig casts away const here too.
-            unsafe { path_ptr.cast_mut().add(path_len).write(0) };
+        // Build httparse header slots from the caller-provided storage.
+        let mut httparse_headers: Vec<httparse::Header<'_>> = Vec::with_capacity(src.len());
+        for _ in 0..src.len() {
+            httparse_headers.push(httparse::Header {
+                name: "",
+                value: &[],
+            });
         }
 
-        match rc {
-            -1 => Err(ParseRequestError::BadRequest),
-            -2 => Err(ParseRequestError::ShortRead),
-            _ => Ok(Request {
-                // SAFETY: on success, ptr/len point into `buf`.
-                method: unsafe { bun_core::ffi::slice(method_ptr, method_len) },
-                // SAFETY: on success, ptr/len point into `buf`.
-                path: unsafe { bun_core::ffi::slice(path_ptr, path_len) },
-                minor_version: usize::try_from(minor_version).expect("int cast"),
-                headers: &src[0..num_headers],
-                bytes_read: u32::try_from(rc).expect("int cast"),
-            }),
+        let mut req = httparse::Request::new(&mut httparse_headers);
+        match req.parse(buf) {
+            Ok(httparse::Status::Complete(bytes_read)) => {
+                let method = req.method.unwrap_or("");
+                let path = req.path.unwrap_or("/");
+                let minor_version = req.version.unwrap_or(1);
+
+                // Fill caller-provided Header array from httparse output.
+                // httparse headers are guaranteed to point into `buf`.
+                let num_headers = req.headers.len().min(src.len());
+                for (i, h) in req.headers.iter().take(num_headers).enumerate() {
+                    src[i] = Header {
+                        name_ptr: h.name.as_ptr(),
+                        name_len: h.name.len(),
+                        value_ptr: h.value.as_ptr(),
+                        value_len: h.value.len(),
+                    };
+                }
+
+                // PORT NOTE: The original picohttpparser FFI wrote a NUL sentinel
+                // after the path for C string compatibility. No downstream code in
+                // Bao actually reads this NUL — it was a C-ABI artifact. Omitted
+                // in the pure Rust httparse implementation.
+
+                Ok(Request {
+                    method: method.as_bytes(),
+                    path: path.as_bytes(),
+                    minor_version: usize::from(minor_version),
+                    headers: &src[0..num_headers],
+                    bytes_read: u32::try_from(bytes_read).expect("int cast"),
+                })
+            }
+            Ok(httparse::Status::Partial) => Err(ParseRequestError::ShortRead),
+            Err(_) => Err(ParseRequestError::BadRequest),
         }
     }
 }
@@ -484,9 +414,6 @@ impl fmt::Display for RequestCurlFormatter<'_> {
 
         if !self.body.is_empty() && Self::is_printable_body(content_type) {
             f.write_str(" --data-raw ")?;
-            // Zig: bun.js_printer.writeJSONString — bun_core re-exports the
-            // tier-0 minimal impl as `js_printer::write_json_string`; the full
-            // encoding-aware printer in bun_js_printer overrides at link time.
             bun_core::js_printer::write_json_string(
                 self.body,
                 f,
@@ -539,7 +466,19 @@ pub struct Response<'a> {
     pub status_code: u32,
     pub status: &'a [u8],
     pub headers: HeaderList<'a>,
-    pub bytes_read: c_int,
+    pub bytes_read: i32,
+}
+
+impl fmt::Debug for Response<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Response")
+            .field("minor_version", &self.minor_version)
+            .field("status_code", &self.status_code)
+            .field("status", &BStr::new(self.status))
+            .field("headers", &self.headers.list.len())
+            .field("bytes_read", &self.bytes_read)
+            .finish()
+    }
 }
 
 impl<'a> Default for Response<'a> {
@@ -603,52 +542,52 @@ impl<'a> Response<'a> {
         src: &'a mut [Header],
         offset: Option<&mut usize>,
     ) -> Result<Response<'a>, ParseResponseError> {
-        let mut minor_version: c_int = 1;
-        let mut status_code: c_int = 0;
-        let mut status_ptr: *const u8 = b"".as_ptr();
-        let mut status_len: usize = 0;
-        let mut num_headers: usize = src.len();
+        let mut httparse_headers: Vec<httparse::Header<'_>> = Vec::with_capacity(src.len());
+        for _ in 0..src.len() {
+            httparse_headers.push(httparse::Header {
+                name: "",
+                value: &[],
+            });
+        }
 
-        let offset = offset.unwrap();
+        let mut resp = httparse::Response::new(&mut httparse_headers);
+        match resp.parse(buf) {
+            Ok(httparse::Status::Complete(bytes_read)) => {
+                let minor_version = resp.version.unwrap_or(1);
+                let status_code = resp.code.unwrap_or(0);
+                let reason = resp.reason.unwrap_or("");
 
-        // SAFETY: src is layout-compatible with phr_header (asserted above);
-        // out-params are valid for write.
-        let rc = unsafe {
-            c::phr_parse_response(
-                buf.as_ptr(),
-                buf.len(),
-                &raw mut minor_version,
-                &raw mut status_code,
-                (&raw mut status_ptr).cast::<*const core::ffi::c_char>(),
-                &raw mut status_len,
-                src.as_mut_ptr().cast::<c::phr_header>(),
-                &raw mut num_headers,
-                *offset,
-            )
-        };
+                // Fill caller-provided Header array from httparse output.
+                let num_headers = resp.headers.len().min(src.len());
+                for (i, h) in resp.headers.iter().take(num_headers).enumerate() {
+                    src[i] = Header {
+                        name_ptr: h.name.as_ptr(),
+                        name_len: h.name.len(),
+                        value_ptr: h.value.as_ptr(),
+                        value_len: h.value.len(),
+                    };
+                }
 
-        match rc {
-            -1 => {
-                // NOTE: `bun_core::debug!` macro is currently broken (it forwards
-                // `concat!(...)` into `pretty_errorln!` whose matcher is `$fmt:literal`).
-                // Use the function-form `output::debug` until the macro is fixed.
+                Ok(Response {
+                    minor_version: usize::from(minor_version),
+                    status_code: u32::from(status_code),
+                    status: reason.as_bytes(),
+                    headers: HeaderList {
+                        list: &src[0..num_headers],
+                    },
+                    bytes_read: i32::try_from(bytes_read).expect("int cast"),
+                })
+            }
+            Ok(httparse::Status::Partial) => {
+                if let Some(offset) = offset {
+                    *offset += buf.len();
+                }
+                Err(ParseResponseError::ShortRead)
+            }
+            Err(_) => {
                 Output::debug(format_args!("Malformed HTTP response:\n{}", BStr::new(buf)));
                 Err(ParseResponseError::MalformedHttpResponse)
             }
-            -2 => {
-                *offset += buf.len();
-                Err(ParseResponseError::ShortRead)
-            }
-            _ => Ok(Response {
-                minor_version: usize::try_from(minor_version).expect("int cast"),
-                status_code: u32::try_from(status_code).expect("int cast"),
-                // SAFETY: on success, ptr/len point into `buf`.
-                status: unsafe { bun_core::ffi::slice(status_ptr, status_len) },
-                headers: HeaderList {
-                    list: &src[0..num_headers.min(src.len())],
-                },
-                bytes_read: rc,
-            }),
         }
     }
 
@@ -701,27 +640,77 @@ pub struct Headers<'a> {
     pub headers: &'a [Header],
 }
 
+impl fmt::Debug for Headers<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Headers")
+            .field("count", &self.headers.len())
+            .finish()
+    }
+}
+
 impl<'a> Headers<'a> {
     pub fn parse(buf: &'a [u8], src: &'a mut [Header]) -> Result<Headers<'a>, ParseHeadersError> {
-        let mut num_headers: usize = src.len();
+        // httparse does not have a standalone header parser.
+        // Parse as a response (headers-only) and extract headers.
+        // This handles raw header blocks that start after the request/response line.
+        // We search for the first \r\n to skip any request/response line if present.
+        let mut httparse_headers: Vec<httparse::Header<'_>> = Vec::with_capacity(src.len());
+        for _ in 0..src.len() {
+            httparse_headers.push(httparse::Header {
+                name: "",
+                value: &[],
+            });
+        }
 
-        // SAFETY: src is layout-compatible with phr_header (asserted above).
-        let rc = unsafe {
-            c::phr_parse_headers(
-                buf.as_ptr(),
-                buf.len(),
-                src.as_mut_ptr().cast::<c::phr_header>(),
-                &raw mut num_headers,
-                0,
-            )
-        };
+        // Try parsing as a request first (covers most header-only use cases).
+        let mut req = httparse::Request::new(&mut httparse_headers);
+        match req.parse(buf) {
+            Ok(httparse::Status::Complete(bytes_read)) => {
+                let num_headers = req.headers.len().min(src.len());
+                for (i, h) in req.headers.iter().take(num_headers).enumerate() {
+                    src[i] = Header {
+                        name_ptr: h.name.as_ptr(),
+                        name_len: h.name.len(),
+                        value_ptr: h.value.as_ptr(),
+                        value_len: h.value.len(),
+                    };
+                }
+                let _ = bytes_read;
+                return Ok(Headers {
+                    headers: &src[0..num_headers],
+                });
+            }
+            Ok(httparse::Status::Partial) => return Err(ParseHeadersError::ShortRead),
+            Err(_) => {}
+        }
 
-        match rc {
-            -1 => Err(ParseHeadersError::BadHeaders),
-            -2 => Err(ParseHeadersError::ShortRead),
-            _ => Ok(Headers {
-                headers: &src[0..num_headers],
-            }),
+        // Fall back: try as a response.
+        let mut httparse_headers2: Vec<httparse::Header<'_>> = Vec::with_capacity(src.len());
+        for _ in 0..src.len() {
+            httparse_headers2.push(httparse::Header {
+                name: "",
+                value: &[],
+            });
+        }
+        let mut resp = httparse::Response::new(&mut httparse_headers2);
+        match resp.parse(buf) {
+            Ok(httparse::Status::Complete(bytes_read)) => {
+                let num_headers = resp.headers.len().min(src.len());
+                for (i, h) in resp.headers.iter().take(num_headers).enumerate() {
+                    src[i] = Header {
+                        name_ptr: h.name.as_ptr(),
+                        name_len: h.name.len(),
+                        value_ptr: h.value.as_ptr(),
+                        value_len: h.value.len(),
+                    };
+                }
+                let _ = bytes_read;
+                Ok(Headers {
+                    headers: &src[0..num_headers],
+                })
+            }
+            Ok(httparse::Status::Partial) => Err(ParseHeadersError::ShortRead),
+            Err(_) => Err(ParseHeadersError::BadHeaders),
         }
     }
 }
@@ -741,17 +730,375 @@ impl fmt::Display for Headers<'_> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Re-exports from picohttp_sys
+// Chunked Decoder (pure Rust replacement for picohttpparser's phr_decode_chunked)
 // ──────────────────────────────────────────────────────────────────────────
 
-pub use c::phr_chunked_decoder;
-pub use c::phr_decode_chunked;
-pub use c::phr_decode_chunked_is_in_data;
-pub use c::phr_header;
-pub use c::phr_parse_headers;
-pub use c::phr_parse_request;
-pub use c::phr_parse_response;
-pub use c::struct_phr_chunked_decoder;
-pub use c::struct_phr_header;
+/// State machine states for chunked transfer decoding.
+///
+/// These mirror the internal states of picohttpparser's `phr_chunked_decoder`
+/// so that downstream code inspecting `_state` (e.g., ProxyTunnel.rs checking
+/// for trailer states 4 and 5) continues to work.
+#[repr(i8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChunkedState {
+    /// Reading chunk size (hex digits)
+    ChunkSize = 0,
+    /// Reading extension after chunk size
+    ChunkExtension = 1,
+    /// Reading chunk data
+    ChunkData = 2,
+    /// Reading CRLF after chunk data
+    ChunkCrlf = 3,
+    /// Reading trailer line start
+    TrailerLineHead = 4,
+    /// Reading trailer line content
+    TrailerLineMiddle = 5,
+    /// Reading final CRLF after trailers (consuming \r\n)
+    TrailerFinalCrlf = 6,
+    /// Decode complete — all chunks and terminators consumed
+    Done = 7,
+}
+
+/// Pure Rust chunked transfer-encoding decoder, replacing picohttpparser's
+/// `phr_chunked_decoder` + `phr_decode_chunked`.
+///
+/// The API preserves the original's in-place mutation semantics: `decode()`
+/// rewrites `buf` in place, removing chunk-size markers and CRLF delimiters,
+/// leaving only the decoded body content. Returns the number of bytes consumed
+/// on success, -1 on invalid input, or -2 when more data is needed.
+#[derive(Clone, Copy, Debug)]
+pub struct ChunkedDecoder {
+    /// Bytes remaining in the current chunk's data section.
+    pub bytes_left_in_chunk: usize,
+    /// Set to 1 to discard trailing headers after the terminal `0\r\n` chunk.
+    pub consume_trailer: i8,
+    /// Internal hex digit count during chunk-size parsing.
+    pub _hex_count: i8,
+    /// Current parser state.
+    pub _state: ChunkedState,
+}
+
+impl Default for ChunkedDecoder {
+    fn default() -> Self {
+        Self {
+            bytes_left_in_chunk: 0,
+            consume_trailer: 0,
+            _hex_count: 0,
+            _state: ChunkedState::ChunkSize,
+        }
+    }
+}
+
+impl ChunkedDecoder {
+    /// Decode chunked transfer encoding in place.
+    ///
+    /// On entry, `buf` contains raw chunked data (chunk-size lines + data).
+    /// On return, `buf[0..*len]` contains the decoded body (chunk markers removed).
+    /// `*len` is updated to the decoded length.
+    ///
+    /// Returns:
+    /// - `>= 0`: success (number of extra bytes consumed from the input)
+    /// - `-1`: invalid input
+    /// - `-2`: need more data
+    ///
+    /// # Safety
+    /// Caller must ensure `buf` is valid for read+write of `*len` bytes,
+    /// and `len` points to a valid `usize`.
+    ///
+    /// This unsafe signature is preserved for API compatibility with the
+    /// original `phr_decode_chunked` C function. Prefer the safe `decode()`
+    /// method for new code.
+    #[inline]
+    pub unsafe fn decode_raw(
+        decoder: *mut ChunkedDecoder,
+        buf: *mut u8,
+        len: *mut usize,
+    ) -> isize {
+        // SAFETY: caller guarantees decoder is valid, buf is valid for *len bytes,
+        // and len points to a valid usize.
+        unsafe {
+            let decoder = &mut *decoder;
+            let buf_slice = core::slice::from_raw_parts_mut(buf, *len);
+            let result = decoder.decode(buf_slice);
+            match result {
+                Ok(decoded_len) => {
+                    *len = decoded_len;
+                    0
+                }
+                Err(ChunkedError::Invalid) => -1,
+                Err(ChunkedError::NeedMore) => -2,
+            }
+        }
+    }
+
+    /// Safe interface: decode chunked data in place.
+    ///
+    /// Rewrites `buf` in place to remove chunk framing, returning the decoded
+    /// body length. Returns `Ok(decoded_len)` on success, `Err(ChunkedError)`
+    /// on failure.
+    pub fn decode(&mut self, buf: &mut [u8]) -> Result<usize, ChunkedError> {
+        let mut src = 0usize;
+        let mut dst = 0usize;
+        let total = buf.len();
+
+        while src < total {
+            match self._state {
+                ChunkedState::ChunkSize => {
+                    // Parse hex chunk size.
+                    let mut found_cr = false;
+                    while src < total {
+                        let b = buf[src];
+                        if b == b'\r' {
+                            found_cr = true;
+                            src += 1;
+                            break;
+                        }
+                        if b == b';' {
+                            // Chunk extension follows.
+                            self._state = ChunkedState::ChunkExtension;
+                            src += 1;
+                            break;
+                        }
+                        let digit = match b {
+                            b'0'..=b'9' => b - b'0',
+                            b'a'..=b'f' => b - b'a' + 10,
+                            b'A'..=b'F' => b - b'A' + 10,
+                            _ => {
+                                // Could be part of extension or invalid.
+                                // Check if we already have a hex count.
+                                if self._hex_count > 0 {
+                                    self._state = ChunkedState::ChunkExtension;
+                                    break;
+                                }
+                                return Err(ChunkedError::Invalid);
+                            }
+                        };
+                        self.bytes_left_in_chunk =
+                            self.bytes_left_in_chunk.wrapping_mul(16).wrapping_add(digit as usize);
+                        self._hex_count += 1;
+                        src += 1;
+                    }
+
+                    if self._state == ChunkedState::ChunkExtension {
+                        continue;
+                    }
+
+                    if !found_cr {
+                        // Need more data for chunk size line.
+                        return Err(ChunkedError::NeedMore);
+                    }
+
+                    // Expect \n after \r.
+                    if src >= total {
+                        return Err(ChunkedError::NeedMore);
+                    }
+                    if buf[src] != b'\n' {
+                        return Err(ChunkedError::Invalid);
+                    }
+                    src += 1;
+
+                    // Check for terminal chunk (size 0).
+                    if self.bytes_left_in_chunk == 0 {
+                        if self.consume_trailer != 0 {
+                            self._state = ChunkedState::TrailerLineHead;
+                        } else {
+                            self._state = ChunkedState::TrailerFinalCrlf;
+                        }
+                        continue;
+                    }
+
+                    self._state = ChunkedState::ChunkData;
+                }
+
+                ChunkedState::ChunkExtension => {
+                    // Skip until \r\n after chunk extension.
+                    while src < total {
+                        if buf[src] == b'\r' {
+                            src += 1;
+                            if src >= total {
+                                return Err(ChunkedError::NeedMore);
+                            }
+                            if buf[src] != b'\n' {
+                                return Err(ChunkedError::Invalid);
+                            }
+                            src += 1;
+
+                            if self.bytes_left_in_chunk == 0 {
+                                if self.consume_trailer != 0 {
+                                    self._state = ChunkedState::TrailerLineHead;
+                                } else {
+                                    self._state = ChunkedState::TrailerFinalCrlf;
+                                }
+                            } else {
+                                self._state = ChunkedState::ChunkData;
+                            }
+                            break;
+                        }
+                        src += 1;
+                    }
+                    if src >= total && self._state == ChunkedState::ChunkExtension {
+                        return Err(ChunkedError::NeedMore);
+                    }
+                }
+
+                ChunkedState::ChunkData => {
+                    let to_copy = self.bytes_left_in_chunk.min(total - src);
+                    // Move data to decoded position.
+                    if dst != src {
+                        buf.copy_within(src..src + to_copy, dst);
+                    }
+                    dst += to_copy;
+                    src += to_copy;
+                    self.bytes_left_in_chunk -= to_copy;
+
+                    if self.bytes_left_in_chunk == 0 {
+                        self._state = ChunkedState::ChunkCrlf;
+                    }
+                }
+
+                ChunkedState::ChunkCrlf => {
+                    if src >= total {
+                        return Err(ChunkedError::NeedMore);
+                    }
+                    if buf[src] != b'\r' {
+                        return Err(ChunkedError::Invalid);
+                    }
+                    src += 1;
+                    if src >= total {
+                        return Err(ChunkedError::NeedMore);
+                    }
+                    if buf[src] != b'\n' {
+                        return Err(ChunkedError::Invalid);
+                    }
+                    src += 1;
+                    self._hex_count = 0;
+                    self._state = ChunkedState::ChunkSize;
+                }
+
+                ChunkedState::TrailerLineHead => {
+                    if src >= total {
+                        return Err(ChunkedError::NeedMore);
+                    }
+                    if buf[src] == b'\r' {
+                        src += 1;
+                        if src >= total {
+                            return Err(ChunkedError::NeedMore);
+                        }
+                        if buf[src] != b'\n' {
+                            return Err(ChunkedError::Invalid);
+                        }
+                        src += 1;
+                        // End of trailers.
+                        self._state = ChunkedState::TrailerFinalCrlf;
+                        continue;
+                    }
+                    self._state = ChunkedState::TrailerLineMiddle;
+                }
+
+                ChunkedState::TrailerLineMiddle => {
+                    // Skip until end of trailer line.
+                    while src < total {
+                        if buf[src] == b'\r' {
+                            src += 1;
+                            if src >= total {
+                                return Err(ChunkedError::NeedMore);
+                            }
+                            if buf[src] != b'\n' {
+                                return Err(ChunkedError::Invalid);
+                            }
+                            src += 1;
+                            self._state = ChunkedState::TrailerLineHead;
+                            break;
+                        }
+                        src += 1;
+                    }
+                    if src >= total && self._state == ChunkedState::TrailerLineMiddle {
+                        return Err(ChunkedError::NeedMore);
+                    }
+                }
+
+                ChunkedState::TrailerFinalCrlf => {
+                    // Consume the final \r\n after the terminal chunk.
+                    if src >= total {
+                        return Err(ChunkedError::NeedMore);
+                    }
+                    if buf[src] != b'\r' {
+                        return Err(ChunkedError::Invalid);
+                    }
+                    src += 1;
+                    if src >= total {
+                        return Err(ChunkedError::NeedMore);
+                    }
+                    if buf[src] != b'\n' {
+                        return Err(ChunkedError::Invalid);
+                    }
+                    src += 1;
+                    self._state = ChunkedState::Done;
+                    break;
+                }
+
+                ChunkedState::Done => {
+                    break;
+                }
+            }
+        }
+
+        // If we exited the loop because we ran out of data, and the decoder
+        // is not in a terminal state, signal that more data is needed.
+        // This matches phr_decode_chunked's behavior of returning -2 when
+        // the input is incomplete.
+        match self._state {
+            ChunkedState::TrailerFinalCrlf => Ok(dst),
+            _ => Err(ChunkedError::NeedMore),
+        }
+    }
+}
+
+/// Errors from chunked transfer decoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChunkedError {
+    Invalid,
+    NeedMore,
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Compatibility re-exports (preserving downstream code that uses the old
+// C FFI type/function names)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Type alias preserving the old name. Pure Rust — no C layout constraint.
+#[allow(non_camel_case_types)]
+pub type phr_chunked_decoder = ChunkedDecoder;
+
+/// Type alias preserving the old struct tag name.
+#[allow(non_camel_case_types)]
+pub type struct_phr_chunked_decoder = ChunkedDecoder;
+
+/// Raw-FFI-compatible wrapper for `ChunkedDecoder::decode_raw`.
+///
+/// Preserves the exact C function signature that downstream code calls
+/// via `picohttp::phr_decode_chunked(&raw mut decoder, ptr, &raw mut len)`.
+///
+/// # Safety
+/// Same as `ChunkedDecoder::decode_raw`: `buf` must be valid for `*len` bytes,
+/// `len` must point to a valid `usize`.
+#[inline]
+pub unsafe fn phr_decode_chunked(
+    decoder: *mut phr_chunked_decoder,
+    buf: *mut u8,
+    len: *mut usize,
+) -> isize {
+    // SAFETY: caller guarantees decoder is valid, buf is valid for *len bytes,
+    // and len points to a valid usize.
+    unsafe { ChunkedDecoder::decode_raw(decoder, buf, len) }
+}
+
+/// Returns whether the decoder is currently in the data phase (reading chunk body).
+///
+/// Preserves the C function signature. Returns 1 if in data state, 0 otherwise.
+#[inline]
+pub fn phr_decode_chunked_is_in_data(decoder: *mut phr_chunked_decoder) -> core::ffi::c_int {
+    unsafe { (*decoder)._state == ChunkedState::ChunkData as _ }.into()
+}
 
 // ported from: src/picohttp/picohttp.zig

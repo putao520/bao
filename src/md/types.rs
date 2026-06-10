@@ -1,4 +1,10 @@
-// TODO(port): bun_jsc::JsResult missing from lower-tier stub surface — local alias.
+//! Public types for the bun_md crate.
+//!
+//! These types define the renderer interface (RendererImpl trait) and the
+//! block/span/text enumerations used by downstream consumers like
+//! MarkdownObject.rs, the ANSI renderer, and the bundler.
+
+/// Result type for renderer callbacks.
 pub type JsResult<T> = Result<T, crate::parser::ParserError>;
 
 /// Offset into the input document.
@@ -60,83 +66,16 @@ pub enum TextType {
 
 /// Table cell alignment.
 #[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Debug, Default)]
 pub enum Align {
+    #[default]
     Default,
     Left,
     Center,
     Right,
 }
 
-// --- Detail structs ---
-
-#[derive(Copy, Clone)]
-pub struct UlDetail {
-    pub is_tight: bool,
-    pub mark: u8,
-}
-
-#[derive(Copy, Clone)]
-pub struct OlDetail {
-    pub start: u32,
-    pub is_tight: bool,
-    pub mark_delimiter: u8,
-}
-
-#[derive(Copy, Clone)]
-pub struct LiDetail {
-    pub is_task: bool,
-    pub task_mark: u8,
-    pub task_mark_offset: OFF,
-}
-
-#[derive(Copy, Clone)]
-pub struct HDetail {
-    pub level: u8,
-}
-
-#[derive(Copy, Clone)]
-pub struct CodeDetail<'a> {
-    pub info: Attribute<'a>,
-    pub lang: Attribute<'a>,
-    pub fence_char: u8,
-}
-
-#[derive(Copy, Clone)]
-pub struct TableDetail {
-    pub col_count: u32,
-    pub head_row_count: u32,
-    pub body_row_count: u32,
-}
-
-#[derive(Copy, Clone)]
-pub struct TdDetail {
-    pub alignment: Align,
-}
-
-#[derive(Copy, Clone)]
-pub struct ADetail<'a> {
-    pub href: Attribute<'a>,
-    pub title: Attribute<'a>,
-}
-
-#[derive(Copy, Clone)]
-pub struct ImgDetail<'a> {
-    pub src: Attribute<'a>,
-    pub title: Attribute<'a>,
-}
-
-#[derive(Copy, Clone)]
-pub struct WikilinkDetail<'a> {
-    pub target: Attribute<'a>,
-}
-
 /// Renderer interface. The parser calls these methods to produce output.
-//
-// PORT NOTE: Zig's `*anyopaque + *const VTable` manual fat-pointer is collapsed
-// into `&mut dyn RendererImpl`. LIFETIMES.tsv classified `ptr` as
-// `&'a mut dyn RendererImpl` (BORROW_PARAM) and `vtable` as `&'static VTable`
-// (STATIC); the trait object encodes both.
 pub struct Renderer<'a> {
     pub ptr: &'a mut dyn RendererImpl,
 }
@@ -174,8 +113,6 @@ impl<'a> Renderer<'a> {
 }
 
 /// Detail data for span events (links, images, wikilinks).
-// TODO(port): lifetime — href/title borrow from the source text; could thread
-// an arena `'bump` lifetime instead.
 #[derive(Copy, Clone)]
 pub struct SpanDetail<'a> {
     pub href: &'a [u8],
@@ -227,7 +164,6 @@ impl<'a> SpanDetail<'a> {
 
 /// An attribute is a string that may contain embedded entities.
 /// The text is split into substrings, each with a type (normal or entity).
-// TODO(port): lifetime — substr slices borrow from parser-owned buffers.
 #[derive(Copy, Clone)]
 pub struct Attribute<'a> {
     /// Slices into the source text, one per substring.
@@ -235,8 +171,6 @@ pub struct Attribute<'a> {
     pub substr_types: &'a [SubstrType],
 }
 
-// PORT NOTE: Zig nests `SubstrType`/`SubstrOffset` inside `Attribute`; Rust has
-// no nested type defs in structs, so they are hoisted to module scope.
 #[repr(u8)]
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 pub enum SubstrType {
@@ -259,279 +193,6 @@ impl<'a> Attribute<'a> {
         let last = self.substr_offsets[self.substr_offsets.len() - 1].end;
         &src[first as usize..last as usize]
     }
-}
-
-// --- Internal types used by the parser ---
-
-/// Line types during block analysis.
-#[repr(u8)]
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub enum LineType {
-    Blank,
-    Hr,
-    Atxheader,
-    Setextunderline,
-    Setextheader,
-    Indentedcode,
-    Fencedcode,
-    Html,
-    Text,
-    Table,
-    Tableunderline,
-}
-
-/// A line analysis result.
-#[derive(Copy, Clone)]
-pub struct Line {
-    pub r#type: LineType,
-    pub beg: OFF,
-    pub end: OFF,
-    pub indent: u32,
-    pub data: u32,
-    pub enforce_new_block: bool,
-}
-
-impl Default for Line {
-    fn default() -> Self {
-        Self {
-            r#type: LineType::Blank,
-            beg: 0,
-            end: 0,
-            indent: 0,
-            data: 0,
-            enforce_new_block: false,
-        }
-    }
-}
-
-/// A verbatim line (stores beg/end offsets plus indent for indented code).
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct VerbatimLine {
-    pub beg: OFF,
-    pub end: OFF,
-    pub indent: u32,
-}
-
-/// Container types: blockquote or list item.
-#[derive(Copy, Clone, Default)]
-pub struct Container {
-    pub ch: u8,
-    pub is_loose: bool,
-    pub is_task: bool,
-    pub task_mark_off: OFF,
-    pub start: u32,
-    pub mark_indent: u32,
-    pub contents_indent: u32,
-    pub block_byte_off: u32,
-}
-
-/// Block flags stored in MD_BLOCK.
-// PORT NOTE: Zig `packed struct(u32)` with bool fields + u28 padding. Not every
-// field is `bool` (padding), so per PORTING.md this is a transparent newtype
-// with manual shift accessors rather than `bitflags!`.
-#[repr(transparent)]
-#[derive(Copy, Clone, Default, Eq, PartialEq)]
-pub struct BlockFlags(pub u32);
-
-impl BlockFlags {
-    #[inline]
-    pub const fn container_closer(self) -> bool {
-        self.0 & 0x01 != 0
-    }
-    #[inline]
-    pub const fn container_opener(self) -> bool {
-        self.0 & 0x02 != 0
-    }
-    #[inline]
-    pub const fn loose_list(self) -> bool {
-        self.0 & 0x04 != 0
-    }
-    #[inline]
-    pub const fn setext_header(self) -> bool {
-        self.0 & 0x08 != 0
-    }
-}
-
-pub const BLOCK_CONTAINER_CLOSER: u32 = 0x01;
-pub const BLOCK_CONTAINER_OPENER: u32 = 0x02;
-pub const BLOCK_LOOSE_LIST: u32 = 0x04;
-pub const BLOCK_SETEXT_HEADER: u32 = 0x08;
-pub const BLOCK_FENCED_CODE: u32 = 0x10;
-pub const BLOCK_REF_DEF_ONLY: u32 = 0x20;
-
-/// Block descriptor stored in block_bytes buffer.
-#[derive(Copy, Clone)]
-pub struct Block {
-    pub r#type: BlockType,
-    pub flags: u32,
-    pub data: u32,
-    pub n_lines: u32,
-}
-
-/// Mark flags.
-pub struct MarkFlags;
-
-impl MarkFlags {
-    pub const POTENTIAL_OPENER: u16 = 0x01;
-    pub const POTENTIAL_CLOSER: u16 = 0x02;
-    pub const OPENER: u16 = 0x04;
-    pub const CLOSER: u16 = 0x08;
-    pub const RESOLVED: u16 = 0x10;
-
-    // Emphasis analysis flags
-    pub const EMPH_INTRAWORD: u16 = 0x20;
-    pub const EMPH_MOD3_0: u16 = 0x40;
-    pub const EMPH_MOD3_1: u16 = 0x80;
-    pub const EMPH_MOD3_2: u16 = 0x100;
-
-    pub const EMPH_OC: u16 = Self::POTENTIAL_OPENER | Self::POTENTIAL_CLOSER;
-}
-
-/// A mark in the inline processing system.
-#[derive(Copy, Clone)]
-pub struct Mark {
-    pub beg: OFF,
-    pub end: OFF,
-    pub prev: i32,
-    pub next: i32,
-    pub ch: u8,
-    pub flags: u16,
-}
-
-impl Default for Mark {
-    fn default() -> Self {
-        Self {
-            beg: 0,
-            end: 0,
-            prev: -1,
-            next: -1,
-            ch: 0,
-            flags: 0,
-        }
-    }
-}
-
-/// Parser flags controlling which extensions are enabled.
-#[derive(Copy, Clone)]
-pub struct Flags {
-    pub collapse_whitespace: bool,
-    pub permissive_atx_headers: bool,
-    pub permissive_url_autolinks: bool,
-    pub permissive_www_autolinks: bool,
-    pub permissive_email_autolinks: bool,
-    pub no_indented_code_blocks: bool,
-    pub no_html_blocks: bool,
-    pub no_html_spans: bool,
-    pub tables: bool,
-    pub strikethrough: bool,
-    pub tasklists: bool,
-    pub latex_math: bool,
-    pub wiki_links: bool,
-    pub underline: bool,
-    pub hard_soft_breaks: bool,
-}
-
-impl Flags {
-    // Private base mirroring the Zig field defaults so the named presets below
-    // can use struct-update syntax in const context.
-    const DEFAULTS: Flags = Flags {
-        collapse_whitespace: false,
-        permissive_atx_headers: false,
-        permissive_url_autolinks: false,
-        permissive_www_autolinks: false,
-        permissive_email_autolinks: false,
-        no_indented_code_blocks: false,
-        no_html_blocks: false,
-        no_html_spans: false,
-        tables: true,
-        strikethrough: true,
-        tasklists: true,
-        latex_math: false,
-        wiki_links: false,
-        underline: false,
-        hard_soft_breaks: false,
-    };
-
-    pub const COMMONMARK: Flags = Flags {
-        tables: false,
-        strikethrough: false,
-        tasklists: false,
-        ..Self::DEFAULTS
-    };
-
-    pub const GITHUB: Flags = Flags {
-        tables: true,
-        strikethrough: true,
-        tasklists: true,
-        permissive_url_autolinks: true,
-        permissive_www_autolinks: true,
-        permissive_email_autolinks: true,
-        ..Self::DEFAULTS
-    };
-
-    pub fn permissive_autolinks(self) -> bool {
-        self.permissive_url_autolinks
-            || self.permissive_www_autolinks
-            || self.permissive_email_autolinks
-    }
-}
-
-impl Default for Flags {
-    fn default() -> Self {
-        Self::DEFAULTS
-    }
-}
-
-/// Number of opener stacks used during inline analysis.
-/// 6 for *, 6 for _, 2 for ~, 1 for brackets, 1 for $
-pub const NUM_OPENER_STACKS: usize = 16;
-
-// Opener stack indices
-pub const ASTERISK_OPENERS_OO_0: usize = 0;
-pub const ASTERISK_OPENERS_OO_1: usize = 1;
-pub const ASTERISK_OPENERS_OO_2: usize = 2;
-pub const ASTERISK_OPENERS_OC_0: usize = 3;
-pub const ASTERISK_OPENERS_OC_1: usize = 4;
-pub const ASTERISK_OPENERS_OC_2: usize = 5;
-pub const UNDERSCORE_OPENERS_OO_0: usize = 6;
-pub const UNDERSCORE_OPENERS_OO_1: usize = 7;
-pub const UNDERSCORE_OPENERS_OO_2: usize = 8;
-pub const UNDERSCORE_OPENERS_OC_0: usize = 9;
-pub const UNDERSCORE_OPENERS_OC_1: usize = 10;
-pub const UNDERSCORE_OPENERS_OC_2: usize = 11;
-pub const TILDE_OPENERS_1: usize = 12;
-pub const TILDE_OPENERS_2: usize = 13;
-pub const BRACKET_OPENERS: usize = 14;
-pub const DOLLAR_OPENERS: usize = 15;
-
-/// An opener stack: a doubly-linked list through mark indices.
-#[derive(Copy, Clone)]
-pub struct OpenerStack {
-    pub top: i32,
-}
-
-impl Default for OpenerStack {
-    fn default() -> Self {
-        Self { top: -1 }
-    }
-}
-
-/// Internal limits matching md4c.
-pub const CODESPAN_MARK_MAXLEN: u32 = 255;
-pub const TABLE_MAXCOLCOUNT: u32 = 128;
-
-/// Reference definition used for link resolution.
-// TODO(port): `label_needs_free`/`title_needs_free` indicate sometimes-owned
-// data (normalized label vs. source slice). Consider `Cow<'a, [u8]>` and drop
-// the bool flags.
-pub struct RefDef<'a> {
-    pub label: &'a [u8],
-    pub title: Attribute<'a>,
-    pub dest_beg: OFF,
-    pub dest_end: OFF,
-    pub label_needs_free: bool,
-    pub title_needs_free: bool,
 }
 
 // ========================================
@@ -568,4 +229,5 @@ pub fn is_task_checked(task_mark: u8) -> bool {
     task_mark != 0 && task_mark != b' '
 }
 
-// ported from: src/md/types.zig
+/// Block flag: fenced code block.
+pub const BLOCK_FENCED_CODE: u32 = 0x10;
