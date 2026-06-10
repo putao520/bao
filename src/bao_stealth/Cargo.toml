@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bao_engine = { path = "../bao_engine" }
+bun_core.workspace = true
 mozjs.workspace = true
 mozjs_sys.workspace = true
 serde = { version = "1", features = ["derive"] }

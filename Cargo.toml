@@ -10,6 +10,7 @@ members = [
     "src/bao_stealth",
     "src/bao_native_stubs",
     "src/bao_uloop",
+    "src/jsc_macros",
     "src/opaque",
     "src/bun_alloc",
     "src/bun_core",
@@ -72,6 +73,7 @@ members = [
     "src/collections",
     "src/lshpack_sys",
     "src/lsquic_sys",
+    "src/lolhtml_sys",
 ]
 
 [workspace.package]
@@ -183,6 +185,8 @@ bun_runtime = { path = "src/runtime", default-features = false }
 bun_which = { path = "src/which" }
 bun_transpiler = { path = "src/transpiler" }
 
+bun_jsc_macros = { path = "src/jsc_macros" }
+bun_lolhtml_sys = { path = "src/lolhtml_sys" }
 bun_boringssl = { path = "src/boringssl" }
 bun_boringssl_sys = { path = "src/boringssl_sys" }
 bun_brotli_sys = { path = "src/brotli_sys" }
