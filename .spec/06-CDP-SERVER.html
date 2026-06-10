@@ -128,7 +128,7 @@
 
 <h3>§3.1 HTTP 发现端点</h3>
 
-<div id="api-cds-json-version" data-api="GET /json/version">
+<div id="get-/json/version" data-api="GET /json/version">
 <script type="application/ld+json">
 {
   "@type": "Api",
@@ -148,9 +148,9 @@
 }
 </script>
 <p data-xref-id="REQ-CDS-001" data-xref-type="req">关联需求: REQ-CDS-001</p>
-</div>
+<table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
 
-<div id="api-cds-json-list" data-api="GET /json/list">
+<div id="get-/json/list" data-api="GET /json/list">
 <script type="application/ld+json">
 {
   "@type": "Api",
@@ -162,9 +162,9 @@
 }
 </script>
 <p data-xref-id="REQ-CDS-001" data-xref-type="req">关联需求: REQ-CDS-001</p>
-</div>
+<table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
 
-<div id="api-cds-json-new" data-api="GET /json/new">
+<div id="get-/json/new" data-api="GET /json/new">
 <script type="application/ld+json">
 {
   "@type": "Api",
@@ -178,9 +178,9 @@
 }
 </script>
 <p data-xref-id="REQ-CDS-002" data-xref-type="req">关联需求: REQ-CDS-002</p>
-</div>
+<table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
 
-<div id="api-cds-json-close" data-api="GET /json/close/{targetId}">
+<div id="get-/json/close/{targetid}" data-api="GET /json/close/{targetId}">
 <script type="application/ld+json">{
   "@type": "Api",
   "method": "GET",
@@ -196,7 +196,7 @@
 <p data-xref-id="REQ-CDS-002" data-xref-type="req">关联需求: REQ-CDS-002</p>
 </div>
 
-<div id="api-cds-json-activate" data-api="GET /json/activate/{targetId}">
+<div id="get-/json/activate/{targetid}" data-api="GET /json/activate/{targetId}">
 <script type="application/ld+json">{
   "@type": "Api",
   "method": "GET",
@@ -469,7 +469,7 @@
 <h2>§8 数据模型</h2>
 <!-- ============================================================ -->
 
-<div id="entity-cdp-server" data-entity="CdpServer" data-field-config="ServerConfig;required;服务器配置" data-field-listener="TcpListener;required;TCP 监听器">;required;活跃 Session 映射" data-field-domain_registry="DomainRegistry;required;DomainHandler 注册表" data-field-target_provider="TargetProvider;required;Target 管理器" data-field-event_broadcaster="EventBroadcaster;required;事件广播器"&gt;
+<div data-entity-model-type="relational" id="cdpserver" data-entity="CdpServer" data-field-config="ServerConfig;required;服务器配置" data-field-listener="TcpListener;required;TCP 监听器">;required;活跃 Session 映射" data-field-domain_registry="DomainRegistry;required;DomainHandler 注册表" data-field-target_provider="TargetProvider;required;Target 管理器" data-field-event_broadcaster="EventBroadcaster;required;事件广播器"&gt;
 <h3>CdpServer 实体 — CDP 服务器实例</h3>
 <script type="application/ld+json">
 {
@@ -500,7 +500,7 @@
 <span data-xref-id="REQ-CDS-003" data-xref-type="req">REQ-CDS-003</span>, <span data-xref-id="REQ-CDS-007" data-xref-type="req">REQ-CDS-007</span></p>
 </div>
 
-<div id="entity-cdp-session-generic" data-entity="CdpSessionGeneric" data-field-session_id="string;required;会话唯一标识（16 位 hex）" data-field-target_id="string;required;关联的 Target ID" data-field-websocket="WebSocket;required;WebSocket 连接">;required;已启用的 CDP domain 集合" data-field-state="enum[Created, Active, Closing, Closed];required;Session 生命周期状态" data-field-is_browser_session="boolean;required;是否为 Browser-level Session（接收所有事件）"&gt;
+<div data-entity-model-type="relational" id="cdpsessiongeneric" data-entity="CdpSessionGeneric" data-field-session_id="string;required;会话唯一标识（16 位 hex）" data-field-target_id="string;required;关联的 Target ID" data-field-websocket="WebSocket;required;WebSocket 连接">;required;已启用的 CDP domain 集合" data-field-state="enum[Created, Active, Closing, Closed];required;Session 生命周期状态" data-field-is_browser_session="boolean;required;是否为 Browser-level Session（接收所有事件）"&gt;
 <h3>CdpSession 实体 — CDP 客户端会话（通用版）</h3>
 <script type="application/ld+json">
 {
@@ -531,7 +531,7 @@
 <span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span></p>
 </div>
 
-<div id="entity-cdp-target" data-entity="CdpTarget" data-field-id="string;required;Target 唯一标识" data-field-title="string;required;页面标题" data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型" data-field-url="string;required;页面 URL" data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL">
+<div data-entity-model-type="relational" id="cdptarget" data-entity="CdpTarget" data-field-id="string;required;Target 唯一标识" data-field-title="string;required;页面标题" data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型" data-field-url="string;required;页面 URL" data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL">
 <h3>CdpTarget 实体 — CDP 浏览器 Target</h3>
 <script type="application/ld+json">
 {
@@ -559,7 +559,7 @@
 <p data-xref-id="CdpTarget" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-002" data-xref-type="req">REQ-CDS-002</span></p>
 </div>
 
-<div id="entity-domain-registry" data-entity="DomainRegistry">&gt;;required;domain 名 → DomainHandler 映射" data-field-event_sender="EventSender;required;注入到所有 DomainHandler 的事件发送器"&gt;
+<div data-entity-model-type="relational" id="domainregistry" data-entity="DomainRegistry">&gt;;required;domain 名 → DomainHandler 映射" data-field-event_sender="EventSender;required;注入到所有 DomainHandler 的事件发送器"&gt;
 <h3>DomainRegistry 实体 — DomainHandler 注册表</h3>
 <script type="application/ld+json">
 {
@@ -582,7 +582,7 @@
 <span data-xref-id="REQ-CDS-006" data-xref-type="req">REQ-CDS-006</span></p>
 </div>
 
-<div id="entity-event-subscription" data-entity="EventSubscription" data-field-created_at="datetime;required;订阅创建时间（Domain.enable 调用时间）" data-field-domain="string;required;订阅的 Domain 名" data-field-session_id="string;required;Session ID">
+<div data-entity-model-type="relational" id="eventsubscription" data-entity="EventSubscription" data-field-created_at="datetime;required;订阅创建时间（Domain.enable 调用时间）" data-field-domain="string;required;订阅的 Domain 名" data-field-session_id="string;required;Session ID">
 <h3>EventSubscription 实体 — 事件订阅关系</h3>
 <script type="application/ld+json">
 {
@@ -606,7 +606,7 @@
 <p data-xref-id="EventSubscription" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span></p>
 </div>
 
-<div id="entity-server-config" data-entity="ServerConfig" data-field-browser_name="string;required;浏览器名称（/json/version 返回）" data-field-host="string;required;监听地址" data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数" data-field-max_sessions="integer;required;最大并发 Session 数" data-field-port="integer;required;监听端口" data-field-protocol_version="string;required;CDP 协议版本" data-field-user_agent="string;optional;用户代理字符串" data-field-v8_version="string;optional;JS 引擎版本标识" data-field-webkit_version="string;optional;渲染引擎版本标识">
+<div data-entity-model-type="relational" id="serverconfig" data-entity="ServerConfig" data-field-browser_name="string;required;浏览器名称（/json/version 返回）" data-field-host="string;required;监听地址" data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数" data-field-max_sessions="integer;required;最大并发 Session 数" data-field-port="integer;required;监听端口" data-field-protocol_version="string;required;CDP 协议版本" data-field-user_agent="string;optional;用户代理字符串" data-field-v8_version="string;optional;JS 引擎版本标识" data-field-webkit_version="string;optional;渲染引擎版本标识">
 <h3>ServerConfig 实体 — 服务器配置</h3>
 <script type="application/ld+json">
 {

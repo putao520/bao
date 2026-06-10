@@ -1,0 +1,356 @@
+// @trace REQ-ENG-007 [entity:HttpClientBridge]
+//! Synchronous HTTP client bridge using bun_http::AsyncHTTP::init_sync + send_sync().
+//!
+//! Provides a simple synchronous HTTP request function that can be called
+//! from anywhere in bun_runtime without needing SpiderMonkey context.
+
+use bun_core::MutableString;
+use bun_http::header_builder::HeaderBuilder;
+use bun_http::{AsyncHTTP, FetchRedirect, Method};
+use bun_url::URL;
+
+/// Simplified HTTP response type extracted from picohttp::Response.
+/// Owns all data (no borrowed lifetime) so it can be stored and used freely.
+pub struct HttpResponse {
+    /// HTTP status code (e.g. 200, 404, 500).
+    pub status_code: u32,
+    /// Status text (e.g. "OK", "Not Found").
+    pub status_text: String,
+    /// Response headers as (name, value) pairs.
+    pub headers: Vec<(String, String)>,
+    /// Response body as bytes.
+    pub body: Vec<u8>,
+}
+
+/// Perform a synchronous HTTP request via bun_http::AsyncHTTP::send_sync().
+///
+/// This function:
+/// 1. Parses the URL via bun_url::URL::parse
+/// 2. Builds request headers via HeaderBuilder
+/// 3. Initializes AsyncHTTP via init_sync()
+/// 4. Executes the request via send_sync() (blocking)
+/// 5. Extracts the response into an owned HttpResponse
+pub fn http_request(
+    method: Method,
+    url: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> ::std::result::Result<HttpResponse, String> {
+    // Parse URL from bytes
+    let url_bytes = url.as_bytes();
+    let parsed_url = URL::parse(url_bytes);
+
+    // Build header entries via HeaderBuilder: count -> allocate -> append
+    let mut hb = HeaderBuilder::default();
+    for (name, value) in headers {
+        hb.count(name.as_bytes(), value.as_bytes());
+    }
+    if let ::std::result::Result::Err(e) = hb.allocate() {
+        return ::std::result::Result::Err(format!("Header allocation failed: {:?}", e));
+    }
+    for (name, value) in headers {
+        hb.append(name.as_bytes(), value.as_bytes());
+    }
+
+    let entry_list = hb.entries;
+    let headers_buf: &[u8] = unsafe {
+        if let Some(ptr) = hb.content.ptr {
+            ::std::slice::from_raw_parts(ptr.as_ptr(), hb.content.len)
+        } else {
+            &[]
+        }
+    };
+
+    // Allocate response buffer — send_sync writes the response body here
+    let response_buffer = Box::into_raw(Box::new(MutableString::default()));
+
+    let body_slice: &[u8] = body.unwrap_or_default();
+
+    let mut async_http = AsyncHTTP::init_sync(
+        method,
+        parsed_url,
+        entry_list,
+        headers_buf,
+        response_buffer,
+        body_slice,
+        None,  // http_proxy
+        None,  // hostname
+        FetchRedirect::Follow,
+    );
+
+    let result = async_http.send_sync()
+        .map_err(|e| format!("{:?}", e))?;
+
+    // Read body from response_buffer before reclaiming it
+    let body: Vec<u8> = unsafe { (*response_buffer).list.clone() };
+
+    // Reclaim response buffer
+    unsafe {
+        drop(Box::from_raw(response_buffer));
+    }
+
+    // Extract fields from picohttp::Response into owned HttpResponse
+    let status_code = result.status_code;
+    let status_text = ::std::str::from_utf8(result.status)
+        .unwrap_or("")
+        .to_string();
+
+    let headers: Vec<(String, String)> = result.headers.list.iter().map(|h| {
+        let name = ::std::str::from_utf8(h.name()).unwrap_or("").to_string();
+        let value = ::std::str::from_utf8(h.value()).unwrap_or("").to_string();
+        (name, value)
+    }).collect();
+
+    ::std::result::Result::Ok(HttpResponse {
+        status_code,
+        status_text,
+        headers,
+        body,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_method_roundtrip() {
+        assert_eq!(Method::GET.as_str(), "GET");
+        assert_eq!(Method::POST.as_str(), "POST");
+        assert_eq!(Method::PUT.as_str(), "PUT");
+        assert_eq!(Method::DELETE.as_str(), "DELETE");
+        assert_eq!(Method::PATCH.as_str(), "PATCH");
+        assert_eq!(Method::HEAD.as_str(), "HEAD");
+    }
+
+    #[test]
+    fn test_http_response_construction() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".to_string(),
+            headers: vec![("Content-Type".to_string(), "text/html".to_string())],
+            body: b"hello".to_vec(),
+        };
+        assert_eq!(resp.status_code, 200);
+        assert_eq!(resp.status_text, "OK");
+        assert_eq!(resp.headers.len(), 1);
+        assert_eq!(resp.body, b"hello".to_vec());
+    }
+
+    // ─── HttpResponse extended tests ──────────────────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_http_response_empty_body() {
+        let resp = HttpResponse {
+            status_code: 204,
+            status_text: "No Content".into(),
+            headers: vec![],
+            body: vec![],
+        };
+        assert_eq!(resp.status_code, 204);
+        assert!(resp.body.is_empty());
+        assert!(resp.headers.is_empty());
+    }
+
+    #[test]
+    fn test_http_response_multiple_headers() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![
+                ("content-type".into(), "application/json".into()),
+                ("x-request-id".into(), "abc-123".into()),
+                ("cache-control".into(), "no-cache".into()),
+            ],
+            body: b"{}".to_vec(),
+        };
+        assert_eq!(resp.headers.len(), 3);
+        assert_eq!(resp.headers[0].0, "content-type");
+        assert_eq!(resp.headers[1].1, "abc-123");
+    }
+
+    #[test]
+    fn test_http_response_error_status() {
+        let resp = HttpResponse {
+            status_code: 500,
+            status_text: "Internal Server Error".into(),
+            headers: vec![],
+            body: b"error".to_vec(),
+        };
+        assert_eq!(resp.status_code, 500);
+        assert_eq!(resp.status_text, "Internal Server Error");
+    }
+
+    #[test]
+    fn test_http_response_redirect_status() {
+        let resp = HttpResponse {
+            status_code: 301,
+            status_text: "Moved Permanently".into(),
+            headers: vec![("location".into(), "https://example.com".into())],
+            body: vec![],
+        };
+        assert_eq!(resp.status_code, 301);
+        assert_eq!(resp.headers[0].0, "location");
+    }
+
+    #[test]
+    fn test_method_all_variants() {
+        assert_eq!(Method::GET.as_str(), "GET");
+        assert_eq!(Method::POST.as_str(), "POST");
+        assert_eq!(Method::PUT.as_str(), "PUT");
+        assert_eq!(Method::DELETE.as_str(), "DELETE");
+        assert_eq!(Method::PATCH.as_str(), "PATCH");
+        assert_eq!(Method::HEAD.as_str(), "HEAD");
+        assert_eq!(Method::OPTIONS.as_str(), "OPTIONS");
+    }
+
+    #[test]
+    fn test_method_connect_trace() {
+        assert_eq!(Method::CONNECT.as_str(), "CONNECT");
+        assert_eq!(Method::TRACE.as_str(), "TRACE");
+    }
+
+    // ─── http_client extended edge case tests ────────────────
+    // @trace REQ-ENG-007 [req:REQ-ENG-007] [level:unit]
+
+    #[test]
+    fn test_http_response_status_codes_range() {
+        for code in [200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 500, 502, 503] {
+            let resp = HttpResponse {
+                status_code: code,
+                status_text: String::new(),
+                headers: vec![],
+                body: vec![],
+            };
+            assert_eq!(resp.status_code, code);
+        }
+    }
+
+    #[test]
+    fn test_http_response_body_binary() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![],
+            body: vec![0x89, 0x50, 0x4E, 0x47],
+        };
+        assert_eq!(&resp.body[..4], &[0x89, 0x50, 0x4E, 0x47]);
+    }
+
+    #[test]
+    fn test_http_response_header_value_with_semicolon() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![("content-type".into(), "text/html; charset=utf-8".into())],
+            body: vec![],
+        };
+        assert!(resp.headers[0].1.contains("charset=utf-8"));
+    }
+
+    #[test]
+    fn test_http_response_large_body() {
+        let large_body: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![],
+            body: large_body.clone(),
+        };
+        assert_eq!(resp.body.len(), 10_000);
+        assert_eq!(resp.body[0], 0);
+        assert_eq!(resp.body[255], 255);
+    }
+
+    #[test]
+    fn test_http_response_header_order_preserved() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![
+                ("x-first".into(), "1".into()),
+                ("x-second".into(), "2".into()),
+                ("x-third".into(), "3".into()),
+            ],
+            body: vec![],
+        };
+        assert_eq!(resp.headers[0].0, "x-first");
+        assert_eq!(resp.headers[1].0, "x-second");
+        assert_eq!(resp.headers[2].0, "x-third");
+    }
+
+    #[test]
+    fn test_http_response_status_4xx() {
+        for code in [400, 401, 403, 404, 405, 408, 429] {
+            let resp = HttpResponse {
+                status_code: code,
+                status_text: String::new(),
+                headers: vec![],
+                body: vec![],
+            };
+            assert!(resp.status_code >= 400 && resp.status_code < 500);
+        }
+    }
+
+    #[test]
+    fn test_http_response_status_5xx() {
+        for code in [500, 502, 503, 504] {
+            let resp = HttpResponse {
+                status_code: code,
+                status_text: String::new(),
+                headers: vec![],
+                body: vec![],
+            };
+            assert!(resp.status_code >= 500 && resp.status_code < 600);
+        }
+    }
+
+    #[test]
+    fn test_method_debug_format() {
+        // Method implements Debug, verify it doesn't panic
+        let _ = format!("{:?}", Method::GET);
+        let _ = format!("{:?}", Method::POST);
+    }
+
+    #[test]
+    fn test_http_response_unicode_body() {
+        let unicode_body = "你好世界".as_bytes().to_vec();
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![("content-type".into(), "text/plain; charset=utf-8".into())],
+            body: unicode_body.clone(),
+        };
+        assert_eq!(resp.body, unicode_body);
+    }
+
+    #[test]
+    fn test_http_response_empty_status_text() {
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: String::new(),
+            headers: vec![],
+            body: vec![],
+        };
+        assert!(resp.status_text.is_empty());
+    }
+
+    #[test]
+    fn test_http_response_header_duplicate_names() {
+        // Set-Cookie can appear multiple times
+        let resp = HttpResponse {
+            status_code: 200,
+            status_text: "OK".into(),
+            headers: vec![
+                ("set-cookie".into(), "a=1".into()),
+                ("set-cookie".into(), "b=2".into()),
+            ],
+            body: vec![],
+        };
+        assert_eq!(resp.headers.len(), 2);
+        assert_eq!(resp.headers[0].0, "set-cookie");
+        assert_eq!(resp.headers[1].0, "set-cookie");
+        assert_ne!(resp.headers[0].1, resp.headers[1].1);
+    }
+}

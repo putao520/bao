@@ -84,7 +84,7 @@ impl PageInner {
                     // Pipeline not ready — spin servo event loop and retry.
                     self.servo.spin_event_loop();
                     self.webview.paint();
-                    bun_sys::c::sleep_ms(20);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
                     continue;
                 }
                 Err(other) => return Err(other),
@@ -232,7 +232,7 @@ impl PageInner {
             if start.elapsed() > timeout {
                 return Err(BrowserError::Init("operation timed out".into()));
             }
-            bun_sys::c::sleep_ms(1);
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         Ok(())
     }
@@ -341,7 +341,7 @@ impl PageHandle {
                 inner.servo.spin_event_loop();
                 Ok(())
             })?;
-            bun_sys::c::sleep_ms(20);
+            std::thread::sleep(std::time::Duration::from_millis(20));
 
             // Try drain — if it succeeds, pipeline is ready.
             match self.drain_callbacks() {
@@ -678,11 +678,11 @@ mod tests {
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
         assert!(
-            func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
+            func_body.contains("bao_runtime::fetch_api::install_fetch_global"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
         );
         assert!(
-            func_body.contains("bun_runtime::timers::install_timer_globals"),
+            func_body.contains("bao_runtime::timers::install_timer_globals"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
         );
         assert!(
@@ -708,11 +708,11 @@ mod tests {
         let func_body = &source[func_start..func_start + func_end];
 
         assert!(
-            func_body.contains("bun_runtime::globals::install_node_apis"),
+            func_body.contains("bao_runtime::globals::install_node_apis"),
             "REQ-SEC-002 REGRESSION: create_node_realm_native must install Node APIs on Node Realm global"
         );
         assert!(
-            func_body.contains("bun_runtime::globals::install_web_apis"),
+            func_body.contains("bao_runtime::globals::install_web_apis"),
             "REQ-SEC-002: Node Realm must also have Web APIs for trusted scripts"
         );
     }

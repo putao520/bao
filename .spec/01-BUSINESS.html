@@ -11,7 +11,7 @@
 <h2>§1 项目定位</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-positioning" data-artifact-type="description">
+<div data-type="document" id="description" data-artifact-type="description">
 <h3>产品定义</h3>
 <p>Bao 是统一的 Cargo 库，融合 SpiderMonkey JS 引擎 + servo 浏览器引擎 + Node.js 生态，所有能力始终可用、零模式切换。核心差异化：</p>
 <ol>
@@ -23,7 +23,7 @@
 </ol>
 </div>
 
-<div id="artifact-brand-rules" data-artifact-type="table">
+<div data-type="document" id="table" data-artifact-type="table">
 <h3>品牌与命名规范</h3>
 <table>
 <tr><td>层级</td><td>规则</td><td>示例</td></tr>
@@ -43,7 +43,7 @@
 <h2>§2 与 Bun 上游关系</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-upstream-relationship" data-artifact-type="table">
+<div data-type="document" id="table" data-artifact-type="table">
 <h3>上游策略</h3>
 <table>
 <tr><td>方面</td><td>Bao</td><td>Bun</td></tr>
@@ -60,7 +60,7 @@
 <h2>§3 目标用户与场景</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-use-case-diagram" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>用例图</h3>
 <pre>
                     ┌──────────────────────────────┐
@@ -82,7 +82,7 @@
 </pre>
 </div>
 
-<div id="artifact-use-cases" data-artifact-type="table">
+<div data-type="document" id="table" data-artifact-type="table">
 <h3>用例清单</h3>
 <table>
 <tr><td>用例</td><td>用户角色</td><td>核心需求</td></tr>
@@ -105,7 +105,7 @@
 <h2>§4 功能模块树</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-function-module-tree" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>功能模块树</h3>
 <pre>
 Bao Runtime (统一库，所有能力始终可用)
@@ -166,7 +166,7 @@ Bao Runtime (统一库，所有能力始终可用)
 <h2>§5 指标维度表</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-metrics-dimension" data-artifact-type="table">
+<div data-type="document" id="table" data-artifact-type="table">
 <h3>指标维度表</h3>
 <table>
 <tr><td>维度</td><td>指标</td><td>目标值</td><td>测量方法</td></tr>
@@ -185,7 +185,7 @@ Bao Runtime (统一库，所有能力始终可用)
 <h2>§6 法律与许可证</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-license-matrix" data-artifact-type="table">
+<div data-type="document" id="table" data-artifact-type="table">
 <h3>许可证兼容性矩阵</h3>
 <table>
 <tr><td>组件</td><td>许可证</td><td>与 MIT 兼容</td></tr>
@@ -200,7 +200,7 @@ Bao Runtime (统一库，所有能力始终可用)
 </table>
 </div>
 
-<div id="artifact-license-compliance" data-artifact-type="list">
+<div data-type="document" id="list" data-artifact-type="list">
 <h3>合规要求</h3>
 <ol>
 <li>保留原始 Bun <code>LICENSE.md</code> 版权声明和许可证文本</li>
@@ -215,7 +215,7 @@ Bao Runtime (统一库，所有能力始终可用)
 <h2>§7 上下文图</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-context-diagram" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>系统上下文</h3>
 <pre>
                     ┌─────────────┐
@@ -241,7 +241,7 @@ Bao Runtime (统一库，所有能力始终可用)
 <h2>§8 活动图 — 核心业务流程</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-activity-bao-browser" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>活动图: bao browser（servo + CDP 便捷入口）</h3>
 <pre>
 开发者 → bao browser --url=https://example.com
@@ -272,7 +272,7 @@ Bao Runtime (统一库，所有能力始终可用)
 </pre>
 </div>
 
-<div id="artifact-activity-bao-run" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>活动图: bao run</h3>
 <pre>
 开发者 → bao run index.ts

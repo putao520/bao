@@ -1,0 +1,58 @@
+[package]
+name = "bao_crypto"
+version = "0.1.0"
+description = "Pure Rust crypto implementations for Bao runtime (RustCrypto backend)"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# ─── Hash / HMAC / KDF ───────────────────────────────────────────────────────
+sha2 = { version = "0.10", features = ["oid"] }
+sha1 = "0.10"
+md-5 = "0.10"
+hmac = "0.12"
+hkdf = "0.12"
+pbkdf2 = "0.12"
+
+# ─── Symmetric AEAD ─────────────────────────────────────────────────────────
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+
+# ─── Asymmetric: RSA ────────────────────────────────────────────────────────
+rsa = { version = "0.9", features = ["pem"] }
+
+# ─── Asymmetric: ECDSA / ECDH ───────────────────────────────────────────────
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+p384 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+ecdsa = { version = "0.16", features = ["pkcs8", "pem"] }
+
+# ─── Asymmetric: Ed25519 / X25519 ───────────────────────────────────────────
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+
+# ─── Key / Certificate formats ──────────────────────────────────────────────
+pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
+pkcs1 = "0.7"
+pem-rfc7468 = "0.7"
+der = "0.7"
+x509-cert = "0.2"
+
+# ─── Random ─────────────────────────────────────────────────────────────────
+getrandom = "0.4"
+rand_core = "0.6"
+thiserror = "2"
+signature = "2"
+
+# ─── Internal deps ──────────────────────────────────────────────────────────
+bun_core = { path = "../bun_core" }
+
+[dev-dependencies]
+p256 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+p384 = { version = "0.13", features = ["ecdsa", "ecdh", "pkcs8"] }
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+rsa = { version = "0.9", features = ["pem"] }
+rand_core = "0.6"
+pkcs8 = { version = "0.10", features = ["pem"] }
+
+[lints]
+workspace = true

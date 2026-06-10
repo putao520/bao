@@ -34,7 +34,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d122413f284cf2d62fb1b7db97e02edb8cda96d769b16e443a4f6195e35662b0"
 dependencies = [
- "crypto-common 0.1.7",
+ "crypto-common",
  "generic-array",
 ]
 
@@ -45,7 +45,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
 dependencies = [
  "cfg-if",
- "cipher 0.4.4",
+ "cipher",
  "cpufeatures",
 ]
 
@@ -57,7 +57,7 @@ checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
 dependencies = [
  "aead",
  "aes",
- "cipher 0.4.4",
+ "cipher",
  "ctr",
  "ghash",
  "subtle",
@@ -430,7 +430,6 @@ dependencies = [
  "bao_stealth",
  "base64",
  "bun_core",
- "bun_runtime",
  "bun_sys",
  "cdp-server",
  "dpi",
@@ -588,19 +587,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 
 [[package]]
-name = "bcrypt"
-version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24ae5479c93d3720e4c1dbd6b945b97457c50cb672781104768190371df1a905"
-dependencies = [
- "base64",
- "blowfish",
- "getrandom 0.4.2",
- "subtle",
- "zeroize",
-]
-
-[[package]]
 name = "bincode"
 version = "1.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -667,17 +653,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blake2b_simd"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b79834656f71332577234b50bfc009996f7449e0c056884e6a02492ded0ca2f3"
-dependencies = [
- "arrayref",
- "arrayvec",
- "constant_time_eq",
-]
-
-[[package]]
 name = "block-buffer"
 version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -702,16 +677,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdeb9d870516001442e364c5220d3574d2da8dc765554b4a617230d33fa58ef5"
 dependencies = [
  "objc2",
-]
-
-[[package]]
-name = "blowfish"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "62ce3946557b35e71d1bbe07ec385073ce9eda05043f95de134eb578fcf1a298"
-dependencies = [
- "byteorder",
- "cipher 0.5.2",
 ]
 
 [[package]]
@@ -957,91 +922,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_bundler"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bumpalo",
- "bun_alloc",
- "bun_ast",
- "bun_base64",
- "bun_collections",
- "bun_core",
- "bun_crash_handler",
- "bun_css",
- "bun_dispatch",
- "bun_dotenv",
- "bun_event_loop",
- "bun_glob",
- "bun_hash",
- "bun_http_types",
- "bun_io",
- "bun_js_parser",
- "bun_js_printer",
- "bun_md",
- "bun_opaque",
- "bun_options_types",
- "bun_parsers",
- "bun_paths",
- "bun_perf",
- "bun_ptr",
- "bun_resolve_builtins",
- "bun_resolver",
- "bun_router",
- "bun_sourcemap",
- "bun_sys",
- "bun_threading",
- "bun_url",
- "bun_watcher",
- "bun_wyhash",
- "bytemuck",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
- "thiserror 2.0.18",
- "typed-arena",
-]
-
-[[package]]
-name = "bun_bunfig"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_alloc",
- "bun_analytics",
- "bun_api",
- "bun_ast",
- "bun_bundler",
- "bun_clap",
- "bun_collections",
- "bun_core",
- "bun_install_types",
- "bun_io",
- "bun_js_parser",
- "bun_options_types",
- "bun_parsers",
- "bun_paths",
- "bun_resolver",
- "bun_standalone_graph",
- "bun_sys",
- "bun_url",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "bun_cares_sys"
 version = "0.0.0"
 dependencies = [
@@ -1191,42 +1071,6 @@ dependencies = [
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
-]
-
-[[package]]
-name = "bun_css"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bumpalo",
- "bun_alloc",
- "bun_ast",
- "bun_base64",
- "bun_collections",
- "bun_core",
- "bun_css_derive",
- "bun_io",
- "bun_paths",
- "bun_ptr",
- "bun_wyhash",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
- "typed-arena",
-]
-
-[[package]]
-name = "bun_css_derive"
-version = "0.0.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -1473,64 +1317,6 @@ dependencies = [
  "bun_parsers",
  "bun_sys",
  "bun_url",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "bun_install"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_alloc",
- "bun_analytics",
- "bun_ast",
- "bun_base64",
- "bun_bunfig",
- "bun_clap",
- "bun_collections",
- "bun_core",
- "bun_crash_handler",
- "bun_dns",
- "bun_dotenv",
- "bun_event_loop",
- "bun_glob",
- "bun_http",
- "bun_ini",
- "bun_install_types",
- "bun_io",
- "bun_js_parser",
- "bun_js_printer",
- "bun_libarchive",
- "bun_libdeflate_sys",
- "bun_options_types",
- "bun_parsers",
- "bun_patch",
- "bun_paths",
- "bun_perf",
- "bun_picohttp",
- "bun_ptr",
- "bun_resolver",
- "bun_semver",
- "bun_sha_hmac",
- "bun_simdutf_sys",
- "bun_spawn",
- "bun_sys",
- "bun_threading",
- "bun_transpiler",
- "bun_url",
- "bun_uws",
- "bun_which",
- "bun_wyhash",
- "bun_zlib",
- "bytemuck",
  "const_format",
  "enum-map",
  "enumset",
@@ -2078,95 +1864,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_runtime"
-version = "0.0.0"
-dependencies = [
- "bcrypt",
- "bitflags 2.11.1",
- "blake2",
- "bstr",
- "bun_alloc",
- "bun_analytics",
- "bun_ast",
- "bun_base64",
- "bun_boringssl",
- "bun_boringssl_sys",
- "bun_brotli",
- "bun_bundler",
- "bun_bunfig",
- "bun_cares_sys",
- "bun_clap",
- "bun_collections",
- "bun_core",
- "bun_crash_handler",
- "bun_csrf",
- "bun_css",
- "bun_dns",
- "bun_dotenv",
- "bun_event_loop",
- "bun_glob",
- "bun_hash",
- "bun_highway",
- "bun_http",
- "bun_http_types",
- "bun_install",
- "bun_install_types",
- "bun_io",
- "bun_js",
- "bun_js_parser",
- "bun_js_printer",
- "bun_libarchive",
- "bun_libdeflate_sys",
- "bun_libuv_sys",
- "bun_lolhtml_sys",
- "bun_md",
- "bun_opaque",
- "bun_options_types",
- "bun_output",
- "bun_parsers",
- "bun_paths",
- "bun_picohttp",
- "bun_ptr",
- "bun_resolve_builtins",
- "bun_resolver",
- "bun_router",
- "bun_s3_signing",
- "bun_safety",
- "bun_semver",
- "bun_sha_hmac",
- "bun_shell_parser",
- "bun_simdutf_sys",
- "bun_sourcemap",
- "bun_spawn",
- "bun_standalone_graph",
- "bun_sys",
- "bun_tcc_sys",
- "bun_threading",
- "bun_transpiler",
- "bun_url",
- "bun_uws",
- "bun_uws_sys",
- "bun_valkey",
- "bun_watcher",
- "bun_which",
- "bun_wyhash",
- "bun_zlib",
- "bun_zstd",
- "bytemuck",
- "const_format",
- "enum-map",
- "enumset",
- "getrandom 0.4.2",
- "libc",
- "phf 0.11.3",
- "rust-argon2",
- "scopeguard",
- "sha3",
- "strum 0.26.3",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "bun_s3_signing"
 version = "0.0.0"
 dependencies = [
@@ -2377,44 +2074,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_standalone_graph"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_alloc",
- "bun_ast",
- "bun_bundler",
- "bun_collections",
- "bun_core",
- "bun_dotenv",
- "bun_exe_format",
- "bun_http",
- "bun_io",
- "bun_js_parser",
- "bun_libarchive",
- "bun_opaque",
- "bun_options_types",
- "bun_parsers",
- "bun_paths",
- "bun_perf",
- "bun_resolver",
- "bun_sourcemap",
- "bun_sys",
- "bun_threading",
- "bun_url",
- "bun_zlib",
- "bun_zstd",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
-]
-
-[[package]]
 name = "bun_sys"
 version = "0.0.0"
 dependencies = [
@@ -2443,26 +2102,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_tcc_sys"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_alloc",
- "bun_core",
- "bun_opaque",
- "bun_ptr",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "bun_threading"
 version = "0.0.0"
 dependencies = [
@@ -2482,22 +2121,6 @@ dependencies = [
  "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "bun_transpiler"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_bundler",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
@@ -2761,7 +2384,7 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26b52a9543ae338f279b96b0b9fed9c8093744685043739079ce85cd58f289a6"
 dependencies = [
- "cipher 0.4.4",
+ "cipher",
 ]
 
 [[package]]
@@ -2833,7 +2456,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3613f74bd2eac03dad61bd53dbe620703d4371614fe0bc3b9f04dd36fe4e818"
 dependencies = [
  "cfg-if",
- "cipher 0.4.4",
+ "cipher",
  "cpufeatures",
 ]
 
@@ -2845,7 +2468,7 @@ checksum = "10cd79432192d1c0f4e1a0fef9527696cc039165d729fb41b3f4f4f354c2dc35"
 dependencies = [
  "aead",
  "chacha20",
- "cipher 0.4.4",
+ "cipher",
  "poly1305",
  "zeroize",
 ]
@@ -2908,19 +2531,9 @@ version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
 dependencies = [
- "crypto-common 0.1.7",
- "inout 0.1.4",
+ "crypto-common",
+ "inout",
  "zeroize",
-]
-
-[[package]]
-name = "cipher"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e8cf2a2c93cd704877c0858356ed03480ff301ee950b43f1cbe4573b088bfa6c"
-dependencies = [
- "crypto-common 0.2.2",
- "inout 0.2.2",
 ]
 
 [[package]]
@@ -3069,12 +2682,6 @@ dependencies = [
  "quote",
  "unicode-xid",
 ]
-
-[[package]]
-name = "constant_time_eq"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "content-security-policy"
@@ -3301,15 +2908,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crypto-common"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ce6e4c961d6cd6c9a86db418387425e8bdeaf05b3c8bc1411e6dca4c252f1453"
-dependencies = [
- "hybrid-array 0.4.12",
-]
-
-[[package]]
 name = "cssparser"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3339,7 +2937,7 @@ version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
 dependencies = [
- "cipher 0.4.4",
+ "cipher",
 ]
 
 [[package]]
@@ -3542,7 +3140,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "const-oid",
- "crypto-common 0.1.7",
+ "crypto-common",
  "subtle",
 ]
 
@@ -4551,15 +4149,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hybrid-array"
-version = "0.4.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da"
-dependencies = [
- "typenum",
-]
-
-[[package]]
 name = "hyper"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5253,15 +4842,6 @@ checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "block-padding",
  "generic-array",
-]
-
-[[package]]
-name = "inout"
-version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4250ce6452e92010fdf7268ccc5d14faa80bb12fc741938534c58f16804e03c7"
-dependencies = [
- "hybrid-array 0.4.12",
 ]
 
 [[package]]
@@ -6183,7 +5763,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c196e0276c471c843dd5777e7543a36a298a4be942a2a688d8111cd43390dedb"
 dependencies = [
  "aead",
- "cipher 0.4.4",
+ "cipher",
  "ctr",
  "subtle",
 ]
@@ -7093,18 +6673,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-argon2"
-version = "3.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ae76b7506744d254fd0eb2c0ff5c5d108201ccbb083111ac04a44eeda105680"
-dependencies = [
- "base64",
- "blake2b_simd",
- "constant_time_eq",
- "crossbeam-utils",
-]
-
-[[package]]
 name = "rustc-demangle"
 version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7256,7 +6824,7 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97a22f5af31f73a954c10289c93e8a50cc23d971e80ee446f1f6f7137a088213"
 dependencies = [
- "cipher 0.4.4",
+ "cipher",
 ]
 
 [[package]]
@@ -8452,7 +8020,7 @@ dependencies = [
  "chacha20poly1305",
  "chardetng",
  "chrono",
- "cipher 0.4.4",
+ "cipher",
  "content-security-policy",
  "cookie 0.18.1",
  "crossbeam-channel",
@@ -9861,7 +9429,7 @@ version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc1de2c688dc15305988b563c3854064043356019f97a4b46276fe734c4f07ea"
 dependencies = [
- "crypto-common 0.1.7",
+ "crypto-common",
  "subtle",
 ]
 

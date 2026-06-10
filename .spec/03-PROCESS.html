@@ -11,7 +11,7 @@
 <h2>§1 JS 执行管线</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-js-execution-pipeline" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>数据流图: JS 文件执行</h3>
 <pre>
 用户代码 (index.ts)
@@ -44,7 +44,7 @@
 <h2>§2 渲染管线</h2>
 <!-- ============================================================ -->
 
-<div id="pipe-render-1" data-pipeline="RenderPipeline" data-pipeline-type="render">
+<div id="renderpipeline" data-pipeline="RenderPipeline" data-pipeline-type="render">
 <h3>PIPE-RENDER-001: 内存渲染管线</h3>
 <script type="application/ld+json">
 {
@@ -64,7 +64,7 @@
 </script>
 </div>
 
-<div id="artifact-render-flow" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>渲染流程时序图</h3>
 <pre>
 CDP: Page.navigate(url)
@@ -103,7 +103,7 @@ CDP: Page.navigate(url)
 <h2>§3 CDP 协议流程</h2>
 <!-- ============================================================ -->
 
-<div id="pipe-cdp-1" data-pipeline="CDPProtocol" data-pipeline-type="protocol">
+<div id="cdpprotocol" data-pipeline="CDPProtocol" data-pipeline-type="protocol">
 <h3>PIPE-CDP-001: CDP 消息处理管线</h3>
 <script type="application/ld+json">
 {
@@ -122,7 +122,7 @@ CDP: Page.navigate(url)
 </script>
 </div>
 
-<div id="artifact-cdp-domain-routing" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>CDP Domain 路由</h3>
 <pre>
 WebSocket Client (Playwright)
@@ -184,7 +184,7 @@ WebSocket Client (Playwright)
 <h2>§4 servo WebView 状态机</h2>
 <!-- ============================================================ -->
 
-<div id="sm-browser-mode" data-state-machine="WebViewLifecycle">
+<div id="webviewlifecycle" data-state-machine="WebViewLifecycle">
 <h3>servo WebView 生命周期状态机</h3>
 <script type="application/ld+json">
 {
@@ -220,7 +220,7 @@ WebSocket Client (Playwright)
 <h2>§5 Event Loop 桥接流程</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-eventloop-bridge" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>SpiderMonkey JobQueue ↔ Bun uSockets 桥接</h3>
 <pre>
 ┌─ SpiderMonkey Side ──────────────────────────────┐
@@ -255,7 +255,7 @@ WebSocket Client (Playwright)
 <h2>§6 Module Loader 桥接流程</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-module-loader-bridge" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>SpiderMonkey Module Loader ↔ Bun Resolver 桥接</h3>
 <pre>
 ┌─ SpiderMonkey Side ──────────────────────────────────┐
@@ -295,10 +295,9 @@ WebSocket Client (Playwright)
 <h2>§7 时序约束</h2>
 <!-- ============================================================ -->
 
-<section id="tmg-cdp-1" data-api-ref="CDP.*" data-req="REQ-CDP-001" data-req-category="business" data-req-domain="CDP" data-req-ref="REQ-CDP-001" data-req-status="approved" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms">
+<section id="cdpresponsetime" data-api-ref="CDP.*" data-req="REQ-CDP-001" data-req-category="business" data-req-domain="CDP" data-req-ref="REQ-CDP-001" data-req-status="approved" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms">
 <h3>TMG-CDP-001: CDP 命令响应时序</h3>
-<script type="application/ld+json">
-{
+<script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -319,9 +318,9 @@ WebSocket Client (Playwright)
     "params": {
       "type": "json"
     }
-  }
-}
-</script>
+  },
+  "target": "TBD"
+}</script>
 <script type="application/ld+json">
 {
   "@type": "TimingConstraint",
@@ -339,12 +338,11 @@ WebSocket Client (Playwright)
   }
 }
 </script>
-</section>
+<div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section>
 
-<section id="tmg-loop-1" data-api-ref="EventLoop.tick" data-req="REQ-ENG-004" data-req-category="business" data-req-domain="ENG" data-req-ref="REQ-ENG-004" data-req-status="approved" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms">
+<section id="eventlooptick" data-api-ref="EventLoop.tick" data-req="REQ-ENG-004" data-req-category="business" data-req-domain="ENG" data-req-ref="REQ-ENG-004" data-req-status="approved" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms">
 <h3>TMG-LOOP-001: Event Loop Tick 时序</h3>
-<script type="application/ld+json">
-{
+<script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -367,9 +365,9 @@ WebSocket Client (Playwright)
     "timeout_ms": {
       "type": "integer"
     }
-  }
-}
-</script>
+  },
+  "target": "TBD"
+}</script>
 <script type="application/ld+json">
 {
   "@type": "TimingConstraint",
@@ -386,13 +384,13 @@ WebSocket Client (Playwright)
   }
 }
 </script>
-</section>
+<div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section>
 
 <!-- ============================================================ -->
 <h2>§8 线程模型与数据流</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-thread-model" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>线程间数据流</h3>
 <pre>
 Main Thread (事件循环 + JSContext + DOM)
@@ -432,7 +430,7 @@ Main Thread (事件循环 + JSContext + DOM)
 <h2>§9 多页面管理流程</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-page-creation-flow" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>Page 创建流程时序图</h3>
 <pre>
 调用方: runtime.createPage(config)
@@ -471,7 +469,7 @@ Main Thread (事件循环 + JSContext + DOM)
 </pre>
 </div>
 
-<div id="artifact-cdp-routing-flow" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>CDP 路由分发流程时序图</h3>
 <pre>
 调用方: cdp.send('Domain.method', params)
@@ -501,7 +499,7 @@ Main Thread (事件循环 + JSContext + DOM)
 </pre>
 </div>
 
-<div id="artifact-pagepool-reclaim-flow" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>PagePool 空闲回收流程时序图</h3>
 <pre>
 事件循环每轮 tick:
@@ -535,7 +533,7 @@ Main Thread (事件循环 + JSContext + DOM)
 <h2>§10 异常流程</h2>
 <!-- ============================================================ -->
 
-<div id="artifact-error-flows" data-artifact-type="diagram">
+<div data-type="document" id="diagram" data-artifact-type="diagram">
 <h3>异常处理流程</h3>
 <pre>
 JS 执行异常:
@@ -577,5 +575,5 @@ SpiderMonkey GC OOM:
 </pre>
 </div>
 
-</main></body>
+</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div id="test-cdp-001" data-req-ref="REQ-CDP-001" data-test-categories="unit" data-test="TEST-CDP-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div id="test-eng-004" data-req-ref="REQ-ENG-004" data-test-categories="unit" data-test="TEST-ENG-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div></section></body>
 </html>

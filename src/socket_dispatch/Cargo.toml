@@ -1,0 +1,15 @@
+[package]
+name = "bun_socket_dispatch"
+version.workspace = true
+edition.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+bun_uws_sys.workspace = true
+bun_uws.workspace = true
+bun_http.workspace = true

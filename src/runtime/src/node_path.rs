@@ -1,0 +1,709 @@
+// @trace REQ-ENG-007
+use ::std::path::{Path, PathBuf, MAIN_SEPARATOR};
+
+use mozjs::jsapi::*;
+use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::rooted;
+use mozjs::rust::wrappers2 as w2;
+
+use crate::require::cache_builtin;
+
+pub fn install(cx: &mut mozjs::context::JSContext) {
+    rooted!(&in(cx) let path_obj = unsafe { w2::JS_NewPlainObject(cx) });
+    if path_obj.get().is_null() {
+        return;
+    }
+
+    unsafe {
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"join".as_ptr(), Some(path_join), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"resolve".as_ptr(), Some(path_resolve), 0, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"dirname".as_ptr(), Some(path_dirname), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"basename".as_ptr(), Some(path_basename), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"extname".as_ptr(), Some(path_extname), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"normalize".as_ptr(), Some(path_normalize), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"isAbsolute".as_ptr(), Some(path_is_absolute), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"relative".as_ptr(), Some(path_relative), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"parse".as_ptr(), Some(path_parse), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"format".as_ptr(), Some(path_format), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, path_obj.handle(), c"toNamespacedPath".as_ptr(), Some(path_to_namespaced), 1, JSPROP_ENUMERATE as u32);
+
+        let sep_cstr = if cfg!(windows) { c"\\" } else { c"/" };
+        let sep_str = JS_NewStringCopyZ(cx.raw_cx(), sep_cstr.as_ptr());
+        if !sep_str.is_null() {
+            let sep_val = mozjs::jsval::StringValue(&*sep_str);
+            rooted!(&in(cx) let sep_root = sep_val);
+            JS_DefineProperty(cx.raw_cx(), path_obj.handle().into(), c"sep".as_ptr(), sep_root.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+
+        let delim_cstr = if cfg!(windows) { c";" } else { c":" };
+        let delim_str = JS_NewStringCopyZ(cx.raw_cx(), delim_cstr.as_ptr());
+        if !delim_str.is_null() {
+            let delim_val = mozjs::jsval::StringValue(&*delim_str);
+            rooted!(&in(cx) let delim_root = delim_val);
+            JS_DefineProperty(cx.raw_cx(), path_obj.handle().into(), c"delimiter".as_ptr(), delim_root.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+    }
+
+    // path.posix / path.win32 — self-references to the path module
+    unsafe {
+        w2::JS_DefineProperty3(cx, path_obj.handle(), c"posix".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
+        w2::JS_DefineProperty3(cx, path_obj.handle(), c"win32".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
+    }
+
+    cache_builtin(cx, "path", path_obj.get());
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> ::std::option::Option<::std::string::String> {
+    if val.is_undefined() || val.is_null() {
+        return ::std::option::Option::None;
+    }
+    let raw_handle = mozjs::rust::HandleValue::from_marked_location(&val);
+    let s = mozjs::rust::ToString(cx, raw_handle);
+    if s.is_null() {
+        return ::std::option::Option::None;
+    }
+    let rust_str = crate::jsstr_to_rust_string(cx, s);
+    ::std::option::Option::Some(rust_str)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
+    let c_str = bun_core::ZBox::from_bytes(s.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+    if js_str.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::StringValue(&*js_str));
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_join(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut parts: Vec<::std::string::String> = Vec::new();
+    for i in 0..argc {
+        let val = *args.get(i).ptr;
+        match arg_to_string(cx, val) {
+            Some(s) => parts.push(s),
+            None => {
+                JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+                return false;
+            }
+        }
+    }
+    let joined = posix_join(&parts);
+    return_string(cx, &args, &joined)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    // D50: bun_sys::getcwd_alloc instead of std::env::current_dir
+    let cwd = bun_sys::getcwd_alloc()
+        .ok()
+        .map(|zb| PathBuf::from(::std::str::from_utf8(zb.as_bytes()).unwrap_or(".")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut resolved = cwd;
+
+    for i in 0..argc {
+        let val = *args.get(i).ptr;
+        match arg_to_string(cx, val) {
+            Some(s) => {
+                let p = Path::new(&s);
+                if p.is_absolute() {
+                    resolved = p.to_path_buf();
+                } else {
+                    resolved = resolved.join(p);
+                }
+            }
+            None => {
+                JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+                return false;
+            }
+        }
+    }
+
+    let result = normalize_path(&resolved);
+    return_string(cx, &args, &result.to_string_lossy())
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_dirname(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+        return false;
+    }
+    let val = *args.get(0).ptr;
+    let s = match arg_to_string(cx, val) {
+        Some(s) => s,
+        None => {
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+            return false;
+        }
+    };
+    let result = Path::new(&s).parent()
+        .map(|p| {
+            let pstr = p.to_string_lossy().into_owned();
+            if pstr.is_empty() { ".".to_string() } else { pstr }
+        })
+        .unwrap_or_else(|| ".".to_string());
+    return_string(cx, &args, &result)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_basename(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+        return false;
+    }
+    let val = *args.get(0).ptr;
+    let s = match arg_to_string(cx, val) {
+        Some(s) => s,
+        None => {
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+            return false;
+        }
+    };
+    let mut base = Path::new(&s).file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| s.clone());
+
+    if argc >= 2 {
+        let ext_val = *args.get(1).ptr;
+        if let Some(ext) = arg_to_string(cx, ext_val)
+            && base.ends_with(&ext) && !ext.is_empty() {
+                base.truncate(base.len() - ext.len());
+            }
+    }
+    return_string(cx, &args, &base)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_extname(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+        return false;
+    }
+    let val = *args.get(0).ptr;
+    let s = match arg_to_string(cx, val) {
+        Some(s) => s,
+        None => {
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+            return false;
+        }
+    };
+    let ext = Path::new(&s).extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    return_string(cx, &args, &ext)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_normalize(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+        return false;
+    }
+    let val = *args.get(0).ptr;
+    let s = match arg_to_string(cx, val) {
+        Some(s) => s,
+        None => {
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+            return false;
+        }
+    };
+    let p = Path::new(&s);
+    let normalized = normalize_path(p);
+    return_string(cx, &args, &normalized.to_string_lossy())
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_is_absolute(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(mozjs::jsval::BooleanValue(false));
+        return true;
+    }
+    let val = *args.get(0).ptr;
+    let s = match arg_to_string(cx, val) {
+        Some(s) => s,
+        None => {
+            args.rval().set(mozjs::jsval::BooleanValue(false));
+            return true;
+        }
+    };
+    args.rval().set(mozjs::jsval::BooleanValue(Path::new(&s).is_absolute()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_relative(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 2 {
+        JS_ReportErrorUTF8(cx, c"The \"from\" and \"to\" arguments must be of type string".as_ptr());
+        return false;
+    }
+    let from_val = *args.get(0).ptr;
+    let to_val = *args.get(1).ptr;
+    let from_str = match arg_to_string(cx, from_val) {
+        Some(s) => s,
+        None => return return_string(cx, &args, ""),
+    };
+    let to_str = match arg_to_string(cx, to_val) {
+        Some(s) => s,
+        None => return return_string(cx, &args, ""),
+    };
+
+    let from_abs = make_absolute(&from_str);
+    let to_abs = make_absolute(&to_str);
+
+    let result = pathdiff(&to_abs, &from_abs);
+    return_string(cx, &args, result.unwrap_or_default().to_string_lossy().as_ref())
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+        return false;
+    }
+    let val = *args.get(0).ptr;
+    let s = match arg_to_string(cx, val) {
+        Some(s) => s,
+        None => {
+            JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
+            return false;
+        }
+    };
+
+    let p = Path::new(&s);
+    let root = if p.is_absolute() { "/".to_string() } else { String::new() };
+    let dir = p.parent().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let file_name = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let name = if !file_name.is_empty() && !ext.is_empty() {
+        file_name[..file_name.len() - ext.len()].to_string()
+    } else {
+        file_name.clone()
+    };
+
+    let parsed = JS_NewPlainObject(cx);
+    if parsed.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let parsed_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &parsed };
+
+    define_string_prop(cx, parsed_handle, "root", &root);
+    define_string_prop(cx, parsed_handle, "dir", &dir);
+    define_string_prop(cx, parsed_handle, "base", &file_name);
+    define_string_prop(cx, parsed_handle, "ext", &ext);
+    define_string_prop(cx, parsed_handle, "name", &name);
+
+    args.rval().set(mozjs::jsval::ObjectValue(parsed));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"The \"pathObject\" argument must be of type object".as_ptr());
+        return false;
+    }
+    let val = *args.get(0).ptr;
+    if !val.is_object() {
+        JS_ReportErrorUTF8(cx, c"The \"pathObject\" argument must be of type object".as_ptr());
+        return false;
+    }
+    let obj = val.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let dir = get_string_prop(cx, obj_h, "dir");
+    let base = get_string_prop(cx, obj_h, "base");
+    let name = get_string_prop(cx, obj_h, "name");
+    let ext = get_string_prop(cx, obj_h, "ext");
+
+    let result = if let Some(b) = base {
+        if dir.as_ref().is_some_and(|d| !d.is_empty()) {
+            format!("{}/{}", dir.unwrap_or_default(), b)
+        } else {
+            b
+        }
+    } else {
+        let mut s = dir.unwrap_or_default();
+        if !s.is_empty() && !s.ends_with('/') {
+            s.push('/');
+        }
+        s.push_str(&name.unwrap_or_default());
+        s.push_str(&ext.unwrap_or_default());
+        s
+    };
+    return_string(cx, &args, &result)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn path_to_namespaced(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let val = *args.get(0).ptr;
+    let s = match arg_to_string(cx, val) {
+        Some(s) => s,
+        None => {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+    };
+    let resolved = make_absolute(&s);
+    return_string(cx, &args, &resolved.to_string_lossy())
+}
+
+// --- Pure logic helpers ---
+
+pub(crate) fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
+    if parts.is_empty() {
+        return ".".to_string();
+    }
+
+    // Node.js path.posix.join:
+    // 1. Filter empty parts
+    // 2. Join all parts with / (absolute components treated as regular — leading / stripped at join time)
+    // 3. If first non-empty part started with /, result is absolute
+    // 4. Normalize . and ..
+    // 5. Preserve trailing / from last non-empty part
+
+    // Step 1: Collect non-empty parts, strip leading / from each, track if first was absolute
+    let mut segments: Vec<&str> = Vec::new();
+    let mut has_root = false;
+    let mut first_seen = false;
+    let mut trailing_slash = false;
+
+    for part in parts {
+        if part.is_empty() {
+            continue;
+        }
+        if !first_seen {
+            first_seen = true;
+            has_root = part.starts_with('/');
+        }
+        // Track trailing slash from last part
+        trailing_slash = part.ends_with('/');
+        // Split by / and collect non-empty segments
+        for seg in part.split('/') {
+            if !seg.is_empty() && seg != "." {
+                segments.push(seg);
+            }
+        }
+    }
+
+    if !first_seen {
+        return ".".to_string();
+    }
+
+    // Step 2: Normalize .. by popping
+    let mut normalized: Vec<&str> = Vec::new();
+    for seg in &segments {
+        if *seg == ".." {
+            if !normalized.is_empty() && *normalized.last().expect("segments") != ".." {
+                normalized.pop();
+            } else if !has_root {
+                normalized.push("..");
+            }
+        } else {
+            normalized.push(seg);
+        }
+    }
+
+    let mut result = if has_root { "/".to_string() } else { String::new() };
+    result.push_str(&normalized.join("/"));
+
+    // Trailing slash: only when last non-empty part had trailing slash AND result is relative
+    // or when result is empty (only . and / segments)
+    if result.is_empty() && trailing_slash {
+        "./".to_string()
+    } else if !result.is_empty() && trailing_slash && !result.ends_with('/') {
+        result.push('/');
+        result
+    } else if result.is_empty() {
+        ".".to_string()
+    } else {
+        result
+    }
+}
+
+pub(crate) fn normalize_path(path: &::std::path::Path) -> PathBuf {
+    let mut components = Vec::new();
+    let has_root = path.is_absolute();
+    for comp in path.components() {
+        match comp {
+            ::std::path::Component::CurDir => {}
+            ::std::path::Component::ParentDir => {
+                if let Some(last) = components.last()
+                    && last != &".." {
+                        components.pop();
+                        continue;
+                    }
+                components.push("..");
+            }
+            ::std::path::Component::Normal(s) => {
+                components.push(s.to_string_lossy().into_owned().leak() as &'static str);
+            }
+            _ => {}
+        }
+    }
+    let mut result = PathBuf::new();
+    if has_root {
+        result.push("/");
+    }
+    for seg in &components {
+        result.push(*seg);
+    }
+    if result.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        result
+    }
+}
+
+pub(crate) fn make_absolute(s: &str) -> PathBuf {
+    let p = PathBuf::from(s);
+    if p.is_absolute() {
+        normalize_path(&p)
+    } else {
+        // D50: bun_sys::getcwd_alloc instead of std::env::current_dir
+    let cwd = bun_sys::getcwd_alloc()
+        .ok()
+        .map(|zb| PathBuf::from(::std::str::from_utf8(zb.as_bytes()).unwrap_or(".")))
+        .unwrap_or_else(|| PathBuf::from("."));
+        normalize_path(&cwd.join(&p))
+    }
+}
+
+pub(crate) fn pathdiff(to: &Path, from: &Path) -> ::std::option::Option<PathBuf> {
+    // D50: bun_sys::getcwd_alloc instead of std::env::current_dir
+    let cwd = bun_sys::getcwd_alloc()
+        .ok()
+        .map(|zb| PathBuf::from(::std::str::from_utf8(zb.as_bytes()).unwrap_or(".")))?;
+    let to_abs = if to.is_absolute() { to.to_path_buf() } else { cwd.join(to) };
+    let from_abs = if from.is_absolute() { from.to_path_buf() } else { cwd.join(from) };
+
+    let mut to_components: Vec<_> = to_abs.components().collect();
+    let mut from_components: Vec<_> = from_abs.components().collect();
+
+    while !to_components.is_empty() && !from_components.is_empty() && to_components[0] == from_components[0] {
+        to_components.remove(0);
+        from_components.remove(0);
+    }
+
+    let mut result = PathBuf::new();
+    for _ in from_components.iter() {
+        result.push("..");
+    }
+    for comp in to_components {
+        result.push(comp);
+    }
+    ::std::option::Option::Some(result)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn define_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: &str, value: &str) {
+    let c_name = bun_core::ZBox::from_bytes(name.as_bytes());
+    let c_val = bun_core::ZBox::from_bytes(value.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_val.as_ptr());
+    if !js_str.is_null() {
+        let val = mozjs::jsval::StringValue(&*js_str);
+        let val_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+        JS_DefineProperty(cx, obj, c_name.as_ptr(), val_handle, JSPROP_ENUMERATE as u32);
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: &str) -> ::std::option::Option<::std::string::String> {
+    let c_name = bun_core::ZBox::from_bytes(name.as_bytes());
+    let mut val = UndefinedValue();
+    let handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
+    JS_GetProperty(cx, obj, c_name.as_ptr(), handle);
+    arg_to_string(cx, val)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- posix_join ---
+
+    #[test]
+    fn test_posix_join_empty() {
+        assert_eq!(posix_join(&[]), ".");
+    }
+
+    #[test]
+    fn test_posix_join_single() {
+        assert_eq!(posix_join(&["foo".to_string()]), "foo");
+    }
+
+    #[test]
+    fn test_posix_join_multiple() {
+        assert_eq!(posix_join(&["a".to_string(), "b".to_string(), "c".to_string()]), "a/b/c");
+    }
+
+    // posix_join: absolute parts after first are joined as relative, NOT overriding
+    #[test]
+    fn test_posix_join_absolute_part() {
+        // Leading / in non-first part is stripped (posix join behavior)
+        assert_eq!(posix_join(&["a".to_string(), "/b".to_string(), "c".to_string()]), "a/b/c");
+    }
+
+    #[test]
+    fn test_posix_join_trailing_slash() {
+        assert_eq!(posix_join(&["a/".to_string(), "b".to_string()]), "a/b");
+    }
+
+    #[test]
+    fn test_posix_join_dot() {
+        assert_eq!(posix_join(&[".".to_string(), "b".to_string()]), "b");
+    }
+
+    #[test]
+    fn test_posix_join_empty_parts_skipped() {
+        assert_eq!(posix_join(&["a".to_string(), "".to_string(), "b".to_string()]), "a/b");
+    }
+
+    #[test]
+    fn test_posix_join_root() {
+        assert_eq!(posix_join(&["/".to_string()]), "/");
+    }
+
+    #[test]
+    fn test_posix_join_dot_dot_normalizes() {
+        assert_eq!(posix_join(&["a".to_string(), "b".to_string(), "..".to_string()]), "a");
+    }
+
+    // posix_join: .. beyond root resolves within root (absolute path can't go beyond root)
+    #[test]
+    fn test_posix_join_dot_dot_beyond_root_stays() {
+        // For relative path, .. resolves upward; extra .. stays as ..
+        assert_eq!(posix_join(&["a".to_string(), "..".to_string(), "..".to_string()]), "..");
+    }
+
+    // --- normalize_path (Path-based) ---
+
+    #[test]
+    fn test_normalize_path_dot_dot() {
+        assert_eq!(normalize_path(::std::path::Path::new("/a/b/../c")), PathBuf::from("/a/c"));
+    }
+
+    #[test]
+    fn test_normalize_path_dot() {
+        assert_eq!(normalize_path(::std::path::Path::new("/a/./b")), PathBuf::from("/a/b"));
+    }
+
+    #[test]
+    fn test_normalize_path_root() {
+        assert_eq!(normalize_path(::std::path::Path::new("/")), PathBuf::from("/"));
+    }
+
+    #[test]
+    fn test_normalize_path_relative() {
+        assert_eq!(normalize_path(::std::path::Path::new("a/b/../c")), PathBuf::from("a/c"));
+    }
+
+    #[test]
+    fn test_normalize_path_double_dot_beyond_root() {
+        // Implementation preserves .. beyond root as /../b
+        assert_eq!(normalize_path(::std::path::Path::new("/a/../../b")), PathBuf::from("/../b"));
+    }
+
+    #[test]
+    fn test_normalize_path_empty_relative() {
+        assert_eq!(normalize_path(::std::path::Path::new(".")), PathBuf::from("."));
+    }
+
+    #[test]
+    fn test_normalize_path_multiple_dots() {
+        assert_eq!(normalize_path(::std::path::Path::new("/a/b/c/../../d")), PathBuf::from("/a/d"));
+    }
+
+    // --- make_absolute ---
+
+    #[test]
+    fn test_make_absolute_already_absolute() {
+        assert_eq!(make_absolute("/foo/bar"), PathBuf::from("/foo/bar"));
+    }
+
+    #[test]
+    fn test_make_absolute_relative() {
+        let result = make_absolute("foo/bar");
+        assert!(result.is_absolute(), "result should be absolute: {:?}", result);
+        assert!(result.to_str().unwrap().contains("foo/bar"));
+    }
+
+    #[test]
+    fn test_make_absolute_dot() {
+        let result = make_absolute(".");
+        assert!(result.is_absolute());
+    }
+
+    #[test]
+    fn test_make_absolute_dot_dot() {
+        let result = make_absolute("/a/b/..");
+        // Path-based normalization: /a/b/.. -> /a
+        let s = result.to_str().unwrap();
+        assert!(s == "/a" || s == "/a/", "expected /a or /a/, got {}", s);
+    }
+
+    // --- pathdiff ---
+
+    #[test]
+    fn test_pathdiff_same() {
+        let p = Path::new("/a/b/c");
+        assert_eq!(pathdiff(p, p), Some(PathBuf::from("")));
+    }
+
+    #[test]
+    fn test_pathdiff_sibling() {
+        let to = Path::new("/a/b/c");
+        let from = Path::new("/a/b/d");
+        // pathdiff strips common prefix then builds relative path
+        assert_eq!(pathdiff(to, from), Some(PathBuf::from("../c")));
+    }
+
+    #[test]
+    fn test_pathdiff_child() {
+        let to = Path::new("/a/b/c/d");
+        let from = Path::new("/a/b");
+        assert_eq!(pathdiff(to, from), Some(PathBuf::from("c/d")));
+    }
+
+    #[test]
+    fn test_pathdiff_parent() {
+        let to = Path::new("/a/b");
+        let from = Path::new("/a/b/c/d");
+        assert_eq!(pathdiff(to, from), Some(PathBuf::from("../..")));
+    }
+
+    #[test]
+    fn test_pathdiff_different_roots() {
+        let to = Path::new("/a/b");
+        let from = Path::new("/c/d");
+        let result = pathdiff(to, from);
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_pathdiff_relative() {
+        let to = Path::new("a/b");
+        let from = Path::new("a/c");
+        let result = pathdiff(to, from);
+        assert!(result.is_some());
+    }
+}
