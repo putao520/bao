@@ -330,31 +330,12 @@ impl ExtractTarball {
                 && esimated_output_size > 0
             {
                 'use_libdeflate: {
-                    use bun_libdeflate_sys::libdeflate;
-                    let decompressor_ptr = libdeflate::Decompressor::alloc();
-                    if decompressor_ptr.is_null() {
-                        break 'use_libdeflate;
-                    }
-                    // `defer decompressor.deinit()` — RAII guard frees on scope exit.
-                    let _guard = scopeguard::guard(decompressor_ptr, |p| {
-                        // SAFETY: `p` was returned by libdeflate_alloc_decompressor and is
-                        // not used after this guard fires.
-                        unsafe { libdeflate::Decompressor::destroy(p) }
-                    });
-                    // SAFETY: alloc returned non-null; valid until destroy.
-                    let decompressor = unsafe { &mut *decompressor_ptr };
-
+                    // Pure Rust fast-path: use bun_zlib (flate2 + miniz_oxide).
                     zlib_pool.list.clear();
-                    let result = decompressor.decompress_to_vec(
-                        tgz_bytes,
-                        &mut zlib_pool.list,
-                        libdeflate::Encoding::Gzip,
-                    );
-                    if result.status == libdeflate::Status::Success {
+                    if let Some(decompressed) = bun_zlib::inflate_decompress(tgz_bytes, 31) {
+                        zlib_pool.list = decompressed;
                         needs_to_decompress = false;
                     }
-
-                    // If libdeflate fails for any reason, fallback to zlib.
                 }
             }
 

@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-// 铁律 0: use bun_zlib (C libz) instead of flate2 (miniz_oxide pure Rust duplicate)
+// Pure Rust zlib: use bun_zlib (flate2 + miniz_oxide) instead of C libz FFI
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
@@ -11,8 +11,7 @@ use mozjs::rust::wrappers2 as w2;
 use crate::require::cache_builtin;
 
 // ---------------------------------------------------------------------------
-// Buffer → bytes extraction helper (delegates to node_crypto for object,
-// adds string support on top)
+// Buffer → bytes extraction helper
 // ---------------------------------------------------------------------------
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -88,55 +87,19 @@ unsafe fn return_bytes(cx: *mut JSContext, args: &CallArgs, data: Vec<u8>) -> bo
 
 // ---------------------------------------------------------------------------
 // Native sync functions — accept buffer-like, return Uint8Array
-// 铁律 0: use bun_zlib (C libz) instead of flate2 (miniz_oxide pure Rust duplicate)
+// Pure Rust: use bun_zlib::deflate_compress / inflate_decompress
 // ---------------------------------------------------------------------------
 
-/// Sync compress using bun_zlib's deflate with specified window_bits.
+/// Sync compress using bun_zlib's pure Rust deflate with specified window_bits.
 /// window_bits: 15=zlib, -15=raw deflate, 31=gzip
 fn zlib_compress_sync(data: &[u8], window_bits: core::ffi::c_int) -> Option<Vec<u8>> {
-    use bun_zlib::{zStream_struct, ReturnCode, FlushValue, uInt, uLong};
-    use core::mem::size_of;
-
-    let mut strm: zStream_struct = unsafe { core::mem::zeroed() };
-    strm.next_in = data.as_ptr();
-    strm.avail_in = data.len() as uInt;
-
-    let ret = unsafe {
-        bun_zlib::deflateInit2_(
-            &raw mut strm, 6, 8, window_bits, 8, 0,
-            bun_zlib::zlibVersion().cast::<u8>(),
-            size_of::<zStream_struct>() as core::ffi::c_int,
-        )
-    };
-    if ret != ReturnCode::Ok { return None; }
-
-    // Pre-allocate using deflateBound (accurate after init)
-    let bound = unsafe { bun_zlib::deflateBound(&raw mut strm, data.len() as uLong) } as usize;
-    let mut output: Vec<u8> = Vec::with_capacity(bound);
-    strm.next_out = output.as_mut_ptr();
-    strm.avail_out = output.capacity() as uInt;
-
-    let ret = unsafe { bun_zlib::deflate(&raw mut strm, FlushValue::Finish) };
-    unsafe { bun_zlib::deflateEnd(&raw mut strm); }
-
-    if ret != ReturnCode::StreamEnd { return None; }
-
-    unsafe { output.set_len(strm.total_out as usize); }
-    Some(output)
+    bun_zlib::deflate_compress(data, window_bits, 6)
 }
 
-/// Sync decompress using bun_zlib's ZlibReaderArrayList (handles buffer growth).
+/// Sync decompress using bun_zlib's pure Rust inflate with specified window_bits.
 /// window_bits: 15=zlib, -15=raw deflate, 31=gzip, 47=auto-detect gzip/zlib
 fn zlib_decompress_sync(data: &[u8], window_bits: core::ffi::c_int) -> Option<Vec<u8>> {
-    use bun_zlib::{Options, ZlibReaderArrayList};
-
-    let mut output = Vec::new();
-    let options = Options { window_bits, ..Default::default() };
-    {
-        let mut reader = ZlibReaderArrayList::init_with_options(data, &mut output, options).ok()?;
-        reader.read_all(true).ok()?;
-    }
-    Some(output)
+    bun_zlib::inflate_decompress(data, window_bits)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

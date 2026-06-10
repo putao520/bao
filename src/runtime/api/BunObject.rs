@@ -2353,31 +2353,7 @@ pub fn parse_compress_buffer_and_options(
 pub mod JSZlib {
     use super::*;
     use bun_jsc::ComptimeStringMapExt as _;
-    use bun_libdeflate_sys::libdeflate as bun_libdeflate;
 
-    /// Local shim: libdeflate's `Status` has no `Into<&str>` upstream.
-    #[inline]
-    fn libdeflate_status_str(s: bun_libdeflate::Status) -> &'static str {
-        match s {
-            bun_libdeflate::Status::Success => "success",
-            bun_libdeflate::Status::BadData => "bad data",
-            bun_libdeflate::Status::ShortOutput => "short output",
-            bun_libdeflate::Status::InsufficientSpace => "insufficient space",
-        }
-    }
-
-    // PORT NOTE: Zig's `list.allocatedSlice()` (the full `[0..capacity)` window)
-    // was previously shimmed here as `&mut [u8]`, but materializing `&mut [u8]`
-    // over uninitialized bytes is UB in Rust regardless of later `set_len`.
-    // Callers now use `Vec::spare_capacity_mut()` (-> `&mut [MaybeUninit<u8>]`)
-    // with `compress_into` / `decompress_into`, which is the sound equivalent.
-
-    // PORT NOTE: Zig exported `reader_deallocator` / `compressor_deallocator`
-    // to free a heap-allocated reader/compressor (and its owned `ArrayList`)
-    // from the ArrayBuffer finalizer. The Rust port keeps the reader on-stack
-    // borrowing a local `Vec<u8>`, then leaks only the Vec's allocation into
-    // the ArrayBuffer — so both zlib paths converge on `global_deallocator`
-    // and the per-type callbacks are gone. (`no_mangle` dropped: 0 C++ refs.)
     pub use bun_alloc::c_thunks::mi_free_ctx as global_deallocator;
 
     #[derive(Copy, Clone, PartialEq, Eq, strum::IntoStaticStr, strum::EnumString)]
@@ -2388,6 +2364,7 @@ pub mod JSZlib {
     }
 
     // bun.ComptimeEnumMap(Library)
+    // "libdeflate" now maps to the same pure Rust flate2 backend as "zlib".
     pub(crate) static LIBRARY_MAP: phf::Map<&'static [u8], Library> = phf::phf_map! {
         b"zlib" => Library::Zlib,
         b"libdeflate" => Library::Libdeflate,
@@ -2441,25 +2418,21 @@ pub mod JSZlib {
             ..Default::default()
         };
 
-        let mut library = Library::Zlib;
         if let Some(options_val) = options_val_ {
             if let Some(window) = options_val.get(global_this, "windowBits")? {
                 opts.window_bits = window.coerce::<i32>(global_this)?;
-                library = Library::Zlib;
             }
 
             if let Some(level) = options_val.get(global_this, "level")? {
                 opts.level = level.coerce::<i32>(global_this)?;
             }
 
-            if let Some(mem_level) = options_val.get(global_this, "memLevel")? {
-                opts.mem_level = mem_level.coerce::<i32>(global_this)?;
-                library = Library::Zlib;
+            if let Some(_mem_level) = options_val.get(global_this, "memLevel")? {
+                // mem_level not applicable to miniz_oxide; ignored
             }
 
-            if let Some(strategy) = options_val.get(global_this, "strategy")? {
-                opts.strategy = strategy.coerce::<i32>(global_this)?;
-                library = Library::Zlib;
+            if let Some(_strategy) = options_val.get(global_this, "strategy")? {
+                // strategy not applicable to miniz_oxide; ignored
             }
 
             if let Some(library_value) = options_val.get_truthy(global_this, "library")? {
@@ -2468,7 +2441,7 @@ pub mod JSZlib {
                         .throw_invalid_arguments(format_args!("Expected library to be a string")));
                 }
 
-                library = match LIBRARY_MAP.from_js(global_this, library_value)? {
+                let _library = match LIBRARY_MAP.from_js(global_this, library_value)? {
                     Some(v) => v,
                     None => {
                         return Err(global_this.throw_invalid_arguments(format_args!(
@@ -2476,6 +2449,7 @@ pub mod JSZlib {
                         )));
                     }
                 };
+                // Both libraries now use the same pure Rust backend
             }
         }
 
@@ -2487,16 +2461,11 @@ pub mod JSZlib {
 
         let mut list: Vec<u8> = 'brk: {
             if is_gzip && compressed.len() > 64 {
-                //   0   1   2   3   4   5   6   7
-                //  +---+---+---+---+---+---+---+---+
-                //  |     CRC32     |     ISIZE     |
-                //  +---+---+---+---+---+---+---+---+
                 let estimated_size: u32 = u32::from_ne_bytes(
                     compressed[compressed.len() - 4..][..4]
                         .try_into()
                         .expect("infallible: size matches"),
                 );
-                // If it's > 256 MB, let's rely on dynamic allocation to minimize the risk of OOM.
                 if estimated_size > 0 && estimated_size < 256 * 1024 * 1024 {
                     break 'brk Vec::with_capacity((estimated_size as usize).max(64));
                 }
@@ -2509,104 +2478,42 @@ pub mod JSZlib {
             });
         };
 
-        match library {
-            Library::Zlib => {
-                let mut reader = match zlib::ZlibReaderArrayList::init_with_options(
-                    compressed,
-                    &mut list,
-                    zlib::Options {
-                        window_bits: opts.window_bits,
-                        level: opts.level,
-                        ..Default::default()
-                    },
-                ) {
-                    Ok(r) => r,
-                    Err(err) => {
-                        // `list` is still mutably borrowed by the match
-                        // scrutinee's temporary; it drops on `return` anyway.
-                        if err == zlib::ZlibError::InvalidArgument {
-                            return Err(
-                                global_this.throw(format_args!("Zlib error: Invalid argument"))
-                            );
-                        }
-                        return Err(global_this.throw_error(err.into(), "Zlib error"));
-                    }
-                };
-
-                if reader.read_all(true).is_err() {
-                    let msg = reader.error_message().unwrap_or(b"Zlib returned an error");
-                    return Err(global_this
-                        .throw_value(ZigString::init(msg).to_error_instance(global_this)));
+        // Both Library::Zlib and Library::Libdeflate use the same pure Rust flate2 backend.
+        let mut reader = match zlib::ZlibReaderArrayList::init_with_options(
+            compressed,
+            &mut list,
+            zlib::Options {
+                window_bits: opts.window_bits,
+                level: opts.level,
+                ..Default::default()
+            },
+        ) {
+            Ok(r) => r,
+            Err(err) => {
+                if err == zlib::ZlibError::InvalidArgument {
+                    return Err(
+                        global_this.throw(format_args!("Zlib error: Invalid argument"))
+                    );
                 }
-                // PORT NOTE: Zig moved `list` into the reader and freed via a
-                // dedicated finalizer. In Rust the reader *borrows* `list_ptr`,
-                // so drop the reader to release the borrow, then leak the owned
-                // `list` directly into the ArrayBuffer (freed by
-                // `global_deallocator`).
-                drop(reader);
-                list.shrink_to_fit();
-                // Ownership of the allocation transfers to JSC; freed via
-                // `global_deallocator` once the ArrayBuffer is finalized.
-                let leaked: &'static mut [u8] = list.leak();
-                let ptr = leaked.as_mut_ptr();
-                let array_buffer = ArrayBuffer::from_bytes(leaked, jsc::JSType::Uint8Array);
-                array_buffer.to_js_with_context(
-                    global_this,
-                    ptr.cast::<c_void>(),
-                    Some(global_deallocator),
-                )
+                return Err(global_this.throw_error(err.into(), "Zlib error"));
             }
-            Library::Libdeflate => {
-                let decompressor_ptr = bun_libdeflate::Decompressor::alloc();
-                if decompressor_ptr.is_null() {
-                    drop(list);
-                    return Err(global_this.throw_out_of_memory());
-                }
-                // SAFETY: non-null per check above; freed via the scopeguard below.
-                let decompressor = unsafe { &mut *decompressor_ptr };
-                let _decompressor_guard = scopeguard::guard(decompressor_ptr, |p| {
-                    // SAFETY: `p` is the non-null `Decompressor::alloc` pointer
-                    // checked above; this guard is its sole owner and runs once.
-                    unsafe { bun_libdeflate::Decompressor::destroy(p) }
-                });
-                let encoding = if is_gzip {
-                    bun_libdeflate::Encoding::Gzip
-                } else {
-                    bun_libdeflate::Encoding::Deflate
-                };
-                let result = decompressor.decompress_to_vec_grow(
-                    compressed,
-                    &mut list,
-                    encoding,
-                    1024 * 1024 * 1024,
-                );
-                match result.status {
-                    bun_libdeflate::Status::Success => {}
-                    bun_libdeflate::Status::InsufficientSpace => {
-                        drop(list);
-                        return Err(global_this.throw_out_of_memory());
-                    }
-                    _ => {
-                        drop(list);
-                        return Err(global_this.throw(format_args!(
-                            "libdeflate returned an error: {}",
-                            libdeflate_status_str(result.status),
-                        )));
-                    }
-                }
+        };
 
-                // Ownership of the allocation transfers to JSC; freed via
-                // `global_deallocator` once the ArrayBuffer is finalized.
-                let leaked: &'static mut [u8] = list.leak();
-                let ptr = leaked.as_mut_ptr();
-                let array_buffer = ArrayBuffer::from_bytes(leaked, jsc::JSType::Uint8Array);
-                array_buffer.to_js_with_context(
-                    global_this,
-                    ptr.cast::<c_void>(),
-                    Some(global_deallocator),
-                )
-            }
+        if reader.read_all(true).is_err() {
+            let msg = reader.error_message().unwrap_or(b"Zlib returned an error");
+            return Err(global_this
+                .throw_value(ZigString::init(msg).to_error_instance(global_this)));
         }
+        drop(reader);
+        list.shrink_to_fit();
+        let leaked: &'static mut [u8] = list.leak();
+        let ptr = leaked.as_mut_ptr();
+        let array_buffer = ArrayBuffer::from_bytes(leaked, jsc::JSType::Uint8Array);
+        array_buffer.to_js_with_context(
+            global_this,
+            ptr.cast::<c_void>(),
+            Some(global_deallocator),
+        )
     }
 
     pub(crate) fn gzip_or_deflate_sync(
@@ -2616,13 +2523,10 @@ pub mod JSZlib {
         is_gzip: bool,
     ) -> JsResult<JSValue> {
         let mut level: Option<i32> = None;
-        let mut library = Library::Zlib;
-        let mut window_bits: i32 = 0;
 
         if let Some(options_val) = options_val_ {
-            if let Some(window) = options_val.get(global_this, "windowBits")? {
-                window_bits = window.coerce::<i32>(global_this)?;
-                library = Library::Zlib;
+            if let Some(_window) = options_val.get(global_this, "windowBits")? {
+                // window_bits consumed but not used differently here
             }
 
             if let Some(library_value) = options_val.get_truthy(global_this, "library")? {
@@ -2631,7 +2535,7 @@ pub mod JSZlib {
                         .throw_invalid_arguments(format_args!("Expected library to be a string")));
                 }
 
-                library = match LIBRARY_MAP.from_js(global_this, library_value)? {
+                let _library = match LIBRARY_MAP.from_js(global_this, library_value)? {
                     Some(v) => v,
                     None => {
                         return Err(global_this.throw_invalid_arguments(format_args!(
@@ -2639,6 +2543,7 @@ pub mod JSZlib {
                         )));
                     }
                 };
+                // Both libraries now use the same pure Rust backend
             }
 
             if let Some(level_value) = options_val.get(global_this, "level")? {
@@ -2654,103 +2559,50 @@ pub mod JSZlib {
         }
 
         let compressed = buffer.slice();
-        let _ = window_bits; // unused in Zig too
 
-        match library {
-            Library::Zlib => {
-                let mut list: Vec<u8> = Vec::with_capacity(if compressed.len() > 512 {
-                    compressed.len()
-                } else {
-                    32
-                });
+        // Both Library::Zlib and Library::Libdeflate use the same pure Rust flate2 backend.
+        let mut list: Vec<u8> = Vec::with_capacity(if compressed.len() > 512 {
+            compressed.len()
+        } else {
+            32
+        });
 
-                let mut reader = match zlib::ZlibCompressorArrayList::init(
-                    compressed,
-                    &mut list,
-                    zlib::Options {
-                        window_bits: 15,
-                        gzip: is_gzip,
-                        level: level.unwrap_or(6),
-                        ..Default::default()
-                    },
-                ) {
-                    Ok(r) => r,
-                    Err(err) => {
-                        // `list` is still mutably borrowed by the match
-                        // scrutinee's temporary; it drops on `return` anyway.
-                        if err == zlib::ZlibError::InvalidArgument {
-                            return Err(
-                                global_this.throw(format_args!("Zlib error: Invalid argument"))
-                            );
-                        }
-                        return Err(global_this.throw_error(err.into(), "Zlib error"));
-                    }
-                };
-
-                if reader.read_all().is_err() {
-                    let msg = reader.error_message().unwrap_or(b"Zlib returned an error");
-                    return Err(global_this
-                        .throw_value(ZigString::init(msg).to_error_instance(global_this)));
+        let mut reader = match zlib::ZlibCompressorArrayList::init(
+            compressed,
+            &mut list,
+            zlib::Options {
+                window_bits: 15,
+                gzip: is_gzip,
+                level: level.unwrap_or(6),
+                ..Default::default()
+            },
+        ) {
+            Ok(r) => r,
+            Err(err) => {
+                if err == zlib::ZlibError::InvalidArgument {
+                    return Err(
+                        global_this.throw(format_args!("Zlib error: Invalid argument"))
+                    );
                 }
-                // PORT NOTE: see gunzip path — reader borrows `list`, so drop
-                // it before leaking `list` into the ArrayBuffer.
-                drop(reader);
-                list.shrink_to_fit();
-                // Ownership of the allocation transfers to JSC; freed via
-                // `global_deallocator` once the ArrayBuffer is finalized.
-                let leaked: &'static mut [u8] = list.leak();
-                let ptr = leaked.as_mut_ptr();
-                let array_buffer = ArrayBuffer::from_bytes(leaked, jsc::JSType::Uint8Array);
-                array_buffer.to_js_with_context(
-                    global_this,
-                    ptr.cast::<c_void>(),
-                    Some(global_deallocator),
-                )
+                return Err(global_this.throw_error(err.into(), "Zlib error"));
             }
-            Library::Libdeflate => {
-                let compressor_ptr = bun_libdeflate::Compressor::alloc(level.unwrap_or(6));
-                if compressor_ptr.is_null() {
-                    return Err(global_this.throw_out_of_memory());
-                }
-                // SAFETY: non-null per check above; freed via the scopeguard below.
-                let compressor = unsafe { &mut *compressor_ptr };
-                let _compressor_guard = scopeguard::guard(compressor_ptr, |p| {
-                    // SAFETY: `p` is the non-null `Compressor::alloc` pointer
-                    // checked above; this guard is its sole owner and runs once.
-                    unsafe { bun_libdeflate::Compressor::destroy(p) }
-                });
-                let encoding = if is_gzip {
-                    bun_libdeflate::Encoding::Gzip
-                } else {
-                    bun_libdeflate::Encoding::Deflate
-                };
+        };
 
-                let mut list: Vec<u8> = Vec::with_capacity(
-                    // This allocation size is unfortunate, but it's not clear how to avoid it with libdeflate.
-                    compressor.max_bytes_needed(compressed, encoding),
-                );
-
-                let result = compressor.compress_to_vec(compressed, &mut list, encoding);
-                if result.status != bun_libdeflate::Status::Success {
-                    drop(list);
-                    return Err(global_this.throw(format_args!(
-                        "libdeflate error: {}",
-                        libdeflate_status_str(result.status),
-                    )));
-                }
-
-                // Ownership of the allocation transfers to JSC; freed via
-                // `global_deallocator` once the ArrayBuffer is finalized.
-                let leaked: &'static mut [u8] = list.leak();
-                let ptr = leaked.as_mut_ptr();
-                let array_buffer = ArrayBuffer::from_bytes(leaked, jsc::JSType::Uint8Array);
-                array_buffer.to_js_with_context(
-                    global_this,
-                    ptr.cast::<c_void>(),
-                    Some(global_deallocator),
-                )
-            }
+        if reader.read_all().is_err() {
+            let msg = reader.error_message().unwrap_or(b"Zlib returned an error");
+            return Err(global_this
+                .throw_value(ZigString::init(msg).to_error_instance(global_this)));
         }
+        drop(reader);
+        list.shrink_to_fit();
+        let leaked: &'static mut [u8] = list.leak();
+        let ptr = leaked.as_mut_ptr();
+        let array_buffer = ArrayBuffer::from_bytes(leaked, jsc::JSType::Uint8Array);
+        array_buffer.to_js_with_context(
+            global_this,
+            ptr.cast::<c_void>(),
+            Some(global_deallocator),
+        )
     }
 }
 

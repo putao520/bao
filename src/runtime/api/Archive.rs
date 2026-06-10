@@ -1324,33 +1324,9 @@ impl From<CompressError> for WriteError {
 }
 
 fn compress_gzip(data: &[u8], level: u8) -> Result<Vec<u8>, CompressError> {
-    use bun_libdeflate_sys::libdeflate;
-    libdeflate::load();
-
-    let compressor_ptr = libdeflate::Compressor::alloc(i32::from(level));
-    if compressor_ptr.is_null() {
-        return Err(CompressError::GzipInitFailed);
-    }
-    // defer compressor.deinit();
-    let _guard = scopeguard::guard(compressor_ptr, |p| {
-        // SAFETY: `p` is the non-null pointer returned by `Compressor::alloc` above;
-        // this is the matching free, run once when `_guard` drops on scope exit.
-        unsafe { libdeflate::Compressor::destroy(p) }
-    });
-    // SAFETY: alloc returned non-null; freed by `_guard` on scope exit.
-    let compressor: &mut libdeflate::Compressor = unsafe { &mut *compressor_ptr };
-
-    let max_size = compressor.max_bytes_needed(data, libdeflate::Encoding::Gzip);
-
-    // PERF(port): the Zig spec used a 256 KiB on-stack scratch for small inputs;
-    // in Rust the scratch is heap-allocated either way, so the threshold is dead
-    // weight — just size the Vec to `max_size` once.
-    let mut output = Vec::with_capacity(max_size);
-    let result = compressor.compress_to_vec(data, &mut output, libdeflate::Encoding::Gzip);
-    if result.status != libdeflate::Status::Success {
-        return Err(CompressError::GzipCompressFailed);
-    }
-    Ok(output)
+    // Pure Rust gzip compression via flate2 + miniz_oxide
+    bun_zlib::deflate_compress(data, 31, i32::from(level))
+        .ok_or(CompressError::GzipCompressFailed)
 }
 
 /// Check if a path is safe (no absolute paths or path traversal)

@@ -289,30 +289,15 @@ pub struct CertCheckResumeMessage {
 }
 
 pub struct LibdeflateState {
-    pub decompressor: *mut bun_libdeflate_sys::libdeflate::Decompressor,
     pub shared_buffer: [u8; 512 * 1024],
 }
 
-// SAFETY: `*mut T` (null) and `[u8; N]` are both valid at the all-zero bit pattern.
+// SAFETY: `[u8; N]` is valid at the all-zero bit pattern.
 unsafe impl bun_core::Zeroable for LibdeflateState {}
 
 impl LibdeflateState {
-    /// Mutable access to the libdeflate decompressor handle.
-    ///
-    /// INVARIANT: `decompressor` is set once in [`HttpThread::deflater`] from
-    /// `libdeflate_alloc_decompressor` (panics on null) and is never freed
-    /// until thread teardown. The handle is a separate C heap allocation
-    /// disjoint from `self`, so the returned `&mut` does not alias
-    /// `shared_buffer`. HTTP-thread-only — sole live borrow. Centralises the
-    /// raw `&mut *deflater.decompressor` upgrade repeated at every
-    /// `decompress` call site.
-    #[inline]
-    pub(crate) fn decompressor_mut<'a>(
-        &self,
-    ) -> &'a mut bun_libdeflate_sys::libdeflate::Decompressor {
-        // SAFETY: see INVARIANT above.
-        unsafe { &mut *self.decompressor }
-    }
+    /// Pure Rust: no C decompressor handle needed.
+    /// The shared_buffer is used for intermediate decompression output.
 }
 
 pub const REQUEST_BODY_SEND_STACK_BUFFER_SIZE: usize = 32 * 1024;
@@ -441,12 +426,7 @@ impl HttpThread {
 
     pub fn deflater(&mut self) -> &mut LibdeflateState {
         if self.lazy_libdeflater.is_none() {
-            let decompressor = bun_libdeflate_sys::libdeflate::Decompressor::alloc();
-            if decompressor.is_null() {
-                bun_core::out_of_memory();
-            }
-            let mut state: Box<LibdeflateState> = bun_core::boxed_zeroed();
-            state.decompressor = decompressor;
+            let state: Box<LibdeflateState> = bun_core::boxed_zeroed();
             self.lazy_libdeflater = Some(state);
         }
 
@@ -1232,7 +1212,7 @@ mod _event_loop_draft {
             (*crate::HTTP_THREAD.get()).write(HttpThread::new());
         }
         crate::HTTP_THREAD_INIT.store(true, core::sync::atomic::Ordering::Release);
-        bun_libdeflate_sys::libdeflate::load();
+        // libdeflate::load() no longer needed — pure Rust flate2 + miniz_oxide backend.
         let opts_copy = opts.clone();
         let thread = std::thread::Builder::new()
             .stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize)

@@ -5,9 +5,8 @@
 //! ## Compiled C libraries (real implementations, no stubs)
 //! - mimalloc → libmimalloc.a (bun_mimalloc_sys)
 //! - highway SIMD → libhighway.a + libhighway_strings.a (bun_highway)
-//! - zstd → libzstd.a (bun_zstd)
-//! - brotli → libbrotli.a (bun_brotli_sys)
-//! - libdeflate → liblibdeflate.a (bun_libdeflate_sys)
+//! - zstd → zstd-pure-rs (pure Rust, no C library)
+//! - brotli → pure Rust (bun_brotli via rust-brotli crate, no C library)
 //!
 //! ## Functional Rust implementations (not stubs)
 //! - ares_inet_pton: real IPv4/IPv6 parsing
@@ -62,14 +61,8 @@ pub fn force_link() {
     // Wave 75b: pull in compiled highway SIMD library (libhighway.a + libhighway_strings.a).
     bun_highway::force_link();
 
-    // Wave 75c: pull in compiled zstd C library (libzstd.a).
+    // Wave 75c: zstd — now pure Rust (zstd-pure-rs), no C library to link.
     bun_zstd::force_link();
-
-    // Wave 76: pull in compiled brotli C library (libbrotli.a).
-    bun_brotli_sys::force_link();
-
-    // Wave 76b: pull in compiled libdeflate C library (liblibdeflate.a).
-    bun_libdeflate_sys::force_link();
 
         let _ = Bun__currentSyncPID.load(std::sync::atomic::Ordering::Relaxed);
 
@@ -532,13 +525,13 @@ pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic
 // ──────────────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────
-// libdeflate — now provided by compiled C library (bun_libdeflate_sys build.rs).
-// All libdeflate_* symbols resolved by liblibdeflate.a at link time.
+// libdeflate — replaced by pure Rust (flate2 + miniz_oxide via bun_zlib).
+// No C compilation needed; bun_libdeflate_sys crate removed.
 // ──────────────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────
-// ZSTD — now provided by compiled C library (bun_zstd build.rs).
-// All ZSTD_* symbols resolved by libzstd.a at link time.
+// ZSTD — now pure Rust (zstd-pure-rs via bun_zstd crate).
+// No C library compilation needed.
 // ──────────────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────

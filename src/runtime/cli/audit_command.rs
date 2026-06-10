@@ -11,7 +11,7 @@ use bun_install::lockfile::package::PackageColumns as _;
 use bun_install::package_manager_real::command_line_arguments::AuditLevel;
 use bun_install::resolution::Tag as ResolutionTag;
 use bun_install::{CommandLineArguments, PackageManager, Subcommand};
-use bun_libdeflate_sys::libdeflate;
+use bun_zlib as zlib;
 use bun_parsers::json as bun_json;
 use bun_url::URL;
 
@@ -434,22 +434,11 @@ fn send_audit_request(
     pm: &mut PackageManager,
     body: &[u8],
 ) -> Result<Box<[u8]>, bun_alloc::AllocError> {
-    libdeflate::load();
-    let compressor_ptr = libdeflate::Compressor::alloc(6);
-    if compressor_ptr.is_null() {
-        return Err(bun_alloc::AllocError);
-    }
-    // SAFETY: non-null checked above; libdeflate hands back a heap-allocated
-    // compressor that lives until `destroy` (Zig: `*Compressor`).
-    let compressor = unsafe { &mut *compressor_ptr };
-
-    let max_compressed_size = compressor.max_bytes_needed(body, libdeflate::Encoding::Gzip);
-    let mut compressed_body = Vec::with_capacity(max_compressed_size);
-    let _ = compressor.compress_to_vec(body, &mut compressed_body, libdeflate::Encoding::Gzip);
-    // SAFETY: `compressor_ptr` was returned by `Compressor::alloc` and is not
-    // used after this point (Zig: `defer compressor.deinit()`).
-    unsafe { libdeflate::Compressor::destroy(compressor_ptr) };
-    let final_compressed_body = compressed_body;
+    // Pure Rust gzip compression via flate2 + miniz_oxide
+    let compressed_body = match zlib::deflate_compress(body, 31, 6) {
+        Some(data) => data,
+        None => return Err(bun_alloc::AllocError),
+    };
 
     let mut headers = HeaderBuilder::default();
     headers.count(b"accept", b"application/json");
@@ -502,7 +491,7 @@ fn send_audit_request(
         headers.entries,
         headers_buf,
         &raw mut response_buf,
-        &final_compressed_body,
+        &compressed_body,
         http_proxy,
         None,
         http::FetchRedirect::Follow,

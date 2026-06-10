@@ -26,7 +26,3 @@ bun_mimalloc_sys = { path = "../mimalloc_sys" }
 bun_highway = { path = "../highway" }
 # Wave 75c: compiled zstd C library provides real ZSTD_* compression symbols.
 bun_zstd = { path = "../zstd" }
-# Wave 76: compiled brotli C library provides real BrotliDecoder* symbols.
-bun_brotli_sys = { path = "../brotli_sys" }
-# Wave 76b: compiled libdeflate C library provides real libdeflate_* symbols.
-bun_libdeflate_sys = { path = "../libdeflate_sys" }

@@ -491,10 +491,8 @@ version = "0.1.0"
 dependencies = [
  "bao_uloop",
  "bun_boringssl_sys",
- "bun_brotli_sys",
  "bun_highway",
  "bun_io",
- "bun_libdeflate_sys",
  "bun_lshpack_sys",
  "bun_lsquic_sys",
  "bun_mimalloc_sys",
@@ -828,22 +826,15 @@ dependencies = [
 name = "bun_base64"
 version = "0.0.0"
 dependencies = [
- "bitflags 2.11.1",
+ "base64",
  "bstr",
- "bumpalo",
  "bun_alloc",
- "bun_collections",
  "bun_core",
  "bun_simdutf_sys",
  "bun_wyhash",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
+ "vlq",
 ]
 
 [[package]]
@@ -888,37 +879,9 @@ dependencies = [
 name = "bun_brotli"
 version = "0.0.0"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_alloc",
- "bun_brotli_sys",
+ "brotli",
  "bun_core",
  "bun_io",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
-]
-
-[[package]]
-name = "bun_brotli_sys"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_opaque",
- "cc",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1257,7 +1220,6 @@ dependencies = [
  "bun_event_loop",
  "bun_http_types",
  "bun_io",
- "bun_libdeflate_sys",
  "bun_lshpack_sys",
  "bun_picohttp",
  "bun_ptr",
@@ -1486,24 +1448,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_libdeflate_sys"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_alloc",
- "bun_opaque",
- "cc",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
-]
-
-[[package]]
 name = "bun_libuv_sys"
 version = "0.0.0"
 dependencies = [
@@ -1560,21 +1504,10 @@ dependencies = [
 name = "bun_md"
 version = "0.0.0"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_alloc",
  "bun_collections",
  "bun_core",
- "bun_paths",
- "bun_sys",
- "bun_url",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
+ "pulldown-cmark",
 ]
 
 [[package]]
@@ -1732,7 +1665,7 @@ dependencies = [
  "const_format",
  "enum-map",
  "enumset",
- "libc",
+ "httparse",
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
@@ -2274,26 +2207,11 @@ dependencies = [
  "bun_collections",
  "bun_core",
  "bun_io",
- "bun_zlib_sys",
  "const_format",
+ "crc32fast",
  "enum-map",
  "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
-]
-
-[[package]]
-name = "bun_zlib_sys"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_core",
- "const_format",
- "enum-map",
- "enumset",
+ "flate2",
  "libc",
  "phf 0.11.3",
  "scopeguard",
@@ -2304,18 +2222,9 @@ dependencies = [
 name = "bun_zstd"
 version = "0.0.0"
 dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "bun_core",
- "bun_opaque",
- "cc",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
  "strum 0.26.3",
+ "zstd-pure-rs",
 ]
 
 [[package]]
@@ -6323,6 +6232,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pulldown-cmark"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f86ba2052aebccc42cbbb3ed234b8b13ce76f75c3551a303cb2bcffcff12bb14"
+dependencies = [
+ "bitflags 2.11.1",
+ "memchr",
+ "unicase",
+]
+
+[[package]]
 name = "pxfm"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9579,6 +9499,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "vlq"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65dd7eed29412da847b0f78bcec0ac98588165988a8cfe41d4ea1d429f8ccfff"
+
+[[package]]
 name = "void"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10575,6 +10501,12 @@ checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
 dependencies = [
  "zstd-safe",
 ]
+
+[[package]]
+name = "zstd-pure-rs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ce022be20a46a5bf7c6b61f0fe68e29ff7a004ebc76bb829079eb201ec2d633"
 
 [[package]]
 name = "zstd-safe"

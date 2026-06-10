@@ -22,5 +22,10 @@ bitflags.workspace = true
 bun_alloc.workspace = true
 bun_collections.workspace = true
 bun_core.workspace = true
-bun_zlib_sys.workspace = true
 bun_io.workspace = true
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast.workspace = true
+
+[[test]]
+name = "zlib_pure_rust_tests"
+path = "tests/zlib_pure_rust_tests.rs"

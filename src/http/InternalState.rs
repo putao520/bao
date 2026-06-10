@@ -254,15 +254,10 @@ impl<'a> InternalState<'a> {
 
         let mut still_needs_to_decompress = true;
 
+        // Fast-path decompression: use bun_zlib (flate2 + miniz_oxide pure Rust).
+        // This replaces the former libdeflate C fast-path with equivalent pure Rust.
         if bun_core::feature_flags::is_libdeflate_enabled() {
-            // Fast-path: use libdeflate
-            // TODO(port): bun_http::HTTPThread::deflater — `http_thread()` accessor and the
-            // `LibdeflateState { decompressor, shared_buffer }` it returns live in the gated
-            // HTTPThread cluster. Re-gated until HTTPThread un-gates (which itself blocks on
-            // bun_uws::SocketHandler method bodies).
-
             'libdeflate: {
-                use bun_libdeflate_sys::libdeflate as bun_libdeflate;
                 if !(is_final_chunk
                     && !self.flags.is_libdeflate_fast_path_disabled
                     && self.encoding.can_use_lib_deflate()
@@ -272,62 +267,18 @@ impl<'a> InternalState<'a> {
                 }
                 self.flags.is_libdeflate_fast_path_disabled = true;
 
-                log!("Decompressing {} bytes with libdeflate\n", buffer.len());
-                let deflater = crate::http_thread().deflater();
+                log!("Decompressing {} bytes with pure Rust flate2\n", buffer.len());
 
-                // gzip stores the size of the uncompressed data in the last 4 bytes of the stream
-                // But it's only valid if the stream is less than 4.7 GB, since it's 4 bytes.
-                // If we know that the stream is going to be larger than our
-                // pre-allocated buffer, then let's dynamically allocate the exact
-                // size.
-                if self.encoding == Encoding::Gzip
-                    && buffer.len() > 16
-                    && buffer.len() < 1024 * 1024 * 1024
-                {
-                    let estimated_size: u32 = u32::from_ne_bytes(
-                        buffer[buffer.len() - 4..][..4]
-                            .try_into()
-                            .expect("infallible: size matches"),
-                    );
-                    // Since this is arbtirary input from the internet, let's set an upper bound of 32 MB for the allocation size.
-                    if (estimated_size as usize) > deflater.shared_buffer.len()
-                        && estimated_size < 32 * 1024 * 1024
-                    {
-                        body_out_str.list.reserve_exact(
-                            (estimated_size as usize).saturating_sub(body_out_str.list.len()),
-                        );
-                        body_out_str.list.clear();
-                        let result = deflater.decompressor_mut().decompress_to_vec(
-                            buffer,
-                            &mut body_out_str.list,
-                            bun_libdeflate::Encoding::Gzip,
-                        );
-                        if result.status == bun_libdeflate::Status::Success {
-                            still_needs_to_decompress = false;
-                        }
+                let window_bits: core::ffi::c_int = match self.encoding {
+                    Encoding::Gzip => 31, // 15 + 16 = gzip
+                    Encoding::Deflate => -15, // raw deflate
+                    _ => break 'libdeflate,
+                };
 
-                        break 'libdeflate;
-                    }
-                }
-
-                let result = deflater.decompressor_mut().decompress(
-                    buffer,
-                    &mut deflater.shared_buffer,
-                    match self.encoding {
-                        Encoding::Gzip => bun_libdeflate::Encoding::Gzip,
-                        Encoding::Deflate => bun_libdeflate::Encoding::Deflate,
-                        _ => unreachable!(),
-                    },
-                );
-
-                if result.status == bun_libdeflate::Status::Success {
-                    body_out_str
-                        .list
-                        .reserve_exact(result.written.saturating_sub(body_out_str.list.len()));
-                    // PERF(port): was appendSliceAssumeCapacity
-                    body_out_str
-                        .list
-                        .extend_from_slice(&deflater.shared_buffer[0..result.written]);
+                if let Some(decompressed) = bun_zlib::inflate_decompress(buffer, window_bits) {
+                    body_out_str.list.clear();
+                    body_out_str.list.reserve_exact(decompressed.len().saturating_sub(body_out_str.list.len()));
+                    body_out_str.list.extend_from_slice(&decompressed);
                     still_needs_to_decompress = false;
                 }
             }

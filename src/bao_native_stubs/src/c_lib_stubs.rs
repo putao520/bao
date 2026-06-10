@@ -6,7 +6,6 @@
 //! - `libusockets_tls.a` (bun_uws_sys): TLS via BoringSSL
 //! - `libbrotli.a` (bun_brotli_sys): Brotli compression
 //! - `libzstd.a` (bun_zstd): Zstandard compression
-//! - `liblibdeflate.a` (bun_libdeflate_sys): deflate/gzip/zlib
 //! - `liblshpack.a` (bun_lshpack_sys): HPACK header compression
 //! - `libmimalloc.a` (bun_mimalloc_sys): memory allocator
 //! - `libhighway.a` + `libhighway_strings.a` (bun_highway): SIMD string ops

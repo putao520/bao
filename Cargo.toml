@@ -105,11 +105,18 @@ libc = "0.2"
 memchr = "2"
 rustix = { version = "0.38", default-features = false, features = ["std", "fs", "event", "process", "net"] }
 bitflags = "2"
+zstd-pure-rs = "0.1"
+base64 = "0.22"
+vlq = "0.5"
 thiserror = "2"
 smallvec = "1"
 bumpalo = { version = "3", features = ["collections", "boxed"] }
 typed-arena = "2"
 itoa = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+crc32fast = "1"
+httparse = "1"
+pulldown-cmark = { version = "0.12", default-features = false }
 
 # ─── Internal path deps ─────────────────────────────────────────────────────
 bun_opaque = { path = "src/opaque" }
@@ -189,18 +196,15 @@ bun_jsc_macros = { path = "src/jsc_macros" }
 bun_lolhtml_sys = { path = "src/lolhtml_sys" }
 bun_boringssl = { path = "src/boringssl" }
 bun_boringssl_sys = { path = "src/boringssl_sys" }
-bun_brotli_sys = { path = "src/brotli_sys" }
 bun_lshpack_sys = { path = "src/lshpack_sys" }
 bun_lsquic_sys = { path = "src/lsquic_sys" }
 bun_cares_sys = { path = "src/cares_sys" }
-bun_libdeflate_sys = { path = "src/libdeflate_sys" }
 bun_libuv_sys = { path = "src/libuv_sys" }
 bun_mimalloc_sys = { path = "src/mimalloc_sys" }
 bun_simdutf_sys = { path = "src/simdutf_sys" }
 bun_spawn_sys = { path = "src/spawn_sys" }
 bun_tcc_sys = { path = "src/tcc_sys" }
 bun_uws_sys = { path = "src/uws_sys" }
-bun_zlib_sys = { path = "src/zlib_sys" }
 
 [profile.release]
 lto = "fat"
