@@ -12,7 +12,7 @@
 <h2>§1 整体架构</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>架构总览</h3>
 <pre>
 ┌──────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@
 <h2>§1.1 BaoRuntime 公共 API</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="api-spec" data-api="GET /api/bao-runtime" data-artifact-type="api-spec">
+<div data-artifact-type="api-spec" data-api="GET /api/bao-runtime" data-type="document" id="api-spec">
 <p>关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span>,
 <span data-xref-id="PagePool" data-xref-type="entity">PagePool</span>,
 <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>,
@@ -178,7 +178,7 @@ pub struct Permission {
 <span data-xref-id="REQ-ENG-006" data-xref-type="req">REQ-ENG-006</span>, <span data-xref-id="REQ-CLI-002" data-xref-type="req">REQ-CLI-002</span>
 <span data-xref-id="REQ-CDP-001" data-xref-type="req">REQ-CDP-001</span></p><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
 
-<div data-type="document" id="api-spec" data-api="GET /api/bao-runtime-js" data-artifact-type="api-spec">
+<div data-artifact-type="api-spec" data-api="GET /api/bao-runtime-js" data-type="document" id="api-spec">
 <h3>JS 公共 API 接口</h3>
 <pre>
 // ── Bao 全局对象 ──────────────────────────────────────────
@@ -238,7 +238,7 @@ const restrictedPage = runtime.createPage({ permission: perm });
 <h2>§1.2 库模式 (In-Process) API 契约 — 零配置路径</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="api-spec" data-api="GET /api/bao-library-mode" data-artifact-type="api-spec">
+<div data-artifact-type="api-spec" data-api="GET /api/bao-library-mode" data-type="document" id="api-spec">
 <p>Bao 是<strong>库优先</strong>的设计：CLI (<code>bao run</code>) 只是库的一个消费者。
 所有能力（SpiderMonkey JSContext、Node.js/Bun API、Web API、Stealth 反指纹、CDP、浏览器引擎）均可
 <strong>作为 Rust 库直接在进程中调用</strong>，无需子进程、无需 display server、无需独立二进制。</p>
@@ -341,7 +341,7 @@ let ext_page = cdp.new_page().await?;
 <h2>§2 Bun 源项目 Crate 架构</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>§2.1 Crate 依赖 DAG (13 层)</h3>
 <pre>
 L0  FOUNDATION (零内部依赖)
@@ -393,7 +393,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </pre>
 </div>
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>§2.2 JSC 依赖边界</h3>
 <p>关键发现：Bun 采用 <strong>foo + foo_jsc 两维分离模式</strong>，每个需要暴露给 JS 的功能域都有独立的纯 Rust crate 和 JSC 绑定 crate。</p>
 
@@ -415,7 +415,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <p>SpiderMonkey 迁移影响范围：<strong>仅 L11-L13 的 13 个 crate</strong>。L0-L10 的 ~85 个纯 Rust crate 完全不受影响。</p>
 </div>
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="table" data-type="document" id="table">
 <h3>§2.3 Crate 统计</h3>
 <table>
 <tr><td>指标</td><td>数量</td></tr>
@@ -432,7 +432,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§3 Servo 源项目组件架构</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>§3.1 组件分层</h3>
 <pre>
 ┌─────────────────────────────────────────────────────────┐
@@ -467,7 +467,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </pre>
 </div>
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="table" data-type="document" id="table">
 <h3>§3.2 组件依赖关系</h3>
 <table>
 <tr><td>组件</td><td>Rust LOC</td><td>依赖 mozjs</td><td>依赖 IPC</td><td>独立性</td></tr>
@@ -485,7 +485,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </table>
 </div>
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="table" data-type="document" id="table">
 <h3>§3.3 Servo 关键数据</h3>
 <table>
 <tr><td>指标</td><td>值</td></tr>
@@ -505,7 +505,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§4 Bao 融合架构</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>§4.1 Bun ↔ Servo 融合映射</h3>
 <pre>
                     Bao 项目 Cargo Workspace
@@ -550,7 +550,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </pre>
 </div>
 
-<div data-type="document" id="external-integration" data-artifact-type="external-integration" data-integration="SpiderMonkey" data-integration-auth="none" data-integration-protocol="ffi">
+<div data-integration-auth="none" data-integration-protocol="ffi" data-integration="SpiderMonkey" data-artifact-type="external-integration" data-type="document" id="external-integration">
 <h3>§4.2 引擎集成: SpiderMonkey via mozjs</h3>
 <script type="application/ld+json">
 {
@@ -575,7 +575,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-type="document" id="external-integration" data-artifact-type="external-integration" data-integration="libservo" data-integration-auth="none" data-integration-protocol="embed">
+<div data-integration-auth="none" data-integration-protocol="embed" data-integration="libservo" data-artifact-type="external-integration" data-type="document" id="external-integration">
 <h3>§4.3 浏览器引擎集成: libservo</h3>
 <script type="application/ld+json">
 {
@@ -592,7 +592,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-type="document" id="external-integration" data-artifact-type="external-integration" data-integration="servo_webrender" data-integration-auth="none" data-integration-protocol="embed">
+<div data-integration-auth="none" data-integration-protocol="embed" data-integration="servo_webrender" data-artifact-type="external-integration" data-type="document" id="external-integration">
 <h3>§4.4 渲染集成: servo webrender</h3>
 <script type="application/ld+json">
 {
@@ -609,7 +609,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-type="document" id="external-integration" data-artifact-type="external-integration" data-integration="CDPProtocol" data-integration-auth="none" data-integration-protocol="websocket">
+<div data-integration-auth="none" data-integration-protocol="websocket" data-integration="CDPProtocol" data-artifact-type="external-integration" data-type="document" id="external-integration">
 <h3>§4.5 CDP 协议集成</h3>
 <script type="application/ld+json">
 {
@@ -630,7 +630,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>§4.6 CDP 双层抽象架构</h3>
 <pre>
 双层 API 设计:
@@ -688,7 +688,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§4.5 多页面管理架构</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>多页面管理架构</h3>
 <pre>
 ┌─ BaoRuntime (顶层协调器) ──────────────────────────────────────┐
@@ -725,7 +725,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <span data-xref-id="Permission" data-xref-type="entity">Permission</span></p>
 </div>
 
-<div data-type="document" id="diagram" data-artifact-type="diagram" data-state-machine="PageLifecycle">
+<div data-artifact-type="diagram" data-state-machine="PageLifecycle" data-type="document" id="diagram">
 <h3>Page 生命周期状态机</h3>
 <script type="application/ld+json">
 {
@@ -775,7 +775,7 @@ Created ──navigate──→ Navigating ──load_complete──→ Interact
 <h2>§5 外部依赖矩阵</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="table" data-type="document" id="table">
 <table>
 <tr><td>依赖</td><td>版本</td><td>许可证</td><td>用途</td><td>复用方式</td></tr>
 <tr><td>mozjs / mozjs-sys</td><td>0.15.14 / 140.10.1</td><td>MPL-2.0</td><td>SpiderMonkey FFI</td><td>git dep</td></tr>
@@ -793,7 +793,7 @@ Created ──navigate──→ Navigating ──load_complete──→ Interact
 <h2>§6 错误处理策略</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>错误处理分层</h3>
 <pre>
 JS 层错误 → SpiderMonkey Exception → JS 可捕获
@@ -809,7 +809,7 @@ CDP 错误 → JSON-RPC Error Response → 客户端处理
 <h2>§7 运行时状态图</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>运行时生命周期状态</h3>
 <pre>
 Uninitialized → Initializing → Ready → Running → ShuttingDown → Terminated
@@ -852,7 +852,7 @@ ShuttingDown:
 <h2>§8 数据管道</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="data-pipeline" data-artifact-type="data-pipeline" data-pipeline="JSExecutionPipeline" data-pipeline-type="execution">
+<div data-pipeline-type="execution" data-pipeline="JSExecutionPipeline" data-artifact-type="data-pipeline" data-type="document" id="data-pipeline">
 <h3>PIPE-SYS-001: JS 执行管道 (概要)</h3>
 <script type="application/ld+json">
 {
@@ -871,7 +871,7 @@ ShuttingDown:
 </script>
 </div>
 
-<div data-type="document" id="data-pipeline" data-artifact-type="data-pipeline" data-pipeline="RenderPipelineSummary" data-pipeline-type="render">
+<div data-pipeline-type="render" data-pipeline="RenderPipelineSummary" data-artifact-type="data-pipeline" data-type="document" id="data-pipeline">
 <h3>PIPE-SYS-002: 渲染管道 (概要)</h3>
 <script type="application/ld+json">
 {
@@ -894,7 +894,7 @@ ShuttingDown:
 <h2>§9 接口协议图</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>内部接口协议</h3>
 <pre>
 ┌─ bao_engine ─┐     FFI (C ABI)     ┌─ mozjs-sys ─┐
@@ -929,7 +929,7 @@ ShuttingDown:
 <h2>§9 事件/消息目录</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="table" data-type="document" id="table">
 <h3>内部事件/消息类型</h3>
 <table>
 <tr><td>事件</td><td>方向</td><td>载体</td><td>触发条件</td></tr>
@@ -955,7 +955,7 @@ ShuttingDown:
 <h2>§4.7 Permission 沙箱架构</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-artifact-type="diagram" data-type="document" id="diagram">
 <h3>Permission 沙箱 — host_fn 层拦截</h3>
 <pre>
 实现层级: 复用 REQ-ENG-003 host_fn 抽象层
@@ -996,7 +996,7 @@ Permission 配置:
 <h2>§10 非功能需求</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="non-functional-requirements" data-artifact-type="non-functional-requirements" data-nfr="StartupPerformance" data-nfr-category="performance">
+<div data-nfr-category="performance" data-nfr="StartupPerformance" data-artifact-type="non-functional-requirements" data-type="document" id="non-functional-requirements">
 <h3>NFR-SYS-PERF-001: 启动性能</h3>
 <script type="application/ld+json">
 {
@@ -1013,7 +1013,7 @@ Permission 配置:
 </script>
 </div>
 
-<div data-type="document" id="non-functional-requirements" data-artifact-type="non-functional-requirements" data-nfr="BunAPICompatibility" data-nfr-category="compatibility">
+<div data-nfr-category="compatibility" data-nfr="BunAPICompatibility" data-artifact-type="non-functional-requirements" data-type="document" id="non-functional-requirements">
 <h3>NFR-SYS-COMPAT-001: 兼容性</h3>
 <script type="application/ld+json">
 {
@@ -1029,7 +1029,7 @@ Permission 配置:
 </script>
 </div>
 
-<div data-type="document" id="non-functional-requirements" data-artifact-type="non-functional-requirements" data-nfr="SecurityRequirements" data-nfr-category="security">
+<div data-nfr-category="security" data-nfr="SecurityRequirements" data-artifact-type="non-functional-requirements" data-type="document" id="non-functional-requirements">
 <h3>NFR-SYS-SEC-001: 安全</h3>
 <script type="application/ld+json">
 {
@@ -1049,7 +1049,7 @@ Permission 配置:
 <h2>§11 SLA 矩阵</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="sla" data-artifact-type="sla">
+<div data-artifact-type="sla" data-type="document" id="sla">
 <h3>服务等级目标</h3>
 <script type="application/ld+json">
 {
@@ -1082,7 +1082,7 @@ Permission 配置:
 </table>
 </div>
 
-<div data-type="document" id="mock-strategy" data-artifact-type="mock-strategy">
+<div data-artifact-type="mock-strategy" data-type="document" id="mock-strategy">
 <h3>Mock 策略</h3>
 <p>运行时引擎项目，无外部服务依赖。所有测试直接使用真实模块，无需 Mock。</p>
 <ul>
@@ -1092,7 +1092,7 @@ Permission 配置:
 </ul>
 </div>
 
-<section id="req-sec-001" data-req="REQ-SEC-001" data-req-api="POST /fetch" data-req-category="security" data-req-domain="sec" data-req-entity="FetchResponse" data-req-priority="P0" data-req-status="implemented"><h3>REQ-SEC-001 CORS 安全策略禁用</h3><p>bao 内置浏览器的所有 HTTP 请求不受 CORS（跨域资源共享）限制。修改 servo net 模块的 CORS 检查逻辑，使其在 bao 模式下跳过 CORS 验证。效果等同 Chromium --disable-web-security。页面 JS 和可信脚本的 fetch/XMLHttpRequest 均可自由访问任意域名的响应体。</p><div id="页面-js-中-fetch('https://任意域名/api')-能直接读取-response.json()，不触发-cors-preflight-也不报错" data-criterion="页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错">页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错</div><div id="xmlhttprequest-跨域请求返回完整响应（非-opaque-response）" data-criterion="XMLHttpRequest 跨域请求返回完整响应（非 opaque response）">XMLHttpRequest 跨域请求返回完整响应（非 opaque response）</div><div id="servo-net-模块的-cors-check()-在-bao-模式下返回-ok(())-跳过所有-cors-验证" data-criterion="servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证">servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证</div><div id="cors-preflight-(options)-请求不再发送" data-criterion="CORS preflight (OPTIONS) 请求不再发送">CORS preflight (OPTIONS) 请求不再发送</div><div id="cors-缓存-(corscache)-不再生效" data-criterion="CORS 缓存 (CorsCache) 不再生效">CORS 缓存 (CorsCache) 不再生效</div><div id="修改仅限于-servo/components/net/-的-cors-相关函数，不影响-servo-其他模块" data-criterion="修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块">修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section id="req-sec-002" data-req="REQ-SEC-002" data-req-api="POST /evaluate-js,POST /evaluate-js-web" data-req-category="security" data-req-domain="sec" data-req-entity="BaoRuntime,EvaluateResult" data-req-priority="P0" data-req-status="implemented"><h3>REQ-SEC-002 双层 JS 执行模型 — 双 Realm 架构级隔离</h3><p data-req-description="">bao 的 evaluate_js 支持两种执行模式：
+<section data-req-api="POST /fetch" data-req-entity="FetchResponse" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-001" id="req-sec-001"><h3>REQ-SEC-001 CORS 安全策略禁用</h3><p>bao 内置浏览器的所有 HTTP 请求不受 CORS（跨域资源共享）限制。修改 servo net 模块的 CORS 检查逻辑，使其在 bao 模式下跳过 CORS 验证。效果等同 Chromium --disable-web-security。页面 JS 和可信脚本的 fetch/XMLHttpRequest 均可自由访问任意域名的响应体。</p><div id="页面-js-中-fetch('https://任意域名/api')-能直接读取-response.json()，不触发-cors-preflight-也不报错" data-criterion="页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错">页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错</div><div id="xmlhttprequest-跨域请求返回完整响应（非-opaque-response）" data-criterion="XMLHttpRequest 跨域请求返回完整响应（非 opaque response）">XMLHttpRequest 跨域请求返回完整响应（非 opaque response）</div><div id="servo-net-模块的-cors-check()-在-bao-模式下返回-ok(())-跳过所有-cors-验证" data-criterion="servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证">servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证</div><div id="cors-preflight-(options)-请求不再发送" data-criterion="CORS preflight (OPTIONS) 请求不再发送">CORS preflight (OPTIONS) 请求不再发送</div><div id="cors-缓存-(corscache)-不再生效" data-criterion="CORS 缓存 (CorsCache) 不再生效">CORS 缓存 (CorsCache) 不再生效</div><div id="修改仅限于-servo/components/net/-的-cors-相关函数，不影响-servo-其他模块" data-criterion="修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块">修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-api="POST /evaluate-js,POST /evaluate-js-web" data-req-entity="BaoRuntime,EvaluateResult" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-002" id="req-sec-002"><h3>REQ-SEC-002 双层 JS 执行模型 — 双 Realm 架构级隔离</h3><p data-req-description="">bao 的 evaluate_js 支持两种执行模式：
 1. 页面模式（受限）：网页自身的 JS 运行在 servo 原生 Window Realm（Page Realm）内，只有前端 API（window/document/navigator/fetch 等），无法访问 Node.js API。SpiderMonkey Compartment 隔离保证物理上不可见。
 2. 可信模式（全权限）：通过 PageHandle.evaluate_js() 执行的脚本运行在独立的 Node Realm 中，拥有完整 Node.js/Bun 运行时权限（require/fs/crypto/Bun.*/process/Buffer），同时通过 JS_WrapObject 跨 Realm proxy 访问当前页面的 DOM（window/document/navigator）。
 
@@ -1105,7 +1105,7 @@ Permission 配置:
 1. 页面模式（受限）：网页自身的 JS 运行在标准 web 安全沙箱内，只有前端 API（window/document/navigator/fetch 等），无法访问 Node.js API
 2. 可信模式（全权限）：通过 PageHandle.evaluate_js() 执行的脚本拥有完整 Node.js/Bun 运行时权限（require/fs/crypto/Bun.*/process/Buffer），同时可访问当前页面的 DOM（window/document/navigator）
 
-实现机制：单 realm + CommonJS 包裹函数。evaluate_js 将用户脚本包装为 (function(require, module, exports, Bun, process, Buffer, __filename, __dirname){ &lt;user_script&gt; })，通过 JS_CallFunction 传入预先创建的 Node API JSValue 作为实参。Node API 从不写入 Window global，页面 JS 物理上无法访问。</p><div id="页面-js-中-typeof-require-===-'undefined'，无论使用任何手段（reflect.ownkeys/proxy/getownpropertynames/for...in-等）都无法发现或访问-node.js-api" data-criterion="页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API">页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API</div><div id="页面-js-中-typeof-bun-===-'undefined'，无法访问-bun-运行时" data-criterion="页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时">页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时</div><div id="可信脚本中-require('fs')-可正常读写文件" data-criterion="可信脚本中 require('fs') 可正常读写文件">可信脚本中 require('fs') 可正常读写文件</div><div id="可信脚本中-bun.file()-/-bun.write()-可正常工作" data-criterion="可信脚本中 Bun.file() / Bun.write() 可正常工作">可信脚本中 Bun.file() / Bun.write() 可正常工作</div><div id="可信脚本中-window-/-document-/-navigator-可正常访问-dom（通过-js-wrapobject-跨-realm-proxy）" data-criterion="可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）">可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）</div><div id="可信脚本中-fetch()-可正常发请求（结合-req-sec-001-无-cors-限制）" data-criterion="可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）">可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）</div><div id="可信脚本的-promise-可正常-await，与页面-js-的微任务队列兼容" data-criterion="可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容">可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容</div><div id="node-realm-与-page-realm-处于不同-spidermonkey-compartment，物理隔离而非逻辑隔离" data-criterion="Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离">Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离</div><div id="evaluate-js()-执行流程：enterrealm(node)-→-执行-→-leaverealm-→-回到-page-realm" data-criterion="evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm">evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm</div><div id="evaluate-js-web()-直接在-page-realm-执行，无-realm-切换" data-criterion="evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换">evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section id="req-sec-003" data-req="REQ-SEC-003" data-req-api="GET /sandbox-status" data-req-category="security" data-req-domain="sec" data-req-entity="PageHandle" data-req-priority="P0" data-req-status="implemented"><h3>REQ-SEC-003 Node API 沙箱隔离 — 移除页面全局注入</h3><p data-req-description="">在双 Realm 架构下，Node.js API 的隔离是架构级保证而非代码逻辑保证。
+实现机制：单 realm + CommonJS 包裹函数。evaluate_js 将用户脚本包装为 (function(require, module, exports, Bun, process, Buffer, __filename, __dirname){ &lt;user_script&gt; })，通过 JS_CallFunction 传入预先创建的 Node API JSValue 作为实参。Node API 从不写入 Window global，页面 JS 物理上无法访问。</p><div id="页面-js-中-typeof-require-===-'undefined'，无论使用任何手段（reflect.ownkeys/proxy/getownpropertynames/for...in-等）都无法发现或访问-node.js-api" data-criterion="页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API">页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API</div><div id="页面-js-中-typeof-bun-===-'undefined'，无法访问-bun-运行时" data-criterion="页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时">页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时</div><div id="可信脚本中-require('fs')-可正常读写文件" data-criterion="可信脚本中 require('fs') 可正常读写文件">可信脚本中 require('fs') 可正常读写文件</div><div id="可信脚本中-bun.file()-/-bun.write()-可正常工作" data-criterion="可信脚本中 Bun.file() / Bun.write() 可正常工作">可信脚本中 Bun.file() / Bun.write() 可正常工作</div><div id="可信脚本中-window-/-document-/-navigator-可正常访问-dom（通过-js-wrapobject-跨-realm-proxy）" data-criterion="可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）">可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）</div><div id="可信脚本中-fetch()-可正常发请求（结合-req-sec-001-无-cors-限制）" data-criterion="可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）">可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）</div><div id="可信脚本的-promise-可正常-await，与页面-js-的微任务队列兼容" data-criterion="可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容">可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容</div><div id="node-realm-与-page-realm-处于不同-spidermonkey-compartment，物理隔离而非逻辑隔离" data-criterion="Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离">Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离</div><div id="evaluate-js()-执行流程：enterrealm(node)-→-执行-→-leaverealm-→-回到-page-realm" data-criterion="evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm">evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm</div><div id="evaluate-js-web()-直接在-page-realm-执行，无-realm-切换" data-criterion="evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换">evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-api="GET /sandbox-status" data-req-entity="PageHandle" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-003" id="req-sec-003"><h3>REQ-SEC-003 Node API 沙箱隔离 — 移除页面全局注入</h3><p data-req-description="">在双 Realm 架构下，Node.js API 的隔离是架构级保证而非代码逻辑保证。
 
 修复原有安全漏洞：runtime_bridge.rs 中 install_all_native() 将 require/fs/crypto/Bun.* 等 Node.js API 直接挂在 Window global 上。
 
@@ -1962,5 +1962,16 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div id="test-sec-001" data-req-ref="REQ-SEC-001" data-test-categories="unit" data-test="TEST-SEC-001"><h4>TEST-SEC-001: REQ-SEC-001 单元测试</h4><p>TODO: 为 REQ-SEC-001 编写测试用例</p></div><div id="test-sec-002" data-req-ref="REQ-SEC-002" data-test-categories="unit" data-test="TEST-SEC-002"><h4>TEST-SEC-002: REQ-SEC-002 单元测试</h4><p>TODO: 为 REQ-SEC-002 编写测试用例</p></div><div id="test-sec-003" data-req-ref="REQ-SEC-003" data-test-categories="unit" data-test="TEST-SEC-003"><h4>TEST-SEC-003: REQ-SEC-003 单元测试</h4><p>TODO: 为 REQ-SEC-003 编写测试用例</p></div></section></body>
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-001" id="req-pure-001"><h3>REQ-PURE-001 REQ-PURE-001: boringssl → rustls 纯 Rust TLS</h3><p>删除 vendor/boringssl/ (94MB) 及 bun_boringssl/bun_boringssl_sys crate，全部 TLS 功能由 bao_tls (rustls) 提供。Bao 已有 bao_tls 完整实现（JA3/JA4 指纹模拟、cipher suite 配置），boringssl 仅因 bun_runtime 残留依赖而存在。删除 bun_runtime 后即可彻底移除。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-002" id="req-pure-002"><h3>REQ-PURE-002 REQ-PURE-002: brotli → rust-brotli 纯 Rust 压缩</h3><p>删除 vendor/brotli/ 及 bun_brotli_sys，替换为 rust-brotli (crates.io 纯 Rust 实现)。brotli 压缩/解压缩用于 HTTP content-encoding 和 Bun.compress API。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-003" id="req-pure-003"><h3>REQ-PURE-003 REQ-PURE-003: zstd → zstd-rs 纯 Rust Zstandard</h3><p>删除 vendor/zstd/ 及 bun_zstd_sys，替换为 zstd-rs (crates.io，官方纯 Rust binding)。zstd 用于 Bun.compress API 和 Node.js zlib 模块的 zstd 压缩。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-004" id="req-pure-004"><h3>REQ-PURE-004 REQ-PURE-004: zlib/libdeflate → miniz_oxide/flate2 纯 Rust</h3><p>删除 vendor/zlib/ vendor/libdeflate/ 及 bun_zlib_sys/bun_libdeflate_sys，替换为 miniz_oxide/flate2 (crates.io 纯 Rust)。用于 HTTP gzip content-encoding、Bun.compress('gzip')、Node.js zlib 模块。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-005" id="req-pure-005"><h3>REQ-PURE-005 REQ-PURE-005: mimalloc → jemallocator/Rust 默认 allocator</h3><p>删除 vendor/mimalloc/ 及 bun_mimalloc_sys，通过 Cargo.toml 的 [profile] 配置切换到 Rust 默认 allocator 或 tikv-jemallocator (crates.io 纯 Rust)。mimalloc 仅是性能优化，不影响功能正确性。配置方式: [profile.release] package = { tikv-jemallocator } 或保持默认。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-006" id="req-pure-006"><h3>REQ-PURE-006 REQ-PURE-006: highway → wide/std::simd 纯 Rust SIMD</h3><p>删除 vendor/highway/ 及 bun_highway 中对 C highway 库的依赖，替换为 Rust SIMD 抽象: wide crate (crates.io) 或 std::simd (nightly)。highway 用于哈希/校验和的 SIMD 加速，bao_hash/bun_hash 中使用。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-007" id="req-pure-007"><h3>REQ-PURE-007 REQ-PURE-007: lsquic → quinn 纯 Rust QUIC/HTTP3</h3><p>删除 vendor/lsquic/ vendor/lsqpack/ vendor/lshpack/ 及 bun_lsquic_sys/bun_lshpack_sys，替换为 quinn (crates.io 纯 Rust QUIC 实现)。lsquic 是 C 语言的 QUIC/HTTP3 库，18.5MB。quinn 已被大量生产项目验证 (h3 crate 提供 HTTP/3 层)。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-008" id="req-pure-008"><h3>REQ-PURE-008 REQ-PURE-008: lolhtml → html5ever (servo 内置) 纯 Rust HTML 重写</h3><p>删除 vendor/lolhtml/ 及 bun_lolhtml_sys，替换为 servo 内置的 html5ever (已随 servo 引入)。lolhtml 是 C 语言的 HTML 重写器，用于 Bun.transform API。servo 的 html5ever 提供完整的 HTML5 解析 + 序列化能力，Bao 已嵌入 servo。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-009" id="req-pure-009"><h3>REQ-PURE-009 REQ-PURE-009: uWS C++ → hyper 纯 Rust HTTP server/client</h3><p>删除 src/uws/ 中对 C++ uSockets/uWS 二进制的依赖 (libuwsockets.cpp)，替换为 hyper (crates.io 纯 Rust HTTP)。Bao 已在 bao_runtime/fetch_api 中用 hyper 实现 HTTP client，需扩展为 HTTP server: Bun.serve() API 用 hyper 替代 uWS C++ server。这是最后一个 C++ 编译依赖。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-010" id="req-pure-010"><h3>REQ-PURE-010 REQ-PURE-010: 删除 bun_runtime — 零 Zig/零 JSC</h3><p>删除 src/runtime/ (bun_runtime) 全部 398 个 Zig 文件和 JSC 残留代码。Bao 已有 bao_runtime (37 个 Rust 文件) 完整替代，提供所有 Node.js/Bun/Web API。bun_runtime 是唯一残留 Zig 代码的地方，删除后 Bao 实现零 Zig 依赖。同时删除所有 bun_*_jsc crate 引用和 JSC re-export (pub mod jsc { pub use bun_jsc::* })。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-nfr-category="compliance" data-nfr="纯Rust依赖合规性" id="纯rust依赖合规性"><h3>纯 Rust 依赖合规性</h3><p>所有 C/C++/Zig 原生依赖必须替换为纯 Rust 实现，消除供应链攻击面、简化交叉编译、统一内存安全模型。目标：零 unsafe FFI 调用点（除 mozjs_sys SpiderMonkey 绑定外），零 C/C++ 构建工具链依赖。</p><script type="application/ld+json">{
+  "@type": "NFR",
+  "name": "纯Rust依赖合规性",
+  "category": "compliance",
+  "metrics": [
+    {
+      "name": "performance",
+      "target": "TBD",
+      "unit": "ms"
+    }
+  ]
+}</script></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-SEC-001" data-test="TEST-SEC-001" id="test-sec-001"><h4>TEST-SEC-001: REQ-SEC-001 单元测试</h4><p>TODO: 为 REQ-SEC-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-002" data-test="TEST-SEC-002" id="test-sec-002"><h4>TEST-SEC-002: REQ-SEC-002 单元测试</h4><p>TODO: 为 REQ-SEC-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-003" data-test="TEST-SEC-003" id="test-sec-003"><h4>TEST-SEC-003: REQ-SEC-003 单元测试</h4><p>TODO: 为 REQ-SEC-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-001" data-test="TEST-PURE-001" id="test-pure-001"><h4>TEST-PURE-001: REQ-PURE-001 单元测试</h4><p>TODO: 为 REQ-PURE-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-002" data-test="TEST-PURE-002" id="test-pure-002"><h4>TEST-PURE-002: REQ-PURE-002 单元测试</h4><p>TODO: 为 REQ-PURE-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-003" data-test="TEST-PURE-003" id="test-pure-003"><h4>TEST-PURE-003: REQ-PURE-003 单元测试</h4><p>TODO: 为 REQ-PURE-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-004" data-test="TEST-PURE-004" id="test-pure-004"><h4>TEST-PURE-004: REQ-PURE-004 单元测试</h4><p>TODO: 为 REQ-PURE-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-005" data-test="TEST-PURE-005" id="test-pure-005"><h4>TEST-PURE-005: REQ-PURE-005 单元测试</h4><p>TODO: 为 REQ-PURE-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-006" data-test="TEST-PURE-006" id="test-pure-006"><h4>TEST-PURE-006: REQ-PURE-006 单元测试</h4><p>TODO: 为 REQ-PURE-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-007" data-test="TEST-PURE-007" id="test-pure-007"><h4>TEST-PURE-007: REQ-PURE-007 单元测试</h4><p>TODO: 为 REQ-PURE-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-008" data-test="TEST-PURE-008" id="test-pure-008"><h4>TEST-PURE-008: REQ-PURE-008 单元测试</h4><p>TODO: 为 REQ-PURE-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-009" data-test="TEST-PURE-009" id="test-pure-009"><h4>TEST-PURE-009: REQ-PURE-009 单元测试</h4><p>TODO: 为 REQ-PURE-009 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-010" data-test="TEST-PURE-010" id="test-pure-010"><h4>TEST-PURE-010: REQ-PURE-010 单元测试</h4><p>TODO: 为 REQ-PURE-010 编写测试用例</p></div></section></body>
 </html>
