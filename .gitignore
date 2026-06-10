@@ -1,2 +1,43 @@
+# Build artifacts
 /target
+**/target/
+
+# Rust compile artifacts
+*.rlib
+*.rmeta
+*.d
+*.pdb
+*.exp
+*.lib
+
+# Binary/build output
+/build/
+*.so
+*.dylib
+*.dll
+*.a
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code session files
 /.claude/scheduled_tasks.*
+/.claude/worktrees/
+/.claude/tasks/
+/.claude/teams/
+
+# Plans (local working docs)
+/.plans/
+
+# Debug/profile
+rust_out
+*.profraw
+*.profdata
