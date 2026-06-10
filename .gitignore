@@ -37,6 +37,12 @@ Thumbs.db
 # Plans (local working docs)
 /.plans/
 
+# Vendor test data (BoringSSL test vectors, docs — not needed for build)
+vendor/boringssl/third_party/wycheproof_testvectors/
+vendor/boringssl/crypto/cipher/test/nist_cavp/
+vendor/boringssl/ssl/test/runner/hpke/testdata/
+vendor/highway/g3doc/
+
 # Debug/profile
 rust_out
 *.profraw
