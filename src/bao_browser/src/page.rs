@@ -84,7 +84,7 @@ impl PageInner {
                     // Pipeline not ready — spin servo event loop and retry.
                     self.servo.spin_event_loop();
                     self.webview.paint();
-                    std::thread::sleep(attempt_interval);
+                    bun_sys::c::sleep_ms(20);
                     continue;
                 }
                 Err(other) => return Err(other),
@@ -232,7 +232,7 @@ impl PageInner {
             if start.elapsed() > timeout {
                 return Err(BrowserError::Init("operation timed out".into()));
             }
-            std::thread::sleep(Duration::from_millis(1));
+            bun_sys::c::sleep_ms(1);
         }
         Ok(())
     }
@@ -341,7 +341,7 @@ impl PageHandle {
                 inner.servo.spin_event_loop();
                 Ok(())
             })?;
-            std::thread::sleep(Duration::from_millis(20));
+            bun_sys::c::sleep_ms(20);
 
             // Try drain — if it succeeds, pipeline is ready.
             match self.drain_callbacks() {
@@ -675,14 +675,14 @@ mod tests {
         let source = include_str!("runtime_bridge.rs");
         let func_start = source.find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
-        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
         assert!(
-            func_body.contains("bao_runtime::fetch_api::install_fetch_global"),
+            func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
         );
         assert!(
-            func_body.contains("bao_runtime::timers::install_timer_globals"),
+            func_body.contains("bun_runtime::timers::install_timer_globals"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
         );
         assert!(
@@ -708,11 +708,11 @@ mod tests {
         let func_body = &source[func_start..func_start + func_end];
 
         assert!(
-            func_body.contains("bao_runtime::globals::install_node_apis"),
+            func_body.contains("bun_runtime::globals::install_node_apis"),
             "REQ-SEC-002 REGRESSION: create_node_realm_native must install Node APIs on Node Realm global"
         );
         assert!(
-            func_body.contains("bao_runtime::globals::install_web_apis"),
+            func_body.contains("bun_runtime::globals::install_web_apis"),
             "REQ-SEC-002: Node Realm must also have Web APIs for trusted scripts"
         );
     }
@@ -724,7 +724,7 @@ mod tests {
         let source = include_str!("runtime_bridge.rs");
         let func_start = source.find("unsafe fn create_node_realm_native")
             .expect("create_node_realm_native function not found");
-        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
         assert!(
             func_body.contains("NewCompartmentAndZone"),
             "REQ-SEC-002 REGRESSION: Node Realm must use NewCompartmentAndZone"

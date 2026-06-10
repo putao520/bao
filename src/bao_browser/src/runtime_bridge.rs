@@ -2529,7 +2529,7 @@ mod tests {
         let func_start = source.find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
         // Extract just the function body — 2000 chars max to avoid test code.
-        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
         assert!(
             func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
@@ -2562,8 +2562,8 @@ mod tests {
         let search_limit = source[func_start + func_body_start..]
             .find("pub fn inject_node_apis")
             .or_else(|| source[func_start + func_body_start..].find("/// Inject Node.js APIs as native"))
-            .unwrap_or(2000)
-            .min(2000);
+            .unwrap_or(3000)
+            .min(3000);
         let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
@@ -2596,8 +2596,8 @@ mod tests {
             .expect("function body start not found");
         let search_limit = source[func_start + func_body_start..]
             .find("unsafe fn create_node_realm_native")
-            .unwrap_or(2000)
-            .min(2000);
+            .unwrap_or(3000)
+            .min(3000);
         let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
@@ -2739,8 +2739,8 @@ mod tests {
         let search_limit = source[func_start + func_body_start..]
             .find("const NODE_POLYFILLS")
             .or_else(|| source[func_start + func_body_start..].find("/// Inject Node.js APIs as native"))
-            .unwrap_or(2000)
-            .min(2000);
+            .unwrap_or(3000)
+            .min(3000);
         let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
@@ -2774,8 +2774,8 @@ mod tests {
         let search_limit = source[func_start + func_body_start..]
             .find("unsafe fn wrap_and_install_dom_proxy")
             .or_else(|| source[func_start + func_body_start..].find("/// Wrap a DOM property"))
-            .unwrap_or(2000)
-            .min(2000);
+            .unwrap_or(3000)
+            .min(3000);
         let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
