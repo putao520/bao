@@ -116,7 +116,8 @@ itoa = "1"
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 crc32fast = "1"
 httparse = "1"
-pulldown-cmark = { version = "0.12", default-features = false }
+pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
+twox-hash = "2.1"
 
 # ─── Internal path deps ─────────────────────────────────────────────────────
 bun_opaque = { path = "src/opaque" }
