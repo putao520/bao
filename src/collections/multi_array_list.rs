@@ -376,34 +376,37 @@ impl<T> Reflected<T> {
         let mut i = 0;
         while i < n {
             let f = &fields[i];
-            // Compute size: try precise primitive size first; fall back to
-            // offset-delta (includes trailing padding, which is safe for
-            // SoA column stride). For the last field, use total_size - offset.
-            let precise = primitive_size(&f.ty.info().kind);
-            let size = match precise {
-                Some(s) => s,
-                None => {
-                    // Fields may be reordered by the compiler, so the next
-                    // field in declaration order does NOT necessarily have a
-                    // larger offset.  Find the smallest offset strictly greater
-                    // than `f.offset` across *all* fields; the delta is the
-                    // usable span (includes inter-field padding, which is safe
-                    // for SoA column stride).
-                    let mut next_offset = total_size;
-                    let mut j = 0;
-                    while j < n {
-                        let o = fields[j].offset;
-                        if o > f.offset && o < next_offset {
-                            next_offset = o;
+            // Compute size: try TypeId::size() first (handles enums and other
+            // non-primitive types precisely), then primitive_size, then fall
+            // back to offset-delta (includes trailing padding, which is safe
+            // for SoA column stride). For the last field, use total_size - offset.
+            let size = match f.ty.size() {
+                Some(s) if s > 0 => s,
+                _ => match primitive_size(&f.ty.info().kind) {
+                    Some(s) => s,
+                    None => {
+                        // Fields may be reordered by the compiler, so the next
+                        // field in declaration order does NOT necessarily have a
+                        // larger offset.  Find the smallest offset strictly greater
+                        // than `f.offset` across *all* fields; the delta is the
+                        // usable span (includes inter-field padding, which is safe
+                        // for SoA column stride).
+                        let mut next_offset = total_size;
+                        let mut j = 0;
+                        while j < n {
+                            let o = fields[j].offset;
+                            if o > f.offset && o < next_offset {
+                                next_offset = o;
+                            }
+                            j += 1;
                         }
-                        j += 1;
+                        if f.offset < next_offset {
+                            next_offset - f.offset
+                        } else {
+                            0 // ZST field at the end
+                        }
                     }
-                    if f.offset < next_offset {
-                        next_offset - f.offset
-                    } else {
-                        0 // ZST field at the end
-                    }
-                }
+                },
             };
             let align = align_sort_key(size, struct_align);
             out[i] = FieldMeta {

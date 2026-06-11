@@ -74,6 +74,9 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
         BridgeCommand::EvaluateJs { .. } => BridgeResponse {
             result: Ok(json!("")),
         },
+        BridgeCommand::CreateTarget { .. } => BridgeResponse {
+            result: Ok(json!({"targetId": "new-target-1"})),
+        },
         _ => BridgeResponse {
             result: Ok(json!({})),
         },

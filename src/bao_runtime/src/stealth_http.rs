@@ -6,6 +6,9 @@
 use bao_stealth::{Http2Fingerprint, StealthProfile, TlsFingerprint, TlsFingerprintConfig};
 use bun_http::Method;
 use bun_http::ssl_config::SSLConfig;
+use bytes::Bytes;
+use compact_str::CompactString;
+use smallvec::SmallVec;
 
 /// Configuration for a stealth-aware HTTP request.
 /// Produced by `create_stealth_request()`, consumed by callers that
@@ -51,9 +54,9 @@ pub fn create_stealth_request(
 /// Owned HTTP response from a stealth-aware request.
 pub struct StealthSyncResult {
     pub status_code: u32,
-    pub status_text: String,
-    pub headers: Vec<(String, String)>,
-    pub body: Vec<u8>,
+    pub status_text: CompactString,
+    pub headers: SmallVec<[(CompactString, CompactString); 8]>,
+    pub body: Bytes,
 }
 
 /// Perform a synchronous HTTP request with optional stealth fingerprint injection.
@@ -444,23 +447,23 @@ mod tests {
     fn test_stealth_sync_result_construction() {
         let result = StealthSyncResult {
             status_code: 200,
-            status_text: "OK".into(),
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: b"<html>".to_vec(),
+            status_text: CompactString::new("OK"),
+            headers: smallvec::smallvec![("content-type".into(), "text/html".into())],
+            body: Bytes::from_static(b"<html>"),
         };
         assert_eq!(result.status_code, 200);
         assert_eq!(result.status_text, "OK");
         assert_eq!(result.headers.len(), 1);
-        assert_eq!(result.body, b"<html>".to_vec());
+        assert_eq!(&result.body[..], b"<html>");
     }
 
     #[test]
     fn test_stealth_sync_result_empty() {
         let result = StealthSyncResult {
             status_code: 204,
-            status_text: "No Content".into(),
-            headers: vec![],
-            body: vec![],
+            status_text: CompactString::new("No Content"),
+            headers: SmallVec::new(),
+            body: Bytes::new(),
         };
         assert!(result.headers.is_empty());
         assert!(result.body.is_empty());

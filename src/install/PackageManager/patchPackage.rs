@@ -505,9 +505,9 @@ pub fn do_patch_commit(
                 Global::crash();
             }
         };
-        let paths = bun_patch::git_diff_preprocess_paths::<false>(old_folder, new_folder);
+        let paths = crate::patch_parser::git_diff_preprocess_paths::<false>(old_folder, new_folder);
         let (opts, _envp_guard) =
-            bun_patch::spawn_opts(&paths[0], &paths[1], cwd, git, &mut manager.event_loop);
+            crate::patch_parser::spawn_opts(&paths[0], &paths[1], cwd, git, &mut manager.event_loop);
 
         let mut spawn_result = match bun_spawn::sync::spawn(&opts) {
             Err(e) => {
@@ -528,7 +528,7 @@ pub fn do_patch_commit(
         };
 
         let contents: Vec<u8> =
-            match bun_patch::diff_post_process(&mut spawn_result, &paths[0], &paths[1]) {
+            match crate::patch_parser::diff_post_process(&mut spawn_result, &paths[0], &paths[1]) {
                 Err(e) => {
                     Output::pretty_error(format_args!(
                         "<r><red>error<r>: failed to make diff {}<r>\n",

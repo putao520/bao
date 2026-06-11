@@ -65,6 +65,10 @@ use core::fmt;
 // explicit #[path] attrs for PascalCase files.
 // ──────────────────────────────────────────────────────────────────────────
 
+pub mod ini;
+#[path = "patch.rs"]
+#[allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
+pub mod patch_parser;
 pub mod npm;
 #[path = "PackageManifestMap.rs"]
 pub mod package_manifest_map;

@@ -41,4 +41,3 @@ memchr = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 bun_libuv_sys.workspace = true
-bun_output.workspace = true

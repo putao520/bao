@@ -1,4 +1,6 @@
 // @trace REQ-CDP-007
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 use serde_json::{json, Value};
 
 use cdp_server::{CdpError, DomainHandler, EventSender};
@@ -7,9 +9,9 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 pub struct EmulationHandler {
     bridge: BridgeSender,
     target_id: String,
-    touch_enabled: std::sync::Mutex<bool>,
-    script_execution_disabled: std::sync::Mutex<bool>,
-    cpu_throttling_rate: std::sync::Mutex<f64>,
+    touch_enabled: AtomicBool,
+    script_execution_disabled: AtomicBool,
+    cpu_throttling_rate: AtomicU64,
 }
 
 impl EmulationHandler {
@@ -17,9 +19,9 @@ impl EmulationHandler {
         EmulationHandler {
             bridge,
             target_id,
-            touch_enabled: std::sync::Mutex::new(false),
-            script_execution_disabled: std::sync::Mutex::new(false),
-            cpu_throttling_rate: std::sync::Mutex::new(1.0),
+            touch_enabled: AtomicBool::new(false),
+            script_execution_disabled: AtomicBool::new(false),
+            cpu_throttling_rate: AtomicU64::new(1.0f64.to_bits()),
         }
     }
 }
@@ -56,16 +58,16 @@ impl DomainHandler for EmulationHandler {
                 }
             }
             "Emulation.setTouchEmulationEnabled" => {
-                *self.touch_enabled.lock().unwrap() = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                self.touch_enabled.store(params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false), Ordering::Relaxed);
                 Ok(json!({}))
             }
             "Emulation.setScriptExecutionDisabled" => {
-                *self.script_execution_disabled.lock().unwrap() = params.get("value").and_then(|v| v.as_bool()).unwrap_or(false);
+                self.script_execution_disabled.store(params.get("value").and_then(|v| v.as_bool()).unwrap_or(false), Ordering::Relaxed);
                 Ok(json!({}))
             }
             "Emulation.setFocusEmulationEnabled" => Ok(json!({})),
             "Emulation.setCPUThrottlingRate" => {
-                *self.cpu_throttling_rate.lock().unwrap() = params.get("rate").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                self.cpu_throttling_rate.store(params.get("rate").and_then(|v| v.as_f64()).unwrap_or(1.0).to_bits(), Ordering::Relaxed);
                 Ok(json!({}))
             }
             "Emulation.setDefaultBackgroundColorOverride" => Ok(json!({})),
@@ -120,29 +122,29 @@ mod tests {
     #[test]
     fn set_touch_emulation_stores_flag() {
         let (handler, _rx) = setup();
-        assert!(!*handler.touch_enabled.lock().unwrap());
+        assert!(!handler.touch_enabled.load(Ordering::Relaxed));
         handler.handle_command("Emulation.setTouchEmulationEnabled", json!({"enabled": true}), &NoopSender).unwrap();
-        assert!(*handler.touch_enabled.lock().unwrap());
+        assert!(handler.touch_enabled.load(Ordering::Relaxed));
         handler.handle_command("Emulation.setTouchEmulationEnabled", json!({"enabled": false}), &NoopSender).unwrap();
-        assert!(!*handler.touch_enabled.lock().unwrap());
+        assert!(!handler.touch_enabled.load(Ordering::Relaxed));
     }
 
     #[test]
     fn set_script_execution_disabled_stores_flag() {
         let (handler, _rx) = setup();
-        assert!(!*handler.script_execution_disabled.lock().unwrap());
+        assert!(!handler.script_execution_disabled.load(Ordering::Relaxed));
         handler.handle_command("Emulation.setScriptExecutionDisabled", json!({"value": true}), &NoopSender).unwrap();
-        assert!(*handler.script_execution_disabled.lock().unwrap());
+        assert!(handler.script_execution_disabled.load(Ordering::Relaxed));
         handler.handle_command("Emulation.setScriptExecutionDisabled", json!({"value": false}), &NoopSender).unwrap();
-        assert!(!*handler.script_execution_disabled.lock().unwrap());
+        assert!(!handler.script_execution_disabled.load(Ordering::Relaxed));
     }
 
     #[test]
     fn set_cpu_throttling_rate_stores_rate() {
         let (handler, _rx) = setup();
-        assert!((*handler.cpu_throttling_rate.lock().unwrap() - 1.0).abs() < f64::EPSILON);
+        assert!((f64::from_bits(handler.cpu_throttling_rate.load(Ordering::Relaxed)) - 1.0).abs() < f64::EPSILON);
         handler.handle_command("Emulation.setCPUThrottlingRate", json!({"rate": 4.0}), &NoopSender).unwrap();
-        assert!((*handler.cpu_throttling_rate.lock().unwrap() - 4.0).abs() < f64::EPSILON);
+        assert!((f64::from_bits(handler.cpu_throttling_rate.load(Ordering::Relaxed)) - 4.0).abs() < f64::EPSILON);
     }
 
     #[test]

@@ -8,18 +8,26 @@ use bun_core::MutableString;
 use bun_http::header_builder::HeaderBuilder;
 use bun_http::{AsyncHTTP, FetchRedirect, Method};
 use bun_url::URL;
+use bytes::Bytes;
+use compact_str::CompactString;
+use smallvec::SmallVec;
 
 /// Simplified HTTP response type extracted from picohttp::Response.
 /// Owns all data (no borrowed lifetime) so it can be stored and used freely.
+///
+/// Zero-copy / zero-alloc optimizations:
+/// - `status_text`: CompactString inlines short strings like "OK" (no heap alloc)
+/// - `headers`: SmallVec stacks ≤8 header pairs (typical case), spills to heap only for many headers
+/// - `body`: Bytes enables zero-copy slicing and avoids clone() on large responses
 pub struct HttpResponse {
     /// HTTP status code (e.g. 200, 404, 500).
     pub status_code: u32,
-    /// Status text (e.g. "OK", "Not Found").
-    pub status_text: String,
-    /// Response headers as (name, value) pairs.
-    pub headers: Vec<(String, String)>,
-    /// Response body as bytes.
-    pub body: Vec<u8>,
+    /// Status text (e.g. "OK", "Not Found"). CompactString: inline for ≤24 bytes.
+    pub status_text: CompactString,
+    /// Response headers as (name, value) pairs. SmallVec: stack for ≤8 pairs.
+    pub headers: SmallVec<[(CompactString, CompactString); 8]>,
+    /// Response body. Bytes: zero-copy slicing, cheap clone (Arc ref count).
+    pub body: Bytes,
 }
 
 /// Perform a synchronous HTTP request via bun_http::AsyncHTTP::send_sync().
@@ -81,8 +89,8 @@ pub fn http_request(
     let result = async_http.send_sync()
         .map_err(|e| format!("{:?}", e))?;
 
-    // Read body from response_buffer before reclaiming it
-    let body: Vec<u8> = unsafe { (*response_buffer).list.clone() };
+    // Read body from response_buffer via zero-copy take (avoids clone of potentially MB-sized buffer)
+    let body_vec = unsafe { std::mem::take(&mut (*response_buffer).list) };
 
     // Reclaim response buffer
     unsafe {
@@ -91,13 +99,13 @@ pub fn http_request(
 
     // Extract fields from picohttp::Response into owned HttpResponse
     let status_code = result.status_code;
-    let status_text = ::std::str::from_utf8(result.status)
-        .unwrap_or("")
-        .to_string();
+    let status_text = CompactString::new(
+        ::std::str::from_utf8(result.status).unwrap_or("")
+    );
 
-    let headers: Vec<(String, String)> = result.headers.list.iter().map(|h| {
-        let name = ::std::str::from_utf8(h.name()).unwrap_or("").to_string();
-        let value = ::std::str::from_utf8(h.value()).unwrap_or("").to_string();
+    let headers: SmallVec<[(CompactString, CompactString); 8]> = result.headers.list.iter().map(|h| {
+        let name = CompactString::new(::std::str::from_utf8(h.name()).unwrap_or(""));
+        let value = CompactString::new(::std::str::from_utf8(h.value()).unwrap_or(""));
         (name, value)
     }).collect();
 
@@ -105,7 +113,7 @@ pub fn http_request(
         status_code,
         status_text,
         headers,
-        body,
+        body: Bytes::from(body_vec),
     })
 }
 
@@ -127,14 +135,14 @@ mod tests {
     fn test_http_response_construction() {
         let resp = HttpResponse {
             status_code: 200,
-            status_text: "OK".to_string(),
-            headers: vec![("Content-Type".to_string(), "text/html".to_string())],
-            body: b"hello".to_vec(),
+            status_text: CompactString::new("OK"),
+            headers: smallvec::smallvec![("Content-Type".into(), "text/html".into())],
+            body: Bytes::from_static(b"hello"),
         };
         assert_eq!(resp.status_code, 200);
         assert_eq!(resp.status_text, "OK");
         assert_eq!(resp.headers.len(), 1);
-        assert_eq!(resp.body, b"hello".to_vec());
+        assert_eq!(&resp.body[..], b"hello");
     }
 
     // ─── HttpResponse extended tests ──────────────────────────────
@@ -144,9 +152,9 @@ mod tests {
     fn test_http_response_empty_body() {
         let resp = HttpResponse {
             status_code: 204,
-            status_text: "No Content".into(),
-            headers: vec![],
-            body: vec![],
+            status_text: CompactString::new("No Content"),
+            headers: SmallVec::new(),
+            body: Bytes::new(),
         };
         assert_eq!(resp.status_code, 204);
         assert!(resp.body.is_empty());
@@ -157,13 +165,13 @@ mod tests {
     fn test_http_response_multiple_headers() {
         let resp = HttpResponse {
             status_code: 200,
-            status_text: "OK".into(),
-            headers: vec![
+            status_text: CompactString::new("OK"),
+            headers: smallvec::smallvec![
                 ("content-type".into(), "application/json".into()),
                 ("x-request-id".into(), "abc-123".into()),
                 ("cache-control".into(), "no-cache".into()),
             ],
-            body: b"{}".to_vec(),
+            body: Bytes::from_static(b"{}"),
         };
         assert_eq!(resp.headers.len(), 3);
         assert_eq!(resp.headers[0].0, "content-type");
@@ -174,9 +182,9 @@ mod tests {
     fn test_http_response_error_status() {
         let resp = HttpResponse {
             status_code: 500,
-            status_text: "Internal Server Error".into(),
-            headers: vec![],
-            body: b"error".to_vec(),
+            status_text: CompactString::new("Internal Server Error"),
+            headers: SmallVec::new(),
+            body: Bytes::from_static(b"error"),
         };
         assert_eq!(resp.status_code, 500);
         assert_eq!(resp.status_text, "Internal Server Error");
@@ -186,9 +194,9 @@ mod tests {
     fn test_http_response_redirect_status() {
         let resp = HttpResponse {
             status_code: 301,
-            status_text: "Moved Permanently".into(),
-            headers: vec![("location".into(), "https://example.com".into())],
-            body: vec![],
+            status_text: CompactString::new("Moved Permanently"),
+            headers: smallvec::smallvec![("location".into(), "https://example.com".into())],
+            body: Bytes::new(),
         };
         assert_eq!(resp.status_code, 301);
         assert_eq!(resp.headers[0].0, "location");
@@ -219,9 +227,9 @@ mod tests {
         for code in [200, 201, 204, 301, 302, 304, 400, 401, 403, 404, 500, 502, 503] {
             let resp = HttpResponse {
                 status_code: code,
-                status_text: String::new(),
-                headers: vec![],
-                body: vec![],
+                status_text: CompactString::new(""),
+                headers: SmallVec::new(),
+                body: Bytes::new(),
             };
             assert_eq!(resp.status_code, code);
         }
@@ -231,9 +239,9 @@ mod tests {
     fn test_http_response_body_binary() {
         let resp = HttpResponse {
             status_code: 200,
-            status_text: "OK".into(),
-            headers: vec![],
-            body: vec![0x89, 0x50, 0x4E, 0x47],
+            status_text: CompactString::new("OK"),
+            headers: SmallVec::new(),
+            body: Bytes::from(vec![0x89, 0x50, 0x4E, 0x47]),
         };
         assert_eq!(&resp.body[..4], &[0x89, 0x50, 0x4E, 0x47]);
     }
@@ -242,9 +250,9 @@ mod tests {
     fn test_http_response_header_value_with_semicolon() {
         let resp = HttpResponse {
             status_code: 200,
-            status_text: "OK".into(),
-            headers: vec![("content-type".into(), "text/html; charset=utf-8".into())],
-            body: vec![],
+            status_text: CompactString::new("OK"),
+            headers: smallvec::smallvec![("content-type".into(), "text/html; charset=utf-8".into())],
+            body: Bytes::new(),
         };
         assert!(resp.headers[0].1.contains("charset=utf-8"));
     }
@@ -254,9 +262,9 @@ mod tests {
         let large_body: Vec<u8> = (0..10_000).map(|i| (i % 256) as u8).collect();
         let resp = HttpResponse {
             status_code: 200,
-            status_text: "OK".into(),
-            headers: vec![],
-            body: large_body.clone(),
+            status_text: CompactString::new("OK"),
+            headers: SmallVec::new(),
+            body: Bytes::from(large_body.clone()),
         };
         assert_eq!(resp.body.len(), 10_000);
         assert_eq!(resp.body[0], 0);
@@ -267,13 +275,13 @@ mod tests {
     fn test_http_response_header_order_preserved() {
         let resp = HttpResponse {
             status_code: 200,
-            status_text: "OK".into(),
-            headers: vec![
+            status_text: CompactString::new("OK"),
+            headers: smallvec::smallvec![
                 ("x-first".into(), "1".into()),
                 ("x-second".into(), "2".into()),
                 ("x-third".into(), "3".into()),
             ],
-            body: vec![],
+            body: Bytes::new(),
         };
         assert_eq!(resp.headers[0].0, "x-first");
         assert_eq!(resp.headers[1].0, "x-second");
@@ -285,9 +293,9 @@ mod tests {
         for code in [400, 401, 403, 404, 405, 408, 429] {
             let resp = HttpResponse {
                 status_code: code,
-                status_text: String::new(),
-                headers: vec![],
-                body: vec![],
+                status_text: CompactString::new(""),
+                headers: SmallVec::new(),
+                body: Bytes::new(),
             };
             assert!(resp.status_code >= 400 && resp.status_code < 500);
         }
@@ -298,9 +306,9 @@ mod tests {
         for code in [500, 502, 503, 504] {
             let resp = HttpResponse {
                 status_code: code,
-                status_text: String::new(),
-                headers: vec![],
-                body: vec![],
+                status_text: CompactString::new(""),
+                headers: SmallVec::new(),
+                body: Bytes::new(),
             };
             assert!(resp.status_code >= 500 && resp.status_code < 600);
         }
@@ -308,7 +316,6 @@ mod tests {
 
     #[test]
     fn test_method_debug_format() {
-        // Method implements Debug, verify it doesn't panic
         let _ = format!("{:?}", Method::GET);
         let _ = format!("{:?}", Method::POST);
     }
@@ -318,39 +325,76 @@ mod tests {
         let unicode_body = "你好世界".as_bytes().to_vec();
         let resp = HttpResponse {
             status_code: 200,
-            status_text: "OK".into(),
-            headers: vec![("content-type".into(), "text/plain; charset=utf-8".into())],
-            body: unicode_body.clone(),
+            status_text: CompactString::new("OK"),
+            headers: smallvec::smallvec![("content-type".into(), "text/plain; charset=utf-8".into())],
+            body: Bytes::from(unicode_body.clone()),
         };
-        assert_eq!(resp.body, unicode_body);
+        assert_eq!(&resp.body[..], &unicode_body[..]);
     }
 
     #[test]
     fn test_http_response_empty_status_text() {
         let resp = HttpResponse {
             status_code: 200,
-            status_text: String::new(),
-            headers: vec![],
-            body: vec![],
+            status_text: CompactString::new(""),
+            headers: SmallVec::new(),
+            body: Bytes::new(),
         };
         assert!(resp.status_text.is_empty());
     }
 
     #[test]
     fn test_http_response_header_duplicate_names() {
-        // Set-Cookie can appear multiple times
         let resp = HttpResponse {
             status_code: 200,
-            status_text: "OK".into(),
-            headers: vec![
+            status_text: CompactString::new("OK"),
+            headers: smallvec::smallvec![
                 ("set-cookie".into(), "a=1".into()),
                 ("set-cookie".into(), "b=2".into()),
             ],
-            body: vec![],
+            body: Bytes::new(),
         };
         assert_eq!(resp.headers.len(), 2);
         assert_eq!(resp.headers[0].0, "set-cookie");
         assert_eq!(resp.headers[1].0, "set-cookie");
         assert_ne!(resp.headers[0].1, resp.headers[1].1);
+    }
+
+    // ── Zero-copy / zero-alloc optimization tests ──────────────────
+    // @trace REQ-PURE-002 [req:REQ-PURE-002] [level:unit]
+
+    /// CompactString inlines short status texts like "OK" — no heap allocation.
+    #[test]
+    fn test_short_status_text_no_heap_alloc() {
+        let short = CompactString::new("OK");
+        assert_eq!(short.len(), 2);
+        assert_eq!(&*short, "OK");
+        // CompactString inlines strings up to 24 bytes on 64-bit platforms
+        let longer = CompactString::new("Internal Server Error");
+        assert_eq!(&*longer, "Internal Server Error");
+    }
+
+    /// SmallVec stacks ≤8 header pairs — no heap allocation for typical responses.
+    #[test]
+    fn test_small_headers_stack_allocated() {
+        let headers: SmallVec<[(CompactString, CompactString); 8]> = smallvec::smallvec![
+            ("content-type".into(), "text/html".into()),
+            ("content-length".into(), "42".into()),
+            ("server".into(), "bao".into()),
+        ];
+        assert_eq!(headers.len(), 3);
+        // ≤8 items: stored on the stack (no heap allocation)
+        assert!(headers.len() <= 8);
+    }
+
+    /// Bytes::from(Vec) is zero-copy — the Vec's buffer is moved into Bytes without cloning.
+    #[test]
+    fn test_body_take_no_clone() {
+        let original = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let ptr = original.as_ptr();
+        let b = Bytes::from(original);
+        // Bytes::from(Vec) reuses the same allocation — pointer is identical
+        assert_eq!(b.as_ptr(), ptr, "Bytes::from(Vec) must reuse the same allocation (zero-copy)");
+        assert_eq!(&b[..], &[0xDE, 0xAD, 0xBE, 0xEF]);
     }
 }

@@ -449,7 +449,7 @@ impl PatchTask {
             };
         // PORT NOTE: `defer this.manager.allocator.free(patchfile_txt)` — `patchfile_txt` is owned
         // (`Vec<u8>`/`Box<[u8]>`) and drops at end of scope.
-        let patchfile = match bun_patch::parse_patch_file(&patchfile_txt) {
+        let patchfile = match crate::patch_parser::parse_patch_file(&patchfile_txt) {
             Ok(p) => p,
             Err(e) => {
                 log.add_error_fmt_opts(

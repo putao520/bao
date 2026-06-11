@@ -287,9 +287,9 @@ fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Resul
     ::std::result::Result::Ok(FetchResponse {
         status_code: result.status_code as u16,
         body: String::from_utf8_lossy(&result.body).to_string(),
-        headers: result.headers,
+        headers: result.headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         url: url.to_string(),
-        status_text: result.status_text,
+        status_text: result.status_text.to_string(),
     })
 }
 

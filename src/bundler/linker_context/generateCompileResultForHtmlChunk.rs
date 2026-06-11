@@ -1,5 +1,4 @@
 use crate::mal_prelude::*;
-use core::ffi::c_void;
 use std::io::Write as _;
 
 use bstr::BStr;
@@ -15,7 +14,7 @@ use crate::linker_context_mod::{GenerateChunkCtx, LinkerContext, debug};
 use crate::options::Loader;
 use crate::{Chunk, CompileResult};
 
-/// Rrewrite the HTML with the following transforms:
+/// Rewrite the HTML with the following transforms:
 /// 1. Remove all <script> and <link> tags which were not marked as
 ///    external. This is defined by the source_index on the ImportRecord,
 ///    when it's not Index.invalid then we update it accordingly. This will
@@ -109,7 +108,7 @@ impl<'a> HTMLProcessorHandler for HTMLLoader<'a> {
 
     fn on_tag(
         &mut self,
-        element: &mut lol::Element,
+        element: &mut lol::html_content::Element,
         _path: &[u8],
         url_attribute: &[u8],
         _kind: ImportKind,
@@ -151,10 +150,14 @@ impl<'a> HTMLProcessorHandler for HTMLLoader<'a> {
             return;
         }
 
+        // Helper: in lol_html 3.0, attribute names and values are &str, not &[u8].
+        let url_attr_str = std::str::from_utf8(url_attribute).unwrap_or("");
+
         if self.linker.dev_server.is_some() {
             if !unique_key_for_additional_files.is_empty() {
+                let val = std::str::from_utf8(unique_key_for_additional_files).unwrap_or("");
                 element
-                    .set_attribute(url_attribute, unique_key_for_additional_files)
+                    .set_attribute(url_attr_str, val)
                     .unwrap_or_else(|_| panic!("unexpected error from Element.setAttribute"));
             } else if import_record.path.is_disabled
                 || loader.is_javascript_like()
@@ -162,8 +165,9 @@ impl<'a> HTMLProcessorHandler for HTMLLoader<'a> {
             {
                 element.remove();
             } else {
+                let val = std::str::from_utf8(import_record.path.pretty).unwrap_or("");
                 element
-                    .set_attribute(url_attribute, import_record.path.pretty)
+                    .set_attribute(url_attr_str, val)
                     .unwrap_or_else(|_| panic!("unexpected error from Element.setAttribute"));
             }
             return;
@@ -188,8 +192,9 @@ impl<'a> HTMLProcessorHandler for HTMLLoader<'a> {
             let url_for_css =
                 parse_graph.ast.items_url_for_css()[import_record.source_index.get() as usize];
             if !url_for_css.is_empty() {
+                let val = std::str::from_utf8(url_for_css).unwrap_or("");
                 element
-                    .set_attribute(url_attribute, url_for_css)
+                    .set_attribute(url_attr_str, val)
                     .unwrap_or_else(|_| panic!("unexpected error from Element.setAttribute"));
                 return;
             }
@@ -197,61 +202,70 @@ impl<'a> HTMLProcessorHandler for HTMLLoader<'a> {
 
         if !unique_key_for_additional_files.is_empty() {
             // Replace the external href/src with the unique key so that we later will rewrite it to the final URL or pathname
+            let val = std::str::from_utf8(unique_key_for_additional_files).unwrap_or("");
             element
-                .set_attribute(url_attribute, unique_key_for_additional_files)
+                .set_attribute(url_attr_str, val)
                 .unwrap_or_else(|_| panic!("unexpected error from Element.setAttribute"));
             return;
         }
     }
 
-    fn on_head_tag(&mut self, element: &mut lol::Element) -> bool {
-        element
-            .on_end_tag(
-                Self::end_head_tag_handler,
-                std::ptr::from_mut::<Self>(self).cast::<c_void>(),
-            )
-            .is_err()
+    fn on_head_tag(&mut self, element: &mut lol::html_content::Element) -> bool {
+        // In lol_html 3.0, on_end_tag takes EndTagHandler<'static> which is
+        // Box<dyn FnOnce(&mut EndTag<'_>) -> HandlerResult + 'static>.
+        // We erase the pointer type to c_void to make the closure 'static
+        // (the raw pointer doesn't capture lifetime info, but the rewriter
+        // runs synchronously so the pointer remains valid).
+        let this_ptr = core::ptr::from_mut::<Self>(self).cast::<core::ffi::c_void>();
+        let handler: lol::EndTagHandler<'static> = Box::new(move |end_tag: &mut lol::html_content::EndTag| {
+            // SAFETY: `this_ptr` was set from `&mut Self` and is valid for the
+            // lifetime of the rewriter.
+            let this = unsafe { &mut *this_ptr.cast::<Self>() };
+            Self::end_head_tag_handler(this, end_tag)
+        });
+        element.on_end_tag(handler).is_err()
     }
 
-    fn on_html_tag(&mut self, element: &mut lol::Element) -> bool {
-        element
-            .on_end_tag(
-                Self::end_html_tag_handler,
-                std::ptr::from_mut::<Self>(self).cast::<c_void>(),
-            )
-            .is_err()
+    fn on_html_tag(&mut self, element: &mut lol::html_content::Element) -> bool {
+        let this_ptr = core::ptr::from_mut::<Self>(self).cast::<core::ffi::c_void>();
+        let handler: lol::EndTagHandler<'static> = Box::new(move |end_tag: &mut lol::html_content::EndTag| {
+            let this = unsafe { &mut *this_ptr.cast::<Self>() };
+            Self::end_html_tag_handler(this, end_tag)
+        });
+        element.on_end_tag(handler).is_err()
     }
 
-    fn on_body_tag(&mut self, element: &mut lol::Element) -> bool {
-        element
-            .on_end_tag(
-                Self::end_body_tag_handler,
-                std::ptr::from_mut::<Self>(self).cast::<c_void>(),
-            )
-            .is_err()
+    fn on_body_tag(&mut self, element: &mut lol::html_content::Element) -> bool {
+        let this_ptr = core::ptr::from_mut::<Self>(self).cast::<core::ffi::c_void>();
+        let handler: lol::EndTagHandler<'static> = Box::new(move |end_tag: &mut lol::html_content::EndTag| {
+            let this = unsafe { &mut *this_ptr.cast::<Self>() };
+            Self::end_body_tag_handler(this, end_tag)
+        });
+        element.on_end_tag(handler).is_err()
     }
 }
 
 impl<'a> HTMLLoader<'a> {
     /// This is called for head, body, and html; whichever ends up coming first.
-    fn add_head_tags(&mut self, end_tag: &mut lol::EndTag) -> Result<(), lol::Error> {
+    fn add_head_tags(&mut self, end_tag: &mut lol::html_content::EndTag) {
         if self.added_head_tags {
-            return Ok(());
+            return;
         }
         self.added_head_tags = true;
 
         // PERF(port): was stack-fallback (std.heap.stackFallback(256))
         let slices = self.get_head_tags();
         for slice in slices.as_slice() {
-            end_tag.before(slice, true)?;
+            // In lol_html 3.0, before() takes (&str, ContentType) and returns ().
+            let content_str = std::str::from_utf8(slice).unwrap_or("");
+            end_tag.before(content_str, lol::html_content::ContentType::Html);
         }
-        Ok(())
     }
 
     /// Insert inline script before </body> so DOM elements are available.
-    fn add_body_tags(&mut self, end_tag: &mut lol::EndTag) -> Result<(), lol::Error> {
+    fn add_body_tags(&mut self, end_tag: &mut lol::html_content::EndTag) {
         if self.added_body_script {
-            return Ok(());
+            return;
         }
         self.added_body_script = true;
 
@@ -266,9 +280,9 @@ impl<'a> HTMLLoader<'a> {
                 BStr::new(js_chunk.unique_key)
             )
             .unwrap();
-            end_tag.before(&script, true)?;
+            let content_str = std::str::from_utf8(&script).unwrap_or("");
+            end_tag.before(content_str, lol::html_content::ContentType::Html);
         }
-        Ok(())
     }
 
     fn get_head_tags(&self) -> Vec<Vec<u8>> {
@@ -317,72 +331,54 @@ impl<'a> HTMLLoader<'a> {
         array
     }
 
-    extern "C" fn end_head_tag_handler(
-        end: *mut lol::EndTag,
-        opaque_this: *mut c_void,
-    ) -> lol::Directive {
-        // SAFETY: opaque_this was set to &mut HTMLLoader in on_head_tag; end is non-null from lol-html callback.
-        let (this, end): (&mut Self, &mut lol::EndTag) =
-            unsafe { (&mut *opaque_this.cast::<Self>(), &mut *end) };
+    /// Handle end head tag — called as a closure from on_head_tag.
+    fn end_head_tag_handler(
+        this: &mut Self,
+        _end_tag: &mut lol::html_content::EndTag,
+    ) -> lol::HandlerResult {
         if this.linker.dev_server.is_none() {
-            if this.add_head_tags(end).is_err() {
-                return lol::Directive::Stop;
-            }
+            this.add_head_tags(_end_tag);
         } else {
             this.end_tag_indices.head = Some(u32::try_from(this.output.len()).expect("int cast"));
         }
-        lol::Directive::Continue
+        Ok(())
     }
 
-    extern "C" fn end_body_tag_handler(
-        end: *mut lol::EndTag,
-        opaque_this: *mut c_void,
-    ) -> lol::Directive {
-        // SAFETY: opaque_this was set to &mut HTMLLoader in on_body_tag; end is non-null from lol-html callback.
-        let (this, end): (&mut Self, &mut lol::EndTag) =
-            unsafe { (&mut *opaque_this.cast::<Self>(), &mut *end) };
+    /// Handle end body tag — called as a closure from on_body_tag.
+    fn end_body_tag_handler(
+        this: &mut Self,
+        _end_tag: &mut lol::html_content::EndTag,
+    ) -> lol::HandlerResult {
         if this.linker.dev_server.is_none() {
             if this.compile_to_standalone_html {
                 // In standalone mode, insert JS before </body> so DOM is available
-                if this.add_body_tags(end).is_err() {
-                    return lol::Directive::Stop;
-                }
+                this.add_body_tags(_end_tag);
             } else {
-                if this.add_head_tags(end).is_err() {
-                    return lol::Directive::Stop;
-                }
+                this.add_head_tags(_end_tag);
             }
         } else {
             this.end_tag_indices.body = Some(u32::try_from(this.output.len()).expect("int cast"));
         }
-        lol::Directive::Continue
+        Ok(())
     }
 
-    extern "C" fn end_html_tag_handler(
-        end: *mut lol::EndTag,
-        opaque_this: *mut c_void,
-    ) -> lol::Directive {
-        // SAFETY: opaque_this was set to &mut HTMLLoader in on_html_tag; end is non-null from lol-html callback.
-        let (this, end): (&mut Self, &mut lol::EndTag) =
-            unsafe { (&mut *opaque_this.cast::<Self>(), &mut *end) };
+    /// Handle end html tag — called as a closure from on_html_tag.
+    fn end_html_tag_handler(
+        this: &mut Self,
+        _end_tag: &mut lol::html_content::EndTag,
+    ) -> lol::HandlerResult {
         if this.linker.dev_server.is_none() {
             if this.compile_to_standalone_html {
                 // Fallback: if no </body> was found, insert both CSS and JS before </html>
-                if this.add_head_tags(end).is_err() {
-                    return lol::Directive::Stop;
-                }
-                if this.add_body_tags(end).is_err() {
-                    return lol::Directive::Stop;
-                }
+                this.add_head_tags(_end_tag);
+                this.add_body_tags(_end_tag);
             } else {
-                if this.add_head_tags(end).is_err() {
-                    return lol::Directive::Stop;
-                }
+                this.add_head_tags(_end_tag);
             }
         } else {
             this.end_tag_indices.html = Some(u32::try_from(this.output.len()).expect("int cast"));
         }
-        lol::Directive::Continue
+        Ok(())
     }
 }
 

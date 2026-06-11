@@ -157,7 +157,7 @@ impl PageInner {
         let result = crate::runtime_bridge::evaluate_js_via_node_realm(webview_id, script);
         self.drain_callbacks()?;
 
-        let eval_result = result.lock().unwrap();
+        let eval_result = result.get().expect("evaluate result not set after drain");
         match (&eval_result.value, &eval_result.error) {
             (Some(val), _) => Ok(val.clone()),
             (_, Some(err)) => Err(BrowserError::JavaScript(err.clone())),
@@ -655,7 +655,7 @@ mod tests {
     }
 
     /// Verify evaluate_js reads result from shared EvaluateResult.
-    /// REQ-SEC-002: Result must come from Arc<Mutex<EvaluateResult>>.
+    /// REQ-SEC-002: Result must come from Arc<OnceLock<EvaluateResult>>.
     #[test]
     fn evaluate_js_reads_evaluate_result() {
         let source = include_str!("page.rs");

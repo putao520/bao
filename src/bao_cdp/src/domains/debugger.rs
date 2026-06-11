@@ -1,4 +1,6 @@
 // @trace REQ-CDP-003
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use serde_json::{json, Value};
 
 use cdp_server::{CdpError, DomainHandler, EventSender};
@@ -112,7 +114,7 @@ const DEBUGGER_SETUP_JS: &str = r#"
 pub struct DebuggerHandler {
     bridge: BridgeSender,
     target_id: String,
-    breakpoints: std::sync::Mutex<u64>,
+    breakpoints: AtomicU64,
 }
 
 impl DebuggerHandler {
@@ -120,7 +122,7 @@ impl DebuggerHandler {
         DebuggerHandler {
             bridge,
             target_id,
-            breakpoints: std::sync::Mutex::new(0),
+            breakpoints: AtomicU64::new(0),
         }
     }
 }
@@ -154,9 +156,7 @@ impl DomainHandler for DebuggerHandler {
                 Ok(json!({}))
             }
             "Debugger.setBreakpointByUrl" => {
-                let mut bp_id = self.breakpoints.lock().unwrap();
-                *bp_id += 1;
-                let id = *bp_id;
+                let id = self.breakpoints.fetch_add(1, Ordering::Relaxed) + 1;
                 let line_number = params.get("lineNumber").and_then(|v| as_u64_safe(v));
                 let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("");
                 let url_regex = params.get("urlRegex").and_then(|v| v.as_str());

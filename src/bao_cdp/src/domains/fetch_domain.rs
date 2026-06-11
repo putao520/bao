@@ -1,4 +1,7 @@
 // @trace REQ-CDP-007
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
 use serde_json::{json, Value};
 
 use cdp_server::{CdpError, DomainHandler, EventSender};
@@ -63,8 +66,8 @@ const FETCH_INTERCEPTOR_JS: &str = r#"
 pub struct FetchHandler {
     bridge: BridgeSender,
     target_id: String,
-    patterns: std::sync::Mutex<Vec<Value>>,
-    enabled: std::sync::Mutex<bool>,
+    patterns: Mutex<Vec<Value>>,
+    enabled: AtomicBool,
 }
 
 impl FetchHandler {
@@ -72,8 +75,8 @@ impl FetchHandler {
         FetchHandler {
             bridge,
             target_id,
-            patterns: std::sync::Mutex::new(Vec::new()),
-            enabled: std::sync::Mutex::new(false),
+            patterns: Mutex::new(Vec::new()),
+            enabled: AtomicBool::new(false),
         }
     }
 }
@@ -91,7 +94,7 @@ impl DomainHandler for FetchHandler {
                 if let Some(pats) = patterns {
                     *self.patterns.lock().unwrap() = pats.clone();
                 }
-                *self.enabled.lock().unwrap() = true;
+                self.enabled.store(true, Ordering::Relaxed);
 
                 // Inject JS interceptor into the page via bridge
                 let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
@@ -104,7 +107,7 @@ impl DomainHandler for FetchHandler {
             }
             "Fetch.disable" => {
                 self.patterns.lock().unwrap().clear();
-                *self.enabled.lock().unwrap() = false;
+                self.enabled.store(false, Ordering::Relaxed);
                 Ok(json!({}))
             }
             "Fetch.continueRequest" | "Fetch.continueWithResponse" => {
@@ -182,9 +185,9 @@ mod tests {
     fn fetch_enable_sets_enabled_flag() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
         let h = FetchHandler::new(bridge, TID.into());
-        assert!(!*h.enabled.lock().unwrap());
+        assert!(!h.enabled.load(Ordering::Relaxed));
         h.handle_command("Fetch.enable", json!({}), &NOOP).unwrap();
-        assert!(*h.enabled.lock().unwrap());
+        assert!(h.enabled.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -203,7 +206,7 @@ mod tests {
         h.handle_command("Fetch.enable", json!({"patterns": [{"urlPattern": "*"}]}), &NOOP).unwrap();
         h.handle_command("Fetch.disable", json!({}), &NOOP).unwrap();
         assert!(h.patterns.lock().unwrap().is_empty());
-        assert!(!*h.enabled.lock().unwrap());
+        assert!(!h.enabled.load(Ordering::Relaxed));
     }
 
     #[test]

@@ -1973,5 +1973,69 @@ Permission 配置:
       "unit": "ms"
     }
   ]
-}</script></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-SEC-001" data-test="TEST-SEC-001" id="test-sec-001"><h4>TEST-SEC-001: REQ-SEC-001 单元测试</h4><p>TODO: 为 REQ-SEC-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-002" data-test="TEST-SEC-002" id="test-sec-002"><h4>TEST-SEC-002: REQ-SEC-002 单元测试</h4><p>TODO: 为 REQ-SEC-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-003" data-test="TEST-SEC-003" id="test-sec-003"><h4>TEST-SEC-003: REQ-SEC-003 单元测试</h4><p>TODO: 为 REQ-SEC-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-001" data-test="TEST-PURE-001" id="test-pure-001"><h4>TEST-PURE-001: REQ-PURE-001 单元测试</h4><p>TODO: 为 REQ-PURE-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-002" data-test="TEST-PURE-002" id="test-pure-002"><h4>TEST-PURE-002: REQ-PURE-002 单元测试</h4><p>TODO: 为 REQ-PURE-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-003" data-test="TEST-PURE-003" id="test-pure-003"><h4>TEST-PURE-003: REQ-PURE-003 单元测试</h4><p>TODO: 为 REQ-PURE-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-004" data-test="TEST-PURE-004" id="test-pure-004"><h4>TEST-PURE-004: REQ-PURE-004 单元测试</h4><p>TODO: 为 REQ-PURE-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-005" data-test="TEST-PURE-005" id="test-pure-005"><h4>TEST-PURE-005: REQ-PURE-005 单元测试</h4><p>TODO: 为 REQ-PURE-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-006" data-test="TEST-PURE-006" id="test-pure-006"><h4>TEST-PURE-006: REQ-PURE-006 单元测试</h4><p>TODO: 为 REQ-PURE-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-007" data-test="TEST-PURE-007" id="test-pure-007"><h4>TEST-PURE-007: REQ-PURE-007 单元测试</h4><p>TODO: 为 REQ-PURE-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-008" data-test="TEST-PURE-008" id="test-pure-008"><h4>TEST-PURE-008: REQ-PURE-008 单元测试</h4><p>TODO: 为 REQ-PURE-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-009" data-test="TEST-PURE-009" id="test-pure-009"><h4>TEST-PURE-009: REQ-PURE-009 单元测试</h4><p>TODO: 为 REQ-PURE-009 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-010" data-test="TEST-PURE-010" id="test-pure-010"><h4>TEST-PURE-010: REQ-PURE-010 单元测试</h4><p>TODO: 为 REQ-PURE-010 编写测试用例</p></div></section></body>
+}</script></section><section data-req-priority="P0" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-001" id="req-perf-001"><h3>REQ-PERF-001 HTTP 响应路径零拷贝</h3><p>## 问题
+HTTP 响应路径上 HttpResponse 结构体使用 String/Vec&lt;u8&gt; clone()，每次响应至少 3 次堆分配：
+1. status_text: String（通常 "OK"，2 字节却分配 24 字节 + heap）
+2. headers: Vec&lt;(String, String)&gt;（每个 header name/value 都分配 String）
+3. body: Vec&lt;u8&gt; clone()（MB 级响应体完整拷贝）
+
+## 验收标准
+- [ ] HttpResponse.status_text 改为 CompactString 或 &amp;'static str
+- [ ] HttpResponse.headers 改为 SmallVec&lt;[(CompactString, CompactString); 8]&gt;
+- [ ] HttpResponse.body 通过 MutableString::take() 零拷贝获取，消除 clone()
+- [ ] HTTP 响应路径零 MB 级内存拷贝
+- [ ] cargo test 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P0" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-002" id="req-perf-002"><h3>REQ-PERF-002 CDP Domain Handler 去锁化 — Mutex&lt;bool&gt;/Mutex&lt;f64&gt; → Cell</h3><p>## 问题
+CDP Domain Handler 使用 std::sync::Mutex 包装单个标量字段（Mutex&lt;bool&gt;、Mutex&lt;f64&gt;、Mutex&lt;u64&gt;），这是 Java 程序员思维：
+- CDP domain handler 在 servo script thread 单线程上运行
+- Mutex 的 lock/unlock 涉及 futex syscall，每个 CDP 命令 2-4 次系统调用
+- Cell&lt;bool&gt;/Cell&lt;f64&gt; 是零开销内部可变性
+
+受影响文件：
+- bao_cdp/domains/emulation.rs: Mutex&lt;bool&gt; ×2, Mutex&lt;f64&gt; ×1
+- bao_cdp/domains/network.rs: Mutex&lt;bool&gt; ×2, Mutex&lt;Value&gt; ×1, Mutex&lt;Option&lt;NetworkConditions&gt;&gt; ×1
+- bao_cdp/domains/debugger.rs: Mutex&lt;u64&gt; ×1
+
+## 验收标准
+- [ ] emulation.rs: 3 个 Mutex → Cell
+- [ ] network.rs: cache_disabled/extra_headers/network_conditions 改为单 RefCell 或 Cell
+- [ ] debugger.rs: Mutex&lt;u64&gt; → Cell&lt;u64&gt;
+- [ ] 所有 DomainHandler 可变状态用 Cell/RefCell 替代 Mutex
+- [ ] cargo test -p bao_cdp 全部通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-003" id="req-perf-003"><h3>REQ-PERF-003 引入 bytes/compact_str/smallvec/dashmap 成熟库</h3><p>## 问题
+项目没有使用 bytes crate，所有 HTTP buffer 都是手动 Vec&lt;u8&gt; + clone() 管理。bytes::Bytes 提供零拷贝 slice 引用（Bytes::slice() 不分配），BytesMut 提供 inline 小 buffer。
+
+## 成熟库引入
+1. `bytes` — 零拷贝 buffer 管理，替换 HTTP body/response/request 的 Vec&lt;u8&gt;
+2. `compact_str` — 短字符串内联存储（24字节内无堆分配），替换 CDP session ID / HTTP header name / URL pathname
+3. `smallvec` — 已在 workspace deps 但未使用，替换小集合堆分配（HTTP headers &lt;8对, event listeners &lt;10个）
+4. `dashmap` — 替换 Mutex&lt;HashMap&gt;（runtime_bridge Realm 映射、fetch 状态等）
+
+## 验收标准
+- [ ] bytes: HttpResponse.body 改为 Bytes，HTTP request buffer 用 BytesMut
+- [ ] compact_str: CDP session ID / HTTP header name / URL pathname 改为 CompactString
+- [ ] smallvec: HTTP headers 改为 SmallVec&lt;[(CompactString, CompactString); 8]&gt;
+- [ ] dashmap: runtime_bridge NODE_REALMS/PAGE_GLOBALS 改为 DashMap
+- [ ] cargo test 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-004" id="req-perf-004"><h3>REQ-PERF-004 CDP enum dispatch + OnceLock 替代 Arc&lt;Mutex&lt;&gt;&gt;</h3><p>## 问题
+CDP Domain Handler 使用 Box&lt;dyn DomainHandler&gt; 动态分发（11 个 vtable 调用 + 堆分配），这是 Go interface 翻译。domain 数量固定，应用 enum dispatch 消除 vtable。
+
+同样，Arc&lt;Mutex&lt;EvaluateResult&gt;&gt; 用于 JS 评估结果传递，但 EvaluateResult 是一次性写入（write-once, read-once），应改为 Arc&lt;OnceLock&lt;EvaluateResult&gt;&gt;。
+
+## 验收标准
+- [ ] DomainHandler trait → enum DomainDispatch { Page(PageHandler), ... } 消除 vtable
+- [ ] Registry 改为 Vec&lt;DomainDispatch&gt; 或固定数组
+- [ ] Arc&lt;Mutex&lt;EvaluateResult&gt;&gt; → Arc&lt;OnceLock&lt;EvaluateResult&gt;&gt;
+- [ ] cargo test -p bao_cdp 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P2" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-005" id="req-perf-005"><h3>REQ-PERF-005 消除 Bun 翻译残留反模式</h3><p>## 问题
+Bun 翻译代码中大量反模式：
+1. Box::new([]) 空数组（Go nil slice 翻译）— 12 处，应改为 Vec::new() 或 Option&lt;Vec&gt;
+2. Option&lt;Box&lt;T&gt;&gt; 不必要堆分配 — 4+ 处（UrlState, EmitterState, LibdeflateState, HeapRequestBodyBuffer），应改为 Option&lt;T&gt;
+3. C 风格索引循环 for i in 0..argc — 15+ 处，应改为迭代器适配器
+4. thread_local RefCell&lt;Vec&lt;u8&gt;&gt; clone() — node_crypto 5 处，应 take()+replace() 零拷贝交换
+5. CURRENT_DIR RefCell&lt;PathBuf&gt; clone() — module_loader 4 处，应就地带引用
+
+## 验收标准
+- [ ] 12 处 Box::new([]) → Vec::new() 或 Option&lt;Vec&gt;
+- [ ] 4+ 处 Option&lt;Box&lt;T&gt;&gt; → Option&lt;T&gt;（UrlState 等小型结构体）
+- [ ] 15+ 处 C 风格索引循环 → 迭代器适配器
+- [ ] node_crypto 5 处 thread_local clone → take()/replace() 零拷贝
+- [ ] module_loader CURRENT_DIR clone → 就地带引用
+- [ ] cargo test 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-SEC-001" data-test="TEST-SEC-001" id="test-sec-001"><h4>TEST-SEC-001: REQ-SEC-001 单元测试</h4><p>TODO: 为 REQ-SEC-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-002" data-test="TEST-SEC-002" id="test-sec-002"><h4>TEST-SEC-002: REQ-SEC-002 单元测试</h4><p>TODO: 为 REQ-SEC-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-003" data-test="TEST-SEC-003" id="test-sec-003"><h4>TEST-SEC-003: REQ-SEC-003 单元测试</h4><p>TODO: 为 REQ-SEC-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-001" data-test="TEST-PURE-001" id="test-pure-001"><h4>TEST-PURE-001: REQ-PURE-001 单元测试</h4><p>TODO: 为 REQ-PURE-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-002" data-test="TEST-PURE-002" id="test-pure-002"><h4>TEST-PURE-002: REQ-PURE-002 单元测试</h4><p>TODO: 为 REQ-PURE-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-003" data-test="TEST-PURE-003" id="test-pure-003"><h4>TEST-PURE-003: REQ-PURE-003 单元测试</h4><p>TODO: 为 REQ-PURE-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-004" data-test="TEST-PURE-004" id="test-pure-004"><h4>TEST-PURE-004: REQ-PURE-004 单元测试</h4><p>TODO: 为 REQ-PURE-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-005" data-test="TEST-PURE-005" id="test-pure-005"><h4>TEST-PURE-005: REQ-PURE-005 单元测试</h4><p>TODO: 为 REQ-PURE-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-006" data-test="TEST-PURE-006" id="test-pure-006"><h4>TEST-PURE-006: REQ-PURE-006 单元测试</h4><p>TODO: 为 REQ-PURE-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-007" data-test="TEST-PURE-007" id="test-pure-007"><h4>TEST-PURE-007: REQ-PURE-007 单元测试</h4><p>TODO: 为 REQ-PURE-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-008" data-test="TEST-PURE-008" id="test-pure-008"><h4>TEST-PURE-008: REQ-PURE-008 单元测试</h4><p>TODO: 为 REQ-PURE-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-009" data-test="TEST-PURE-009" id="test-pure-009"><h4>TEST-PURE-009: REQ-PURE-009 单元测试</h4><p>TODO: 为 REQ-PURE-009 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-010" data-test="TEST-PURE-010" id="test-pure-010"><h4>TEST-PURE-010: REQ-PURE-010 单元测试</h4><p>TODO: 为 REQ-PURE-010 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-001" data-test="TEST-PERF-001" id="test-perf-001"><h4>TEST-PERF-001: REQ-PERF-001 单元测试</h4><p>TODO: 为 REQ-PERF-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-002" data-test="TEST-PERF-002" id="test-perf-002"><h4>TEST-PERF-002: REQ-PERF-002 单元测试</h4><p>TODO: 为 REQ-PERF-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-003" data-test="TEST-PERF-003" id="test-perf-003"><h4>TEST-PERF-003: REQ-PERF-003 单元测试</h4><p>TODO: 为 REQ-PERF-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-004" data-test="TEST-PERF-004" id="test-perf-004"><h4>TEST-PERF-004: REQ-PERF-004 单元测试</h4><p>TODO: 为 REQ-PERF-004 编写测试用例</p></div><div id="test-perf-005" data-req-ref="REQ-PERF-005" data-test-categories="unit" data-test="TEST-PERF-005"><h4>TEST-PERF-005: REQ-PERF-005 单元测试</h4><p>TODO: 为 REQ-PERF-005 编写测试用例</p></div></section></body>
 </html>

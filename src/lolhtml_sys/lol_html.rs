@@ -4,36 +4,18 @@
 //! with direct Rust types. The API surface is preserved as closely as possible to
 //! minimize consumer changes, but some v3 API differences require adaptation:
 //!
-//! - `before/after/replace` content type: `bool` → `ContentType` enum
-//! - `comment!` macro → `comments!`
+//! - `before/after/replace` content type: `bool` -> `ContentType` enum
+//! - `comment!` macro -> `comments!`
 //! - Handler method return types differ (some now return `()` not `Result`)
+//! - `DirectiveCallback` trait -> closures
+//! - `HTMLRewriterBuilder` / `HTMLSelector` -> `Settings` + `Selector`
+//! - `OutputSink::write` / `OutputSink::done` -> `OutputSink::handle_chunk`
 
 // Re-export the entire lol_html crate so consumers can use lol_html types directly.
 pub use lol_html::*;
 
-/// Encoding — maps the old C FFI Encoding enum.
-/// lol_html v3 uses `AsciiCompatibleEncoding` internally; we expose UTF-8 by default.
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub enum Encoding {
-    UTF8,
-    UTF16,
-}
-
-impl Encoding {
-    pub fn label(self) -> &'static [u8] {
-        match self {
-            Encoding::UTF8 => b"UTF-8",
-            Encoding::UTF16 => b"UTF-16",
-        }
-    }
-}
-
-/// Memory settings — maps old C FFI MemorySettings.
-#[derive(Copy, Clone)]
-pub struct MemorySettings {
-    pub preallocated_parsing_buffer_size: usize,
-    pub max_allowed_memory_usage: usize,
-}
+/// Error type alias — maps old `lol::Error` to `lol_html::errors::RewritingError`.
+pub type Error = lol_html::errors::RewritingError;
 
 /// Source location bytes — preserved for consumers.
 #[derive(Copy, Clone, Debug)]
@@ -42,21 +24,13 @@ pub struct SourceLocationBytes {
     pub end: usize,
 }
 
-/// Error type — re-exported from lol_html.
-pub type Error = lol_html::errors::RewritingError;
-
-/// ContentType helper — maps old `bool` html_content parameter.
-/// In the old C API, `html_content: bool` meant `true = HTML, false = Text`.
-/// lol_html v3 uses `ContentType::Html` / `ContentType::Text`.
-pub use lol_html::html_content::ContentType;
-
 /// Helper to convert old bool to ContentType (true = Html, false = Text).
 #[inline(always)]
-pub fn content_type_from_bool(html: bool) -> ContentType {
+pub fn content_type_from_bool(html: bool) -> lol_html::html_content::ContentType {
     if html {
-        ContentType::Html
+        lol_html::html_content::ContentType::Html
     } else {
-        ContentType::Text
+        lol_html::html_content::ContentType::Text
     }
 }
 
@@ -65,7 +39,7 @@ mod tests {
     use super::*;
     use lol_html::{HtmlRewriter, Settings, element, text, comments};
 
-    // ── Basic rewriter: element tag rename ──────────────────────────────────
+    // -- Basic rewriter: element tag rename
 
     #[test]
     fn rewrite_element_tag_name() {
@@ -82,7 +56,7 @@ mod tests {
         assert!(result.contains("<h2>"), "h1 should be renamed to h2, got: {result}");
     }
 
-    // ── Element attribute manipulation ──────────────────────────────────────
+    // -- Element attribute manipulation
 
     #[test]
     fn rewrite_element_set_attribute() {
@@ -115,15 +89,15 @@ mod tests {
         assert!(result.contains("data-original-href=\"https://example.com\""), "got: {result}");
     }
 
-    // ── Content insertion ──────────────────────────────────────────────────
+    // -- Content insertion
 
     #[test]
     fn rewrite_element_before_after() {
         let mut output = Vec::new();
         let settings = Settings::new()
             .append_element_content_handler(element!("p", |el| {
-                el.before("<span>before</span>", ContentType::Html);
-                el.after("<span>after</span>", ContentType::Html);
+                el.before("<span>before</span>", lol_html::html_content::ContentType::Html);
+                el.after("<span>after</span>", lol_html::html_content::ContentType::Html);
                 Ok(())
             }));
         let mut rewriter = HtmlRewriter::new(settings, |c: &[u8]| output.extend_from_slice(c));
@@ -139,8 +113,8 @@ mod tests {
         let mut output = Vec::new();
         let settings = Settings::new()
             .append_element_content_handler(element!("div", |el| {
-                el.prepend("PREFIX:", ContentType::Text);
-                el.append(":SUFFIX", ContentType::Text);
+                el.prepend("PREFIX:", lol_html::html_content::ContentType::Text);
+                el.append(":SUFFIX", lol_html::html_content::ContentType::Text);
                 Ok(())
             }));
         let mut rewriter = HtmlRewriter::new(settings, |c: &[u8]| output.extend_from_slice(c));
@@ -151,7 +125,7 @@ mod tests {
         assert!(result.contains(":SUFFIX"), "got: {result}");
     }
 
-    // ── Text content handler ───────────────────────────────────────────────
+    // -- Text content handler
 
     #[test]
     fn rewrite_text_content() {
@@ -159,7 +133,7 @@ mod tests {
         let settings = Settings::new()
             .append_element_content_handler(text!("p", |t| {
                 if t.last_in_text_node() {
-                    t.after(" [processed]", ContentType::Text);
+                    t.after(" [processed]", lol_html::html_content::ContentType::Text);
                 }
                 Ok(())
             }));
@@ -170,7 +144,7 @@ mod tests {
         assert!(result.contains("[processed]"), "got: {result}");
     }
 
-    // ── Comment handler ────────────────────────────────────────────────────
+    // -- Comment handler
 
     #[test]
     fn rewrite_comment() {
@@ -187,7 +161,7 @@ mod tests {
         assert!(result.contains("modified comment"), "got: {result}");
     }
 
-    // ── Streaming: multiple write chunks ───────────────────────────────────
+    // -- Streaming: multiple write chunks
 
     #[test]
     fn rewrite_streaming_chunks() {
@@ -205,7 +179,7 @@ mod tests {
         assert!(result.contains("<strong>Hello</strong>"), "got: {result}");
     }
 
-    // ── Remove element ─────────────────────────────────────────────────────
+    // -- Remove element
 
     #[test]
     fn rewrite_remove_element() {
@@ -223,19 +197,11 @@ mod tests {
         assert!(result.contains("kept"), "kept element should remain, got: {result}");
     }
 
-    // ── ContentType helper ─────────────────────────────────────────────────
+    // -- ContentType helper
 
     #[test]
     fn content_type_from_bool_mapping() {
-        assert!(matches!(content_type_from_bool(true), ContentType::Html));
-        assert!(matches!(content_type_from_bool(false), ContentType::Text));
-    }
-
-    // ── Encoding shim ──────────────────────────────────────────────────────
-
-    #[test]
-    fn encoding_label() {
-        assert_eq!(Encoding::UTF8.label(), b"UTF-8");
-        assert_eq!(Encoding::UTF16.label(), b"UTF-16");
+        assert!(matches!(content_type_from_bool(true), lol_html::html_content::ContentType::Html));
+        assert!(matches!(content_type_from_bool(false), lol_html::html_content::ContentType::Text));
     }
 }

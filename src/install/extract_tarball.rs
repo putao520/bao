@@ -329,7 +329,7 @@ impl ExtractTarball {
                 && zlib_pool.list.capacity() > 16
                 && esimated_output_size > 0
             {
-                'use_libdeflate: {
+                {
                     // Pure Rust fast-path: use bun_zlib (flate2 + miniz_oxide).
                     zlib_pool.list.clear();
                     if let Some(decompressed) = bun_zlib::inflate_decompress(tgz_bytes, 31) {

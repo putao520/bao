@@ -4,13 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [lib]
-path = "lib.rs"
+path = "src/lib.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
-bun_core.workspace = true
-
-[features]
-debug_logs = []
+bun_core = { path = "../bun_core" }

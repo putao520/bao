@@ -45,6 +45,9 @@ bun_event_loop = { path = "../event_loop" }
 bun_dns = { path = "../dns" }
 bun_io = { path = "../io" }
 bun_base64 = { path = "../base64" }
+bytes.workspace = true
+compact_str.workspace = true
+smallvec.workspace = true
 bao_uloop = { path = "../bao_uloop" }
 
 [dev-dependencies]

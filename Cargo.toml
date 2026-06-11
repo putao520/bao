@@ -3,10 +3,12 @@ resolver = "2"
 members = [
     "src/bao_engine",
     "src/bao_engine_macros",
+    "src/bao_crypto",
     "src/bao_runtime",
     "src/bao_browser",
     "src/bao_bin",
     "src/bao_cdp",
+    "src/bao_tls",
     "src/bao_stealth",
     "src/bao_native_stubs",
     "src/bao_uloop",
@@ -28,12 +30,9 @@ members = [
     "src/base64",
     "src/safety",
     "src/shell_parser",
-    "src/ini",
     "src/exe_format",
     "src/which",
-    "src/valkey",
     "src/perf",
-    "src/csrf",
     "src/s3_signing",
     "src/sha_hmac",
     "src/url",
@@ -45,7 +44,6 @@ members = [
     "src/spawn",
     "src/picohttp",
     "src/router",
-    "src/output",
     "src/windows_sys",
     "src/dotenv",
     "src/watcher",
@@ -55,9 +53,7 @@ members = [
     "src/clap_macros",
     "src/install_types",
     "src/options_types",
-    "src/patch",
     "src/platform",
-    "src/js",
     "src/ast",
     "src/js_parser",
     "src/js_printer",
@@ -71,7 +67,9 @@ members = [
     "src/paths",
     "src/sys",
     "src/collections",
-    "src/lshpack_sys",
+    "src/install",
+    "src/output",
+    "src/transpiler",
     "src/lsquic_sys",
     "src/lolhtml_sys",
 ]
@@ -85,6 +83,8 @@ repository = "https://github.com/user/bao"
 [workspace.dependencies]
 mozjs = { path = "../mozjs/mozjs" }
 mozjs_sys = { path = "../mozjs/mozjs-sys" }
+bao_crypto = { path = "src/bao_crypto" }
+bao_tls = { path = "src/bao_tls" }
 bao_native_stubs = { path = "src/bao_native_stubs" }
 bao_uloop = { path = "src/bao_uloop" }
 
@@ -109,6 +109,9 @@ zstd-pure-rs = "0.1"
 base64 = "0.22"
 vlq = "0.5"
 thiserror = "2"
+bytes = "1"
+compact_str = "0.8"
+dashmap = "6"
 smallvec = "1"
 bumpalo = { version = "3", features = ["collections", "boxed"] }
 typed-arena = "2"
@@ -134,7 +137,6 @@ bun_http = { path = "src/http" }
 bun_install = { path = "src/install" }
 bun_parsers = { path = "src/parsers" }
 bun_io = { path = "src/io" }
-bun_js = { path = "src/js" }
 bun_libarchive = { path = "src/libarchive" }
 bun_md = { path = "src/md" }
 bun_paths = { path = "src/paths" }
@@ -145,19 +147,16 @@ bun_sourcemap = { path = "src/sourcemap" }
 bun_sql = { path = "src/sql" }
 bun_sys = { path = "src/sys" }
 bun_threading = { path = "src/threading" }
-bun_valkey = { path = "src/valkey" }
 bun_watcher = { path = "src/watcher" }
 bun_clap = { path = "src/clap" }
 bun_clap_macros = { path = "src/clap_macros" }
 bun_crash_handler = { path = "src/crash_handler" }
-bun_csrf = { path = "src/csrf" }
 bun_dns = { path = "src/dns" }
 bun_dotenv = { path = "src/dotenv" }
 bun_event_loop = { path = "src/event_loop" }
 bun_exe_format = { path = "src/exe_format" }
 bun_highway = { path = "src/highway" }
 bun_http_types = { path = "src/http_types" }
-bun_ini = { path = "src/ini" }
 bun_install_types = { path = "src/install_types" }
 bun_js_parser = { path = "src/js_parser" }
 bun_js_printer = { path = "src/js_printer" }
@@ -165,7 +164,6 @@ bun_ast = { path = "src/ast" }
 bun_picohttp = { path = "src/picohttp" }
 bun_s3_signing = { path = "src/s3_signing" }
 bun_zlib = { path = "src/zlib" }
-bun_patch = { path = "src/patch" }
 bun_platform = { path = "src/platform" }
 bun_sha_hmac = { path = "src/sha_hmac" }
 bun_dispatch = { path = "src/dispatch" }
@@ -198,7 +196,6 @@ bun_jsc_macros = { path = "src/jsc_macros" }
 bun_lolhtml_sys = { path = "src/lolhtml_sys" }
 bun_boringssl = { path = "src/boringssl" }
 bun_boringssl_sys = { path = "src/boringssl_sys" }
-bun_lshpack_sys = { path = "src/lshpack_sys" }
 bun_lsquic_sys = { path = "src/lsquic_sys" }
 bun_cares_sys = { path = "src/cares_sys" }
 bun_libuv_sys = { path = "src/libuv_sys" }

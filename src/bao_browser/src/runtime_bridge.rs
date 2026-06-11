@@ -16,20 +16,13 @@
 
 use crate::page::PageHandle;
 use crate::error::BrowserError;
+use dashmap::DashMap;
 use mozjs::rooted;
 use std::cell::RefCell;
 use std::ptr::{self, NonNull};
-use std::collections::HashMap;
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-
-/// Lock a Mutex, recovering from poison instead of panicking.
-/// Mutex poison means a thread panicked while holding the lock — the data
-/// may be inconsistent but for our use cases (result channels) it's safe to proceed.
-fn lock_or_recover<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
+use std::sync::{Arc, OnceLock};
 
 use std::time::Duration;
 
@@ -80,63 +73,52 @@ impl EvaluateResult {
 // The callbacks (install_all_native, create_node_realm_native) execute on the script thread,
 // but the caller (inject_node_apis_with_stealth) reads the results on the main thread.
 // Therefore we MUST use cross-thread-safe storage (std::sync::Mutex) instead of thread_local.
-static NODE_REALMS: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, usize>>> = std::sync::OnceLock::new();
+static NODE_REALMS: OnceLock<DashMap<usize, usize>> = OnceLock::new();
 
-fn node_realms() -> &'static std::sync::Mutex<HashMap<usize, usize>> {
-    NODE_REALMS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+fn node_realms() -> &'static DashMap<usize, usize> {
+    NODE_REALMS.get_or_init(DashMap::new)
 }
 
 // Reverse mapping: node_global → page_global. Used by lazy getters to find the Page Realm.
-static PAGE_GLOBALS: std::sync::OnceLock<std::sync::Mutex<HashMap<usize, usize>>> = std::sync::OnceLock::new();
+static PAGE_GLOBALS: OnceLock<DashMap<usize, usize>> = OnceLock::new();
 
-fn page_globals() -> &'static std::sync::Mutex<HashMap<usize, usize>> {
-    PAGE_GLOBALS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
-}
-
-/// Lock a Mutex with poison recovery — never silently swallows errors.
-/// If a previous thread panicked while holding the lock, we recover the
-/// intact data and continue rather than silently returning.
-fn lock_recover<K, V>(mutex: &std::sync::Mutex<HashMap<K, V>>) -> std::sync::MutexGuard<'_, HashMap<K, V>> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+fn page_globals() -> &'static DashMap<usize, usize> {
+    PAGE_GLOBALS.get_or_init(DashMap::new)
 }
 
 /// Store a Node Realm global pointer for a specific page (by page_global address).
 fn store_node_realm(page_global: *mut mozjs::jsapi::JSObject, node_global: *mut mozjs::jsapi::JSObject) {
-    lock_recover(node_realms()).insert(page_global as usize, node_global as usize);
-    lock_recover(page_globals()).insert(node_global as usize, page_global as usize);
+    node_realms().insert(page_global as usize, node_global as usize);
+    page_globals().insert(node_global as usize, page_global as usize);
 }
 
 /// Look up Node Realm global pointer for a specific page.
 fn get_node_realm(page_global: *mut mozjs::jsapi::JSObject) -> *mut mozjs::jsapi::JSObject {
-    match lock_recover(node_realms()).get(&(page_global as usize)) {
-        Some(&ptr) => ptr as *mut mozjs::jsapi::JSObject,
+    match node_realms().get(&(page_global as usize)) {
+        Some(v) => *v as *mut mozjs::jsapi::JSObject,
         None => ptr::null_mut(),
     }
 }
 
 /// Look up Page Realm global pointer for a Node Realm (reverse mapping for lazy getters).
 fn get_page_global_for_node(node_global: *mut mozjs::jsapi::JSObject) -> *mut mozjs::jsapi::JSObject {
-    match lock_recover(page_globals()).get(&(node_global as usize)) {
-        Some(&ptr) => ptr as *mut mozjs::jsapi::JSObject,
+    match page_globals().get(&(node_global as usize)) {
+        Some(v) => *v as *mut mozjs::jsapi::JSObject,
         None => ptr::null_mut(),
     }
 }
 
 /// Remove Node Realm for a specific page (called on page close).
 pub fn remove_node_realm(page_global: *mut mozjs::jsapi::JSObject) {
-    let mut nr = lock_recover(node_realms());
-    if let Some(node_global) = nr.remove(&(page_global as usize)) {
-        lock_recover(page_globals()).remove(&node_global);
+    if let Some((_, node_global)) = node_realms().remove(&(page_global as usize)) {
+        page_globals().remove(&node_global);
     }
 }
 
 /// Clear all stored Node Realm pointers (for test isolation).
 fn clear_all_node_realms() {
-    lock_recover(node_realms()).clear();
-    lock_recover(page_globals()).clear();
+    node_realms().clear();
+    page_globals().clear();
 }
 
 /// Test serialization lock for NODE_REALMS operations.
@@ -157,10 +139,9 @@ pub fn rekey_node_realm(old_page_global: *mut mozjs::jsapi::JSObject, new_page_g
     if old_page_global.is_null() || new_page_global.is_null() {
         return;
     }
-    let mut nr = lock_recover(node_realms());
-    if let Some(node_global) = nr.remove(&(old_page_global as usize)) {
-        nr.insert(new_page_global as usize, node_global);
-        lock_recover(page_globals()).insert(node_global, new_page_global as usize);
+    if let Some((_, node_global)) = node_realms().remove(&(old_page_global as usize)) {
+        node_realms().insert(new_page_global as usize, node_global);
+        page_globals().insert(node_global, new_page_global as usize);
     }
 }
 
@@ -269,7 +250,7 @@ pub fn get_node_realm_global(page_global: *mut mozjs::jsapi::JSObject) -> *mut m
 /// The script has full access to Node.js APIs (require/Bun/process/Buffer)
 /// because they are installed on the Node Realm global.
 ///
-/// Results are written into `result_out` (shared via `Arc<Mutex<>>`):
+/// Results are written into `result_out` (shared via `Arc<OnceLock<>>`):
 /// - On success, `value` is set to the serialized JS return value.
 /// - On failure, `error` is set to a descriptive message.
 ///
@@ -282,7 +263,7 @@ pub unsafe fn evaluate_in_node_realm(
     cx_ptr: *mut std::ffi::c_void,
     node_global: *mut mozjs::jsapi::JSObject,
     script: &str,
-    result_out: Arc<Mutex<EvaluateResult>>,
+    result_out: Arc<OnceLock<EvaluateResult>>,
 ) {
     use mozjs::context::JSContext;
     use mozjs::jsapi::JSContext as RawJSContext;
@@ -292,7 +273,7 @@ pub unsafe fn evaluate_in_node_realm(
     use mozjs::rust::evaluate_script;
 
     if node_global.is_null() {
-        *lock_or_recover(&result_out) = EvaluateResult::err("node_global is null".into());
+        let _ = result_out.set(EvaluateResult::err("node_global is null".into()));
         return;
     }
 
@@ -300,7 +281,7 @@ pub unsafe fn evaluate_in_node_realm(
     let cx_nn = match NonNull::new(raw_cx) {
         Some(nn) => nn,
         None => {
-            *lock_or_recover(&result_out) = EvaluateResult::err("JSContext pointer is null".into());
+            let _ = result_out.set(EvaluateResult::err("JSContext pointer is null".into()));
             return;
         }
     };
@@ -321,42 +302,43 @@ pub unsafe fn evaluate_in_node_realm(
     rooted!(&in(realm_cx) let mut rval = UndefinedValue());
     let eval_result = evaluate_script(realm_cx, node_global_handle, script, rval.handle_mut(), options);
 
-    let mut result = lock_or_recover(&result_out);
     if eval_result.is_err() {
-        result.error = Some("evaluate_script returned Err (JS exception thrown)".into());
+        let _ = result_out.set(EvaluateResult {
+            value: None,
+            error: Some("evaluate_script returned Err (JS exception thrown)".into()),
+        });
         return;
     }
 
     // Serialize rval to a string. Undefined is treated as no value.
     let rval_val = rval.get();
-    if rval_val.is_undefined() {
-        result.value = None;
+    let value = if rval_val.is_undefined() {
+        None
     } else if rval_val.is_string() {
         // SAFETY: we just checked is_string(), so to_string returns a valid JSString pointer.
         let js_str = rval_val.to_string();
         if js_str.is_null() {
-            result.value = Some(String::new());
+            Some(String::new())
         } else {
             // Use mozjs's built-in jsstr_to_string for safe UTF-8 conversion.
             // It handles both Latin1 and TwoByte JS string encodings.
             let raw_cx = realm_cx.raw_cx();
             match NonNull::new(js_str) {
-                Some(nn) => {
-                    result.value = Some(mozjs::conversions::jsstr_to_string(raw_cx, nn));
-                }
-                None => result.value = Some(String::new()),
+                Some(nn) => Some(mozjs::conversions::jsstr_to_string(raw_cx, nn)),
+                None => Some(String::new()),
             }
         }
     } else if rval_val.is_number() {
-        result.value = Some(rval_val.to_number().to_string());
+        Some(rval_val.to_number().to_string())
     } else if rval_val.is_boolean() {
-        result.value = Some(rval_val.to_boolean().to_string());
+        Some(rval_val.to_boolean().to_string())
     } else if rval_val.is_null() {
-        result.value = Some("null".into());
+        Some("null".into())
     } else {
         // Object / symbol / bigint — represent as debug string.
-        result.value = Some(format!("[JSValue:object]"));
-    }
+        Some("[JSValue:object]".into())
+    };
+    let _ = result_out.set(EvaluateResult { value, error: None });
 }
 
 /// Evaluate a script in the Node Realm via servo's script thread callback mechanism.
@@ -365,16 +347,17 @@ pub unsafe fn evaluate_in_node_realm(
 /// It registers a callback on servo's script thread that:
 /// 1. Reads the Node Realm global pointer from `NODE_REALM_GLOBAL`
 /// 2. Calls `evaluate_in_node_realm` with the script
-/// 3. Writes the result to the shared `Arc<Mutex<EvaluateResult>>`
+/// 3. Writes the result to the shared `Arc<OnceLock<EvaluateResult>>`
 ///
 /// The caller must call `page.drain_callbacks()` after this to trigger execution.
 ///
-/// Returns the shared result handle — read after drain_callbacks completes.
+/// Returns the shared result handle — read after drain_callbacks completes
+/// (use `result.get()` to obtain the EvaluateResult).
 pub fn evaluate_js_via_node_realm(
     webview_id: servo::WebViewId,
     script: &str,
-) -> Arc<Mutex<EvaluateResult>> {
-    let result = Arc::new(Mutex::new(EvaluateResult::default()));
+) -> Arc<OnceLock<EvaluateResult>> {
+    let result = Arc::new(OnceLock::new());
     let result_clone = result.clone();
     let script_owned = script.to_string();
 
@@ -3012,5 +2995,63 @@ mod tests {
         let _: mozjs::jsapi::JSNative = Some(super::lazy_dom_getter_window);
         let _: mozjs::jsapi::JSNative = Some(super::lazy_dom_getter_document);
         let _: mozjs::jsapi::JSNative = Some(super::lazy_dom_getter_navigator);
+    }
+
+    // ── DashMap + OnceLock refactoring tests ──────────────────────────────
+    // @trace REQ-PURE-002 [req:REQ-PURE-002] [level:unit]
+
+    /// DashMap NODE_REALMS: insert + get works.
+    #[test]
+    fn dashmap_node_realms_insert_and_get() {
+        let _guard = super::test_serial_lock().lock().unwrap();
+        super::clear_all_node_realms();
+        let pg: *mut mozjs::jsapi::JSObject = 0xDA10_0001 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBE10_0001 as *mut _;
+
+        super::store_node_realm(pg, ng);
+        assert_eq!(super::get_node_realm(pg), ng, "DashMap NODE_REALMS insert+get");
+    }
+
+    /// DashMap PAGE_GLOBALS: insert + get works (reverse mapping).
+    #[test]
+    fn dashmap_page_globals_insert_and_get() {
+        let _guard = super::test_serial_lock().lock().unwrap();
+        super::clear_all_node_realms();
+        let pg: *mut mozjs::jsapi::JSObject = 0xDA20_0001 as *mut _;
+        let ng: *mut mozjs::jsapi::JSObject = 0xBE20_0001 as *mut _;
+
+        super::store_node_realm(pg, ng);
+        assert_eq!(super::get_page_global_for_node(ng), pg, "DashMap PAGE_GLOBALS insert+get (reverse)");
+    }
+
+    /// OnceLock EvaluateResult: set + get works.
+    #[test]
+    fn oncelock_evaluate_result_set_and_get() {
+        use std::sync::Arc;
+        let lock: Arc<OnceLock<super::EvaluateResult>> = Arc::new(OnceLock::new());
+        assert!(lock.get().is_none(), "OnceLock should be unset initially");
+
+        let result = super::EvaluateResult::ok("42".into());
+        assert!(lock.set(result).is_ok(), "First set should succeed");
+
+        let got = lock.get().unwrap();
+        assert_eq!(got.value, Some("42".into()));
+        assert!(got.error.is_none());
+    }
+
+    /// OnceLock EvaluateResult: second set() fails gracefully (returns Err).
+    #[test]
+    fn oncelock_evaluate_result_second_set_fails() {
+        use std::sync::Arc;
+        let lock: Arc<OnceLock<super::EvaluateResult>> = Arc::new(OnceLock::new());
+
+        let first = super::EvaluateResult::ok("first".into());
+        assert!(lock.set(first).is_ok());
+
+        let second = super::EvaluateResult::err("second".into());
+        let set_result = lock.set(second);
+        assert!(set_result.is_err(), "Second set should return Err");
+        // Original value is preserved
+        assert_eq!(lock.get().unwrap().value, Some("first".into()));
     }
 }

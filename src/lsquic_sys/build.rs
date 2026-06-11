@@ -20,6 +20,21 @@ fn main() {
     let lshpack_dir = vendor_dir.join("lshpack");
     let boringssl_dir = vendor_dir.join("boringssl");
 
+    // ── lshpack compilation (merged from bun_lshpack_sys) ────────────────
+    let mut lshpack_build = cc::Build::new();
+    lshpack_build.compiler("clang");
+    lshpack_build.opt_level(2);
+    lshpack_build
+        .flag("-DLS_HPACK_USE_LARGE_TABLES=1")
+        .flag("-DLS_HPACK_BSS_LARGE_TABLES=1")
+        .flag("-DXXH_HEADER_NAME=\"xxhash.h\"");
+    lshpack_build.include(&lshpack_dir);
+    lshpack_build.include(lshpack_dir.join("deps/xxhash"));
+    lshpack_build.file(lshpack_dir.join("lshpack.c"));
+    lshpack_build.file(lshpack_dir.join("deps/xxhash/xxhash.c"));
+    lshpack_build.file(crate_dir.join("src/lshpack_wrapper.c"));
+    lshpack_build.compile("lshpack");
+
     // ── lsquic C source files (mirrors Bun's liblsquic array) ──────────────
     let lsquic_sources = [
         "ls-sfparser.c",
@@ -143,11 +158,13 @@ fn main() {
 
     // ── Link dependencies ─────────────────────────────────────────────────
     // lsquic depends on zlib (system lib). BoringSSL and lshpack are
-    // propagated via Cargo dependencies (bun_boringssl_sys, bun_lshpack_sys).
+    // propagated via Cargo dependencies (bun_boringssl_sys, bun_lsquic_sys).
     println!("cargo:rustc-link-lib=z");
 
     // ── Rebuild hints ─────────────────────────────────────────────────────
     println!("cargo:rerun-if-changed={}", lsquic_src.join("lsquic_engine.c").display());
     println!("cargo:rerun-if-changed={}", lsqpack_dir.join("lsqpack.c").display());
+    println!("cargo:rerun-if-changed={}", lshpack_dir.join("lshpack.c").display());
+    println!("cargo:rerun-if-changed={}", crate_dir.join("src/lshpack_wrapper.c").display());
     println!("cargo:rerun-if-changed=build.rs");
 }

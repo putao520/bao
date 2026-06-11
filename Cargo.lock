@@ -307,7 +307,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tungstenite 0.29.0",
- "webpki-roots",
+ "webpki-roots 1.0.7",
 ]
 
 [[package]]
@@ -432,6 +432,7 @@ dependencies = [
  "bun_core",
  "bun_sys",
  "cdp-server",
+ "dashmap",
  "dpi",
  "image",
  "mozjs",
@@ -450,10 +451,38 @@ dependencies = [
  "base64",
  "cdp-protocol",
  "cdp-server",
+ "compact_str",
  "serde",
  "serde_json",
  "sha1",
  "tungstenite 0.26.2",
+]
+
+[[package]]
+name = "bao_crypto"
+version = "0.0.0"
+dependencies = [
+ "aes-gcm",
+ "chacha20poly1305",
+ "ecdsa",
+ "ed25519-dalek",
+ "elliptic-curve",
+ "getrandom 0.4.2",
+ "hkdf",
+ "hmac",
+ "p256",
+ "p384",
+ "pem-rfc7468 0.7.0",
+ "pkcs1",
+ "pkcs8",
+ "rand_core 0.6.4",
+ "rsa",
+ "sha1",
+ "sha2",
+ "signature",
+ "thiserror 2.0.18",
+ "x25519-dalek",
+ "x509-cert",
 ]
 
 [[package]]
@@ -493,7 +522,6 @@ dependencies = [
  "bun_boringssl_sys",
  "bun_highway",
  "bun_io",
- "bun_lshpack_sys",
  "bun_lsquic_sys",
  "bun_mimalloc_sys",
  "bun_zstd",
@@ -525,6 +553,8 @@ dependencies = [
  "bun_url",
  "bun_uws",
  "bun_uws_sys",
+ "bytes",
+ "compact_str",
  "digest",
  "flate2",
  "hex",
@@ -540,6 +570,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2",
+ "smallvec",
  "tempfile",
 ]
 
@@ -558,10 +589,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao_tls"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "bun_core",
+ "bun_uws_sys",
+ "chacha20poly1305",
+ "ecdsa",
+ "ed25519-dalek",
+ "getrandom 0.4.2",
+ "hmac",
+ "p256",
+ "p384",
+ "pkcs8",
+ "rand_core 0.6.4",
+ "rcgen",
+ "rsa",
+ "rustls",
+ "rustls-native-certs",
+ "sha2",
+ "thiserror 2.0.18",
+ "webpki-roots 0.26.11",
+ "x25519-dalek",
+]
+
+[[package]]
 name = "bao_uloop"
 version = "0.1.0"
 dependencies = [
  "bao_native_stubs",
+ "bun_sys",
  "bun_uws_sys",
  "libc",
 ]
@@ -885,6 +943,92 @@ dependencies = [
 ]
 
 [[package]]
+name = "bun_bundler"
+version = "0.0.0"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_ast",
+ "bun_base64",
+ "bun_collections",
+ "bun_core",
+ "bun_crash_handler",
+ "bun_css",
+ "bun_dispatch",
+ "bun_dotenv",
+ "bun_event_loop",
+ "bun_glob",
+ "bun_hash",
+ "bun_http_types",
+ "bun_io",
+ "bun_js_parser",
+ "bun_js_printer",
+ "bun_lolhtml_sys",
+ "bun_md",
+ "bun_opaque",
+ "bun_options_types",
+ "bun_parsers",
+ "bun_paths",
+ "bun_perf",
+ "bun_ptr",
+ "bun_resolve_builtins",
+ "bun_resolver",
+ "bun_router",
+ "bun_sourcemap",
+ "bun_sys",
+ "bun_threading",
+ "bun_url",
+ "bun_watcher",
+ "bun_wyhash",
+ "bytemuck",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+ "typed-arena",
+]
+
+[[package]]
+name = "bun_bunfig"
+version = "0.0.0"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_analytics",
+ "bun_api",
+ "bun_ast",
+ "bun_bundler",
+ "bun_clap",
+ "bun_collections",
+ "bun_core",
+ "bun_install_types",
+ "bun_io",
+ "bun_js_parser",
+ "bun_options_types",
+ "bun_parsers",
+ "bun_paths",
+ "bun_resolver",
+ "bun_standalone_graph",
+ "bun_sys",
+ "bun_url",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "bun_cares_sys"
 version = "0.0.0"
 dependencies = [
@@ -1018,15 +1162,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_csrf"
+name = "bun_css"
 version = "0.0.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
+ "bumpalo",
+ "bun_alloc",
+ "bun_ast",
  "bun_base64",
- "bun_boringssl_sys",
+ "bun_collections",
  "bun_core",
- "bun_sha_hmac",
+ "bun_css_derive",
+ "bun_io",
+ "bun_paths",
+ "bun_ptr",
+ "bun_wyhash",
  "const_format",
  "enum-map",
  "enumset",
@@ -1034,6 +1185,16 @@ dependencies = [
  "phf 0.11.3",
  "scopeguard",
  "strum 0.26.3",
+ "typed-arena",
+]
+
+[[package]]
+name = "bun_css_derive"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1220,7 +1381,7 @@ dependencies = [
  "bun_event_loop",
  "bun_http_types",
  "bun_io",
- "bun_lshpack_sys",
+ "bun_lsquic_sys",
  "bun_picohttp",
  "bun_ptr",
  "bun_sys",
@@ -1262,23 +1423,51 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_ini"
+name = "bun_install"
 version = "0.0.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
  "bun_alloc",
+ "bun_analytics",
  "bun_api",
  "bun_ast",
  "bun_base64",
+ "bun_bunfig",
+ "bun_clap",
  "bun_collections",
  "bun_core",
+ "bun_crash_handler",
+ "bun_dns",
  "bun_dotenv",
+ "bun_event_loop",
+ "bun_glob",
+ "bun_http",
  "bun_install_types",
+ "bun_io",
  "bun_js_parser",
+ "bun_js_printer",
+ "bun_libarchive",
+ "bun_options_types",
  "bun_parsers",
+ "bun_paths",
+ "bun_perf",
+ "bun_picohttp",
+ "bun_ptr",
+ "bun_resolver",
+ "bun_semver",
+ "bun_sha_hmac",
+ "bun_simdutf_sys",
+ "bun_spawn",
  "bun_sys",
+ "bun_threading",
+ "bun_transpiler",
  "bun_url",
+ "bun_uws",
+ "bun_which",
+ "bun_wyhash",
+ "bun_zlib",
+ "bytemuck",
  "const_format",
  "enum-map",
  "enumset",
@@ -1327,21 +1516,6 @@ dependencies = [
  "bun_sys",
  "bun_threading",
  "bun_uws_sys",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
-]
-
-[[package]]
-name = "bun_js"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
  "const_format",
  "enum-map",
  "enumset",
@@ -1475,18 +1649,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bun_lshpack_sys"
-version = "0.0.0"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "bun_lsquic_sys"
 version = "0.1.0"
 dependencies = [
  "bun_boringssl_sys",
- "bun_lshpack_sys",
  "cc",
 ]
 
@@ -1587,29 +1753,6 @@ dependencies = [
  "strum 0.26.3",
  "thiserror 2.0.18",
  "typed-arena",
-]
-
-[[package]]
-name = "bun_patch"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_collections",
- "bun_core",
- "bun_event_loop",
- "bun_paths",
- "bun_spawn",
- "bun_sys",
- "bun_which",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
- "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2001,6 +2144,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "bun_standalone_graph"
+version = "0.0.0"
+dependencies = [
+ "bitflags 2.11.1",
+ "bstr",
+ "bun_alloc",
+ "bun_ast",
+ "bun_bundler",
+ "bun_collections",
+ "bun_core",
+ "bun_dotenv",
+ "bun_exe_format",
+ "bun_http",
+ "bun_io",
+ "bun_js_parser",
+ "bun_libarchive",
+ "bun_opaque",
+ "bun_options_types",
+ "bun_parsers",
+ "bun_paths",
+ "bun_perf",
+ "bun_resolver",
+ "bun_sourcemap",
+ "bun_sys",
+ "bun_threading",
+ "bun_url",
+ "bun_zlib",
+ "bun_zstd",
+ "const_format",
+ "enum-map",
+ "enumset",
+ "libc",
+ "phf 0.11.3",
+ "scopeguard",
+ "strum 0.26.3",
+]
+
+[[package]]
 name = "bun_sys"
 version = "0.0.0"
 dependencies = [
@@ -2011,7 +2192,6 @@ dependencies = [
  "bun_errno",
  "bun_libuv_sys",
  "bun_opaque",
- "bun_output",
  "bun_paths",
  "bun_windows_sys",
  "bun_wyhash",
@@ -2048,6 +2228,13 @@ dependencies = [
  "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "bun_transpiler"
+version = "0.0.0"
+dependencies = [
+ "bun_bundler",
 ]
 
 [[package]]
@@ -2115,21 +2302,6 @@ dependencies = [
  "scopeguard",
  "strum 0.26.3",
  "thiserror 2.0.18",
-]
-
-[[package]]
-name = "bun_valkey"
-version = "0.0.0"
-dependencies = [
- "bitflags 2.11.1",
- "bstr",
- "bun_core",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "scopeguard",
- "strum 0.26.3",
 ]
 
 [[package]]
@@ -2280,6 +2452,15 @@ name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
+
+[[package]]
+name = "castaway"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dec551ab6e7578819132c713a93c022a05d60159dc86e7a7050223577484c55a"
+dependencies = [
+ "rustversion",
+]
 
 [[package]]
 name = "cbc"
@@ -2540,6 +2721,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "compact_str"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fd622ebbb56a5b2ccb651b32b911cdeb2a9b4b11776b2473bf26a26a286244e"
+dependencies = [
+ "castaway",
+ "cfg-if",
+ "itoa",
+ "rustversion",
+ "ryu",
+ "static_assertions",
+]
+
+[[package]]
 name = "compression-codecs"
 version = "0.4.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2564,6 +2759,12 @@ name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2459377285ad874054d797f3ccebf984978aa39129f6eafde5cdc8315b612f8"
+
+[[package]]
+name = "const-oid"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
 name = "const_format"
@@ -2875,6 +3076,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "curve25519-dalek-derive",
+ "digest",
  "fiat-crypto",
  "rustc_version",
  "subtle",
@@ -2962,6 +3164,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2979,9 +3195,22 @@ version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
- "const-oid",
- "der_derive",
- "pem-rfc7468",
+ "const-oid 0.9.6",
+ "der_derive 0.7.3",
+ "pem-rfc7468 0.7.0",
+ "zeroize",
+]
+
+[[package]]
+name = "der"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
+dependencies = [
+ "const-oid 0.10.2",
+ "der_derive 0.8.0",
+ "flagset",
+ "pem-rfc7468 1.0.0",
  "zeroize",
 ]
 
@@ -2990,6 +3219,17 @@ name = "der_derive"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8034092389675178f570469e6c3b0465d3d30b4505c294a6550db47f3c17ad18"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "der_derive"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59600e2c2d636fde9b65e99cc6445ac770c63d3628195ff39932b8d6d7409903"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3065,7 +3305,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
- "const-oid",
+ "const-oid 0.9.6",
  "crypto-common",
  "subtle",
 ]
@@ -3180,12 +3420,36 @@ version = "0.16.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee27f32b5c5292967d2d4a9d7f1e0b0aed2c15daded5a60300e4abb9d8020bca"
 dependencies = [
- "der",
+ "der 0.7.10",
  "digest",
  "elliptic-curve",
  "rfc6979",
  "signature",
- "spki",
+ "spki 0.7.3",
+]
+
+[[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "serde",
+ "sha2",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -3207,7 +3471,7 @@ dependencies = [
  "generic-array",
  "group",
  "hkdf",
- "pem-rfc7468",
+ "pem-rfc7468 0.7.0",
  "pkcs8",
  "rand_core 0.6.4",
  "sec1",
@@ -3486,6 +3750,12 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
+name = "flagset"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
 name = "flate2"
@@ -3900,6 +4170,12 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.14.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+
+[[package]]
+name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
@@ -4120,7 +4396,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower-service",
- "webpki-roots",
+ "webpki-roots 1.0.7",
 ]
 
 [[package]]
@@ -5317,7 +5593,7 @@ version = "0.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac4a46643af2001eafebcc37031fc459eb72d45057aac5d7a15b00046a2ad6db"
 dependencies = [
- "const-oid",
+ "const-oid 0.9.6",
  "hybrid-array 0.3.1",
  "num-traits",
  "pkcs8",
@@ -5899,10 +6175,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "pem"
+version = "3.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
+dependencies = [
+ "base64",
+ "serde_core",
+]
+
+[[package]]
 name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
+dependencies = [
+ "base64ct",
+]
+
+[[package]]
+name = "pem-rfc7468"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6305423e0e7738146434843d1694d621cce767262b2a86910beab705e4493d9"
 dependencies = [
  "base64ct",
 ]
@@ -6051,9 +6346,9 @@ version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f"
 dependencies = [
- "der",
+ "der 0.7.10",
  "pkcs8",
- "spki",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -6062,9 +6357,9 @@ version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
- "der",
+ "der 0.7.10",
  "rand_core 0.6.4",
- "spki",
+ "spki 0.7.3",
 ]
 
 [[package]]
@@ -6472,6 +6767,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rcgen"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75e669e5202259b5314d1ea5397316ad400819437857b90861765f24c4cf80a2"
+dependencies = [
+ "pem",
+ "ring",
+ "rustls-pki-types",
+ "time",
+ "yasna",
+]
+
+[[package]]
 name = "read-fonts"
 version = "0.35.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6612,7 +6920,7 @@ version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8573f03f5883dcaebdfcf4725caa1ecb9c15b2ef50c43a07b816e06799bb12d"
 dependencies = [
- "const-oid",
+ "const-oid 0.9.6",
  "digest",
  "num-bigint-dig",
  "num-integer",
@@ -6623,7 +6931,7 @@ dependencies = [
  "sha1",
  "sha2",
  "signature",
- "spki",
+ "spki 0.7.3",
  "subtle",
  "zeroize",
 ]
@@ -6789,6 +7097,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu"
+version = "1.0.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
 name = "salsa20"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6874,7 +7188,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3e97a565f76233a6003f9f5c54be1d9c5bdfa3eccfb189469f11ec4901c47dc"
 dependencies = [
  "base16ct",
- "der",
+ "der 0.7.10",
  "generic-array",
  "pkcs8",
  "subtle",
@@ -7827,7 +8141,7 @@ dependencies = [
  "tungstenite 0.29.0",
  "url",
  "uuid",
- "webpki-roots",
+ "webpki-roots 1.0.7",
  "webrender_api",
 ]
 
@@ -8016,7 +8330,7 @@ dependencies = [
  "cssparser 0.37.0",
  "ctr",
  "data-url",
- "der",
+ "der 0.7.10",
  "digest",
  "ecdsa",
  "elliptic-curve",
@@ -8504,7 +8818,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
- "der",
+ "der 0.7.10",
+]
+
+[[package]]
+name = "spki"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f"
+dependencies = [
+ "base64ct",
+ "der 0.8.0",
 ]
 
 [[package]]
@@ -9061,6 +9385,27 @@ name = "tinyvec_macros"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
+
+[[package]]
+name = "tls_codec"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0de2e01245e2bb89d6f05801c564fa27624dbd7b1846859876c7dad82e90bf6b"
+dependencies = [
+ "tls_codec_derive",
+ "zeroize",
+]
+
+[[package]]
+name = "tls_codec_derive"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d2e76690929402faae40aebdda620a2c0e25dd6d3b9afe48867dfd95991f4bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "to_shmem"
@@ -9784,6 +10129,15 @@ dependencies = [
 
 [[package]]
 name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.7",
+]
+
+[[package]]
+name = "webpki-roots"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
@@ -10324,6 +10678,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "x509-cert"
+version = "0.3.0-rc.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e21aad3a769f25f3d2d0cbf30ea8b50a1d602354bd6ab687fad112821608ba6"
+dependencies = [
+ "const-oid 0.10.2",
+ "der 0.8.0",
+ "spki 0.8.0",
+ "tls_codec",
+]
+
+[[package]]
 name = "xattr"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10366,6 +10732,15 @@ name = "y4m"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a5a4b21e1a62b67a2970e6831bc091d7b87e119e7f9791aef9702e3bef04448"
+
+[[package]]
+name = "yasna"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e17bb3549cc1321ae1296b9cdc2698e2b6cb1992adfa19a8c72e5b7a738f44cd"
+dependencies = [
+ "time",
+]
 
 [[package]]
 name = "yeslogic-fontconfig-sys"

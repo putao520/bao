@@ -1,4 +1,7 @@
 // @trace REQ-CDP-006
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
 use serde_json::{json, Value};
 
 use cdp_server::{CdpError, DomainHandler, EventSender};
@@ -95,10 +98,10 @@ const NETWORK_INTERCEPTOR_JS: &str = r#"
 pub struct NetworkHandler {
     bridge: BridgeSender,
     target_id: String,
-    enabled: std::sync::Mutex<bool>,
-    cache_disabled: std::sync::Mutex<bool>,
-    extra_headers: std::sync::Mutex<Value>,
-    network_conditions: std::sync::Mutex<Option<NetworkConditions>>,
+    enabled: AtomicBool,
+    cache_disabled: AtomicBool,
+    extra_headers: Mutex<Value>,
+    network_conditions: Mutex<Option<NetworkConditions>>,
 }
 
 struct NetworkConditions {
@@ -113,10 +116,10 @@ impl NetworkHandler {
         NetworkHandler {
             bridge,
             target_id,
-            enabled: std::sync::Mutex::new(false),
-            cache_disabled: std::sync::Mutex::new(false),
-            extra_headers: std::sync::Mutex::new(json!({})),
-            network_conditions: std::sync::Mutex::new(None),
+            enabled: AtomicBool::new(false),
+            cache_disabled: AtomicBool::new(false),
+            extra_headers: Mutex::new(json!({})),
+            network_conditions: Mutex::new(None),
         }
     }
 }
@@ -132,7 +135,7 @@ impl DomainHandler for NetworkHandler {
     ) -> Result<Value, CdpError> {
         match command {
             "Network.enable" => {
-                *self.enabled.lock().unwrap() = true;
+                self.enabled.store(true, Ordering::Relaxed);
                 // Inject network monitoring interceptor into the page
                 let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
                     target_id: self.target_id.clone(),
@@ -142,7 +145,7 @@ impl DomainHandler for NetworkHandler {
                 Ok(json!({}))
             }
             "Network.disable" => {
-                *self.enabled.lock().unwrap() = false;
+                self.enabled.store(false, Ordering::Relaxed);
                 Ok(json!({}))
             }
             "Network.getResponseBody" => {
@@ -162,7 +165,7 @@ impl DomainHandler for NetworkHandler {
             }
             "Network.setCacheDisabled" => {
                 let disabled = params.get("cacheDisabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                *self.cache_disabled.lock().unwrap() = disabled;
+                self.cache_disabled.store(disabled, Ordering::Relaxed);
                 Ok(json!({}))
             }
             "Network.setExtraHTTPHeaders" => {
@@ -237,9 +240,9 @@ mod tests {
     fn enable_sets_flag_and_sends_bridge_command() {
         let (bridge, rx) = bridge_channel(Duration::from_millis(100));
         let handler = NetworkHandler::new(bridge, TID.into());
-        assert!(!*handler.enabled.lock().unwrap());
+        assert!(!handler.enabled.load(Ordering::Relaxed));
         handler.handle_command("Network.enable", json!({}), &NoopSender).unwrap();
-        assert!(*handler.enabled.lock().unwrap());
+        assert!(handler.enabled.load(Ordering::Relaxed));
         // Verify bridge received EvaluateJs
         let mut found = false;
         rx.try_process(|cmd| {
@@ -274,7 +277,7 @@ mod tests {
         let handler = NetworkHandler::new(bridge, TID.into());
         handler.handle_command("Network.enable", json!({}), &NoopSender).unwrap();
         handler.handle_command("Network.disable", json!({}), &NoopSender).unwrap();
-        assert!(!*handler.enabled.lock().unwrap());
+        assert!(!handler.enabled.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -290,11 +293,11 @@ mod tests {
     fn setCacheDisabled_stores_flag() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
         let handler = NetworkHandler::new(bridge, TID.into());
-        assert!(!*handler.cache_disabled.lock().unwrap());
+        assert!(!handler.cache_disabled.load(Ordering::Relaxed));
         handler.handle_command("Network.setCacheDisabled", json!({"cacheDisabled": true}), &NoopSender).unwrap();
-        assert!(*handler.cache_disabled.lock().unwrap());
+        assert!(handler.cache_disabled.load(Ordering::Relaxed));
         handler.handle_command("Network.setCacheDisabled", json!({"cacheDisabled": false}), &NoopSender).unwrap();
-        assert!(!*handler.cache_disabled.lock().unwrap());
+        assert!(!handler.cache_disabled.load(Ordering::Relaxed));
     }
 
     #[test]
@@ -314,8 +317,8 @@ mod tests {
         handler.handle_command("Network.emulateNetworkConditions", json!({
             "offline": true, "latency": 100, "downloadThroughput": 50000, "uploadThroughput": 25000
         }), &NoopSender).unwrap();
-        let binding = handler.network_conditions.lock().unwrap();
-        let cond = binding.as_ref().unwrap().clone();
+        let cond = handler.network_conditions.lock().unwrap();
+        let cond = cond.as_ref().unwrap().clone();
         assert!(cond.offline);
         assert!((cond.latency_ms - 100.0).abs() < f64::EPSILON);
         assert!((cond.download_throughput - 50000.0).abs() < f64::EPSILON);
