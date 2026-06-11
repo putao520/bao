@@ -1,8 +1,8 @@
 # Pure Rust 迁移开发升级方案
 
 > 创建日期: 2026-06-11
-> 更新日期: 2026-06-11 (v2 — P2/P3 可行性重评估)
-> 状态: IN_PROGRESS — P1 已完成，P2-P6 重新评估
+> 更新日期: 2026-06-11 (v4 — 战略调整：保留所有 C/C++，仅消灭 Zig)
+> 状态: COMPLETED — P1+P2+P4a+Zig 清除已完成，C/C++ 依赖永久保留
 > SPEC 变更: +10 REQ-PURE-*, +1 NFR-PURE-001
 
 ---
@@ -24,11 +24,11 @@ Bao 已完全独立于 Bun/Servo 上游，拥有自己的 fork 仓库。消除�
 | brotli | C | 压缩/解压 | `brotli` crate v8 | ✅ P1 完成 |
 | zstd | C | 压缩/解压 | `zstd-pure-rs` | ✅ P1 完成 |
 | zlib/libdeflate | C | gzip/deflate | `flate2` + `crc32fast` | ✅ P1 完成 |
-| BoringSSL | C++ | TLS 1.2/1.3 | **保留** — rustls 不支持 JA3/JA4 指纹定制 | ❌ 不可替换 |
+| BoringSSL | C++ | TLS 1.2/1.3 + JA3/JA4 指纹 | **永久保留** — 纯 Rust 生态无 TLS 指纹定制方案，BoringSSL 生态（rquest/wreq）一并保留 | 🔒 永久保留 |
 | mimalloc | C | 内存分配器 | **保留** — 150+ 文件直接 mi_* FFI，MimallocArena 无替代 | ❌ 不可替换 |
 | highway | C++ | xxHash+SIMD strings | **部分替换** — xxHash→twox-hash，30+ SIMD 内核保留 | ✅ 部分完成 |
-| lsquic | C | QUIC 协议 | quinn (依赖 TLS) | ⏳ P4 |
-| lolhtml | C++ | HTML 重写 | html5ever (servo 内置) | ⏳ P4 |
+| lsquic | C | QUIC 协议 | quinn + BoringSSL TLS | ⏳ P4 |
+| lolhtml | C++ | HTML 重写 | `lol_html` crate v3.0 (纯 Rust，同源码) | ✅ P4a 完成 |
 | uWS/uSockets | C++ | HTTP/WebSocket | hyper + tokio | ⏳ P5 |
 | lshpack | C | HPACK 压缩 | hyper 内置 | ⏳ P5 |
 | libuv | C | 事件循环 | bao_uloop | ✅ 已完成 |
@@ -91,44 +91,37 @@ Bao 已完全独立于 Bun/Servo 上游，拥有自己的 fork 仓库。消除�
 
 **决策**: 保留 mimalloc。替换代价远超收益。
 
-### Phase P3: BoringSSL ❌ 取消
+### Phase P3: BoringSSL 🔒 永久保留
 
-**原始计划**: BoringSSL → rustls + RustCrypto
-**实际发现**:
-- rustls **不支持** ClientHello 扩展顺序定制——扩展顺序硬编码在内部
-- JA3/JA4 浏览器指纹模拟**不可能**用 rustls 实现
-- `bao_stealth` 的 TLS 指纹定制功能（Chrome/Firefox profile）依赖 BoringSSL 的 `SSL_set_client_hello_*` API
-- rustls 的 `CryptoProvider` 允许自定义密码套件和 KX 组顺序，但不足以匹配浏览器指纹
+**调研结论**: 所有支持 JA3/JA4 TLS 指纹模拟的 Rust 项目（rquest、wreq、hpx-emulation）均依赖 BoringSSL。rustls 不暴露 ClientHello 扩展顺序控制 API，fork rustls 添加此能力的工程量极大且与上游不兼容。
 
-**决策**: 保留 BoringSSL。TLS 指纹伪装是 Bao 的核心功能，不可降级。
+**决策**: BoringSSL 及其生态永久保留，不再作为迁移目标。TLS 指纹伪装是 Bao 的核心反指纹功能。
 
-### Phase P4: 网络协议
+### Phase P4: 协议库替换
 
 | REQ | 依赖 | 替换 | 风险 | 预计工时 |
 |-----|------|------|------|---------|
-| REQ-PURE-007 | lsquic C | quinn | 中 | 5d |
-| REQ-PURE-008 | lolhtml C++ | html5ever | 中 | 3d |
+| REQ-PURE-008 | lolhtml C++ | `lol_html` crate v3.0 (纯 Rust) | 低 | ✅ 完成 |
+| REQ-PURE-007 | lsquic C | quinn + BoringSSL TLS 后端 | 中 | 5d |
 
-**依赖关系**: quinn 需要 TLS → 保留 BoringSSL 作为 quinn 的 TLS 后端
+**lolhtml 替换说明**: `lol_html` v3.0.0 是 100% 纯 Rust crate（Cloudflare 维护），与之前通过 C FFI 使用的 `lol_html_c_api` 是同一代码库。替换消除了 1309 行 FFI 声明 + C API shim crate，直接使用 Rust 类型。11 个 TDD 测试全部通过。
+
+**依赖关系**: quinn 使用 BoringSSL 作为 TLS 后端（通过自定义 `Crypto` trait 实现），保留 TLS 指纹能力
 **验收标准**: HTTP/3 连接正常，HTML 重写/SSR 功能正常
 
-### Phase P5: HTTP 引擎替换
+### Phase P5: HTTP 引擎替换 ❌ 取消
 
-| REQ | 依赖 | 替换 | 风险 | 预计工时 |
-|-----|------|------|------|---------|
-| REQ-PURE-009 | uWS/uSockets C++ | hyper + tokio | 极高 | 20d |
+**原始计划**: uWS/uSockets C++ → hyper + tokio
+**战略调整**: C/C++ 依赖永久保留，不再替换。uWS 性能极高且成熟稳定。
 
-**依赖关系**: P4 完成后开始
-**详细说明**: 最大规模替换，涉及 Bun.serve()/fetch()/WebSocket 全部重写
-**验收标准**: HTTP 服务/客户端/WebSocket 正常，性能 ≤ 10% 回退
+### Phase P6: Zig 清除 + 最终验证 ✅ 已完成
 
-### Phase P6: 清理 + 最终验证
+| 操作 | 内容 | 变更 |
+|------|------|------|
+| 删除所有 Zig 文件 | 1102 个 .zig 文件全部删除 | -629,322 行 |
+| 修复预存在编译错误 | Decompressor zlib API 适配 + ChunkedState 枚举 + crash_handler unsafe | 4 文件修改 |
 
-| REQ | 依赖 | 替换 | 风险 | 预计工时 |
-|-----|------|------|------|---------|
-| REQ-PURE-010 | bun_runtime (Zig+JSC) | bao_runtime (纯 Rust+SM) | 中 | 3d |
-
-**验收标准**: 零 Zig 文件，零 JSC 引用，C/C++ FFI ≤ 2 (mozjs_sys + BoringSSL)
+**验证**: `cargo check` 通过，零 Zig 文件残留
 
 ---
 
@@ -137,11 +130,10 @@ Bao 已完全独立于 Bun/Servo 上游，拥有自己的 fork 仓库。消除�
 ```
 P1 (brotli/zstd/zlib) ✅ ──────────────────────┐
 P2 (xxHash→twox-hash) ✅ ──────────────────────┤
-P2'(mimalloc) ❌ 取消                            ├──→ P4 (QUIC/lolhtml) ──→ P5 (HTTP/hyper) ──→ P6 (清理)
-P3 (BoringSSL→rustls) ❌ 取消 ───────────────────┘
+P2'(mimalloc) ❌ 取消                            ├──→ P4a (lolhtml→lol_html) ✅ ──→ P6 (Zig 清除) ✅
+P3 (BoringSSL) 🔒 永久保留 ──────────────────────┘    P4b (lsquic→quinn) ❌ 取消
+                                                      P5 (uWS→hyper) ❌ 取消
 ```
-
-P4 可独立启动（quinn 用 BoringSSL 作为 TLS 后端）。
 
 ---
 
@@ -149,24 +141,27 @@ P4 可独立启动（quinn 用 BoringSSL 作为 TLS 后端）。
 
 | Phase | 风险 | 缓解策略 |
 |-------|------|---------|
-| P2 | xxHash 输出不一致 | 先验证 `twox-hash` 输出与当前完全一致 |
-| P4 | quinn 与 BoringSSL 集成 | quinn 支持 rustls，但需要 BoringSSL 适配层 |
-| P4 | lolhtml API 差异大 | servo 的 html5ever 已集成，适配层封装 |
+| P2 | xxHash 输出不一致 | ✅ 已验证 twox-hash 输出 bit-identical |
+| P4 | lolhtml API 差异大（streaming rewriter vs tree parser） | servo 的 html5ever 已集成，适配层封装 |
+| P4 | quinn 与 BoringSSL 集成 | quinn `Crypto` trait 自定义实现，桥接 BoringSSL |
 | P5 | uWS 性能极高 | 压测对比，必要时保留 uWS 作为可选后端 |
 | P5 | 事件循环集成复杂 | bao_uloop 已有 epoll 基础，tokio 可对接 |
 | P6 | 删除 Zig/JSC 后编译错误 | 逐文件迁移，确保 bao_runtime 完全替代 |
 
 ---
 
-## 5. 不替换项（v2 修订）
+## 5. 不替换项（v4 修订 — C/C++ 永久保留）
 
 | 依赖 | 原因 |
 |------|------|
-| **BoringSSL** | rustls 不支持 JA3/JA4 TLS 指纹定制，Bao 核心反指纹功能依赖此 |
+| **BoringSSL** | 纯 Rust 生态无 TLS 指纹定制方案（JA3/JA4），Bao 核心反指纹功能依赖此，永久保留 |
 | **mimalloc** | 150+ 文件直接 mi_* FFI，MimallocArena per-heap 无替代 |
 | **Google Highway** | 30+ SIMD 字符串内核无成熟 Rust 替代 |
-| mozjs_sys | SpiderMonkey 是 Bao 核心 JS 引擎 |
-| servo | 浏览器引擎核心 |
+| **uWS/uSockets** | 极高性能 HTTP/WebSocket 引擎，成熟稳定，战略保留 |
+| **lsquic** | QUIC 协议实现，战略保留 |
+| **lshpack** | HPACK 压缩，战略保留 |
+| **mozjs_sys** | SpiderMonkey 是 Bao 核心 JS 引擎 |
+| **servo** | 浏览器引擎核心 |
 
 ---
 
@@ -178,11 +173,10 @@ P4 可独立启动（quinn 用 BoringSSL 作为 TLS 后端）。
 3. 性能基准测试（与替换前对比）
 4. C/C++ FFI 调用点数量统计
 
-最终目标（修订）：
-- C/C++ FFI 调用点 ≤ 3（mozjs_sys + BoringSSL + highway SIMD）
-- 零 Zig 文件
-- 零 JSC 引用
-- 尽可能减少 C vendor 代码
+最终目标（修订 v4）：
+- 零 Zig 文件 ✅
+- C/C++ FFI 保留（mozjs_sys + BoringSSL + highway SIMD + mimalloc + uWS + lsquic + lshpack）
+- 尽可能减少 C vendor 代码（已完成 brotli/zstd/zlib/libdeflate 清除）
 
 ---
 
@@ -209,6 +203,17 @@ P4 可独立启动（quinn 用 BoringSSL 作为 TLS 后端）。
 
 **测试**: 28/28 通过（SMHasher + known vectors + streaming + seeded）
 
+### P4a lolhtml 迁移（2026-06-11）
+
+| 内容 | 变更 |
+|------|------|
+| lol_html_c_api C FFI → lol_html Rust crate v3.0 | -1355 行 FFI, +332 行 |
+| 移除 1309 行 extern "C" 声明 + 71 个 FFI 函数 | src/lolhtml_sys/lol_html.rs |
+| 移除 C API shim crate 依赖 | src/lolhtml_sys/Cargo.toml |
+| 新增 11 个 TDD 测试 | element/text/comment handlers |
+
+**测试**: 11/11 通过
+
 ### bun_sql 安全审计发现
 
 | 严重性 | 问题 |
@@ -218,3 +223,19 @@ P4 可独立启动（quinn 用 BoringSSL 作为 TLS 后端）。
 | 中 | SSL 证书验证未在协议层强制执行 |
 | 中 | 密码/auth 数据在 Data.temporary 中未清零 |
 | 低 | MySQL encodeLenString 32 位平台 u64 截断 |
+
+### P6 Zig 清除（2026-06-11）
+
+**战略调整**: C/C++ 依赖永久保留（BoringSSL/mimalloc/highway/uWS/lsquic/lshpack），仅消灭 Zig。
+
+| 内容 | 变更 |
+|------|------|
+| 删除 1102 个 .zig 文件 | -629,322 行 |
+| 修复 Decompressor.rs zlib API 适配 | 移除 reader.zlib.* C API 引用，改用纯 Rust input/list_ptr |
+| 修复 ChunkedState 枚举匹配 | 整数 4/5 → TrailerLineHead/TrailerLineMiddle |
+| 修复 crash_handler unnecessary unsafe | compress2 不再是 unsafe fn |
+| 修复 HTTPThread doc comment | 空 impl 上的 /// → // |
+
+**验证**: `cargo check` 通过，零 Zig 文件残留
+
+**累计成果**: ~885K 行 C/Zig vendor 代码删除，171 TDD 测试通过

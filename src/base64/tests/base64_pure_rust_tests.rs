@@ -1,5 +1,5 @@
 use bun_base64::{encode_alloc, decode_alloc, encode_len, decode_len,
-    simdutf_encode_url_safe_alloc, url_safe_encode_len};
+    simdutf_encode_url_safe_alloc, url_safe_encode_len, decode_lenient, decode_lenient_len};
 
 // ──────────────────────────────────────────────────────────────────────────
 // Standard base64 encode/decode roundtrip
@@ -158,4 +158,38 @@ fn vlq_negative_values() {
         let result = bun_base64::vlq_mod::decode(encoded.slice(), 0);
         assert_eq!(result.value, v, "VLQ roundtrip for negative {v}");
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Forgiving-base64 (WHATWG semantics)
+// ──────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn forgiving_base64_whitespace_tolerant() {
+    // WHATWG forgiving-base64: whitespace is ignored
+    let input = b"Z m 9 v"; // "foo" with spaces
+    let outlen = decode_lenient_len(input.len());
+    let mut dest = vec![0u8; outlen];
+    let wrote = decode_lenient(&mut dest, input, false);
+    assert_eq!(&dest[..wrote], b"foo");
+}
+
+#[test]
+fn forgiving_base64_stops_at_padding() {
+    // Forgiving-base64 stops at first '='
+    let input = b"Zm9vYmE=extra"; // "fooba" with extra data after padding
+    let outlen = decode_lenient_len(input.len());
+    let mut dest = vec![0u8; outlen];
+    let wrote = decode_lenient(&mut dest, input, false);
+    assert_eq!(&dest[..wrote], b"fooba");
+}
+
+#[test]
+fn forgiving_base64_url_safe_chars() {
+    // Forgiving-base64 accepts URL-safe chars (- and _) when is_urlsafe=true
+    let input = b"SGVsbG8"; // "Hello" without padding
+    let outlen = decode_lenient_len(input.len());
+    let mut dest = vec![0u8; outlen];
+    let wrote = decode_lenient(&mut dest, input, true);
+    assert_eq!(&dest[..wrote], b"Hello");
 }

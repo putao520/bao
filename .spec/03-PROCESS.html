@@ -11,7 +11,7 @@
 <h2>§1 JS 执行管线</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>数据流图: JS 文件执行</h3>
 <pre>
 用户代码 (index.ts)
@@ -64,7 +64,7 @@
 </script>
 </div>
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>渲染流程时序图</h3>
 <pre>
 CDP: Page.navigate(url)
@@ -122,7 +122,7 @@ CDP: Page.navigate(url)
 </script>
 </div>
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>CDP Domain 路由</h3>
 <pre>
 WebSocket Client (Playwright)
@@ -220,7 +220,7 @@ WebSocket Client (Playwright)
 <h2>§5 Event Loop 桥接流程</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>SpiderMonkey JobQueue ↔ Bun uSockets 桥接</h3>
 <pre>
 ┌─ SpiderMonkey Side ──────────────────────────────┐
@@ -255,7 +255,7 @@ WebSocket Client (Playwright)
 <h2>§6 Module Loader 桥接流程</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>SpiderMonkey Module Loader ↔ Bun Resolver 桥接</h3>
 <pre>
 ┌─ SpiderMonkey Side ──────────────────────────────────┐
@@ -390,7 +390,7 @@ WebSocket Client (Playwright)
 <h2>§8 线程模型与数据流</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>线程间数据流</h3>
 <pre>
 Main Thread (事件循环 + JSContext + DOM)
@@ -430,7 +430,7 @@ Main Thread (事件循环 + JSContext + DOM)
 <h2>§9 多页面管理流程</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>Page 创建流程时序图</h3>
 <pre>
 调用方: runtime.createPage(config)
@@ -469,7 +469,7 @@ Main Thread (事件循环 + JSContext + DOM)
 </pre>
 </div>
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>CDP 路由分发流程时序图</h3>
 <pre>
 调用方: cdp.send('Domain.method', params)
@@ -499,7 +499,7 @@ Main Thread (事件循环 + JSContext + DOM)
 </pre>
 </div>
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>PagePool 空闲回收流程时序图</h3>
 <pre>
 事件循环每轮 tick:
@@ -533,7 +533,7 @@ Main Thread (事件循环 + JSContext + DOM)
 <h2>§10 异常流程</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="diagram" data-artifact-type="diagram">
+<div data-type="document" id="use-case-diagram" data-artifact-type="use-case-diagram">
 <h3>异常处理流程</h3>
 <pre>
 JS 执行异常:

@@ -555,7 +555,7 @@ fn on_close(ctx: *mut HTTPClient) {
             // 4 = CHUNKED_IN_TRAILERS_LINE_HEAD, 5 = CHUNKED_IN_TRAILERS_LINE_MIDDLE
             // (`phr_chunked_decoder._state` is a raw `c_char`.)
             match this.state.chunked_decoder._state {
-                4 | 5 => {
+                bun_picohttp::ChunkedState::TrailerLineHead | bun_picohttp::ChunkedState::TrailerLineMiddle => {
                     this.state.flags.received_last_chunk = true;
                     // `this` dead (NLL); reborrow via `client_from_ctx` inside.
                     progress_update_for_proxy_socket(ctx, proxy_nn);

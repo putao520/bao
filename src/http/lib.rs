@@ -1874,7 +1874,7 @@ impl<'a> HTTPClient<'a> {
                 // "all chunks consumed"; CHUNKED_IN_CHUNK_SIZE/EXT/CRLF mean
                 // the body was truncated mid-stream and must fail.
                 // 4 = CHUNKED_IN_TRAILERS_LINE_HEAD, 5 = CHUNKED_IN_TRAILERS_LINE_MIDDLE
-                if matches!(self.state.chunked_decoder._state, 4 | 5) {
+                if matches!(self.state.chunked_decoder._state, bun_picohttp::ChunkedState::TrailerLineHead | bun_picohttp::ChunkedState::TrailerLineMiddle) {
                     // ignore failure if we are in the middle of trailer headers, since we processed all the chunks and trailers are ignored
                     self.state.flags.received_last_chunk = true;
                     let ctx = self.get_ssl_ctx::<IS_SSL>();

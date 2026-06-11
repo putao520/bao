@@ -1,4 +1,3 @@
-use bun_collections::VecExt as _;
 use bun_core::MutableString;
 use bun_http_types::Encoding::Encoding;
 
@@ -134,43 +133,10 @@ impl Decompressor {
 
         match self {
             Decompressor::Zlib(reader) => {
-                debug_assert!(reader.zlib.avail_in == 0);
-                reader.zlib.next_in = buffer.as_ptr();
-                reader.zlib.avail_in = buffer.len() as u32;
-
-                let initial = body_out_str.list.len();
-                // PORT NOTE: Zig `expandToCapacity()` set `len = capacity` so the
-                // zlib output pointers could write into the spare region while
-                // `read_all` later truncated back to `total_out`. `read_all`'s
-                // grow-on-avail_out==0 path reads `list_ptr.len()` to compute the
-                // resume offset, so this `set_len(capacity)` is load-bearing —
-                // skipping it leaves `len == initial` and the next grow rewinds
-                // `next_out` to `ptr + initial`, overwriting freshly-inflated
-                // bytes (observed as mid-stream gzip/deflate corruption when a
-                // streamed body chunk decompresses past the reused buffer's
-                // capacity).
-                if body_out_str.list.capacity() == initial {
-                    body_out_str.list.reserve(4096);
-                }
-                // PORT NOTE: Zig `reader.list = body_out_str.list` aliased the
-                // ArrayListUnmanaged header by value. The Rust reader keeps a
-                // `&mut Vec<u8>` instead; re-seat it in case the response buffer
-                // was swapped between chunks. After re-seating, derive
-                // `next_out`/`avail_out` from `reader.list_ptr` (NOT
-                // `body_out_str.list`) — taking a fresh `&mut body_out_str.list`
-                // would invalidate the just-stored `&'static mut` under stacked
-                // borrows.
                 // SAFETY: see `seat` contract — same buffer pair as initial seat.
-                let (_, out) = unsafe { seat(buffer, &mut body_out_str.list) };
+                let (input, out) = unsafe { seat(buffer, &mut body_out_str.list) };
+                reader.input = input;
                 reader.list_ptr = out;
-                // SAFETY: zlib writes the tail; `read_all` truncates to `total_out` before any read.
-                // `additional = 0`: the conditional reserve above already grew the buffer; `reserve(0)` is a no-op.
-                // `list_ptr.len() == initial` here (reserve does not change len), so the helper's internal `prev` matches.
-                let (next_out, avail_out) = unsafe { reader.list_ptr.reserve_expand_tail(0) };
-                reader.zlib.next_out = next_out;
-                reader.zlib.avail_out = avail_out as u32;
-                // we reset the total out so we can track how much we decompressed this time
-                reader.zlib.total_out = initial as _;
             }
             Decompressor::Brotli(reader) => {
                 let initial = body_out_str.list.len();

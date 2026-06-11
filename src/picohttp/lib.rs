@@ -3,7 +3,6 @@ use core::fmt;
 
 use bstr::BStr;
 
-use bun_core::output as Output;
 use bun_core::output::enable_ansi_colors_stderr;
 use bun_core::pretty_fmt;
 
@@ -584,10 +583,7 @@ impl<'a> Response<'a> {
                 }
                 Err(ParseResponseError::ShortRead)
             }
-            Err(_) => {
-                Output::debug(format_args!("Malformed HTTP response:\n{}", BStr::new(buf)));
-                Err(ParseResponseError::MalformedHttpResponse)
-            }
+            Err(_) => Err(ParseResponseError::MalformedHttpResponse),
         }
     }
 
@@ -987,9 +983,8 @@ impl ChunkedDecoder {
                         if buf[src] != b'\n' {
                             return Err(ChunkedError::Invalid);
                         }
-                        src += 1;
-                        // End of trailers.
-                        self._state = ChunkedState::TrailerFinalCrlf;
+                        // End of trailers — the empty line marks completion.
+                        self._state = ChunkedState::Done;
                         continue;
                     }
                     self._state = ChunkedState::TrailerLineMiddle;
@@ -1032,7 +1027,7 @@ impl ChunkedDecoder {
                     if buf[src] != b'\n' {
                         return Err(ChunkedError::Invalid);
                     }
-                    src += 1;
+                    // No need to advance src further — we're done.
                     self._state = ChunkedState::Done;
                     break;
                 }
@@ -1048,7 +1043,7 @@ impl ChunkedDecoder {
         // This matches phr_decode_chunked's behavior of returning -2 when
         // the input is incomplete.
         match self._state {
-            ChunkedState::TrailerFinalCrlf => Ok(dst),
+            ChunkedState::Done => Ok(dst),
             _ => Err(ChunkedError::NeedMore),
         }
     }

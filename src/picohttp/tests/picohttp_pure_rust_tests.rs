@@ -366,6 +366,7 @@ fn chunked_state_matches_picohttpparser_values() {
     assert_eq!(ChunkedState::TrailerLineHead as i8, 4);
     assert_eq!(ChunkedState::TrailerLineMiddle as i8, 5);
     assert_eq!(ChunkedState::TrailerFinalCrlf as i8, 6);
+    assert_eq!(ChunkedState::Done as i8, 7);
 }
 
 #[test]

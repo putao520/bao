@@ -452,16 +452,6 @@ pub mod zig_base64 {
         }
     }
 
-    /// Resolve the `base64` crate engine for decoding based on pad_char.
-    #[inline]
-    fn decode_engine(pad_char: Option<u8>) -> &'static base64::engine::GeneralPurpose {
-        if pad_char.is_some() {
-            &base64::engine::general_purpose::STANDARD
-        } else {
-            &base64::engine::general_purpose::STANDARD_NO_PAD
-        }
-    }
-
     /// Base64Encoder — delegates to the `base64` crate's GeneralPurpose engine.
     /// Stores only the `pad_char` flag; the engine is resolved at call time
     /// from static constants (zero-cost).
@@ -560,19 +550,13 @@ pub mod zig_base64 {
         /// invalid padding results in Error::InvalidPadding.
         #[inline]
         pub fn decode(&self, dest: &mut [u8], source: &[u8]) -> Result<(), Error> {
-            if self.pad_char.is_some() && !source.len().is_multiple_of(4) {
-                return Err(Error::InvalidPadding);
-            }
-            let engine = decode_engine(self.pad_char);
-            match engine.decode_slice(source, dest) {
-                Ok(_written) => Ok(()),
-                Err(base64::DecodeSliceError::DecodeError(e)) => map_decode_error(e),
-                Err(base64::DecodeSliceError::OutputSliceTooSmall) => Err(Error::NoSpaceLeft),
-            }
+            let mut wrote: usize = 0;
+            strict_decode_with_ignore(dest, source, &mut wrote, self.pad_char)
         }
     }
 
     /// Map `base64::DecodeError` to our `Error`.
+    #[allow(dead_code)] // Kept for potential future use with the `base64` crate directly
     #[inline]
     fn map_decode_error(e: base64::DecodeError) -> Result<(), Error> {
         match e {
@@ -1016,18 +1000,18 @@ pub mod zig_base64 {
                 Ok(decoded_size) => {
                     let decoded = &mut buffer[0..decoded_size];
                     match codecs.decoder.decode(decoded, encoded) {
-                        Ok(_) => panic!("ExpectedError for encoded={:?}", encoded),
-                        Err(err) => assert_eq!(err, expected_err, "for encoded={:?}", encoded),
+                        Ok(_) => panic!("ExpectedError"),
+                        Err(err) => assert_eq!(err, expected_err),
                     }
                 }
-                Err(err) => assert_eq!(err, expected_err, "for encoded={:?}", encoded),
+                Err(err) => assert_eq!(err, expected_err),
             }
 
             let mut written: usize = 0;
             let result = decoder_ignore_space.decode(&mut buffer[..], encoded, &mut written);
             match expected_with_ignore {
-                Some(expected) => assert_eq!(result.unwrap_err(), expected, "for encoded={:?} with_ignore", encoded),
-                None => assert!(result.is_ok(), "for encoded={:?} with_ignore expected Ok", encoded),
+                Some(expected) => assert_eq!(result.unwrap_err(), expected),
+                None => assert!(result.is_ok()),
             }
         }
 

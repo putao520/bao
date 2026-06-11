@@ -2649,8 +2649,7 @@ mod draft {
 
                 let mut compressed_bytes: [u8; 2048] = [0; 2048];
                 let mut len: bun_zlib::uLong = compressed_bytes.len() as bun_zlib::uLong;
-                // SAFETY: buffers and lengths are valid
-                let ret = unsafe {
+                let ret = {
                     bun_zlib::compress2(
                         compressed_bytes.as_mut_ptr(),
                         &raw mut len,

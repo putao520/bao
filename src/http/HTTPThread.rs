@@ -296,8 +296,8 @@ pub struct LibdeflateState {
 unsafe impl bun_core::Zeroable for LibdeflateState {}
 
 impl LibdeflateState {
-    /// Pure Rust: no C decompressor handle needed.
-    /// The shared_buffer is used for intermediate decompression output.
+    // Pure Rust: no C decompressor handle needed.
+    // The shared_buffer is used for intermediate decompression output.
 }
 
 pub const REQUEST_BODY_SEND_STACK_BUFFER_SIZE: usize = 32 * 1024;

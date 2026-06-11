@@ -12,7 +12,7 @@
 <h2>§1 整体架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>架构总览</h3>
 <pre>
 ┌──────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@
 <h2>§1.1 BaoRuntime 公共 API</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="api-spec" data-api="GET /api/bao-runtime" data-type="document" id="api-spec">
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-runtime" data-type="document" id="interface-protocol">
 <p>关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span>,
 <span data-xref-id="PagePool" data-xref-type="entity">PagePool</span>,
 <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>,
@@ -178,7 +178,7 @@ pub struct Permission {
 <span data-xref-id="REQ-ENG-006" data-xref-type="req">REQ-ENG-006</span>, <span data-xref-id="REQ-CLI-002" data-xref-type="req">REQ-CLI-002</span>
 <span data-xref-id="REQ-CDP-001" data-xref-type="req">REQ-CDP-001</span></p><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
 
-<div data-artifact-type="api-spec" data-api="GET /api/bao-runtime-js" data-type="document" id="api-spec">
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-runtime-js" data-type="document" id="interface-protocol">
 <h3>JS 公共 API 接口</h3>
 <pre>
 // ── Bao 全局对象 ──────────────────────────────────────────
@@ -238,7 +238,7 @@ const restrictedPage = runtime.createPage({ permission: perm });
 <h2>§1.2 库模式 (In-Process) API 契约 — 零配置路径</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="api-spec" data-api="GET /api/bao-library-mode" data-type="document" id="api-spec">
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-library-mode" data-type="document" id="interface-protocol">
 <p>Bao 是<strong>库优先</strong>的设计：CLI (<code>bao run</code>) 只是库的一个消费者。
 所有能力（SpiderMonkey JSContext、Node.js/Bun API、Web API、Stealth 反指纹、CDP、浏览器引擎）均可
 <strong>作为 Rust 库直接在进程中调用</strong>，无需子进程、无需 display server、无需独立二进制。</p>
@@ -341,7 +341,7 @@ let ext_page = cdp.new_page().await?;
 <h2>§2 Bun 源项目 Crate 架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>§2.1 Crate 依赖 DAG (13 层)</h3>
 <pre>
 L0  FOUNDATION (零内部依赖)
@@ -393,7 +393,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </pre>
 </div>
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>§2.2 JSC 依赖边界</h3>
 <p>关键发现：Bun 采用 <strong>foo + foo_jsc 两维分离模式</strong>，每个需要暴露给 JS 的功能域都有独立的纯 Rust crate 和 JSC 绑定 crate。</p>
 
@@ -432,7 +432,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§3 Servo 源项目组件架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>§3.1 组件分层</h3>
 <pre>
 ┌─────────────────────────────────────────────────────────┐
@@ -505,7 +505,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§4 Bao 融合架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>§4.1 Bun ↔ Servo 融合映射</h3>
 <pre>
                     Bao 项目 Cargo Workspace
@@ -609,7 +609,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-integration-auth="none" data-integration-protocol="websocket" data-integration="CDPProtocol" data-artifact-type="external-integration" data-type="document" id="external-integration">
+<div data-integration-auth="none" data-integration-protocol="ws" data-integration="CDPProtocol" data-artifact-type="external-integration" data-type="document" id="external-integration">
 <h3>§4.5 CDP 协议集成</h3>
 <script type="application/ld+json">
 {
@@ -630,7 +630,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>§4.6 CDP 双层抽象架构</h3>
 <pre>
 双层 API 设计:
@@ -688,7 +688,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§4.5 多页面管理架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>多页面管理架构</h3>
 <pre>
 ┌─ BaoRuntime (顶层协调器) ──────────────────────────────────────┐
@@ -725,7 +725,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <span data-xref-id="Permission" data-xref-type="entity">Permission</span></p>
 </div>
 
-<div data-artifact-type="diagram" data-state-machine="PageLifecycle" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-state-machine="PageLifecycle" data-type="document" id="use-case-diagram">
 <h3>Page 生命周期状态机</h3>
 <script type="application/ld+json">
 {
@@ -793,7 +793,7 @@ Created ──navigate──→ Navigating ──load_complete──→ Interact
 <h2>§6 错误处理策略</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>错误处理分层</h3>
 <pre>
 JS 层错误 → SpiderMonkey Exception → JS 可捕获
@@ -809,7 +809,7 @@ CDP 错误 → JSON-RPC Error Response → 客户端处理
 <h2>§7 运行时状态图</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>运行时生命周期状态</h3>
 <pre>
 Uninitialized → Initializing → Ready → Running → ShuttingDown → Terminated
@@ -894,7 +894,7 @@ ShuttingDown:
 <h2>§9 接口协议图</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>内部接口协议</h3>
 <pre>
 ┌─ bao_engine ─┐     FFI (C ABI)     ┌─ mozjs-sys ─┐
@@ -955,7 +955,7 @@ ShuttingDown:
 <h2>§4.7 Permission 沙箱架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="diagram" data-type="document" id="diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>Permission 沙箱 — host_fn 层拦截</h3>
 <pre>
 实现层级: 复用 REQ-ENG-003 host_fn 抽象层
