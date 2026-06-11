@@ -118,6 +118,7 @@ crc32fast = "1"
 httparse = "1"
 pulldown-cmark = { version = "0.12", default-features = false, features = ["html"] }
 twox-hash = "2.1"
+lol_html = "3.0"
 
 # ─── Internal path deps ─────────────────────────────────────────────────────
 bun_opaque = { path = "src/opaque" }
