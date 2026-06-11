@@ -241,7 +241,7 @@ impl CdpServer {
                                 }),
                             );
                         }
-                    } else if let Some(payload) = text.strip_prefix("__BAO_DEBUGGER_PAUSE__") {
+                    } else if let Some(payload) = text.strip_prefix("__BAO_DEBUGGER_PAUSED__") {
                         if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
                             self.broadcaster.send_event(
                                 "Debugger.paused",
@@ -582,10 +582,10 @@ mod tests {
         let mut server = CdpServer::new(ServerConfig::default());
         let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
         server.set_console_receiver(rx);
-        tx.send(("info".into(), "__BAO_DEBUGGER_PAUSE__{\"reason\":\"breakpoint\",\"callFrames\":[]}".into())).unwrap();
+        tx.send(("info".into(), "__BAO_DEBUGGER_PAUSED__{\"reason\":\"breakpoint\",\"callFrames\":[]}".into())).unwrap();
         let rx_ref = server.console_rx.as_ref().unwrap();
         let (level, text) = rx_ref.try_recv().unwrap();
-        assert!(text.starts_with("__BAO_DEBUGGER_PAUSE__"));
+        assert!(text.starts_with("__BAO_DEBUGGER_PAUSED__"));
     }
 
     #[test]
@@ -601,7 +601,7 @@ mod tests {
             "__BAO_DEBUGGER_SCRIPT__{}",
             "__BAO_RUNTIME_EXCEPTION__{}",
             "__BAO_PAGE_LOAD__{}",
-            "__BAO_DEBUGGER_PAUSE__{}",
+            "__BAO_DEBUGGER_PAUSED__{}",
         ];
         for msg in &prefixes {
             tx.send(("info".into(), msg.to_string())).unwrap();
