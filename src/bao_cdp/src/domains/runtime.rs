@@ -6,11 +6,12 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 pub struct RuntimeHandler {
     bridge: BridgeSender,
+    target_id: String,
 }
 
 impl RuntimeHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
-        RuntimeHandler { bridge }
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
+        RuntimeHandler { bridge, target_id }
     }
 }
 
@@ -42,7 +43,7 @@ impl DomainHandler for RuntimeHandler {
                 let expression = params.get("expression").and_then(|v| v.as_str()).unwrap_or("").to_string();
                 let return_by_value = params.get("returnByValue").and_then(|v| v.as_bool()).unwrap_or(true);
                 if !expression.is_empty() {
-                    let resp = self.bridge.send(BridgeCommand::EvaluateJs { expression, return_by_value });
+                    let resp = self.bridge.send(BridgeCommand::EvaluateJs { target_id: self.target_id.clone(), expression, return_by_value });
                     resp.result.map_err(|e| CdpError { code: -32603, message: e })
                 } else {
                     Ok(json!({ "result": { "type": "undefined" }, "exceptionDetails": null }))
@@ -64,6 +65,7 @@ impl DomainHandler for RuntimeHandler {
                     };
                     let expression = format!("({})({})", function_declaration, args_str);
                     let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                        target_id: self.target_id.clone(),
                         expression,
                         return_by_value: true,
                     });
@@ -73,6 +75,7 @@ impl DomainHandler for RuntimeHandler {
                 } else if let Some(oid) = object_id {
                     // Just evaluate the object ID as an expression
                     let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                        target_id: self.target_id.clone(),
                         expression: oid.to_string(),
                         return_by_value: true,
                     });
@@ -94,6 +97,7 @@ impl DomainHandler for RuntimeHandler {
                     method,
                 );
                 let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
@@ -111,6 +115,7 @@ impl DomainHandler for RuntimeHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const TID: &str = "test-target";
     use crate::servo_bridge::{bridge_channel, BridgeResponse, BridgeCommand};
     use cdp_server::EventSender;
     use std::time::Duration;
@@ -124,7 +129,7 @@ mod tests {
 
     fn setup() -> RuntimeHandler {
         let (sender, _rx) = bridge_channel(TIMEOUT);
-        RuntimeHandler::new(sender)
+        RuntimeHandler::new(sender, TID.into())
     }
 
     #[test]
@@ -165,7 +170,7 @@ mod tests {
     #[test]
     fn call_function_on_with_declaration_sends_bridge() {
         let (bridge, rx) = bridge_channel(TIMEOUT);
-        let handler = RuntimeHandler::new(bridge);
+        let handler = RuntimeHandler::new(bridge, TID.into());
         let responder = std::thread::spawn(move || {
             rx.recv_and_process(TIMEOUT, |cmd| {
                 if let BridgeCommand::EvaluateJs { expression, .. } = cmd {
@@ -193,7 +198,7 @@ mod tests {
     #[test]
     fn call_function_on_with_arguments_sends_bridge() {
         let (bridge, rx) = bridge_channel(TIMEOUT);
-        let handler = RuntimeHandler::new(bridge);
+        let handler = RuntimeHandler::new(bridge, TID.into());
         let responder = std::thread::spawn(move || {
             rx.recv_and_process(TIMEOUT, |cmd| {
                 if let BridgeCommand::EvaluateJs { expression, .. } = cmd {
@@ -216,7 +221,7 @@ mod tests {
     #[test]
     fn get_properties_sends_bridge_reflection_query() {
         let (bridge, rx) = bridge_channel(TIMEOUT);
-        let handler = RuntimeHandler::new(bridge);
+        let handler = RuntimeHandler::new(bridge, TID.into());
         let responder = std::thread::spawn(move || {
             rx.recv_and_process(TIMEOUT, |cmd| {
                 if let BridgeCommand::EvaluateJs { expression, .. } = cmd {

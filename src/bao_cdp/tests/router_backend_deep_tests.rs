@@ -5,7 +5,10 @@
 // command routing, error paths, clone/debug.
 
 use bao_cdp::{CdpRouter, BackendKind, CDPError, CDPMessage, handle_command, bridge_channel};
+
+const TID: &str = "test-target";
 use serde_json::json;
+
 
 // ---- CdpRouter construction ----
 

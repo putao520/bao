@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use std::thread;
 
+const TID: &str = "test-target";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -26,7 +28,7 @@ impl EventSender for NoopEventSender {
 fn setup() -> (DomainRegistry, BridgeSender) {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     let registry = DomainRegistry::new();
-    register_all_domains_into(tx.clone(), &registry);
+    register_all_domains_into(tx.clone(), TID.into(), &registry);
 
     // Keep an extra clone alive so the channel stays open after test drops tx
     let keeper = tx.clone();
@@ -46,13 +48,13 @@ fn setup() -> (DomainRegistry, BridgeSender) {
 
 fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
     match cmd {
-        BridgeCommand::GetTitle => BridgeResponse {
+        BridgeCommand::GetTitle { .. } => BridgeResponse {
             result: Ok(json!("Test Page")),
         },
-        BridgeCommand::GetUrl => BridgeResponse {
+        BridgeCommand::GetUrl { .. } => BridgeResponse {
             result: Ok(json!("https://example.com")),
         },
-        BridgeCommand::GetDocument => BridgeResponse {
+        BridgeCommand::GetDocument { .. } => BridgeResponse {
             result: Ok(json!({
                 "root": {
                     "nodeId": 1, "nodeType": 9, "nodeName": "#document",

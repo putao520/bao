@@ -3,11 +3,18 @@
 // cross-domain routing, event broadcasting, bridge channel relay.
 
 use bao_cdp::domains::{register_all_domains_with_target, ServoTargetProvider};
+
+const TID: &str = "test-target";
 use bao_cdp::{BridgeCommand, BridgeResponse, bridge_channel};
+
 use cdp_server::{DomainRegistry, EventBroadcaster, TargetProvider};
+
 use serde_json::json;
+
 use std::sync::Arc;
+
 use std::time::Duration;
+
 
 const TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -26,11 +33,11 @@ fn mock_responder(
                 break;
             }
             let _ = receiver.try_process(|cmd| match cmd {
-                BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!("Wave23 Page")) },
-                BridgeCommand::GetUrl => BridgeResponse { result: Ok(json!("https://wave23.test")) },
+                BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Wave23 Page")) },
+                BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://wave23.test")) },
                 BridgeCommand::Navigate { .. } => BridgeResponse { result: Ok(json!({ "frameId": "f1" })) },
                 BridgeCommand::EvaluateJs { .. } => BridgeResponse { result: Ok(json!({ "result": { "type": "number", "value": 42 } })) },
-                BridgeCommand::ClosePage => BridgeResponse { result: Ok(json!({})) },
+                BridgeCommand::ClosePage { .. } => BridgeResponse { result: Ok(json!({})) },
                 _ => BridgeResponse { result: Ok(json!({})) },
             });
             std::thread::sleep(std::time::Duration::from_millis(1));

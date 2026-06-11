@@ -7,7 +7,6 @@ license.workspace = true
 
 [dependencies]
 rustls = { version = "0.23", default-features = false, features = ["tls12", "logging", "std"] }
-bao_crypto = { path = "../bao_crypto" }
 bun_uws_sys = { path = "../uws_sys" }
 bun_core = { path = "../bun_core" }
 
@@ -21,7 +20,7 @@ p384 = { version = "0.13", features = ["ecdh", "pkcs8"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2", features = ["pkcs8"] }
 ecdsa = { version = "0.16", features = ["pkcs8"] }
-rsa = { version = "0.9", features = ["pem"] }
+rsa = { version = "0.9", features = ["pem", "sha2"] }
 pkcs8 = { version = "0.10", features = ["pem"] }
 getrandom = "0.4"
 rand_core = "0.6"

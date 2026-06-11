@@ -8,6 +8,8 @@ use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse, bridge_channel};
 use bao_cdp::{handle_command, CDPMessage, CDPResponse};
 use serde_json::json;
 
+const TID: &str = "test-target";
+
 // ---- InternalBackend indirect tests (via handle_command) ----
 
 fn dispatch(method: &str, params: Option<serde_json::Value>) -> CDPResponse {
@@ -132,158 +134,152 @@ fn test_internal_empty_params_object() {
 
 #[test]
 fn test_bridge_cmd_navigate_debug() {
-    let cmd = BridgeCommand::Navigate { url: "http://test".into() };
+    let cmd = BridgeCommand::Navigate { target_id: TID.into(), url: "http://test".into() };
     assert!(format!("{:?}", cmd).contains("Navigate"));
 }
 
 #[test]
 fn test_bridge_cmd_evaluate_debug() {
-    let cmd = BridgeCommand::EvaluateJs { expression: "1+1".into(), return_by_value: true };
+    let cmd = BridgeCommand::EvaluateJs { target_id: TID.into(), expression: "1+1".into(), return_by_value: true };
     assert!(format!("{:?}", cmd).contains("EvaluateJs"));
 }
 
 #[test]
 fn test_bridge_cmd_screenshot_debug() {
-    let cmd = BridgeCommand::TakeScreenshot { format: "png".into(), quality: Some(90) };
+    let cmd = BridgeCommand::TakeScreenshot { target_id: TID.into(), format: "png".into(), quality: Some(90) };
     assert!(format!("{:?}", cmd).contains("TakeScreenshot"));
 }
 
 #[test]
 fn test_bridge_cmd_get_title_debug() {
-    assert!(format!("{:?}", BridgeCommand::GetTitle).contains("GetTitle"));
+    assert!(format!("{:?}", BridgeCommand::GetTitle { target_id: TID.into() }).contains("GetTitle"));
 }
 
 #[test]
 fn test_bridge_cmd_get_url_debug() {
-    assert!(format!("{:?}", BridgeCommand::GetUrl).contains("GetUrl"));
+    assert!(format!("{:?}", BridgeCommand::GetUrl { target_id: TID.into() }).contains("GetUrl"));
 }
 
 #[test]
 fn test_bridge_cmd_get_document_debug() {
-    assert!(format!("{:?}", BridgeCommand::GetDocument).contains("GetDocument"));
+    assert!(format!("{:?}", BridgeCommand::GetDocument { target_id: TID.into() }).contains("GetDocument"));
 }
 
 #[test]
 fn test_bridge_cmd_query_selector_debug() {
-    let cmd = BridgeCommand::QuerySelector { selector: "div".into() };
+    let cmd = BridgeCommand::QuerySelector { target_id: TID.into(), selector: "div".into() };
     assert!(format!("{:?}", cmd).contains("QuerySelector"));
 }
 
 #[test]
 fn test_bridge_cmd_query_selector_all_debug() {
-    let cmd = BridgeCommand::QuerySelectorAll { selector: "div.cls".into() };
+    let cmd = BridgeCommand::QuerySelectorAll { target_id: TID.into(), selector: "div.cls".into() };
     assert!(format!("{:?}", cmd).contains("QuerySelectorAll"));
 }
 
 #[test]
 fn test_bridge_cmd_mouse_event_debug() {
-    let cmd = BridgeCommand::DispatchMouseEvent {
-        event_type: "mousePressed".into(), x: 100.0, y: 200.0,
-        button: Some(0), click_count: Some(1),
-    };
+    let cmd = BridgeCommand::DispatchMouseEvent { target_id: TID.into(), event_type: "mousePressed".into(), x: 100.0, y: 200.0,
+        button: Some(0), click_count: Some(1), };
     assert!(format!("{:?}", cmd).contains("DispatchMouseEvent"));
 }
 
 #[test]
 fn test_bridge_cmd_key_event_debug() {
-    let cmd = BridgeCommand::DispatchKeyEvent {
-        event_type: "keyDown".into(), key: "a".into(),
-        code: "KeyA".into(), text: Some("a".into()),
-    };
+    let cmd = BridgeCommand::DispatchKeyEvent { target_id: TID.into(), event_type: "keyDown".into(), key: "a".into(),
+        code: "KeyA".into(), text: Some("a".into()), };
     assert!(format!("{:?}", cmd).contains("DispatchKeyEvent"));
 }
 
 #[test]
 fn test_bridge_cmd_insert_text_debug() {
-    let cmd = BridgeCommand::InsertText { text: "hello".into() };
+    let cmd = BridgeCommand::InsertText { target_id: TID.into(), text: "hello".into() };
     assert!(format!("{:?}", cmd).contains("InsertText"));
 }
 
 #[test]
 fn test_bridge_cmd_set_viewport_debug() {
-    let cmd = BridgeCommand::SetViewport { width: 1920, height: 1080, device_scale_factor: Some(2.0) };
+    let cmd = BridgeCommand::SetViewport { target_id: TID.into(), width: 1920, height: 1080, device_scale_factor: Some(2.0) };
     assert!(format!("{:?}", cmd).contains("SetViewport"));
 }
 
 #[test]
 fn test_bridge_cmd_set_user_agent_debug() {
-    let cmd = BridgeCommand::SetUserAgent { user_agent: "TestBot/1.0".into() };
+    let cmd = BridgeCommand::SetUserAgent { target_id: TID.into(), user_agent: "TestBot/1.0".into() };
     assert!(format!("{:?}", cmd).contains("SetUserAgent"));
 }
 
 #[test]
 fn test_bridge_cmd_get_cookies_debug() {
-    let cmd = BridgeCommand::GetCookies { urls: vec!["http://a.com".into()] };
+    let cmd = BridgeCommand::GetCookies { target_id: TID.into(), urls: vec!["http://a.com".into()] };
     assert!(format!("{:?}", cmd).contains("GetCookies"));
 }
 
 #[test]
 fn test_bridge_cmd_get_all_cookies_debug() {
-    assert!(format!("{:?}", BridgeCommand::GetAllCookies).contains("GetAllCookies"));
+    assert!(format!("{:?}", BridgeCommand::GetAllCookies { target_id: TID.into() }).contains("GetAllCookies"));
 }
 
 #[test]
 fn test_bridge_cmd_set_cookie_debug() {
-    let cmd = BridgeCommand::SetCookie {
-        name: "session".into(), value: "abc".into(),
-        url: Some("http://test".into()), domain: None,
-    };
+    let cmd = BridgeCommand::SetCookie { target_id: TID.into(), name: "session".into(), value: "abc".into(),
+        url: Some("http://test".into()), domain: None, };
     assert!(format!("{:?}", cmd).contains("SetCookie"));
 }
 
 #[test]
 fn test_bridge_cmd_delete_cookie_debug() {
-    let cmd = BridgeCommand::DeleteCookie { name: "session".into(), url: None };
+    let cmd = BridgeCommand::DeleteCookie { target_id: TID.into(), name: "session".into(), url: None };
     assert!(format!("{:?}", cmd).contains("DeleteCookie"));
 }
 
 #[test]
 fn test_bridge_cmd_get_response_body_debug() {
-    let cmd = BridgeCommand::GetResponseBody { request_id: "req-1".into() };
+    let cmd = BridgeCommand::GetResponseBody { target_id: TID.into(), request_id: "req-1".into() };
     assert!(format!("{:?}", cmd).contains("GetResponseBody"));
 }
 
 #[test]
 fn test_bridge_cmd_add_script_debug() {
-    let cmd = BridgeCommand::AddScriptToEvaluateOnNewDocument { source: "console.log(1)".into() };
+    let cmd = BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id: TID.into(), source: "console.log(1)".into() };
     assert!(format!("{:?}", cmd).contains("AddScript"));
 }
 
 #[test]
 fn test_bridge_cmd_reload_debug() {
-    let cmd = BridgeCommand::Reload { ignore_cache: true };
+    let cmd = BridgeCommand::Reload { target_id: TID.into(), ignore_cache: true };
     assert!(format!("{:?}", cmd).contains("Reload"));
 }
 
 #[test]
 fn test_bridge_cmd_go_back_debug() {
-    assert!(format!("{:?}", BridgeCommand::GoBack).contains("GoBack"));
+    assert!(format!("{:?}", BridgeCommand::GoBack { target_id: TID.into() }).contains("GoBack"));
 }
 
 #[test]
 fn test_bridge_cmd_go_forward_debug() {
-    assert!(format!("{:?}", BridgeCommand::GoForward).contains("GoForward"));
+    assert!(format!("{:?}", BridgeCommand::GoForward { target_id: TID.into() }).contains("GoForward"));
 }
 
 #[test]
 fn test_bridge_cmd_stop_loading_debug() {
-    assert!(format!("{:?}", BridgeCommand::StopLoading).contains("StopLoading"));
+    assert!(format!("{:?}", BridgeCommand::StopLoading { target_id: TID.into() }).contains("StopLoading"));
 }
 
 #[test]
 fn test_bridge_cmd_close_page_debug() {
-    assert!(format!("{:?}", BridgeCommand::ClosePage).contains("ClosePage"));
+    assert!(format!("{:?}", BridgeCommand::ClosePage { target_id: TID.into() }).contains("ClosePage"));
 }
 
 #[test]
 fn test_bridge_cmd_get_outer_html_debug() {
-    let cmd = BridgeCommand::GetOuterHtml { node_id: Some(1) };
+    let cmd = BridgeCommand::GetOuterHtml { target_id: TID.into(), node_id: Some(1) };
     assert!(format!("{:?}", cmd).contains("GetOuterHtml"));
 }
 
 #[test]
 fn test_bridge_cmd_set_attribute_debug() {
-    let cmd = BridgeCommand::SetAttributeValue { node_id: 5, name: "class".into(), value: "active".into() };
+    let cmd = BridgeCommand::SetAttributeValue { target_id: TID.into(), node_id: 5, name: "class".into(), value: "active".into() };
     assert!(format!("{:?}", cmd).contains("SetAttributeValue"));
 }
 
@@ -318,14 +314,14 @@ fn test_channel_send_recv() {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(10));
         receiver.try_process(|cmd| match cmd {
-            BridgeCommand::Navigate { url } => BridgeResponse {
+            BridgeCommand::Navigate { url, .. } => BridgeResponse {
                 result: Ok(json!({"navigated": url})),
             },
             _ => BridgeResponse { result: Err("unexpected".into()) },
         });
     });
 
-    let resp = sender.send(BridgeCommand::Navigate { url: "http://test".into() });
+    let resp = sender.send(BridgeCommand::Navigate { target_id: TID.into(), url: "http://test".into() });
     assert!(resp.result.is_ok());
     assert_eq!(resp.result.unwrap()["navigated"], "http://test");
 }
@@ -334,7 +330,7 @@ fn test_channel_send_recv() {
 fn test_channel_closed_sender() {
     let (sender, receiver) = bridge_channel(Duration::from_secs(1));
     drop(receiver);
-    let resp = sender.send(BridgeCommand::GetTitle);
+    let resp = sender.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_err());
     assert!(resp.result.unwrap_err().contains("closed"));
 }
@@ -342,7 +338,7 @@ fn test_channel_closed_sender() {
 #[test]
 fn test_channel_fire_and_forget() {
     let (sender, receiver) = bridge_channel(Duration::from_secs(5));
-    sender.send_fire_and_forget(BridgeCommand::GetTitle);
+    sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
     let processed = receiver.try_process(|_cmd| BridgeResponse { result: Ok(json!({})) });
     assert!(processed);
 }
@@ -350,9 +346,9 @@ fn test_channel_fire_and_forget() {
 #[test]
 fn test_channel_drain_multiple() {
     let (sender, receiver) = bridge_channel(Duration::from_secs(5));
-    sender.send_fire_and_forget(BridgeCommand::GetTitle);
-    sender.send_fire_and_forget(BridgeCommand::GetUrl);
-    sender.send_fire_and_forget(BridgeCommand::GetDocument);
+    sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    sender.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
+    sender.send_fire_and_forget(BridgeCommand::GetDocument { target_id: TID.into() });
     let count = receiver.drain(|_cmd| BridgeResponse { result: Ok(json!({})) });
     assert_eq!(count, 3);
 }
@@ -368,7 +364,7 @@ fn test_channel_drain_empty() {
 #[test]
 fn test_channel_timeout() {
     let (sender, _receiver) = bridge_channel(Duration::from_millis(10));
-    let resp = sender.send(BridgeCommand::GetTitle);
+    let resp = sender.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_err());
     assert!(resp.result.unwrap_err().contains("timeout"));
 }
@@ -397,8 +393,8 @@ fn test_channel_sender_clone_shared() {
         });
     });
 
-    sender.send_fire_and_forget(BridgeCommand::GetTitle);
-    cloned.send_fire_and_forget(BridgeCommand::GetUrl);
+    sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    cloned.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
 
     let _ = handle.join();
     assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 2);
@@ -419,7 +415,7 @@ fn test_channel_send_with_response_match() {
     std::thread::spawn(move || {
         loop {
             let got = receiver.try_process(|cmd| match cmd {
-                BridgeCommand::GetTitle => BridgeResponse {
+                BridgeCommand::GetTitle { .. } => BridgeResponse {
                     result: Ok(json!("Test Title")),
                 },
                 _ => BridgeResponse { result: Ok(json!({})) },
@@ -430,7 +426,7 @@ fn test_channel_send_with_response_match() {
         }
     });
 
-    let resp = sender.send(BridgeCommand::GetTitle);
+    let resp = sender.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_ok());
     assert_eq!(resp.result.unwrap(), json!("Test Title"));
 }

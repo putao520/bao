@@ -10,6 +10,8 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use std::thread;
 
+const TID: &str = "test-target";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -21,13 +23,13 @@ impl EventSender for NoopEventSender {
 
 fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
     match cmd {
-        BridgeCommand::GetTitle => BridgeResponse {
+        BridgeCommand::GetTitle { .. } => BridgeResponse {
             result: Ok(json!("Integration Page")),
         },
-        BridgeCommand::GetUrl => BridgeResponse {
+        BridgeCommand::GetUrl { .. } => BridgeResponse {
             result: Ok(json!("https://integration.test")),
         },
-        BridgeCommand::GetDocument => BridgeResponse {
+        BridgeCommand::GetDocument { .. } => BridgeResponse {
             result: Ok(json!({
                 "root": {
                     "nodeId": 1, "nodeType": 9, "nodeName": "#document",
@@ -77,7 +79,7 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
 fn setup_registry() -> DomainRegistry {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     let registry = DomainRegistry::new();
-    register_all_domains_into(tx.clone(), &registry);
+    register_all_domains_into(tx.clone(), TID.into(), &registry);
     thread::spawn(move || {
         let start = std::time::Instant::now();
         while start.elapsed() < Duration::from_secs(10) {
@@ -251,8 +253,8 @@ fn test_bridge_rapid_fire_commands() {
         while start.elapsed() < Duration::from_secs(3) {
             let count = rx.drain(|cmd| BridgeResponse {
                 result: Ok(match cmd {
-                    BridgeCommand::GetTitle => json!("rapid"),
-                    BridgeCommand::GetUrl => json!("https://rapid.test"),
+                    BridgeCommand::GetTitle { .. } => json!("rapid"),
+                    BridgeCommand::GetUrl { .. } => json!("https://rapid.test"),
                     _ => json!({}),
                 }),
             });
@@ -263,7 +265,7 @@ fn test_bridge_rapid_fire_commands() {
     });
 
     for i in 0..10 {
-        let cmd = if i % 2 == 0 { BridgeCommand::GetTitle } else { BridgeCommand::GetUrl };
+        let cmd = if i % 2 == 0 { BridgeCommand::GetTitle { target_id: TID.into() } } else { BridgeCommand::GetUrl { target_id: TID.into() } };
         let resp = tx.send(cmd);
         assert!(resp.result.is_ok(), "Command {} should succeed", i);
     }

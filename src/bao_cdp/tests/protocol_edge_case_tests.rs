@@ -7,11 +7,18 @@
 // EventBroadcaster with no subscribers.
 
 use bao_cdp::{CDPMessage, CDPResponse, CDPError, CDPEvent, parse_message, serialize_response, serialize_event, handle_command};
+
+const TID: &str = "test-target";
 use bao_cdp::{ServerConfig, DomainRegistry, EventBroadcaster};
+
 use cdp_server::{DomainHandler, EventSender, CdpError as ServerCdpError, SessionState, TargetInfo};
+
 use serde_json::{json, Value};
+
 use std::collections::HashMap;
+
 use std::sync::{Arc, Mutex};
+
 
 // ---------------------------------------------------------------------------
 // 1. CdpMessage parsing with unusual/edge-case inputs

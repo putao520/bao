@@ -4,7 +4,10 @@
 // Tests without bridge (None) to verify default/stub responses.
 
 use bao_cdp::{handle_command, serialize_response, serialize_event, CDPMessage, CDPResponse, CDPEvent};
+
+const TID: &str = "test-target";
 use serde_json::json;
+
 
 fn dispatch(method: &str, params: Option<serde_json::Value>) -> CDPResponse {
     let p = params;

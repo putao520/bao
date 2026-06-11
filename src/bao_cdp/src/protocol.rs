@@ -53,13 +53,13 @@ pub fn handle_command(
 
     let result = match domain {
         "Target" => handle_target(command, target_id, bridge),
-        "Page" => handle_page(command, params, bridge),
-        "Runtime" => handle_runtime(command, params, bridge),
-        "DOM" => handle_dom(command, params, bridge),
+        "Page" => handle_page(command, target_id, params, bridge),
+        "Runtime" => handle_runtime(command, target_id, params, bridge),
+        "DOM" => handle_dom(command, target_id, params, bridge),
         "Network" => handle_network(command),
         "CSS" => handle_css(command),
-        "Emulation" => handle_emulation(command, params, bridge),
-        "Input" => handle_input(command, params, bridge),
+        "Emulation" => handle_emulation(command, target_id, params, bridge),
+        "Input" => handle_input(command, target_id, params, bridge),
         "Overlay" => handle_overlay(command),
         "Debugger" => handle_debugger(command),
         "Log" => handle_log(command),
@@ -110,10 +110,10 @@ fn ok_empty() -> HandlerResult {
 }
 
 fn live_target_info(target_id: &str, bridge: Option<&BridgeSender>) -> Value {
-    let title = bridge.and_then(|b| b.send(BridgeCommand::GetTitle).result.ok())
+    let title = bridge.and_then(|b| b.send(BridgeCommand::GetTitle { target_id: target_id.to_string() }).result.ok())
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "Bao".into());
-    let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl).result.ok())
+    let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl { target_id: target_id.to_string() }).result.ok())
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "about:blank".into());
     serde_json::json!({
@@ -132,7 +132,7 @@ fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
         }
         "createTarget" => Ok(serde_json::json!({ "targetId": target_id })),
         "closeTarget" => {
-            if let Some(b) = bridge { b.send_fire_and_forget(BridgeCommand::ClosePage); }
+            if let Some(b) = bridge { b.send_fire_and_forget(BridgeCommand::ClosePage { target_id: target_id.to_string() }); }
             Ok(serde_json::json!({ "success": true }))
         }
         "setAutoAttach" | "setDiscoverTargets" => ok_empty(),
@@ -147,7 +147,8 @@ fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
     }
 }
 
-fn handle_page(command: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
         "navigate" => {
@@ -156,7 +157,7 @@ fn handle_page(command: &str, params: &Option<Value>, bridge: Option<&BridgeSend
                 .and_then(|v| v.as_str())
                 .unwrap_or("about:blank");
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::Navigate { url: url.to_string() })?;
+                bridge_send(bridge, BridgeCommand::Navigate { target_id: tid.clone(), url: url.to_string() })?;
             }
             let loader_id = format!("{:016x}", url.len() as u64);
             let resp = cdp_protocol::page::NavigateReturnObjectBuilder::default()
@@ -172,12 +173,12 @@ fn handle_page(command: &str, params: &Option<Value>, bridge: Option<&BridgeSend
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::Reload { ignore_cache })?;
+                bridge_send(bridge, BridgeCommand::Reload { target_id: tid.clone(), ignore_cache })?;
             }
             Ok(serde_json::json!({ "frameId": "0", "loaderId": "0" }))
         }
         "getFrameTree" => {
-            let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl).result.ok())
+            let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl { target_id: tid.clone() }).result.ok())
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "about:blank".into());
             Ok(serde_json::json!({
@@ -187,7 +188,7 @@ fn handle_page(command: &str, params: &Option<Value>, bridge: Option<&BridgeSend
             }))
         }
         "getNavigationHistory" => {
-            let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl).result.ok())
+            let url = bridge.and_then(|b| b.send(BridgeCommand::GetUrl { target_id: tid.clone() }).result.ok())
                 .and_then(|v| v.as_str().map(|s| s.to_string()))
                 .unwrap_or_else(|| "about:blank".into());
             Ok(serde_json::json!({
@@ -204,7 +205,7 @@ fn handle_page(command: &str, params: &Option<Value>, bridge: Option<&BridgeSend
                 .and_then(|p| p.get("quality"))
                 .and_then(|v| v.as_u64()).map(|q| q as u8);
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::TakeScreenshot { format, quality })
+                bridge_send(bridge, BridgeCommand::TakeScreenshot { target_id: tid.clone(), format, quality })
             } else {
                 Ok(serde_json::json!({ "data": "" }))
             }
@@ -217,7 +218,7 @@ fn handle_page(command: &str, params: &Option<Value>, bridge: Option<&BridgeSend
         "addScriptToEvaluateOnNewDocument" => {
             let source = params_str(params, "source");
             if bridge.is_some() && !source.is_empty() {
-                bridge_send(bridge, BridgeCommand::AddScriptToEvaluateOnNewDocument { source })?;
+                bridge_send(bridge, BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id: tid.clone(), source })?;
             }
             Ok(serde_json::json!({ "identifier": "1" }))
         }
@@ -226,7 +227,8 @@ fn handle_page(command: &str, params: &Option<Value>, bridge: Option<&BridgeSend
     }
 }
 
-fn handle_runtime(command: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_runtime(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
         "enable" => Ok(serde_json::json!({ "executionContextId": 1 })),
         "disable" => ok_empty(),
@@ -240,7 +242,7 @@ fn handle_runtime(command: &str, params: &Option<Value>, bridge: Option<&BridgeS
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
             if bridge.is_some() && !expression.is_empty() {
-                bridge_send(bridge, BridgeCommand::EvaluateJs { expression, return_by_value })
+                bridge_send(bridge, BridgeCommand::EvaluateJs { target_id: tid, expression, return_by_value })
             } else {
                 Ok(serde_json::json!({ "result": { "type": "undefined" }, "exceptionDetails": null }))
             }
@@ -253,12 +255,13 @@ fn handle_runtime(command: &str, params: &Option<Value>, bridge: Option<&BridgeS
     }
 }
 
-fn handle_dom(command: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_dom(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
         "getDocument" => {
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::GetDocument)
+                bridge_send(bridge, BridgeCommand::GetDocument { target_id: tid.clone() })
             } else {
                 Ok(serde_json::json!({
                     "root": {
@@ -278,7 +281,7 @@ fn handle_dom(command: &str, params: &Option<Value>, bridge: Option<&BridgeSende
         "querySelector" => {
             let selector = params_str(params, "selector");
             if bridge.is_some() && !selector.is_empty() {
-                bridge_send(bridge, BridgeCommand::QuerySelector { selector })
+                bridge_send(bridge, BridgeCommand::QuerySelector { target_id: tid.clone(), selector })
             } else {
                 Ok(serde_json::json!({ "nodeId": 0 }))
             }
@@ -286,7 +289,7 @@ fn handle_dom(command: &str, params: &Option<Value>, bridge: Option<&BridgeSende
         "querySelectorAll" => {
             let selector = params_str(params, "selector");
             if bridge.is_some() && !selector.is_empty() {
-                bridge_send(bridge, BridgeCommand::QuerySelectorAll { selector })
+                bridge_send(bridge, BridgeCommand::QuerySelectorAll { target_id: tid.clone(), selector })
             } else {
                 Ok(serde_json::json!({ "nodeIds": [] }))
             }
@@ -299,7 +302,7 @@ fn handle_dom(command: &str, params: &Option<Value>, bridge: Option<&BridgeSende
             let name = params_str(params, "name");
             let value = params_str(params, "value");
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::SetAttributeValue { node_id, name, value })
+                bridge_send(bridge, BridgeCommand::SetAttributeValue { target_id: tid.clone(), node_id, name, value })
             } else {
                 ok_empty()
             }
@@ -308,7 +311,7 @@ fn handle_dom(command: &str, params: &Option<Value>, bridge: Option<&BridgeSende
         "getOuterHTML" => {
             let node_id = params.as_ref().and_then(|p| p.get("nodeId")).and_then(|v| v.as_i64());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::GetOuterHtml { node_id })
+                bridge_send(bridge, BridgeCommand::GetOuterHtml { target_id: tid.clone(), node_id })
             } else {
                 Ok(serde_json::json!({ "outerHTML": "<html><body></body></html>" }))
             }
@@ -345,7 +348,8 @@ fn handle_css(command: &str) -> HandlerResult {
     }
 }
 
-fn handle_emulation(command: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_emulation(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
         "setDeviceMetricsOverride" => {
             let width = params.as_ref()
@@ -355,7 +359,7 @@ fn handle_emulation(command: &str, params: &Option<Value>, bridge: Option<&Bridg
             let dsf = params.as_ref()
                 .and_then(|p| p.get("deviceScaleFactor")).and_then(|v| v.as_f64());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::SetViewport { width, height, device_scale_factor: dsf })
+                bridge_send(bridge, BridgeCommand::SetViewport { target_id: tid, width, height, device_scale_factor: dsf })
             } else {
                 ok_empty()
             }
@@ -364,7 +368,7 @@ fn handle_emulation(command: &str, params: &Option<Value>, bridge: Option<&Bridg
         "setUserAgentOverride" => {
             let ua = params_str(params, "userAgent");
             if bridge.is_some() && !ua.is_empty() {
-                bridge_send(bridge, BridgeCommand::SetUserAgent { user_agent: ua })
+                bridge_send(bridge, BridgeCommand::SetUserAgent { target_id: tid, user_agent: ua })
             } else {
                 ok_empty()
             }
@@ -376,7 +380,8 @@ fn handle_emulation(command: &str, params: &Option<Value>, bridge: Option<&Bridg
     }
 }
 
-fn handle_input(command: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+fn handle_input(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
         "dispatchMouseEvent" => {
             let event_type = params_str(params, "type");
@@ -385,7 +390,7 @@ fn handle_input(command: &str, params: &Option<Value>, bridge: Option<&BridgeSen
             let button = params.as_ref().and_then(|p| p.get("button")).and_then(|v| v.as_i64());
             let click_count = params.as_ref().and_then(|p| p.get("clickCount")).and_then(|v| v.as_i64());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count })
+                bridge_send(bridge, BridgeCommand::DispatchMouseEvent { target_id: tid.clone(), event_type, x, y, button, click_count })
             } else {
                 ok_empty()
             }
@@ -396,7 +401,7 @@ fn handle_input(command: &str, params: &Option<Value>, bridge: Option<&BridgeSen
             let code = params_str(params, "code");
             let text = params.as_ref().and_then(|p| p.get("text")).and_then(|v| v.as_str()).map(|s| s.to_string());
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DispatchKeyEvent { event_type, key, code, text })
+                bridge_send(bridge, BridgeCommand::DispatchKeyEvent { target_id: tid.clone(), event_type, key, code, text })
             } else {
                 ok_empty()
             }
@@ -405,7 +410,7 @@ fn handle_input(command: &str, params: &Option<Value>, bridge: Option<&BridgeSen
         "insertText" => {
             let text = params_str(params, "text");
             if bridge.is_some() && !text.is_empty() {
-                bridge_send(bridge, BridgeCommand::InsertText { text })
+                bridge_send(bridge, BridgeCommand::InsertText { target_id: tid, text })
             } else {
                 ok_empty()
             }
@@ -2451,7 +2456,7 @@ mod tests {
         // The key scenario is when bridge_send is called with None
         // This is tested indirectly through the domain handlers
         // Direct test: bridge_send(None, ...) → Err(-32603)
-        let result = bridge_send(None, BridgeCommand::GetTitle);
+        let result = bridge_send(None, BridgeCommand::GetTitle { target_id: "test-target".into() });
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.code, -32603);

@@ -4,7 +4,10 @@
 // multiple sessions, session IDs uniqueness, detach_session errors.
 
 use bao_cdp::{CdpRouter, ExternalBrowser, BackendKind};
+
+const TID: &str = "test-target";
 use serde_json::json;
+
 
 // ============================================================================
 // CdpRouter construction

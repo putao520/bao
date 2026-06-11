@@ -5,6 +5,8 @@
 
 use bao_cdp::{CdpRouter, BackendKind};
 
+const TID: &str = "test-target";
+
 // ---- connect_external succeeds (no validation) ----
 
 #[test]

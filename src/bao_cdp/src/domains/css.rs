@@ -7,11 +7,12 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 /// CSS domain handler — queries real computed/matched styles via servo bridge.
 pub struct CssHandler {
     bridge: BridgeSender,
+    target_id: String,
 }
 
 impl CssHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
-        CssHandler { bridge }
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
+        CssHandler { bridge, target_id }
     }
 }
 
@@ -39,6 +40,7 @@ impl DomainHandler for CssHandler {
                     }})()"
                 );
                 let response = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
@@ -87,6 +89,7 @@ impl DomainHandler for CssHandler {
                     }})()"
                 );
                 let response = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
@@ -113,6 +116,7 @@ impl DomainHandler for CssHandler {
                     }})()"
                 );
                 let response = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
@@ -146,6 +150,7 @@ impl DomainHandler for CssHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const TID: &str = "test-target";
     use crate::servo_bridge::bridge_channel;
     use std::time::Duration;
 
@@ -158,14 +163,14 @@ mod tests {
     #[test]
     fn css_domain_name() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = CssHandler::new(bridge);
+        let h = CssHandler::new(bridge, TID.into());
         assert_eq!(h.domain_name(), "CSS");
     }
 
     #[test]
     fn css_enable_disable() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = CssHandler::new(bridge);
+        let h = CssHandler::new(bridge, TID.into());
         assert_eq!(h.handle_command("CSS.enable", json!({}), &NOOP).unwrap(), json!({}));
         assert_eq!(h.handle_command("CSS.disable", json!({}), &NOOP).unwrap(), json!({}));
     }
@@ -173,7 +178,7 @@ mod tests {
     #[test]
     fn css_get_computed_style_returns_structure() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = CssHandler::new(bridge);
+        let h = CssHandler::new(bridge, TID.into());
         let res = h.handle_command("CSS.getComputedStyleForNode", json!({"nodeId": 1}), &NOOP).unwrap();
         assert!(res.get("computedStyle").is_some(), "should have computedStyle field");
     }
@@ -181,7 +186,7 @@ mod tests {
     #[test]
     fn css_get_matched_styles_returns_structure() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = CssHandler::new(bridge);
+        let h = CssHandler::new(bridge, TID.into());
         let res = h.handle_command("CSS.getMatchedStylesForNode", json!({"nodeId": 1}), &NOOP).unwrap();
         assert!(res.get("matchedCSSRules").is_some(), "should have matchedCSSRules field");
         assert!(res.get("inlineStyle").is_some(), "should have inlineStyle field");
@@ -190,7 +195,7 @@ mod tests {
     #[test]
     fn css_get_inline_styles_returns_structure() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = CssHandler::new(bridge);
+        let h = CssHandler::new(bridge, TID.into());
         let res = h.handle_command("CSS.getInlineStylesForNode", json!({"nodeId": 1}), &NOOP).unwrap();
         assert!(res.get("inlineStyle").is_some(), "should have inlineStyle field");
     }
@@ -198,7 +203,7 @@ mod tests {
     #[test]
     fn css_set_style_texts_returns_empty_styles() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = CssHandler::new(bridge);
+        let h = CssHandler::new(bridge, TID.into());
         let res = h.handle_command("CSS.setStyleTexts", json!({"edits": []}), &NOOP).unwrap();
         assert!(res.get("styles").is_some(), "should have styles field");
     }
@@ -206,7 +211,7 @@ mod tests {
     #[test]
     fn css_unknown_returns_error() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = CssHandler::new(bridge);
+        let h = CssHandler::new(bridge, TID.into());
         let err = h.handle_command("CSS.nonexistent", json!({}), &NOOP).unwrap_err();
         assert_eq!(err.code, -32601);
         assert!(err.message.contains("nonexistent"));

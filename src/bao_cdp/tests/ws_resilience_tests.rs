@@ -4,13 +4,21 @@
 // so multi-session tests use sequential connect→send→recv→close cycles.
 
 use std::net::{TcpListener, TcpStream};
+
+const TID: &str = "test-target";
 use std::sync::mpsc::Sender;
+
 use std::thread;
+
 use std::time::Duration;
 
+
 use bao_cdp::{CDPServer, CDPCommand, CDPServerError, bridge_channel};
+
 use tungstenite::Message;
+
 use tungstenite::client::client as ws_client;
+
 
 // ---------------------------------------------------------------------------
 // Helpers

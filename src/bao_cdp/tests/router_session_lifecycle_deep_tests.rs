@@ -4,6 +4,8 @@
 
 use bao_cdp::{CdpRouter, BackendKind};
 
+const TID: &str = "test-target";
+
 // ---- CdpRouter construction ----
 
 #[test]

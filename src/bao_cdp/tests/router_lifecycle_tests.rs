@@ -7,6 +7,8 @@ use bao_cdp::{
 };
 use serde_json::json;
 
+const TID: &str = "test-target";
+
 // ---- CdpRouter internal session lifecycle ----
 
 #[test]
@@ -228,13 +230,13 @@ fn test_bridge_channel_creation() {
 fn test_bridge_channel_send_fire_and_forget() {
     let (sender, _receiver) = bridge_channel(std::time::Duration::from_secs(5));
     // Should not panic
-    sender.send_fire_and_forget(BridgeCommand::Navigate { url: "https://example.com".into() });
+    sender.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: "https://example.com".into() });
 }
 
 #[test]
 fn test_bridge_channel_send_timeout() {
     let (sender, _receiver) = bridge_channel(std::time::Duration::from_millis(50));
-    let response = sender.send(BridgeCommand::Navigate { url: "https://example.com".into() });
+    let response = sender.send(BridgeCommand::Navigate { target_id: TID.into(), url: "https://example.com".into() });
     // No handler processes, so should timeout
     assert!(response.result.is_err());
     assert!(response.result.unwrap_err().contains("timeout"));
@@ -243,11 +245,11 @@ fn test_bridge_channel_send_timeout() {
 #[test]
 fn test_bridge_receiver_try_process() {
     let (sender, receiver) = bridge_channel(std::time::Duration::from_secs(5));
-    sender.send_fire_and_forget(BridgeCommand::Navigate { url: "https://test.com".into() });
+    sender.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: "https://test.com".into() });
 
     let processed = receiver.try_process(|cmd| {
         match cmd {
-            BridgeCommand::Navigate { url } => BridgeResponse { result: Ok(json!({"url": url})) },
+            BridgeCommand::Navigate { url, .. } => BridgeResponse { result: Ok(json!({"url": url})) },
             _ => BridgeResponse { result: Err("unexpected".into()) },
         }
     });
@@ -264,9 +266,9 @@ fn test_bridge_receiver_try_process_empty() {
 #[test]
 fn test_bridge_receiver_drain() {
     let (sender, receiver) = bridge_channel(std::time::Duration::from_secs(5));
-    sender.send_fire_and_forget(BridgeCommand::Navigate { url: "https://a.com".into() });
-    sender.send_fire_and_forget(BridgeCommand::Navigate { url: "https://b.com".into() });
-    sender.send_fire_and_forget(BridgeCommand::Navigate { url: "https://c.com".into() });
+    sender.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: "https://a.com".into() });
+    sender.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: "https://b.com".into() });
+    sender.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: "https://c.com".into() });
 
     let count = receiver.drain(|_cmd| BridgeResponse { result: Ok(json!({})) });
     assert_eq!(count, 3);
@@ -283,7 +285,7 @@ fn test_bridge_receiver_drain_empty() {
 
 #[test]
 fn test_bridge_command_debug() {
-    let cmd = BridgeCommand::Navigate { url: "https://example.com".into() };
+    let cmd = BridgeCommand::Navigate { target_id: TID.into(), url: "https://example.com".into() };
     let debug = format!("{:?}", cmd);
     assert!(debug.contains("Navigate"));
     assert!(debug.contains("example.com"));

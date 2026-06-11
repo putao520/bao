@@ -239,7 +239,7 @@ fn create_loop(
         parent_ptr: ptr::null_mut(),
         parent_tag: 0 as c_char,
         iteration_nr: 0,
-        jsc_vm: ptr::null(),
+        jsc_vm: ptr::null(), // In Bao, this holds a SpiderMonkey JSContext pointer
         tick_depth: 0,
     };
 

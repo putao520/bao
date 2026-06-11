@@ -6,11 +6,12 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 pub struct PageHandler {
     bridge: BridgeSender,
+    target_id: String,
 }
 
 impl PageHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
-        PageHandler { bridge }
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
+        PageHandler { bridge, target_id }
     }
 }
 
@@ -27,7 +28,7 @@ impl DomainHandler for PageHandler {
             "Page.enable" | "Page.disable" => Ok(json!({})),
             "Page.navigate" => {
                 let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank");
-                bridge_send(&self.bridge, BridgeCommand::Navigate { url: url.to_string() })?;
+                bridge_send(&self.bridge, BridgeCommand::Navigate { target_id: self.target_id.clone(), url: url.to_string() })?;
                 let loader_id = format!("{:016x}", url.len() as u64);
                 event_sender.send_event("Page.frameNavigated", json!({
                     "frame": { "id": "0", "url": url, "loaderId": loader_id, "mimeType": "text/html" }
@@ -36,11 +37,11 @@ impl DomainHandler for PageHandler {
             }
             "Page.reload" => {
                 let ignore_cache = params.get("ignoreCache").and_then(|v| v.as_bool()).unwrap_or(false);
-                bridge_send(&self.bridge, BridgeCommand::Reload { ignore_cache })?;
+                bridge_send(&self.bridge, BridgeCommand::Reload { target_id: self.target_id.clone(), ignore_cache })?;
                 Ok(json!({ "frameId": "0", "loaderId": "0" }))
             }
             "Page.getFrameTree" => {
-                let url = self.bridge.send(BridgeCommand::GetUrl).result
+                let url = self.bridge.send(BridgeCommand::GetUrl { target_id: self.target_id.clone() }).result
                     .ok()
                     .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_else(|| "about:blank".into());
@@ -51,7 +52,7 @@ impl DomainHandler for PageHandler {
                 }))
             }
             "Page.getNavigationHistory" => {
-                let url = self.bridge.send(BridgeCommand::GetUrl).result
+                let url = self.bridge.send(BridgeCommand::GetUrl { target_id: self.target_id.clone() }).result
                     .ok()
                     .and_then(|v| v.as_str().map(|s| s.to_string()))
                     .unwrap_or_else(|| "about:blank".into());
@@ -63,7 +64,7 @@ impl DomainHandler for PageHandler {
             "Page.captureScreenshot" => {
                 let format = params.get("format").and_then(|v| v.as_str()).unwrap_or("png").to_string();
                 let quality = params.get("quality").and_then(|v| v.as_u64()).map(|q| q as u8);
-                bridge_send(&self.bridge, BridgeCommand::TakeScreenshot { format, quality })
+                bridge_send(&self.bridge, BridgeCommand::TakeScreenshot { target_id: self.target_id.clone(), format, quality })
             }
             "Page.setContent" | "Page.close" | "Page.bringToFront" => Ok(json!({})),
             "Page.getLayoutMetrics" => {
@@ -72,6 +73,7 @@ impl DomainHandler for PageHandler {
                     height: window.innerHeight || document.documentElement.clientHeight || 1080
                 }); })()"#;
                 let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js.to_string(),
                     return_by_value: true,
                 });
@@ -92,7 +94,7 @@ impl DomainHandler for PageHandler {
             "Page.addScriptToEvaluateOnNewDocument" => {
                 let source = param_str(&params, "source");
                 if !source.is_empty() {
-                    bridge_send(&self.bridge, BridgeCommand::AddScriptToEvaluateOnNewDocument { source })?;
+                    bridge_send(&self.bridge, BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id: self.target_id.clone(), source })?;
                 }
                 Ok(json!({ "identifier": "1" }))
             }
@@ -125,10 +127,11 @@ mod tests {
     }
 
     const TIMEOUT: Duration = Duration::from_millis(500);
+    const TID: &str = "test-target";
 
     fn setup() -> (PageHandler, crate::servo_bridge::BridgeReceiver) {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        (PageHandler::new(sender), receiver)
+        (PageHandler::new(sender, TID.into()), receiver)
     }
 
     fn mock_responder(receiver: crate::servo_bridge::BridgeReceiver) -> thread::JoinHandle<()> {
@@ -137,7 +140,7 @@ mod tests {
                 let _ = receiver.try_process(|cmd| match cmd {
                     BridgeCommand::Navigate { .. } => BridgeResponse { result: Ok(json!({"ok": true})) },
                     BridgeCommand::Reload { .. } => BridgeResponse { result: Ok(json!({})) },
-                    BridgeCommand::GetUrl => BridgeResponse { result: Ok(json!("https://example.com")) },
+                    BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://example.com")) },
                     BridgeCommand::TakeScreenshot { .. } => BridgeResponse { result: Ok(json!({"data": "base64data"})) },
                     BridgeCommand::AddScriptToEvaluateOnNewDocument { .. } => BridgeResponse { result: Ok(json!({})) },
                     BridgeCommand::EvaluateJs { .. } => BridgeResponse { result: Ok(json!(r#"{"width":1920,"height":1080}"#)) },

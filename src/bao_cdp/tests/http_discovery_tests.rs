@@ -3,6 +3,8 @@
 
 use bao_cdp::CDPServer;
 
+const TID: &str = "test-target";
+
 fn http_get(port: u16, path: &str) -> String {
     use std::io::{Read, Write};
     use std::net::TcpStream;

@@ -51,8 +51,8 @@ pub struct InternalLoopData {
     pub parent_ptr: *mut c_void,
     pub parent_tag: c_char,
     pub iteration_nr: u64,
-    // SAFETY: erased `Option<&'static jsc::VM>` — tier-0 crate cannot name jsc types.
-    // Higher tier (`bun_runtime`) casts this back when reading.
+    // SAFETY: erased `Option<&'static SpiderMonkey JSContext>` — tier-0 crate cannot name SM types.
+    // Higher tier (`bao_runtime`) casts this back when reading.
     pub jsc_vm: *const c_void,
     pub tick_depth: c_int,
 }
@@ -70,10 +70,10 @@ impl InternalLoopData {
         self.sweep_timer_count > 0
     }
 
-    /// Tag values for `parent_tag`: 1 = `jsc::EventLoop`, 2 = `jsc::MiniEventLoop`.
+    /// Tag values for `parent_tag`: 1 = `bao_engine::BaoEventLoop`, 2 = `bao_uloop::MiniEventLoop`.
     /// Low tier stores tag+ptr only; the typed `EventLoopHandle` wrappers
     /// (`set_parent_event_loop` / `get_parent`) live in the higher-tier crate
-    /// that can name `bun_jsc` — see `bun_runtime::dispatch` (move-in pass).
+    /// (`bao_runtime`) — see `bao_runtime::dispatch` (move-in pass).
     #[inline]
     pub fn set_parent_raw(&mut self, tag: c_char, ptr: *mut c_void) {
         self.parent_tag = tag;

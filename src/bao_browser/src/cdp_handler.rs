@@ -5,44 +5,97 @@ use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse};
 use base64::Engine;
 use serde_json::Value;
 
+use crate::config::PageConfig;
 use crate::error::BrowserError;
 use crate::page::PageHandle;
+use crate::page_pool::PagePool;
 use crate::screenshot::ScreenshotFormat;
 
-/// Process a single bridge command by dispatching to the active page.
-pub fn handle_bridge_command(cmd: BridgeCommand, page: &PageHandle) -> BridgeResponse {
+/// Process a single bridge command by dispatching to the appropriate page in the pool.
+pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeResponse {
     let result = match cmd {
-        BridgeCommand::Navigate { url } => cmd_navigate(page, &url),
-        BridgeCommand::EvaluateJs { expression, return_by_value } => cmd_evaluate(page, &expression, return_by_value),
-        BridgeCommand::TakeScreenshot { format, quality: _ } => cmd_screenshot(page, &format),
-        BridgeCommand::GetTitle => cmd_get_title(page),
-        BridgeCommand::GetUrl => cmd_get_url(page),
-        BridgeCommand::GetDocument => cmd_get_document(page),
-        BridgeCommand::QuerySelector { selector } => cmd_query_selector(page, &selector),
-        BridgeCommand::QuerySelectorAll { selector } => cmd_query_selector_all(page, &selector),
-        BridgeCommand::GetOuterHtml { .. } => cmd_get_outer_html(page),
-        BridgeCommand::SetAttributeValue { node_id: _, name, value } => cmd_set_attribute(page, &name, &value),
-        BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count } => {
-            cmd_mouse_event(page, &event_type, x, y, button, click_count)
+        // Multi-target management commands — operate on the pool, not a specific page
+        BridgeCommand::CreateTarget { url } => cmd_create_target(pool, &url),
+        BridgeCommand::ListTargets => cmd_list_targets(pool),
+
+        // All other commands require a target_id to look up the page
+        BridgeCommand::Navigate { target_id, url } => with_page(pool, &target_id, |page| cmd_navigate(page, &url)),
+        BridgeCommand::EvaluateJs { target_id, expression, return_by_value } => with_page(pool, &target_id, |page| cmd_evaluate(page, &expression, return_by_value)),
+        BridgeCommand::TakeScreenshot { target_id, format, quality: _ } => with_page(pool, &target_id, |page| cmd_screenshot(page, &format)),
+        BridgeCommand::GetTitle { target_id } => with_page(pool, &target_id, cmd_get_title),
+        BridgeCommand::GetUrl { target_id } => with_page(pool, &target_id, cmd_get_url),
+        BridgeCommand::GetDocument { target_id } => with_page(pool, &target_id, cmd_get_document),
+        BridgeCommand::QuerySelector { target_id, selector } => with_page(pool, &target_id, |page| cmd_query_selector(page, &selector)),
+        BridgeCommand::QuerySelectorAll { target_id, selector } => with_page(pool, &target_id, |page| cmd_query_selector_all(page, &selector)),
+        BridgeCommand::GetOuterHtml { target_id, .. } => with_page(pool, &target_id, cmd_get_outer_html),
+        BridgeCommand::SetAttributeValue { target_id, node_id: _, name, value } => with_page(pool, &target_id, |page| cmd_set_attribute(page, &name, &value)),
+        BridgeCommand::DispatchMouseEvent { target_id, event_type, x, y, button, click_count } => {
+            with_page(pool, &target_id, |page| cmd_mouse_event(page, &event_type, x, y, button, click_count))
         }
-        BridgeCommand::DispatchKeyEvent { event_type, key, code, text } => {
-            cmd_key_event(page, &event_type, &key, &code, text.as_deref())
+        BridgeCommand::DispatchKeyEvent { target_id, event_type, key, code, text } => {
+            with_page(pool, &target_id, |page| cmd_key_event(page, &event_type, &key, &code, text.as_deref()))
         }
-        BridgeCommand::InsertText { text } => cmd_insert_text(page, &text),
-        BridgeCommand::SetViewport { width, height, device_scale_factor: _ } => cmd_set_viewport(page, width, height),
-        BridgeCommand::SetUserAgent { user_agent } => cmd_set_user_agent(page, &user_agent),
-        BridgeCommand::AddScriptToEvaluateOnNewDocument { source } => cmd_add_script(page, &source),
-        BridgeCommand::Reload { ignore_cache: _ } => cmd_reload(page),
-        BridgeCommand::GoBack | BridgeCommand::GoForward | BridgeCommand::StopLoading => {
+        BridgeCommand::InsertText { target_id, text } => with_page(pool, &target_id, |page| cmd_insert_text(page, &text)),
+        BridgeCommand::SetViewport { target_id, width, height, device_scale_factor: _ } => with_page(pool, &target_id, |page| cmd_set_viewport(page, width, height)),
+        BridgeCommand::SetUserAgent { target_id, user_agent } => with_page(pool, &target_id, |page| cmd_set_user_agent(page, &user_agent)),
+        BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id, source } => with_page(pool, &target_id, |page| cmd_add_script(page, &source)),
+        BridgeCommand::Reload { target_id, ignore_cache: _ } => with_page(pool, &target_id, cmd_reload),
+        BridgeCommand::GoBack { target_id: _ } | BridgeCommand::GoForward { target_id: _ } | BridgeCommand::StopLoading { target_id: _ } => {
             Ok(serde_json::json!({}))
         }
-        BridgeCommand::ClosePage => {
-            let _ = page.close();
-            Ok(serde_json::json!({}))
+        BridgeCommand::ClosePage { target_id } => {
+            let id = parse_target_id(&target_id);
+            match id {
+                Some(id) => {
+                    let _ = pool.close_page(id);
+                    Ok(serde_json::json!({}))
+                }
+                None => Err(format!("invalid target_id: {target_id}")),
+            }
         }
-        _ => Err("unsupported bridge command".into()),
+        // Cookie commands — stub responses until full cookie routing is implemented
+        BridgeCommand::GetCookies { .. } => Ok(serde_json::json!({ "cookies": [] })),
+        BridgeCommand::GetAllCookies { .. } => Ok(serde_json::json!({ "cookies": [] })),
+        BridgeCommand::DeleteCookie { .. } => Ok(serde_json::json!({})),
+        BridgeCommand::SetCookie { .. } => Ok(serde_json::json!({})),
+        BridgeCommand::GetResponseBody { .. } => Ok(serde_json::json!({ "body": "", "base64Encoded": false })),
     };
     BridgeResponse { result }
+}
+
+/// Parse a string target_id into a usize page ID.
+fn parse_target_id(target_id: &str) -> Option<usize> {
+    target_id.parse::<usize>().ok()
+}
+
+/// Look up a page by target_id string and execute the closure with it.
+fn with_page<F>(pool: &PagePool, target_id: &str, f: F) -> Result<Value, String>
+where
+    F: FnOnce(&PageHandle) -> Result<Value, String>,
+{
+    let id = parse_target_id(target_id)
+        .ok_or_else(|| format!("invalid target_id: {target_id}"))?;
+    let page = pool.get_page(id)
+        .ok_or_else(|| format!("page not found: {target_id}"))?;
+    f(&page)
+}
+
+fn cmd_create_target(pool: &PagePool, url: &str) -> Result<Value, String> {
+    let config = PageConfig {
+        url: if url.is_empty() { None } else { Some(url.to_string()) },
+        ..Default::default()
+    };
+    let page = pool.create_page(&config).map_err(|e| format!("{e}"))?;
+    let page_id = page.id();
+    Ok(serde_json::json!({ "targetId": page_id.to_string() }))
+}
+
+fn cmd_list_targets(pool: &PagePool) -> Result<Value, String> {
+    let stats = pool.stats();
+    let target_ids: Vec<String> = (1..=stats.active + stats.idle)
+        .map(|i| i.to_string())
+        .collect();
+    Ok(serde_json::json!({ "targetIds": target_ids }))
 }
 
 fn to_browser_error(e: BrowserError) -> String {

@@ -16,6 +16,8 @@ use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+const TID: &str = "test-target";
+
 struct NoopEventSender;
 impl EventSender for NoopEventSender {
     fn send_event(&self, _method: &str, _params: Value) {}
@@ -48,7 +50,7 @@ impl TestBridge {
 #[test]
 fn test_css_enable_disable_no_bridge() {
     let b = TestBridge::new();
-    let h = CssHandler::new(b.sender.clone());
+    let h = CssHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("CSS.enable", json!({}), noop_es()).is_ok());
     assert!(h.handle_command("CSS.disable", json!({}), noop_es()).is_ok());
 }
@@ -56,13 +58,13 @@ fn test_css_enable_disable_no_bridge() {
 #[test]
 fn test_css_get_computed_style_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = CssHandler::new(b.sender.clone());
+    let h = CssHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::EvaluateJs { ref expression, return_by_value } => {
+                BridgeCommand::EvaluateJs { ref expression, return_by_value, .. } => {
                     assert!(expression.contains("getComputedStyle"));
                     assert!(return_by_value);
                 }
@@ -80,7 +82,7 @@ fn test_css_get_computed_style_sends_evaluate_js() {
 #[test]
 fn test_css_get_matched_styles_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = CssHandler::new(b.sender.clone());
+    let h = CssHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -102,7 +104,7 @@ fn test_css_get_matched_styles_sends_evaluate_js() {
 #[test]
 fn test_css_get_inline_styles_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = CssHandler::new(b.sender.clone());
+    let h = CssHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -124,7 +126,7 @@ fn test_css_get_inline_styles_sends_evaluate_js() {
 #[test]
 fn test_css_set_style_texts_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = CssHandler::new(b.sender.clone());
+    let h = CssHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -141,7 +143,7 @@ fn test_css_set_style_texts_sends_evaluate_js() {
 #[test]
 fn test_css_unknown_command() {
     let b = TestBridge::new();
-    let h = CssHandler::new(b.sender.clone());
+    let h = CssHandler::new(b.sender.clone(), TID.into());
     let err = h.handle_command("CSS.nonexistent", json!({}), noop_es()).unwrap_err();
     assert_eq!(err.code, -32601);
 }
@@ -153,7 +155,7 @@ fn test_css_unknown_command() {
 #[test]
 fn test_overlay_enable_disable() {
     let b = TestBridge::new();
-    let h = OverlayHandler::new(b.sender.clone());
+    let h = OverlayHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Overlay.enable", json!({}), noop_es()).is_ok());
     assert!(h.handle_command("Overlay.disable", json!({}), noop_es()).is_ok());
 }
@@ -161,7 +163,7 @@ fn test_overlay_enable_disable() {
 #[test]
 fn test_overlay_highlight_hide() {
     let b = TestBridge::new();
-    let h = OverlayHandler::new(b.sender.clone());
+    let h = OverlayHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Overlay.highlightNode", json!({"nodeId": 1}), noop_es()).is_ok());
     assert!(h.handle_command("Overlay.hideHighlight", json!({}), noop_es()).is_ok());
 }
@@ -169,21 +171,21 @@ fn test_overlay_highlight_hide() {
 #[test]
 fn test_overlay_inspect_mode() {
     let b = TestBridge::new();
-    let h = OverlayHandler::new(b.sender.clone());
+    let h = OverlayHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Overlay.setInspectMode", json!({"mode": "searchForNode"}), noop_es()).is_ok());
 }
 
 #[test]
 fn test_overlay_paused_in_debugger() {
     let b = TestBridge::new();
-    let h = OverlayHandler::new(b.sender.clone());
+    let h = OverlayHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Overlay.setPausedInDebuggerMessage", json!({"message": "Paused"}), noop_es()).is_ok());
 }
 
 #[test]
 fn test_overlay_unknown_command() {
     let b = TestBridge::new();
-    let h = OverlayHandler::new(b.sender.clone());
+    let h = OverlayHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("Overlay.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -222,7 +224,7 @@ fn test_log_unknown_command() {
 #[test]
 fn test_fetch_enable_disable() {
     let b = TestBridge::new();
-    let h = FetchHandler::new(b.sender.clone());
+    let h = FetchHandler::new(b.sender.clone(), TID.into());
     let r1 = h.handle_command("Fetch.enable", json!({"patterns": [{"urlPattern": "*"}]}), noop_es()).unwrap();
     assert_eq!(r1["enabled"], true);
     assert!(h.handle_command("Fetch.disable", json!({}), noop_es()).is_ok());
@@ -231,7 +233,7 @@ fn test_fetch_enable_disable() {
 #[test]
 fn test_fetch_continue_request_params() {
     let b = TestBridge::new();
-    let h = FetchHandler::new(b.sender.clone());
+    let h = FetchHandler::new(b.sender.clone(), TID.into());
     let result = h.handle_command("Fetch.continueRequest", json!({"requestId": "req-1"}), noop_es()).unwrap();
     assert_eq!(result["requestId"], "req-1");
 }
@@ -239,7 +241,7 @@ fn test_fetch_continue_request_params() {
 #[test]
 fn test_fetch_fail_request_params() {
     let b = TestBridge::new();
-    let h = FetchHandler::new(b.sender.clone());
+    let h = FetchHandler::new(b.sender.clone(), TID.into());
     let result = h.handle_command("Fetch.failRequest", json!({"requestId": "req-3", "reason": "TimedOut"}), noop_es()).unwrap();
     assert_eq!(result["reason"], "TimedOut");
 }
@@ -247,7 +249,7 @@ fn test_fetch_fail_request_params() {
 #[test]
 fn test_fetch_unknown_command() {
     let b = TestBridge::new();
-    let h = FetchHandler::new(b.sender.clone());
+    let h = FetchHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("Fetch.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -258,7 +260,7 @@ fn test_fetch_unknown_command() {
 #[test]
 fn test_debugger_enable_sets_spidermonkey_debugger() {
     let b = TestBridge::new();
-    let h = DebuggerHandler::new(b.sender.clone());
+    let h = DebuggerHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -279,14 +281,14 @@ fn test_debugger_enable_sets_spidermonkey_debugger() {
 #[test]
 fn test_debugger_disable() {
     let b = TestBridge::new();
-    let h = DebuggerHandler::new(b.sender.clone());
+    let h = DebuggerHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Debugger.disable", json!({}), noop_es()).is_ok());
 }
 
 #[test]
 fn test_debugger_set_breakpoint_by_url() {
     let b = TestBridge::new();
-    let h = DebuggerHandler::new(b.sender.clone());
+    let h = DebuggerHandler::new(b.sender.clone(), TID.into());
     let result = h.handle_command("Debugger.setBreakpointByUrl", json!({
         "lineNumber": 10, "url": "test.js"
     }), noop_es()).unwrap();
@@ -297,14 +299,14 @@ fn test_debugger_set_breakpoint_by_url() {
 #[test]
 fn test_debugger_remove_breakpoint() {
     let b = TestBridge::new();
-    let h = DebuggerHandler::new(b.sender.clone());
+    let h = DebuggerHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Debugger.removeBreakpoint", json!({"breakpointId": "1"}), noop_es()).is_ok());
 }
 
 #[test]
 fn test_debugger_pause_resume() {
     let b = TestBridge::new();
-    let h = DebuggerHandler::new(b.sender.clone());
+    let h = DebuggerHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Debugger.pause", json!({}), noop_es()).is_ok());
     assert!(h.handle_command("Debugger.resume", json!({}), noop_es()).is_ok());
 }
@@ -312,7 +314,7 @@ fn test_debugger_pause_resume() {
 #[test]
 fn test_debugger_stepping() {
     let b = TestBridge::new();
-    let h = DebuggerHandler::new(b.sender.clone());
+    let h = DebuggerHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Debugger.stepOver", json!({}), noop_es()).is_ok());
     assert!(h.handle_command("Debugger.stepInto", json!({}), noop_es()).is_ok());
     assert!(h.handle_command("Debugger.stepOut", json!({}), noop_es()).is_ok());
@@ -321,7 +323,7 @@ fn test_debugger_stepping() {
 #[test]
 fn test_debugger_unknown_command() {
     let b = TestBridge::new();
-    let h = DebuggerHandler::new(b.sender.clone());
+    let h = DebuggerHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("Debugger.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -332,7 +334,7 @@ fn test_debugger_unknown_command() {
 #[test]
 fn test_network_enable_sets_interceptor() {
     let b = TestBridge::new();
-    let h = NetworkHandler::new(b.sender.clone());
+    let h = NetworkHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -353,14 +355,14 @@ fn test_network_enable_sets_interceptor() {
 #[test]
 fn test_network_disable() {
     let b = TestBridge::new();
-    let h = NetworkHandler::new(b.sender.clone());
+    let h = NetworkHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Network.disable", json!({}), noop_es()).is_ok());
 }
 
 #[test]
 fn test_network_get_response_body_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = NetworkHandler::new(b.sender.clone());
+    let h = NetworkHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -383,7 +385,7 @@ fn test_network_get_response_body_sends_evaluate_js() {
 #[test]
 fn test_network_get_cookies_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = NetworkHandler::new(b.sender.clone());
+    let h = NetworkHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -405,7 +407,7 @@ fn test_network_get_cookies_sends_evaluate_js() {
 #[test]
 fn test_network_unknown_command() {
     let b = TestBridge::new();
-    let h = NetworkHandler::new(b.sender.clone());
+    let h = NetworkHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("Network.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -416,13 +418,13 @@ fn test_network_unknown_command() {
 #[test]
 fn test_page_navigate_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = PageHandler::new(b.sender.clone());
+    let h = PageHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::Navigate { ref url } => {
+                BridgeCommand::Navigate { ref url, .. } => {
                     assert_eq!(url, "https://example.com");
                 }
                 _ => panic!("Expected Navigate, got {:?}", cmd),
@@ -439,13 +441,13 @@ fn test_page_navigate_sends_bridge_command() {
 #[test]
 fn test_page_navigate_default_url() {
     let b = TestBridge::new();
-    let h = PageHandler::new(b.sender.clone());
+    let h = PageHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::Navigate { ref url } => {
+                BridgeCommand::Navigate { ref url, .. } => {
                     assert_eq!(url, "about:blank");
                 }
                 _ => panic!("Expected Navigate with default URL, got {:?}", cmd),
@@ -460,13 +462,13 @@ fn test_page_navigate_default_url() {
 #[test]
 fn test_page_reload_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = PageHandler::new(b.sender.clone());
+    let h = PageHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::Reload { ref ignore_cache } => {
+                BridgeCommand::Reload { ref ignore_cache, .. } => {
                     assert!(ignore_cache);
                 }
                 _ => panic!("Expected Reload, got {:?}", cmd),
@@ -481,12 +483,12 @@ fn test_page_reload_sends_bridge_command() {
 #[test]
 fn test_page_get_frame_tree_sends_get_url() {
     let b = TestBridge::new();
-    let h = PageHandler::new(b.sender.clone());
+    let h = PageHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
-            assert!(matches!(cmd, BridgeCommand::GetUrl));
+            assert!(matches!(cmd, BridgeCommand::GetUrl { .. }));
             BridgeResponse { result: Ok(json!("https://example.com")) }
         });
     });
@@ -498,13 +500,13 @@ fn test_page_get_frame_tree_sends_get_url() {
 #[test]
 fn test_page_capture_screenshot_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = PageHandler::new(b.sender.clone());
+    let h = PageHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::TakeScreenshot { ref format, ref quality } => {
+                BridgeCommand::TakeScreenshot { ref format, ref quality, .. } => {
                     assert_eq!(format, "png");
                     assert_eq!(quality, &None);
                 }
@@ -521,7 +523,7 @@ fn test_page_capture_screenshot_sends_bridge_command() {
 #[test]
 fn test_page_get_layout_metrics_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = PageHandler::new(b.sender.clone());
+    let h = PageHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -544,13 +546,13 @@ fn test_page_get_layout_metrics_sends_evaluate_js() {
 #[test]
 fn test_page_add_script_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = PageHandler::new(b.sender.clone());
+    let h = PageHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::AddScriptToEvaluateOnNewDocument { ref source } => {
+                BridgeCommand::AddScriptToEvaluateOnNewDocument { ref source, .. } => {
                     assert_eq!(source, "console.log('injected')");
                 }
                 _ => panic!("Expected AddScriptToEvaluateOnNewDocument, got {:?}", cmd),
@@ -570,7 +572,7 @@ fn test_page_add_script_sends_bridge_command() {
 #[test]
 fn test_page_unknown_command() {
     let b = TestBridge::new();
-    let h = PageHandler::new(b.sender.clone());
+    let h = PageHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("Page.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -581,12 +583,12 @@ fn test_page_unknown_command() {
 #[test]
 fn test_dom_get_document_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
-            assert!(matches!(cmd, BridgeCommand::GetDocument));
+            assert!(matches!(cmd, BridgeCommand::GetDocument { .. }));
             BridgeResponse { result: Ok(json!({
                 "root": { "nodeId": 1, "nodeType": 9, "nodeName": "#document",
                            "localName": "", "nodeValue": "", "childNodeCount": 2 }
@@ -602,13 +604,13 @@ fn test_dom_get_document_sends_bridge_command() {
 #[test]
 fn test_dom_query_selector_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::QuerySelector { ref selector } => {
+                BridgeCommand::QuerySelector { ref selector, .. } => {
                     assert_eq!(selector, "div");
                 }
                 _ => panic!("Expected QuerySelector, got {:?}", cmd),
@@ -624,13 +626,13 @@ fn test_dom_query_selector_sends_bridge_command() {
 #[test]
 fn test_dom_query_selector_all_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::QuerySelectorAll { ref selector } => {
+                BridgeCommand::QuerySelectorAll { ref selector, .. } => {
                     assert_eq!(selector, "div");
                 }
                 _ => panic!("Expected QuerySelectorAll, got {:?}", cmd),
@@ -646,7 +648,7 @@ fn test_dom_query_selector_all_sends_bridge_command() {
 #[test]
 fn test_dom_describe_node_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -668,7 +670,7 @@ fn test_dom_describe_node_sends_evaluate_js() {
 #[test]
 fn test_dom_get_box_model_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -690,13 +692,13 @@ fn test_dom_get_box_model_sends_evaluate_js() {
 #[test]
 fn test_dom_set_attribute_value_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::SetAttributeValue { node_id: _, ref name, ref value } => {
+                BridgeCommand::SetAttributeValue { node_id: _, ref name, ref value, .. } => {
                     assert_eq!(name, "class");
                     assert_eq!(value, "active");
                 }
@@ -714,12 +716,12 @@ fn test_dom_set_attribute_value_sends_bridge_command() {
 #[test]
 fn test_dom_get_outer_html_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
-            assert!(matches!(cmd, BridgeCommand::GetOuterHtml { node_id: _ }));
+            assert!(matches!(cmd, BridgeCommand::GetOuterHtml { node_id: _, .. }));
             BridgeResponse { result: Ok(json!({"outerHTML": "<html></html>"})) }
         });
     });
@@ -731,7 +733,7 @@ fn test_dom_get_outer_html_sends_bridge_command() {
 #[test]
 fn test_dom_resolve_node_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -753,7 +755,7 @@ fn test_dom_resolve_node_sends_evaluate_js() {
 #[test]
 fn test_dom_unknown_command() {
     let b = TestBridge::new();
-    let h = DomHandler::new(b.sender.clone());
+    let h = DomHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("DOM.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -764,7 +766,7 @@ fn test_dom_unknown_command() {
 #[test]
 fn test_runtime_enable_returns_execution_context() {
     let b = TestBridge::new();
-    let h = RuntimeHandler::new(b.sender.clone());
+    let h = RuntimeHandler::new(b.sender.clone(), TID.into());
     let result = h.handle_command("Runtime.enable", json!({}), noop_es()).unwrap();
     assert_eq!(result["executionContextId"], 1);
 }
@@ -772,14 +774,14 @@ fn test_runtime_enable_returns_execution_context() {
 #[test]
 fn test_runtime_disable() {
     let b = TestBridge::new();
-    let h = RuntimeHandler::new(b.sender.clone());
+    let h = RuntimeHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Runtime.disable", json!({}), noop_es()).is_ok());
 }
 
 #[test]
 fn test_runtime_evaluate_empty_returns_undefined() {
     let b = TestBridge::new();
-    let h = RuntimeHandler::new(b.sender.clone());
+    let h = RuntimeHandler::new(b.sender.clone(), TID.into());
     let result = h.handle_command("Runtime.evaluate", json!({}), noop_es()).unwrap();
     assert_eq!(result["result"]["type"], "undefined");
 }
@@ -787,13 +789,13 @@ fn test_runtime_evaluate_empty_returns_undefined() {
 #[test]
 fn test_runtime_evaluate_with_expression_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = RuntimeHandler::new(b.sender.clone());
+    let h = RuntimeHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::EvaluateJs { ref expression, return_by_value } => {
+                BridgeCommand::EvaluateJs { ref expression, return_by_value, .. } => {
                     assert_eq!(expression, "1+1");
                     assert!(return_by_value);
                 }
@@ -811,7 +813,7 @@ fn test_runtime_evaluate_with_expression_sends_evaluate_js() {
 #[test]
 fn test_runtime_call_function_on_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = RuntimeHandler::new(b.sender.clone());
+    let h = RuntimeHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -835,7 +837,7 @@ fn test_runtime_call_function_on_sends_evaluate_js() {
 #[test]
 fn test_runtime_get_properties_sends_evaluate_js() {
     let b = TestBridge::new();
-    let h = RuntimeHandler::new(b.sender.clone());
+    let h = RuntimeHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -857,14 +859,14 @@ fn test_runtime_get_properties_sends_evaluate_js() {
 #[test]
 fn test_runtime_release_object() {
     let b = TestBridge::new();
-    let h = RuntimeHandler::new(b.sender.clone());
+    let h = RuntimeHandler::new(b.sender.clone(), TID.into());
     assert!(h.handle_command("Runtime.releaseObject", json!({}), noop_es()).is_ok());
 }
 
 #[test]
 fn test_runtime_unknown_command() {
     let b = TestBridge::new();
-    let h = RuntimeHandler::new(b.sender.clone());
+    let h = RuntimeHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("Runtime.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -875,13 +877,13 @@ fn test_runtime_unknown_command() {
 #[test]
 fn test_emulation_set_device_metrics_sends_set_viewport() {
     let b = TestBridge::new();
-    let h = EmulationHandler::new(b.sender.clone());
+    let h = EmulationHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::SetViewport { width, height, device_scale_factor } => {
+                BridgeCommand::SetViewport { width, height, device_scale_factor, .. } => {
                     assert_eq!(width, 1920);
                     assert_eq!(height, 1080);
                     assert_eq!(device_scale_factor, Some(1.0));
@@ -900,13 +902,13 @@ fn test_emulation_set_device_metrics_sends_set_viewport() {
 #[test]
 fn test_emulation_set_user_agent_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = EmulationHandler::new(b.sender.clone());
+    let h = EmulationHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::SetUserAgent { ref user_agent } => {
+                BridgeCommand::SetUserAgent { ref user_agent, .. } => {
                     assert_eq!(user_agent, "Mozilla/5.0 Test");
                 }
                 _ => panic!("Expected SetUserAgent, got {:?}", cmd),
@@ -923,7 +925,7 @@ fn test_emulation_set_user_agent_sends_bridge_command() {
 #[test]
 fn test_emulation_unknown_command() {
     let b = TestBridge::new();
-    let h = EmulationHandler::new(b.sender.clone());
+    let h = EmulationHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("Emulation.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -934,13 +936,13 @@ fn test_emulation_unknown_command() {
 #[test]
 fn test_input_dispatch_mouse_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = InputHandler::new(b.sender.clone());
+    let h = InputHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::DispatchMouseEvent { ref event_type, x, y, ref button, ref click_count } => {
+                BridgeCommand::DispatchMouseEvent { ref event_type, x, y, ref button, ref click_count, .. } => {
                     assert_eq!(event_type, "mousePressed");
                     assert_eq!(x, 100.0);
                     assert_eq!(y, 200.0);
@@ -961,7 +963,7 @@ fn test_input_dispatch_mouse_sends_bridge_command() {
 #[test]
 fn test_input_dispatch_key_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = InputHandler::new(b.sender.clone());
+    let h = InputHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
@@ -986,13 +988,13 @@ fn test_input_dispatch_key_sends_bridge_command() {
 #[test]
 fn test_input_insert_text_sends_bridge_command() {
     let b = TestBridge::new();
-    let h = InputHandler::new(b.sender.clone());
+    let h = InputHandler::new(b.sender.clone(), TID.into());
     let rx = b.receiver.clone();
     let t = std::thread::spawn(move || {
         let guard = rx.lock().unwrap();
         guard.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
-                BridgeCommand::InsertText { ref text } => {
+                BridgeCommand::InsertText { ref text, .. } => {
                     assert_eq!(text, "hello");
                 }
                 _ => panic!("Expected InsertText, got {:?}", cmd),
@@ -1007,7 +1009,7 @@ fn test_input_insert_text_sends_bridge_command() {
 #[test]
 fn test_input_unknown_command() {
     let b = TestBridge::new();
-    let h = InputHandler::new(b.sender.clone());
+    let h = InputHandler::new(b.sender.clone(), TID.into());
     assert_eq!(h.handle_command("Input.nonexistent", json!({}), noop_es()).unwrap_err().code, -32601);
 }
 
@@ -1019,9 +1021,9 @@ fn test_input_unknown_command() {
 fn test_registry_dispatches_to_correct_domain() {
     let b = TestBridge::new();
     let registry = DomainRegistry::new();
-    registry.register(Box::new(PageHandler::new(b.sender.clone()))).unwrap();
-    registry.register(Box::new(RuntimeHandler::new(b.sender.clone()))).unwrap();
-    registry.register(Box::new(DomHandler::new(b.sender.clone()))).unwrap();
+    registry.register(Box::new(PageHandler::new(b.sender.clone(), TID.into()))).unwrap();
+    registry.register(Box::new(RuntimeHandler::new(b.sender.clone(), TID.into()))).unwrap();
+    registry.register(Box::new(DomHandler::new(b.sender.clone(), TID.into()))).unwrap();
 
     // Page.enable — no bridge needed, just routing
     assert!(registry.dispatch_command("Page.enable", json!({}), noop_es()).unwrap().is_ok());

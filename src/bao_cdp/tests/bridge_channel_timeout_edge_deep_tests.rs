@@ -11,6 +11,8 @@ use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse, BridgeSender, CDPMe
 use bao_cdp::{handle_command, serialize_response, serialize_event};
 use serde_json::json;
 
+const TID: &str = "test-target";
+
 /// Helper: dispatch a CDP command with correct params passing
 fn dispatch(method: &str, params: Option<serde_json::Value>) -> bao_cdp::CDPResponse {
     let msg = CDPMessage { id: 1, method: method.to_string(), params: params.clone(), session_id: None };
@@ -29,7 +31,7 @@ fn dispatch_bridge(method: &str, params: Option<serde_json::Value>, target: &str
 #[test]
 fn test_bridge_sender_times_out() {
     let (tx, rx) = bridge_channel(Duration::from_millis(50));
-    let resp = tx.send(BridgeCommand::GetTitle);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_err());
     assert!(resp.result.unwrap_err().contains("timeout"));
     rx.try_process(|cmd| BridgeResponse { result: Ok(json!(format!("{:?}", cmd))) });
@@ -49,7 +51,7 @@ fn test_bridge_sender_succeeds_within_timeout() {
             std::thread::sleep(Duration::from_millis(1));
         }
     });
-    let resp = tx.send(BridgeCommand::GetTitle);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     done.store(1, Ordering::Relaxed);
     assert!(resp.result.is_ok());
     assert_eq!(resp.result.unwrap(), json!("test-title"));
@@ -58,7 +60,7 @@ fn test_bridge_sender_succeeds_within_timeout() {
 #[test]
 fn test_bridge_channel_timeout_value_propagated() {
     let (tx, _rx) = bridge_channel(Duration::from_millis(10));
-    let resp = tx.send(BridgeCommand::GetUrl);
+    let resp = tx.send(BridgeCommand::GetUrl { target_id: TID.into() });
     assert!(resp.result.is_err());
 }
 
@@ -76,11 +78,11 @@ fn test_try_process_no_pending_returns_false() {
 #[test]
 fn test_try_process_single_command() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
     std::thread::sleep(Duration::from_millis(10));
     let processed = rx.try_process(|cmd| {
         let result = match cmd {
-            BridgeCommand::GetTitle => Ok(json!("title")),
+            BridgeCommand::GetTitle { .. } => Ok(json!("title")),
             _ => Ok(json!(null)),
         };
         BridgeResponse { result }
@@ -104,9 +106,9 @@ fn test_drain_no_pending_returns_zero() {
 #[test]
 fn test_drain_multiple_commands() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
-    tx.send_fire_and_forget(BridgeCommand::GetUrl);
-    tx.send_fire_and_forget(BridgeCommand::GetDocument);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetDocument { target_id: TID.into() });
     std::thread::sleep(Duration::from_millis(10));
     let count = rx.drain(|_cmd| BridgeResponse { result: Ok(json!({})) });
     assert_eq!(count, 3);
@@ -116,8 +118,8 @@ fn test_drain_multiple_commands() {
 fn test_drain_order_preserved() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     let counter = Arc::new(AtomicUsize::new(0));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
-    tx.send_fire_and_forget(BridgeCommand::GetUrl);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
     std::thread::sleep(Duration::from_millis(10));
     let c = counter.clone();
     let count = rx.drain(move |_cmd| {
@@ -135,7 +137,7 @@ fn test_drain_order_preserved() {
 #[test]
 fn test_send_fire_and_forget_does_not_block() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
     std::thread::sleep(Duration::from_millis(10));
     let processed = rx.try_process(|_cmd| BridgeResponse { result: Ok(json!({})) });
     assert!(processed);
@@ -145,7 +147,7 @@ fn test_send_fire_and_forget_does_not_block() {
 fn test_send_fire_and_forget_multiple() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     for _ in 0..10 {
-        tx.send_fire_and_forget(BridgeCommand::GetTitle);
+        tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
     }
     std::thread::sleep(Duration::from_millis(20));
     let count = rx.drain(|_cmd| BridgeResponse { result: Ok(json!({})) });
@@ -172,8 +174,8 @@ fn test_is_alive_after_drop_rx() {
 #[test]
 fn test_is_alive_after_multiple_sends() {
     let (tx, _rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
-    tx.send_fire_and_forget(BridgeCommand::GetUrl);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
     assert!(tx.is_alive());
 }
 
@@ -185,8 +187,8 @@ fn test_is_alive_after_multiple_sends() {
 fn test_sender_clone_shares_channel() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     let tx2 = tx.clone();
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
-    tx2.send_fire_and_forget(BridgeCommand::GetUrl);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx2.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
     std::thread::sleep(Duration::from_millis(10));
     let count = rx.drain(|_cmd| BridgeResponse { result: Ok(json!({})) });
     assert_eq!(count, 2);
@@ -196,8 +198,8 @@ fn test_sender_clone_shares_channel() {
 fn test_sender_clone_independent_timeout() {
     let (tx, _rx) = bridge_channel(Duration::from_millis(50));
     let tx2 = tx.clone();
-    let resp1 = tx.send(BridgeCommand::GetTitle);
-    let resp2 = tx2.send(BridgeCommand::GetUrl);
+    let resp1 = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    let resp2 = tx2.send(BridgeCommand::GetUrl { target_id: TID.into() });
     assert!(resp1.result.is_err());
     assert!(resp2.result.is_err());
 }
@@ -236,8 +238,8 @@ fn test_target_get_targets_with_bridge() {
             let got = rx.try_process(|cmd| {
                 processed2.fetch_add(1, Ordering::SeqCst);
                 match cmd {
-                    BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!("Test Title")) },
-                    BridgeCommand::GetUrl => BridgeResponse { result: Ok(json!("https://example.com")) },
+                    BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Test Title")) },
+                    BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://example.com")) },
                     _ => BridgeResponse { result: Ok(json!(null)) },
                 }
             });
@@ -268,7 +270,7 @@ fn test_target_close_target_fire_and_forget() {
     let closed2 = closed.clone();
     std::thread::spawn(move || {
         rx.drain(move |cmd| {
-            if matches!(cmd, BridgeCommand::ClosePage) {
+            if matches!(cmd, BridgeCommand::ClosePage { .. }) {
                 closed2.fetch_add(1, Ordering::SeqCst);
             }
             BridgeResponse { result: Ok(json!({})) }
@@ -377,7 +379,7 @@ fn test_dom_query_selector_with_bridge() {
         while done2.load(Ordering::Relaxed) == 0 {
             let got = rx.try_process(|cmd| {
                 match cmd {
-                    BridgeCommand::QuerySelector { selector } => {
+                    BridgeCommand::QuerySelector { selector, .. } => {
                         BridgeResponse { result: Ok(json!({"nodeId": 42, "selector": selector})) }
                     }
                     _ => BridgeResponse { result: Ok(json!({})) },

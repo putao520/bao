@@ -7,6 +7,8 @@ use cdp_server::{CdpError, DomainRegistry, EventSender};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+const TID: &str = "test-target";
+
 struct NoopSender;
 impl EventSender for NoopSender {
     fn send_event(&self, _: &str, _: Value) {}
@@ -15,7 +17,7 @@ impl EventSender for NoopSender {
 fn make_registry() -> DomainRegistry {
     let mut reg = DomainRegistry::new();
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    register_all_domains_into(tx, &mut reg);
+    register_all_domains_into(tx, TID.into(), &mut reg);
     // Background thread drains bridge commands with generic OK responses
     std::thread::spawn(move || {
         let start = std::time::Instant::now();
@@ -33,7 +35,7 @@ fn make_registry() -> DomainRegistry {
 fn make_registry_no_responder() -> DomainRegistry {
     let mut reg = DomainRegistry::new();
     let (tx, _rx) = bridge_channel(Duration::from_millis(50));
-    register_all_domains_into(tx, &mut reg);
+    register_all_domains_into(tx, TID.into(), &mut reg);
     // _rx is dropped — bridge commands will timeout
     reg
 }

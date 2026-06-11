@@ -367,7 +367,7 @@ pub unsafe extern "C" fn us_poll_start_rc(p: *mut BaoPoll, loop_: *mut Loop, eve
         let mut ret: c_int;
         loop {
             ret = libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, (*p).fd(), &mut event);
-            if ret != -1 || *libc::__errno_location() != libc::EINTR {
+            if ret != -1 || bun_sys::e_from_negated(ret) != bun_sys::E::EINTR {
                 break;
             }
         }

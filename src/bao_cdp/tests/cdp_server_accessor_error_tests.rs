@@ -6,6 +6,8 @@
 use bao_cdp::{CdpRouter, BackendKind, BridgeCommand, BridgeResponse, bridge_channel};
 use std::time::Duration;
 
+const TID: &str = "test-target";
+
 // ---- ServerConfig builder ----
 
 #[test]
@@ -183,16 +185,16 @@ fn test_backend_kind_debug() {
 
 #[test]
 fn test_bridge_command_navigate() {
-    let cmd = BridgeCommand::Navigate { url: "https://example.com".into() };
-    if let BridgeCommand::Navigate { url } = cmd {
+    let cmd = BridgeCommand::Navigate { target_id: TID.into(), url: "https://example.com".into() };
+    if let BridgeCommand::Navigate { url, .. } = cmd {
         assert_eq!(url, "https://example.com");
     } else { panic!("Expected Navigate"); }
 }
 
 #[test]
 fn test_bridge_command_evaluate_js() {
-    let cmd = BridgeCommand::EvaluateJs { expression: "1+1".into(), return_by_value: true };
-    if let BridgeCommand::EvaluateJs { expression, return_by_value } = cmd {
+    let cmd = BridgeCommand::EvaluateJs { target_id: TID.into(), expression: "1+1".into(), return_by_value: true };
+    if let BridgeCommand::EvaluateJs { expression, return_by_value, .. } = cmd {
         assert_eq!(expression, "1+1");
         assert!(return_by_value);
     } else { panic!("Expected EvaluateJs"); }
@@ -200,8 +202,8 @@ fn test_bridge_command_evaluate_js() {
 
 #[test]
 fn test_bridge_command_take_screenshot() {
-    let cmd = BridgeCommand::TakeScreenshot { format: "png".into(), quality: Some(80) };
-    if let BridgeCommand::TakeScreenshot { format, quality } = cmd {
+    let cmd = BridgeCommand::TakeScreenshot { target_id: TID.into(), format: "png".into(), quality: Some(80) };
+    if let BridgeCommand::TakeScreenshot { format, quality, .. } = cmd {
         assert_eq!(format, "png");
         assert_eq!(quality, Some(80));
     } else { panic!("Expected TakeScreenshot"); }
@@ -209,7 +211,7 @@ fn test_bridge_command_take_screenshot() {
 
 #[test]
 fn test_bridge_command_take_screenshot_no_quality() {
-    let cmd = BridgeCommand::TakeScreenshot { format: "jpeg".into(), quality: None };
+    let cmd = BridgeCommand::TakeScreenshot { target_id: TID.into(), format: "jpeg".into(), quality: None };
     if let BridgeCommand::TakeScreenshot { quality, .. } = cmd {
         assert!(quality.is_none());
     } else { panic!("Expected TakeScreenshot"); }
@@ -217,55 +219,55 @@ fn test_bridge_command_take_screenshot_no_quality() {
 
 #[test]
 fn test_bridge_command_get_title() {
-    assert!(matches!(BridgeCommand::GetTitle, BridgeCommand::GetTitle));
+    assert!(matches!(BridgeCommand::GetTitle { target_id: TID.into() }, BridgeCommand::GetTitle { .. }));
 }
 
 #[test]
 fn test_bridge_command_get_url() {
-    assert!(matches!(BridgeCommand::GetUrl, BridgeCommand::GetUrl));
+    assert!(matches!(BridgeCommand::GetUrl { target_id: TID.into() }, BridgeCommand::GetUrl { .. }));
 }
 
 #[test]
 fn test_bridge_command_get_document() {
-    assert!(matches!(BridgeCommand::GetDocument, BridgeCommand::GetDocument));
+    assert!(matches!(BridgeCommand::GetDocument { target_id: TID.into() }, BridgeCommand::GetDocument { .. }));
 }
 
 #[test]
 fn test_bridge_command_query_selector() {
-    let cmd = BridgeCommand::QuerySelector { selector: "div".into() };
-    if let BridgeCommand::QuerySelector { selector } = cmd {
+    let cmd = BridgeCommand::QuerySelector { target_id: TID.into(), selector: "div".into() };
+    if let BridgeCommand::QuerySelector { selector, .. } = cmd {
         assert_eq!(selector, "div");
     } else { panic!("Expected QuerySelector"); }
 }
 
 #[test]
 fn test_bridge_command_query_selector_all() {
-    let cmd = BridgeCommand::QuerySelectorAll { selector: "a".into() };
-    if let BridgeCommand::QuerySelectorAll { selector } = cmd {
+    let cmd = BridgeCommand::QuerySelectorAll { target_id: TID.into(), selector: "a".into() };
+    if let BridgeCommand::QuerySelectorAll { selector, .. } = cmd {
         assert_eq!(selector, "a");
     } else { panic!("Expected QuerySelectorAll"); }
 }
 
 #[test]
 fn test_bridge_command_get_outer_html() {
-    let cmd = BridgeCommand::GetOuterHtml { node_id: Some(42) };
-    if let BridgeCommand::GetOuterHtml { node_id } = cmd {
+    let cmd = BridgeCommand::GetOuterHtml { target_id: TID.into(), node_id: Some(42) };
+    if let BridgeCommand::GetOuterHtml { node_id, .. } = cmd {
         assert_eq!(node_id, Some(42));
     } else { panic!("Expected GetOuterHtml"); }
 }
 
 #[test]
 fn test_bridge_command_get_outer_html_no_node() {
-    let cmd = BridgeCommand::GetOuterHtml { node_id: None };
-    if let BridgeCommand::GetOuterHtml { node_id } = cmd {
+    let cmd = BridgeCommand::GetOuterHtml { target_id: TID.into(), node_id: None };
+    if let BridgeCommand::GetOuterHtml { node_id, .. } = cmd {
         assert!(node_id.is_none());
     } else { panic!("Expected GetOuterHtml"); }
 }
 
 #[test]
 fn test_bridge_command_set_attribute_value() {
-    let cmd = BridgeCommand::SetAttributeValue { node_id: 5, name: "class".into(), value: "active".into() };
-    if let BridgeCommand::SetAttributeValue { node_id, name, value } = cmd {
+    let cmd = BridgeCommand::SetAttributeValue { target_id: TID.into(), node_id: 5, name: "class".into(), value: "active".into() };
+    if let BridgeCommand::SetAttributeValue { node_id, name, value, .. } = cmd {
         assert_eq!(node_id, 5);
         assert_eq!(name, "class");
         assert_eq!(value, "active");
@@ -274,11 +276,9 @@ fn test_bridge_command_set_attribute_value() {
 
 #[test]
 fn test_bridge_command_dispatch_mouse_event() {
-    let cmd = BridgeCommand::DispatchMouseEvent {
-        event_type: "mousePressed".into(), x: 100.0, y: 200.0,
-        button: Some(0), click_count: Some(1),
-    };
-    if let BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count } = cmd {
+    let cmd = BridgeCommand::DispatchMouseEvent { target_id: TID.into(), event_type: "mousePressed".into(), x: 100.0, y: 200.0,
+        button: Some(0), click_count: Some(1) };
+    if let BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count, .. } = cmd {
         assert_eq!(event_type, "mousePressed");
         assert!((x - 100.0).abs() < f64::EPSILON);
         assert!((y - 200.0).abs() < f64::EPSILON);
@@ -289,10 +289,8 @@ fn test_bridge_command_dispatch_mouse_event() {
 
 #[test]
 fn test_bridge_command_dispatch_key_event() {
-    let cmd = BridgeCommand::DispatchKeyEvent {
-        event_type: "keyDown".into(), key: "Enter".into(), code: "Enter".into(), text: None,
-    };
-    if let BridgeCommand::DispatchKeyEvent { event_type, key, code, text } = cmd {
+    let cmd = BridgeCommand::DispatchKeyEvent { target_id: TID.into(), event_type: "keyDown".into(), key: "Enter".into(), code: "Enter".into(), text: None };
+    if let BridgeCommand::DispatchKeyEvent { event_type, key, code, text, .. } = cmd {
         assert_eq!(event_type, "keyDown");
         assert_eq!(key, "Enter");
         assert_eq!(code, "Enter");
@@ -302,16 +300,16 @@ fn test_bridge_command_dispatch_key_event() {
 
 #[test]
 fn test_bridge_command_insert_text() {
-    let cmd = BridgeCommand::InsertText { text: "hello".into() };
-    if let BridgeCommand::InsertText { text } = cmd {
+    let cmd = BridgeCommand::InsertText { target_id: TID.into(), text: "hello".into() };
+    if let BridgeCommand::InsertText { text, .. } = cmd {
         assert_eq!(text, "hello");
     } else { panic!("Expected InsertText"); }
 }
 
 #[test]
 fn test_bridge_command_set_viewport() {
-    let cmd = BridgeCommand::SetViewport { width: 1920, height: 1080, device_scale_factor: Some(2.0) };
-    if let BridgeCommand::SetViewport { width, height, device_scale_factor } = cmd {
+    let cmd = BridgeCommand::SetViewport { target_id: TID.into(), width: 1920, height: 1080, device_scale_factor: Some(2.0) };
+    if let BridgeCommand::SetViewport { width, height, device_scale_factor, .. } = cmd {
         assert_eq!(width, 1920);
         assert_eq!(height, 1080);
         assert_eq!(device_scale_factor, Some(2.0));
@@ -320,7 +318,7 @@ fn test_bridge_command_set_viewport() {
 
 #[test]
 fn test_bridge_command_set_viewport_no_dpr() {
-    let cmd = BridgeCommand::SetViewport { width: 800, height: 600, device_scale_factor: None };
+    let cmd = BridgeCommand::SetViewport { target_id: TID.into(), width: 800, height: 600, device_scale_factor: None };
     if let BridgeCommand::SetViewport { device_scale_factor, .. } = cmd {
         assert!(device_scale_factor.is_none());
     } else { panic!("Expected SetViewport"); }
@@ -328,29 +326,29 @@ fn test_bridge_command_set_viewport_no_dpr() {
 
 #[test]
 fn test_bridge_command_set_user_agent() {
-    let cmd = BridgeCommand::SetUserAgent { user_agent: "TestBot/1.0".into() };
-    if let BridgeCommand::SetUserAgent { user_agent } = cmd {
+    let cmd = BridgeCommand::SetUserAgent { target_id: TID.into(), user_agent: "TestBot/1.0".into() };
+    if let BridgeCommand::SetUserAgent { user_agent, .. } = cmd {
         assert_eq!(user_agent, "TestBot/1.0");
     } else { panic!("Expected SetUserAgent"); }
 }
 
 #[test]
 fn test_bridge_command_get_cookies() {
-    let cmd = BridgeCommand::GetCookies { urls: vec!["https://a.com".into()] };
-    if let BridgeCommand::GetCookies { urls } = cmd {
+    let cmd = BridgeCommand::GetCookies { target_id: TID.into(), urls: vec!["https://a.com".into()] };
+    if let BridgeCommand::GetCookies { urls, .. } = cmd {
         assert_eq!(urls.len(), 1);
     } else { panic!("Expected GetCookies"); }
 }
 
 #[test]
 fn test_bridge_command_get_all_cookies() {
-    assert!(matches!(BridgeCommand::GetAllCookies, BridgeCommand::GetAllCookies));
+    assert!(matches!(BridgeCommand::GetAllCookies { target_id: TID.into() }, BridgeCommand::GetAllCookies { .. }));
 }
 
 #[test]
 fn test_bridge_command_delete_cookie() {
-    let cmd = BridgeCommand::DeleteCookie { name: "session".into(), url: Some("https://x.com".into()) };
-    if let BridgeCommand::DeleteCookie { name, url } = cmd {
+    let cmd = BridgeCommand::DeleteCookie { target_id: TID.into(), name: "session".into(), url: Some("https://x.com".into()) };
+    if let BridgeCommand::DeleteCookie { name, url, .. } = cmd {
         assert_eq!(name, "session");
         assert_eq!(url, Some("https://x.com".into()));
     } else { panic!("Expected DeleteCookie"); }
@@ -358,11 +356,9 @@ fn test_bridge_command_delete_cookie() {
 
 #[test]
 fn test_bridge_command_set_cookie() {
-    let cmd = BridgeCommand::SetCookie {
-        name: "sid".into(), value: "abc".into(),
-        url: Some("https://example.com".into()), domain: Some("example.com".into()),
-    };
-    if let BridgeCommand::SetCookie { name, value, url, domain } = cmd {
+    let cmd = BridgeCommand::SetCookie { target_id: TID.into(), name: "sid".into(), value: "abc".into(),
+        url: Some("https://example.com".into()), domain: Some("example.com".into()) };
+    if let BridgeCommand::SetCookie { name, value, url, domain, .. } = cmd {
         assert_eq!(name, "sid");
         assert_eq!(value, "abc");
         assert_eq!(url, Some("https://example.com".into()));
@@ -372,53 +368,53 @@ fn test_bridge_command_set_cookie() {
 
 #[test]
 fn test_bridge_command_get_response_body() {
-    let cmd = BridgeCommand::GetResponseBody { request_id: "req-123".into() };
-    if let BridgeCommand::GetResponseBody { request_id } = cmd {
+    let cmd = BridgeCommand::GetResponseBody { target_id: TID.into(), request_id: "req-123".into() };
+    if let BridgeCommand::GetResponseBody { request_id, .. } = cmd {
         assert_eq!(request_id, "req-123");
     } else { panic!("Expected GetResponseBody"); }
 }
 
 #[test]
 fn test_bridge_command_add_script() {
-    let cmd = BridgeCommand::AddScriptToEvaluateOnNewDocument { source: "console.log(1)".into() };
-    if let BridgeCommand::AddScriptToEvaluateOnNewDocument { source } = cmd {
+    let cmd = BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id: TID.into(), source: "console.log(1)".into() };
+    if let BridgeCommand::AddScriptToEvaluateOnNewDocument { source, .. } = cmd {
         assert_eq!(source, "console.log(1)");
     } else { panic!("Expected AddScriptToEvaluateOnNewDocument"); }
 }
 
 #[test]
 fn test_bridge_command_reload() {
-    let cmd = BridgeCommand::Reload { ignore_cache: true };
-    if let BridgeCommand::Reload { ignore_cache } = cmd {
+    let cmd = BridgeCommand::Reload { target_id: TID.into(), ignore_cache: true };
+    if let BridgeCommand::Reload { ignore_cache, .. } = cmd {
         assert!(ignore_cache);
     } else { panic!("Expected Reload"); }
 }
 
 #[test]
 fn test_bridge_command_go_back() {
-    assert!(matches!(BridgeCommand::GoBack, BridgeCommand::GoBack));
+    assert!(matches!(BridgeCommand::GoBack { target_id: TID.into() }, BridgeCommand::GoBack { .. }));
 }
 
 #[test]
 fn test_bridge_command_go_forward() {
-    assert!(matches!(BridgeCommand::GoForward, BridgeCommand::GoForward));
+    assert!(matches!(BridgeCommand::GoForward { target_id: TID.into() }, BridgeCommand::GoForward { .. }));
 }
 
 #[test]
 fn test_bridge_command_stop_loading() {
-    assert!(matches!(BridgeCommand::StopLoading, BridgeCommand::StopLoading));
+    assert!(matches!(BridgeCommand::StopLoading { target_id: TID.into() }, BridgeCommand::StopLoading { .. }));
 }
 
 #[test]
 fn test_bridge_command_close_page() {
-    assert!(matches!(BridgeCommand::ClosePage, BridgeCommand::ClosePage));
+    assert!(matches!(BridgeCommand::ClosePage { target_id: TID.into() }, BridgeCommand::ClosePage { .. }));
 }
 
 // ---- BridgeCommand Debug ----
 
 #[test]
 fn test_bridge_command_debug_navigate() {
-    let cmd = BridgeCommand::Navigate { url: "https://test.com".into() };
+    let cmd = BridgeCommand::Navigate { target_id: TID.into(), url: "https://test.com".into() };
     let debug = format!("{:?}", cmd);
     assert!(debug.contains("Navigate"));
     assert!(debug.contains("https://test.com"));
@@ -426,7 +422,7 @@ fn test_bridge_command_debug_navigate() {
 
 #[test]
 fn test_bridge_command_debug_get_title() {
-    let debug = format!("{:?}", BridgeCommand::GetTitle);
+    let debug = format!("{:?}", BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(debug.contains("GetTitle"));
 }
 
@@ -464,8 +460,8 @@ fn test_bridge_response_debug() {
 #[test]
 fn test_bridge_channel_send_and_drain() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
-    tx.send_fire_and_forget(BridgeCommand::GetUrl);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
     let count = std::sync::atomic::AtomicUsize::new(0);
     rx.drain(|_cmd| {
         count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -479,8 +475,8 @@ fn test_bridge_channel_sender_clone() {
     let (tx, _rx) = bridge_channel(Duration::from_secs(5));
     let tx2 = tx.clone();
     // Both senders can fire-and-forget
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
-    tx2.send_fire_and_forget(BridgeCommand::GetUrl);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx2.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
 }
 
 #[test]
@@ -508,9 +504,9 @@ fn test_bridge_channel_try_process_none() {
 #[test]
 fn test_bridge_channel_try_process_one() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
     let processed = rx.try_process(|cmd| {
-        assert!(matches!(cmd, BridgeCommand::GetTitle));
+        assert!(matches!(cmd, BridgeCommand::GetTitle { .. }));
         BridgeResponse { result: Ok(serde_json::Value::Null) }
     });
     assert!(processed);
@@ -524,6 +520,6 @@ fn test_bridge_send_returns_timeout_on_no_processor() {
     let (tx, rx) = bridge_channel(Duration::from_millis(50));
     // Drop receiver without processing — send should timeout
     drop(rx);
-    let resp = tx.send(BridgeCommand::GetTitle);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_err());
 }

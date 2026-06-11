@@ -669,15 +669,33 @@ mod tests {
 
     #[test]
     fn dispatch_target_create_target_via_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let (sender, rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(500));
         let server = CDPServer::with_bridge(9333, sender);
         let registry = server.registry.as_ref().unwrap();
+
+        // Spawn a thread to handle the CreateTarget bridge command
+        let responder = std::thread::spawn(move || {
+            rx.recv_and_process(Duration::from_secs(1), |cmd| {
+                match cmd {
+                    crate::servo_bridge::BridgeCommand::CreateTarget { .. } => {
+                        crate::servo_bridge::BridgeResponse {
+                            result: Ok(serde_json::json!({ "targetId": "new-target-123" })),
+                        }
+                    }
+                    _ => crate::servo_bridge::BridgeResponse {
+                        result: Ok(serde_json::json!({})),
+                    },
+                }
+            });
+        });
 
         let result = registry.dispatch_command("Target.createTarget", serde_json::json!({ "url": "https://example.com" }), &test_event_sender());
         assert!(result.is_some());
         let response = result.unwrap();
         assert!(response.is_ok());
-        assert_eq!(response.unwrap()["targetId"], server.target_id());
+        let val = response.unwrap();
+        assert!(val.get("targetId").is_some());
+        responder.join().unwrap();
     }
 
     #[test]

@@ -11,6 +11,8 @@ use serde_json::{json, Value};
 use std::time::Duration;
 use std::thread;
 
+const TID: &str = "test-target";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -22,13 +24,13 @@ impl EventSender for NoopEventSender {
 
 fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
     match cmd {
-        BridgeCommand::GetTitle => BridgeResponse {
+        BridgeCommand::GetTitle { .. } => BridgeResponse {
             result: Ok(json!("Test Page")),
         },
-        BridgeCommand::GetUrl => BridgeResponse {
+        BridgeCommand::GetUrl { .. } => BridgeResponse {
             result: Ok(json!("https://example.com")),
         },
-        BridgeCommand::GetDocument => BridgeResponse {
+        BridgeCommand::GetDocument { .. } => BridgeResponse {
             result: Ok(json!({
                 "root": {
                     "nodeId": 1, "nodeType": 9, "nodeName": "#document",
@@ -78,7 +80,7 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
 fn setup() -> (DomainRegistry, BridgeSender) {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     let registry = DomainRegistry::new();
-    register_all_domains_into(tx.clone(), &registry);
+    register_all_domains_into(tx.clone(), TID.into(), &registry);
     // Keep an extra clone alive so the channel stays open after test drops tx
     let keeper = tx.clone();
     thread::spawn(move || {
@@ -542,13 +544,20 @@ fn test_log_stop_violations_report() {
 fn test_bridge_send_receive() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     let handle = thread::spawn(move || {
-        rx.drain(|cmd| match cmd {
-            BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!("Hello")) },
-            _ => BridgeResponse { result: Ok(json!({})) },
-        });
+        // Use recv_and_process (blocking) instead of drain (non-blocking try_recv)
+        // to avoid race: drain may return empty before sender enqueues the command.
+        loop {
+            let processed = rx.recv_and_process(Duration::from_secs(5), |cmd| match cmd {
+                BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Hello")) },
+                _ => BridgeResponse { result: Ok(json!({})) },
+            });
+            if !processed {
+                break;
+            }
+        }
     });
 
-    let resp = tx.send(BridgeCommand::GetTitle);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_ok());
     assert_eq!(resp.result.unwrap(), json!("Hello"));
 
@@ -559,7 +568,7 @@ fn test_bridge_send_receive() {
 #[test]
 fn test_bridge_fire_and_forget() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::ClosePage);
+    tx.send_fire_and_forget(BridgeCommand::ClosePage { target_id: TID.into() });
     let count = rx.drain(|_cmd| BridgeResponse { result: Ok(json!({})) });
     assert_eq!(count, 1);
 }
@@ -569,8 +578,8 @@ fn test_bridge_clone_preserves_channel() {
     let (tx, _rx) = bridge_channel(Duration::from_secs(10));
     let tx2 = tx.clone();
     // Both senders share the same underlying channel
-    let resp1 = tx.send(BridgeCommand::GetTitle);
-    let resp2 = tx2.send(BridgeCommand::GetUrl);
+    let resp1 = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    let resp2 = tx2.send(BridgeCommand::GetUrl { target_id: TID.into() });
     // Both should timeout (no receiver processing)
     assert!(resp1.result.is_err());
     assert!(resp2.result.is_err());
@@ -590,9 +599,9 @@ fn test_bridge_multiple_commands() {
         }
     });
 
-    let resp1 = tx.send(BridgeCommand::GetTitle);
+    let resp1 = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp1.result.is_ok());
-    let resp2 = tx.send(BridgeCommand::GetUrl);
+    let resp2 = tx.send(BridgeCommand::GetUrl { target_id: TID.into() });
     assert!(resp2.result.is_ok());
 
     drop(tx);

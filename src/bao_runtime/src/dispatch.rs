@@ -81,28 +81,60 @@ pub unsafe extern "Rust" fn __bun_js_timer_epoch(
 }
 
 // ──────────────────────────────────────────────────────────────
-// FilePoll dispatch stub (POSIX-only)
+// FilePoll dispatch (POSIX-only)
 // ──────────────────────────────────────────────────────────────
 
-/// No-op stub for `bun_io::FilePoll::on_update` dispatch.
+/// FilePoll owner dispatch — routes `on_update` to the correct handler
+/// based on the `PollTag` stored in `FilePoll.owner`.
 ///
-/// In upstream Bun, `bun_runtime::dispatch::__bun_run_file_poll` contains the
-/// full ~13-variant poll-tag match (BufferedReader, Process, FileSink, DNS,
-/// etc.). Bao does not use these Bun-specific poll owners — our I/O goes
-/// through SpiderMonkey + bao_uloop. This stub satisfies the `extern "Rust"`
-/// link-time reference from `bun_io::posix_event_loop::FilePoll::on_update`.
+/// In upstream Bun this is a ~13-variant match. Bao implements the variants
+/// that are actually used: BufferedReader (file I/O), Process (child process
+/// waitpid), and falls through silently for unused tags.
 ///
 /// # Safety
-/// `poll` must point at a live `FilePoll` per the caller contract.
+/// `poll` must point at a live `FilePoll` per the caller contract,
+/// and `owner.ptr` must be a valid pointer of the type indicated by `owner.tag`.
 #[cfg(not(windows))]
 #[unsafe(no_mangle)]
 pub unsafe extern "Rust" fn __bun_run_file_poll(
-    _poll: *mut FilePoll,
-    _size_or_offset: i64,
+    poll: *mut FilePoll,
+    size_or_offset: i64,
 ) {
-    // No-op: Bao does not implement Bun's poll-tag dispatch vtable.
-    // FilePoll::on_update calls this when the owner tag is non-NULL;
-    // with a no-op, the poll is effectively disconnected after the
-    // first event, which is safe for our use case (we don't use
-    // Bun's FilePoll for I/O).
+    use bun_io::posix_event_loop::{PollTag, poll_tag};
+
+    if poll.is_null() {
+        return;
+    }
+    let poll_ref = unsafe { &mut *poll };
+    let owner = poll_ref.owner;
+    let hup = poll_ref.flags.contains(bun_io::posix_event_loop::Flags::Hup);
+
+    match owner.tag() {
+        poll_tag::BUFFERED_READER => {
+            let reader = owner.ptr.cast::<bun_io::BufferedReader>();
+            unsafe {
+                bun_io::BufferedReader::on_poll(&mut *reader, size_or_offset as isize, hup);
+            }
+        }
+        poll_tag::PROCESS => {
+            let proc = owner.ptr.cast::<bun_spawn::process::Process>();
+            unsafe {
+                bun_spawn::process::Process::on_wait_pid_from_event_loop_task(proc);
+            }
+        }
+        // Tags not yet used in Bao — safe no-op (the FilePoll will just
+        // not deliver callbacks for these owner types until implemented).
+        poll_tag::NULL
+        | poll_tag::FILE_SINK
+        | poll_tag::STATIC_PIPE_WRITER
+        | poll_tag::SHELL_STATIC_PIPE_WRITER
+        | poll_tag::SECURITY_SCAN_STATIC_PIPE_WRITER
+        | poll_tag::DNS_RESOLVER
+        | poll_tag::GET_ADDR_INFO_REQUEST
+        | poll_tag::REQUEST
+        | poll_tag::SHELL_BUFFERED_WRITER
+        | poll_tag::TERMINAL_POLL
+        | poll_tag::PARENT_DEATH_WATCHDOG
+        | poll_tag::LIFECYCLE_SCRIPT_SUBPROCESS_OUTPUT_READER => {}
+    }
 }

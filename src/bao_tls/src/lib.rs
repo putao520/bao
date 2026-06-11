@@ -8,6 +8,7 @@ pub mod connection;
 pub mod profile;
 pub mod provider;
 pub mod server;
+pub mod socket;
 
 pub use client::TlsClient;
 pub use connection::{TlsConnection, TlsError, ProcessResult, TlsState};

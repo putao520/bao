@@ -48,7 +48,10 @@ impl BaoRuntime {
 
         let servo: Rc<Servo> = Rc::new(
             ServoBuilder::default()
-                .opts(Opts::default())
+                .opts(Opts {
+                    force_isolate_event_loops: true,
+                    ..Opts::default()
+                })
                 .build(),
         );
 
@@ -119,7 +122,6 @@ impl BaoRuntime {
     pub fn run_with_bridge(
         &self,
         bridge_rx: bao_cdp::servo_bridge::BridgeReceiver,
-        active_page: &PageHandle,
     ) -> Result<(), BrowserError> {
         let max_wait = Duration::from_secs(3600);
         let start = std::time::Instant::now();
@@ -129,7 +131,7 @@ impl BaoRuntime {
             self.page_pool.check_idle_pages();
 
             // Process pending CDP bridge commands
-            bridge_rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, active_page));
+            bridge_rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
 
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -190,7 +192,7 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
             let _ = server.run();
         });
 
-        let result = runtime.run_with_bridge(bridge_rx, &page);
+        let result = runtime.run_with_bridge(bridge_rx);
         handle.thread().unpark();
         return result;
     }

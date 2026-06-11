@@ -444,3 +444,141 @@ fn tls_profile_firefox_handshake() {
 fn tls_profile_safari_handshake() {
     let (_client, _server) = do_handshake_with_profile(TlsProfile::Safari);
 }
+
+// ─── UpgradedDuplex FFI tests ────────────────────────────────────────
+// Tests the C FFI functions in socket.rs that replace bao_native_stubs.
+// These use the same TlsConnection as the rest of the tests, but via
+// the opaque *const c_void pointer interface that bun_uws_sys uses.
+
+use std::ffi::c_void;
+
+unsafe extern "C" {
+    fn UpgradedDuplex__ssl_error(this: *const c_void) -> bao_tls::socket::VerifyError;
+    fn UpgradedDuplex__is_established(this: *const c_void) -> bool;
+    fn UpgradedDuplex__is_closed(this: *const c_void) -> bool;
+    fn UpgradedDuplex__is_shutdown(this: *const c_void) -> bool;
+    fn UpgradedDuplex__ssl(this: *const c_void) -> *mut c_void;
+    fn UpgradedDuplex__encode_and_write(this: *mut c_void, ptr: *const u8, len: usize) -> i32;
+    fn UpgradedDuplex__raw_write(this: *mut c_void, ptr: *const u8, len: usize) -> i32;
+    fn UpgradedDuplex__shutdown(this: *mut c_void);
+    fn UpgradedDuplex__close(this: *mut c_void);
+}
+
+/// Box a TlsConnection and return the raw pointer for FFI testing.
+/// Caller must NOT call UpgradedDuplex__close (which drops the Box)
+/// and then use the pointer again.
+fn box_conn(conn: TlsConnection) -> *mut c_void {
+    Box::into_raw(Box::new(conn)) as *mut c_void
+}
+
+#[test]
+fn upgraded_duplex_null_ptr_is_closed() {
+    unsafe {
+        assert!(!UpgradedDuplex__is_established(core::ptr::null()));
+        assert!(UpgradedDuplex__is_closed(core::ptr::null()));
+        assert!(UpgradedDuplex__is_shutdown(core::ptr::null()));
+        assert!(UpgradedDuplex__ssl(core::ptr::null()).is_null());
+        assert_eq!(UpgradedDuplex__encode_and_write(core::ptr::null_mut(), b"test".as_ptr(), 4), -1);
+    }
+}
+
+#[test]
+fn upgraded_duplex_handshaking_conn() {
+    let client = TlsClient::new();
+    let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+    let conn = client.connect(name).unwrap();
+    let ptr = box_conn(conn);
+
+    unsafe {
+        // Handshaking connection → not established, not closed.
+        assert!(!UpgradedDuplex__is_established(ptr as *const c_void));
+        assert!(!UpgradedDuplex__is_closed(ptr as *const c_void));
+        assert!(!UpgradedDuplex__is_shutdown(ptr as *const c_void));
+
+        // ssl() returns null (rustls, not BoringSSL).
+        assert!(UpgradedDuplex__ssl(ptr as *const c_void).is_null());
+
+        // ssl_error returns handshake-in-progress.
+        let err = UpgradedDuplex__ssl_error(ptr as *const c_void);
+        assert_eq!(err.error, 1);
+
+        // encode_and_write on handshaking conn → 0 (NotReady).
+        let msg = b"premature";
+        assert_eq!(UpgradedDuplex__encode_and_write(ptr, msg.as_ptr(), msg.len()), 0);
+    }
+
+    // Clean up without using UpgradedDuplex__close to avoid double-free.
+    unsafe { let _ = Box::from_raw(ptr as *mut TlsConnection); }
+}
+
+#[test]
+fn upgraded_duplex_established_conn() {
+    let (client, _server) = do_handshake();
+    let ptr = box_conn(client);
+
+    unsafe {
+        // Established connection.
+        assert!(UpgradedDuplex__is_established(ptr as *const c_void));
+        assert!(!UpgradedDuplex__is_closed(ptr as *const c_void));
+
+        // ssl_error returns no error.
+        let err = UpgradedDuplex__ssl_error(ptr as *const c_void);
+        assert_eq!(err.error, 0);
+    }
+
+    unsafe { let _ = Box::from_raw(ptr as *mut TlsConnection); }
+}
+
+#[test]
+fn upgraded_duplex_encode_and_write() {
+    let (client, mut server) = do_handshake();
+
+    let ptr = box_conn(client);
+
+    unsafe {
+        let msg = b"hello FFI";
+        let written = UpgradedDuplex__encode_and_write(ptr, msg.as_ptr(), msg.len());
+        assert_eq!(written, msg.len() as i32);
+    }
+
+    // Reconstruct and verify data flows to server.
+    let client = unsafe { Box::from_raw(ptr as *mut TlsConnection) };
+    let mut client = *client;
+    let cr = client.process().unwrap();
+    assert!(cr.outgoing_bytes > 0);
+    server.feed(&client.take_outgoing());
+    let sr = server.process().unwrap();
+    assert_eq!(sr.plaintext[0], b"hello FFI");
+}
+
+#[test]
+fn upgraded_duplex_raw_write_same_as_encode() {
+    let (client, _server) = do_handshake();
+    let ptr = box_conn(client);
+
+    unsafe {
+        let msg = b"raw write test";
+        let a = UpgradedDuplex__encode_and_write(ptr, msg.as_ptr(), msg.len());
+        // raw_write delegates to encode_and_write.
+        let b = UpgradedDuplex__raw_write(ptr, msg.as_ptr(), msg.len());
+        assert_eq!(a, b);
+    }
+
+    unsafe { let _ = Box::from_raw(ptr as *mut TlsConnection); }
+}
+
+#[test]
+fn upgraded_duplex_shutdown_and_close() {
+    let (client, _server) = do_handshake();
+    let ptr = box_conn(client);
+
+    unsafe {
+        UpgradedDuplex__shutdown(ptr);
+        // After shutdown, the connection has queued close_notify.
+        // is_closed/is_shutdown reflect peer_closed state (peer hasn't closed yet).
+        assert!(!UpgradedDuplex__is_closed(ptr as *const c_void));
+    }
+
+    // close() drops the Box — pointer is now invalid.
+    unsafe { UpgradedDuplex__close(ptr); }
+}

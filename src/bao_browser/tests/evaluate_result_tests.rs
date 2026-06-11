@@ -272,7 +272,7 @@ fn evaluate_in_node_realm_does_not_discard_result() {
         "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must capture evaluate_script return value"
     );
     assert!(
-        func_body.contains("result_out.lock()"),
+        func_body.contains("result_out") && (func_body.contains("lock_or_recover") || func_body.contains("result_out.lock()")),
         "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must write result to result_out"
     );
 }

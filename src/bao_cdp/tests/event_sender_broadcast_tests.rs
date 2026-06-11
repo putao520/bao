@@ -12,6 +12,8 @@ use serde_json::json;
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
+const TID: &str = "test-target";
+
 // --- SessionEventSender basic tests ---
 
 #[test]
@@ -52,13 +54,13 @@ fn session_event_sender_multiple_events_queued() {
 fn setup_registry_with_all_domains() -> DomainRegistry {
     let registry = DomainRegistry::new();
     let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-    registry.register(Box::new(PageHandler::new(bridge.clone()))).unwrap();
-    registry.register(Box::new(RuntimeHandler::new(bridge.clone()))).unwrap();
-    registry.register(Box::new(DomHandler::new(bridge.clone()))).unwrap();
-    registry.register(Box::new(NetworkHandler::new(bridge.clone()))).unwrap();
-    registry.register(Box::new(DebuggerHandler::new(bridge.clone()))).unwrap();
-    registry.register(Box::new(InputHandler::new(bridge.clone()))).unwrap();
-    registry.register(Box::new(EmulationHandler::new(bridge.clone()))).unwrap();
+    registry.register(Box::new(PageHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(Box::new(RuntimeHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(Box::new(DomHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(Box::new(NetworkHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(Box::new(DebuggerHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(Box::new(InputHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(Box::new(EmulationHandler::new(bridge.clone(), TID.into()))).unwrap();
     registry.register(Box::new(TargetHandler::new(bridge, "test-target-id".to_string()))).unwrap();
     registry
 }

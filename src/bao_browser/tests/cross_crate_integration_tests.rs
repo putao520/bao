@@ -106,7 +106,7 @@ fn test_cdp_server_with_bridge_and_domains() {
         .port(0)
         .build();
     let mut server = bao_cdp::CdpServer::new(config);
-    register_all_domains_into(bridge_tx.clone(), server.registry());
+    register_all_domains_into(bridge_tx.clone(), "test-target-id".into(), server.registry());
 
     let provider = std::sync::Arc::new(
         ServoTargetProvider::new(bridge_tx, "test-target-id".into(), "127.0.0.1".into(), 0)

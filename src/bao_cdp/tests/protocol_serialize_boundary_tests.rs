@@ -5,7 +5,10 @@
 // parse_message invalid inputs, roundtrip consistency.
 
 use bao_cdp::{CDPMessage, CDPResponse, CDPError, CDPEvent, parse_message, serialize_response, serialize_event};
+
+const TID: &str = "test-target";
 use serde_json::json;
+
 
 // ---- parse_message valid inputs ----
 

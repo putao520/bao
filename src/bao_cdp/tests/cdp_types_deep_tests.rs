@@ -4,7 +4,10 @@
 // large inputs, unicode, determinism.
 
 use bao_cdp::{CDPMessage, CDPResponse, CDPError, CDPEvent, parse_message, serialize_response, serialize_event};
+
+const TID: &str = "test-target";
 use serde_json::json;
+
 
 // ---- CDPMessage field validation ----
 

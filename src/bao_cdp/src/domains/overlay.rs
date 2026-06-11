@@ -7,13 +7,15 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 /// Overlay domain handler — screenshot-based node highlighting.
 pub struct OverlayHandler {
     bridge: BridgeSender,
+    target_id: String,
     enabled: std::sync::atomic::AtomicBool,
 }
 
 impl OverlayHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
         OverlayHandler {
             bridge,
+            target_id,
             enabled: std::sync::atomic::AtomicBool::new(false),
         }
     }
@@ -58,6 +60,7 @@ impl DomainHandler for OverlayHandler {
                     }})()"
                 );
                 let response = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
@@ -77,6 +80,7 @@ impl DomainHandler for OverlayHandler {
                     return '{}'; \
                 })()";
                 let _ = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js.to_string(),
                     return_by_value: true,
                 });
@@ -95,6 +99,7 @@ impl DomainHandler for OverlayHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const TID: &str = "test-target";
     use crate::servo_bridge::bridge_channel;
     use std::time::Duration;
 
@@ -107,14 +112,14 @@ mod tests {
     #[test]
     fn overlay_domain_name() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = OverlayHandler::new(bridge);
+        let h = OverlayHandler::new(bridge, TID.into());
         assert_eq!(h.domain_name(), "Overlay");
     }
 
     #[test]
     fn overlay_enable_disable() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = OverlayHandler::new(bridge);
+        let h = OverlayHandler::new(bridge, TID.into());
         assert_eq!(h.handle_command("Overlay.enable", json!({}), &NOOP).unwrap(), json!({}));
         assert_eq!(h.handle_command("Overlay.disable", json!({}), &NOOP).unwrap(), json!({}));
         assert!(!h.enabled.load(std::sync::atomic::Ordering::SeqCst));
@@ -123,7 +128,7 @@ mod tests {
     #[test]
     fn overlay_highlight_node_returns_structure() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = OverlayHandler::new(bridge);
+        let h = OverlayHandler::new(bridge, TID.into());
         let res = h.handle_command("Overlay.highlightNode", json!({"nodeId": 1}), &NOOP).unwrap();
         assert!(res.get("highlighted").is_some(), "should have highlighted field");
     }
@@ -131,7 +136,7 @@ mod tests {
     #[test]
     fn overlay_hide_highlight_returns_empty() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = OverlayHandler::new(bridge);
+        let h = OverlayHandler::new(bridge, TID.into());
         let res = h.handle_command("Overlay.hideHighlight", json!({}), &NOOP).unwrap();
         assert_eq!(res, json!({}));
     }
@@ -139,7 +144,7 @@ mod tests {
     #[test]
     fn overlay_set_inspect_mode_returns_mode() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = OverlayHandler::new(bridge);
+        let h = OverlayHandler::new(bridge, TID.into());
         let res = h.handle_command("Overlay.setInspectMode", json!({"mode": "searchForNode"}), &NOOP).unwrap();
         assert_eq!(res["mode"], "searchForNode");
     }
@@ -147,7 +152,7 @@ mod tests {
     #[test]
     fn overlay_unknown_returns_error() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = OverlayHandler::new(bridge);
+        let h = OverlayHandler::new(bridge, TID.into());
         let err = h.handle_command("Overlay.nonexistent", json!({}), &NOOP).unwrap_err();
         assert_eq!(err.code, -32601);
     }

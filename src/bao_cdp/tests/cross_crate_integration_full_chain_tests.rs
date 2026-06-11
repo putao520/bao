@@ -11,6 +11,8 @@ use cdp_server::{CdpServer, ServerConfig, DomainRegistry, EventBroadcaster, Targ
 use serde_json::json;
 use std::time::Duration;
 
+const TID: &str = "test-target";
+
 // ============================================================================
 // CdpRouter full lifecycle: create → enable domains → send commands → detach
 // ============================================================================
@@ -196,7 +198,7 @@ fn test_cdp_server_with_domain_registration() {
 
     // Register all bao_cdp domain handlers
     let (bridge_tx, _bridge_rx) = bridge_channel(Duration::from_millis(500));
-    bao_cdp::domains::register_all_domains_into(bridge_tx, reg);
+    bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), reg);
 
     assert!(reg.has_domain("Page"));
     assert!(reg.has_domain("Runtime"));
@@ -316,7 +318,7 @@ fn test_bridge_responds_to_navigate_command() {
                 let guard = rx2.lock().unwrap();
                 guard.try_process(|cmd| {
                     match cmd {
-                        bao_cdp::BridgeCommand::Navigate { url } => {
+                        bao_cdp::BridgeCommand::Navigate { url, .. } => {
                             BridgeResponse { result: Ok(json!({"navigated": url})) }
                         }
                         _ => BridgeResponse { result: Ok(json!({})) },
@@ -332,7 +334,7 @@ fn test_bridge_responds_to_navigate_command() {
     });
 
     std::thread::sleep(std::time::Duration::from_millis(10));
-    let resp = tx.send(bao_cdp::BridgeCommand::Navigate { url: "http://test.com".into() });
+    let resp = tx.send(bao_cdp::BridgeCommand::Navigate { target_id: TID.into(), url: "http://test.com".into() });
     assert!(resp.result.is_ok());
 
     for _ in 0..200 {
@@ -382,7 +384,7 @@ fn test_server_config_full_build() {
 fn test_registry_dispatch_all_known_commands() {
     let registry = DomainRegistry::new();
     let (bridge_tx, _bridge_rx) = bridge_channel(Duration::from_millis(500));
-    bao_cdp::domains::register_all_domains_into(bridge_tx, &registry);
+    bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), &registry);
 
     let broadcaster = EventBroadcaster::new(std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())));
     let sender = broadcaster.sender();
@@ -413,7 +415,7 @@ fn test_registry_dispatch_all_known_commands() {
 fn test_registry_dispatch_unknown_domain() {
     let registry = DomainRegistry::new();
     let (bridge_tx, _bridge_rx) = bridge_channel(Duration::from_millis(500));
-    bao_cdp::domains::register_all_domains_into(bridge_tx, &registry);
+    bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), &registry);
 
     let broadcaster = EventBroadcaster::new(std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())));
     let sender = broadcaster.sender();
@@ -434,7 +436,7 @@ fn test_router_and_registry_consistent_domains() {
 
     let registry = DomainRegistry::new();
     let (bridge_tx, _bridge_rx) = bridge_channel(Duration::from_millis(500));
-    bao_cdp::domains::register_all_domains_into(bridge_tx, &registry);
+    bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), &registry);
 
     let broadcaster = EventBroadcaster::new(std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())));
     let sender = broadcaster.sender();

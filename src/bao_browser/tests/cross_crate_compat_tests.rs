@@ -172,15 +172,15 @@ fn test_backend_kind_cross_crate_copy() {
 #[test]
 fn test_bridge_command_variants() {
     let commands = vec![
-        BridgeCommand::Navigate { url: "https://example.com".into() },
-        BridgeCommand::EvaluateJs { expression: "1+1".into(), return_by_value: true },
-        BridgeCommand::TakeScreenshot { format: "png".into(), quality: None },
-        BridgeCommand::GetTitle,
-        BridgeCommand::GetUrl,
-        BridgeCommand::SetViewport { width: 1920, height: 1080, device_scale_factor: Some(2.0) },
-        BridgeCommand::Reload { ignore_cache: false },
-        BridgeCommand::StopLoading,
-        BridgeCommand::ClosePage,
+        BridgeCommand::Navigate { target_id: "t".into(), url: "https://example.com".into() },
+        BridgeCommand::EvaluateJs { target_id: "t".into(), expression: "1+1".into(), return_by_value: true },
+        BridgeCommand::TakeScreenshot { target_id: "t".into(), format: "png".into(), quality: None },
+        BridgeCommand::GetTitle { target_id: "t".into() },
+        BridgeCommand::GetUrl { target_id: "t".into() },
+        BridgeCommand::SetViewport { target_id: "t".into(), width: 1920, height: 1080, device_scale_factor: Some(2.0) },
+        BridgeCommand::Reload { target_id: "t".into(), ignore_cache: false },
+        BridgeCommand::StopLoading { target_id: "t".into() },
+        BridgeCommand::ClosePage { target_id: "t".into() },
     ];
     // Verify all variants construct without panic
     for cmd in &commands {
@@ -192,10 +192,10 @@ fn test_bridge_command_variants() {
 #[test]
 fn test_bridge_response_cross_crate() {
     let (sender, receiver) = bridge_channel(std::time::Duration::from_secs(1));
-    sender.send_fire_and_forget(BridgeCommand::GetTitle);
+    sender.send_fire_and_forget(BridgeCommand::GetTitle { target_id: "t".into() });
     let processed = receiver.try_process(|cmd| {
         match cmd {
-            BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!("Test Title")) },
+            BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Test Title")) },
             _ => BridgeResponse { result: Err("unexpected".into()) },
         }
     });

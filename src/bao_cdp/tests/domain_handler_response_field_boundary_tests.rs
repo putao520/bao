@@ -4,7 +4,10 @@
 // unknown command error code -32601, empty/null/missing param handling.
 
 use bao_cdp::CdpRouter;
+
+const TID: &str = "test-target";
 use serde_json::json;
+
 
 // ============================================================================
 // Page handler: response field structure verification

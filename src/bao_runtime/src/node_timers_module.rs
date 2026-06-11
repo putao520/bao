@@ -1,5 +1,4 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -51,7 +50,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn timers_set_timeout(
-    _cx: *mut JSContext,
+    cx: *mut JSContext,
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
@@ -66,7 +65,7 @@ unsafe extern "C" fn timers_set_timeout(
         if v.is_int32() { v.to_int32().max(0) as u64 } else if v.is_double() { v.to_double().max(0.0) as u64 } else { 0 }
     } else { 0 };
 
-    let id = crate::timers::schedule_raw(callback, delay, false, &[]);
+    let id = crate::timers::schedule_raw(cx, callback, delay, false, &[]);
     args.rval().set(Int32Value(id as i32));
     true
 }
@@ -90,7 +89,7 @@ unsafe extern "C" fn timers_clear_timeout(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn timers_set_interval(
-    _cx: *mut JSContext,
+    cx: *mut JSContext,
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
@@ -105,7 +104,7 @@ unsafe extern "C" fn timers_set_interval(
         if v.is_int32() { v.to_int32().max(1) as u64 } else if v.is_double() { v.to_double().max(1.0) as u64 } else { 1 }
     } else { 1 };
 
-    let id = crate::timers::schedule_raw(callback, delay, true, &[]);
+    let id = crate::timers::schedule_raw(cx, callback, delay, true, &[]);
     args.rval().set(Int32Value(id as i32));
     true
 }
@@ -121,7 +120,7 @@ unsafe extern "C" fn timers_clear_interval(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn timers_set_immediate(
-    _cx: *mut JSContext,
+    cx: *mut JSContext,
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
@@ -131,7 +130,7 @@ unsafe extern "C" fn timers_set_immediate(
         return true;
     }
     let callback = (*args.get(0).ptr).to_object();
-    let id = crate::timers::schedule_raw(callback, 0, false, &[]);
+    let id = crate::timers::schedule_raw(cx, callback, 0, false, &[]);
     args.rval().set(Int32Value(id as i32));
     true
 }

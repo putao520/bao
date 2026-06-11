@@ -10,6 +10,7 @@ license = "MIT"
 # mirror we allocate; `libc` provides raw epoll/eventfd syscalls.
 [dependencies]
 bun_uws_sys = { path = "../uws_sys" }
+bun_sys = { path = "../sys" }
 libc = "0.2"
 
 [dev-dependencies]

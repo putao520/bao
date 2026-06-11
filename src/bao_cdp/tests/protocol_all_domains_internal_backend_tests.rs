@@ -5,8 +5,12 @@
 // InternalBackend send_command, CDPResponse/CDPError construction.
 
 use bao_cdp::{CDPMessage, CDPResponse, CDPError, CDPEvent};
+
+const TID: &str = "test-target";
 use bao_cdp::{parse_message, handle_command, serialize_response, serialize_event};
+
 use serde_json::json;
+
 
 // ---- CDPMessage parse edge cases ----
 

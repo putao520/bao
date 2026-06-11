@@ -62,14 +62,16 @@ const FETCH_INTERCEPTOR_JS: &str = r#"
 /// and failRequest injects a network error.
 pub struct FetchHandler {
     bridge: BridgeSender,
+    target_id: String,
     patterns: std::sync::Mutex<Vec<Value>>,
     enabled: std::sync::Mutex<bool>,
 }
 
 impl FetchHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
         FetchHandler {
             bridge,
+            target_id,
             patterns: std::sync::Mutex::new(Vec::new()),
             enabled: std::sync::Mutex::new(false),
         }
@@ -93,6 +95,7 @@ impl DomainHandler for FetchHandler {
 
                 // Inject JS interceptor into the page via bridge
                 let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: FETCH_INTERCEPTOR_JS.to_string(),
                     return_by_value: false,
                 });
@@ -149,6 +152,7 @@ impl DomainHandler for FetchHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const TID: &str = "test-target";
     use crate::servo_bridge::bridge_channel;
     use std::time::Duration;
 
@@ -161,14 +165,14 @@ mod tests {
     #[test]
     fn fetch_domain_name() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         assert_eq!(h.domain_name(), "Fetch");
     }
 
     #[test]
     fn fetch_enable_returns_count() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         let res = h.handle_command("Fetch.enable", json!({"patterns": [{"urlPattern": "*"}]}), &NOOP).unwrap();
         assert_eq!(res["enabled"], true);
         assert_eq!(res["patternCount"], 1);
@@ -177,7 +181,7 @@ mod tests {
     #[test]
     fn fetch_enable_sets_enabled_flag() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         assert!(!*h.enabled.lock().unwrap());
         h.handle_command("Fetch.enable", json!({}), &NOOP).unwrap();
         assert!(*h.enabled.lock().unwrap());
@@ -186,7 +190,7 @@ mod tests {
     #[test]
     fn fetch_enable_no_patterns_zero_count() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         let res = h.handle_command("Fetch.enable", json!({}), &NOOP).unwrap();
         assert_eq!(res["enabled"], true);
         assert_eq!(res["patternCount"], 0);
@@ -195,7 +199,7 @@ mod tests {
     #[test]
     fn fetch_disable_clears_patterns_and_flag() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         h.handle_command("Fetch.enable", json!({"patterns": [{"urlPattern": "*"}]}), &NOOP).unwrap();
         h.handle_command("Fetch.disable", json!({}), &NOOP).unwrap();
         assert!(h.patterns.lock().unwrap().is_empty());
@@ -213,7 +217,7 @@ mod tests {
         }
         let collector = CollectSender(std::sync::Mutex::new(Vec::new()));
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         h.handle_command("Fetch.enable", json!({"patterns": [{"urlPattern": "*"}]}), &collector).unwrap();
         let events = collector.0.lock().unwrap();
         assert!(events.is_empty(), "Fetch.enable must NOT emit fabricated requestPaused events");
@@ -222,7 +226,7 @@ mod tests {
     #[test]
     fn fetch_continue_request_returns_request_id() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         let res = h.handle_command("Fetch.continueRequest", json!({"requestId": "r1"}), &NOOP).unwrap();
         assert_eq!(res["requestId"], "r1");
         assert_eq!(res["continued"], true);
@@ -231,7 +235,7 @@ mod tests {
     #[test]
     fn fetch_fail_request_returns_reason() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         let res = h.handle_command("Fetch.failRequest", json!({"requestId": "r1", "reason": "Aborted"}), &NOOP).unwrap();
         assert_eq!(res["requestId"], "r1");
         assert_eq!(res["failed"], true);
@@ -241,7 +245,7 @@ mod tests {
     #[test]
     fn fetch_fulfill_request_returns_status_and_body_length() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         let res = h.handle_command(
             "Fetch.fulfillRequest",
             json!({"requestId": "r1", "responseCode": 404, "body": "not found"}),
@@ -256,7 +260,7 @@ mod tests {
     #[test]
     fn fetch_unknown_returns_error() {
         let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         let err = h.handle_command("Fetch.nonexistent", json!({}), &NOOP).unwrap_err();
         assert_eq!(err.code, -32601);
     }
@@ -285,7 +289,7 @@ mod tests {
     #[test]
     fn fetch_enable_sends_bridge_evaluate_js() {
         let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let h = FetchHandler::new(bridge);
+        let h = FetchHandler::new(bridge, TID.into());
         h.handle_command("Fetch.enable", json!({}), &NOOP).unwrap();
 
         // The handler should have sent an EvaluateJs command via the bridge

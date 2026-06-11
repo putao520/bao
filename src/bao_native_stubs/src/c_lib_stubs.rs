@@ -6,7 +6,7 @@
 //! - `libusockets_tls.a` (bun_uws_sys): TLS via BoringSSL
 //! - `libbrotli.a` (bun_brotli_sys): Brotli compression
 //! - `libzstd.a` (bun_zstd): Zstandard compression
-//! - `liblshpack.a` (bun_lshpack_sys): HPACK header compression
+//! - `liblshpack.a` (bun_lsquic_sys): HPACK header compression
 //! - `libmimalloc.a` (bun_mimalloc_sys): memory allocator
 //! - `libhighway.a` + `libhighway_strings.a` (bun_highway): SIMD string ops
 //!
@@ -20,7 +20,7 @@ use core::ffi::{c_char, c_int, c_void};
 
 // ──────────────────────────────────────────────────────────────
 // lshpack — HPACK header compression for HTTP/2
-// Provided by compiled C library: bun_lshpack_sys (vendor/lshpack)
+// Provided by compiled C library: bun_lsquic_sys (vendor/lshpack, merged)
 // ──────────────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────
@@ -125,8 +125,8 @@ pub unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
 /// Called from bao_native_stubs::force_link().
 #[inline(never)]
 pub fn force_c_lib_stubs() {
-    // Force bun_lshpack_sys native link dependency propagation.
-    let _ = bun_lshpack_sys::force_link as *const () as usize;
+    // Force lshpack native link dependency propagation (now merged into bun_lsquic_sys).
+    let _ = bun_lsquic_sys::force_link_lshpack as *const () as usize;
     // Force bun_boringssl_sys native link dependency propagation.
     let _ = bun_boringssl_sys::force_link as *const () as usize;
     // Force bun_lsquic_sys native link dependency propagation.

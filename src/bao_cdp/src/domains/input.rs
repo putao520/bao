@@ -6,11 +6,12 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 pub struct InputHandler {
     bridge: BridgeSender,
+    target_id: String,
 }
 
 impl InputHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
-        InputHandler { bridge }
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
+        InputHandler { bridge, target_id }
     }
 }
 
@@ -34,7 +35,7 @@ impl DomainHandler for InputHandler {
                 let y = params.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
                 let button = params.get("button").and_then(|v| v.as_i64());
                 let click_count = params.get("clickCount").and_then(|v| v.as_i64());
-                let resp = self.bridge.send(BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count });
+                let resp = self.bridge.send(BridgeCommand::DispatchMouseEvent { target_id: self.target_id.clone(), event_type, x, y, button, click_count });
                 resp.result.map_err(|e| CdpError { code: -32603, message: e })
             }
             "Input.dispatchKeyEvent" => {
@@ -42,14 +43,14 @@ impl DomainHandler for InputHandler {
                 let key = ps(&params, "key");
                 let code = ps(&params, "code");
                 let text = params.get("text").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let resp = self.bridge.send(BridgeCommand::DispatchKeyEvent { event_type, key, code, text });
+                let resp = self.bridge.send(BridgeCommand::DispatchKeyEvent { target_id: self.target_id.clone(), event_type, key, code, text });
                 resp.result.map_err(|e| CdpError { code: -32603, message: e })
             }
             "Input.dispatchTouchEvent" => Ok(json!({})),
             "Input.insertText" => {
                 let text = ps(&params, "text");
                 if !text.is_empty() {
-                    let resp = self.bridge.send(BridgeCommand::InsertText { text });
+                    let resp = self.bridge.send(BridgeCommand::InsertText { target_id: self.target_id.clone(), text });
                     resp.result.map_err(|e| CdpError { code: -32603, message: e })
                 } else {
                     Ok(json!({}))
@@ -64,6 +65,7 @@ impl DomainHandler for InputHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const TID: &str = "test-target";
     use crate::servo_bridge::{bridge_channel, BridgeResponse};
     use cdp_server::EventSender;
     use std::time::Duration;
@@ -78,7 +80,7 @@ mod tests {
 
     fn setup() -> (InputHandler, crate::servo_bridge::BridgeReceiver) {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        (InputHandler::new(sender), receiver)
+        (InputHandler::new(sender, TID.into()), receiver)
     }
 
     fn mock_responder(receiver: crate::servo_bridge::BridgeReceiver) -> thread::JoinHandle<()> {

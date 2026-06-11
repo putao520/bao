@@ -21,11 +21,11 @@ fn mock_responder(
                 break;
             }
             let _ = receiver.try_process(|cmd| match cmd {
-                BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!(title)) },
-                BridgeCommand::GetUrl => BridgeResponse { result: Ok(json!(url)) },
+                BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!(title)) },
+                BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!(url)) },
                 BridgeCommand::Navigate { .. } => BridgeResponse { result: Ok(json!({ "frameId": "0" })) },
                 BridgeCommand::EvaluateJs { .. } => BridgeResponse { result: Ok(json!({ "result": { "type": "number", "value": 42 } })) },
-                BridgeCommand::ClosePage => BridgeResponse { result: Ok(json!({})) },
+                BridgeCommand::ClosePage { .. } => BridgeResponse { result: Ok(json!({})) },
                 _ => BridgeResponse { result: Ok(json!({})) },
             });
             std::thread::sleep(std::time::Duration::from_millis(1));

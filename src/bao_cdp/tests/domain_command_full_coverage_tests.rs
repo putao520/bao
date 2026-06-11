@@ -8,6 +8,8 @@ use cdp_server::{DomainRegistry, EventSender, CdpError};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+const TID: &str = "test-target";
+
 struct NopSender;
 impl EventSender for NopSender {
     fn send_event(&self, _method: &str, _params: Value) {}
@@ -16,7 +18,7 @@ impl EventSender for NopSender {
 fn setup_registry() -> (DomainRegistry, BridgeReceiver) {
     let registry = DomainRegistry::new();
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    register_all_domains_into(tx, &registry);
+    register_all_domains_into(tx, TID.into(), &registry);
     (registry, rx)
 }
 

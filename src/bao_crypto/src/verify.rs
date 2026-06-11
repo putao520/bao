@@ -1,191 +1,188 @@
-//! Digital signature verification (RSA/ECDSA/Ed25519).
-//!
-//! Replaces the HMAC comparison in `bun_runtime/node_crypto.rs` createVerify().
-
-use rsa::RsaPublicKey;
+use crate::CryptoError;
+use ecdsa::signature::Verifier as VerifierTrait;
 use ecdsa::VerifyingKey;
-use ed25519_dalek::VerifyingKey as Ed25519VerifyingKey;
-use pkcs8::DecodePublicKey;
-use p256::NistP256;
-use p384::NistP384;
+use pkcs8::DecodePrivateKey;
+use rsa::pkcs1v15;
+use rsa::pss;
+use rsa::RsaPrivateKey;
+use sha2::{Sha256, Sha384, Sha512};
 
-use crate::sign::{CryptoError, RsaHash, SignAlgorithm, SignatureFormat};
+use crate::sign::{RsaHash, SignAlgorithm, SignatureFormat};
 
-/// Verification key holder.
-pub enum Verifier {
-    RsaPkcs1v15 {
-        key: RsaPublicKey,
-        hash: RsaHash,
-    },
-    RsaPss {
-        key: RsaPublicKey,
-        hash: RsaHash,
-    },
-    EcdsaP256(VerifyingKey<NistP256>),
-    EcdsaP384(VerifyingKey<NistP384>),
-    Ed25519(Ed25519VerifyingKey),
+enum VerifierInner {
+    RsaPkcs1v15Sha256(pkcs1v15::VerifyingKey<Sha256>),
+    RsaPkcs1v15Sha384(pkcs1v15::VerifyingKey<Sha384>),
+    RsaPkcs1v15Sha512(pkcs1v15::VerifyingKey<Sha512>),
+    RsaPssSha256(pss::VerifyingKey<Sha256>),
+    RsaPssSha384(pss::VerifyingKey<Sha384>),
+    RsaPssSha512(pss::VerifyingKey<Sha512>),
+    EcdsaP256(VerifyingKey<p256::NistP256>),
+    EcdsaP384(VerifyingKey<p384::NistP384>),
+    Ed25519(ed25519_dalek::VerifyingKey),
+}
+
+pub struct Verifier {
+    inner: VerifierInner,
+}
+
+fn parse_rsa_private_key_pem(pem: &str) -> Result<RsaPrivateKey, CryptoError> {
+    RsaPrivateKey::from_pkcs8_pem(pem)
+        .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse RSA PEM key: {}", e)))
+}
+
+fn parse_rsa_private_key_der(der: &[u8]) -> Result<RsaPrivateKey, CryptoError> {
+    RsaPrivateKey::from_pkcs8_der(der)
+        .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse RSA DER key: {}", e)))
 }
 
 impl Verifier {
-    /// Create a verifier from a PKCS#8 DER public key.
-    pub fn from_pkcs8_der(algorithm: &SignAlgorithm, der: &[u8]) -> Result<Self, CryptoError> {
-        match algorithm {
-            SignAlgorithm::RsaPkcs1v15 { hash } => {
-                let key = RsaPublicKey::from_public_key_der(der)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::RsaPkcs1v15 { key, hash: *hash })
-            }
-            SignAlgorithm::RsaPss { hash } => {
-                let key = RsaPublicKey::from_public_key_der(der)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::RsaPss { key, hash: *hash })
+    pub fn from_pkcs8_pem(algo: &SignAlgorithm, pem: &str) -> Result<Verifier, CryptoError> {
+        match algo {
+            SignAlgorithm::RsaPkcs1v15 { .. } | SignAlgorithm::RsaPss { .. } => {
+                let rsa_key = parse_rsa_private_key_pem(pem)?;
+                Verifier::from_rsa_public_key(algo, &rsa_key.to_public_key())
             }
             SignAlgorithm::EcdsaP256 => {
-                let key = VerifyingKey::<NistP256>::from_public_key_der(der)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::EcdsaP256(key))
+                let sk = ecdsa::SigningKey::<p256::NistP256>::from_pkcs8_pem(pem)
+                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse ECDSA P-256 PEM key: {}", e)))?;
+                Ok(Verifier { inner: VerifierInner::EcdsaP256(sk.verifying_key().clone()) })
             }
             SignAlgorithm::EcdsaP384 => {
-                let key = VerifyingKey::<NistP384>::from_public_key_der(der)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::EcdsaP384(key))
+                let sk = ecdsa::SigningKey::<p384::NistP384>::from_pkcs8_pem(pem)
+                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse ECDSA P-384 PEM key: {}", e)))?;
+                Ok(Verifier { inner: VerifierInner::EcdsaP384(sk.verifying_key().clone()) })
             }
             SignAlgorithm::Ed25519 => {
-                let key = Ed25519VerifyingKey::from_public_key_der(der)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::Ed25519(key))
+                let sk = ed25519_dalek::SigningKey::from_pkcs8_pem(pem)
+                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse Ed25519 PEM key: {}", e)))?;
+                Ok(Verifier { inner: VerifierInner::Ed25519(sk.verifying_key()) })
             }
         }
     }
 
-    /// Create a verifier from a PKCS#8 PEM public key.
-    pub fn from_pkcs8_pem(algorithm: &SignAlgorithm, pem: &str) -> Result<Self, CryptoError> {
-        match algorithm {
-            SignAlgorithm::RsaPkcs1v15 { hash } => {
-                let key = RsaPublicKey::from_public_key_pem(pem)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::RsaPkcs1v15 { key, hash: *hash })
-            }
-            SignAlgorithm::RsaPss { hash } => {
-                let key = RsaPublicKey::from_public_key_pem(pem)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::RsaPss { key, hash: *hash })
+    pub fn from_pkcs8_der(algo: &SignAlgorithm, der: &[u8]) -> Result<Verifier, CryptoError> {
+        match algo {
+            SignAlgorithm::RsaPkcs1v15 { .. } | SignAlgorithm::RsaPss { .. } => {
+                let rsa_key = parse_rsa_private_key_der(der)?;
+                Verifier::from_rsa_public_key(algo, &rsa_key.to_public_key())
             }
             SignAlgorithm::EcdsaP256 => {
-                let key = VerifyingKey::<NistP256>::from_public_key_pem(pem)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::EcdsaP256(key))
+                let sk = ecdsa::SigningKey::<p256::NistP256>::from_pkcs8_der(der)
+                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse ECDSA P-256 DER key: {}", e)))?;
+                Ok(Verifier { inner: VerifierInner::EcdsaP256(sk.verifying_key().clone()) })
             }
             SignAlgorithm::EcdsaP384 => {
-                let key = VerifyingKey::<NistP384>::from_public_key_pem(pem)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::EcdsaP384(key))
+                let sk = ecdsa::SigningKey::<p384::NistP384>::from_pkcs8_der(der)
+                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse ECDSA P-384 DER key: {}", e)))?;
+                Ok(Verifier { inner: VerifierInner::EcdsaP384(sk.verifying_key().clone()) })
             }
             SignAlgorithm::Ed25519 => {
-                let key = Ed25519VerifyingKey::from_public_key_pem(pem)
-                    .map_err(|e| CryptoError::KeyError(e.to_string()))?;
-                Ok(Self::Ed25519(key))
+                let sk = ed25519_dalek::SigningKey::from_pkcs8_der(der)
+                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse Ed25519 DER key: {}", e)))?;
+                Ok(Verifier { inner: VerifierInner::Ed25519(sk.verifying_key()) })
             }
         }
     }
 
-    /// Verify a signature against data.
-    pub fn verify(
-        &self,
-        data: &[u8],
-        signature: &[u8],
-        format: SignatureFormat,
-    ) -> Result<bool, CryptoError> {
-        use rsa::signature::Verifier as RsaVerifier;
+    fn from_rsa_public_key(algo: &SignAlgorithm, pub_key: &rsa::RsaPublicKey) -> Result<Verifier, CryptoError> {
+        match algo {
+            SignAlgorithm::RsaPkcs1v15 { hash } => {
+                let inner = match hash {
+                    RsaHash::Sha256 => VerifierInner::RsaPkcs1v15Sha256(pkcs1v15::VerifyingKey::<Sha256>::new(pub_key.clone())),
+                    RsaHash::Sha384 => VerifierInner::RsaPkcs1v15Sha384(pkcs1v15::VerifyingKey::<Sha384>::new(pub_key.clone())),
+                    RsaHash::Sha512 => VerifierInner::RsaPkcs1v15Sha512(pkcs1v15::VerifyingKey::<Sha512>::new(pub_key.clone())),
+                };
+                Ok(Verifier { inner })
+            }
+            SignAlgorithm::RsaPss { hash } => {
+                let inner = match hash {
+                    RsaHash::Sha256 => VerifierInner::RsaPssSha256(pss::VerifyingKey::<Sha256>::new(pub_key.clone())),
+                    RsaHash::Sha384 => VerifierInner::RsaPssSha384(pss::VerifyingKey::<Sha384>::new(pub_key.clone())),
+                    RsaHash::Sha512 => VerifierInner::RsaPssSha512(pss::VerifyingKey::<Sha512>::new(pub_key.clone())),
+                };
+                Ok(Verifier { inner })
+            }
+            _ => Err(CryptoError::UnsupportedAlgorithm(format!("{:?}", algo))),
+        }
+    }
 
-        match self {
-            Self::RsaPkcs1v15 { key, hash } => {
-                match hash {
-                    RsaHash::Sha256 => {
-                        let verifying_key =
-                            rsa::pkcs1v15::VerifyingKey::<sha2::Sha256>::new(key.clone());
-                        let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                            .map_err(|e| CryptoError::VerificationError(e.to_string()))?;
-                        Ok(verifying_key.verify(data, &sig).is_ok())
-                    }
-                    RsaHash::Sha384 => {
-                        let verifying_key =
-                            rsa::pkcs1v15::VerifyingKey::<sha2::Sha384>::new(key.clone());
-                        let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                            .map_err(|e| CryptoError::VerificationError(e.to_string()))?;
-                        Ok(verifying_key.verify(data, &sig).is_ok())
-                    }
-                    RsaHash::Sha512 => {
-                        let verifying_key =
-                            rsa::pkcs1v15::VerifyingKey::<sha2::Sha512>::new(key.clone());
-                        let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                            .map_err(|e| CryptoError::VerificationError(e.to_string()))?;
-                        Ok(verifying_key.verify(data, &sig).is_ok())
-                    }
-                }
+    pub fn verify(&self, data: &[u8], signature: &[u8], format: SignatureFormat) -> Result<bool, CryptoError> {
+        match &self.inner {
+            VerifierInner::RsaPkcs1v15Sha256(vk) => {
+                let sig = rsa::pkcs1v15::Signature::try_from(signature)
+                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA PKCS1v15 signature: {}", e)))?;
+                Ok(vk.verify(data, &sig).is_ok())
             }
-            Self::RsaPss { key, hash } => {
-                match hash {
-                    RsaHash::Sha256 => {
-                        let verifying_key =
-                            rsa::pss::VerifyingKey::<sha2::Sha256>::new(key.clone());
-                        let sig = rsa::pss::Signature::try_from(signature)
-                            .map_err(|e| CryptoError::VerificationError(e.to_string()))?;
-                        Ok(verifying_key.verify(data, &sig).is_ok())
-                    }
-                    RsaHash::Sha384 => {
-                        let verifying_key =
-                            rsa::pss::VerifyingKey::<sha2::Sha384>::new(key.clone());
-                        let sig = rsa::pss::Signature::try_from(signature)
-                            .map_err(|e| CryptoError::VerificationError(e.to_string()))?;
-                        Ok(verifying_key.verify(data, &sig).is_ok())
-                    }
-                    RsaHash::Sha512 => {
-                        let verifying_key =
-                            rsa::pss::VerifyingKey::<sha2::Sha512>::new(key.clone());
-                        let sig = rsa::pss::Signature::try_from(signature)
-                            .map_err(|e| CryptoError::VerificationError(e.to_string()))?;
-                        Ok(verifying_key.verify(data, &sig).is_ok())
-                    }
-                }
+            VerifierInner::RsaPkcs1v15Sha384(vk) => {
+                let sig = rsa::pkcs1v15::Signature::try_from(signature)
+                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA PKCS1v15 signature: {}", e)))?;
+                Ok(vk.verify(data, &sig).is_ok())
             }
-            Self::EcdsaP256(key) => {
-                let sig = parse_p256_signature(signature, format)?;
-                Ok(key.verify(data, &sig).is_ok())
+            VerifierInner::RsaPkcs1v15Sha512(vk) => {
+                let sig = rsa::pkcs1v15::Signature::try_from(signature)
+                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA PKCS1v15 signature: {}", e)))?;
+                Ok(vk.verify(data, &sig).is_ok())
             }
-            Self::EcdsaP384(key) => {
-                let sig = parse_p384_signature(signature, format)?;
-                Ok(key.verify(data, &sig).is_ok())
+            VerifierInner::RsaPssSha256(vk) => {
+                let sig = rsa::pss::Signature::try_from(signature)
+                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA-PSS signature: {}", e)))?;
+                Ok(vk.verify(data, &sig).is_ok())
             }
-            Self::Ed25519(key) => {
-                let sig = ed25519_dalek::Signature::from_slice(signature)
-                    .map_err(|e| CryptoError::VerificationError(e.to_string()))?;
-                Ok(key.verify(data, &sig).is_ok())
+            VerifierInner::RsaPssSha384(vk) => {
+                let sig = rsa::pss::Signature::try_from(signature)
+                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA-PSS signature: {}", e)))?;
+                Ok(vk.verify(data, &sig).is_ok())
+            }
+            VerifierInner::RsaPssSha512(vk) => {
+                let sig = rsa::pss::Signature::try_from(signature)
+                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA-PSS signature: {}", e)))?;
+                Ok(vk.verify(data, &sig).is_ok())
+            }
+            VerifierInner::EcdsaP256(vk) => {
+                let sig = decode_p256_signature(signature, format)?;
+                Ok(vk.verify(data, &sig).is_ok())
+            }
+            VerifierInner::EcdsaP384(vk) => {
+                let sig = decode_p384_signature(signature, format)?;
+                Ok(vk.verify(data, &sig).is_ok())
+            }
+            VerifierInner::Ed25519(vk) => {
+                let sig = ed25519_dalek::Signature::try_from(signature)
+                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid Ed25519 signature: {}", e)))?;
+                Ok(vk.verify(data, &sig).is_ok())
             }
         }
     }
 }
 
-fn parse_p256_signature(
-    signature: &[u8],
+fn decode_p256_signature(
+    bytes: &[u8],
     format: SignatureFormat,
-) -> Result<ecdsa::Signature<NistP256>, CryptoError> {
+) -> Result<ecdsa::Signature<p256::NistP256>, CryptoError> {
     match format {
-        SignatureFormat::Der => ecdsa::Signature::<NistP256>::from_der(signature)
-            .map_err(|e| CryptoError::VerificationError(e.to_string())),
-        SignatureFormat::Raw => ecdsa::Signature::<NistP256>::from_slice(signature)
-            .map_err(|e| CryptoError::VerificationError(e.to_string())),
+        SignatureFormat::Der => {
+            ecdsa::Signature::<p256::NistP256>::from_der(bytes)
+                .map_err(|e| CryptoError::DecodingFailed(format!("Invalid DER ECDSA P256 signature: {}", e)))
+        }
+        SignatureFormat::Raw => {
+            ecdsa::Signature::<p256::NistP256>::from_slice(bytes)
+                .map_err(|e| CryptoError::DecodingFailed(format!("Invalid raw ECDSA P256 signature: {}", e)))
+        }
     }
 }
 
-fn parse_p384_signature(
-    signature: &[u8],
+fn decode_p384_signature(
+    bytes: &[u8],
     format: SignatureFormat,
-) -> Result<ecdsa::Signature<NistP384>, CryptoError> {
+) -> Result<ecdsa::Signature<p384::NistP384>, CryptoError> {
     match format {
-        SignatureFormat::Der => ecdsa::Signature::<NistP384>::from_der(signature)
-            .map_err(|e| CryptoError::VerificationError(e.to_string())),
-        SignatureFormat::Raw => ecdsa::Signature::<NistP384>::from_slice(signature)
-            .map_err(|e| CryptoError::VerificationError(e.to_string())),
+        SignatureFormat::Der => {
+            ecdsa::Signature::<p384::NistP384>::from_der(bytes)
+                .map_err(|e| CryptoError::DecodingFailed(format!("Invalid DER ECDSA P384 signature: {}", e)))
+        }
+        SignatureFormat::Raw => {
+            ecdsa::Signature::<p384::NistP384>::from_slice(bytes)
+                .map_err(|e| CryptoError::DecodingFailed(format!("Invalid raw ECDSA P384 signature: {}", e)))
+        }
     }
 }

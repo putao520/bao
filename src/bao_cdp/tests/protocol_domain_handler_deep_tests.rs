@@ -8,6 +8,8 @@ use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+const TID: &str = "test-target";
+
 // Helper: parse + handle without bridge
 fn dispatch(raw: &str) -> CDPResponse {
     let msg = parse_message(raw).unwrap();
@@ -738,7 +740,7 @@ fn test_serialize_event_no_params() {
 #[test]
 fn test_bridge_try_process() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
     let processed = rx.try_process(|cmd| {
         let debug = format!("{:?}", cmd);
         assert!(debug.contains("GetTitle"));
@@ -757,9 +759,9 @@ fn test_bridge_try_process_empty() {
 #[test]
 fn test_bridge_drain_multiple() {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
-    tx.send_fire_and_forget(BridgeCommand::GetUrl);
-    tx.send_fire_and_forget(BridgeCommand::GetDocument);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetUrl { target_id: TID.into() });
+    tx.send_fire_and_forget(BridgeCommand::GetDocument { target_id: TID.into() });
     let count = rx.drain(|cmd| {
         let _ = format!("{:?}", cmd);
         BridgeResponse { result: Ok(json!({})) }

@@ -8,6 +8,8 @@ use std::time::Duration;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+const TID: &str = "test-target";
+
 fn setup(timeout_ms: u64) -> (bao_cdp::BridgeSender, bao_cdp::BridgeReceiver) {
     bridge_channel(Duration::from_millis(timeout_ms))
 }
@@ -25,12 +27,12 @@ fn test_burst_100_commands_drain_all() {
     let (tx, rx) = setup(500);
     for i in 0..100 {
         let url = format!("http://example.com/{}", i);
-        tx.send_fire_and_forget(BridgeCommand::Navigate { url });
+        tx.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url });
     }
     let count = counter();
     rx.drain(|cmd| {
         count.fetch_add(1, Ordering::SeqCst);
-        if let BridgeCommand::Navigate { url } = cmd {
+        if let BridgeCommand::Navigate { url, .. } = cmd {
             assert!(url.starts_with("http://example.com/"));
         } else {
             panic!("Expected Navigate, got {:?}", cmd);
@@ -45,7 +47,7 @@ fn test_burst_50_eval_commands_drain() {
     let (tx, rx) = setup(500);
     for i in 0..50 {
         let expr = format!("1 + {}", i);
-        tx.send_fire_and_forget(BridgeCommand::EvaluateJs { expression: expr, return_by_value: true });
+        tx.send_fire_and_forget(BridgeCommand::EvaluateJs { target_id: TID.into(), expression: expr, return_by_value: true });
     }
     let count = counter();
     rx.drain(|cmd| {
@@ -65,9 +67,9 @@ fn test_burst_mixed_command_types() {
     let (tx, rx) = setup(500);
     for i in 0..30 {
         match i % 3 {
-            0 => tx.send_fire_and_forget(BridgeCommand::Navigate { url: format!("http://x/{}", i) }),
-            1 => tx.send_fire_and_forget(BridgeCommand::EvaluateJs { expression: format!("{}", i), return_by_value: true }),
-            _ => tx.send_fire_and_forget(BridgeCommand::GetTitle),
+            0 => tx.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: format!("http://x/{}", i) }),
+            1 => tx.send_fire_and_forget(BridgeCommand::EvaluateJs { target_id: TID.into(), expression: format!("{}", i), return_by_value: true }),
+            _ => tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() }),
         }
     }
     let nav = counter();
@@ -77,7 +79,7 @@ fn test_burst_mixed_command_types() {
         match cmd {
             BridgeCommand::Navigate { .. } => { nav.fetch_add(1, Ordering::SeqCst); }
             BridgeCommand::EvaluateJs { .. } => { eval.fetch_add(1, Ordering::SeqCst); }
-            BridgeCommand::GetTitle => { title.fetch_add(1, Ordering::SeqCst); }
+            BridgeCommand::GetTitle { .. } => { title.fetch_add(1, Ordering::SeqCst); }
             _ => panic!("unexpected command type"),
         }
         BridgeResponse { result: Ok(json!({})) }
@@ -102,7 +104,7 @@ fn test_concurrent_sends_from_4_threads() {
         handles.push(std::thread::spawn(move || {
             for i in 0..25 {
                 let url = format!("http://thread{}/page{}", t, i);
-                tx.send_fire_and_forget(BridgeCommand::Navigate { url });
+                tx.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url });
             }
         }));
     }
@@ -136,8 +138,8 @@ fn test_concurrent_send_with_sync_response() {
                 rx_guard.try_process(|cmd| {
                     total2.fetch_add(1, Ordering::SeqCst);
                     match cmd {
-                        BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!("title")) },
-                        BridgeCommand::Navigate { url } => BridgeResponse { result: Ok(json!({"navigated": url})) },
+                        BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("title")) },
+                        BridgeCommand::Navigate { url, .. } => BridgeResponse { result: Ok(json!({"navigated": url})) },
                         _ => BridgeResponse { result: Ok(json!({})) },
                     }
                 })
@@ -156,10 +158,10 @@ fn test_concurrent_send_with_sync_response() {
         senders.push(std::thread::spawn(move || {
             for i in 0..10 {
                 if i % 2 == 0 {
-                    let resp = tx.send(BridgeCommand::GetTitle);
+                    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
                     assert!(resp.result.is_ok(), "thread {} iter {} failed", t, i);
                 } else {
-                    tx.send_fire_and_forget(BridgeCommand::Navigate { url: format!("t{}i{}", t, i) });
+                    tx.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: format!("t{}i{}", t, i) });
                 }
             }
         }));
@@ -180,7 +182,7 @@ fn test_concurrent_send_with_sync_response() {
 #[test]
 fn test_timeout_when_no_responder() {
     let (tx, _rx) = setup(50);
-    let resp = tx.send(BridgeCommand::GetTitle);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_err());
     assert!(resp.result.unwrap_err().contains("timeout"));
 }
@@ -188,7 +190,7 @@ fn test_timeout_when_no_responder() {
 #[test]
 fn test_timeout_message_format() {
     let (tx, _rx) = setup(20);
-    let resp = tx.send(BridgeCommand::Navigate { url: "http://x".into() });
+    let resp = tx.send(BridgeCommand::Navigate { target_id: TID.into(), url: "http://x".into() });
     let err = resp.result.unwrap_err();
     assert!(err.contains("timeout") || err.contains("bridge"));
 }
@@ -215,7 +217,7 @@ fn test_slow_responder_still_succeeds() {
     });
 
     std::thread::sleep(std::time::Duration::from_millis(10));
-    let resp = tx.send(BridgeCommand::GetTitle);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_ok());
 }
 
@@ -228,7 +230,7 @@ fn test_fire_and_forget_does_not_block() {
     let (tx, _rx) = setup(50);
     let start = std::time::Instant::now();
     for _ in 0..1000 {
-        tx.send_fire_and_forget(BridgeCommand::GetTitle);
+        tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
     }
     let elapsed = start.elapsed();
     assert!(elapsed.as_millis() < 100, "fire-and-forget should be fast, took {:?}", elapsed);
@@ -238,7 +240,7 @@ fn test_fire_and_forget_does_not_block() {
 fn test_fire_and_forget_commands_receivable() {
     let (tx, rx) = setup(500);
     for i in 0..10 {
-        tx.send_fire_and_forget(BridgeCommand::Navigate { url: format!("http://{}", i) });
+        tx.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: format!("http://{}", i) });
     }
     let count = counter();
     rx.drain(|_| {
@@ -276,8 +278,8 @@ fn test_is_alive_multiple_calls() {
 fn test_cloned_sender_sends_to_same_receiver() {
     let (tx, rx) = setup(500);
     let tx2 = tx.clone();
-    tx.send_fire_and_forget(BridgeCommand::GetTitle);
-    tx2.send_fire_and_forget(BridgeCommand::Navigate { url: "http://x".into() });
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    tx2.send_fire_and_forget(BridgeCommand::Navigate { target_id: TID.into(), url: "http://x".into() });
 
     let count = counter();
     rx.drain(|_| {
@@ -298,7 +300,7 @@ fn test_multiple_cloned_senders_concurrent() {
     let mut handles = vec![];
     for s in senders {
         handles.push(std::thread::spawn(move || {
-            s.send_fire_and_forget(BridgeCommand::GetTitle);
+            s.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
         }));
     }
 
@@ -321,32 +323,32 @@ fn test_multiple_cloned_senders_concurrent() {
 #[test]
 fn test_all_bridge_command_variants_serializable() {
     let commands: Vec<BridgeCommand> = vec![
-        BridgeCommand::Navigate { url: "http://x".into() },
-        BridgeCommand::EvaluateJs { expression: "1+1".into(), return_by_value: true },
-        BridgeCommand::TakeScreenshot { format: "png".into(), quality: Some(80) },
-        BridgeCommand::GetTitle,
-        BridgeCommand::GetUrl,
-        BridgeCommand::GetDocument,
-        BridgeCommand::QuerySelector { selector: "div".into() },
-        BridgeCommand::QuerySelectorAll { selector: "span".into() },
-        BridgeCommand::GetOuterHtml { node_id: Some(1) },
-        BridgeCommand::SetAttributeValue { node_id: 1, name: "class".into(), value: "x".into() },
-        BridgeCommand::DispatchMouseEvent { event_type: "click".into(), x: 100.0, y: 200.0, button: Some(0), click_count: Some(1) },
-        BridgeCommand::DispatchKeyEvent { event_type: "keyDown".into(), key: "a".into(), code: "KeyA".into(), text: Some("a".into()) },
-        BridgeCommand::InsertText { text: "hello".into() },
-        BridgeCommand::SetViewport { width: 1920, height: 1080, device_scale_factor: Some(2.0) },
-        BridgeCommand::SetUserAgent { user_agent: "Test".into() },
-        BridgeCommand::GetCookies { urls: vec!["http://x".into()] },
-        BridgeCommand::GetAllCookies,
-        BridgeCommand::DeleteCookie { name: "sid".into(), url: Some("http://x".into()) },
-        BridgeCommand::SetCookie { name: "sid".into(), value: "123".into(), url: Some("http://x".into()), domain: None },
-        BridgeCommand::GetResponseBody { request_id: "r1".into() },
-        BridgeCommand::AddScriptToEvaluateOnNewDocument { source: "console.log(1)".into() },
-        BridgeCommand::Reload { ignore_cache: false },
-        BridgeCommand::GoBack,
-        BridgeCommand::GoForward,
-        BridgeCommand::StopLoading,
-        BridgeCommand::ClosePage,
+        BridgeCommand::Navigate { target_id: TID.into(), url: "http://x".into() },
+        BridgeCommand::EvaluateJs { target_id: TID.into(), expression: "1+1".into(), return_by_value: true },
+        BridgeCommand::TakeScreenshot { target_id: TID.into(), format: "png".into(), quality: Some(80) },
+        BridgeCommand::GetTitle { target_id: TID.into() },
+        BridgeCommand::GetUrl { target_id: TID.into() },
+        BridgeCommand::GetDocument { target_id: TID.into() },
+        BridgeCommand::QuerySelector { target_id: TID.into(), selector: "div".into() },
+        BridgeCommand::QuerySelectorAll { target_id: TID.into(), selector: "span".into() },
+        BridgeCommand::GetOuterHtml { target_id: TID.into(), node_id: Some(1) },
+        BridgeCommand::SetAttributeValue { target_id: TID.into(), node_id: 1, name: "class".into(), value: "x".into() },
+        BridgeCommand::DispatchMouseEvent { target_id: TID.into(), event_type: "click".into(), x: 100.0, y: 200.0, button: Some(0), click_count: Some(1) },
+        BridgeCommand::DispatchKeyEvent { target_id: TID.into(), event_type: "keyDown".into(), key: "a".into(), code: "KeyA".into(), text: Some("a".into()) },
+        BridgeCommand::InsertText { target_id: TID.into(), text: "hello".into() },
+        BridgeCommand::SetViewport { target_id: TID.into(), width: 1920, height: 1080, device_scale_factor: Some(2.0) },
+        BridgeCommand::SetUserAgent { target_id: TID.into(), user_agent: "Test".into() },
+        BridgeCommand::GetCookies { target_id: TID.into(), urls: vec!["http://x".into()] },
+        BridgeCommand::GetAllCookies { target_id: TID.into() },
+        BridgeCommand::DeleteCookie { target_id: TID.into(), name: "sid".into(), url: Some("http://x".into()) },
+        BridgeCommand::SetCookie { target_id: TID.into(), name: "sid".into(), value: "123".into(), url: Some("http://x".into()), domain: None },
+        BridgeCommand::GetResponseBody { target_id: TID.into(), request_id: "r1".into() },
+        BridgeCommand::AddScriptToEvaluateOnNewDocument { target_id: TID.into(), source: "console.log(1)".into() },
+        BridgeCommand::Reload { target_id: TID.into(), ignore_cache: false },
+        BridgeCommand::GoBack { target_id: TID.into() },
+        BridgeCommand::GoForward { target_id: TID.into() },
+        BridgeCommand::StopLoading { target_id: TID.into() },
+        BridgeCommand::ClosePage { target_id: TID.into() },
     ];
 
     let (tx, rx) = setup(500);
@@ -382,8 +384,8 @@ fn test_response_value_propagation() {
                 let rx_guard = rx2.lock().unwrap();
                 rx_guard.try_process(|cmd| {
                     match cmd {
-                        BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!("My Title")) },
-                        BridgeCommand::GetUrl => BridgeResponse { result: Ok(json!("http://example.com")) },
+                        BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("My Title")) },
+                        BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("http://example.com")) },
                         _ => BridgeResponse { result: Ok(json!({})) },
                     }
                 })
@@ -397,7 +399,7 @@ fn test_response_value_propagation() {
     });
 
     std::thread::sleep(std::time::Duration::from_millis(10));
-    let resp = tx.send(BridgeCommand::GetTitle);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_ok());
 
     for _ in 0..100 {
@@ -431,7 +433,7 @@ fn test_response_error_propagation() {
     });
 
     std::thread::sleep(std::time::Duration::from_millis(10));
-    let resp = tx.send(BridgeCommand::GetTitle);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
     assert!(resp.result.is_err());
     assert_eq!(resp.result.unwrap_err(), "internal error");
 
