@@ -6,11 +6,21 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 pub struct EmulationHandler {
     bridge: BridgeSender,
+    target_id: String,
+    touch_enabled: std::sync::Mutex<bool>,
+    script_execution_disabled: std::sync::Mutex<bool>,
+    cpu_throttling_rate: std::sync::Mutex<f64>,
 }
 
 impl EmulationHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
-        EmulationHandler { bridge }
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
+        EmulationHandler {
+            bridge,
+            target_id,
+            touch_enabled: std::sync::Mutex::new(false),
+            script_execution_disabled: std::sync::Mutex::new(false),
+            cpu_throttling_rate: std::sync::Mutex::new(1.0),
+        }
     }
 }
 
@@ -32,21 +42,32 @@ impl DomainHandler for EmulationHandler {
                 let width = params.get("width").and_then(|v| v.as_u64()).unwrap_or(1920) as u32;
                 let height = params.get("height").and_then(|v| v.as_u64()).unwrap_or(1080) as u32;
                 let dsf = params.get("deviceScaleFactor").and_then(|v| v.as_f64());
-                let resp = self.bridge.send(BridgeCommand::SetViewport { width, height, device_scale_factor: dsf });
+                let resp = self.bridge.send(BridgeCommand::SetViewport { target_id: self.target_id.clone(), width, height, device_scale_factor: dsf });
                 resp.result.map_err(|e| CdpError { code: -32603, message: e })
             }
             "Emulation.clearDeviceMetricsOverride" => Ok(json!({})),
             "Emulation.setUserAgentOverride" => {
                 let ua = ps(&params, "userAgent");
                 if !ua.is_empty() {
-                    let resp = self.bridge.send(BridgeCommand::SetUserAgent { user_agent: ua });
+                    let resp = self.bridge.send(BridgeCommand::SetUserAgent { target_id: self.target_id.clone(), user_agent: ua });
                     resp.result.map_err(|e| CdpError { code: -32603, message: e })
                 } else {
                     Ok(json!({}))
                 }
             }
-            "Emulation.setTouchEmulationEnabled" | "Emulation.setScriptExecutionDisabled" => Ok(json!({})),
-            "Emulation.setFocusEmulationEnabled" | "Emulation.setCPUThrottlingRate" => Ok(json!({})),
+            "Emulation.setTouchEmulationEnabled" => {
+                *self.touch_enabled.lock().unwrap() = params.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                Ok(json!({}))
+            }
+            "Emulation.setScriptExecutionDisabled" => {
+                *self.script_execution_disabled.lock().unwrap() = params.get("value").and_then(|v| v.as_bool()).unwrap_or(false);
+                Ok(json!({}))
+            }
+            "Emulation.setFocusEmulationEnabled" => Ok(json!({})),
+            "Emulation.setCPUThrottlingRate" => {
+                *self.cpu_throttling_rate.lock().unwrap() = params.get("rate").and_then(|v| v.as_f64()).unwrap_or(1.0);
+                Ok(json!({}))
+            }
             "Emulation.setDefaultBackgroundColorOverride" => Ok(json!({})),
             _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", command) }),
         }
@@ -56,6 +77,7 @@ impl DomainHandler for EmulationHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const TID: &str = "test-target";
     use crate::servo_bridge::{bridge_channel, BridgeResponse};
     use cdp_server::EventSender;
     use std::time::Duration;
@@ -70,7 +92,7 @@ mod tests {
 
     fn setup() -> (EmulationHandler, crate::servo_bridge::BridgeReceiver) {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        (EmulationHandler::new(sender), receiver)
+        (EmulationHandler::new(sender, TID.into()), receiver)
     }
 
     fn mock_responder(receiver: crate::servo_bridge::BridgeReceiver) -> thread::JoinHandle<()> {
@@ -96,31 +118,31 @@ mod tests {
     }
 
     #[test]
-    fn set_touch_emulation_returns_empty() {
+    fn set_touch_emulation_stores_flag() {
         let (handler, _rx) = setup();
-        let result = handler.handle_command("Emulation.setTouchEmulationEnabled", json!({"enabled": true}), &NoopSender).unwrap();
-        assert_eq!(result, json!({}));
+        assert!(!*handler.touch_enabled.lock().unwrap());
+        handler.handle_command("Emulation.setTouchEmulationEnabled", json!({"enabled": true}), &NoopSender).unwrap();
+        assert!(*handler.touch_enabled.lock().unwrap());
+        handler.handle_command("Emulation.setTouchEmulationEnabled", json!({"enabled": false}), &NoopSender).unwrap();
+        assert!(!*handler.touch_enabled.lock().unwrap());
     }
 
     #[test]
-    fn set_script_execution_disabled_returns_empty() {
+    fn set_script_execution_disabled_stores_flag() {
         let (handler, _rx) = setup();
-        let result = handler.handle_command("Emulation.setScriptExecutionDisabled", json!({"value": true}), &NoopSender).unwrap();
-        assert_eq!(result, json!({}));
+        assert!(!*handler.script_execution_disabled.lock().unwrap());
+        handler.handle_command("Emulation.setScriptExecutionDisabled", json!({"value": true}), &NoopSender).unwrap();
+        assert!(*handler.script_execution_disabled.lock().unwrap());
+        handler.handle_command("Emulation.setScriptExecutionDisabled", json!({"value": false}), &NoopSender).unwrap();
+        assert!(!*handler.script_execution_disabled.lock().unwrap());
     }
 
     #[test]
-    fn set_focus_emulation_returns_empty() {
+    fn set_cpu_throttling_rate_stores_rate() {
         let (handler, _rx) = setup();
-        let result = handler.handle_command("Emulation.setFocusEmulationEnabled", json!({"enabled": true}), &NoopSender).unwrap();
-        assert_eq!(result, json!({}));
-    }
-
-    #[test]
-    fn set_cpu_throttling_rate_returns_empty() {
-        let (handler, _rx) = setup();
-        let result = handler.handle_command("Emulation.setCPUThrottlingRate", json!({"rate": 4.0}), &NoopSender).unwrap();
-        assert_eq!(result, json!({}));
+        assert!((*handler.cpu_throttling_rate.lock().unwrap() - 1.0).abs() < f64::EPSILON);
+        handler.handle_command("Emulation.setCPUThrottlingRate", json!({"rate": 4.0}), &NoopSender).unwrap();
+        assert!((*handler.cpu_throttling_rate.lock().unwrap() - 4.0).abs() < f64::EPSILON);
     }
 
     #[test]

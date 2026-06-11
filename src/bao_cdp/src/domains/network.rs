@@ -94,14 +94,29 @@ const NETWORK_INTERCEPTOR_JS: &str = r#"
 /// and broadcasts them as Network.requestWillBeSent / Network.responseReceived events.
 pub struct NetworkHandler {
     bridge: BridgeSender,
+    target_id: String,
     enabled: std::sync::Mutex<bool>,
+    cache_disabled: std::sync::Mutex<bool>,
+    extra_headers: std::sync::Mutex<Value>,
+    network_conditions: std::sync::Mutex<Option<NetworkConditions>>,
+}
+
+struct NetworkConditions {
+    offline: bool,
+    latency_ms: f64,
+    download_throughput: f64,
+    upload_throughput: f64,
 }
 
 impl NetworkHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
         NetworkHandler {
             bridge,
+            target_id,
             enabled: std::sync::Mutex::new(false),
+            cache_disabled: std::sync::Mutex::new(false),
+            extra_headers: std::sync::Mutex::new(json!({})),
+            network_conditions: std::sync::Mutex::new(None),
         }
     }
 }
@@ -120,6 +135,7 @@ impl DomainHandler for NetworkHandler {
                 *self.enabled.lock().unwrap() = true;
                 // Inject network monitoring interceptor into the page
                 let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: NETWORK_INTERCEPTOR_JS.to_string(),
                     return_by_value: false,
                 });
@@ -137,18 +153,42 @@ impl DomainHandler for NetworkHandler {
                     serde_json::to_string(&request_id).unwrap_or_else(|_| "\"\"".into())
                 );
                 let resp = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
                 let body = resp.result.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
                 Ok(json!({ "body": body, "base64Encoded": false }))
             }
-            "Network.setCacheDisabled" | "Network.setExtraHTTPHeaders" => Ok(json!({})),
-            "Network.emulateNetworkConditions" | "Network.setRequestInterception" => Ok(json!({})),
+            "Network.setCacheDisabled" => {
+                let disabled = params.get("cacheDisabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                *self.cache_disabled.lock().unwrap() = disabled;
+                Ok(json!({}))
+            }
+            "Network.setExtraHTTPHeaders" => {
+                let headers = params.get("headers").cloned().unwrap_or(json!({}));
+                *self.extra_headers.lock().unwrap() = headers;
+                Ok(json!({}))
+            }
+            "Network.emulateNetworkConditions" => {
+                let offline = params.get("offline").and_then(|v| v.as_bool()).unwrap_or(false);
+                let latency = params.get("latency").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let download = params.get("downloadThroughput").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+                let upload = params.get("uploadThroughput").and_then(|v| v.as_f64()).unwrap_or(-1.0);
+                *self.network_conditions.lock().unwrap() = Some(NetworkConditions {
+                    offline,
+                    latency_ms: latency,
+                    download_throughput: download,
+                    upload_throughput: upload,
+                });
+                Ok(json!({}))
+            }
+            "Network.setRequestInterception" => Ok(json!({})),
             "Network.continueInterceptedRequest" => Ok(json!({})),
             "Network.getCookies" | "Network.getAllCookies" => {
                 // Query document.cookie for real cookies
                 let resp = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: "document.cookie || ''".to_string(),
                     return_by_value: true,
                 });
@@ -177,6 +217,7 @@ impl DomainHandler for NetworkHandler {
 #[allow(non_snake_case)]
 mod tests {
     use super::*;
+    const TID: &str = "test-target";
     use crate::servo_bridge::bridge_channel;
     use std::time::Duration;
 
@@ -188,14 +229,14 @@ mod tests {
     #[test]
     fn domain_name_returns_Network() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = NetworkHandler::new(bridge);
+        let handler = NetworkHandler::new(bridge, TID.into());
         assert_eq!(handler.domain_name(), "Network");
     }
 
     #[test]
     fn enable_sets_flag_and_sends_bridge_command() {
         let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = NetworkHandler::new(bridge);
+        let handler = NetworkHandler::new(bridge, TID.into());
         assert!(!*handler.enabled.lock().unwrap());
         handler.handle_command("Network.enable", json!({}), &NoopSender).unwrap();
         assert!(*handler.enabled.lock().unwrap());
@@ -221,7 +262,7 @@ mod tests {
         }
         let collector = CollectSender(std::sync::Mutex::new(Vec::new()));
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = NetworkHandler::new(bridge);
+        let handler = NetworkHandler::new(bridge, TID.into());
         handler.handle_command("Network.enable", json!({}), &collector).unwrap();
         let events = collector.0.lock().unwrap();
         assert!(events.is_empty(), "Network.enable must NOT emit fabricated requestWillBeSent");
@@ -230,7 +271,7 @@ mod tests {
     #[test]
     fn disable_clears_flag() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = NetworkHandler::new(bridge);
+        let handler = NetworkHandler::new(bridge, TID.into());
         handler.handle_command("Network.enable", json!({}), &NoopSender).unwrap();
         handler.handle_command("Network.disable", json!({}), &NoopSender).unwrap();
         assert!(!*handler.enabled.lock().unwrap());
@@ -239,24 +280,52 @@ mod tests {
     #[test]
     fn getResponseBody_returns_structure() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = NetworkHandler::new(bridge);
+        let handler = NetworkHandler::new(bridge, TID.into());
         let result = handler.handle_command("Network.getResponseBody", json!({"requestId": "test-1"}), &NoopSender).unwrap();
         assert!(result.get("body").is_some());
         assert_eq!(result["base64Encoded"], false);
     }
 
     #[test]
-    fn setCacheDisabled_returns_ok_empty() {
+    fn setCacheDisabled_stores_flag() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = NetworkHandler::new(bridge);
-        let result = handler.handle_command("Network.setCacheDisabled", json!({}), &NoopSender).unwrap();
-        assert_eq!(result, json!({}));
+        let handler = NetworkHandler::new(bridge, TID.into());
+        assert!(!*handler.cache_disabled.lock().unwrap());
+        handler.handle_command("Network.setCacheDisabled", json!({"cacheDisabled": true}), &NoopSender).unwrap();
+        assert!(*handler.cache_disabled.lock().unwrap());
+        handler.handle_command("Network.setCacheDisabled", json!({"cacheDisabled": false}), &NoopSender).unwrap();
+        assert!(!*handler.cache_disabled.lock().unwrap());
+    }
+
+    #[test]
+    fn setExtraHTTPHeaders_stores_headers() {
+        let (bridge, _) = bridge_channel(Duration::from_millis(100));
+        let handler = NetworkHandler::new(bridge, TID.into());
+        assert_eq!(*handler.extra_headers.lock().unwrap(), json!({}));
+        handler.handle_command("Network.setExtraHTTPHeaders", json!({"headers": {"X-Custom": "value"}}), &NoopSender).unwrap();
+        assert_eq!(*handler.extra_headers.lock().unwrap(), json!({"X-Custom": "value"}));
+    }
+
+    #[test]
+    fn emulateNetworkConditions_stores_conditions() {
+        let (bridge, _) = bridge_channel(Duration::from_millis(100));
+        let handler = NetworkHandler::new(bridge, TID.into());
+        assert!(handler.network_conditions.lock().unwrap().is_none());
+        handler.handle_command("Network.emulateNetworkConditions", json!({
+            "offline": true, "latency": 100, "downloadThroughput": 50000, "uploadThroughput": 25000
+        }), &NoopSender).unwrap();
+        let binding = handler.network_conditions.lock().unwrap();
+        let cond = binding.as_ref().unwrap().clone();
+        assert!(cond.offline);
+        assert!((cond.latency_ms - 100.0).abs() < f64::EPSILON);
+        assert!((cond.download_throughput - 50000.0).abs() < f64::EPSILON);
+        assert!((cond.upload_throughput - 25000.0).abs() < f64::EPSILON);
     }
 
     #[test]
     fn getCookies_returns_structure() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = NetworkHandler::new(bridge);
+        let handler = NetworkHandler::new(bridge, TID.into());
         let result = handler.handle_command("Network.getCookies", json!({}), &NoopSender).unwrap();
         assert!(result.get("cookies").is_some());
         assert!(result["cookies"].is_array());
@@ -265,7 +334,7 @@ mod tests {
     #[test]
     fn unknown_command_returns_error_32601() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = NetworkHandler::new(bridge);
+        let handler = NetworkHandler::new(bridge, TID.into());
         let err = handler.handle_command("Network.nonexistent", json!({}), &NoopSender).unwrap_err();
         assert_eq!(err.code, -32601);
     }

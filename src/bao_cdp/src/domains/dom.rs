@@ -6,11 +6,12 @@ use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
 pub struct DomHandler {
     bridge: BridgeSender,
+    target_id: String,
 }
 
 impl DomHandler {
-    pub fn new(bridge: BridgeSender) -> Self {
-        DomHandler { bridge }
+    pub fn new(bridge: BridgeSender, target_id: String) -> Self {
+        DomHandler { bridge, target_id }
     }
 }
 
@@ -35,7 +36,7 @@ impl DomainHandler for DomHandler {
         match command {
             "DOM.enable" | "DOM.disable" => Ok(json!({})),
             "DOM.getDocument" => {
-                bridge_send(&self.bridge, BridgeCommand::GetDocument)
+                bridge_send(&self.bridge, BridgeCommand::GetDocument { target_id: self.target_id.clone() })
             }
             "DOM.describeNode" => {
                 let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(1);
@@ -45,6 +46,7 @@ impl DomainHandler for DomHandler {
                     node_id, node_id, node_id
                 );
                 let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
@@ -60,7 +62,7 @@ impl DomainHandler for DomHandler {
             "DOM.querySelector" => {
                 let selector = ps(&params, "selector");
                 if !selector.is_empty() {
-                    bridge_send(&self.bridge, BridgeCommand::QuerySelector { selector })
+                    bridge_send(&self.bridge, BridgeCommand::QuerySelector { target_id: self.target_id.clone(), selector })
                 } else {
                     Ok(json!({ "nodeId": 0 }))
                 }
@@ -68,7 +70,7 @@ impl DomainHandler for DomHandler {
             "DOM.querySelectorAll" => {
                 let selector = ps(&params, "selector");
                 if !selector.is_empty() {
-                    bridge_send(&self.bridge, BridgeCommand::QuerySelectorAll { selector })
+                    bridge_send(&self.bridge, BridgeCommand::QuerySelectorAll { target_id: self.target_id.clone(), selector })
                 } else {
                     Ok(json!({ "nodeIds": [] }))
                 }
@@ -81,6 +83,7 @@ impl DomainHandler for DomHandler {
                     node_id
                 );
                 let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
@@ -97,12 +100,73 @@ impl DomainHandler for DomHandler {
                 let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
                 let name = ps(&params, "name");
                 let value = ps(&params, "value");
-                bridge_send(&self.bridge, BridgeCommand::SetAttributeValue { node_id, name, value })
+                bridge_send(&self.bridge, BridgeCommand::SetAttributeValue { target_id: self.target_id.clone(), node_id, name, value })
             }
-            "DOM.removeAttribute" | "DOM.setOuterHTML" | "DOM.insertBefore" | "DOM.removeNode" => Ok(json!({})),
+            "DOM.removeAttribute" => {
+                    let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let name = ps(&params, "name");
+                    let js = format!(
+                        "(function() {{ try {{ var el = document.querySelector('[data-bao-node-id=\"{}\"]'); if (el) el.removeAttribute({}); }} catch(e) {{}} }})()",
+                        node_id,
+                        serde_json::to_string(&name).unwrap_or_else(|_| "\"\"".into())
+                    );
+                    let _ = self.bridge.send(BridgeCommand::EvaluateJs {
+                        target_id: self.target_id.clone(),
+                        expression: js,
+                        return_by_value: false,
+                    });
+                    Ok(json!({}))
+                }
+                "DOM.setOuterHTML" => {
+                    let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let outer_html = ps(&params, "outerHTML");
+                    let js = format!(
+                        "(function() {{ try {{ var el = document.querySelector('[data-bao-node-id=\"{}\"]'); if (el) el.outerHTML = {}; }} catch(e) {{}} }})()",
+                        node_id,
+                        serde_json::to_string(&outer_html).unwrap_or_else(|_| "\"\"".into())
+                    );
+                    let _ = self.bridge.send(BridgeCommand::EvaluateJs {
+                        target_id: self.target_id.clone(),
+                        expression: js,
+                        return_by_value: false,
+                    });
+                    Ok(json!({}))
+                }
+                "DOM.insertBefore" => {
+                    let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let new_node_id = params.get("newNodeId").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let ref_node_id = params.get("refNodeId").and_then(|v| v.as_i64());
+                    let ref_selector = match ref_node_id {
+                        Some(id) => format!("document.querySelector('[data-bao-node-id=\"{}\"]')", id),
+                        None => "null".to_string(),
+                    };
+                    let js = format!(
+                        "(function() {{ try {{ var parent = document.querySelector('[data-bao-node-id=\"{}\"]'); var newChild = document.querySelector('[data-bao-node-id=\"{}\"]'); var refChild = {}; if (parent && newChild) parent.insertBefore(newChild, refChild); }} catch(e) {{}} }})()",
+                        node_id, new_node_id, ref_selector
+                    );
+                    let _ = self.bridge.send(BridgeCommand::EvaluateJs {
+                        target_id: self.target_id.clone(),
+                        expression: js,
+                        return_by_value: false,
+                    });
+                    Ok(json!({}))
+                }
+                "DOM.removeNode" => {
+                    let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let js = format!(
+                        "(function() {{ try {{ var el = document.querySelector('[data-bao-node-id=\"{}\"]'); if (el) el.remove(); }} catch(e) {{}} }})()",
+                        node_id
+                    );
+                    let _ = self.bridge.send(BridgeCommand::EvaluateJs {
+                        target_id: self.target_id.clone(),
+                        expression: js,
+                        return_by_value: false,
+                    });
+                    Ok(json!({}))
+                }
             "DOM.getOuterHTML" => {
                 let node_id = params.get("nodeId").and_then(|v| v.as_i64());
-                bridge_send(&self.bridge, BridgeCommand::GetOuterHtml { node_id })
+                bridge_send(&self.bridge, BridgeCommand::GetOuterHtml { target_id: self.target_id.clone(), node_id })
             }
             "DOM.resolveNode" => {
                 let node_id = params.get("nodeId").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -111,6 +175,7 @@ impl DomainHandler for DomHandler {
                     node_id
                 );
                 let resp = self.bridge.send(BridgeCommand::EvaluateJs {
+                    target_id: self.target_id.clone(),
                     expression: js,
                     return_by_value: true,
                 });
@@ -140,17 +205,18 @@ mod tests {
     }
 
     const TIMEOUT: Duration = Duration::from_millis(500);
+    const TID: &str = "test-target";
 
     fn setup() -> (DomHandler, crate::servo_bridge::BridgeReceiver) {
         let (sender, receiver) = bridge_channel(TIMEOUT);
-        (DomHandler::new(sender), receiver)
+        (DomHandler::new(sender, TID.into()), receiver)
     }
 
     fn mock_responder(receiver: crate::servo_bridge::BridgeReceiver) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             for _ in 0..20 {
                 let _ = receiver.try_process(|cmd| match cmd {
-                    BridgeCommand::GetDocument => BridgeResponse { result: Ok(json!({"root": {"nodeId": 1}})) },
+                    BridgeCommand::GetDocument { .. } => BridgeResponse { result: Ok(json!({"root": {"nodeId": 1}})) },
                     BridgeCommand::QuerySelector { .. } => BridgeResponse { result: Ok(json!({"nodeId": 5})) },
                     BridgeCommand::QuerySelectorAll { .. } => BridgeResponse { result: Ok(json!({"nodeIds": [1, 2, 3]})) },
                     BridgeCommand::SetAttributeValue { .. } => BridgeResponse { result: Ok(json!({})) },
@@ -232,27 +298,48 @@ mod tests {
     }
 
     #[test]
-    fn remove_attribute_returns_empty() {
-        let (handler, _rx) = setup();
-        assert_eq!(handler.handle_command("DOM.removeAttribute", json!({}), &NoopSender).unwrap(), json!({}));
+    fn remove_attribute_sends_js_via_bridge() {
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
+        let result = handler.handle_command("DOM.removeAttribute", json!({"nodeId": 5, "name": "class"}), &NoopSender).unwrap();
+        assert_eq!(result, json!({}));
+        responder.join().unwrap();
     }
 
     #[test]
-    fn set_outer_html_returns_empty() {
-        let (handler, _rx) = setup();
-        assert_eq!(handler.handle_command("DOM.setOuterHTML", json!({}), &NoopSender).unwrap(), json!({}));
+    fn set_outer_html_sends_js_via_bridge() {
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
+        let result = handler.handle_command("DOM.setOuterHTML", json!({"nodeId": 5, "outerHTML": "<div>replaced</div>"}), &NoopSender).unwrap();
+        assert_eq!(result, json!({}));
+        responder.join().unwrap();
     }
 
     #[test]
-    fn insert_before_returns_empty() {
-        let (handler, _rx) = setup();
-        assert_eq!(handler.handle_command("DOM.insertBefore", json!({}), &NoopSender).unwrap(), json!({}));
+    fn insert_before_sends_js_via_bridge() {
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
+        let result = handler.handle_command("DOM.insertBefore", json!({"nodeId": 1, "newNodeId": 5, "refNodeId": 3}), &NoopSender).unwrap();
+        assert_eq!(result, json!({}));
+        responder.join().unwrap();
     }
 
     #[test]
-    fn remove_node_returns_empty() {
-        let (handler, _rx) = setup();
-        assert_eq!(handler.handle_command("DOM.removeNode", json!({}), &NoopSender).unwrap(), json!({}));
+    fn insert_before_without_ref_node_sends_js() {
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
+        let result = handler.handle_command("DOM.insertBefore", json!({"nodeId": 1, "newNodeId": 5}), &NoopSender).unwrap();
+        assert_eq!(result, json!({}));
+        responder.join().unwrap();
+    }
+
+    #[test]
+    fn remove_node_sends_js_via_bridge() {
+        let (handler, rx) = setup();
+        let responder = mock_responder(rx);
+        let result = handler.handle_command("DOM.removeNode", json!({"nodeId": 5}), &NoopSender).unwrap();
+        assert_eq!(result, json!({}));
+        responder.join().unwrap();
     }
 
     #[test]
