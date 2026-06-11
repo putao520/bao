@@ -383,8 +383,20 @@ fn test_server_config_full_build() {
 #[test]
 fn test_registry_dispatch_all_known_commands() {
     let registry = DomainRegistry::new();
-    let (bridge_tx, _bridge_rx) = bridge_channel(Duration::from_millis(500));
-    bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), &registry);
+    let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_millis(500));
+    bao_cdp::domains::register_all_domains_into(bridge_tx.clone(), TID.into(), &registry);
+
+    // Background responder for bridge commands (Debugger commands require bridge response)
+    let keeper = bridge_tx.clone();
+    std::thread::spawn(move || {
+        let _keeper = keeper;
+        loop {
+            let handled = bridge_rx.try_process(|_| BridgeResponse { result: Ok(json!({})) });
+            if !handled {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    });
 
     let broadcaster = EventBroadcaster::new(std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())));
     let sender = broadcaster.sender();

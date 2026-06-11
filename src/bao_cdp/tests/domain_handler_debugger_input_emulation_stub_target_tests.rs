@@ -34,10 +34,47 @@ fn dispatch_cmd(registry: &cdp_server::DomainRegistry, cmd: &str, params: Value)
 // ============================================================================
 
 fn setup_registry() -> (BridgeSender, cdp_server::DomainRegistry) {
-    let (tx, _rx) = bridge(50);
+    let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
     bao_cdp::domains::register_all_domains_into(tx.clone(), TID.into(), &registry);
+
+    // Background thread responds to all bridge commands so Debugger BridgeCommands don't timeout
+    let keeper = tx.clone();
+    std::thread::spawn(move || {
+        let _keeper = keeper;
+        loop {
+            let handled = rx.try_process(|cmd| default_bridge_response(cmd));
+            if !handled {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        }
+    });
+
     (tx, registry)
+}
+
+fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
+    match cmd {
+        BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Test Page")) },
+        BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://example.com")) },
+        BridgeCommand::CreateTarget { .. } => BridgeResponse { result: Ok(json!({"targetId": "new-target-1"})) },
+        BridgeCommand::DebuggerEnable { .. } => BridgeResponse { result: Ok(json!({})) },
+        BridgeCommand::DebuggerDisable { .. } => BridgeResponse { result: Ok(json!({})) },
+        BridgeCommand::DebuggerSetBreakpoint { line, .. } => BridgeResponse {
+            result: Ok(json!({ "actualLocation": { "scriptId": "1", "lineNumber": line, "columnNumber": 0 } })),
+        },
+        BridgeCommand::DebuggerClearBreakpoint { .. } => BridgeResponse { result: Ok(json!({})) },
+        BridgeCommand::DebuggerInterrupt { .. } => BridgeResponse { result: Ok(json!({})) },
+        BridgeCommand::DebuggerResume { .. } => BridgeResponse { result: Ok(json!({})) },
+        BridgeCommand::DebuggerListFrames { .. } => BridgeResponse { result: Ok(json!({ "frames": [] })) },
+        BridgeCommand::DebuggerGetEnvironment { .. } => BridgeResponse { result: Ok(json!({})) },
+        BridgeCommand::DebuggerEval { .. } => BridgeResponse { result: Ok(json!("")) },
+        BridgeCommand::DebuggerGetPossibleBreakpoints { .. } => BridgeResponse { result: Ok(json!({ "locations": [] })) },
+        BridgeCommand::DebuggerGetScriptSource { .. } => BridgeResponse { result: Ok(json!("function foo() {}")) },
+        BridgeCommand::DebuggerBlackbox { .. } => BridgeResponse { result: Ok(json!({})) },
+        BridgeCommand::DebuggerUnblackbox { .. } => BridgeResponse { result: Ok(json!({})) },
+        _ => BridgeResponse { result: Ok(json!({})) },
+    }
 }
 
 // ---- DebuggerHandler ----

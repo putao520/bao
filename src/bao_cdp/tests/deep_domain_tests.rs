@@ -25,8 +25,26 @@ impl EventSender for NoopEventSender {
 static NOOP_ES: NoopEventSender = NoopEventSender;
 fn noop_es() -> &'static dyn EventSender { &NOOP_ES }
 
+fn mock_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
+    match cmd {
+        BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Test Page")) },
+        BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://example.com")) },
+        BridgeCommand::GetDocument { .. } => BridgeResponse { result: Ok(json!({"root": {"nodeId": 1, "nodeType": 9, "nodeName": "#document", "localName": "", "nodeValue": "", "childNodeCount": 1}})) },
+        BridgeCommand::QuerySelector { .. } => BridgeResponse { result: Ok(json!({"nodeId": 42})) },
+        BridgeCommand::QuerySelectorAll { .. } => BridgeResponse { result: Ok(json!({"nodeIds": [42, 43]})) },
+        BridgeCommand::TakeScreenshot { .. } => BridgeResponse { result: Ok(json!({"data": "iVBORw0KGgo="})) },
+        BridgeCommand::EvaluateJs { .. } => BridgeResponse { result: Ok(json!("")) },
+        BridgeCommand::CreateTarget { .. } => BridgeResponse { result: Ok(json!({"targetId": "new-target-1"})) },
+        BridgeCommand::DebuggerSetBreakpoint { line, .. } => BridgeResponse {
+            result: Ok(json!({"actualLocation": {"scriptId": "1", "lineNumber": line, "columnNumber": 0}})),
+        },
+        _ => BridgeResponse { result: Ok(json!({})) },
+    }
+}
+
 /// Shared bridge + background processor: spawn a thread that drains
-/// bridge commands for the test lifetime.
+/// bridge commands for the test lifetime. Responds to all commands
+/// so Debugger BridgeCommands don't timeout.
 struct TestBridge {
     #[allow(dead_code)]
     sender: BridgeSender,
@@ -36,9 +54,26 @@ struct TestBridge {
 impl TestBridge {
     fn new() -> Self {
         let (tx, rx) = bridge_channel(Duration::from_secs(5));
+        let rx = Arc::new(Mutex::new(rx));
+
+        // Background responder: process all bridge commands with appropriate mock responses
+        let rx2 = rx.clone();
+        let keeper = tx.clone();
+        std::thread::spawn(move || {
+            let _keeper = keeper;
+            loop {
+                let guard = rx2.lock().unwrap();
+                let handled = guard.try_process(|cmd| mock_bridge_response(cmd));
+                drop(guard);
+                if !handled {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        });
+
         TestBridge {
             sender: tx,
-            receiver: Arc::new(Mutex::new(rx)),
+            receiver: rx,
         }
     }
 }
@@ -258,24 +293,12 @@ fn test_fetch_unknown_command() {
 // ===========================================================================
 
 #[test]
-fn test_debugger_enable_sets_spidermonkey_debugger() {
+fn test_debugger_enable_returns_ok() {
     let b = TestBridge::new();
     let h = DebuggerHandler::new(b.sender.clone(), TID.into());
-    let rx = b.receiver.clone();
-    let t = std::thread::spawn(move || {
-        let guard = rx.lock().unwrap();
-        guard.recv_and_process(Duration::from_secs(5), |cmd| {
-            match cmd {
-                BridgeCommand::EvaluateJs { ref expression, .. } => {
-                    assert!(expression.contains("__bao_debugger_active"));
-                }
-                _ => panic!("Expected EvaluateJs for debugger setup, got {:?}", cmd),
-            }
-            BridgeResponse { result: Ok(json!({})) }
-        });
-    });
+    // Debugger.enable now sends BridgeCommand::DebuggerEnable via bridge,
+    // the background responder returns Ok(json!({})), so handle_command returns Ok.
     assert!(h.handle_command("Debugger.enable", json!({}), noop_es()).is_ok());
-    t.join().unwrap();
 }
 
 #[test]

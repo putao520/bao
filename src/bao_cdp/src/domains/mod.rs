@@ -86,9 +86,21 @@ mod tests {
     // 2. all domains have correct names and respond to known commands
     #[test]
     fn all_domains_have_correct_names_and_respond_to_known_commands() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
+        let (bridge, rx) = bridge_channel(TIMEOUT);
         let registry = DomainRegistry::new();
-        register_all_domains_into(bridge, "test-target".into(), &registry);
+        register_all_domains_into(bridge.clone(), "test-target".into(), &registry);
+
+        // Background responder for bridge commands (Debugger.enable sends BridgeCommand)
+        let keeper = bridge.clone();
+        std::thread::spawn(move || {
+            let _keeper = keeper;
+            loop {
+                let handled = rx.try_process(|_| crate::servo_bridge::BridgeResponse { result: Ok(json!({})) });
+                if !handled {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        });
 
         // Test non-bridge commands for each domain
         let known_commands: &[(&str, Value)] = &[

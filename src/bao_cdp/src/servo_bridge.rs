@@ -15,7 +15,7 @@ use serde_json::Value;
 
 /// Commands that the CDP server sends to the main thread for servo execution.
 /// Each command carries a `target_id` identifying which page/target to route to.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum BridgeCommand {
     Navigate { target_id: String, url: String },
     EvaluateJs { target_id: String, expression: String, return_by_value: bool },
@@ -46,6 +46,20 @@ pub enum BridgeCommand {
     // Multi-target management commands
     CreateTarget { url: String },
     ListTargets,
+    // Debugger domain — mapped to servo DevtoolScriptControlMsg (BUG-CDP-006)
+    DebuggerEnable { target_id: String },
+    DebuggerDisable { target_id: String },
+    DebuggerSetBreakpoint { target_id: String, script_id: u32, offset: u32, line: u32, column: Option<u32> },
+    DebuggerClearBreakpoint { target_id: String, script_id: u32, offset: u32 },
+    DebuggerInterrupt { target_id: String },
+    DebuggerResume { target_id: String, step_type: Option<String> },
+    DebuggerListFrames { target_id: String },
+    DebuggerGetEnvironment { target_id: String, frame_actor_id: String },
+    DebuggerEval { target_id: String, expression: String, frame_actor_id: Option<String> },
+    DebuggerGetPossibleBreakpoints { target_id: String, script_id: u32 },
+    DebuggerGetScriptSource { target_id: String, script_id: u32 },
+    DebuggerBlackbox { target_id: String, script_id: u32 },
+    DebuggerUnblackbox { target_id: String, script_id: u32 },
 }
 
 /// Response from the main thread back to the CDP server.

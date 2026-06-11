@@ -77,6 +77,48 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
         BridgeCommand::CreateTarget { .. } => BridgeResponse {
             result: Ok(json!({"targetId": "new-target-1"})),
         },
+        // Debugger BridgeCommand mock responses
+        BridgeCommand::DebuggerEnable { .. } => BridgeResponse {
+            result: Ok(json!({})),
+        },
+        BridgeCommand::DebuggerDisable { .. } => BridgeResponse {
+            result: Ok(json!({})),
+        },
+        BridgeCommand::DebuggerSetBreakpoint { line, .. } => BridgeResponse {
+            result: Ok(json!({
+                "actualLocation": { "scriptId": "1", "lineNumber": line, "columnNumber": 0 }
+            })),
+        },
+        BridgeCommand::DebuggerClearBreakpoint { .. } => BridgeResponse {
+            result: Ok(json!({})),
+        },
+        BridgeCommand::DebuggerInterrupt { .. } => BridgeResponse {
+            result: Ok(json!({})),
+        },
+        BridgeCommand::DebuggerResume { .. } => BridgeResponse {
+            result: Ok(json!({})),
+        },
+        BridgeCommand::DebuggerListFrames { .. } => BridgeResponse {
+            result: Ok(json!({ "frames": [] })),
+        },
+        BridgeCommand::DebuggerGetEnvironment { .. } => BridgeResponse {
+            result: Ok(json!({ "environment": {} })),
+        },
+        BridgeCommand::DebuggerEval { .. } => BridgeResponse {
+            result: Ok(json!("")),
+        },
+        BridgeCommand::DebuggerGetPossibleBreakpoints { .. } => BridgeResponse {
+            result: Ok(json!({ "locations": [] })),
+        },
+        BridgeCommand::DebuggerGetScriptSource { .. } => BridgeResponse {
+            result: Ok(json!("function foo() {}")),
+        },
+        BridgeCommand::DebuggerBlackbox { .. } => BridgeResponse {
+            result: Ok(json!({})),
+        },
+        BridgeCommand::DebuggerUnblackbox { .. } => BridgeResponse {
+            result: Ok(json!({})),
+        },
         _ => BridgeResponse {
             result: Ok(json!({})),
         },

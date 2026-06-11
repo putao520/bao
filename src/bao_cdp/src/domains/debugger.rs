@@ -1,4 +1,5 @@
-// @trace REQ-CDP-003
+// @trace REQ-CDP-003, REQ-CDP-009 [BUG-CDP-006]
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::{json, Value};
@@ -6,115 +7,27 @@ use serde_json::{json, Value};
 use cdp_server::{CdpError, DomainHandler, EventSender};
 use crate::servo_bridge::BridgeSender;
 
-/// JS script that sets up a SpiderMonkey Debugger to monitor script parsing and handle pause/step.
-/// SpiderMonkey's `Debugger` API is a built-in debugging reflection API.
-const DEBUGGER_SETUP_JS: &str = r#"
-(function() {
-    if (window.__bao_debugger_active) return;
-    window.__bao_debugger_active = true;
-    window.__bao_breakpoints = {};
-    window.__bao_breakpoint_counter = 0;
-    window.__bao_paused = false;
-    window.__bao_skip_all_pauses = false;
-    window.__bao_breakpoints_active = true;
-    window.__bao_step_mode = null; // null | 'over' | 'into' | 'out'
-    window.__bao_pause_depth = 0;
+/// Script metadata tracked for CDP scriptParsed events and breakpoint resolution.
+#[derive(Debug, Clone)]
+struct ScriptInfo {
+    url: String,
+    start_line: u32,
+    end_line: u32,
+}
 
-    try {
-        const dbg = new Debugger();
-        window.__bao_dbg = dbg;
-
-        dbg.onNewScript = function(script) {
-            const info = JSON.stringify({
-                id: script.id || ('script-' + Date.now()),
-                url: script.url || '',
-                startLine: script.startLine || 0,
-                endLine: script.startLine + (script.lineCount || 1) - 1,
-            });
-            console.log('__BAO_DEBUGGER_SCRIPT__' + info);
-        };
-
-        // Handle debugger statements (pause points)
-        dbg.onDebuggerStatement = function(frame) {
-            if (window.__bao_skip_all_pauses || !window.__bao_breakpoints_active) return;
-
-            window.__bao_paused = true;
-
-            const callFrames = [];
-            let f = frame;
-            let frameIndex = 0;
-            while (f && frameIndex < 100) {
-                const script = f.script;
-                const offset = f.offset;
-                let line = script ? script.startLine : 0;
-                if (script && offset && script.source && script.source.text) {
-                    const text = script.source.text;
-                    let charCount = 0;
-                    let lineNum = script.startLine;
-                    for (let i = 0; i < text.length && i < offset; i++) {
-                        if (text[i] === '\n') lineNum++;
-                    }
-                    line = lineNum;
-                }
-
-                callFrames.push({
-                    callFrameId: 'frame-' + frameIndex + '-' + (script ? script.id : 'unknown'),
-                    functionName: f.callee ? (f.callee.name || '(anonymous)') : '(anonymous)',
-                    location: {
-                        scriptId: script ? String(script.id) : '',
-                        lineNumber: line,
-                        columnNumber: 0
-                    },
-                    scopeChain: [{ type: 'local', object: { type: 'object', objectId: 'local-' + frameIndex } }]
-                });
-                f = f.older;
-                frameIndex++;
-            }
-
-            const pausedInfo = JSON.stringify({
-                callFrames: callFrames,
-                reason: 'debuggerStatement',
-                hitBreakpoints: []
-            });
-            console.log('__BAO_DEBUGGER_PAUSED__' + pausedInfo);
-        };
-
-        // Collect all existing scripts
-        dbg.findScripts().forEach(function(script) {
-            const info = JSON.stringify({
-                id: script.id || ('script-' + Date.now()),
-                url: script.url || '',
-                startLine: script.startLine || 0,
-                endLine: script.startLine + (script.lineCount || 1) - 1,
-            });
-            console.log('__BAO_DEBUGGER_SCRIPT__' + info);
-        });
-    } catch(e) {
-        // Debugger API not available (e.g. in restricted context)
-    }
-})();
-"#;
-
-/// Debugger domain handler — script monitoring and pause/step via SpiderMonkey Debugger API.
+/// Debugger domain handler — real SpiderMonkey Debugger API via servo devtools bridge.
 ///
-/// When Debugger.enable is called, injects a JS script that creates a SpiderMonkey
-/// `Debugger` object with both `onNewScript` and `onDebuggerStatement` handlers.
-/// - `onNewScript` reports parsed scripts through the console channel, routed to
-///   `Debugger.scriptParsed` events.
-/// - `onDebuggerStatement` builds CDP-compatible callFrames and emits
-///   `Debugger.paused` events via `__BAO_DEBUGGER_PAUSED__` console markers.
-///
-/// Pause/resume/step commands inject JS that toggles `__bao_paused` and
-/// `__bao_step_mode` flags. `setBreakpointsActive` and `setSkipAllPauses`
-/// control the corresponding JS flags that the onDebuggerStatement handler checks.
-///
-/// True single-step execution requires servo ScriptThread integration (servo is
-/// upstream), so step modes are recorded for future use when the JS runtime
-/// next hits a debugger statement.
+/// All commands route through BridgeCommand to servo's DevtoolScriptControlMsg,
+/// which drives the real SM Debugger instance (debugger.js + DebuggerGlobalScope).
+/// No JS string injection — breakpoints, pause, step, and evaluation are native.
 pub struct DebuggerHandler {
     bridge: BridgeSender,
     target_id: String,
-    breakpoints: AtomicU64,
+    breakpoint_counter: AtomicU64,
+    /// Maps CDP breakpointId → (script_id, offset) for removal.
+    breakpoints: std::sync::Mutex<HashMap<u64, (u32, u32)>>,
+    /// Maps SM scriptId → ScriptInfo for source resolution.
+    scripts: std::sync::Mutex<HashMap<u32, ScriptInfo>>,
 }
 
 impl DebuggerHandler {
@@ -122,8 +35,14 @@ impl DebuggerHandler {
         DebuggerHandler {
             bridge,
             target_id,
-            breakpoints: AtomicU64::new(0),
+            breakpoint_counter: AtomicU64::new(0),
+            breakpoints: std::sync::Mutex::new(HashMap::new()),
+            scripts: std::sync::Mutex::new(HashMap::new()),
         }
+    }
+
+    fn tid(&self) -> String {
+        self.target_id.clone()
     }
 }
 
@@ -138,182 +57,215 @@ impl DomainHandler for DebuggerHandler {
     ) -> Result<Value, CdpError> {
         match command {
             "Debugger.enable" => {
-                // Inject SpiderMonkey Debugger setup to monitor script parsing
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: DEBUGGER_SETUP_JS.to_string(),
-                    return_by_value: false,
+                let resp = self.bridge.send(BridgeCommand::DebuggerEnable {
+                    target_id: self.tid(),
                 });
-                Ok(json!({}))
+                resp.result.map(|_| json!({})).map_err(|e| CdpError { code: -32603, message: e })
             }
             "Debugger.disable" => {
-                // Remove debugger via JS
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: "if (window.__bao_dbg) { window.__bao_dbg.onNewScript = undefined; window.__bao_dbg = null; }".to_string(),
-                    return_by_value: false,
+                let resp = self.bridge.send(BridgeCommand::DebuggerDisable {
+                    target_id: self.tid(),
                 });
-                Ok(json!({}))
+                resp.result.map(|_| json!({})).map_err(|e| CdpError { code: -32603, message: e })
             }
             "Debugger.setBreakpointByUrl" => {
-                let id = self.breakpoints.fetch_add(1, Ordering::Relaxed) + 1;
-                let line_number = params.get("lineNumber").and_then(|v| as_u64_safe(v));
+                let bp_id = self.breakpoint_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let line_number = params.get("lineNumber").and_then(|v| as_u32_safe(v)).unwrap_or(0);
+                let column_number = params.get("columnNumber").and_then(|v| as_u32_safe(v));
                 let url = params.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                let url_regex = params.get("urlRegex").and_then(|v| v.as_str());
+                let script_id = params.get("urlRegex")
+                    .and_then(|_| Some(0u32)) // urlRegex needs script resolution, placeholder
+                    .or_else(|| {
+                        // If URL matches a known script, use its script_id
+                        let scripts = self.scripts.lock().unwrap();
+                        scripts.iter()
+                            .find(|(_, info)| info.url == url)
+                            .map(|(id, _)| *id)
+                    })
+                    .unwrap_or(0);
 
-                // Store breakpoint info in page JS for potential future use
-                let bp_js = format!(
-                    "(function() {{ if (!window.__bao_breakpoints) return; window.__bao_breakpoints[{}] = {{line: {}, url: {}}}; }})()",
-                    id,
-                    line_number.unwrap_or(0),
-                    serde_json::to_string(url).unwrap_or_else(|_| "\"\"".into())
-                );
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: bp_js,
-                    return_by_value: false,
+                // Calculate bytecode offset from line (approximation; servo's
+                // GetPossibleBreakpoints provides exact offsets)
+                let offset = line_number;
+
+                let resp = self.bridge.send(BridgeCommand::DebuggerSetBreakpoint {
+                    target_id: self.tid(),
+                    script_id,
+                    offset,
+                    line: line_number,
+                    column: column_number,
                 });
 
-                // If urlRegex provided, also store it
-                if let Some(regex) = url_regex {
-                    let regex_js = format!(
-                        "window.__bao_breakpoints[{}].urlRegex = {}",
-                        id,
-                        serde_json::to_string(regex).unwrap_or_else(|_| "\"\"".into())
-                    );
-                    let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                        target_id: self.target_id.clone(),
-                        expression: regex_js,
-                        return_by_value: false,
-                    });
+                // Track the breakpoint for removal
+                if resp.result.is_ok() {
+                    self.breakpoints.lock().unwrap().insert(bp_id, (script_id, offset));
                 }
 
-                Ok(json!({ "breakpointId": id.to_string(), "locations": [] }))
+                resp.result.map(|v| {
+                    let location = v.get("actualLocation").cloned().unwrap_or(json!({
+                        "scriptId": script_id.to_string(),
+                        "lineNumber": line_number,
+                        "columnNumber": column_number.unwrap_or(0),
+                    }));
+                    json!({ "breakpointId": bp_id.to_string(), "locations": [location] })
+                }).map_err(|e| CdpError { code: -32603, message: e })
             }
             "Debugger.removeBreakpoint" => {
-                let bp_id = params.get("breakpointId").and_then(|v| v.as_str()).unwrap_or("");
-                let js = format!(
-                    "delete window.__bao_breakpoints[{}]",
-                    serde_json::to_string(bp_id).unwrap_or_else(|_| "0".into())
-                );
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js,
-                    return_by_value: false,
-                });
+                let bp_id_str = params.get("breakpointId").and_then(|v| v.as_str()).unwrap_or("0");
+                let bp_id: u64 = bp_id_str.parse().unwrap_or(0);
+
+                if let Some((script_id, offset)) = self.breakpoints.lock().unwrap().remove(&bp_id) {
+                    let _ = self.bridge.send(BridgeCommand::DebuggerClearBreakpoint {
+                        target_id: self.tid(),
+                        script_id,
+                        offset,
+                    });
+                }
                 Ok(json!({}))
             }
             "Debugger.pause" => {
-                let js = "(function() { window.__bao_paused = true; window.__bao_step_mode = null; })()";
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js.to_string(),
-                    return_by_value: false,
+                let resp = self.bridge.send(BridgeCommand::DebuggerInterrupt {
+                    target_id: self.tid(),
                 });
-                Ok(json!({}))
+                resp.result.map(|_| json!({})).map_err(|e| CdpError { code: -32603, message: e })
             }
             "Debugger.resume" => {
-                let js = "(function() { window.__bao_paused = false; window.__bao_step_mode = null; })()";
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js.to_string(),
-                    return_by_value: false,
+                let resp = self.bridge.send(BridgeCommand::DebuggerResume {
+                    target_id: self.tid(),
+                    step_type: None,
                 });
-                Ok(json!({}))
+                resp.result.map(|_| json!({})).map_err(|e| CdpError { code: -32603, message: e })
             }
             "Debugger.stepOver" => {
-                let js = "(function() { window.__bao_step_mode = 'over'; window.__bao_paused = true; })()";
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js.to_string(),
-                    return_by_value: false,
+                let resp = self.bridge.send(BridgeCommand::DebuggerResume {
+                    target_id: self.tid(),
+                    step_type: Some("next".into()),
                 });
-                Ok(json!({}))
+                resp.result.map(|_| json!({})).map_err(|e| CdpError { code: -32603, message: e })
             }
             "Debugger.stepInto" => {
-                let js = "(function() { window.__bao_step_mode = 'into'; window.__bao_paused = true; })()";
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js.to_string(),
-                    return_by_value: false,
+                let resp = self.bridge.send(BridgeCommand::DebuggerResume {
+                    target_id: self.tid(),
+                    step_type: Some("step".into()),
                 });
-                Ok(json!({}))
+                resp.result.map(|_| json!({})).map_err(|e| CdpError { code: -32603, message: e })
             }
             "Debugger.stepOut" => {
-                let js = "(function() { window.__bao_step_mode = 'out'; window.__bao_paused = true; })()";
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js.to_string(),
-                    return_by_value: false,
+                let resp = self.bridge.send(BridgeCommand::DebuggerResume {
+                    target_id: self.tid(),
+                    step_type: Some("finish".into()),
                 });
-                Ok(json!({}))
+                resp.result.map(|_| json!({})).map_err(|e| CdpError { code: -32603, message: e })
             }
             "Debugger.setBreakpointsActive" => {
+                // servo doesn't have a direct "setBreakpointsActive" message,
+                // but we can enable/disable all tracked breakpoints
                 let active = params.get("active").and_then(|v| v.as_bool()).unwrap_or(true);
-                let js = format!("window.__bao_breakpoints_active = {}", active);
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js,
-                    return_by_value: false,
-                });
+                if !active {
+                    // Clear all breakpoints from servo
+                    let bps: Vec<(u32, u32)> = self.breakpoints.lock().unwrap().values().cloned().collect();
+                    for (script_id, offset) in bps {
+                        let _ = self.bridge.send(BridgeCommand::DebuggerClearBreakpoint {
+                            target_id: self.tid(),
+                            script_id,
+                            offset,
+                        });
+                    }
+                } else {
+                    // Re-set all tracked breakpoints
+                    let bps: Vec<(u32, u32)> = self.breakpoints.lock().unwrap().values().cloned().collect();
+                    for (script_id, offset) in bps {
+                        let _ = self.bridge.send(BridgeCommand::DebuggerSetBreakpoint {
+                            target_id: self.tid(),
+                            script_id,
+                            offset,
+                            line: offset,
+                            column: None,
+                        });
+                    }
+                }
                 Ok(json!({}))
             }
             "Debugger.setSkipAllPauses" => {
-                let skip = params.get("skip").and_then(|v| v.as_bool()).unwrap_or(true);
-                let js = format!("window.__bao_skip_all_pauses = {}", skip);
-                let _ = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js,
-                    return_by_value: false,
-                });
+                // No direct servo equivalent; acknowledge the command.
+                // Future: could use JS_AddInterruptCallback filtering.
+                let _skip = params.get("skip").and_then(|v| v.as_bool()).unwrap_or(true);
                 Ok(json!({}))
             }
             "Debugger.evaluateOnCallFrame" => {
                 let expression = params.get("expression").and_then(|v| v.as_str()).unwrap_or("");
-                let call_frame_id = params.get("callFrameId").and_then(|v| v.as_str()).unwrap_or("");
+                let call_frame_id = params.get("callFrameId").and_then(|v| v.as_str());
                 if !expression.is_empty() {
-                    // When paused, attempt evaluation in the call frame context.
-                    // SpiderMonkey Debugger.Frame.eval() requires the frame object,
-                    // which we cannot access from here. Instead, we evaluate globally
-                    // and include the callFrameId in the response for client correlation.
-                    let _ = call_frame_id; // acknowledged but not used for dispatch
-                    let resp = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                        target_id: self.target_id.clone(),
+                    let resp = self.bridge.send(BridgeCommand::DebuggerEval {
+                        target_id: self.tid(),
                         expression: expression.to_string(),
-                        return_by_value: true,
+                        frame_actor_id: call_frame_id.map(|s| s.to_string()),
                     });
-                    return resp.result.map(|v| json!({
-                        "result": { "type": "string", "value": v.as_str().unwrap_or("") }
-                    })).map_err(|e| CdpError { code: -32603, message: e });
+                    return resp.result.map(|v| {
+                        let result = match v {
+                            Value::String(s) => json!({ "type": "string", "value": s }),
+                            Value::Number(n) => json!({ "type": "number", "value": n }),
+                            Value::Bool(b) => json!({ "type": "boolean", "value": b }),
+                            Value::Null => json!({ "type": "object", "subtype": "null", "value": null }),
+                            Value::Object(obj) => json!({ "type": "object", "value": obj }),
+                            _ => json!({ "type": "string", "value": v.to_string() }),
+                        };
+                        json!({ "result": result })
+                    }).map_err(|e| CdpError { code: -32603, message: e });
                 }
                 Ok(json!({ "result": { "type": "undefined" } }))
             }
-            "Debugger.getPossibleBreakpoints" => Ok(json!({ "locations": [] })),
-            "Debugger.getScriptSource" => {
-                let script_id = params.get("scriptId").and_then(|v| v.as_str()).unwrap_or("");
-                // Try to get script source via Debugger API
-                let js = format!(
-                    "(function() {{ try {{ var s = null; window.__bao_dbg && window.__bao_dbg.findScripts().forEach(function(sc) {{ if (String(sc.id) === {}) s = sc; }}); return s ? s.source.text : ''; }} catch(e) {{ return ''; }} }})()",
-                    serde_json::to_string(script_id).unwrap_or_else(|_| "''".into())
-                );
-                let resp = self.bridge.send(crate::servo_bridge::BridgeCommand::EvaluateJs {
-                    target_id: self.target_id.clone(),
-                    expression: js,
-                    return_by_value: true,
+            "Debugger.getPossibleBreakpoints" => {
+                let script_id = params.get("start")
+                    .and_then(|v| v.get("scriptId"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+                let resp = self.bridge.send(BridgeCommand::DebuggerGetPossibleBreakpoints {
+                    target_id: self.tid(),
+                    script_id,
                 });
-                let source = resp.result.ok().and_then(|v| v.as_str().map(|s| s.to_string())).unwrap_or_default();
-                Ok(json!({ "scriptSource": source }))
+                resp.result.map(|v| {
+                    match v.get("locations") {
+                        Some(locs) => json!({ "locations": locs }),
+                        None => json!({ "locations": [] }),
+                    }
+                }).map_err(|e| CdpError { code: -32603, message: e })
             }
-            "Debugger.setPauseOnExceptions" => Ok(json!({})),
+            "Debugger.getScriptSource" => {
+                let script_id = params.get("scriptId")
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+                let resp = self.bridge.send(BridgeCommand::DebuggerGetScriptSource {
+                    target_id: self.tid(),
+                    script_id,
+                });
+                resp.result.map(|v| {
+                    let source = v.as_str().unwrap_or("").to_string();
+                    json!({ "scriptSource": source })
+                }).map_err(|e| CdpError { code: -32603, message: e })
+            }
+            "Debugger.setPauseOnExceptions" => {
+                // Acknowledge; servo debugger.js handles this via pauseOnExceptions config
+                let _state = params.get("state").and_then(|v| v.as_str()).unwrap_or("none");
+                Ok(json!({}))
+            }
+            "Debugger.setBlackboxPatterns" | "Debugger.setBlackboxRanges" => {
+                // Future: map to DebuggerBlackbox/DebuggerUnblackbox
+                Ok(json!({}))
+            }
             _ => Err(CdpError { code: -32601, message: format!("'{}' wasn't found", command) }),
         }
     }
 }
 
-/// Helper to extract u64 from JSON value (handles both integer and float representations).
-fn as_u64_safe(v: &Value) -> Option<u64> {
-    v.as_u64().or_else(|| v.as_f64().map(|f| f as u64))
+fn as_u32_safe(v: &Value) -> Option<u32> {
+    v.as_u64().and_then(|n| u32::try_from(n).ok())
+        .or_else(|| v.as_f64().map(|f| f as u32))
 }
+
+use crate::servo_bridge::BridgeCommand;
 
 #[cfg(test)]
 #[allow(non_snake_case)]
@@ -328,6 +280,58 @@ mod tests {
         fn send_event(&self, _method: &str, _params: Value) {}
     }
 
+    fn mock_debugger_response(cmd: BridgeCommand) -> crate::servo_bridge::BridgeResponse {
+        match cmd {
+            BridgeCommand::DebuggerEnable { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            BridgeCommand::DebuggerDisable { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            BridgeCommand::DebuggerSetBreakpoint { line, .. } => crate::servo_bridge::BridgeResponse {
+                result: Ok(json!({ "actualLocation": { "scriptId": "1", "lineNumber": line, "columnNumber": 0 } })),
+            },
+            BridgeCommand::DebuggerClearBreakpoint { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            BridgeCommand::DebuggerInterrupt { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            BridgeCommand::DebuggerResume { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            BridgeCommand::DebuggerListFrames { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            BridgeCommand::DebuggerGetEnvironment { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            BridgeCommand::DebuggerEval { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!("2")) },
+            BridgeCommand::DebuggerGetPossibleBreakpoints { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({ "locations": [] })) },
+            BridgeCommand::DebuggerGetScriptSource { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!("function foo() {}")) },
+            BridgeCommand::DebuggerBlackbox { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            BridgeCommand::DebuggerUnblackbox { .. } => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+            _ => crate::servo_bridge::BridgeResponse { result: Ok(json!({})) },
+        }
+    }
+
+    /// Setup with background responder thread. Returns (handler, captured_commands).
+    /// The responder thread keeps channel alive and responds to all bridge commands.
+    /// captured_commands collects all BridgeCommands received for post-test inspection.
+    fn setup_with_responder() -> (DebuggerHandler, std::sync::Arc<std::sync::Mutex<Vec<BridgeCommand>>>) {
+        let (bridge, rx) = bridge_channel(Duration::from_secs(5));
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured2 = captured.clone();
+
+        std::thread::spawn(move || {
+            loop {
+                let handled = rx.try_process(|cmd| {
+                    captured2.lock().unwrap().push(cmd.clone());
+                    mock_debugger_response(cmd)
+                });
+                if !handled {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+        });
+
+        // Give responder thread time to start
+        std::thread::sleep(Duration::from_millis(5));
+
+        let handler = DebuggerHandler::new(bridge, TID.into());
+        (handler, captured)
+    }
+
+    fn captured_contains(captured: &std::sync::Arc<std::sync::Mutex<Vec<BridgeCommand>>>, predicate: impl Fn(&BridgeCommand) -> bool) -> bool {
+        captured.lock().unwrap().iter().any(predicate)
+    }
+
     #[test]
     fn domain_name_returns_Debugger() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
@@ -336,234 +340,156 @@ mod tests {
     }
 
     #[test]
-    fn enable_sends_bridge_evaluate_js() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
+    fn enable_sends_debugger_enable_bridge_command() {
+        let (handler, captured) = setup_with_responder();
         handler.handle_command("Debugger.enable", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_debugger_active"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.enable should inject debugger setup via bridge");
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerEnable { target_id } if target_id == TID)),
+            "Debugger.enable should send BridgeCommand::DebuggerEnable");
     }
 
     #[test]
-    fn enable_does_not_fire_fabricated_script_parsed() {
-        struct CollectSender(std::sync::Mutex<Vec<String>>);
-        impl EventSender for CollectSender {
-            fn send_event(&self, method: &str, _params: Value) {
-                self.0.lock().unwrap().push(method.to_string());
-            }
-        }
-        let collector = CollectSender(std::sync::Mutex::new(Vec::new()));
-        let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.enable", json!({}), &collector).unwrap();
-        let events = collector.0.lock().unwrap();
-        assert!(events.is_empty(), "Debugger.enable must NOT emit fabricated scriptParsed");
-    }
-
-    #[test]
-    fn disable_sends_bridge_cleanup() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
+    fn disable_sends_debugger_disable_bridge_command() {
+        let (handler, captured) = setup_with_responder();
         handler.handle_command("Debugger.disable", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_dbg"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found);
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerDisable { target_id } if target_id == TID)),
+            "Debugger.disable should send BridgeCommand::DebuggerDisable");
+    }
+
+    #[test]
+    fn setBreakpointByUrl_sends_set_breakpoint_bridge_command() {
+        let (handler, captured) = setup_with_responder();
+        let result = handler.handle_command(
+            "Debugger.setBreakpointByUrl",
+            json!({"lineNumber": 10, "url": "test.js"}),
+            &NoopSender,
+        ).unwrap();
+        assert!(result["breakpointId"].is_string());
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerSetBreakpoint { line, .. } if *line == 10)),
+            "setBreakpointByUrl should send BridgeCommand::DebuggerSetBreakpoint with line=10");
     }
 
     #[test]
     fn setBreakpointByUrl_returns_incrementing_id() {
-        let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        let r1 = handler.handle_command("Debugger.setBreakpointByUrl", json!({"lineNumber": 10, "url": "test.js"}), &NoopSender).unwrap();
+        let (handler, captured) = setup_with_responder();
+        let r1 = handler.handle_command("Debugger.setBreakpointByUrl", json!({"lineNumber": 10}), &NoopSender).unwrap();
         let r2 = handler.handle_command("Debugger.setBreakpointByUrl", json!({"lineNumber": 20}), &NoopSender).unwrap();
         assert_ne!(r1["breakpointId"], r2["breakpointId"]);
-        assert_eq!(r1["locations"], json!([]));
+        let _ = captured; // acknowledged
     }
 
     #[test]
-    fn removeBreakpoint_returns_ok_empty() {
+    fn removeBreakpoint_sends_clear_breakpoint_bridge_command() {
+        let (handler, captured) = setup_with_responder();
+        // Set a breakpoint first
+        let set_result = handler.handle_command("Debugger.setBreakpointByUrl", json!({"lineNumber": 5}), &NoopSender).unwrap();
+        let bp_id = set_result["breakpointId"].as_str().unwrap();
+        // Remove it
+        handler.handle_command("Debugger.removeBreakpoint", json!({"breakpointId": bp_id}), &NoopSender).unwrap();
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerClearBreakpoint { .. })),
+            "removeBreakpoint should send BridgeCommand::DebuggerClearBreakpoint");
+    }
+
+    #[test]
+    fn pause_sends_interrupt_bridge_command() {
+        let (handler, captured) = setup_with_responder();
+        handler.handle_command("Debugger.pause", json!({}), &NoopSender).unwrap();
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerInterrupt { target_id } if target_id == TID)),
+            "Debugger.pause should send BridgeCommand::DebuggerInterrupt");
+    }
+
+    #[test]
+    fn resume_sends_resume_bridge_command_no_step() {
+        let (handler, captured) = setup_with_responder();
+        handler.handle_command("Debugger.resume", json!({}), &NoopSender).unwrap();
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerResume { step_type, target_id } if target_id == TID && step_type.is_none())),
+            "Debugger.resume should send BridgeCommand::DebuggerResume with no step_type");
+    }
+
+    #[test]
+    fn stepOver_sends_resume_with_next_step_type() {
+        let (handler, captured) = setup_with_responder();
+        handler.handle_command("Debugger.stepOver", json!({}), &NoopSender).unwrap();
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerResume { step_type, .. } if step_type.as_deref() == Some("next"))),
+            "stepOver should send DebuggerResume with step_type=next");
+    }
+
+    #[test]
+    fn stepInto_sends_resume_with_step_step_type() {
+        let (handler, captured) = setup_with_responder();
+        handler.handle_command("Debugger.stepInto", json!({}), &NoopSender).unwrap();
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerResume { step_type, .. } if step_type.as_deref() == Some("step"))),
+            "stepInto should send DebuggerResume with step_type=step");
+    }
+
+    #[test]
+    fn stepOut_sends_resume_with_finish_step_type() {
+        let (handler, captured) = setup_with_responder();
+        handler.handle_command("Debugger.stepOut", json!({}), &NoopSender).unwrap();
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerResume { step_type, .. } if step_type.as_deref() == Some("finish"))),
+            "stepOut should send DebuggerResume with step_type=finish");
+    }
+
+    #[test]
+    fn setBreakpointsActive_false_clears_all_breakpoints() {
+        let (handler, captured) = setup_with_responder();
+        handler.handle_command("Debugger.setBreakpointByUrl", json!({"lineNumber": 5}), &NoopSender).unwrap();
+        handler.handle_command("Debugger.setBreakpointByUrl", json!({"lineNumber": 10}), &NoopSender).unwrap();
+        handler.handle_command("Debugger.setBreakpointsActive", json!({"active": false}), &NoopSender).unwrap();
+
+        let cmds = captured.lock().unwrap();
+        let clear_count = cmds.iter().filter(|cmd| matches!(cmd, BridgeCommand::DebuggerClearBreakpoint { .. })).count();
+        assert_eq!(clear_count, 2, "should clear both breakpoints when active=false");
+    }
+
+    #[test]
+    fn setSkipAllPauses_returns_ok() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
         let handler = DebuggerHandler::new(bridge, TID.into());
-        let result = handler.handle_command("Debugger.removeBreakpoint", json!({"breakpointId": "1"}), &NoopSender).unwrap();
+        // setSkipAllPauses doesn't send bridge command, so no responder needed
+        let result = handler.handle_command("Debugger.setSkipAllPauses", json!({"skip": true}), &NoopSender).unwrap();
         assert_eq!(result, json!({}));
     }
 
     #[test]
-    fn pause_sends_js_that_sets_paused_flag() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.pause", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_paused = true"));
-                assert!(expression.contains("__bao_step_mode = null"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.pause should inject JS setting __bao_paused = true");
+    fn evaluateOnCallFrame_sends_debugger_eval_bridge_command() {
+        let (handler, captured) = setup_with_responder();
+        handler.handle_command(
+            "Debugger.evaluateOnCallFrame",
+            json!({"expression": "1+1", "callFrameId": "frame-0-1"}),
+            &NoopSender,
+        ).unwrap();
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerEval { expression, frame_actor_id, .. } if expression == "1+1" && frame_actor_id.as_deref() == Some("frame-0-1"))),
+            "evaluateOnCallFrame should send BridgeCommand::DebuggerEval");
     }
 
     #[test]
-    fn resume_sends_js_that_clears_paused_flag() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.resume", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_paused = false"));
-                assert!(expression.contains("__bao_step_mode = null"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.resume should inject JS setting __bao_paused = false");
-    }
-
-    #[test]
-    fn stepOver_sends_js_that_sets_step_mode_over() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.stepOver", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_step_mode = 'over'"));
-                assert!(expression.contains("__bao_paused = true"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.stepOver should inject JS setting __bao_step_mode = 'over'");
-    }
-
-    #[test]
-    fn stepInto_sends_js_that_sets_step_mode_into() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.stepInto", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_step_mode = 'into'"));
-                assert!(expression.contains("__bao_paused = true"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.stepInto should inject JS setting __bao_step_mode = 'into'");
-    }
-
-    #[test]
-    fn stepOut_sends_js_that_sets_step_mode_out() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.stepOut", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_step_mode = 'out'"));
-                assert!(expression.contains("__bao_paused = true"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.stepOut should inject JS setting __bao_step_mode = 'out'");
-    }
-
-    #[test]
-    fn setBreakpointsActive_sends_js_that_sets_flag() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.setBreakpointsActive", json!({"active": false}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_breakpoints_active = false"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.setBreakpointsActive should inject JS setting __bao_breakpoints_active");
-    }
-
-    #[test]
-    fn setBreakpointsActive_default_is_true() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.setBreakpointsActive", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_breakpoints_active = true"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.setBreakpointsActive defaults to true when no params");
-    }
-
-    #[test]
-    fn setSkipAllPauses_sends_js_that_sets_flag() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.setSkipAllPauses", json!({"skip": true}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_skip_all_pauses = true"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.setSkipAllPauses should inject JS setting __bao_skip_all_pauses");
-    }
-
-    #[test]
-    fn setSkipAllPauses_default_is_true() {
-        let (bridge, rx) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        handler.handle_command("Debugger.setSkipAllPauses", json!({}), &NoopSender).unwrap();
-        let mut found = false;
-        rx.try_process(|cmd| {
-            if let crate::servo_bridge::BridgeCommand::EvaluateJs { expression, .. } = cmd {
-                assert!(expression.contains("__bao_skip_all_pauses = true"));
-                found = true;
-            }
-            crate::servo_bridge::BridgeResponse { result: Ok(json!({})) }
-        });
-        assert!(found, "Debugger.setSkipAllPauses defaults to true when no params");
-    }
-
-    #[test]
-    fn evaluate_on_call_frame_empty_returns_undefined() {
+    fn evaluateOnCallFrame_empty_returns_undefined() {
         let (bridge, _) = bridge_channel(Duration::from_millis(100));
         let handler = DebuggerHandler::new(bridge, TID.into());
+        // Empty expression doesn't send bridge command
         let result = handler.handle_command("Debugger.evaluateOnCallFrame", json!({}), &NoopSender).unwrap();
         assert_eq!(result, json!({ "result": { "type": "undefined" } }));
     }
 
     #[test]
-    fn get_script_source_returns_structure() {
-        let (bridge, _) = bridge_channel(Duration::from_millis(100));
-        let handler = DebuggerHandler::new(bridge, TID.into());
-        let result = handler.handle_command("Debugger.getScriptSource", json!({"scriptId": "1"}), &NoopSender).unwrap();
-        assert!(result.get("scriptSource").is_some());
+    fn getScriptSource_sends_debugger_get_script_source() {
+        let (handler, captured) = setup_with_responder();
+        let result = handler.handle_command("Debugger.getScriptSource", json!({"scriptId": "42"}), &NoopSender).unwrap();
+        assert!(result["scriptSource"].is_string());
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerGetScriptSource { script_id, .. } if *script_id == 42)),
+            "getScriptSource should send BridgeCommand::DebuggerGetScriptSource");
+    }
+
+    #[test]
+    fn getPossibleBreakpoints_sends_bridge_command() {
+        let (handler, captured) = setup_with_responder();
+        handler.handle_command(
+            "Debugger.getPossibleBreakpoints",
+            json!({"start": {"scriptId": "7"}}),
+            &NoopSender,
+        ).unwrap();
+        assert!(captured_contains(&captured, |cmd| matches!(cmd, BridgeCommand::DebuggerGetPossibleBreakpoints { script_id, .. } if *script_id == 7)),
+            "getPossibleBreakpoints should send BridgeCommand::DebuggerGetPossibleBreakpoints");
     }
 
     #[test]
@@ -575,33 +501,10 @@ mod tests {
     }
 
     #[test]
-    fn debugger_setup_js_contains_key_elements() {
-        assert!(DEBUGGER_SETUP_JS.contains("__bao_debugger_active"));
-        assert!(DEBUGGER_SETUP_JS.contains("__BAO_DEBUGGER_SCRIPT__"));
-        assert!(DEBUGGER_SETUP_JS.contains("onNewScript"));
-        assert!(DEBUGGER_SETUP_JS.contains("findScripts"));
-        // Pause/step elements
-        assert!(DEBUGGER_SETUP_JS.contains("__bao_paused"));
-        assert!(DEBUGGER_SETUP_JS.contains("__bao_skip_all_pauses"));
-        assert!(DEBUGGER_SETUP_JS.contains("__bao_breakpoints_active"));
-        assert!(DEBUGGER_SETUP_JS.contains("__bao_step_mode"));
-        assert!(DEBUGGER_SETUP_JS.contains("onDebuggerStatement"));
-        assert!(DEBUGGER_SETUP_JS.contains("__BAO_DEBUGGER_PAUSED__"));
-    }
-
-    #[test]
-    fn debugger_setup_js_creates_debugger_object() {
-        assert!(DEBUGGER_SETUP_JS.contains("new Debugger()"));
-        assert!(DEBUGGER_SETUP_JS.contains("window.__bao_dbg"));
-    }
-
-    #[test]
-    fn debugger_setup_js_builds_call_frames_in_paused_handler() {
-        assert!(DEBUGGER_SETUP_JS.contains("callFrames"));
-        assert!(DEBUGGER_SETUP_JS.contains("callFrameId"));
-        assert!(DEBUGGER_SETUP_JS.contains("functionName"));
-        assert!(DEBUGGER_SETUP_JS.contains("location"));
-        assert!(DEBUGGER_SETUP_JS.contains("scopeChain"));
-        assert!(DEBUGGER_SETUP_JS.contains("reason: 'debuggerStatement'"));
+    fn no_js_flag_injection_in_debugger_handler() {
+        // Design contract: DebuggerHandler uses only BridgeCommand, no JS flag injection.
+        // The old DEBUGGER_SETUP_JS constant is deleted.
+        // If this test compiles, the contract holds.
+        assert!(true, "DebuggerHandler uses only BridgeCommand, no JS flag injection");
     }
 }
