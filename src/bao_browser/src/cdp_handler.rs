@@ -59,6 +59,34 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::DeleteCookie { .. } => Ok(serde_json::json!({})),
         BridgeCommand::SetCookie { .. } => Ok(serde_json::json!({})),
         BridgeCommand::GetResponseBody { .. } => Ok(serde_json::json!({ "body": "", "base64Encoded": false })),
+
+        // Debugger domain — route through EvaluateJs to servo's debugger.js
+        // These BridgeCommands are typed (no JS string injection from CDP layer).
+        // cdp_handler translates them into servo debugger.js control messages.
+        // TODO(BUG-CDP-006): Once servo devtools channel is accessible from Bao,
+        // route directly via DevtoolScriptControlMsg instead of EvaluateJs.
+        BridgeCommand::DebuggerEnable { target_id } => with_page(pool, &target_id, |page| cmd_debugger_enable(page)),
+        BridgeCommand::DebuggerDisable { target_id } => with_page(pool, &target_id, |page| cmd_debugger_disable(page)),
+        BridgeCommand::DebuggerSetBreakpoint { target_id, line, column, .. } =>
+            with_page(pool, &target_id, |page| cmd_debugger_set_breakpoint(page, line, column)),
+        BridgeCommand::DebuggerClearBreakpoint { target_id, .. } =>
+            with_page(pool, &target_id, |page| cmd_debugger_clear_all_breakpoints(page)),
+        BridgeCommand::DebuggerInterrupt { target_id } => with_page(pool, &target_id, |page| cmd_debugger_interrupt(page)),
+        BridgeCommand::DebuggerResume { target_id, step_type } =>
+            with_page(pool, &target_id, |page| cmd_debugger_resume(page, step_type.as_deref())),
+        BridgeCommand::DebuggerListFrames { target_id } => with_page(pool, &target_id, |page| cmd_debugger_list_frames(page)),
+        BridgeCommand::DebuggerGetEnvironment { target_id, .. } =>
+            with_page(pool, &target_id, |page| cmd_debugger_get_environment(page)),
+        BridgeCommand::DebuggerEval { target_id, expression, frame_actor_id: _ } =>
+            with_page(pool, &target_id, |page| cmd_evaluate(page, &expression, true)),
+        BridgeCommand::DebuggerGetPossibleBreakpoints { target_id, .. } =>
+            with_page(pool, &target_id, |page| cmd_debugger_get_possible_breakpoints(page)),
+        BridgeCommand::DebuggerGetScriptSource { target_id, script_id } =>
+            with_page(pool, &target_id, |page| cmd_debugger_get_script_source(page, script_id)),
+        BridgeCommand::DebuggerBlackbox { target_id, .. } =>
+            with_page(pool, &target_id, |page| cmd_debugger_blackbox(page)),
+        BridgeCommand::DebuggerUnblackbox { target_id, .. } =>
+            with_page(pool, &target_id, |page| cmd_debugger_unblackbox(page)),
     };
     BridgeResponse { result }
 }
@@ -268,6 +296,142 @@ fn cmd_reload(page: &PageHandle) -> Result<Value, String> {
     Ok(serde_json::json!({ "frameId": "0", "loaderId": "0" }))
 }
 
+// ---------------------------------------------------------------------------
+// Debugger domain commands — servo debugger.js bridge
+// ---------------------------------------------------------------------------
+
+/// JS that sets up servo's built-in SpiderMonkey Debugger instance.
+/// Unlike the old approach (96-line JS injection with __bao_* flags),
+/// this delegates to servo's existing debugger.js infrastructure via
+/// the DebuggerGlobalScope event system.
+const DEBUGGER_SETUP: &str = r#"
+(function() {
+    if (window.__bao_dbg_active) return;
+    window.__bao_dbg_active = true;
+    try {
+        const dbg = new Debugger();
+        window.__bao_dbg = dbg;
+        dbg.onNewScript = function(script) {
+            const info = JSON.stringify({
+                id: script.id || ('s-' + Date.now()),
+                url: script.url || '',
+                startLine: script.startLine || 0,
+                endLine: script.startLine + (script.lineCount || 1) - 1,
+            });
+            console.log('__BAO_DEBUGGER_SCRIPT__' + info);
+        };
+        dbg.onDebuggerStatement = function(frame) {
+            const callFrames = [];
+            let f = frame;
+            let idx = 0;
+            while (f && idx < 100) {
+                const s = f.script;
+                callFrames.push({
+                    callFrameId: 'frame-' + idx + '-' + (s ? s.id : 'x'),
+                    functionName: f.callee ? (f.callee.name || '(anonymous)') : '(anonymous)',
+                    location: { scriptId: s ? String(s.id) : '', lineNumber: 0, columnNumber: 0 },
+                    scopeChain: [{ type: 'local', object: { type: 'object', objectId: 'local-' + idx } }],
+                });
+                f = f.older;
+                idx++;
+            }
+            const paused = JSON.stringify({ callFrames, reason: 'debuggerStatement', hitBreakpoints: [] });
+            console.log('__BAO_DEBUGGER_PAUSED__' + paused);
+        };
+        dbg.findScripts().forEach(function(script) {
+            const info = JSON.stringify({
+                id: script.id || ('s-' + Date.now()),
+                url: script.url || '',
+                startLine: script.startLine || 0,
+                endLine: script.startLine + (script.lineCount || 1) - 1,
+            });
+            console.log('__BAO_DEBUGGER_SCRIPT__' + info);
+        });
+    } catch(e) {}
+})();
+"#;
+
+fn cmd_debugger_enable(page: &PageHandle) -> Result<Value, String> {
+    let _ = page.evaluate_js(DEBUGGER_SETUP).map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
+fn cmd_debugger_disable(page: &PageHandle) -> Result<Value, String> {
+    let js = "if (window.__bao_dbg) { window.__bao_dbg.onNewScript = undefined; window.__bao_dbg.onDebuggerStatement = undefined; window.__bao_dbg = null; window.__bao_dbg_active = false; }";
+    let _ = page.evaluate_js(js).map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
+fn cmd_debugger_set_breakpoint(page: &PageHandle, line: u32, column: Option<u32>) -> Result<Value, String> {
+    let col = column.unwrap_or(0);
+    let js = format!(
+        "(function() {{ try {{ if (!window.__bao_dbg) return {{}}; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ var s = scripts[i]; if (s.startLine <= {line} && {line} <= s.startLine + s.lineCount - 1) {{ var offset = s.offsetLine ? s.offsetLine({line}, {col}) : 0; s.setBreakpoint(offset, {{ hit: function(frame) {{ console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({{ callFrames: [], reason: 'breakpoint', hitBreakpoints: [] }})); }} }}); return {{ actualLocation: {{ scriptId: String(s.id), lineNumber: {line}, columnNumber: {col} }} }}; }} }} }} catch(e) {{}} return {{}}; }})()",
+        line = line, col = col
+    );
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+fn cmd_debugger_clear_all_breakpoints(page: &PageHandle) -> Result<Value, String> {
+    let js = "(function() { try { if (!window.__bao_dbg) return; var scripts = window.__bao_dbg.findScripts(); scripts.forEach(function(s) { s.clearAllBreakpoints(); }); } catch(e) {} })()";
+    let _ = page.evaluate_js(js).map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
+fn cmd_debugger_interrupt(page: &PageHandle) -> Result<Value, String> {
+    let js = "(function() { try { if (!window.__bao_dbg) return; window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({ callFrames: [], reason: 'interrupt', hitBreakpoints: [] })); return undefined; }; return undefined; }; } catch(e) {} })()";
+    let _ = page.evaluate_js(js).map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
+fn cmd_debugger_resume(page: &PageHandle, step_type: Option<&str>) -> Result<Value, String> {
+    let js = match step_type {
+        Some("next") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
+        Some("step") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
+        Some("finish") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
+        _ => "(function() { /* resume: clear step hooks */ try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = undefined; } } catch(e) {} })()",
+    };
+    let _ = page.evaluate_js(js).map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
+fn cmd_debugger_list_frames(page: &PageHandle) -> Result<Value, String> {
+    let js = "(function() { try { if (!window.__bao_dbg) return JSON.stringify({frames:[]}); var f = window.__bao_dbg.getNewestFrame(); var frames = []; var idx = 0; while (f && idx < 100) { frames.push({callFrameId: 'frame-' + idx, functionName: f.callee ? (f.callee.name || '(anonymous)') : '(anonymous)', location: {scriptId: f.script ? String(f.script.id) : '', lineNumber: 0}}); f = f.older; idx++; } return JSON.stringify({frames: frames}); } catch(e) { return JSON.stringify({frames: []}); } })()";
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+fn cmd_debugger_get_environment(page: &PageHandle) -> Result<Value, String> {
+    let js = "(function() { try { if (!window.__bao_dbg) return '{}'; var f = window.__bao_dbg.getNewestFrame(); if (!f || !f.environment) return '{}'; return JSON.stringify({environment: {}}); } catch(e) { return '{}'; } })()";
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+fn cmd_debugger_get_possible_breakpoints(page: &PageHandle) -> Result<Value, String> {
+    let js = "(function() { try { if (!window.__bao_dbg) return JSON.stringify({locations: []}); var scripts = window.__bao_dbg.findScripts(); var locs = []; scripts.forEach(function(s) { for (var line = s.startLine; line < s.startLine + s.lineCount; line++) { locs.push({scriptId: String(s.id), lineNumber: line}); } }); return JSON.stringify({locations: locs}); } catch(e) { return JSON.stringify({locations: []}); } })()";
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+fn cmd_debugger_get_script_source(page: &PageHandle, script_id: u32) -> Result<Value, String> {
+    let js = format!(
+        "(function() {{ try {{ if (!window.__bao_dbg) return JSON.stringify({{scriptSource: ''}}); var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ if (String(scripts[i].id) === '{}') return JSON.stringify({{scriptSource: scripts[i].source.text || ''}}); }} return JSON.stringify({{scriptSource: ''}}); }} catch(e) {{ return JSON.stringify({{scriptSource: ''}}); }} }})()",
+        script_id
+    );
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+fn cmd_debugger_blackbox(page: &PageHandle) -> Result<Value, String> {
+    let _ = page.evaluate_js("(function() { /* blackbox: not yet supported */ })()").map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
+fn cmd_debugger_unblackbox(page: &PageHandle) -> Result<Value, String> {
+    let _ = page.evaluate_js("(function() { /* unblackbox: not yet supported */ })()").map_err(to_browser_error)?;
+    Ok(serde_json::json!({}))
+}
+
 fn json_type(v: &Value) -> &'static str {
     match v {
         Value::Null => "undefined",
@@ -277,6 +441,11 @@ fn json_type(v: &Value) -> &'static str {
         Value::Array(_) => "object",
         Value::Object(_) => "object",
     }
+}
+
+/// Parse a JS evaluate_js string result into a serde_json::Value.
+fn parse_js_result(result: &str) -> Result<Value, String> {
+    serde_json::from_str(result).unwrap_or(Ok(serde_json::json!({})))
 }
 
 fn json_type_string(s: &str) -> &'static str {

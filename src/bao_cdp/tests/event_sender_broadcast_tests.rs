@@ -6,7 +6,7 @@ use bao_cdp::domains::{
     RuntimeHandler, DebuggerHandler, PageHandler, NetworkHandler,
     TargetHandler, DomHandler, EmulationHandler, InputHandler,
 };
-use bao_cdp::servo_bridge::bridge_channel;
+use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeResponse};
 use cdp_server::{DomainRegistry, EventSender};
 use serde_json::json;
 use std::sync::mpsc::channel;
@@ -53,7 +53,7 @@ fn session_event_sender_multiple_events_queued() {
 
 fn setup_registry_with_all_domains() -> DomainRegistry {
     let registry = DomainRegistry::new();
-    let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
+    let (bridge, rx) = bridge_channel(Duration::from_secs(5));
     registry.register(Box::new(PageHandler::new(bridge.clone(), TID.into()))).unwrap();
     registry.register(Box::new(RuntimeHandler::new(bridge.clone(), TID.into()))).unwrap();
     registry.register(Box::new(DomHandler::new(bridge.clone(), TID.into()))).unwrap();
@@ -62,6 +62,17 @@ fn setup_registry_with_all_domains() -> DomainRegistry {
     registry.register(Box::new(InputHandler::new(bridge.clone(), TID.into()))).unwrap();
     registry.register(Box::new(EmulationHandler::new(bridge.clone(), TID.into()))).unwrap();
     registry.register(Box::new(TargetHandler::new(bridge, "test-target-id".to_string()))).unwrap();
+
+    // Background responder: owns receiver exclusively
+    std::thread::spawn(move || {
+        loop {
+            let handled = rx.try_process(|_cmd| BridgeResponse { result: Ok(json!({})) });
+            if !handled {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    });
+
     registry
 }
 

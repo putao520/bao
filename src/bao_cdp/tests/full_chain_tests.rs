@@ -2,7 +2,7 @@
 // CDP full-chain integration: DomainRegistry + DomainHandler command routing
 
 use bao_cdp::domains::register_all_domains_into;
-use bao_cdp::servo_bridge::bridge_channel;
+use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeResponse};
 use cdp_server::{DomainRegistry, EventSender, CdpError};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -16,8 +16,19 @@ impl EventSender for NoopSender {
 
 fn make_registry() -> DomainRegistry {
     let mut reg = DomainRegistry::new();
-    let (tx, _rx) = bridge_channel(Duration::from_secs(5));
+    let (tx, rx) = bridge_channel(Duration::from_secs(5));
     register_all_domains_into(tx, TID.into(), &mut reg);
+
+    // Background responder: owns receiver exclusively
+    std::thread::spawn(move || {
+        loop {
+            let handled = rx.try_process(|_cmd| BridgeResponse { result: Ok(json!({})) });
+            if !handled {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    });
+
     reg
 }
 
