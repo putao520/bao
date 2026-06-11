@@ -1,6 +1,6 @@
 // @trace REQ-ENG-005
 use ::std::cell::RefCell;
-use ::std::collections::HashMap;
+use ::std::collections::HashSet;
 use ::std::ffi::CString;
 use ::std::fs;
 use ::std::path::{Path, PathBuf};
@@ -28,9 +28,56 @@ use crate::value::{JsValue, jsval_to_jsvalue};
 pub type ResolverFn = fn(&str, Option<&Path>) -> Option<PathBuf>;
 
 thread_local! {
-    static MODULE_CACHE: RefCell<HashMap<::std::string::String, *mut JSObject>> = RefCell::new(HashMap::new());
+    /// GC-safe module cache: stores cached module objects as properties on the JS global.
+    /// We only track which keys are set (a HashSet of strings). The actual `*mut JSObject`
+    /// pointers are managed by SpiderMonkey's GC via global object properties.
+    /// Property name format: `__gc_mod_{cache_key}`.
+    static MODULE_CACHE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static CURRENT_DIR: RefCell<::std::option::Option<::std::path::PathBuf>> = const { RefCell::new(None) };
     static EXTERNAL_RESOLVER: RefCell<Option<ResolverFn>> = const { RefCell::new(None) };
+}
+
+/// Format a module cache property name: `__gc_mod_{key}`.
+fn mod_prop_name(key: &str) -> CString {
+    CString::new(format!("__gc_mod_{}", key)).unwrap_or_default()
+}
+
+/// Store a module object in the GC-safe MODULE_CACHE.
+fn module_cache_insert(cx: *mut JSContext, key: &str, obj: *mut JSObject) {
+    if obj.is_null() { return; }
+    let global = unsafe { CurrentGlobalOrNull(cx) };
+    if global.is_null() { return; }
+    let prop_name = mod_prop_name(key);
+    let obj_val = mozjs::jsval::ObjectValue(obj);
+    let obj_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &obj_val };
+    unsafe {
+        JS_DefineProperty(
+            cx,
+            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+            prop_name.as_ptr(),
+            obj_h,
+            JSPROP_READONLY as u32,
+        );
+    }
+    MODULE_CACHE.with(|c| c.borrow_mut().insert(key.to_string()));
+}
+
+/// Retrieve a module object from the GC-safe MODULE_CACHE.
+fn module_cache_get(cx: *mut JSContext, key: &str) -> Option<*mut JSObject> {
+    if !MODULE_CACHE.with(|c| c.borrow().contains(key)) { return None; }
+    let global = unsafe { CurrentGlobalOrNull(cx) };
+    if global.is_null() { return None; }
+    let prop_name = mod_prop_name(key);
+    let mut val = UndefinedValue();
+    unsafe {
+        JS_GetProperty(
+            cx,
+            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+            prop_name.as_ptr(),
+            MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val },
+        );
+    }
+    if val.is_object() { Some(val.to_object()) } else { None }
 }
 
 /// Inject an external resolver function (e.g. `bun_resolver::Resolver` bridge).
@@ -236,21 +283,21 @@ export default _m;
     if let Some(esm_src) = synthetic_esm {
         // Check cache first — synthetic modules must be returned as the same object
         let cache_key = format!("builtin:{}", stripped);
-        let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
-        if let Some(existing) = cached && !existing.is_null() {
-            return existing;
-        }
-
-        let c_filename = CString::new(format!("<builtin:{}>", stripped))
-            .unwrap_or_else(|_| CString::new("<builtin>").unwrap());
-        let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
-        if !opts.is_null() {
-            let mut src = transform_str_to_source_text(esm_src);
-            let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
-            libc::free(opts as *mut _);
-            if !module.is_null() {
-                MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, module));
+                let cached = module_cache_get(raw_cx, &cache_key);
+            if let Some(existing) = cached && !existing.is_null() {
+                return existing;
             }
+
+            let c_filename = CString::new(format!("<builtin:{}>", stripped))
+                .unwrap_or_else(|_| CString::new("<builtin>").unwrap());
+            let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
+            if !opts.is_null() {
+                let mut src = transform_str_to_source_text(esm_src);
+                let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+                libc::free(opts as *mut _);
+                if !module.is_null() {
+                    module_cache_insert(raw_cx, &cache_key, module);
+                }
             return module;
         }
     }
@@ -265,7 +312,7 @@ export default _m;
     let canonical = path.canonicalize().unwrap_or(path.clone());
     let cache_key = canonical.to_string_lossy().into_owned();
 
-    let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
+    let cached = module_cache_get(raw_cx, &cache_key);
     if let Some(existing) = cached && !existing.is_null() {
         return existing;
     }
@@ -293,7 +340,7 @@ export default _m;
         let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
         libc::free(opts as *mut _);
         if !module.is_null() {
-            MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, module));
+            module_cache_insert(raw_cx, &cache_key, module);
         }
         module
     }
@@ -364,7 +411,7 @@ unsafe extern "C" fn host_dynamic_import(
     if builtin_modules.contains(&stripped) {
         // Look up the module in the require() cache by its canonical name
         let cache_key = stripped;
-        let cached = MODULE_CACHE.with(|c| c.borrow().get(cache_key).copied());
+        let cached = module_cache_get(raw_cx, cache_key);
         if let Some(existing) = cached && !existing.is_null() {
             let module_val = mozjs::jsval::ObjectValue(existing);
             let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
@@ -377,7 +424,7 @@ unsafe extern "C" fn host_dynamic_import(
         // The require() system registers modules under their plain names in the cache
         // Try with the "node:" prefix too
         let node_key = format!("node:{}", stripped);
-        let node_cached = MODULE_CACHE.with(|c| c.borrow().get(&node_key).copied());
+        let node_cached = module_cache_get(raw_cx, &node_key);
         if let Some(existing) = node_cached && !existing.is_null() {
             let module_val = mozjs::jsval::ObjectValue(existing);
             let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
@@ -451,7 +498,7 @@ unsafe extern "C" fn host_dynamic_import(
     let canonical = path.canonicalize().unwrap_or(path.clone());
     let cache_key = canonical.to_string_lossy().into_owned();
 
-    let cached = MODULE_CACHE.with(|c| c.borrow().get(&cache_key).copied());
+    let cached = module_cache_get(raw_cx, &cache_key);
     if let Some(existing) = cached && !existing.is_null() {
         let module_val = mozjs::jsval::ObjectValue(existing);
         let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
@@ -504,7 +551,7 @@ unsafe extern "C" fn host_dynamic_import(
             return false;
         }
 
-        MODULE_CACHE.with(|c| c.borrow_mut().insert(cache_key, module));
+        module_cache_insert(raw_cx, &cache_key, module);
 
         let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module };
         if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_h) {

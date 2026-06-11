@@ -8,6 +8,7 @@ use ::std::io::Read;
 use ::std::path;
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 use ::std::ptr::NonNull;
+use ::std::sync::atomic::{AtomicU64, Ordering};
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, NullValue, ObjectValue, BooleanValue};
@@ -22,6 +23,8 @@ use bun_uws_sys::response::Response;
 use bun_uws_sys::request::Request;
 use bun_uws_sys::socket_context::BunSocketContextOptions;
 use bun_uws_sys::listen_socket::ListenSocket;
+
+use crate::gc_store::{gc_store_insert, gc_store_get, gc_store_remove};
 
 /// Install Bun.* namespace on a target object (REQ-SEC-002 parameter injection).
 ///
@@ -611,10 +614,16 @@ thread_local! {
     static SPAWNED_PROCS: RefCell<Vec<*mut ::std::process::Child>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Global counter for generating unique GcStore keys for Bun.serve callbacks.
+static SERVE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 struct TestCase {
     name: String,
-    callback: *mut JSObject,
+    callback_key: String,
 }
+
+/// Global counter for generating unique GcStore keys for test callbacks.
+static TEST_CB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
     static TEST_REGISTRY: RefCell<Vec<TestCase>> = const { RefCell::new(Vec::new()) };
@@ -996,8 +1005,11 @@ unsafe extern "C" fn stdin_read(
 }
 
 thread_local! {
-    static STDIN_LISTENERS: RefCell<Vec<*mut JSObject>> = const { RefCell::new(Vec::new()) };
+    static STDIN_LISTENER_KEYS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
+
+/// Global counter for generating unique GcStore keys for stdin listener callbacks.
+static STDIN_CB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stdin_on(
@@ -1022,8 +1034,11 @@ unsafe extern "C" fn stdin_on(
         return true;
     }
     let callback = fn_val.to_object();
-    STDIN_LISTENERS.with(|l| {
-        l.borrow_mut().push(callback);
+    let cb_id = STDIN_CB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let key = format!("stdin_cb_{}", cb_id);
+    gc_store_insert(cx, &key, callback);
+    STDIN_LISTENER_KEYS.with(|l| {
+        l.borrow_mut().push(key);
     });
     args.rval().set(UndefinedValue());
     true
@@ -1101,6 +1116,23 @@ unsafe extern "C" fn bun_serve(
         }
     }
 
+    // Store callbacks in GcStore for GC safety
+    let serve_id = SERVE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let fetch_cb_key = fetch_handler.map(|cb| {
+        let key = format!("serve_fetch_{}", serve_id);
+        gc_store_insert(cx, &key, cb);
+        key
+    });
+    let websocket_cb_key = websocket_handler.map(|cb| {
+        let key = format!("serve_ws_{}", serve_id);
+        gc_store_insert(cx, &key, cb);
+        key
+    });
+
+    // Clone keys for JS property definition (keys will be moved into BunServeUserData)
+    let fetch_cb_key_for_js = fetch_cb_key.clone();
+    let websocket_cb_key_for_js = websocket_cb_key.clone();
+
     // Ensure MiniEventLoop is initialized (drain_and_check will tick it).
     crate::timers::with_event_loop(|_| {});
 
@@ -1111,8 +1143,8 @@ unsafe extern "C" fn bun_serve(
 
     // Store fetch_handler + websocket_handler in user_data for the route callback
     let ud = Box::new(BunServeUserData {
-        fetch_cb: fetch_handler,
-        websocket_cb: websocket_handler,
+        fetch_cb_key,
+        websocket_cb_key,
         app_ptr: app_ptr as *mut ::std::ffi::c_void,
         hostname: hostname.clone(),
         port,
@@ -1127,7 +1159,6 @@ unsafe extern "C" fn bun_serve(
         user_data: *mut ::std::ffi::c_void,
     ) {
         let ud = &*(user_data as *const BunServeUserData);
-        let fetch_cb = ud.fetch_cb;
 
         let res_mut = Response::<false>::cast_res(res);
         let req_ref = bun_opaque::opaque_deref_mut(req);
@@ -1139,7 +1170,7 @@ unsafe extern "C" fn bun_serve(
 
         if is_ws_upgrade {
             // A WebSocket upgrade was requested.
-            if ud.websocket_cb.is_some() && !ud.websocket_cb.unwrap().is_null() {
+            if ud.websocket_cb_key.is_some() {
                 // WebSocket handler registered — respond with 101 Switching Protocols
                 // to acknowledge the upgrade. In a full implementation, the handler
                 // would be invoked to process the upgrade via uWS App::ws().
@@ -1157,7 +1188,7 @@ unsafe extern "C" fn bun_serve(
             }
         }
 
-        if fetch_cb.is_none() || fetch_cb.unwrap().is_null() {
+        if ud.fetch_cb_key.is_none() {
             (*res_mut).write_status(b"404 Not Found");
             (*res_mut).end(b"Not Found", true);
             return;
@@ -1231,6 +1262,28 @@ unsafe extern "C" fn bun_serve(
     let app_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &app_val };
     JS_DefineProperty(cx, srv_h, c"_appPtr".as_ptr(), app_h, 0);
 
+    // Store GcStore keys on the server object for cleanup in stop()
+    if let Some(ref fk) = fetch_cb_key_for_js {
+        if let Ok(c_fk) = CString::new(fk.as_str()) {
+            let fk_str = JS_NewStringCopyZ(cx, c_fk.as_ptr());
+            if !fk_str.is_null() {
+                let v = StringValue(&*fk_str);
+                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+                JS_DefineProperty(cx, srv_h, c"_fetchCbKey".as_ptr(), v_h, 0);
+            }
+        }
+    }
+    if let Some(ref wk) = websocket_cb_key_for_js {
+        if let Ok(c_wk) = CString::new(wk.as_str()) {
+            let wk_str = JS_NewStringCopyZ(cx, c_wk.as_ptr());
+            if !wk_str.is_null() {
+                let v = StringValue(&*wk_str);
+                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+                JS_DefineProperty(cx, srv_h, c"_wsCbKey".as_ptr(), v_h, 0);
+            }
+        }
+    }
+
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe extern "C" fn server_stop(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
         let args = CallArgs::from_vp(vp, _argc);
@@ -1245,6 +1298,19 @@ unsafe extern "C" fn bun_serve(
             (*app_ptr).close();
             App::<false>::destroy(app_ptr);
             eprintln!("Bun.serve() stopped");
+        }
+        // Clean up GcStore entries for fetch and websocket callbacks
+        let mut fk_val = UndefinedValue();
+        JS_GetProperty(cx, this_h, c"_fetchCbKey".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fk_val });
+        if fk_val.is_string() {
+            let key = crate::js_to_rust_string(cx, fk_val);
+            gc_store_remove(cx, &key);
+        }
+        let mut wk_val = UndefinedValue();
+        JS_GetProperty(cx, this_h, c"_wsCbKey".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut wk_val });
+        if wk_val.is_string() {
+            let key = crate::js_to_rust_string(cx, wk_val);
+            gc_store_remove(cx, &key);
         }
         args.rval().set(UndefinedValue());
         true
@@ -1279,8 +1345,8 @@ unsafe extern "C" fn bun_serve(
 /// User data passed to uWS route handler via bun_uws::App::any.
 #[allow(dead_code)]
 struct BunServeUserData {
-    fetch_cb: Option<*mut JSObject>,
-    websocket_cb: Option<*mut JSObject>,
+    fetch_cb_key: Option<String>,
+    websocket_cb_key: Option<String>,
     app_ptr: *mut ::std::ffi::c_void,
     hostname: String,
     port: u16,
@@ -1691,8 +1757,12 @@ unsafe extern "C" fn bun_test(
     let name = jsstr_to_string(cx, NonNull::new_unchecked(name_val.to_string()));
     let callback = fn_val.to_object();
 
+    let cb_id = TEST_CB_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let callback_key = format!("test_cb_{}", cb_id);
+    gc_store_insert(cx, &callback_key, callback);
+
     TEST_REGISTRY.with(|reg| {
-        reg.borrow_mut().push(TestCase { name, callback });
+        reg.borrow_mut().push(TestCase { name, callback_key });
     });
 
     args.rval().set(UndefinedValue());
@@ -1721,7 +1791,16 @@ unsafe extern "C" fn test_run(
     });
 
     for tc in &tests {
-        let cb_val = ObjectValue(tc.callback);
+        let cb_obj = match gc_store_get(cx, &tc.callback_key) {
+            Some(obj) => obj,
+            None => {
+                eprint!("\n\u{2717} {} (callback GC'd)\n", tc.name);
+                failures.push(tc.name.clone());
+                failed += 1;
+                continue;
+            }
+        };
+        let cb_val = ObjectValue(cb_obj);
         let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
         let empty_args = HandleValueArray::empty();
         let mut rval = UndefinedValue();
@@ -1739,6 +1818,11 @@ unsafe extern "C" fn test_run(
             failures.push(tc.name.clone());
             failed += 1;
         }
+    }
+
+    // Clean up GcStore entries for all test callbacks
+    for tc in &tests {
+        gc_store_remove(cx, &tc.callback_key);
     }
 
     let total = passed + failed;
@@ -2044,8 +2128,11 @@ unsafe extern "C" fn process_noop(_cx: *mut JSContext, _argc: u32, vp: *mut JSVa
 }
 
 thread_local! {
-    static EXIT_HANDLERS: RefCell<Vec<*mut JSObject>> = const { RefCell::new(Vec::new()) };
+    static EXIT_HANDLER_KEYS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
+
+/// Global counter for generating unique GcStore keys for exit handler callbacks.
+static EXIT_CB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn process_on(
@@ -2070,7 +2157,10 @@ unsafe extern "C" fn process_on(
     let handler_obj = handler_val.to_object();
 
     if event == "exit" {
-        EXIT_HANDLERS.with(|h| h.borrow_mut().push(handler_obj));
+        let cb_id = EXIT_CB_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let key = format!("exit_cb_{}", cb_id);
+        gc_store_insert(cx, &key, handler_obj);
+        EXIT_HANDLER_KEYS.with(|h| h.borrow_mut().push(key));
     }
     args.rval().set(UndefinedValue());
     true
@@ -2440,18 +2530,18 @@ mod tests {
     fn test_case_stores_name() {
         let tc = TestCase {
             name: "my test".to_string(),
-            callback: ::std::ptr::null_mut(),
+            callback_key: "test_cb_0".to_string(),
         };
         assert_eq!(tc.name, "my test");
     }
 
     #[test]
-    fn test_case_callback_default_null() {
+    fn test_case_callback_key_default() {
         let tc = TestCase {
             name: String::new(),
-            callback: ::std::ptr::null_mut(),
+            callback_key: "test_cb_1".to_string(),
         };
-        assert!(tc.callback.is_null());
+        assert!(!tc.callback_key.is_empty());
     }
 
     // ── BunServeUserData ──
@@ -2459,14 +2549,14 @@ mod tests {
     #[test]
     fn bun_serve_user_data_default_fields() {
         let data = BunServeUserData {
-            fetch_cb: None,
-            websocket_cb: None,
+            fetch_cb_key: None,
+            websocket_cb_key: None,
             app_ptr: ::std::ptr::null_mut(),
             hostname: "localhost".to_string(),
             port: 3000,
         };
-        assert!(data.fetch_cb.is_none());
-        assert!(data.websocket_cb.is_none());
+        assert!(data.fetch_cb_key.is_none());
+        assert!(data.websocket_cb_key.is_none());
         assert!(data.app_ptr.is_null());
         assert_eq!(data.hostname, "localhost");
         assert_eq!(data.port, 3000);
@@ -2475,36 +2565,36 @@ mod tests {
     #[test]
     fn bun_serve_user_data_with_fetch_cb() {
         let data = BunServeUserData {
-            fetch_cb: Some(::std::ptr::null_mut()),
-            websocket_cb: None,
+            fetch_cb_key: Some("serve_fetch_0".to_string()),
+            websocket_cb_key: None,
             app_ptr: ::std::ptr::null_mut(),
             hostname: "0.0.0.0".to_string(),
             port: 8080,
         };
-        assert!(data.fetch_cb.is_some());
-        assert!(data.websocket_cb.is_none());
+        assert!(data.fetch_cb_key.is_some());
+        assert!(data.websocket_cb_key.is_none());
         assert_eq!(data.port, 8080);
     }
 
     #[test]
     fn bun_serve_user_data_with_websocket_cb() {
         let data = BunServeUserData {
-            fetch_cb: None,
-            websocket_cb: Some(::std::ptr::null_mut()),
+            fetch_cb_key: None,
+            websocket_cb_key: Some("serve_ws_0".to_string()),
             app_ptr: ::std::ptr::null_mut(),
             hostname: "0.0.0.0".to_string(),
             port: 8080,
         };
-        assert!(data.fetch_cb.is_none());
-        assert!(data.websocket_cb.is_some());
+        assert!(data.fetch_cb_key.is_none());
+        assert!(data.websocket_cb_key.is_some());
     }
 
     #[test]
     fn bun_serve_user_data_hostname_variants() {
         for host in &["localhost", "0.0.0.0", "127.0.0.1", "::"] {
             let data = BunServeUserData {
-                fetch_cb: None,
-                websocket_cb: None,
+                fetch_cb_key: None,
+                websocket_cb_key: None,
                 app_ptr: ::std::ptr::null_mut(),
                 hostname: host.to_string(),
                 port: 80,
@@ -2516,8 +2606,8 @@ mod tests {
     #[test]
     fn bun_serve_user_data_port_boundaries() {
         let data = BunServeUserData {
-            fetch_cb: None,
-            websocket_cb: None,
+            fetch_cb_key: None,
+            websocket_cb_key: None,
             app_ptr: ::std::ptr::null_mut(),
             hostname: String::new(),
             port: 0,
@@ -2525,8 +2615,8 @@ mod tests {
         assert_eq!(data.port, 0);
 
         let data = BunServeUserData {
-            fetch_cb: None,
-            websocket_cb: None,
+            fetch_cb_key: None,
+            websocket_cb_key: None,
             app_ptr: ::std::ptr::null_mut(),
             hostname: String::new(),
             port: 65535,

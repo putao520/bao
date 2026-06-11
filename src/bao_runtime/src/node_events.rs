@@ -3,6 +3,7 @@ use ::std::cell::RefCell;
 use ::std::collections::HashMap;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
+use ::std::sync::atomic::{AtomicU64, Ordering};
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::glue::JS_GetReservedSlot;
@@ -11,10 +12,15 @@ use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, BooleanValue, ObjectValue,
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
+use crate::gc_store::{gc_store_insert, gc_store_get, gc_store_remove};
 use crate::require::cache_builtin;
 
+/// Global counter for generating unique GcStore keys for event listeners.
+static EE_LISTENER_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 struct EmitterState {
-    listeners: HashMap<String, Vec<*mut JSObject>>,
+    /// GcStore keys for listener functions (GC-managed via global object properties).
+    listeners: HashMap<String, Vec<String>>,
     once_flags: HashMap<String, Vec<bool>>,
     max_listeners: u32,
 }
@@ -36,7 +42,8 @@ static EMITTER_CLASS: JSClass = JSClass {
 };
 
 thread_local! {
-    static EMITTER_PROTO: RefCell<*mut JSObject> = const { RefCell::new(::std::ptr::null_mut()) };
+    /// GC-safe: GcStore key for the EventEmitter prototype object.
+    static EMITTER_PROTO_KEY: RefCell<Option<String>> = const { RefCell::new(None) };
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext) {
@@ -67,7 +74,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         );
 
         if !proto.is_null() {
-            EMITTER_PROTO.with(|p| *p.borrow_mut() = proto);
+            let key = "__emitter_proto".to_string();
+            gc_store_insert(cx.raw_cx(), &key, proto);
+            EMITTER_PROTO_KEY.with(|p| *p.borrow_mut() = Some(key));
         }
 
         rooted!(&in(cx) let proto_h = proto);
@@ -329,6 +338,12 @@ fn throw_type_error(cx: *mut JSContext, msg: &str) {
     }
 }
 
+/// Generate a unique GcStore key for an event listener.
+fn alloc_listener_key(event_name: &str) -> String {
+    let id = EE_LISTENER_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("ee_{}_{}", event_name, id)
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn event_emitter_constructor(
     cx: *mut JSContext,
@@ -407,7 +422,9 @@ unsafe extern "C" fn ee_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> boo
     };
 
     let mut state = ensure_state(cx, this_obj);
-    state.listeners.entry(event_name).or_default().push(callback);
+    let key = alloc_listener_key(&event_name);
+    gc_store_insert(cx, &key, callback);
+    state.listeners.entry(event_name).or_default().push(key);
     set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
     true
@@ -430,7 +447,9 @@ unsafe extern "C" fn ee_once(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     };
 
     let mut state = ensure_state(cx, this_obj);
-    state.listeners.entry(event_name.clone()).or_default().push(callback);
+    let key = alloc_listener_key(&event_name);
+    gc_store_insert(cx, &key, callback);
+    state.listeners.entry(event_name.clone()).or_default().push(key);
     state.once_flags.entry(event_name).or_default().push(true);
     set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
@@ -452,7 +471,12 @@ unsafe extern "C" fn ee_off(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     let mut state = ensure_state(cx, this_obj);
 
     if argc < 2 {
-        state.listeners.remove(&event_name);
+        // Remove all listeners for this event — clean up GcStore entries
+        if let Some(keys) = state.listeners.remove(&event_name) {
+            for key in keys {
+                gc_store_remove(cx, &key);
+            }
+        }
         state.once_flags.remove(&event_name);
         set_state(cx, this_obj, state);
         args.rval().set(ObjectValue(this_obj));
@@ -462,16 +486,23 @@ unsafe extern "C" fn ee_off(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bo
     let callback_val = *args.get(1).ptr;
     if !callback_val.is_object() { set_state(cx, this_obj, state); args.rval().set(ObjectValue(this_obj)); return true; }
 
-    if let Some(listeners) = state.listeners.get_mut(&event_name) {
+    if let Some(keys) = state.listeners.get_mut(&event_name) {
         let mut removed_indices: Vec<usize> = Vec::new();
         let mut i = 0;
-        while i < listeners.len() {
-            let stored_val = ObjectValue(listeners[i]);
-            if js_same_value(cx, stored_val, callback_val) {
-                listeners.remove(i);
-                removed_indices.push(i);
+        while i < keys.len() {
+            if let Some(stored_obj) = gc_store_get(cx, &keys[i]) {
+                let stored_val = ObjectValue(stored_obj);
+                if js_same_value(cx, stored_val, callback_val) {
+                    gc_store_remove(cx, &keys[i]);
+                    keys.remove(i);
+                    removed_indices.push(i);
+                } else {
+                    i += 1;
+                }
             } else {
-                i += 1;
+                // Key no longer in GcStore (GC collected) — remove stale entry
+                keys.remove(i);
+                removed_indices.push(i);
             }
         }
         if let Some(flags) = state.once_flags.get_mut(&event_name) {
@@ -499,12 +530,12 @@ unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     };
 
     let mut state = ensure_state(cx, this_obj);
-    let listeners = match state.listeners.get(&event_name) {
+    let listener_keys = match state.listeners.get(&event_name) {
         Some(l) => l.clone(),
         None => { set_state(cx, this_obj, state); args.rval().set(BooleanValue(false)); return true; }
     };
     let once_flags = state.once_flags.get(&event_name).cloned().unwrap_or_default();
-    let had_listeners = !listeners.is_empty();
+    let had_listeners = !listener_keys.is_empty();
 
     let emit_args: Vec<JSVal> = if argc > 1 {
         (1..argc).map(|i| *args.get(i).ptr).collect()
@@ -522,25 +553,30 @@ unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         HandleValueArray { length_: emit_args.len(), elements_: emit_args.as_ptr() }
     };
 
-    let mut remaining_listeners: Vec<*mut JSObject> = Vec::new();
+    let mut remaining_keys: Vec<String> = Vec::new();
     let mut remaining_once: Vec<bool> = Vec::new();
 
-    for (i, &callback) in listeners.iter().enumerate() {
-        let cb_val = ObjectValue(callback);
-        let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
-        let mut rval = UndefinedValue();
-        let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-        JS_CallFunctionValue(cx, global_h, cb_h, &call_args, rval_h);
-        JS_ClearPendingException(cx);
+    for (i, key) in listener_keys.iter().enumerate() {
+        if let Some(callback) = gc_store_get(cx, key) {
+            let cb_val = ObjectValue(callback);
+            let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
+            let mut rval = UndefinedValue();
+            let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+            JS_CallFunctionValue(cx, global_h, cb_h, &call_args, rval_h);
+            JS_ClearPendingException(cx);
 
-        let is_once = once_flags.get(i).copied().unwrap_or(false);
-        if !is_once {
-            remaining_listeners.push(callback);
-            remaining_once.push(false);
+            let is_once = once_flags.get(i).copied().unwrap_or(false);
+            if is_once {
+                gc_store_remove(cx, key);
+            } else {
+                remaining_keys.push(key.clone());
+                remaining_once.push(false);
+            }
         }
+        // If gc_store_get returns None, the object was GC'd — skip it (don't keep stale key)
     }
 
-    state.listeners.insert(event_name.clone(), remaining_listeners);
+    state.listeners.insert(event_name.clone(), remaining_keys);
     state.once_flags.insert(event_name, remaining_once);
     set_state(cx, this_obj, state);
 
@@ -563,7 +599,9 @@ unsafe extern "C" fn ee_prepend(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     };
 
     let mut state = ensure_state(cx, this_obj);
-    state.listeners.entry(event_name.clone()).or_default().insert(0, callback);
+    let key = alloc_listener_key(&event_name);
+    gc_store_insert(cx, &key, callback);
+    state.listeners.entry(event_name.clone()).or_default().insert(0, key);
     state.once_flags.entry(event_name).or_default().insert(0, false);
     set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
@@ -585,7 +623,9 @@ unsafe extern "C" fn ee_prepend_once(cx: *mut JSContext, argc: u32, vp: *mut JSV
     };
 
     let mut state = ensure_state(cx, this_obj);
-    state.listeners.entry(event_name.clone()).or_default().insert(0, callback);
+    let key = alloc_listener_key(&event_name);
+    gc_store_insert(cx, &key, callback);
+    state.listeners.entry(event_name.clone()).or_default().insert(0, key);
     state.once_flags.entry(event_name).or_default().insert(0, true);
     set_state(cx, this_obj, state);
     args.rval().set(ObjectValue(this_obj));
@@ -602,11 +642,20 @@ unsafe extern "C" fn ee_remove_all(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let mut state = ensure_state(cx, this_obj);
     if argc > 0 {
         if let Some(event_name) = get_event_name(cx, &args) {
-            state.listeners.remove(&event_name);
+            if let Some(keys) = state.listeners.remove(&event_name) {
+                for key in keys {
+                    gc_store_remove(cx, &key);
+                }
+            }
             state.once_flags.remove(&event_name);
         }
     } else {
-        state.listeners.clear();
+        // Remove all listeners for all events — clean up GcStore entries
+        for (_event, keys) in state.listeners.drain() {
+            for key in keys {
+                gc_store_remove(cx, &key);
+            }
+        }
         state.once_flags.clear();
     }
     set_state(cx, this_obj, state);
@@ -632,16 +681,20 @@ unsafe extern "C" fn ee_listeners(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     };
 
     let state = ensure_state(cx, this_obj);
-    let listeners = state.listeners.get(&event_name).cloned().unwrap_or_default();
+    let listener_keys = state.listeners.get(&event_name).cloned().unwrap_or_default();
     set_state(cx, this_obj, state);
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, listeners.len()));
-    for (i, &cb) in listeners.iter().enumerate() {
-        let val = ObjectValue(cb);
-        rooted!(&in(cx_ref) let v = val);
-        JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, listener_keys.len()));
+    let mut arr_idx = 0u32;
+    for key in &listener_keys {
+        if let Some(cb) = gc_store_get(cx, key) {
+            let val = ObjectValue(cb);
+            rooted!(&in(cx_ref) let v = val);
+            JS_DefineElement(cx, arr.handle().into(), arr_idx, v.handle().into(), JSPROP_ENUMERATE as u32);
+            arr_idx += 1;
+        }
     }
     args.rval().set(ObjectValue(arr.get()));
     true
@@ -824,16 +877,20 @@ unsafe extern "C" fn events_static_get_event_listeners(cx: *mut JSContext, argc:
     };
 
     let state = ensure_state(cx, emitter);
-    let listeners = state.listeners.get(&event_name).cloned().unwrap_or_default();
+    let listener_keys = state.listeners.get(&event_name).cloned().unwrap_or_default();
     set_state(cx, emitter, state);
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, listeners.len()));
-    for (i, &cb) in listeners.iter().enumerate() {
-        let val = ObjectValue(cb);
-        rooted!(&in(cx_ref) let v = val);
-        JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, listener_keys.len()));
+    let mut arr_idx = 0u32;
+    for key in &listener_keys {
+        if let Some(cb) = gc_store_get(cx, key) {
+            let val = ObjectValue(cb);
+            rooted!(&in(cx_ref) let v = val);
+            JS_DefineElement(cx, arr.handle().into(), arr_idx, v.handle().into(), JSPROP_ENUMERATE as u32);
+            arr_idx += 1;
+        }
     }
     args.rval().set(ObjectValue(arr.get()));
     true
@@ -876,7 +933,7 @@ mod tests {
     #[test]
     fn emitter_state_can_add_listener() {
         let mut state = make_state();
-        state.listeners.insert("data".to_string(), vec![::std::ptr::null_mut(); 3]);
+        state.listeners.insert("data".to_string(), vec!["ee_data_0".to_string(), "ee_data_1".to_string(), "ee_data_2".to_string()]);
         assert!(state.listeners.contains_key("data"));
         assert_eq!(state.listeners.get("data").map(|v| v.len()), Some(3));
     }
@@ -941,7 +998,7 @@ mod tests {
     #[test]
     fn emitter_state_listener_count_for_event() {
         let mut state = make_state();
-        state.listeners.insert("data".to_string(), vec![::std::ptr::null_mut(); 5]);
+        state.listeners.insert("data".to_string(), vec!["ee_data_0".to_string(), "ee_data_1".to_string(), "ee_data_2".to_string(), "ee_data_3".to_string(), "ee_data_4".to_string()]);
         let count = state.listeners.get("data").map(|v| v.len()).unwrap_or(0);
         assert_eq!(count, 5);
     }
@@ -958,7 +1015,7 @@ mod tests {
     #[test]
     fn emitter_state_clone_listener_vec() {
         let mut state = make_state();
-        let listeners = vec![::std::ptr::null_mut(); 3];
+        let listeners = vec!["ee_data_0".to_string(), "ee_data_1".to_string(), "ee_data_2".to_string()];
         state.listeners.insert("data".to_string(), listeners.clone());
         let cloned = state.listeners.get("data").unwrap().clone();
         assert_eq!(cloned.len(), listeners.len());

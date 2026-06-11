@@ -7,6 +7,8 @@ use cdp_server::{CdpError, EventSender, TargetProvider};
 use serde_json::{json, Value};
 use std::time::Duration;
 
+const TID: &str = "test-target";
+
 // Access stub types via register_all_domains_into (they're private modules)
 // We test them through DomainRegistry dispatch.
 
@@ -34,7 +36,7 @@ fn dispatch_cmd(registry: &cdp_server::DomainRegistry, cmd: &str, params: Value)
 fn setup_registry() -> (BridgeSender, cdp_server::DomainRegistry) {
     let (tx, _rx) = bridge(50);
     let registry = cdp_server::DomainRegistry::new();
-    bao_cdp::domains::register_all_domains_into(tx.clone(), &registry);
+    bao_cdp::domains::register_all_domains_into(tx.clone(), TID.into(), &registry);
     (tx, registry)
 }
 
@@ -44,7 +46,7 @@ fn setup_registry() -> (BridgeSender, cdp_server::DomainRegistry) {
 fn test_debugger_domain_name() {
     let (tx, _) = bridge(50);
     let registry = cdp_server::DomainRegistry::new();
-    bao_cdp::domains::register_all_domains_into(tx, &registry);
+    bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
     assert!(registry.has_domain("Debugger"));
 }
 
@@ -142,7 +144,7 @@ fn test_input_domain_name() {
 fn test_input_dispatch_mouse_event() {
     let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
-    bao_cdp::domains::register_all_domains_into(tx, &registry);
+    bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let processed2 = processed.clone();
@@ -152,7 +154,7 @@ fn test_input_dispatch_mouse_event() {
         let rx = rx2.lock().unwrap();
         for _ in 0..200 {
             let done = rx.try_process(|cmd| {
-                if let BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count } = cmd {
+                if let BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count, .. } = cmd {
                     assert_eq!(event_type, "mousePressed");
                     assert!((x - 100.0).abs() < f64::EPSILON);
                     assert!((y - 200.0).abs() < f64::EPSILON);
@@ -185,7 +187,7 @@ fn test_input_dispatch_mouse_event() {
 fn test_input_dispatch_key_event() {
     let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
-    bao_cdp::domains::register_all_domains_into(tx, &registry);
+    bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let processed2 = processed.clone();
@@ -195,7 +197,7 @@ fn test_input_dispatch_key_event() {
         let rx = rx2.lock().unwrap();
         for _ in 0..200 {
             let done = rx.try_process(|cmd| {
-                if let BridgeCommand::DispatchKeyEvent { event_type, key, code, text } = cmd {
+                if let BridgeCommand::DispatchKeyEvent { event_type, key, code, text, .. } = cmd {
                     assert_eq!(event_type, "keyDown");
                     assert_eq!(key, "Enter");
                     assert_eq!(code, "Enter");
@@ -230,7 +232,7 @@ fn test_input_dispatch_touch_event() {
 fn test_input_insert_text() {
     let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
-    bao_cdp::domains::register_all_domains_into(tx, &registry);
+    bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let processed2 = processed.clone();
@@ -240,7 +242,7 @@ fn test_input_insert_text() {
         let rx = rx2.lock().unwrap();
         for _ in 0..200 {
             let done = rx.try_process(|cmd| {
-                if let BridgeCommand::InsertText { text } = cmd {
+                if let BridgeCommand::InsertText { text, .. } = cmd {
                     assert_eq!(text, "hello world");
                 }
                 BridgeResponse { result: Ok(json!({})) }
@@ -307,7 +309,7 @@ fn test_emulation_domain_name() {
 fn test_emulation_set_device_metrics_override() {
     let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
-    bao_cdp::domains::register_all_domains_into(tx, &registry);
+    bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let processed2 = processed.clone();
@@ -317,7 +319,7 @@ fn test_emulation_set_device_metrics_override() {
         let rx = rx2.lock().unwrap();
         for _ in 0..200 {
             let done = rx.try_process(|cmd| {
-                if let BridgeCommand::SetViewport { width, height, device_scale_factor } = cmd {
+                if let BridgeCommand::SetViewport { width, height, device_scale_factor, .. } = cmd {
                     assert_eq!(width, 1280);
                     assert_eq!(height, 720);
                     assert_eq!(device_scale_factor, Some(2.0));
@@ -345,7 +347,7 @@ fn test_emulation_set_device_metrics_override() {
 fn test_emulation_set_device_metrics_defaults() {
     let (tx, rx) = bridge(500);
     let registry = cdp_server::DomainRegistry::new();
-    bao_cdp::domains::register_all_domains_into(tx, &registry);
+    bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let processed2 = processed.clone();
@@ -355,7 +357,7 @@ fn test_emulation_set_device_metrics_defaults() {
         let rx = rx2.lock().unwrap();
         for _ in 0..200 {
             let done = rx.try_process(|cmd| {
-                if let BridgeCommand::SetViewport { width, height, device_scale_factor } = cmd {
+                if let BridgeCommand::SetViewport { width, height, device_scale_factor, .. } = cmd {
                     assert_eq!(width, 1920);  // default
                     assert_eq!(height, 1080); // default
                     assert!(device_scale_factor.is_none());
@@ -387,14 +389,14 @@ fn test_emulation_clear_device_metrics() {
 fn test_emulation_set_user_agent_override() {
     let (tx, rx) = bridge(200);
     let registry = cdp_server::DomainRegistry::new();
-    bao_cdp::domains::register_all_domains_into(tx, &registry);
+    bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let done2 = done.clone();
     std::thread::spawn(move || {
         while !done2.load(std::sync::atomic::Ordering::Relaxed) {
             let got = rx.try_process(|cmd| {
-                if let BridgeCommand::SetUserAgent { user_agent } = cmd {
+                if let BridgeCommand::SetUserAgent { user_agent, .. } = cmd {
                     assert_eq!(user_agent, "TestBot/1.0");
                 }
                 BridgeResponse { result: Ok(json!({})) }
@@ -706,18 +708,18 @@ fn test_target_list_targets() {
     let (tx, rx) = bridge(500);
     let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "test-target-id".into(), "127.0.0.1".into(), 9222);
 
-    // list_targets sends 2 bridge.send() calls sequentially (GetTitle, GetUrl).
+    // list_targets sends 3 bridge.send() calls (ListTargets fallback, GetTitle, GetUrl).
     // Each send() blocks waiting for response, so we need a thread that processes
     // them one at a time with retry loops.
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let done2 = done.clone();
     std::thread::spawn(move || {
         let mut processed = 0;
-        while processed < 2 && !done2.load(std::sync::atomic::Ordering::Relaxed) {
+        while processed < 3 && !done2.load(std::sync::atomic::Ordering::Relaxed) {
             let got = rx.try_process(|cmd| {
                 match cmd {
-                    BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!("Test Page")) },
-                    BridgeCommand::GetUrl => BridgeResponse { result: Ok(json!("https://example.com")) },
+                    BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Test Page")) },
+                    BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://example.com")) },
                     _ => BridgeResponse { result: Ok(json!("")) },
                 }
             });
@@ -738,7 +740,7 @@ fn test_target_list_targets() {
 }
 
 #[test]
-fn test_target_create_target_returns_existing() {
+fn test_target_create_target_with_new_id() {
     let (tx, rx) = bridge(500);
     let provider = bao_cdp::domains::ServoTargetProvider::new(tx, "test-target-id".into(), "0.0.0.0".into(), 8080);
 
@@ -749,8 +751,9 @@ fn test_target_create_target_returns_existing() {
         while processed < 2 && !done2.load(std::sync::atomic::Ordering::Relaxed) {
             let got = rx.try_process(|cmd| {
                 match cmd {
-                    BridgeCommand::GetTitle => BridgeResponse { result: Ok(json!("Title")) },
-                    BridgeCommand::GetUrl => BridgeResponse { result: Ok(json!("https://test.com")) },
+                    BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Title")) },
+                    BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://test.com")) },
+                    BridgeCommand::CreateTarget { .. } => BridgeResponse { result: Ok(json!({"targetId": "new-target-123"})) },
                     _ => BridgeResponse { result: Ok(json!("")) },
                 }
             });
@@ -764,6 +767,7 @@ fn test_target_create_target_returns_existing() {
     assert!(result.is_ok());
     let info = result.unwrap();
     assert_eq!(info.target_type, "page");
+    assert_eq!(info.id, "new-target-123");
 }
 
 #[test]

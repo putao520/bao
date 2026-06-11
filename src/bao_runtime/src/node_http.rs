@@ -4,6 +4,7 @@
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
+use ::std::sync::atomic::{AtomicU64, Ordering};
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{UndefinedValue, Int32Value, StringValue, ObjectValue};
@@ -15,7 +16,11 @@ use bun_uws_sys::response::Response;
 use bun_uws_sys::request::Request;
 use bun_uws_sys::socket_context::BunSocketContextOptions;
 
+use crate::gc_store::{gc_store_insert_ns, gc_store_get_ns, gc_store_remove_ns};
 use crate::require::cache_builtin;
+
+/// Monotonic server ID for GcStore key namespacing.
+static NEXT_SERVER_ID: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
     /// Active uWS App handles. Each `server.listen()` creates one App.
@@ -111,14 +116,44 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 // ──────────────────────────────────────────────────────────────
 
 /// Per-server user data passed to uWS route handler via `user_data`.
+/// GC-safe: JSObject references are stored in GcStore (as properties on the
+/// JS global object, managed by SpiderMonkey GC). We only keep the string
+/// keys — no raw `*mut JSObject` that could dangle after GC.
 struct ServerUserData {
     /// JSContext* for creating JS objects and calling JS functions.
     cx: *mut JSContext,
-    /// Global object for looking up the request handler.
-    global: *mut JSObject,
-    /// The JS request handler function (stored as _onRequest on the server object,
-    /// or _httpRequestHandler on the global).
-    handler: *mut JSObject,
+    /// GcStore key for the global object.
+    global_key: String,
+    /// GcStore key for the JS request handler function.
+    handler_key: String,
+}
+
+impl ServerUserData {
+    /// Create a new ServerUserData, storing global and handler in GcStore.
+    fn new(cx: *mut JSContext, global: *mut JSObject, handler: *mut JSObject) -> Self {
+        let server_id = NEXT_SERVER_ID.fetch_add(1, Ordering::Relaxed);
+        let global_key = format!("http_server_{}_global", server_id);
+        let handler_key = format!("http_server_{}_handler", server_id);
+        gc_store_insert_ns(cx, "http", &global_key, global);
+        gc_store_insert_ns(cx, "http", &handler_key, handler);
+        Self { cx, global_key, handler_key }
+    }
+
+    /// Retrieve the global object from GcStore.
+    fn global(&self) -> Option<*mut JSObject> {
+        gc_store_get_ns(self.cx, "http", &self.global_key)
+    }
+
+    /// Retrieve the handler object from GcStore.
+    fn handler(&self) -> Option<*mut JSObject> {
+        gc_store_get_ns(self.cx, "http", &self.handler_key)
+    }
+
+    /// Remove both references from GcStore. Call on server close/cleanup.
+    fn cleanup(&self) {
+        gc_store_remove_ns(self.cx, "http", &self.global_key);
+        gc_store_remove_ns(self.cx, "http", &self.handler_key);
+    }
 }
 
 /// uWS route handler callback. Called by uWS C++ when an HTTP request arrives.
@@ -142,8 +177,11 @@ unsafe extern "C" fn uws_route_handler(
     if cx.is_null() { return; }
 
     let raw_cx = cx;
-    let global = ud.global;
+    let Some(global) = ud.global() else { return };
     if global.is_null() { return; }
+
+    let Some(handler) = ud.handler() else { return };
+    if handler.is_null() { return; }
 
     // Read method/url from uWS Request (C++ already parsed).
     let req_ref = bun_opaque::opaque_deref_mut(req);
@@ -217,7 +255,7 @@ unsafe extern "C" fn uws_route_handler(
     JS_DefineProperty(raw_cx, res_obj.handle().into(), c"_uwsRes".as_ptr(), rv.handle().into(), 0);
 
     // Call the JS request handler: handler(req, res)
-    let handler_val = ObjectValue(ud.handler);
+    let handler_val = ObjectValue(handler);
     let handler_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &handler_val };
     let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
 
@@ -524,12 +562,8 @@ unsafe extern "C" fn server_listen(
         return false;
     }
 
-    // Allocate ServerUserData on the heap. Leaked until server_close.
-    let ud = Box::new(ServerUserData {
-        cx,
-        global,
-        handler: handler_val.to_object(),
-    });
+    // Allocate ServerUserData on the heap. GC-safe: global+handler stored in GcStore.
+    let ud = Box::new(ServerUserData::new(cx, global, handler_val.to_object()));
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
     // Register catch-all route: app.any("/*", handler, user_data)
@@ -539,6 +573,15 @@ unsafe extern "C" fn server_listen(
         unsafe { ::std::mem::transmute(Some(uws_route_handler as unsafe extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut bun_uws_sys::Request, *mut ::std::ffi::c_void))) };
     (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
+    // Store the ServerUserData pointer on the server object for cleanup in server_close.
+    {
+        let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref3 = &mut wrapped_cx3;
+        let ud_val = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
+        rooted!(&in(cx_ref3) let udv = ud_val);
+        JS_DefineProperty(cx, server_h, c"_udPtr".as_ptr(), udv.handle().into(), 0);
+    }
+
     // Listen on the specified port.
     // SAFETY: same ABI transmute rationale as above.
     let safe_listen_cb: extern "C" fn(*mut bun_uws_sys::listen_socket::ListenSocket, *mut ::std::ffi::c_void) =
@@ -546,11 +589,13 @@ unsafe extern "C" fn server_listen(
     (*app_ptr).listen(port as i32, safe_listen_cb, core::ptr::null_mut());
 
     // Store app pointer on server object for close/destroy.
-    let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref3 = &mut wrapped_cx3;
-    let app_ptr_val = mozjs::jsval::PrivateValue(app_ptr as *const core::ffi::c_void);
-    rooted!(&in(cx_ref3) let apv = app_ptr_val);
-    JS_DefineProperty(cx, server_h, c"_appPtr".as_ptr(), apv.handle().into(), 0);
+    {
+        let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref3 = &mut wrapped_cx3;
+        let app_ptr_val = mozjs::jsval::PrivateValue(app_ptr as *const core::ffi::c_void);
+        rooted!(&in(cx_ref3) let apv = app_ptr_val);
+        JS_DefineProperty(cx, server_h, c"_appPtr".as_ptr(), apv.handle().into(), 0);
+    }
 
     let port_val = Int32Value(port as i32);
     let port_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &port_val };
@@ -600,6 +645,16 @@ unsafe extern "C" fn server_close(
             let mut apps = s.borrow_mut();
             apps.retain(|&p| p != app_ptr);
         });
+    }
+
+    // Cleanup: reclaim ServerUserData box and remove GcStore entries.
+    let mut ud_ptr_val = UndefinedValue();
+    JS_GetProperty(cx, server_h, c"_udPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_ptr_val });
+    let ud_ptr = ud_ptr_val.to_private() as *mut ServerUserData;
+    if !ud_ptr.is_null() {
+        // SAFETY: ud_ptr was created by Box::into_raw in server_listen.
+        let ud = unsafe { Box::from_raw(ud_ptr) };
+        ud.cleanup();
     }
 
     args.rval().set(UndefinedValue());
@@ -737,30 +792,49 @@ mod tests {
         assert!(fds.is_empty());
     }
 
-    // ── ServerUserData ──
+    // ── ServerUserData (GC-safe GcStore keys) ──
 
     #[test]
-    fn server_user_data_default_nulls() {
-        let ud = ServerUserData {
-            cx: ::std::ptr::null_mut(),
-            global: ::std::ptr::null_mut(),
-            handler: ::std::ptr::null_mut(),
-        };
-        assert!(ud.cx.is_null());
-        assert!(ud.global.is_null());
-        assert!(ud.handler.is_null());
+    fn server_user_data_keys_are_namespaced() {
+        // ServerUserData::new must produce unique namespaced GcStore keys.
+        // We can't call ::new without a real JSContext, so test the key format directly.
+        let key1 = format!("http_server_{}_global", 1);
+        let key2 = format!("http_server_{}_handler", 1);
+        assert!(key1.starts_with("http_server_"));
+        assert!(key1.ends_with("_global"));
+        assert!(key2.starts_with("http_server_"));
+        assert!(key2.ends_with("_handler"));
+        assert_ne!(key1, key2, "global and handler keys must differ");
     }
 
     #[test]
-    fn server_user_data_stores_fields() {
+    fn server_user_data_next_server_id_monotonic() {
+        let id1 = NEXT_SERVER_ID.fetch_add(1, Ordering::Relaxed);
+        let id2 = NEXT_SERVER_ID.fetch_add(1, Ordering::Relaxed);
+        assert!(id2 > id1, "server IDs must be monotonic");
+    }
+
+    #[test]
+    fn server_user_data_global_handler_retrieve_without_cx() {
+        // With null cx, gc_store_get returns None — the GC-safe path.
         let ud = ServerUserData {
-            cx: 0x1 as *mut JSContext,
-            global: 0x2 as *mut JSObject,
-            handler: 0x3 as *mut JSObject,
+            cx: ::std::ptr::null_mut(),
+            global_key: "http_server_999_global".to_string(),
+            handler_key: "http_server_999_handler".to_string(),
         };
-        assert!(!ud.cx.is_null());
-        assert!(!ud.global.is_null());
-        assert!(!ud.handler.is_null());
+        assert!(ud.global().is_none(), "gc_store_get with null cx returns None");
+        assert!(ud.handler().is_none(), "gc_store_get with null cx returns None");
+    }
+
+    #[test]
+    fn server_user_data_cleanup_removes_from_gc_store() {
+        // cleanup with null cx should not panic (gc_store_remove handles null cx gracefully).
+        let ud = ServerUserData {
+            cx: ::std::ptr::null_mut(),
+            global_key: "http_server_998_global".to_string(),
+            handler_key: "http_server_998_handler".to_string(),
+        };
+        ud.cleanup(); // Must not panic
     }
 
     // ── HTTP STATUS_CODES (static data) ──

@@ -6,6 +6,8 @@ use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, ObjectValue};
 use mozjs::rust::wrappers2::JS_DefineFunction;
 
+use crate::gc_store::{gc_store_insert_ns, gc_store_get_ns, gc_store_remove_ns};
+
 thread_local! {
     static NEXT_ID: Cell<u32> = const { Cell::new(1) };
 
@@ -280,14 +282,16 @@ fn drain_bao_timers(raw_cx: *mut JSContext) -> bool {
             obj.event_loop_timer.state = TimerState::PENDING;
             obj.epoch = obj.epoch.wrapping_add(1);
             BAO_REGISTRY.with(|r| r.borrow_mut().insert(obj));
+        } else {
+            // One-shot: cleanup GcStore before Box is dropped.
+            obj.cleanup_callback(raw_cx);
         }
-        // One-shot: Box<BaoTimeoutObject> dropped here.
     }
 
     fired
 }
 
-pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _args: &[JSVal]) -> u32 {
+pub fn schedule_raw(cx: *mut JSContext, callback: *mut JSObject, delay_ms: u64, repeating: bool, _args: &[JSVal]) -> u32 {
     let id = NEXT_ID.with(|n| {
         let val = n.get();
         n.set(val + 1);
@@ -302,12 +306,16 @@ pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _ar
 
     let effective_delay = if delay_ms == 0 && repeating { 1 } else { delay_ms };
 
+    // GC-safe: store callback in GcStore, keep only the string key.
+    let callback_key = format!("cb_{}", id);
+    gc_store_insert_ns(cx, "timer", &callback_key, callback);
+
     let mut bao_obj = Box::new(BaoTimeoutObject::new_paused());
     bao_obj.timer_id = id;
     bao_obj.event_loop_timer.next = bun_core::Timespec::now_allow_mocked_time()
         .add_ms(effective_delay as i64);
     bao_obj.interval = interval;
-    bao_obj.callback = ::std::option::Option::Some(callback);
+    bao_obj.callback_key = ::std::option::Option::Some(callback_key);
     bao_obj.args = _args.to_vec();
     bao_obj.epoch = NEXT_EPOCH.with(|c| {
         let v = c.get();
@@ -321,7 +329,13 @@ pub fn schedule_raw(callback: *mut JSObject, delay_ms: u64, repeating: bool, _ar
 
 pub fn cancel_raw(id: u32) {
     BAO_REGISTRY.with(|r| {
-        r.borrow_mut().remove(id);
+        if let ::std::option::Option::Some(obj) = r.borrow_mut().remove(id) {
+            // GC-safe: remove callback from GcStore if cx is available.
+            let cx = current_cx();
+            if !cx.is_null() {
+                obj.cleanup_callback(cx);
+            }
+        }
     });
 }
 
@@ -345,7 +359,7 @@ unsafe extern "C" fn set_interval(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn clear_timeout(
-    _cx: *mut JSContext,
+    cx: *mut JSContext,
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
@@ -355,7 +369,9 @@ unsafe extern "C" fn clear_timeout(
         if v.is_int32() {
             let id = v.to_int32() as u32;
             BAO_REGISTRY.with(|r| {
-                r.borrow_mut().remove(id);
+                if let ::std::option::Option::Some(obj) = r.borrow_mut().remove(id) {
+                    obj.cleanup_callback(cx);
+                }
             });
         }
     }
@@ -374,7 +390,7 @@ unsafe extern "C" fn clear_interval(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn set_immediate(
-    _cx: *mut JSContext,
+    cx: *mut JSContext,
     argc: u32,
     vp: *mut JSVal,
 ) -> bool {
@@ -389,7 +405,7 @@ unsafe extern "C" fn set_immediate(
     } else {
         Vec::new()
     };
-    let id = schedule_raw(cb, 0, false, &cb_args);
+    let id = schedule_raw(cx, cb, 0, false, &cb_args);
     args.rval().set(Int32Value(id as i32));
     true
 }
@@ -438,7 +454,7 @@ unsafe fn register_timer(
         Vec::new()
     };
 
-    let id = schedule_raw(callback, delay_ms, repeating, &extra_args);
+    let id = schedule_raw(_cx, callback, delay_ms, repeating, &extra_args);
     args.rval().set(Int32Value(id as i32));
     true
 }
@@ -472,12 +488,12 @@ pub struct BaoTimeoutObject {
     /// Monotonic epoch for stable heap ordering of equal-deadline JS timers.
     /// Mirrors Bun's `TimerObjectInternals.flags.epoch` (u25 in Zig).
     pub epoch: u32,
-    /// JS callback to invoke when the timer fires. None = virgin state.
-    /// Stored as raw `*mut JSObject`; rooted by the implicit no-GC window
-    /// between schedule (host_fn set_timeout/set_interval) and fire (drain
-    /// runs to completion before yielding to the SM engine). Same pattern as
-    /// the legacy TimerHeap — see `TimerEntry.callback` doc.
-    pub callback: ::std::option::Option<*mut JSObject>,
+    /// GC-safe: GcStore key for the JS callback. None = virgin state.
+    /// The actual `*mut JSObject` is stored as a property on the JS global
+    /// via `gc_store_insert`; this field only holds the string key.
+    /// Retrieval via `gc_store_get(cx, &key)` is GC-safe (the property is
+    /// rooted on the global object, managed by SpiderMonkey's GC).
+    pub callback_key: ::std::option::Option<String>,
     /// Marshalled JS arguments preserved across the schedule→fire window.
     pub args: ::std::vec::Vec<JSVal>,
     /// P1-A.3c: re-arm interval for setInterval. None = one-shot setTimeout.
@@ -500,7 +516,7 @@ impl BaoTimeoutObject {
                 bun_event_loop::EventLoopTimer::Tag::TimeoutObject,
             ),
             epoch: 0,
-            callback: ::std::option::Option::None,
+            callback_key: ::std::option::Option::None,
             args: ::std::vec::Vec::new(),
             interval: ::std::option::Option::None,
             timer_id: 0,
@@ -532,20 +548,29 @@ impl BaoTimeoutObject {
 
     /// Mark fired AND dispatch the JS callback via `fire_js_callback_raw`.
     /// This is the SpiderMonkey equivalent of Bun's `TimeoutObject::fire`.
-    /// No-op if no callback is attached (defensive — schedule path always
+    /// No-op if no callback key is attached (defensive — schedule path always
     /// sets one). Swallows any JS exception per drain_timers convention.
     ///
     /// # Safety
     /// - `raw_cx` must be a live `JSContext*` on the current thread.
-    /// - `self.callback` (if Some) must point to a live function object
-    ///   rooted by the caller for the duration of this call.
+    /// - The callback retrieved from GcStore (if Some) must be a live function
+    ///   object rooted on the JS global for the duration of this call.
     /// - `self.args` slice must point to `JSVal`s rooted by the caller.
     pub unsafe fn fire_js(&mut self, raw_cx: *mut JSContext, now: &Timespec) {
         self.fire(now);
-        if let ::std::option::Option::Some(cb) = self.callback
-            && !cb.is_null()
-        {
-            unsafe { fire_js_callback_raw(raw_cx, cb, &self.args) };
+        if let ::std::option::Option::Some(ref key) = self.callback_key {
+            if let ::std::option::Option::Some(cb) = gc_store_get_ns(raw_cx, "timer", key) {
+                if !cb.is_null() {
+                    unsafe { fire_js_callback_raw(raw_cx, cb, &self.args) };
+                }
+            }
+        }
+    }
+
+    /// Remove the callback from GcStore. Call on cancel/remove.
+    fn cleanup_callback(&self, cx: *mut JSContext) {
+        if let ::std::option::Option::Some(ref key) = self.callback_key {
+            gc_store_remove_ns(cx, "timer", key);
         }
     }
 }
@@ -720,37 +745,34 @@ mod bao_timeout_tests {
     #[test]
     fn bao_timeout_object_new_paused_has_no_callback() {
         let obj = BaoTimeoutObject::new_paused();
-        assert!(obj.callback.is_none(), "new_paused must start with no callback");
+        assert!(obj.callback_key.is_none(), "new_paused must start with no callback_key");
         assert!(obj.args.is_empty(), "new_paused must start with empty args");
     }
 
     #[test]
-    fn bao_timeout_object_fire_js_null_callback_is_noop() {
-        // fire_js with null callback must still transition state but skip
+    fn bao_timeout_object_fire_js_no_callback_key_is_noop() {
+        // fire_js with no callback_key must still transition state but skip
         // JS dispatch (defensive guard). No JSContext is touched.
         let mut obj = BaoTimeoutObject::new_paused();
         let now = Timespec { sec: 1_700_000_000, nsec: 0 };
 
-        // SAFETY: passing null raw_cx is sound because the null callback
+        // SAFETY: passing null raw_cx is sound because the None callback_key
         // guard returns before any JSAPI call. We deliberately test the
         // defensive path — the production path requires a live cx.
         unsafe { obj.fire_js(::std::ptr::null_mut(), &now); }
 
-        assert!(obj.event_loop_timer.state == TimerState::FIRED, "fire_js transitions state even with null callback");
+        assert!(obj.event_loop_timer.state == TimerState::FIRED, "fire_js transitions state even with no callback_key");
         assert_eq!(obj.epoch, 1, "fire_js bumps epoch");
     }
 
     #[test]
-    fn bao_timeout_object_callback_field_roundtrip() {
-        // Verify callback/args fields can be set and read back. Uses a
-        // sentinel pointer (non-null but never dereferenced) to validate
-        // storage without engaging JSAPI.
+    fn bao_timeout_object_callback_key_field_roundtrip() {
+        // Verify callback_key/args fields can be set and read back.
         let mut obj = BaoTimeoutObject::new_paused();
-        let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
-        obj.callback = ::std::option::Option::Some(sentinel);
+        obj.callback_key = ::std::option::Option::Some("cb_42".to_string());
         obj.args = vec![mozjs::jsval::Int32Value(42)];
 
-        assert_eq!(obj.callback, ::std::option::Option::Some(sentinel), "callback field stores raw pointer");
+        assert_eq!(obj.callback_key, ::std::option::Option::Some("cb_42".to_string()), "callback_key stores string");
         assert_eq!(obj.args.len(), 1, "args field stores JSVal vec");
         assert_eq!(obj.args[0].to_int32(), 42, "JSVal roundtrips intact");
     }
@@ -1157,10 +1179,12 @@ mod bao_timeout_tests {
     fn schedule_raw_returns_monotonic_ids() {
         // schedule_raw should return monotonically increasing IDs.
         // Use sentinel callback pointer (never dereferenced).
+        // Null cx is safe — gc_store_insert skips when cx/global is null.
         let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
-        let id1 = schedule_raw(sentinel, 100, false, &[]);
-        let id2 = schedule_raw(sentinel, 200, false, &[]);
-        let id3 = schedule_raw(sentinel, 300, false, &[]);
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        let id1 = schedule_raw(null_cx, sentinel, 100, false, &[]);
+        let id2 = schedule_raw(null_cx, sentinel, 200, false, &[]);
+        let id3 = schedule_raw(null_cx, sentinel, 300, false, &[]);
         assert!(id2 > id1, "schedule_raw IDs must be monotonic");
         assert!(id3 > id2, "schedule_raw IDs must be monotonic");
         // Cleanup: cancel all scheduled timers
@@ -1173,7 +1197,8 @@ mod bao_timeout_tests {
     fn schedule_raw_one_shot_has_no_interval() {
         // schedule_raw with repeating=false should create one-shot timer (no interval).
         let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
-        let id = schedule_raw(sentinel, 100, false, &[]);
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        let id = schedule_raw(null_cx, sentinel, 100, false, &[]);
         // Retrieve the timer from BAO_REGISTRY to check interval
         let interval = BAO_REGISTRY.with(|r| {
             r.borrow().owned.get(&id).map(|obj| obj.interval)
@@ -1186,7 +1211,8 @@ mod bao_timeout_tests {
     fn schedule_raw_interval_has_interval_set() {
         // schedule_raw with repeating=true should create interval timer.
         let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
-        let id = schedule_raw(sentinel, 100, true, &[]);
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        let id = schedule_raw(null_cx, sentinel, 100, true, &[]);
         let interval = BAO_REGISTRY.with(|r| {
             r.borrow().owned.get(&id).map(|obj| obj.interval)
         });
@@ -1198,7 +1224,8 @@ mod bao_timeout_tests {
     fn schedule_raw_zero_delay_interval_uses_minimum_one_ms() {
         // schedule_raw with delay=0 and repeating=true should use 1ms minimum.
         let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
-        let id = schedule_raw(sentinel, 0, true, &[]);
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        let id = schedule_raw(null_cx, sentinel, 0, true, &[]);
         let interval = BAO_REGISTRY.with(|r| {
             r.borrow().owned.get(&id).map(|obj| obj.interval)
         });
@@ -1210,7 +1237,8 @@ mod bao_timeout_tests {
     fn cancel_raw_removes_timer_from_registry() {
         // cancel_raw should remove the timer from BAO_REGISTRY.
         let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
-        let id = schedule_raw(sentinel, 1000, false, &[]);
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        let id = schedule_raw(null_cx, sentinel, 1000, false, &[]);
         assert!(BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&id)), "timer should be in registry");
         cancel_raw(id);
         assert!(!BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&id)), "timer should be removed after cancel_raw");
@@ -1393,14 +1421,14 @@ mod bao_timeout_tests {
     }
 
     #[test]
-    fn bao_timeout_object_fire_js_none_callback_skips_dispatch_with_null_cx() {
-        // fire_js with callback=None and null cx should safely transition state.
-        // The None callback guard in fire_js returns before reaching
+    fn bao_timeout_object_fire_js_none_callback_key_skips_dispatch_with_null_cx() {
+        // fire_js with callback_key=None and null cx should safely transition state.
+        // The None callback_key guard in fire_js returns before reaching
         // fire_js_callback_raw, so null cx is safe.
         let mut obj = BaoTimeoutObject::new_paused();
         let now = Timespec { sec: 1_700_000_000, nsec: 0 };
         unsafe { obj.fire_js(::std::ptr::null_mut(), &now); }
-        assert!(obj.event_loop_timer.state == TimerState::FIRED, "fire_js transitions state with None callback");
+        assert!(obj.event_loop_timer.state == TimerState::FIRED, "fire_js transitions state with None callback_key");
         assert_eq!(obj.epoch, 1);
     }
 
@@ -1413,7 +1441,8 @@ mod bao_timeout_tests {
         assert!(!has_pending_timers(), "should be empty after clearing");
         // Add a timer
         let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
-        let id = schedule_raw(sentinel, 1000, false, &[]);
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        let id = schedule_raw(null_cx, sentinel, 1000, false, &[]);
         assert!(has_pending_timers(), "should have pending timer");
         cancel_raw(id);
         assert!(!has_pending_timers(), "should be empty after cancel");

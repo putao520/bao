@@ -12,6 +12,22 @@ pub enum JsValue {
     Bool(bool),
     Number(f64),
     String(::std::string::String),
+    /// **GC-unsafe**: the `*mut JSObject` pointer is NOT rooted. This variant must
+    /// only be used as a transient conversion value within a single no-GC window
+    /// (i.e., created from `jsval_to_jsvalue` and consumed by `to_jsval` before
+    /// any JS code runs that could trigger GC). Storing `JsValue::Object` in a
+    /// struct field, local variable across an await point, or collection that
+    /// outlives the current SM API call will cause use-after-free if GC moves
+    /// or collects the object.
+    ///
+    /// For persistent storage, use `GcStore` (see `bao_runtime::gc_store`):
+    /// - `gc_store_insert(cx, key, obj)` — store with simple key (`__gc_cache_{key}`)
+    /// - `gc_store_insert_ns(cx, namespace, key, obj)` — store with namespaced key (`__gc_{namespace}_{key}`)
+    /// - `gc_store_get(cx, key)` / `gc_store_get_ns(cx, namespace, key)` — retrieve
+    /// - `gc_store_remove(cx, key)` / `gc_store_remove_ns(cx, namespace, key)` — remove
+    ///
+    /// GcStore stores objects as properties on the JS global, so SpiderMonkey's GC
+    /// manages them naturally — no raw pointer that could dangle after GC.
     Object(*mut JSObject),
 }
 
@@ -265,6 +281,12 @@ mod tests {
 ///
 /// # Safety
 /// `cx` must be a valid JSContext pointer. `val` must be a valid JSVal.
+///
+/// # GC safety
+/// The returned `JsValue::Object` variant contains an unrooted `*mut JSObject`.
+/// The caller must consume the value (convert it back to JSVal, store it via
+/// GcStore, or pass it to a SM API) before any JS code executes that could
+/// trigger GC. See `JsValue::Object` variant documentation for details.
 #[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn jsval_to_jsvalue(cx: *mut JSContext, val: JSVal) -> JsValue {
     if val.is_undefined() {

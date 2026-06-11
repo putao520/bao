@@ -5,6 +5,7 @@ use ::std::ffi::CString;
 use ::std::io::{Read, Write};
 use ::std::net::TcpStream;
 use ::std::ptr::NonNull;
+use ::std::sync::atomic::{AtomicU64, Ordering};
 use ::std::time::Duration;
 
 use mozjs::jsapi::*;
@@ -12,6 +13,8 @@ use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, ObjectValue, 
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1, CallOriginalPromiseResolve, CallOriginalPromiseThen};
 use mozjs::conversions::jsstr_to_string;
+
+use crate::gc_store::{gc_store_insert, gc_store_get, gc_store_remove};
 
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 
@@ -178,10 +181,13 @@ fn write_masked_payload(frame: &mut Vec<u8>, payload: &[u8]) {
 
 // ── JS bridge ──
 
+/// Global counter for generating unique GcStore keys for WebSocket objects.
+static WS_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 #[allow(dead_code)]
 struct WsEntry {
     client: WsClient,
-    js_obj: *mut JSObject,
+    js_obj_key: String,
 }
 
 thread_local! {
@@ -213,7 +219,11 @@ pub fn install_websocket_constructor(
     }
 }
 
-unsafe fn ws_trigger_event(cx: *mut JSContext, ws_obj: *mut JSObject, event_name: &str, data_val: Option<JSVal>) {
+unsafe fn ws_trigger_event(cx: *mut JSContext, ws_obj_key: &str, event_name: &str, data_val: Option<JSVal>) {
+    let ws_obj = match gc_store_get(cx, ws_obj_key) {
+        Some(obj) => obj,
+        None => return,
+    };
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ws_obj };
     let mut handler_val = UndefinedValue();
     let c_name = ::std::ffi::CString::new(event_name).unwrap_or_default();
@@ -365,6 +375,11 @@ unsafe extern "C" fn websocket_constructor(
             let open_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &open_val };
             JS_SetProperty(cx, obj_h, c"readyState".as_ptr(), open_h);
 
+            // Store the JS WebSocket object in GcStore for GC safety
+            let ws_id = WS_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let ws_key = format!("ws_{}", ws_id);
+            gc_store_insert(cx, &ws_key, ws_obj.get());
+
             // Set non-blocking to drain available messages
             let _ = client.stream.set_nonblocking(true);
             loop {
@@ -374,7 +389,7 @@ unsafe extern "C" fn websocket_constructor(
                             let js_str = JS_NewStringCopyZ(cx, c_text.as_ptr());
                             if !js_str.is_null() {
                                 let dv = StringValue(&*js_str);
-                                ws_trigger_event(cx, ws_obj.get(), "onmessage", Some(dv));
+                                ws_trigger_event(cx, &ws_key, "onmessage", Some(dv));
                             }
                         }
                     }
@@ -383,7 +398,8 @@ unsafe extern "C" fn websocket_constructor(
                         let closed_val = Int32Value(3);
                         let closed_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &closed_val };
                         JS_SetProperty(cx, obj_h, c"readyState".as_ptr(), closed_h);
-                        ws_trigger_event(cx, ws_obj.get(), "onclose", None);
+                        ws_trigger_event(cx, &ws_key, "onclose", None);
+                        gc_store_remove(cx, &ws_key);
                         break;
                     }
                     Err(_) => break, // WouldBlock or other error
@@ -393,14 +409,14 @@ unsafe extern "C" fn websocket_constructor(
 
             let ws_idx = WS_CONNECTIONS.with(|c| {
                 let mut conns = c.borrow_mut();
-                conns.push(WsEntry { client, js_obj: ws_obj.get() });
+                conns.push(WsEntry { client, js_obj_key: ws_key.clone() });
                 conns.len() - 1
             });
             let idx_val = Int32Value(ws_idx as i32);
             let idx_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &idx_val };
             JS_DefineProperty(cx, obj_h, c"_wsIdx".as_ptr(), idx_h, 0);
 
-            ws_trigger_event(cx, ws_obj.get(), "onopen", None);
+            ws_trigger_event(cx, &ws_key, "onopen", None);
         }
         Err(e) => {
             let msg = format!("WebSocket connection failed: {}", e);
