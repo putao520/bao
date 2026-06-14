@@ -111,7 +111,8 @@ impl BaoRuntime {
         while start.elapsed() < max_wait {
             self.servo.spin_event_loop();
             self.page_pool.check_idle_pages();
-            std::thread::sleep(Duration::from_millis(10));
+            // Yield instead of sleep — servo spin_event_loop is non-blocking.
+            std::thread::yield_now();
         }
 
         let _stats = self.page_pool.stats();
@@ -134,7 +135,8 @@ impl BaoRuntime {
             // Process pending CDP bridge commands
             bridge_rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
 
-            std::thread::sleep(Duration::from_millis(5));
+            // Yield instead of sleep — check bridge commands more frequently.
+            std::thread::yield_now();
         }
 
         Ok(())

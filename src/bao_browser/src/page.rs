@@ -73,18 +73,20 @@ impl PageInner {
     /// loop and retries until the pipeline is ready or the timeout expires.
     ///
     /// Returns the result of the drain evaluation (typically "undefined").
+    // @trace REQ-BRW-001 [entity:PageHandle]
     pub fn drain_callbacks(&self) -> Result<String, BrowserError> {
-        let max_attempts = 50;
-        let attempt_interval = Duration::from_millis(20);
+        let max_attempts = 100;
 
-        for _ in 0..max_attempts {
+        for attempt in 0..max_attempts {
             match self.evaluate_js_web(";") {
                 Ok(result) => return Ok(result),
                 Err(BrowserError::JavaScript(msg)) if msg.contains("InternalError") => {
                     // Pipeline not ready — spin servo event loop and retry.
-                    self.servo.spin_event_loop();
-                    self.webview.paint();
-                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    // Yield after every few attempts to avoid CPU spinning.
+                    if attempt % 5 == 4 {
+                        self.servo.spin_event_loop();
+                        self.webview.paint();
+                    }
                     continue;
                 }
                 Err(other) => return Err(other),
@@ -218,8 +220,8 @@ impl PageInner {
     }
 
     /// Spin servo's event loop until the callback returns false or timeout.
-    /// Mirrors servo's official test pattern: single spin_event_loop() per
-    /// iteration with 1ms sleep, checking a shared RefCell for results.
+    /// Uses yield_now instead of sleep to avoid blocking the thread.
+    // @trace REQ-BRW-001 [entity:PageHandle]
     fn spin_servo(
         &self,
         timeout: Duration,
@@ -232,7 +234,9 @@ impl PageInner {
             if start.elapsed() > timeout {
                 return Err(BrowserError::Init("operation timed out".into()));
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
+            // Yield instead of sleep — servo event loop is non-blocking,
+            // and we want to check callback as soon as possible.
+            std::thread::yield_now();
         }
         Ok(())
     }
@@ -322,34 +326,39 @@ impl PageHandle {
         self.with_inner(|inner| inner.navigate(url))
     }
 
-    /// Drain pending servo script thread callbacks.
-    ///
-    /// See [`PageInner::drain_callbacks`] for details.
     /// Wait for servo's WebView pipeline to be ready for script evaluation.
     ///
     /// After `pool.create_page()`, servo's constellation hasn't finished setting
     /// up the script thread pipeline. Calling `evaluate_js_web` too early causes
-    /// SIGSEGV. This method spins the event loop (without paint) until the
-    /// pipeline accepts script evaluation (drain_callbacks succeeds) or timeout.
+    /// SIGSEGV. This method waits for `frame_ready` callback from servo, then
+    /// verifies pipeline readiness via drain_callbacks.
+    ///
+    /// Uses event-driven notification via `notify_new_frame_ready` callback
+    /// instead of sleep polling.
+    // @trace REQ-BRW-001 [entity:PageHandle] [sm:PageLifecycle]
     pub fn wait_for_pipeline_ready(&self, timeout: Duration) -> Result<(), BrowserError> {
         let start = Instant::now();
 
-        // Phase 1: Spin servo event loop to let constellation create the pipeline.
-        // Do NOT call paint() here — paint on an uninitialized pipeline segfaults.
+        // Event-driven wait: spin event loop until frame_ready callback fires.
+        // The callback sets frame_ready = true via notify_new_frame_ready.
         while start.elapsed() < timeout {
+            // Check frame_ready flag first (fast path, no sleep needed)
+            let ready = self.with_inner_opt(|inner| inner.webview_state.borrow().frame_ready).unwrap_or(false);
+            if ready {
+                // Frame ready — verify pipeline by draining callbacks.
+                return self.drain_callbacks().map(|_| ());
+            }
+
+            // Not ready yet — spin event loop to process servo messages.
             self.with_inner(|inner| {
                 inner.servo.spin_event_loop();
                 Ok(())
             })?;
-            std::thread::sleep(std::time::Duration::from_millis(20));
 
-            // Try drain — if it succeeds, pipeline is ready.
-            match self.drain_callbacks() {
-                Ok(_) => return Ok(()),
-                Err(BrowserError::JavaScript(msg)) if msg.contains("InternalError") => continue,
-                Err(other) => return Err(other),
-            }
+            // Yield briefly to avoid CPU spinning (servo event loop is non-blocking).
+            std::thread::yield_now();
         }
+
         Err(BrowserError::Init("pipeline not ready after timeout".into()))
     }
 
