@@ -355,8 +355,8 @@ unsafe extern "C" fn crypto_random_bytes(cx: *mut JSContext, argc: u32, vp: *mut
     };
 
     let mut bytes = vec![0u8; size];
-    use rand::RngCore;
-    rand::thread_rng().fill_bytes(&mut bytes);
+    // Use BoringSSL CSPRNG instead of rand
+    bao_crypto::random::rand_bytes(&mut bytes).unwrap();
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
@@ -514,7 +514,8 @@ unsafe extern "C" fn crypto_random_uuid(cx: *mut JSContext, _argc: u32, vp: *mut
 
 fn uuid_v4() -> String {
     let mut bytes = [0u8; 16];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut bytes);
+    // Use BoringSSL CSPRNG instead of rand
+    bao_crypto::random::rand_bytes(&mut bytes).unwrap();
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!("{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
@@ -542,7 +543,8 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
     let len = if len_val.is_int32() { len_val.to_int32() as usize } else { return throw_type_error(cx, "getRandomValues() invalid array") };
 
     let mut random_bytes = vec![0u8; len];
-    rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut random_bytes);
+    // Use BoringSSL CSPRNG instead of rand
+    bao_crypto::random::rand_bytes(&mut random_bytes).unwrap();
 
     for (i, &byte) in random_bytes.iter().enumerate() {
         let v = mozjs::jsval::Int32Value(byte as i32);

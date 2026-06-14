@@ -42,7 +42,8 @@ impl WsClient {
         ).map_err(|e| format!("connect failed: {}", e))?;
         stream.set_nonblocking(false).ok();
 
-        let key_base: [u8; 16] = rand::random();
+        let mut key_base = [0u8; 16];
+        bao_crypto::random::rand_bytes(&mut key_base).unwrap();
         let key_bytes = bun_base64::encode_alloc(&key_base);
         let key = ::std::str::from_utf8(&key_bytes).unwrap_or("");
 
@@ -162,7 +163,8 @@ fn parse_ws_url(url: &str) -> ::std::result::Result<(String, u16, String), Strin
 }
 
 fn write_masked_payload(frame: &mut Vec<u8>, payload: &[u8]) {
-    let mask_key: [u8; 4] = rand::random();
+    let mut mask_key = [0u8; 4];
+    bao_crypto::random::rand_bytes(&mut mask_key).unwrap();
     let len = payload.len();
     if len < 126 {
         frame.push(0x80 | len as u8);

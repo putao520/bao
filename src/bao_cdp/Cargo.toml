@@ -9,8 +9,9 @@ compact_str.workspace = true
 cdp-server = { path = "../../src/cdp-server" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-base64 = "0.22"
-sha1 = "0.10"
-tungstenite = { version = "0.26", features = ["handshake"] }
+bun_uws = { path = "../uws" }
+bun_picohttp = { path = "../picohttp" }
+bun_base64 = { path = "../base64" }
+bun_sha_hmac = { path = "../sha_hmac" }
 cdp-protocol = "0.3"
 log = "0.4"
