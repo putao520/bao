@@ -1,4 +1,4 @@
-// @trace REQ-ENG-007
+// @trace REQ-ENG-007 [entity:URL] [api:URL.parse]
 use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
@@ -11,6 +11,8 @@ use mozjs::rust::wrappers2 as w2;
 use mozjs::rust::IdVector;
 
 use crate::require::cache_builtin;
+// @trace REQ-ENG-007 [code:bun_url::URL, bun_url::PercentEncoding]
+use bun_url::{URL as BunUrl, PercentEncoding};
 
 struct UrlState {
     href: String,
@@ -26,13 +28,15 @@ struct UrlState {
     origin: String,
 }
 
+// @trace REQ-ENG-007 [entity:URL] [code:bun_url::URL::parse]
 fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
     let input = input.trim();
     if input.is_empty() {
         return None;
     }
 
-    let full_url = if input.starts_with("data:") || input.starts_with("blob:") {
+    // Handle special URLs (data:, blob:) that bun_url may not fully support
+    if input.starts_with("data:") || input.starts_with("blob:") {
         return Some(UrlState {
             href: input.to_string(),
             protocol: input.split(':').next().unwrap_or("").to_string() + ":",
@@ -46,107 +50,64 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
             hash: String::new(),
             origin: "null".to_string(),
         });
-    } else {
-        let (base_parts, _actual_base) = if let Some(b) = base {
-            (Some(parse_url(b, None)?), b.to_string())
-        } else {
-            (None, String::new())
-        };
+    }
 
-        let has_scheme = input.contains("://") || input.starts_with("//");
-        
-        if has_scheme {
-            input.to_string()
-        } else if input.starts_with("/") {
-            if let Some(bp) = &base_parts {
-                format!("{}://{}{}", bp.protocol.trim_end_matches(':'), bp.host, input)
-            } else {
-                return None;
-            }
-        } else if input.starts_with("?") || input.starts_with("#") {
-            if let Some(bp) = &base_parts {
-                format!("{}://{}{}{}", bp.protocol.trim_end_matches(':'), bp.host, bp.pathname, input)
-            } else {
-                return None;
-            }
-        } else {
-            if let Some(bp) = &base_parts {
-                let dir = if bp.pathname.contains('/') {
-                    bp.pathname.rsplit_once('/').map(|(d, _)| d).unwrap_or("")
-                } else {
-                    ""
-                };
-                format!("{}://{}{}/{}", bp.protocol.trim_end_matches(':'), bp.host, dir, input)
-            } else {
-                return None;
-            }
+    // Determine the actual URL string to parse (resolve relative if needed)
+    let url_to_parse: String = if input.contains("://") || input.starts_with("//") {
+        // Absolute URL - use as-is
+        input.to_string()
+    } else if let Some(base_str) = base {
+        // Relative URL with base - resolve it
+        let base_bytes = base_str.as_bytes();
+        let base_url = BunUrl::parse(base_bytes);
+        if base_url.protocol.is_empty() {
+            return None;
         }
-    };
 
-    let (scheme_rest, hash) = if let Some(pos) = full_url.find('#') {
-        (&full_url[..pos], full_url[pos..].to_string())
-    } else {
-        (full_url.as_str(), String::new())
-    };
-
-    let (scheme_rest, search) = if let Some(pos) = scheme_rest.find('?') {
-        (&scheme_rest[..pos], scheme_rest[pos..].to_string())
-    } else {
-        (scheme_rest, String::new())
-    };
-
-    #[allow(clippy::question_mark)]
-    let (scheme, authority_path) = if let Some((s, rest)) = scheme_rest.split_once("://") {
-        (s, rest)
-    } else if let Some(rest) = scheme_rest.strip_prefix("//") {
-        ("", rest)
+        // Resolve relative URL against base using bun_url's join logic
+        if input.starts_with("/") {
+            // Absolute path
+            format!("{}://{}{}",
+                core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
+                core::str::from_utf8(base_url.host).unwrap_or(""),
+                input)
+        } else if input.starts_with("?") || input.starts_with("#") {
+            // Query or fragment only
+            format!("{}://{}{}{}",
+                core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
+                core::str::from_utf8(base_url.host).unwrap_or(""),
+                core::str::from_utf8(base_url.pathname).unwrap_or("/"),
+                input)
+        } else {
+            // Relative path
+            let dir = if let Some(pos) = base_url.pathname.iter().rposition(|&c| c == b'/') {
+                &base_url.pathname[..pos]
+            } else {
+                b""
+            };
+            format!("{}://{}{}/{}",
+                core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
+                core::str::from_utf8(base_url.host).unwrap_or(""),
+                core::str::from_utf8(dir).unwrap_or(""),
+                input)
+        }
     } else {
         return None;
     };
 
-    let (authority, pathname) = if let Some(slash_pos) = authority_path.find('/') {
-        (&authority_path[..slash_pos], authority_path[slash_pos..].to_string())
+    // Now parse the resolved URL (url_to_parse owns the String)
+    let parsed = BunUrl::parse(url_to_parse.as_bytes());
+
+    // Convert bun_url::URL to UrlState
+    let protocol = core::str::from_utf8(parsed.protocol).unwrap_or("").to_string();
+    let hostname = core::str::from_utf8(parsed.hostname).unwrap_or("").to_string();
+    let port = core::str::from_utf8(parsed.port).unwrap_or("").to_string();
+
+    let host = if port.is_empty() {
+        hostname.clone()
     } else {
-        (authority_path, "/".to_string())
+        format!("{}:{}", hostname, port)
     };
-
-    let (userinfo, host_port) = if let Some(at_pos) = authority.rfind('@') {
-        (&authority[..at_pos], &authority[at_pos + 1..])
-    } else {
-        ("", authority)
-    };
-
-    let (username, password) = if !userinfo.is_empty() {
-        if let Some(colon_pos) = userinfo.find(':') {
-            (userinfo[..colon_pos].to_string(), userinfo[colon_pos + 1..].to_string())
-        } else {
-            (userinfo.to_string(), String::new())
-        }
-    } else {
-        (String::new(), String::new())
-    };
-
-    let (hostname, port) = if host_port.starts_with('[') {
-        if let Some(bracket_end) = host_port.find(']') {
-            let host = host_port[..=bracket_end].to_string();
-            let port = if bracket_end + 1 < host_port.len() && host_port.as_bytes()[bracket_end + 1] == b':' {
-                host_port[bracket_end + 2..].to_string()
-            } else {
-                String::new()
-            };
-            (host, port)
-        } else {
-            (host_port.to_string(), String::new())
-        }
-    } else if let Some(colon_pos) = host_port.rfind(':') {
-        (host_port[..colon_pos].to_string(), host_port[colon_pos + 1..].to_string())
-    } else {
-        (host_port.to_string(), String::new())
-    };
-
-    let host = if port.is_empty() { hostname.clone() } else { format!("{}:{}", hostname, port) };
-
-    let protocol = if scheme.is_empty() { "http:".to_string() } else { format!("{}:", scheme) };
 
     let origin = if hostname.is_empty() {
         "null".to_string()
@@ -154,19 +115,17 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
         format!("{}//{}", protocol, host)
     };
 
-    let href = format!("{}//{}{}{}{}", protocol, host, pathname, search, hash);
-
     Some(UrlState {
-        href,
+        href: core::str::from_utf8(parsed.href).unwrap_or("").to_string(),
         protocol,
-        username,
-        password,
+        username: core::str::from_utf8(parsed.username).unwrap_or("").to_string(),
+        password: core::str::from_utf8(parsed.password).unwrap_or("").to_string(),
         host,
         hostname,
         port,
-        pathname,
-        search,
-        hash,
+        pathname: core::str::from_utf8(parsed.pathname).unwrap_or("/").to_string(),
+        search: core::str::from_utf8(parsed.search).unwrap_or("").to_string(),
+        hash: core::str::from_utf8(parsed.hash).unwrap_or("").to_string(),
         origin,
     })
 }
@@ -973,8 +932,9 @@ unsafe extern "C" fn sp_to_string(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
     true
 }
 
+// @trace REQ-ENG-007 [code:bun_url::PercentEncoding]
 fn url_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+    let mut out = String::with_capacity(s.len() * 3);
     for b in s.bytes() {
         match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
@@ -985,30 +945,38 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+// @trace REQ-ENG-007 [code:bun_url::PercentEncoding::decode_alloc]
 fn url_decode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'+' {
-            out.push(' ');
-            i += 1;
-        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push(char::from_u32(h * 16 + l).unwrap_or('?'));
-                i += 3;
-            } else {
-                out.push(bytes[i] as char);
-                i += 1;
+    // Use bun_url::PercentEncoding for decode if available, otherwise fallback
+    match PercentEncoding::decode_alloc(s.as_bytes()) {
+        Ok(decoded) => String::from_utf8_lossy(&decoded).to_string(),
+        Err(_) => {
+            // Fallback to manual decode
+            let mut out = String::with_capacity(s.len());
+            let bytes = s.as_bytes();
+            let mut i = 0;
+            while i < bytes.len() {
+                if bytes[i] == b'+' {
+                    out.push(' ');
+                    i += 1;
+                } else if bytes[i] == b'%' && i + 2 < bytes.len() {
+                    let hi = (bytes[i + 1] as char).to_digit(16);
+                    let lo = (bytes[i + 2] as char).to_digit(16);
+                    if let (Some(h), Some(l)) = (hi, lo) {
+                        out.push(char::from_u32(h * 16 + l).unwrap_or('?'));
+                        i += 3;
+                    } else {
+                        out.push(bytes[i] as char);
+                        i += 1;
+                    }
+                } else {
+                    out.push(bytes[i] as char);
+                    i += 1;
+                }
             }
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
+            out
         }
     }
-    out
 }
 
 /// Collect (key, value) pairs from a URLSearchParams object using GetPropertyKeys.
