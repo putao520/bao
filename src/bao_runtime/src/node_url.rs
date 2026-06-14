@@ -159,13 +159,22 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
         hash: {
             // bun_url returns hash without leading '#'; WHATWG spec includes '#'.
             let raw = core::str::from_utf8(parsed.hash).unwrap_or("");
-            if raw.is_empty() {
-                String::new()
+            // bun_url bug: for URLs without a path (e.g. "https://example.com#section"),
+            // parsed.hash can come back empty even when href contains '#'.
+            // Fall back to extracting from href.
+            let resolved = if raw.is_empty() {
+                let href = core::str::from_utf8(parsed.href).unwrap_or("");
+                if let Some(pos) = href.find('#') {
+                    href[pos..].to_string()
+                } else {
+                    String::new()
+                }
             } else if raw.starts_with('#') {
                 raw.to_string()
             } else {
                 format!("#{}", raw)
-            }
+            };
+            resolved
         },
         origin,
     })
@@ -1542,6 +1551,12 @@ mod tests {
     fn parse_url_hash_only() {
         let s = parse_url("https://x.com/page#section", None).unwrap();
         assert_eq!(s.search, "");
+        assert_eq!(s.hash, "#section");
+    }
+
+    #[test]
+    fn parse_url_hash_no_path() {
+        let s = parse_url("https://example.com#section", None).unwrap();
         assert_eq!(s.hash, "#section");
     }
 
