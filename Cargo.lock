@@ -1932,7 +1932,6 @@ dependencies = [
  "log",
  "mozjs",
  "mozjs_sys",
- "rand 0.8.6",
  "rusqlite",
  "serde_json",
  "smallvec",

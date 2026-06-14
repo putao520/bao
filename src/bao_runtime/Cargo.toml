@@ -49,7 +49,6 @@ compact_str.workspace = true
 smallvec.workspace = true
 bao_uloop = { path = "../bao_uloop" }
 bun_sha_hmac = { path = "../sha_hmac" }
-rand = "0.8"
 hex = "0.4"
 flate2.workspace = true
 
