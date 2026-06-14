@@ -247,6 +247,7 @@ fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Resul
     // AsyncHTTP, which may otherwise hang for minutes on SYN to dead endpoints
     // (root cause of the fetch_api_tests SIGTERM during the suite — port 1 on
     // loopback never responds and the bun_http internals lack a connect timeout).
+    // @trace REQ-ENG-007 [code:std::net::ToSocketAddrs] - uses system DNS (libc::getaddrinfo, equivalent to bun_dns::Backend::Libc)
     if let Some((host, port)) = extract_host_port(url) {
         let addr = format!("{}:{}", host, port);
         if let Ok(addrs) = ::std::net::ToSocketAddrs::to_socket_addrs(&addr) {

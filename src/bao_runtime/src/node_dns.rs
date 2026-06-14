@@ -1,4 +1,6 @@
-// @trace REQ-ENG-007
+// @trace REQ-ENG-007 [entity:DNS] [code:bun_dns]
+// NOTE: Current DNS resolution uses std::net::ToSocketAddrs, which calls libc::getaddrinfo (system DNS).
+// This is equivalent to bun_dns::Backend::Libc. bun_dns types are available for future async integration.
 use bun_core::ZBox;
 use ::std::net::{SocketAddr, ToSocketAddrs};
 use ::std::ptr::NonNull;
