@@ -1,4 +1,4 @@
-// @trace REQ-ENG-006
+// @trace REQ-ENG-006 [api:GET /api/bun-compat]
 // Bun.* namespace + process global + servers + test runner
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
@@ -451,15 +451,15 @@ unsafe fn populate_process_object(
             JS_DefineFunction(cx, stdin_obj.handle(), c"read".as_ptr(), Some(stdin_read), 0, JSPROP_ENUMERATE as u32);
             JS_DefineFunction(cx, stdin_obj.handle(), c"on".as_ptr(), Some(stdin_on), 2, JSPROP_ENUMERATE as u32);
             JS_DefineFunction(cx, stdin_obj.handle(), c"pipe".as_ptr(), Some(stdin_pipe), 1, JSPROP_ENUMERATE as u32);
-            JS_DefineFunction(cx, stdin_obj.handle(), c"resume".as_ptr(), Some(stdin_noop), 0, JSPROP_ENUMERATE as u32);
-            JS_DefineFunction(cx, stdin_obj.handle(), c"pause".as_ptr(), Some(stdin_noop), 0, JSPROP_ENUMERATE as u32);
-            JS_DefineFunction(cx, stdin_obj.handle(), c"destroy".as_ptr(), Some(stdin_noop), 0, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx, stdin_obj.handle(), c"resume".as_ptr(), Some(stdin_resume), 0, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx, stdin_obj.handle(), c"pause".as_ptr(), Some(stdin_pause), 0, JSPROP_ENUMERATE as u32);
+            JS_DefineFunction(cx, stdin_obj.handle(), c"destroy".as_ptr(), Some(stdin_destroy), 0, JSPROP_ENUMERATE as u32);
             JS_DefineProperty3(cx, proc_obj, c"stdin".as_ptr(), stdin_obj.handle(), JSPROP_ENUMERATE as u32);
         }
     }
 
-    // process.on()
-    JS_DefineFunction(cx, proc_obj, c"on".as_ptr(), ::std::option::Option::Some(process_on), 2, JSPROP_ENUMERATE as u32);
+    // process.on() — real EventEmitter
+    JS_DefineFunction(cx, proc_obj, c"on".as_ptr(), Some(crate::node_events::ee_on), 2, JSPROP_ENUMERATE as u32);
 
     // process.nextTick()
     JS_DefineFunction(cx, proc_obj, c"nextTick".as_ptr(), ::std::option::Option::Some(process_next_tick), 1, JSPROP_ENUMERATE as u32);
@@ -574,15 +574,14 @@ unsafe fn populate_process_object(
         }
     }
 
-    // process EventEmitter — on/once/addListener delegate to process_on
-    // emit/off/removeListener/removeAllListeners use process_noop (accept and ignore)
-    JS_DefineFunction(cx, proc_obj, c"on".as_ptr(), Some(process_on), 2, JSPROP_ENUMERATE as u32);
-    JS_DefineFunction(cx, proc_obj, c"once".as_ptr(), Some(process_on), 2, JSPROP_ENUMERATE as u32);
-    JS_DefineFunction(cx, proc_obj, c"addListener".as_ptr(), Some(process_on), 2, JSPROP_ENUMERATE as u32);
-    JS_DefineFunction(cx, proc_obj, c"emit".as_ptr(), Some(process_noop), 1, JSPROP_ENUMERATE as u32);
-    JS_DefineFunction(cx, proc_obj, c"off".as_ptr(), Some(process_noop), 2, JSPROP_ENUMERATE as u32);
-    JS_DefineFunction(cx, proc_obj, c"removeListener".as_ptr(), Some(process_noop), 2, JSPROP_ENUMERATE as u32);
-    JS_DefineFunction(cx, proc_obj, c"removeAllListeners".as_ptr(), Some(process_noop), 0, JSPROP_ENUMERATE as u32);
+    // process EventEmitter — delegate to node_events implementations
+    JS_DefineFunction(cx, proc_obj, c"on".as_ptr(), Some(crate::node_events::ee_on), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, proc_obj, c"once".as_ptr(), Some(crate::node_events::ee_once), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, proc_obj, c"addListener".as_ptr(), Some(crate::node_events::ee_on), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, proc_obj, c"emit".as_ptr(), Some(crate::node_events::ee_emit), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, proc_obj, c"off".as_ptr(), Some(crate::node_events::ee_off), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, proc_obj, c"removeListener".as_ptr(), Some(crate::node_events::ee_off), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, proc_obj, c"removeAllListeners".as_ptr(), Some(crate::node_events::ee_remove_all), 0, JSPROP_ENUMERATE as u32);
 
     // Cache process object for require("process") / require("node:process")
     let proc_ptr = proc_obj.get();
@@ -1057,13 +1056,56 @@ unsafe extern "C" fn stdin_pipe(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn stdin_noop(
-    _cx: *mut JSContext,
+unsafe extern "C" fn stdin_resume(
+    cx: *mut JSContext,
     _argc: u32,
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(UndefinedValue());
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let readable_v = BooleanValue(true);
+    let rv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &readable_v };
+    JS_DefineProperty(cx, obj_h, c"readable".as_ptr(), rv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stdin_pause(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let readable_v = BooleanValue(false);
+    let rv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &readable_v };
+    JS_DefineProperty(cx, obj_h, c"readable".as_ptr(), rv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stdin_destroy(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let destroyed_v = BooleanValue(true);
+    let dv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &destroyed_v };
+    JS_DefineProperty(cx, obj_h, c"destroyed".as_ptr(), dv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
     true
 }
 
@@ -1222,7 +1264,7 @@ unsafe extern "C" fn bun_serve(
             if !listen_socket.is_null() {
                 let ls_ref = bun_opaque::opaque_deref_mut(listen_socket);
                 let ls_port = ls_ref.get_local_port();
-                eprintln!("Bun.serve() listening (uWS port={})", ls_port);
+                log::info!("Bun.serve() listening (uWS port={})", ls_port);
             }
         }
 
@@ -1230,7 +1272,7 @@ unsafe extern "C" fn bun_serve(
             unsafe { ::std::mem::transmute(bun_serve_listen_cb as unsafe extern "C" fn(*mut ListenSocket, *mut ::std::ffi::c_void)) };
 
         (*app_ptr).listen(port as i32, safe_listen_cb, ud_ptr);
-        eprintln!("Bun.serve() listening on {}:{}", hostname, port);
+        log::info!("Bun.serve() listening on {}:{}", hostname, port);
     }
 
     // Build JS server object
@@ -1297,7 +1339,7 @@ unsafe extern "C" fn bun_serve(
             // Skip destroys socket group with dangling listen sockets → assertion.
             (*app_ptr).close();
             App::<false>::destroy(app_ptr);
-            eprintln!("Bun.serve() stopped");
+            log::info!("Bun.serve() stopped");
         }
         // Clean up GcStore entries for fetch and websocket callbacks
         let mut fk_val = UndefinedValue();
@@ -1644,6 +1686,9 @@ unsafe extern "C" fn bun_build(
     let mut error_msg = String::new();
 
     for (idx, entry) in entrypoints.iter().enumerate() {
+        // Phase 1: inline file read + size report.
+        // Phase 2: delegate to bao_bundler::build() via bao_cli (can't direct-dep
+        //          due to cyclic dep: bao_bundler → bun_runtime → bao_bundler).
         let epath = path::Path::new(entry);
         let content = match fs::read_to_string(epath) {
             Ok(c) => c,
@@ -2496,17 +2541,21 @@ unsafe extern "C" fn bun_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     } else {
         Vec::new()
     };
-    use sha2::{Sha256, Sha512, Digest};
+    use bun_sha_hmac;
     let result = match algo.as_str() {
         "sha512" => {
-            let mut hasher = Sha512::new();
+            let mut hasher = bun_sha_hmac::sha::hashers::SHA512::init();
             hasher.update(&data);
-            hasher.finalize().to_vec()
+            let mut out = [0u8; bun_sha_hmac::SHA512::DIGEST];
+            hasher.r#final(&mut out);
+            out.to_vec()
         }
         _ => {
-            let mut hasher = Sha256::new();
+            let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
             hasher.update(&data);
-            hasher.finalize().to_vec()
+            let mut out = [0u8; bun_sha_hmac::SHA256::DIGEST];
+            hasher.r#final(&mut out);
+            out.to_vec()
         }
     };
     let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
@@ -2522,7 +2571,7 @@ unsafe extern "C" fn bun_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Sha256, Sha512, Digest};
+    use bun_sha_hmac;
 
     // ── TestCase ──
 
@@ -2649,10 +2698,10 @@ mod tests {
 
     #[test]
     fn sha256_empty_input() {
-        let mut hasher = Sha256::new();
+        let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
         hasher.update(b"");
-        let result = hasher.finalize();
-        // SHA-256 of empty string: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        let mut result = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        hasher.r#final(&mut result);
         assert_eq!(result.len(), 32);
         let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
         assert!(hex.starts_with("e3b0c442"));
@@ -2660,18 +2709,20 @@ mod tests {
 
     #[test]
     fn sha256_hello_world() {
-        let mut hasher = Sha256::new();
+        let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
         hasher.update(b"hello world");
-        let result = hasher.finalize();
+        let mut result = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        hasher.r#final(&mut result);
         let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
         assert!(hex.starts_with("b94d27b9"));
     }
 
     #[test]
     fn sha512_empty_input() {
-        let mut hasher = Sha512::new();
+        let mut hasher = bun_sha_hmac::sha::hashers::SHA512::init();
         hasher.update(b"");
-        let result = hasher.finalize();
+        let mut result = [0u8; bun_sha_hmac::SHA512::DIGEST];
+        hasher.r#final(&mut result);
         assert_eq!(result.len(), 64);
         let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
         assert!(hex.starts_with("cf83e135"));
@@ -2679,59 +2730,66 @@ mod tests {
 
     #[test]
     fn sha512_hello_world() {
-        let mut hasher = Sha512::new();
+        let mut hasher = bun_sha_hmac::sha::hashers::SHA512::init();
         hasher.update(b"hello world");
-        let result = hasher.finalize();
+        let mut result = [0u8; bun_sha_hmac::SHA512::DIGEST];
+        hasher.r#final(&mut result);
         let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
         assert!(hex.starts_with("309ecc48"));
     }
 
     #[test]
     fn hash_hex_format_lowercase() {
-        let mut hasher = Sha256::new();
+        let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
         hasher.update(b"\xff");
-        let result = hasher.finalize();
+        let mut result = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        hasher.r#final(&mut result);
         let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
-        // All hex chars should be lowercase
         assert_eq!(hex, hex.to_lowercase());
     }
 
     #[test]
     fn sha256_deterministic() {
-        let mut h1 = Sha256::new();
+        let mut h1 = bun_sha_hmac::sha::hashers::SHA256::init();
         h1.update(b"test data");
-        let r1 = h1.finalize();
+        let mut r1 = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        h1.r#final(&mut r1);
 
-        let mut h2 = Sha256::new();
+        let mut h2 = bun_sha_hmac::sha::hashers::SHA256::init();
         h2.update(b"test data");
-        let r2 = h2.finalize();
+        let mut r2 = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        h2.r#final(&mut r2);
 
         assert_eq!(r1.as_slice(), r2.as_slice());
     }
 
     #[test]
     fn sha256_different_inputs_different_outputs() {
-        let mut h1 = Sha256::new();
+        let mut h1 = bun_sha_hmac::sha::hashers::SHA256::init();
         h1.update(b"input1");
-        let r1 = h1.finalize();
+        let mut r1 = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        h1.r#final(&mut r1);
 
-        let mut h2 = Sha256::new();
+        let mut h2 = bun_sha_hmac::sha::hashers::SHA256::init();
         h2.update(b"input2");
-        let r2 = h2.finalize();
+        let mut r2 = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        h2.r#final(&mut r2);
 
         assert_ne!(r1.as_slice(), r2.as_slice());
     }
 
     #[test]
     fn sha256_incremental_update() {
-        let mut h1 = Sha256::new();
+        let mut h1 = bun_sha_hmac::sha::hashers::SHA256::init();
         h1.update(b"hello");
         h1.update(b" world");
-        let r1 = h1.finalize();
+        let mut r1 = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        h1.r#final(&mut r1);
 
-        let mut h2 = Sha256::new();
+        let mut h2 = bun_sha_hmac::sha::hashers::SHA256::init();
         h2.update(b"hello world");
-        let r2 = h2.finalize();
+        let mut r2 = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        h2.r#final(&mut r2);
 
         assert_eq!(r1.as_slice(), r2.as_slice());
     }
@@ -2739,18 +2797,20 @@ mod tests {
     #[test]
     fn sha256_large_input() {
         let data = vec![0xABu8; 10_000];
-        let mut hasher = Sha256::new();
+        let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
         hasher.update(&data);
-        let result = hasher.finalize();
+        let mut result = [0u8; bun_sha_hmac::SHA256::DIGEST];
+        hasher.r#final(&mut result);
         assert_eq!(result.len(), 32);
     }
 
     #[test]
     fn sha512_large_input() {
         let data = vec![0xCDu8; 10_000];
-        let mut hasher = Sha512::new();
+        let mut hasher = bun_sha_hmac::sha::hashers::SHA512::init();
         hasher.update(&data);
-        let result = hasher.finalize();
+        let mut result = [0u8; bun_sha_hmac::SHA512::DIGEST];
+        hasher.r#final(&mut result);
         assert_eq!(result.len(), 64);
     }
 }

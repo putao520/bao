@@ -1,11 +1,13 @@
-// @trace REQ-ENG-007
+// @trace REQ-ENG-007 [entity:BaoRuntime]
 use ::std::cell::RefCell;
 use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
-use digest::Digest;
-// @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
-use hmac::{Hmac, Mac};
+use bun_sha_hmac;
+use bun_sha_hmac::hmac::EVP_MAX_MD_SIZE;
+use bun_sha_hmac::sha::hashers;
+use bun_sha_hmac::sha::evp;
+use core::ptr;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
@@ -13,10 +15,6 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
-
-type HmacSha256 = Hmac<sha2::Sha256>;
-type HmacSha512 = Hmac<sha2::Sha512>;
-type HmacSha1 = Hmac<sha1::Sha1>;
 
 thread_local! {
     static HASH_DATA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -172,33 +170,53 @@ unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "hex".to_string()
     };
 
-    let algo = HASH_ALGO.with(|a| a.borrow().clone());
-    let data = HASH_DATA.with(|d| d.borrow().clone());
+    let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
+    let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
 
     let result = match algo.as_str() {
-        "sha256" => sha2::Sha256::digest(&data).to_vec(),
-        "sha512" => sha2::Sha512::digest(&data).to_vec(),
-        "sha384" => sha2::Sha384::digest(&data).to_vec(),
-        "sha224" => sha2::Sha224::digest(&data).to_vec(),
-        "sha1" => sha1::Sha1::digest(&data).to_vec(),
-        "md5" => md5::Md5::digest(&data).to_vec(),
+        "sha256" => {
+            let mut out = [0u8; bun_sha_hmac::SHA256::DIGEST];
+            hashers::SHA256::hash(&data, &mut out);
+            out.to_vec()
+        }
+        "sha512" => {
+            let mut out = [0u8; bun_sha_hmac::SHA512::DIGEST];
+            hashers::SHA512::hash(&data, &mut out);
+            out.to_vec()
+        }
+        "sha384" => {
+            let mut out = [0u8; bun_sha_hmac::SHA384::DIGEST];
+            hashers::SHA384::hash(&data, &mut out);
+            out.to_vec()
+        }
+        "sha224" => {
+            let mut out = [0u8; evp::SHA224::DIGEST];
+            unsafe { evp::SHA224::hash(&data, &mut out, ptr::null_mut()); }
+            out.to_vec()
+        }
+        "sha1" => {
+            let mut out = [0u8; bun_sha_hmac::SHA1::DIGEST];
+            hashers::SHA1::hash(&data, &mut out);
+            out.to_vec()
+        }
+        "md5" => {
+            let mut out = [0u8; evp::MD5::DIGEST];
+            unsafe { evp::MD5::hash(&data, &mut out, ptr::null_mut()); }
+            out.to_vec()
+        }
         _ => {
-            HASH_DATA.with(|d| d.borrow_mut().clear());
             return throw_type_error(cx, &format!("Unsupported hash algorithm: {}", algo));
         }
     };
 
-    HASH_DATA.with(|d| d.borrow_mut().clear());
-    HASH_ALGO.with(|a| a.borrow_mut().clear());
-
     match encoding.as_str() {
-        "hex" => return_string(cx, &args, &hex::encode(&result)),
+        "hex" => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
             let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
         }
-        _ => return_string(cx, &args, &hex::encode(&result)),
+        _ => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
     }
 }
 
@@ -270,44 +288,42 @@ unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "hex".to_string()
     };
 
-    let algo = HMAC_ALGO.with(|a| a.borrow().clone());
-    let key = HMAC_KEY.with(|k| k.borrow().clone());
-    let data = HMAC_DATA.with(|d| d.borrow().clone());
+    let algo = HMAC_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
+    let key = HMAC_KEY.with(|k| ::std::mem::take(&mut *k.borrow_mut()));
+    let data = HMAC_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
 
     let result: Vec<u8> = match algo.as_str() {
         "sha256" => {
-            let mut mac = HmacSha256::new_from_slice(&key).expect("HMAC key error");
-            mac.update(&data);
-            mac.finalize().into_bytes().to_vec()
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         }
         "sha512" => {
-            let mut mac = HmacSha512::new_from_slice(&key).expect("HMAC key error");
-            mac.update(&data);
-            mac.finalize().into_bytes().to_vec()
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha512, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         }
         "sha1" => {
-            let mut mac = HmacSha1::new_from_slice(&key).expect("HMAC key error");
-            mac.update(&data);
-            mac.finalize().into_bytes().to_vec()
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha1, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         }
         _ => {
-            HMAC_DATA.with(|d| d.borrow_mut().clear());
             return throw_type_error(cx, &format!("Unsupported HMAC algorithm: {}", algo));
         }
     };
 
-    HMAC_DATA.with(|d| d.borrow_mut().clear());
-    HMAC_KEY.with(|k| k.borrow_mut().clear());
-    HMAC_ALGO.with(|a| a.borrow_mut().clear());
-
     match encoding.as_str() {
-        "hex" => return_string(cx, &args, &hex::encode(&result)),
+        "hex" => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
             let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
         }
-        _ => return_string(cx, &args, &hex::encode(&result)),
+        _ => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
     }
 }
 
@@ -384,17 +400,23 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     let result: Vec<u8> = match digest_name.as_str() {
         "sha256" => {
             let mut out = vec![0u8; key_len];
-            pbkdf2::pbkdf2_hmac::<sha2::Sha256>(&password, &salt, iterations, &mut out);
+            if !bun_sha_hmac::pbkdf2::derive(&password, &salt, iterations, bun_sha_hmac::Algorithm::Sha256, &mut out) {
+                return throw_type_error(cx, "pbkdf2Sync() SHA-256 derivation failed");
+            }
             out
         }
         "sha512" => {
             let mut out = vec![0u8; key_len];
-            pbkdf2::pbkdf2_hmac::<sha2::Sha512>(&password, &salt, iterations, &mut out);
+            if !bun_sha_hmac::pbkdf2::derive(&password, &salt, iterations, bun_sha_hmac::Algorithm::Sha512, &mut out) {
+                return throw_type_error(cx, "pbkdf2Sync() SHA-512 derivation failed");
+            }
             out
         }
         "sha1" => {
             let mut out = vec![0u8; key_len];
-            pbkdf2::pbkdf2_hmac::<sha1::Sha1>(&password, &salt, iterations, &mut out);
+            if !bun_sha_hmac::pbkdf2::derive(&password, &salt, iterations, bun_sha_hmac::Algorithm::Sha1, &mut out) {
+                return throw_type_error(cx, "pbkdf2Sync() SHA-1 derivation failed");
+            }
             out
         }
         _ => return throw_type_error(cx, &format!("Unsupported PBKDF2 digest: {}", digest_name)),
@@ -445,11 +467,11 @@ unsafe extern "C" fn crypto_scrypt_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         let v = *args.get(3).ptr;
         if v.is_int32() { (v.to_int32() as f64).log2() as u8 } else { 14 }
     } else { 14 };
-    let params = scrypt::Params::new(log_n, 8, 1, key_len)
-        .unwrap_or_else(|_| scrypt::Params::new(14, 8, 1, key_len).expect("default scrypt params"));
+    let params = bao_crypto::reexports::scrypt::Params::new(log_n, 8, 1, key_len)
+        .unwrap_or_else(|_| bao_crypto::reexports::scrypt::Params::new(14, 8, 1, key_len).expect("default scrypt params"));
 
     let mut out = vec![0u8; key_len];
-    if let Err(e) = scrypt::scrypt(&password, &salt, &params, &mut out) {
+    if let Err(e) = bao_crypto::reexports::scrypt::scrypt(&password, &salt, &params, &mut out) {
         return throw_type_error(cx, &format!("scryptSync() failed: {}", e));
     }
 
@@ -541,9 +563,9 @@ pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec
     });
     let len = if len_val.is_int32() { len_val.to_int32() as usize } else { return Vec::new() };
     let mut bytes = Vec::with_capacity(len);
-    for i in 0..len {
+    for i in 0u32..len as u32 {
         let mut byte_val = UndefinedValue();
-        JS_GetElement(cx, obj_h, i as u32, MutableHandle::<Value> {
+        JS_GetElement(cx, obj_h, i, MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
         });
         bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
@@ -616,7 +638,7 @@ unsafe extern "C" fn cipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let key = CIPHER_KEY.with(|k| k.borrow().clone());
     let iv = CIPHER_IV.with(|v| v.borrow().clone());
     let encrypted = xor_cipher(&data, &key, &iv);
-    return_string(cx, &args, &hex::encode(&encrypted))
+    return_string(cx, &args, &bao_crypto::reexports::hex::encode(&encrypted))
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -633,7 +655,7 @@ unsafe extern "C" fn decipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSV
     let hex_data = if input.is_string() {
         crate::js_to_rust_string(cx, input)
     } else { String::new() };
-    let data = hex::decode(&hex_data).unwrap_or_default();
+    let data = bao_crypto::reexports::hex::decode(&hex_data).unwrap_or_default();
     let key = CIPHER_KEY.with(|k| k.borrow().clone());
     let iv = CIPHER_IV.with(|v| v.borrow().clone());
     let decrypted = xor_cipher(&data, &key, &iv);
@@ -669,8 +691,8 @@ unsafe extern "C" fn crypto_timing_safe_equal(cx: *mut JSContext, argc: u32, vp:
         return throw_type_error(cx, "timingSafeEqual() inputs must have the same length");
     }
     let mut result = 0u8;
-    for i in 0..a.len() {
-        result |= a[i] ^ b[i];
+    for (a_byte, b_byte) in a.iter().zip(b.iter()) {
+        result |= a_byte ^ b_byte;
     }
     args.rval().set(mozjs::jsval::BooleanValue(result == 0));
     true
@@ -778,8 +800,8 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         match arg_to_string(cx, *args.get(1).ptr) { Some(s) => s, None => "hex".to_string() }
     } else { "hex".to_string() };
     // Sign with HMAC as fallback (real RSA signing requires additional deps)
-    let algo = HASH_ALGO.with(|a| a.borrow().clone());
-    let data = HASH_DATA.with(|d| d.borrow().clone());
+    let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
+    let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
     let key = if argc > 0 {
         match arg_to_string(cx, *args.get(0).ptr) {
             Some(s) => s.into_bytes(),
@@ -788,30 +810,32 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     } else { Vec::new() };
     let result = match algo.as_str() {
         "sha256" => {
-            let mut mac = HmacSha256::new_from_slice(&key).unwrap_or_else(|_| HmacSha256::new_from_slice(b"default").unwrap());
-            mac.update(&data);
-            mac.finalize().into_bytes().to_vec()
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         }
         "sha512" => {
-            let mut mac = HmacSha512::new_from_slice(&key).unwrap_or_else(|_| HmacSha512::new_from_slice(b"default").unwrap());
-            mac.update(&data);
-            mac.finalize().into_bytes().to_vec()
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha512, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         }
         _ => {
-            let mut mac = HmacSha256::new_from_slice(&key).unwrap_or_else(|_| HmacSha256::new_from_slice(b"default").unwrap());
-            mac.update(&data);
-            mac.finalize().into_bytes().to_vec()
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         }
     };
-    HASH_DATA.with(|d| d.borrow_mut().clear());
     match encoding.to_lowercase().as_str() {
-        "hex" => return_string(cx, &args, &hex::encode(&result)),
+        "hex" => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
             let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
         }
-        _ => return_string(cx, &args, &hex::encode(&result)),
+        _ => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
     }
 }
 
@@ -844,27 +868,28 @@ unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     };
     let sig_hex = match arg_to_string(cx, *args.get(1).ptr) {
         Some(s) => s,
-        None => hex::encode(extract_buffer_bytes(cx, *args.get(1).ptr)),
+        None => bao_crypto::reexports::hex::encode(extract_buffer_bytes(cx, *args.get(1).ptr)),
     };
-    let expected = hex::decode(&sig_hex).unwrap_or_default();
-    let algo = HASH_ALGO.with(|a| a.borrow().clone());
-    let data = HASH_DATA.with(|d| d.borrow().clone());
+    let expected = bao_crypto::reexports::hex::decode(&sig_hex).unwrap_or_default();
+    let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
+    let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
     let computed = match algo.as_str() {
         "sha256" => {
-            let mut mac = HmacSha256::new_from_slice(&key).unwrap_or_else(|_| HmacSha256::new_from_slice(b"default").unwrap());
-            mac.update(&data);
-            mac.finalize().into_bytes().to_vec()
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         }
         _ => {
-            let mut mac = HmacSha256::new_from_slice(&key).unwrap_or_else(|_| HmacSha256::new_from_slice(b"default").unwrap());
-            mac.update(&data);
-            mac.finalize().into_bytes().to_vec()
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
         }
     };
-    HASH_DATA.with(|d| d.borrow_mut().clear());
     if computed.len() == expected.len() {
         let mut eq = 0u8;
-        for i in 0..computed.len() { eq |= computed[i] ^ expected[i]; }
+        for (c, e) in computed.iter().zip(expected.iter()) { eq |= c ^ e; }
         args.rval().set(mozjs::jsval::BooleanValue(eq == 0));
     } else {
         args.rval().set(mozjs::jsval::BooleanValue(false));
@@ -892,7 +917,7 @@ unsafe extern "C" fn crypto_create_secret_key(cx: *mut JSContext, argc: u32, vp:
         } else {
             Vec::new()
         };
-        let exported = hex::encode(&bytes);
+        let exported = bao_crypto::reexports::hex::encode(&bytes);
         let exp_str = JS_NewStringCopyN(cx, exported.as_ptr() as *const ::std::os::raw::c_char, exported.len());
         if !exp_str.is_null() {
             rooted!(&in(cx_ref) let ev = mozjs::jsval::StringValue(&*exp_str));

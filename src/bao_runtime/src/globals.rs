@@ -11,7 +11,6 @@ use mozjs::rust::wrappers2::{
 };
 use mozjs::conversions::jsstr_to_string;
 
-use digest::Digest;
 
 thread_local! {
     static FILE_GLOBALS: RefCell<(Option<String>, Option<String>)> = const { RefCell::new((None, None)) };
@@ -39,7 +38,8 @@ pub unsafe fn install_web_apis(
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     bao_stealth::engine_props::ensure_default_profile();
-    bao_stealth::engine_props::install_stealth_props(cx.raw_cx(), global.get());
+    let raw_cx = cx.raw_cx();
+    bao_stealth::engine_props::install_stealth_props(raw_cx, global.get());
     crate::fetch_api::ensure_default_fetch_stealth_profile();
 
     // Web APIs — safe for page global
@@ -71,9 +71,11 @@ pub unsafe fn install_node_apis(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
-    bao_stealth::engine_props::ensure_default_profile();
-    bao_stealth::engine_props::install_stealth_props(cx.raw_cx(), global.get());
-    crate::fetch_api::ensure_default_fetch_stealth_profile();
+    // Note: install_stealth_props is NOT called here.
+    // It is called once in install_web_apis(). Calling it twice would
+    // attempt JS_DeleteProperty on JSPROP_PERMANENT properties installed
+    // by the first call, which corrupts SpiderMonkey internal state
+    // and causes SIGSEGV (cx pointer corruption in JS_DeleteProperty).
 
     // Node.js / Bun APIs — privileged context only
     crate::bun_api::install_bun_global(cx, global);
@@ -113,6 +115,8 @@ pub unsafe fn install_node_apis(
     install_assert_strict(cx);
     install_file_globals_from_cache(cx, global);
     crate::bun_test::install_bun_test(cx);
+    crate::bun_builtins::install(cx);
+    crate::s3_api::install(cx);
 }
 
 /// Install all APIs (Web + Node) — only for CLI/engine context.
@@ -1524,10 +1528,26 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
     };
 
     let hash = match algo.as_str() {
-        "sha-1" | "sha1" => sha1::Sha1::digest(&bytes).to_vec(),
-        "sha-256" | "sha256" => sha2::Sha256::digest(&bytes).to_vec(),
-        "sha-384" | "sha384" => sha2::Sha384::digest(&bytes).to_vec(),
-        "sha-512" | "sha512" => sha2::Sha512::digest(&bytes).to_vec(),
+        "sha-1" | "sha1" => {
+            let mut out = [0u8; bun_sha_hmac::SHA1::DIGEST];
+            bun_sha_hmac::sha::hashers::SHA1::hash(&bytes, &mut out);
+            out.to_vec()
+        }
+        "sha-256" | "sha256" => {
+            let mut out = [0u8; bun_sha_hmac::SHA256::DIGEST];
+            bun_sha_hmac::sha::hashers::SHA256::hash(&bytes, &mut out);
+            out.to_vec()
+        }
+        "sha-384" | "sha384" => {
+            let mut out = [0u8; bun_sha_hmac::SHA384::DIGEST];
+            bun_sha_hmac::sha::hashers::SHA384::hash(&bytes, &mut out);
+            out.to_vec()
+        }
+        "sha-512" | "sha512" => {
+            let mut out = [0u8; bun_sha_hmac::SHA512::DIGEST];
+            bun_sha_hmac::sha::hashers::SHA512::hash(&bytes, &mut out);
+            out.to_vec()
+        }
         _ => {
             let msg = format!("Unsupported algorithm: {}", algo);
             let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
