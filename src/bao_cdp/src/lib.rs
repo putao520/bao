@@ -375,11 +375,11 @@ impl CDPServer {
 
         // WebSocket upgrade — perform handshake using our codec
         if request.starts_with("GET /devtools/page/") {
-            // Set short read timeout so session.process() doesn't block the event loop.
-            // The server is single-threaded; without a timeout, ws.read() would hang
-            // forever waiting for data, freezing accept() and Shutdown handling.
-            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(50)));
-            let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(1000)));
+            // Set per-read timeout long enough for large payloads (1MB+) to arrive
+            // even under concurrent test load. ws::read_message treats WouldBlock
+            // as Ok(None), keeping the session alive across event-loop ticks.
+            let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1000)));
+            let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(5000)));
 
             // Wrap stream as ReplayStream so handshake sees the already-read HTTP bytes.
             let mut replay = ReplayStream::new(stream, buf[..n].to_vec());
