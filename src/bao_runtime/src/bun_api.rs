@@ -2544,14 +2544,14 @@ unsafe extern "C" fn bun_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     use bun_sha_hmac;
     let result = match algo.as_str() {
         "sha512" => {
-            let mut hasher = bun_sha_hmac::sha::hashers::SHA512::init();
+            let mut hasher = bun_sha_hmac::SHA512::init();
             hasher.update(&data);
             let mut out = [0u8; bun_sha_hmac::SHA512::DIGEST];
             hasher.r#final(&mut out);
             out.to_vec()
         }
         _ => {
-            let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
+            let mut hasher = bun_sha_hmac::SHA256::init();
             hasher.update(&data);
             let mut out = [0u8; bun_sha_hmac::SHA256::DIGEST];
             hasher.r#final(&mut out);
@@ -2698,7 +2698,7 @@ mod tests {
 
     #[test]
     fn sha256_empty_input() {
-        let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut hasher = bun_sha_hmac::SHA256::init();
         hasher.update(b"");
         let mut result = [0u8; bun_sha_hmac::SHA256::DIGEST];
         hasher.r#final(&mut result);
@@ -2709,7 +2709,7 @@ mod tests {
 
     #[test]
     fn sha256_hello_world() {
-        let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut hasher = bun_sha_hmac::SHA256::init();
         hasher.update(b"hello world");
         let mut result = [0u8; bun_sha_hmac::SHA256::DIGEST];
         hasher.r#final(&mut result);
@@ -2719,7 +2719,7 @@ mod tests {
 
     #[test]
     fn sha512_empty_input() {
-        let mut hasher = bun_sha_hmac::sha::hashers::SHA512::init();
+        let mut hasher = bun_sha_hmac::SHA512::init();
         hasher.update(b"");
         let mut result = [0u8; bun_sha_hmac::SHA512::DIGEST];
         hasher.r#final(&mut result);
@@ -2730,7 +2730,7 @@ mod tests {
 
     #[test]
     fn sha512_hello_world() {
-        let mut hasher = bun_sha_hmac::sha::hashers::SHA512::init();
+        let mut hasher = bun_sha_hmac::SHA512::init();
         hasher.update(b"hello world");
         let mut result = [0u8; bun_sha_hmac::SHA512::DIGEST];
         hasher.r#final(&mut result);
@@ -2740,7 +2740,7 @@ mod tests {
 
     #[test]
     fn hash_hex_format_lowercase() {
-        let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut hasher = bun_sha_hmac::SHA256::init();
         hasher.update(b"\xff");
         let mut result = [0u8; bun_sha_hmac::SHA256::DIGEST];
         hasher.r#final(&mut result);
@@ -2750,12 +2750,12 @@ mod tests {
 
     #[test]
     fn sha256_deterministic() {
-        let mut h1 = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut h1 = bun_sha_hmac::SHA256::init();
         h1.update(b"test data");
         let mut r1 = [0u8; bun_sha_hmac::SHA256::DIGEST];
         h1.r#final(&mut r1);
 
-        let mut h2 = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut h2 = bun_sha_hmac::SHA256::init();
         h2.update(b"test data");
         let mut r2 = [0u8; bun_sha_hmac::SHA256::DIGEST];
         h2.r#final(&mut r2);
@@ -2765,12 +2765,12 @@ mod tests {
 
     #[test]
     fn sha256_different_inputs_different_outputs() {
-        let mut h1 = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut h1 = bun_sha_hmac::SHA256::init();
         h1.update(b"input1");
         let mut r1 = [0u8; bun_sha_hmac::SHA256::DIGEST];
         h1.r#final(&mut r1);
 
-        let mut h2 = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut h2 = bun_sha_hmac::SHA256::init();
         h2.update(b"input2");
         let mut r2 = [0u8; bun_sha_hmac::SHA256::DIGEST];
         h2.r#final(&mut r2);
@@ -2780,13 +2780,13 @@ mod tests {
 
     #[test]
     fn sha256_incremental_update() {
-        let mut h1 = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut h1 = bun_sha_hmac::SHA256::init();
         h1.update(b"hello");
         h1.update(b" world");
         let mut r1 = [0u8; bun_sha_hmac::SHA256::DIGEST];
         h1.r#final(&mut r1);
 
-        let mut h2 = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut h2 = bun_sha_hmac::SHA256::init();
         h2.update(b"hello world");
         let mut r2 = [0u8; bun_sha_hmac::SHA256::DIGEST];
         h2.r#final(&mut r2);
@@ -2797,7 +2797,7 @@ mod tests {
     #[test]
     fn sha256_large_input() {
         let data = vec![0xABu8; 10_000];
-        let mut hasher = bun_sha_hmac::sha::hashers::SHA256::init();
+        let mut hasher = bun_sha_hmac::SHA256::init();
         hasher.update(&data);
         let mut result = [0u8; bun_sha_hmac::SHA256::DIGEST];
         hasher.r#final(&mut result);
@@ -2807,7 +2807,7 @@ mod tests {
     #[test]
     fn sha512_large_input() {
         let data = vec![0xCDu8; 10_000];
-        let mut hasher = bun_sha_hmac::sha::hashers::SHA512::init();
+        let mut hasher = bun_sha_hmac::SHA512::init();
         hasher.update(&data);
         let mut result = [0u8; bun_sha_hmac::SHA512::DIGEST];
         hasher.r#final(&mut result);

@@ -1529,23 +1529,31 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
 
     let hash = match algo.as_str() {
         "sha-1" | "sha1" => {
+            let mut h = bun_sha_hmac::SHA1::init();
+            h.update(&bytes);
             let mut out = [0u8; bun_sha_hmac::SHA1::DIGEST];
-            bun_sha_hmac::sha::hashers::SHA1::hash(&bytes, &mut out);
+            h.r#final(&mut out);
             out.to_vec()
         }
         "sha-256" | "sha256" => {
+            let mut h = bun_sha_hmac::SHA256::init();
+            h.update(&bytes);
             let mut out = [0u8; bun_sha_hmac::SHA256::DIGEST];
-            bun_sha_hmac::sha::hashers::SHA256::hash(&bytes, &mut out);
+            h.r#final(&mut out);
             out.to_vec()
         }
         "sha-384" | "sha384" => {
+            let mut h = bun_sha_hmac::SHA384::init();
+            h.update(&bytes);
             let mut out = [0u8; bun_sha_hmac::SHA384::DIGEST];
-            bun_sha_hmac::sha::hashers::SHA384::hash(&bytes, &mut out);
+            h.r#final(&mut out);
             out.to_vec()
         }
         "sha-512" | "sha512" => {
+            let mut h = bun_sha_hmac::SHA512::init();
+            h.update(&bytes);
             let mut out = [0u8; bun_sha_hmac::SHA512::DIGEST];
-            bun_sha_hmac::sha::hashers::SHA512::hash(&bytes, &mut out);
+            h.r#final(&mut out);
             out.to_vec()
         }
         _ => {

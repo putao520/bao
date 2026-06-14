@@ -5,8 +5,6 @@ use ::std::ptr::NonNull;
 
 use bun_sha_hmac;
 use bun_sha_hmac::hmac::EVP_MAX_MD_SIZE;
-use bun_sha_hmac::sha::hashers;
-use bun_sha_hmac::sha::evp;
 use core::ptr;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
@@ -175,33 +173,45 @@ unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     let result = match algo.as_str() {
         "sha256" => {
+            let mut h = bun_sha_hmac::SHA256::init();
+            h.update(&data);
             let mut out = [0u8; bun_sha_hmac::SHA256::DIGEST];
-            hashers::SHA256::hash(&data, &mut out);
+            h.r#final(&mut out);
             out.to_vec()
         }
         "sha512" => {
+            let mut h = bun_sha_hmac::SHA512::init();
+            h.update(&data);
             let mut out = [0u8; bun_sha_hmac::SHA512::DIGEST];
-            hashers::SHA512::hash(&data, &mut out);
+            h.r#final(&mut out);
             out.to_vec()
         }
         "sha384" => {
+            let mut h = bun_sha_hmac::SHA384::init();
+            h.update(&data);
             let mut out = [0u8; bun_sha_hmac::SHA384::DIGEST];
-            hashers::SHA384::hash(&data, &mut out);
+            h.r#final(&mut out);
             out.to_vec()
         }
         "sha224" => {
-            let mut out = [0u8; evp::SHA224::DIGEST];
-            unsafe { evp::SHA224::hash(&data, &mut out, ptr::null_mut()); }
+            let mut h = bun_sha_hmac::SHA224::init();
+            h.update(&data);
+            let mut out = [0u8; bun_sha_hmac::SHA224::DIGEST];
+            h.r#final(&mut out);
             out.to_vec()
         }
         "sha1" => {
+            let mut h = bun_sha_hmac::SHA1::init();
+            h.update(&data);
             let mut out = [0u8; bun_sha_hmac::SHA1::DIGEST];
-            hashers::SHA1::hash(&data, &mut out);
+            h.r#final(&mut out);
             out.to_vec()
         }
         "md5" => {
-            let mut out = [0u8; evp::MD5::DIGEST];
-            unsafe { evp::MD5::hash(&data, &mut out, ptr::null_mut()); }
+            let mut h = bun_sha_hmac::MD5::init();
+            h.update(&data);
+            let mut out = [0u8; bun_sha_hmac::MD5::DIGEST];
+            h.r#final(&mut out);
             out.to_vec()
         }
         _ => {
