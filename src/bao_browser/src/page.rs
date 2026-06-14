@@ -343,7 +343,7 @@ impl PageHandle {
         // The callback sets frame_ready = true via notify_new_frame_ready.
         while start.elapsed() < timeout {
             // Check frame_ready flag first (fast path, no sleep needed)
-            let ready = self.with_inner_opt(|inner| inner.webview_state.borrow().frame_ready).unwrap_or(false);
+            let ready = self.with_inner_opt(|inner| Some(inner.webview_state.borrow().frame_ready)).unwrap_or(false);
             if ready {
                 // Frame ready — verify pipeline by draining callbacks.
                 return self.drain_callbacks().map(|_| ());
