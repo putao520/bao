@@ -476,8 +476,10 @@ dependencies = [
 name = "bao_cdp"
 version = "0.1.0"
 dependencies = [
+ "bao_boringssl_bridge",
  "bao_engine",
  "bun_base64",
+ "bun_boringssl_sys",
  "bun_sha_hmac",
  "cdp-protocol",
  "cdp-server",

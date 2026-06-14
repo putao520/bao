@@ -13,21 +13,31 @@ pub fn read_message<S: Read + Write>(
     decoder: &mut FrameDecoder,
     stream: &mut S,
 ) -> Result<Option<String>, ()> {
-    match decoder.decode_frame(stream) {
-        Ok(Some(header)) => {
-            let payload = decoder.take_payload(&header);
-            let msg = Message::from_frame(header.opcode, payload);
-
-            match msg {
-                Message::Text(text) => Ok(Some(text)),
-                Message::Binary(data) => Ok(Some(String::from_utf8_lossy(&data).into_owned())),
-                Message::Ping(_) | Message::Pong(_) => Ok(None),
-                Message::Close(_, _) => Err(()),
-                _ => Ok(None),
-            }
+    let header = match decoder.decode_frame(stream) {
+        Ok(Some(h)) => h,
+        Ok(None) => return Ok(None),
+        Err(ref e)
+            if e.kind() == std::io::ErrorKind::WouldBlock
+                || e.kind() == std::io::ErrorKind::TimedOut =>
+        {
+            // Stream stalled mid-frame (e.g. large payload across multiple wakeups).
+            // buffer/pos are preserved by FrameDecoder, so the next read_message call
+            // continues reading where we left off. Returning Ok(None) keeps the
+            // session alive — process() will retry on the next event loop tick.
+            return Ok(None);
         }
-        Ok(None) => Ok(None),
-        Err(_) => Err(()),
+        Err(_) => return Err(()),
+    };
+
+    let payload = decoder.take_payload(&header);
+    let msg = Message::from_frame(header.opcode, payload);
+
+    match msg {
+        Message::Text(text) => Ok(Some(text)),
+        Message::Binary(data) => Ok(Some(String::from_utf8_lossy(&data).into_owned())),
+        Message::Ping(_) | Message::Pong(_) => Ok(None),
+        Message::Close(_, _) => Err(()),
+        _ => Ok(None),
     }
 }
 

@@ -5,6 +5,8 @@ edition = "2021"
 
 [dependencies]
 bao_engine = { path = "../bao_engine" }
+bao_boringssl_bridge = { path = "../bao_boringssl_bridge" }
+bun_boringssl_sys = { path = "../boringssl_sys" }
 bun_base64 = { path = "../base64" }
 bun_sha_hmac = { path = "../sha_hmac" }
 compact_str.workspace = true

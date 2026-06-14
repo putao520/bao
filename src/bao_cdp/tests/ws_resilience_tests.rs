@@ -3,25 +3,19 @@
 // The server event loop is single-threaded with blocking per-session reads,
 // so multi-session tests use sequential connect→send→recv→close cycles.
 
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-
-const TID: &str = "test-target";
 use std::sync::mpsc::Sender;
-
 use std::thread;
-
 use std::time::Duration;
 
+use bao_cdp::ws_codec::{FrameDecoder, FrameEncoder};
+use bao_cdp::{bridge_channel, CDPCommand, CDPServer, CDPServerError};
 
-use bao_cdp::{CDPServer, CDPCommand, CDPServerError, bridge_channel};
-
-use tungstenite::Message;
-
-use tungstenite::client::client as ws_client;
-
+const TID: &str = "test-target";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers — bao_cdp client (no masking, RFC-compliant server tolerates it)
 // ---------------------------------------------------------------------------
 
 fn allocate_port() -> u16 {
@@ -29,6 +23,74 @@ fn allocate_port() -> u16 {
     let port = l.local_addr().unwrap().port();
     drop(l);
     port
+}
+
+/// Client-side WebSocket connection: raw TcpStream + bao_cdp codec.
+struct ClientWs {
+    stream: TcpStream,
+    encoder: FrameEncoder,
+    decoder: FrameDecoder,
+}
+
+impl ClientWs {
+    /// Connect + perform client handshake. Server (bao_cdp::CDPServer) replies 101.
+    fn connect(server: &TestServer) -> Self {
+        let mut stream = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+
+        // Client handshake — RFC 6455 §4.1
+        // bao_cdp server validates Sec-WebSocket-Key presence but not the value.
+        let handshake = format!(
+            "GET /devtools/page/{} HTTP/1.1\r\n\
+             Host: 127.0.0.1:{}\r\n\
+             Upgrade: websocket\r\n\
+             Connection: Upgrade\r\n\
+             Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+             Sec-WebSocket-Version: 13\r\n\
+             \r\n",
+            server.target_id, server.port
+        );
+        stream.write_all(handshake.as_bytes()).unwrap();
+        stream.flush().unwrap();
+
+        // Read 101 response (drain until \r\n\r\n)
+        let mut buf = [0u8; 4096];
+        let _n = stream.read(&mut buf).unwrap();
+
+        ClientWs {
+            stream,
+            encoder: FrameEncoder::new(),
+            decoder: FrameDecoder::new(),
+        }
+    }
+
+    fn send_text(&mut self, text: &str) {
+        let frame = self.encoder.encode_text(text);
+        self.stream.write_all(frame).unwrap();
+        self.stream.flush().unwrap();
+    }
+
+    fn recv_text(&mut self) -> String {
+        loop {
+            match self.decoder.decode_frame(&mut self.stream) {
+                Ok(Some(header)) => {
+                    let payload = self.decoder.take_payload(&header);
+                    return String::from_utf8_lossy(&payload).into_owned();
+                }
+                Ok(None) => continue,
+                Err(e) => panic!("recv error: {:?}", e),
+            }
+        }
+    }
+
+    fn shutdown_both(&mut self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 struct TestServer {
@@ -58,10 +120,14 @@ impl TestServer {
         let handle = thread::spawn(move || {
             let _ = server.run();
         });
-        // Give the server thread time to bind. We avoid TcpListener::bind for polling
-        // because it would preempt the server's own bind on the same port.
+        // Give the server thread time to bind.
         thread::sleep(Duration::from_millis(300));
-        TestServer { cmd_tx, target_id, port, handle: Some(handle) }
+        TestServer {
+            cmd_tx,
+            target_id,
+            port,
+            handle: Some(handle),
+        }
     }
 
     fn shutdown(&mut self) {
@@ -70,59 +136,35 @@ impl TestServer {
             let _ = h.join();
         }
     }
-
-    fn ws_url(&self) -> String {
-        format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, self.target_id)
-    }
 }
 
-/// Connect, immediately send a CDP command, then read the response.
-/// This ordering is critical: the server's event loop does blocking reads,
-/// so data must be in the TCP buffer before the server processes the session.
-/// Does NOT send Close frame — the server detects the dropped TCP connection
-/// on its next read attempt and removes the session automatically.
+/// Connect, immediately send a CDP command, read response, force-close.
 fn connect_send_recv(server: &TestServer, id: i64, method: &str) -> serde_json::Value {
-    let tcp = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
-    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
-    let (mut ws, _) = ws_client(server.ws_url().as_str(), tcp).unwrap();
-
-    // Send immediately — data enters TCP buffer before server reads this session
+    let mut ws = ClientWs::connect(server);
     let req = serde_json::json!({"id": id, "method": method});
-    ws.send(Message::Text(serde_json::to_string(&req).unwrap().into())).unwrap();
+    ws.send_text(&serde_json::to_string(&req).unwrap());
 
-    // Read response (server processes after accept, which may take 1-2 loop iterations)
-    let resp = match ws.read() {
-        Ok(Message::Text(text)) => serde_json::from_str(&text.to_string()).unwrap(),
-        Ok(other) => panic!("expected text, got {:?}", other),
-        Err(e) => panic!("read error: {}", e),
-    };
-    // Force-close the TCP stream so tungstenite's Drop can't block on close-handshake.
-    // The server detects the RST and removes the session immediately.
-    let _ = ws.get_mut().shutdown(std::net::Shutdown::Both);
+    let text = ws.recv_text();
+    let resp: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("parse error: {} (text: {})", e, text));
+    ws.shutdown_both();
     resp
 }
 
-/// Connect and send without reading — for tests that check server liveness after abuse.
-fn connect_and_send(server: &TestServer, id: i64, method: &str) -> tungstenite::protocol::WebSocket<TcpStream> {
-    let tcp = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
-    tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-    tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
-    let (mut ws, _) = ws_client(server.ws_url().as_str(), tcp).unwrap();
+/// Connect + send without reading (for abuse tests).
+fn connect_and_send(server: &TestServer, id: i64, method: &str) -> ClientWs {
+    let mut ws = ClientWs::connect(server);
     let req = serde_json::json!({"id": id, "method": method});
-    ws.send(Message::Text(serde_json::to_string(&req).unwrap().into())).unwrap();
+    ws.send_text(&serde_json::to_string(&req).unwrap());
     ws
 }
 
-fn read_response(ws: &mut tungstenite::protocol::WebSocket<TcpStream>) -> serde_json::Value {
-    match ws.read() {
-        Ok(Message::Text(text)) => serde_json::from_str(&text.to_string()).unwrap(),
-        Ok(other) => panic!("expected text, got {:?}", other),
-        Err(e) => panic!("read error: {}", e),
-    }
+fn read_response(ws: &mut ClientWs) -> serde_json::Value {
+    let text = ws.recv_text();
+    serde_json::from_str(&text).unwrap_or_else(|e| panic!("parse error: {} (text: {})", e, text))
 }
 
-/// Wait for server to clean up dropped sessions (its event loop sleeps 10ms).
+/// Wait for server to clean up dropped sessions.
 fn wait_for_cleanup() {
     thread::sleep(Duration::from_millis(100));
 }
@@ -138,7 +180,11 @@ fn test_server_start_accepts_connection() {
 
     let resp = connect_send_recv(&server, 1, "Page.enable");
     assert_eq!(resp["id"], 1);
-    assert!(resp.get("result").is_some(), "expected result, got: {:?}", resp);
+    assert!(
+        resp.get("result").is_some(),
+        "expected result, got: {:?}",
+        resp
+    );
 
     wait_for_cleanup();
     server.shutdown();
@@ -151,7 +197,6 @@ fn test_server_start_accepts_connection() {
 #[test]
 fn test_addr_in_use_fails_gracefully() {
     let port = allocate_port();
-    // Hold the port with a raw listener — no CDPServer needed
     let _guard = TcpListener::bind(("127.0.0.1", port)).unwrap();
 
     let mut server2 = CDPServer::new(port);
@@ -162,7 +207,8 @@ fn test_addr_in_use_fails_gracefully() {
             let lower = msg.to_lowercase();
             assert!(
                 lower.contains("address") || lower.contains("in use") || lower.contains("already"),
-                "unexpected bind error: {}", msg
+                "unexpected bind error: {}",
+                msg
             );
         }
         other => panic!("expected CDPServerError::Bind, got: {:?}", other),
@@ -181,16 +227,19 @@ fn test_sequential_connections() {
     for i in 0i64..5 {
         let resp = connect_send_recv(&server, i, "Page.enable");
         assert_eq!(resp["id"], i, "sequential client {} response id mismatch", i);
-        assert!(resp.get("result").is_some(), "client {} expected result: {:?}", i, resp);
+        assert!(
+            resp.get("result").is_some(),
+            "client {} expected result: {:?}",
+            i,
+            resp
+        );
     }
 
     server.shutdown();
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Multiple clients × multiple requests (sequential per client)
-//         Tests server's ability to handle repeated connect/send/recv cycles
-//         from 5 different clients, each issuing 10 requests.
+// Test 4: 5 clients × 10 requests each (sequential per client)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -199,42 +248,32 @@ fn test_concurrent_connections_5x10() {
     let mut server = TestServer::start_with_bridge(port);
 
     for cid in 0..5i64 {
-        // Each client: connect once, send 10 requests, read 10 responses, drop
-        let tcp = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let (mut ws, _) = ws_client(server.ws_url().as_str(), tcp).unwrap();
+        let mut ws = ClientWs::connect(&server);
 
-        // Send 10 requests immediately (buffered before server reads)
         for rid in 0..10i64 {
             let id = cid * 100 + rid;
             let req = serde_json::json!({"id": id, "method": "Page.enable"});
-            ws.send(Message::Text(serde_json::to_string(&req).unwrap().into())).unwrap();
+            ws.send_text(&serde_json::to_string(&req).unwrap());
         }
 
-        // Read 10 responses
         let mut responses = Vec::new();
         for _ in 0..10 {
-            match ws.read() {
-                Ok(Message::Text(text)) => {
-                    let v: serde_json::Value = serde_json::from_str(&text.to_string()).unwrap();
-                    responses.push(v);
-                }
-                Ok(other) => panic!("client {} got non-text: {:?}", cid, other),
-                Err(e) => panic!("client {} read error: {}", cid, e),
-            }
+            let text = ws.recv_text();
+            let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+            responses.push(v);
         }
 
         assert_eq!(responses.len(), 10, "client {} expected 10 responses", cid);
         for resp in &responses {
             assert!(
                 resp.get("result").is_some() || resp.get("error").is_some(),
-                "client {} unexpected response: {:?}", cid, resp
+                "client {} unexpected response: {:?}",
+                cid,
+                resp
             );
         }
 
-        // Force-close TCP so server detects RST immediately
-        let _ = ws.get_mut().shutdown(std::net::Shutdown::Both);
-        drop(ws);
+        ws.shutdown_both();
         wait_for_cleanup();
     }
 
@@ -250,23 +289,20 @@ fn test_malformed_json_no_crash() {
     let port = allocate_port();
     let mut server = TestServer::start_with_bridge(port);
 
-    // Phase 1: Send garbage through a single connection
     {
-        let tcp = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
-        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-        let (mut ws, _) = ws_client(server.ws_url().as_str(), tcp).unwrap();
+        let mut ws = ClientWs::connect(&server);
 
-        // Completely invalid JSON — server silently ignores
-        ws.send(Message::Text("NOT JSON AT ALL {{{".into())).unwrap();
+        // Garbage — server silently ignores
+        ws.send_text("NOT JSON AT ALL {{{");
         thread::sleep(Duration::from_millis(30));
 
         // Valid JSON but missing method — also silently ignored
-        ws.send(Message::Text("{\"id\":42}".into())).unwrap();
+        ws.send_text("{\"id\":42}");
         thread::sleep(Duration::from_millis(30));
 
-        // Valid JSON with unknown domain — must return error response
+        // Unknown domain — must return error response
         let req = serde_json::json!({"id": 43, "method": "UnknownDomain.nonexistent"});
-        ws.send(Message::Text(serde_json::to_string(&req).unwrap().into())).unwrap();
+        ws.send_text(&serde_json::to_string(&req).unwrap());
         thread::sleep(Duration::from_millis(30));
         let resp = read_response(&mut ws);
         assert_eq!(resp["id"], 43);
@@ -274,17 +310,15 @@ fn test_malformed_json_no_crash() {
 
         // Server still alive — valid request succeeds
         let req2 = serde_json::json!({"id": 44, "method": "Page.enable"});
-        ws.send(Message::Text(serde_json::to_string(&req2).unwrap().into())).unwrap();
+        ws.send_text(&serde_json::to_string(&req2).unwrap());
         thread::sleep(Duration::from_millis(30));
         let resp2 = read_response(&mut ws);
         assert_eq!(resp2["id"], 44);
         assert!(resp2.get("result").is_some());
 
-        // Force-close TCP
-        let _ = ws.get_mut().shutdown(std::net::Shutdown::Both);
+        ws.shutdown_both();
     }
 
-    // Phase 2: Server still accepts new connections after abuse
     wait_for_cleanup();
     let resp = connect_send_recv(&server, 45, "Page.enable");
     assert_eq!(resp["id"], 45);
@@ -302,9 +336,7 @@ fn test_large_payload_1mb() {
     let port = allocate_port();
     let mut server = TestServer::start_with_bridge(port);
 
-    let tcp = TcpStream::connect(("127.0.0.1", server.port)).unwrap();
-    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-    let (mut ws, _) = ws_client(server.ws_url().as_str(), tcp).unwrap();
+    let mut ws = ClientWs::connect(&server);
 
     let large_expr = "x".repeat(1_000_000);
     let msg = serde_json::json!({
@@ -315,21 +347,18 @@ fn test_large_payload_1mb() {
     let msg_str = serde_json::to_string(&msg).unwrap();
     assert!(msg_str.len() > 1_000_000, "payload should exceed 1MB");
 
-    ws.send(Message::Text(msg_str.into())).unwrap();
+    ws.send_text(&msg_str);
 
     let resp = read_response(&mut ws);
     assert_eq!(resp["id"], 200, "large payload response id mismatch");
 
-    // Server still works after large payload
     let req2 = serde_json::json!({"id": 201, "method": "Page.enable"});
-    ws.send(Message::Text(serde_json::to_string(&req2).unwrap().into())).unwrap();
+    ws.send_text(&serde_json::to_string(&req2).unwrap());
     thread::sleep(Duration::from_millis(30));
     let resp2 = read_response(&mut ws);
     assert_eq!(resp2["id"], 201);
 
-    // Force-close TCP
-    let _ = ws.get_mut().shutdown(std::net::Shutdown::Both);
-    drop(ws);
+    ws.shutdown_both();
     wait_for_cleanup();
     server.shutdown();
 }
@@ -343,16 +372,13 @@ fn test_connection_drop_cleanup() {
     let port = allocate_port();
     let mut server = TestServer::start_with_bridge(port);
 
-    // Connect, send, drop without close frame
     {
-        let _ws = connect_and_send(&server, 1, "Page.enable");
-        // Drop without WebSocket close — simulates network failure
+        let mut _ws = connect_and_send(&server, 1, "Page.enable");
+        _ws.shutdown_both();
     }
 
-    // Give server time to detect broken connection
     wait_for_cleanup();
 
-    // Server still works
     let resp = connect_send_recv(&server, 2, "Page.enable");
     assert_eq!(resp["id"], 2);
     assert!(resp.get("result").is_some());
@@ -370,15 +396,11 @@ fn test_shutdown_drops_clients() {
     let port = allocate_port();
     let mut server = TestServer::start_with_bridge(port);
 
-    // Connect a client and complete a full exchange
     let resp = connect_send_recv(&server, 1, "Page.enable");
     assert_eq!(resp["id"], 1);
     assert!(resp.get("result").is_some());
 
-    // Session is cleaned up after drop (connect_send_recv drops without Close)
     wait_for_cleanup();
-
-    // Shutdown — server thread should join cleanly
     server.shutdown();
 }
 
@@ -389,12 +411,8 @@ fn test_shutdown_drops_clients() {
 #[test]
 fn test_session_state_isolation() {
     let port = allocate_port();
-    // No bridge: protocol handles DOM/Page/Runtime/Network commands locally,
-    // returning deterministic fixture responses. With a bridge but no responder,
-    // commands would timeout (500ms) and return errors.
     let mut server = TestServer::start(port);
 
-    // Session 1: Page domain commands
     let r1 = connect_send_recv(&server, 1, "Page.enable");
     assert_eq!(r1["id"], 1);
     assert!(r1.get("result").is_some());
@@ -403,7 +421,6 @@ fn test_session_state_isolation() {
     assert_eq!(r2["id"], 2);
     assert_eq!(r2["result"]["contentSize"]["width"], 1920);
 
-    // Session 2: Runtime domain commands — independent results
     let r3 = connect_send_recv(&server, 3, "Runtime.enable");
     assert_eq!(r3["id"], 3);
     assert!(r3["result"]["executionContextId"].as_i64().unwrap() > 0);
@@ -412,7 +429,6 @@ fn test_session_state_isolation() {
     assert_eq!(r4["id"], 4);
     assert_eq!(r4["result"]["root"]["nodeId"], 1);
 
-    // Session 3: Cross-domain commands still work
     let r5 = connect_send_recv(&server, 5, "Network.enable");
     assert_eq!(r5["id"], 5);
     assert!(r5.get("result").is_some());
@@ -422,42 +438,38 @@ fn test_session_state_isolation() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 10: Thread safety — Mutex<WebSocket> via ExternalBackend (unit-level)
-//          + server handles rapid sequential connections from different threads
+// Test 10: Thread safety — rapid sequential connections from different threads
 // ---------------------------------------------------------------------------
 
 #[test]
 fn test_mutex_websocket_thread_safety() {
     let port = allocate_port();
     let mut server = TestServer::start_with_bridge(port);
-    let ws_url = server.ws_url();
-    let sport = server.port;
 
-    // Spawn threads that each connect sequentially, send, recv, close
-    let handles: Vec<_> = (0..5).map(|tid| {
-        let url = ws_url.clone();
-        thread::spawn(move || {
-            let tcp = TcpStream::connect(("127.0.0.1", sport)).unwrap();
-            tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            let (mut ws, _) = ws_client(url.as_str(), tcp).unwrap();
+    let handles: Vec<_> = (0..5)
+        .map(|tid| {
+            let server_port = server.port;
+            let target_id = server.target_id.clone();
+            thread::spawn(move || {
+                let mut ws = ClientWs::connect(&TestServer {
+                    cmd_tx: std::sync::mpsc::channel().0,
+                    target_id: target_id.clone(),
+                    port: server_port,
+                    handle: None,
+                });
 
-            // Send immediately
-            let req = serde_json::json!({"id": tid, "method": "Page.enable"});
-            ws.send(Message::Text(serde_json::to_string(&req).unwrap().into())).unwrap();
+                let req = serde_json::json!({"id": tid, "method": "Page.enable"});
+                ws.send_text(&serde_json::to_string(&req).unwrap());
 
-            // Read response
-            let ok = match ws.read() {
-                Ok(Message::Text(text)) => {
-                    let v: serde_json::Value = serde_json::from_str(&text.to_string()).unwrap();
-                    v.get("result").is_some()
-                }
-                _ => false,
-            };
-            // Force-close TCP so server detects RST immediately
-            let _ = ws.get_mut().shutdown(std::net::Shutdown::Both);
-            ok
+                let ok = match ws.recv_text().parse::<serde_json::Value>() {
+                    Ok(v) => v.get("result").is_some(),
+                    Err(_) => false,
+                };
+                ws.shutdown_both();
+                ok
+            })
         })
-    }).collect();
+        .collect();
 
     let mut pass_count = 0;
     for h in handles {

@@ -120,9 +120,9 @@ impl cdp_server::EventSender for SessionEventSender {
     }
 }
 
-mod ws;
-mod ws_codec;
-mod ws_handshake;
+pub mod ws;
+pub mod ws_codec;
+pub mod ws_handshake;
 mod protocol;
 mod backend;
 mod router;

@@ -61,16 +61,22 @@ impl FrameDecoder {
     }
 
     fn read_bytes<R: Read>(&mut self, reader: &mut R, n: usize) -> std::io::Result<()> {
-        while self.buffer.len() - self.pos < n {
-            let mut byte = [0u8; 1];
-            match reader.read(&mut byte) {
-                Ok(0) => return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "unexpected EOF",
-                )),
-                Ok(_) => self.buffer.push(byte[0]),
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut =>
+        // Read in chunks (up to 8KB at a time) to avoid 1M syscalls for 1MB payloads.
+        let needed = n + self.pos;
+        while self.buffer.len() < needed {
+            let mut chunk = [0u8; 8192];
+            let to_read = std::cmp::min(chunk.len(), needed - self.buffer.len());
+            match reader.read(&mut chunk[..to_read]) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "unexpected EOF",
+                    ))
+                }
+                Ok(k) => self.buffer.extend_from_slice(&chunk[..k]),
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
                 {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::WouldBlock,
@@ -331,7 +337,7 @@ mod tests {
         let mut encoder = FrameEncoder::new();
         let frame = encoder.encode_close(1000, "Normal");
         assert_eq!(frame[0] & 0x0F, Opcode::Close as u8);
-        assert_eq!(frame[1] & 0x7F, 9); // 2 + 6
+        assert_eq!(frame[1] & 0x7F, 8); // 2-byte code + 6-byte "Normal"
         assert_eq!(u16::from_be_bytes([frame[2], frame[3]]), 1000);
         assert_eq!(&frame[4..], b"Normal");
     }

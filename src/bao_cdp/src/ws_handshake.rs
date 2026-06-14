@@ -2,18 +2,40 @@
 // WebSocket handshake (RFC 6455 §1.3) — replaces tungstenite::accept
 // Uses bun_sha_hmac::SHA1 and bun_base64 for WebSocket accept computation.
 
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 
 // GUID from RFC 6455 §1.3
 const WEBSOCKET_GUID: &[u8] = b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+/// Read a single CRLF-terminated line directly from a stream (unbuffered).
+/// Avoids BufReader caching issues where buffered-but-unconsumed bytes get lost
+/// when the stream is later written to (e.g. in Cursor-backed tests).
+fn read_line_direct<S: Read>(stream: &mut S) -> Result<String, HandshakeError> {
+    let mut buf = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => return Err(HandshakeError::ReadError),
+            Ok(_) => {
+                buf.push(byte[0]);
+                if buf.ends_with(b"\r\n") {
+                    buf.truncate(buf.len() - 2);
+                    return String::from_utf8(buf).map_err(|_| HandshakeError::InvalidRequest);
+                }
+                if buf.len() > 8192 {
+                    return Err(HandshakeError::InvalidRequest);
+                }
+            }
+            Err(_) => return Err(HandshakeError::ReadError),
+        }
+    }
+}
 
 /// Perform WebSocket server handshake on a TcpStream.
 /// Reads the HTTP upgrade request, validates it, and sends the response.
 /// Returns Ok if handshake succeeded, Err on failure.
 pub fn server_handshake<S: Read + Write>(stream: &mut S) -> Result<(), HandshakeError> {
-    let mut reader = BufReader::new(&mut *stream);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line).map_err(|_| HandshakeError::ReadError)?;
+    let request_line = read_line_direct(stream)?;
 
     // Check request line: GET /path HTTP/1.1
     if !request_line.starts_with("GET ") {
@@ -23,9 +45,7 @@ pub fn server_handshake<S: Read + Write>(stream: &mut S) -> Result<(), Handshake
     // Read headers until empty line
     let mut sec_websocket_key = None;
     loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|_| HandshakeError::ReadError)?;
-        let line = line.trim();
+        let line = read_line_direct(stream)?;
         if line.is_empty() {
             break;
         }
@@ -64,17 +84,19 @@ pub fn server_handshake<S: Read + Write>(stream: &mut S) -> Result<(), Handshake
 /// Compute Sec-WebSocket-Accept header value from client Sec-WebSocket-Key.
 fn compute_accept(key: &str) -> String {
     use bun_base64::encode_alloc;
-    use bun_sha_hmac::SHA1;
 
     let key_bytes = key.as_bytes();
     let mut combined = Vec::with_capacity(key_bytes.len() + WEBSOCKET_GUID.len());
     combined.extend_from_slice(key_bytes);
     combined.extend_from_slice(WEBSOCKET_GUID);
 
-    let mut hasher = SHA1::init();
-    hasher.update(&combined);
+    // BoringSSL low-level SHA1() — one-shot, no init/update/final state to misuse.
+    // (bun_sha_hmac::SHA1 EVP wrapper produces incorrect digests on short inputs,
+    //  tracked separately.)
     let mut output = [0u8; 20];
-    hasher.r#final(&mut output);
+    unsafe {
+        bun_boringssl_sys::SHA1(combined.as_ptr(), combined.len(), output.as_mut_ptr());
+    }
 
     String::from_utf8(encode_alloc(&output)).unwrap_or_default()
 }
@@ -94,14 +116,17 @@ mod tests {
 
     #[test]
     fn compute_accept_known_vector() {
-        // RFC 6455 example: dGhlIHNhbXBsZSBub25jZQ==
-        // → s3pPLMBiTxaQ9kYGzzhZRbmc+Pw=
+        // RFC 6455 §4.2.2 example: Sec-WebSocket-Key dGhlIHNhbXBsZSBub25jZQ==
+        // concatenated with GUID 258EAFA5-E914-47DA-95CA-C5AB0DC85B11
+        // → SHA1 = b37a4f2cc0624f1690f64606cf385945b2bec4ea
+        // → base64 = s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
         let accept = compute_accept("dGhlIHNhbXBsZSBub25jZQ==");
-        assert_eq!(accept, "s3pPLMBiTxaQ9kYGzzhZRbmc+Pw=");
+        assert_eq!(accept, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
     }
 
     #[test]
     fn server_handshake_valid_request() {
+        use std::io::Seek;
         let request = b"GET /chat HTTP/1.1\r\n\
                        Host: example.com\r\n\
                        Upgrade: websocket\r\n\
@@ -114,12 +139,16 @@ mod tests {
         let result = server_handshake(&mut cursor);
         assert!(result.is_ok());
 
-        // Verify response
+        // Rewind — server_handshake consumed the request and appended the
+        // response; we want to inspect the full buffer from the start.
+        cursor.seek(std::io::SeekFrom::Start(0)).unwrap();
         let mut output = Vec::new();
         cursor.read_to_end(&mut output).unwrap();
         let response = String::from_utf8(output).unwrap();
-        assert!(response.starts_with("HTTP/1.1 101"));
-        assert!(response.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbmc+Pw="));
+        // Buffer contains the original request followed by the server's response,
+        // so check the response portion via contains rather than starts_with.
+        assert!(response.contains("HTTP/1.1 101 Switching Protocols"));
+        assert!(response.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="));
     }
 
     #[test]
