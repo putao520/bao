@@ -1,9 +1,7 @@
 // REQ-CDP-004: CDP backend abstraction (internal/external)  @trace REQ-CDP-001
 // @trace REQ-LIB-003
+use std::io::{Read, Write};
 use std::net::TcpStream;
-
-use tungstenite::client;
-use tungstenite::protocol::WebSocket;
 
 use crate::protocol::CDPError;
 
@@ -48,7 +46,7 @@ impl CdpBackend for InternalBackend {
 
 pub struct ExternalBackend {
     endpoint: String,
-    ws: std::sync::Mutex<Option<WebSocket<TcpStream>>>,
+    ws: std::sync::Mutex<Option<crate::WebSocketConnection>>,
 }
 
 impl ExternalBackend {
@@ -76,11 +74,54 @@ impl ExternalBackend {
                 message: format!("nonblocking failed: {e}"),
             })?;
 
-            let (websocket, _response) = client(&self.endpoint, stream).map_err(|e| CDPError {
+            // Perform WebSocket client handshake
+            // For now, we'll use a simple synchronous implementation
+            // In production, this should use the full ws_handshake with client mode
+            let mut replay = crate::ReplayStream::new(stream, Vec::new());
+
+            // Send client handshake
+            let handshake = format!(
+                "GET / HTTP/1.1\r\n\
+                 Host: {}\r\n\
+                 Upgrade: websocket\r\n\
+                 Connection: Upgrade\r\n\
+                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
+                 Sec-WebSocket-Version: 13\r\n\
+                 \r\n",
+                self.endpoint
+            );
+            replay
+                .write_all(handshake.as_bytes())
+                .map_err(|_| CDPError {
+                    code: -32603,
+                    message: "handshake write failed".into(),
+                })?;
+            replay.flush().map_err(|_| CDPError {
                 code: -32603,
-                message: format!("websocket handshake failed: {e}"),
+                message: "handshake flush failed".into(),
             })?;
-            *guard = Some(websocket);
+
+            // Read server response (101 Switching Protocols)
+            let mut response = [0u8; 4096];
+            let n = replay.read(&mut response).map_err(|e| CDPError {
+                code: -32603,
+                message: format!("handshake read failed: {e}"),
+            })?;
+
+            let response_str = std::str::from_utf8(&response[..n]).unwrap_or("");
+            if !response_str.contains("101") && !response_str.contains("Sec-WebSocket-Accept") {
+                return Err(CDPError {
+                    code: -32603,
+                    message: "handshake failed: invalid response".into(),
+                });
+            }
+
+            let ws_connection = crate::WebSocketConnection {
+                stream: replay,
+                decoder: crate::ws_codec::FrameDecoder::new(),
+                encoder: crate::ws_codec::FrameEncoder::new(),
+            };
+            *guard = Some(ws_connection);
         }
         Ok(())
     }
@@ -125,13 +166,13 @@ impl CdpBackend for ExternalBackend {
             message: format!("serialize error: {e}"),
         })?;
 
-        crate::ws::write_message(ws, &msg_str).map_err(|_| CDPError {
+        crate::ws::write_message(&mut ws.encoder, &mut ws.stream, &msg_str).map_err(|_| CDPError {
             code: -32603,
             message: "websocket write failed".into(),
         })?;
 
         for _ in 0..100 {
-            match crate::ws::read_message(ws) {
+            match crate::ws::read_message(&mut ws.decoder, &mut ws.stream) {
                 Ok(Some(response_str)) => {
                     let resp: serde_json::Value =
                         serde_json::from_str(&response_str).map_err(|e| CDPError {

@@ -477,13 +477,14 @@ name = "bao_cdp"
 version = "0.1.0"
 dependencies = [
  "bao_engine",
+ "bun_base64",
+ "bun_sha_hmac",
  "cdp-protocol",
  "cdp-server",
  "compact_str",
  "log",
  "serde",
  "serde_json",
- "tungstenite 0.26.2",
 ]
 
 [[package]]
