@@ -9,9 +9,10 @@ compact_str.workspace = true
 cdp-server = { path = "../../src/cdp-server" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bun_uws = { path = "../uws" }
-bun_picohttp = { path = "../picohttp" }
-bun_base64 = { path = "../base64" }
-bun_sha_hmac = { path = "../sha_hmac" }
+# BUG-CDP-007a resolved: base64/sha1 unused deps removed (no source-level usage).
+# BUG-CDP-007b pending: tungstenite → bun_uws WebSocket Server requires new bridge layer
+# (bun_uws has no WebSocket Server usage precedent in this workspace; needs async rewrite
+# of bao_cdp's sync TCP/WS architecture). Tracked separately.
+tungstenite = { version = "0.26", features = ["handshake"] }
 cdp-protocol = "0.3"
 log = "0.4"
