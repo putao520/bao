@@ -53,7 +53,10 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
     }
 
     // Determine the actual URL string to parse (resolve relative if needed)
-    let url_to_parse: String = if input.contains("://") || input.starts_with("//") {
+    let url_to_parse: String = if input.starts_with("//") {
+        // Scheme-relative URL — WHATWG spec defaults to "http:" when no scheme.
+        format!("http:{}", input)
+    } else if input.contains("://") {
         // Absolute URL - use as-is
         input.to_string()
     } else if let Some(base_str) = base {
@@ -72,23 +75,27 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
                 core::str::from_utf8(base_url.host).unwrap_or(""),
                 input)
         } else if input.starts_with("?") || input.starts_with("#") {
-            // Query or fragment only
+            // Query or fragment only — use base path with query/hash stripped
+            let base_path_raw = core::str::from_utf8(base_url.pathname).unwrap_or("/");
+            let base_path = base_path_raw.split(['?', '#']).next().unwrap_or(base_path_raw);
             format!("{}://{}{}{}",
                 core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
                 core::str::from_utf8(base_url.host).unwrap_or(""),
-                core::str::from_utf8(base_url.pathname).unwrap_or("/"),
+                base_path,
                 input)
         } else {
             // Relative path
-            let dir = if let Some(pos) = base_url.pathname.iter().rposition(|&c| c == b'/') {
-                &base_url.pathname[..pos]
+            let base_path_raw = core::str::from_utf8(base_url.pathname).unwrap_or("/");
+            let base_path = base_path_raw.split(['?', '#']).next().unwrap_or(base_path_raw);
+            let dir = if let Some(pos) = base_path.rfind('/') {
+                &base_path[..pos]
             } else {
-                b""
+                ""
             };
             format!("{}://{}{}/{}",
                 core::str::from_utf8(base_url.protocol).unwrap_or("http:"),
                 core::str::from_utf8(base_url.host).unwrap_or(""),
-                core::str::from_utf8(dir).unwrap_or(""),
+                dir,
                 input)
         }
     } else {
@@ -99,7 +106,16 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
     let parsed = BunUrl::parse(url_to_parse.as_bytes());
 
     // Convert bun_url::URL to UrlState
-    let protocol = core::str::from_utf8(parsed.protocol).unwrap_or("").to_string();
+    // bun_url returns protocol without trailing ':' (e.g. "https"), but WHATWG
+    // URL spec requires protocol getter to return with ':' (e.g. "https:").
+    let protocol_raw = core::str::from_utf8(parsed.protocol).unwrap_or("").to_string();
+    let protocol = if protocol_raw.is_empty() {
+        String::new()
+    } else if protocol_raw.ends_with(':') {
+        protocol_raw
+    } else {
+        format!("{}:", protocol_raw)
+    };
     let hostname = core::str::from_utf8(parsed.hostname).unwrap_or("").to_string();
     let port = core::str::from_utf8(parsed.port).unwrap_or("").to_string();
 
@@ -123,9 +139,34 @@ fn parse_url(input: &str, base: Option<&str>) -> Option<UrlState> {
         host,
         hostname,
         port,
-        pathname: core::str::from_utf8(parsed.pathname).unwrap_or("/").to_string(),
-        search: core::str::from_utf8(parsed.search).unwrap_or("").to_string(),
-        hash: core::str::from_utf8(parsed.hash).unwrap_or("").to_string(),
+        pathname: {
+            // bun_url may include query/hash in pathname; WHATWG pathname is bare path.
+            let raw = core::str::from_utf8(parsed.pathname).unwrap_or("/");
+            let bare = raw.split(['?', '#']).next().unwrap_or(raw);
+            bare.to_string()
+        },
+        search: {
+            // bun_url returns search without leading '?'; WHATWG spec includes '?'.
+            let raw = core::str::from_utf8(parsed.search).unwrap_or("");
+            if raw.is_empty() {
+                String::new()
+            } else if raw.starts_with('?') {
+                raw.to_string()
+            } else {
+                format!("?{}", raw)
+            }
+        },
+        hash: {
+            // bun_url returns hash without leading '#'; WHATWG spec includes '#'.
+            let raw = core::str::from_utf8(parsed.hash).unwrap_or("");
+            if raw.is_empty() {
+                String::new()
+            } else if raw.starts_with('#') {
+                raw.to_string()
+            } else {
+                format!("#{}", raw)
+            }
+        },
         origin,
     })
 }
@@ -947,36 +988,32 @@ fn url_encode(s: &str) -> String {
 
 // @trace REQ-ENG-007 [code:bun_url::PercentEncoding::decode_alloc]
 fn url_decode(s: &str) -> String {
-    // Use bun_url::PercentEncoding for decode if available, otherwise fallback
-    match PercentEncoding::decode_alloc(s.as_bytes()) {
-        Ok(decoded) => String::from_utf8_lossy(&decoded).to_string(),
-        Err(_) => {
-            // Fallback to manual decode
-            let mut out = String::with_capacity(s.len());
-            let bytes = s.as_bytes();
-            let mut i = 0;
-            while i < bytes.len() {
-                if bytes[i] == b'+' {
-                    out.push(' ');
-                    i += 1;
-                } else if bytes[i] == b'%' && i + 2 < bytes.len() {
-                    let hi = (bytes[i + 1] as char).to_digit(16);
-                    let lo = (bytes[i + 2] as char).to_digit(16);
-                    if let (Some(h), Some(l)) = (hi, lo) {
-                        out.push(char::from_u32(h * 16 + l).unwrap_or('?'));
-                        i += 3;
-                    } else {
-                        out.push(bytes[i] as char);
-                        i += 1;
-                    }
-                } else {
-                    out.push(bytes[i] as char);
-                    i += 1;
-                }
+    // Node.js querystring.unescape semantics: '+' → space, '%XX' → byte.
+    // bun_url::PercentEncoding only handles '%XX' (RFC 3986) and not '+',
+    // so use manual decode for full compatibility with legacy Node URL APIs.
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'+' {
+            out.push(' ');
+            i += 1;
+        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push(char::from_u32(h * 16 + l).unwrap_or('?'));
+                i += 3;
+            } else {
+                out.push(bytes[i] as char);
+                i += 1;
             }
-            out
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
         }
     }
+    out
 }
 
 /// Collect (key, value) pairs from a URLSearchParams object using GetPropertyKeys.
