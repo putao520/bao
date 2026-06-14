@@ -1,7 +1,7 @@
 // @trace REQ-ENG-006 REQ-STL-001
 // fetch + Response + Headers constructors
 use ::std::cell::RefCell;
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -68,7 +68,7 @@ unsafe extern "C" fn fetch_fn(
         let host_part = &url[pos + 3..];
         let host = host_part.split('/').next().unwrap_or(host_part).split(':').next().unwrap_or(host_part);
         if let ::std::result::Result::Err(e) = crate::permission_bridge::check_net(host) {
-            let c_msg = ::std::ffi::CString::new(e).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(e.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -120,10 +120,7 @@ unsafe extern "C" fn fetch_fn(
             let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() });
             if !promise.is_null() {
                 let msg = format!("fetch failed: {}", e);
-                let Ok(c_msg) = ::std::ffi::CString::new(msg) else {
-                    args.rval().set(mozjs::jsval::ObjectValue(promise));
-                    return true;
-                };
+                let c_msg = ZBox::from_bytes(msg.as_bytes());
                 let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
                 if !err_obj.is_null() {
                     let err_msg = JS_NewStringCopyZ(cx, c_msg.as_ptr());
@@ -166,7 +163,8 @@ unsafe extern "C" fn fetch_fn(
     let ok_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ok_val };
     JS_DefineProperty(cx, obj_handle, c"ok".as_ptr(), ok_handle, JSPROP_ENUMERATE as u32);
 
-    if let Ok(c_url) = ::std::ffi::CString::new(response.url.as_str()) {
+    {
+        let c_url = ZBox::from_bytes(response.url.as_bytes());
         let url_js = JS_NewStringCopyZ(cx, c_url.as_ptr());
         if !url_js.is_null() {
             let url_val = StringValue(&*url_js);
@@ -175,7 +173,8 @@ unsafe extern "C" fn fetch_fn(
         }
     }
 
-    if let Ok(c_st) = ::std::ffi::CString::new(response.status_text.as_str()) {
+    {
+        let c_st = ZBox::from_bytes(response.status_text.as_bytes());
         let st_js = JS_NewStringCopyZ(cx, c_st.as_ptr());
         if !st_js.is_null() {
             let st_val = StringValue(&*st_js);
@@ -188,8 +187,8 @@ unsafe extern "C" fn fetch_fn(
     if !headers_obj.is_null() {
         let h_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &headers_obj };
         for (key, value) in &response.headers {
-            let Ok(c_key) = ::std::ffi::CString::new(key.as_str()) else { continue };
-            let Ok(c_val) = ::std::ffi::CString::new(value.as_str()) else { continue };
+            let c_key = ZBox::from_bytes(key.as_bytes());
+            let c_val = ZBox::from_bytes(value.as_bytes());
             let val_js = JS_NewStringCopyZ(cx, c_val.as_ptr());
             if !val_js.is_null() {
                 let hv = StringValue(&*val_js);
@@ -202,10 +201,7 @@ unsafe extern "C" fn fetch_fn(
         JS_DefineProperty(cx, obj_handle, c"headers".as_ptr(), hdrs_handle, JSPROP_ENUMERATE as u32);
     }
 
-    let Ok(c_body) = ::std::ffi::CString::new(response.body.clone()) else {
-        args.rval().set(mozjs::jsval::ObjectValue(resp_obj));
-        return true;
-    };
+    let c_body = ZBox::from_vec(response.body.clone().into_bytes());
     let body_str = JS_NewStringCopyZ(cx, c_body.as_ptr());
     if !body_str.is_null() {
         let body_val = StringValue(&*body_str);
@@ -429,7 +425,8 @@ unsafe extern "C" fn response_constructor(
         let body_val = *args.get(0).ptr;
         if body_val.is_string() {
             let body_str = crate::js_to_rust_string(cx, body_val);
-            if let Ok(c_body) = ::std::ffi::CString::new(body_str.as_str()) {
+            {
+                let c_body = ZBox::from_bytes(body_str.as_bytes());
                 let body_js = JS_NewStringCopyZ(cx, c_body.as_ptr());
                 if !body_js.is_null() {
                     let bv = StringValue(&*body_js);
@@ -554,10 +551,7 @@ unsafe extern "C" fn headers_get(
     }
     let name_js = name_val.to_string();
     let name_str = crate::jsstr_to_rust_string(cx, name_js);
-    let Ok(c_name) = ::std::ffi::CString::new(name_str.as_str()) else {
-        args.rval().set(mozjs::jsval::NullValue());
-        return true;
-    };
+    let c_name = ZBox::from_bytes(name_str.as_bytes());
     let this = args.thisv();
     if !this.is_object() {
         args.rval().set(mozjs::jsval::NullValue());
@@ -595,10 +589,7 @@ unsafe extern "C" fn headers_set(
     }
     let name_js = name_val.to_string();
     let name_str = crate::jsstr_to_rust_string(cx, name_js);
-    let Ok(c_name) = ::std::ffi::CString::new(name_str.as_str()) else {
-        args.rval().set(UndefinedValue());
-        return true;
-    };
+    let c_name = ZBox::from_bytes(name_str.as_bytes());
     let this = args.thisv();
     if !this.is_object() {
         args.rval().set(UndefinedValue());
@@ -630,10 +621,7 @@ unsafe extern "C" fn headers_has(
     }
     let name_js = name_val.to_string();
     let name_str = crate::jsstr_to_rust_string(cx, name_js);
-    let Ok(c_name) = ::std::ffi::CString::new(name_str.as_str()) else {
-        args.rval().set(mozjs::jsval::BooleanValue(false));
-        return true;
-    };
+    let c_name = ZBox::from_bytes(name_str.as_bytes());
     let this = args.thisv();
     if !this.is_object() {
         args.rval().set(mozjs::jsval::BooleanValue(false));
@@ -699,7 +687,7 @@ unsafe extern "C" fn request_constructor(
             } else { "GET".to_string() }
         } else { "GET".to_string() }
     } else { "GET".to_string() };
-    let method_cstr = CString::new(method_str).unwrap_or_default();
+    let method_cstr = ZBox::from_bytes(method_str.as_bytes());
     let method_jsstr = JS_NewStringCopyZ(cx, method_cstr.as_ptr());
     let method_val = StringValue(&*method_jsstr);
     let method_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &method_val };

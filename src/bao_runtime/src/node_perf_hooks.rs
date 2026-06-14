@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 use ::std::time::Instant;
 
@@ -35,14 +35,14 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             JS_DefineProperty(cx.raw_cx(), perf_mod.handle().into(), c"performance".as_ptr(), perf_h, JSPROP_ENUMERATE as u32);
         }
 
-        let _ = CString::new(r#"
+        let _ = ZBox::from_bytes(b"
           (function(mod) {
             mod.nodeTiming = { name: 'node', startTime: 0 };
             mod.eventLoopUtilization = function() { return { idle: 0, active: 0, utilization: 0 }; };
             mod.timerify = function(fn) { return fn; };
             return mod;
           })
-        "#).unwrap_or_default();
+        ");
     }
 
     cache_builtin(cx, "perf_hooks", perf_mod.get());

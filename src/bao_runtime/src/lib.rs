@@ -1,4 +1,4 @@
-// @trace REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05
+// @trace REQ-ENG-001 [entity:BaoRuntime] REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_imports)]
 // @trace REQ-IMPL-01: Phase 1 SpiderMonkey engine replacement (completed)
@@ -7,14 +7,10 @@
 // @trace REQ-IMPL-04: Phase 4 Stealth anti-fingerprinting (completed)
 // @trace REQ-IMPL-05: Phase 5 Integration testing and release (completed)
 
-// Force-link all C library symbol replacements from bao_native_stubs
-// (pure Rust implementations of mimalloc, BoringSSL, uSockets, etc.)
-// Without this, the linker may GC unreferenced symbols from the rlib.
-fn _force_native_stubs_link() {
-    bao_native_stubs::force_link();
-    bao_uloop::force_link();
-}
 pub mod bun_api;
+pub mod bun_builtins;
+pub mod bun_sqlite;
+pub mod bun_ffi;
 pub mod bun_test;
 pub mod dispatch;
 pub mod fetch_api;
@@ -51,7 +47,9 @@ pub mod runtime;
 pub mod timers;
 pub mod http_client;
 pub mod resolver_bridge;
+pub mod s3_api;
 pub mod stealth_http;
+pub mod install;
 
 pub use runtime::BaoRuntime;
 
@@ -100,11 +98,24 @@ pub fn install_exit_handler() {
     // No-op at init time. Cleanup happens via shutdown_thread_sm() at test end.
 }
 
-/// No-op. SpiderMonkey Runtime and Engine are kept alive in TLS via ManuallyDrop
-/// and never explicitly destroyed. See `bao_engine::context::JsContext::shutdown_thread_sm()`
-/// for the full rationale.
+/// Shut down SpiderMonkey Runtime on the current thread.
+///
+/// Drops Runtime (→ JS_DestroyContext) stored in TLS. Safe to call multiple
+/// times per thread (e.g., between tests). The JSEngine remains alive so
+/// subsequent `for_test()` calls can create a new Runtime.
+///
+/// For process exit cleanup (JS_ShutDown), use `shutdown_engine()` instead.
 pub fn shutdown_thread_sm() {
     bao_engine::context::JsContext::shutdown_thread_sm();
+}
+
+/// Shut down the SpiderMonkey engine entirely (process exit only).
+///
+/// Calls `JS_ShutDown` to clean up SpiderMonkey's process-wide C++ state.
+/// After this, no new Runtime/JSContext can be created on any thread.
+/// Should only be called at process exit.
+pub fn shutdown_engine() {
+    bao_engine::context::JsContext::shutdown_engine();
 }
 
 /// Safe JS string conversion: returns "" if JS string allocation fails.
@@ -129,3 +140,16 @@ pub unsafe fn jsstr_to_rust_string(cx: *mut mozjs::jsapi::JSContext, s: *mut moz
         None => String::new(),
     }
 }
+
+/// Force-link `bun_install` compilation unit so the linker resolves
+/// `__bun_resolver_init_package_manager` from `bun_install::auto_installer`.
+#[inline(never)]
+pub fn force_link_bun_install() {
+    let _ = bun_install::Subcommand::Install;
+}
+
+// Force-link bao_native_stubs (dispatch no-op stubs + C library bridges).
+// Without this anchor, the linker GCs the entire bao_native_stubs compilation
+// unit, causing undefined __bun_dispatch__* and C symbol errors in test binaries.
+#[used]
+static BAO_NATIVE_STUBS_ANCHOR: unsafe extern "C" fn() = bao_native_stubs::__force_link_entry;

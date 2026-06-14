@@ -54,7 +54,7 @@ impl BaoRuntime {
     }
 
     pub fn run_file(&mut self, path: &str) -> ::std::result::Result<JsValue, JsError> {
-        let source = ::std::fs::read_to_string(path).map_err(|e| JsError {
+        let source = bun_sys::fs::read_to_string(path).map_err(|e| JsError {
             message: format!("Error reading {}: {}", path, e),
             filename: path.into(),
             line: 0,

@@ -237,12 +237,14 @@ fn evaluate_result_has_value_and_error_fields() {
 }
 
 /// Verify evaluate_in_node_realm accepts EvaluateResult channel (REQ-SEC-002).
+/// OnceLock is used instead of Mutex because the result is written exactly once
+/// (single-producer, single-consumer), making OnceLock both safer and more efficient.
 #[test]
 fn evaluate_in_node_realm_accepts_result_channel() {
     let source = include_str!("../src/runtime_bridge.rs");
     assert!(
-        source.contains("result_out: Arc<Mutex<EvaluateResult>>"),
-        "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must accept Arc<Mutex<EvaluateResult>>"
+        source.contains("result_out: Arc<OnceLock<EvaluateResult>>"),
+        "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must accept Arc<OnceLock<EvaluateResult>>"
     );
 }
 
@@ -272,8 +274,8 @@ fn evaluate_in_node_realm_does_not_discard_result() {
         "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must capture evaluate_script return value"
     );
     assert!(
-        func_body.contains("result_out") && (func_body.contains("lock_or_recover") || func_body.contains("result_out.lock()")),
-        "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must write result to result_out"
+        func_body.contains("result_out") && func_body.contains("result_out.set"),
+        "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must write result to result_out via OnceLock::set"
     );
 }
 

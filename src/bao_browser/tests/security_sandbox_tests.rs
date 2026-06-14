@@ -1280,7 +1280,7 @@ fn scenario_error_stack_realm_leaks(pool: &PagePool, report: &mut Report) {
     ) {
         Ok(s) => {
             let has_node_refs = s.contains("require") || s.contains("node_modules")
-                || s.contains("bao_runtime") || s.contains("bao_engine")
+                || s.contains("bun_runtime") || s.contains("bao_engine")
                 || s.contains("__dirname") || s.contains("__filename");
             if !has_node_refs {
                 report.pass(&format!("{}::page_error_stack_clean", name));
@@ -1307,7 +1307,7 @@ fn scenario_error_stack_realm_leaks(pool: &PagePool, report: &mut Report) {
         "try { (0,eval)('throw new Error(\"indirect_eval_error\")'); } catch(e) { e.stack || '' }"
     ) {
         Ok(s) => {
-            let has_node_refs = s.contains("require") || s.contains("bao_runtime")
+            let has_node_refs = s.contains("require") || s.contains("bun_runtime")
                 || s.contains("bao_engine") || s.contains("node_modules");
             if !has_node_refs {
                 report.pass(&format!("{}::indirect_eval_error_stack_clean", name));
@@ -1324,7 +1324,7 @@ fn scenario_error_stack_realm_leaks(pool: &PagePool, report: &mut Report) {
         "try { new Function('throw new Error(\"fn_ctor_error\")')(); } catch(e) { e.stack || '' }"
     ) {
         Ok(s) => {
-            let has_node_refs = s.contains("require") || s.contains("bao_runtime")
+            let has_node_refs = s.contains("require") || s.contains("bun_runtime")
                 || s.contains("bao_engine") || s.contains("node_modules");
             if !has_node_refs {
                 report.pass(&format!("{}::fn_ctor_error_stack_clean", name));
@@ -1345,7 +1345,7 @@ fn scenario_error_stack_realm_leaks(pool: &PagePool, report: &mut Report) {
         Ok(s) => {
             let _has_clean_error = s.contains("not defined") || s.contains("ReferenceError")
                 || s.contains("require");
-            let has_node_leak = s.contains("bao_runtime") || s.contains("bao_engine")
+            let has_node_leak = s.contains("bun_runtime") || s.contains("bao_engine")
                 || s.contains("node_modules") || s.contains("NativeModule");
             if !has_node_leak {
                 report.pass(&format!("{}::type_error_no_realm_leak", name));
@@ -1366,7 +1366,7 @@ fn scenario_error_stack_realm_leaks(pool: &PagePool, report: &mut Report) {
                 "(function() { var e = {}; Error.captureStackTrace(e); return e.stack || ''; })()"
             ) {
                 Ok(stack) => {
-                    let has_node_refs = stack.contains("bao_runtime") || stack.contains("bao_engine")
+                    let has_node_refs = stack.contains("bun_runtime") || stack.contains("bao_engine")
                         || stack.contains("node_modules") || stack.contains("NativeModule");
                     if !has_node_refs {
                         report.pass(&format!("{}::capture_stack_trace_clean", name));

@@ -318,7 +318,7 @@ const DEBUGGER_SETUP: &str = r#"
                 startLine: script.startLine || 0,
                 endLine: script.startLine + (script.lineCount || 1) - 1,
             });
-            console.log('__BAO_DEBUGGER_SCRIPT__' + info);
+            console.log('__BAO_EVT__Debugger.scriptParsed\n' + info);
         };
         dbg.onDebuggerStatement = function(frame) {
             const callFrames = [];
@@ -336,7 +336,7 @@ const DEBUGGER_SETUP: &str = r#"
                 idx++;
             }
             const paused = JSON.stringify({ callFrames, reason: 'debuggerStatement', hitBreakpoints: [] });
-            console.log('__BAO_DEBUGGER_PAUSED__' + paused);
+            console.log('__BAO_EVT__Debugger.paused\n' + paused);
         };
         dbg.findScripts().forEach(function(script) {
             const info = JSON.stringify({
@@ -345,7 +345,7 @@ const DEBUGGER_SETUP: &str = r#"
                 startLine: script.startLine || 0,
                 endLine: script.startLine + (script.lineCount || 1) - 1,
             });
-            console.log('__BAO_DEBUGGER_SCRIPT__' + info);
+            console.log('__BAO_EVT__Debugger.scriptParsed\n' + info);
         });
     } catch(e) {}
 })();
@@ -365,7 +365,7 @@ fn cmd_debugger_disable(page: &PageHandle) -> Result<Value, String> {
 fn cmd_debugger_set_breakpoint(page: &PageHandle, line: u32, column: Option<u32>) -> Result<Value, String> {
     let col = column.unwrap_or(0);
     let js = format!(
-        "(function() {{ try {{ if (!window.__bao_dbg) return {{}}; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ var s = scripts[i]; if (s.startLine <= {line} && {line} <= s.startLine + s.lineCount - 1) {{ var offset = s.offsetLine ? s.offsetLine({line}, {col}) : 0; s.setBreakpoint(offset, {{ hit: function(frame) {{ console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({{ callFrames: [], reason: 'breakpoint', hitBreakpoints: [] }})); }} }}); return {{ actualLocation: {{ scriptId: String(s.id), lineNumber: {line}, columnNumber: {col} }} }}; }} }} }} catch(e) {{}} return {{}}; }})()",
+        "(function() {{ try {{ if (!window.__bao_dbg) return {{}}; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ var s = scripts[i]; if (s.startLine <= {line} && {line} <= s.startLine + s.lineCount - 1) {{ var offset = s.offsetLine ? s.offsetLine({line}, {col}) : 0; s.setBreakpoint(offset, {{ hit: function(frame) {{ console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({{ callFrames: [], reason: 'breakpoint', hitBreakpoints: [] }})); }} }}); return {{ actualLocation: {{ scriptId: String(s.id), lineNumber: {line}, columnNumber: {col} }} }}; }} }} }} catch(e) {{}} return {{}}; }})()",
         line = line, col = col
     );
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
@@ -379,16 +379,16 @@ fn cmd_debugger_clear_all_breakpoints(page: &PageHandle) -> Result<Value, String
 }
 
 fn cmd_debugger_interrupt(page: &PageHandle) -> Result<Value, String> {
-    let js = "(function() { try { if (!window.__bao_dbg) return; window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({ callFrames: [], reason: 'interrupt', hitBreakpoints: [] })); return undefined; }; return undefined; }; } catch(e) {} })()";
+    let js = "(function() { try { if (!window.__bao_dbg) return; window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({ callFrames: [], reason: 'interrupt', hitBreakpoints: [] })); return undefined; }; return undefined; }; } catch(e) {} })()";
     let _ = page.evaluate_js(js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
 
 fn cmd_debugger_resume(page: &PageHandle, step_type: Option<&str>) -> Result<Value, String> {
     let js = match step_type {
-        Some("next") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
-        Some("step") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
-        Some("finish") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; console.log('__BAO_DEBUGGER_PAUSED__' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
+        Some("next") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
+        Some("step") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onStep = function() { frame.onStep = undefined; console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
+        Some("finish") => "(function() { try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = function(frame) { window.__bao_dbg.onEnterFrame = undefined; frame.onPop = function() { frame.onPop = undefined; console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({callFrames:[],reason:'step',hitBreakpoints:[]})); }; return undefined; }; } } catch(e) {} })()",
         _ => "(function() { /* resume: clear step hooks */ try { if (window.__bao_dbg) { window.__bao_dbg.onEnterFrame = undefined; } } catch(e) {} })()",
     };
     let _ = page.evaluate_js(js).map_err(to_browser_error)?;

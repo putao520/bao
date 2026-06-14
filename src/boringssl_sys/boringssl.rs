@@ -8,7 +8,7 @@
 //
 // ported from: src/boringssl_sys/boringssl.zig
 
-use core::ffi::{c_char, c_int, c_long, c_uint, c_void};
+use core::ffi::{c_char, c_int, c_long, c_uint, c_ulong, c_void};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Opaque-type helper — thin sugar over the canonical
@@ -37,6 +37,32 @@ pub const RIPEMD160_DIGEST_LENGTH: c_int = 20;
 pub const NID_commonName: c_int = 13;
 /// `#define NID_subject_alt_name 85`
 pub const NID_subject_alt_name: c_int = 85;
+
+/// NID for P-256 (prime256v1 / secp256r1)
+pub const NID_X9_62_prime256v1: c_int = 415;
+/// NID for P-384 (secp384r1)
+pub const NID_secp384r1: c_int = 715;
+/// NID for Ed25519
+pub const NID_Ed25519: c_int = 1087;
+/// NID for X25519
+pub const NID_X25519: c_int = 1035;
+
+/// EVP_PKEY type IDs
+pub const EVP_PKEY_RSA: c_int = 6;
+pub const EVP_PKEY_EC: c_int = 408;
+pub const EVP_PKEY_ED25519: c_int = 1087;
+pub const EVP_PKEY_X25519: c_int = 1035;
+
+/// RSA padding modes
+pub const RSA_PKCS1_PADDING: c_int = 1;
+pub const RSA_PKCS1_PSS_PADDING: c_int = 6;
+
+/// EVP_PKEY_CTX saltlen: use digest length
+pub const RSA_PSS_SALTLEN_DIGEST: c_int = -1;
+
+/// EVP_PKEY_OP bit flags
+pub const EVP_PKEY_OP_SIGN: c_int = 1 << 3;
+pub const EVP_PKEY_OP_VERIFY: c_int = 1 << 4;
 
 pub const GEN_DNS: c_int = 2;
 pub const GEN_URI: c_int = 6;
@@ -113,6 +139,18 @@ opaque!(
     ASN1_TYPE
 );
 opaque!(
+    /// `struct asn1_time_st` (`typedef ... ASN1_TIME`).
+    ASN1_TIME
+);
+opaque!(
+    /// `struct asn1_integer_st` (`typedef ... ASN1_INTEGER`).
+    ASN1_INTEGER
+);
+opaque!(
+    /// `struct evp_pkey_st` (`typedef ... EVP_PKEY`).
+    EVP_PKEY
+);
+opaque!(
     /// `struct evp_pkey_ctx_st`.
     EVP_PKEY_CTX
 );
@@ -131,6 +169,42 @@ opaque!(
 opaque!(
     /// `struct crypto_ex_data_st` (`typedef ... CRYPTO_EX_DATA`).
     CRYPTO_EX_DATA
+);
+opaque!(
+    /// `struct evp_aead_ctx_st` (`typedef ... EVP_AEAD_CTX`).
+    EVP_AEAD_CTX
+);
+opaque!(
+    /// `struct evp_aead_st` (`typedef ... EVP_AEAD`).
+    EVP_AEAD
+);
+opaque!(
+    /// `struct bignum_st` (`typedef ... BIGNUM`).
+    BIGNUM
+);
+opaque!(
+    /// `struct ec_key_st` (`typedef ... EC_KEY`).
+    EC_KEY
+);
+opaque!(
+    /// `struct ec_group_st` (`typedef ... EC_GROUP`).
+    EC_GROUP
+);
+opaque!(
+    /// `struct ec_point_st` (`typedef ... EC_POINT`).
+    EC_POINT
+);
+opaque!(
+    /// `struct bn_gencb_st` (`typedef ... BN_GENCB`).
+    BN_GENCB
+);
+opaque!(
+    /// `struct bn_ctx_st` (`typedef ... BN_CTX`).
+    BN_CTX
+);
+opaque!(
+    /// `struct evp_cipher_st` (`typedef ... EVP_CIPHER`).
+    EVP_CIPHER
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -335,6 +409,8 @@ unsafe extern "C" {
     // struct (no deref of its raw-ptr fields), so any `&mut EVP_MD_CTX` is sound.
     pub safe fn EVP_MD_CTX_init(ctx: &mut EVP_MD_CTX);
     pub fn EVP_MD_CTX_cleanup(ctx: *mut EVP_MD_CTX) -> c_int;
+    pub fn EVP_MD_CTX_new() -> *mut EVP_MD_CTX;
+    pub fn EVP_MD_CTX_free(ctx: *mut EVP_MD_CTX);
     pub fn EVP_MD_CTX_copy_ex(out: *mut EVP_MD_CTX, in_: *const EVP_MD_CTX) -> c_int;
     pub fn EVP_MD_CTX_size(ctx: *const EVP_MD_CTX) -> usize;
     pub fn EVP_DigestInit(ctx: *mut EVP_MD_CTX, type_: *const EVP_MD) -> c_int;
@@ -425,6 +501,15 @@ unsafe extern "C" {
     pub fn i2d_X509(x: *mut X509, outp: *mut *mut u8) -> c_int;
     pub fn X509_free(x509: *mut X509);
     pub fn X509_get_subject_name(x509: *const X509) -> *mut X509_NAME;
+    pub fn X509_get_issuer_name(x509: *const X509) -> *mut X509_NAME;
+    pub fn X509_NAME_oneline(name: *const X509_NAME, buf: *mut c_char, len: c_int) -> *mut c_char;
+    pub fn X509_get_notBefore(x509: *const X509) -> *mut ASN1_TIME;
+    pub fn X509_get_notAfter(x509: *const X509) -> *mut ASN1_TIME;
+    pub fn X509_get_serialNumber(x509: *const X509) -> *mut ASN1_INTEGER;
+    pub fn X509_digest(x509: *const X509, md: *const EVP_MD, buf: *mut u8, len: *mut c_uint) -> c_int;
+    pub fn ASN1_INTEGER_to_BN(ai: *const ASN1_INTEGER, bn: *mut BIGNUM) -> *mut BIGNUM;
+    pub fn BN_bn2hex(bn: *const BIGNUM) -> *mut c_char;
+    pub fn OPENSSL_free(ptr: *mut c_void);
     pub fn X509_get_ext_by_NID(x: *const X509, nid: c_int, lastpos: c_int) -> c_int;
     pub fn X509_get_ext(x: *const X509, loc: c_int) -> *mut X509_EXTENSION;
     pub fn X509_NAME_get_index_by_NID(name: *const X509_NAME, nid: c_int, lastpos: c_int) -> c_int;
@@ -561,6 +646,11 @@ pub const SSL_OP_LEGACY_SERVER_CONNECT: u32 = 0;
 /// `#define RSA_PKCS1_OAEP_PADDING 4` (`openssl/rsa.h`).
 pub const RSA_PKCS1_OAEP_PADDING: c_int = 4;
 
+/// `point_conversion_form_t` — EC point serialization format.
+pub type point_conversion_form_t = u8;
+/// `POINT_CONVERSION_UNCOMPRESSED` — 0x04 prefix + full X + Y coordinates.
+pub const POINT_CONVERSION_UNCOMPRESSED: point_conversion_form_t = 4;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // BIO — opaque-ish handle + method vtable
 // (`vendor/boringssl/include/openssl/bio.h`)
@@ -638,7 +728,7 @@ opaque!(
 pub type SSL_verify_cb = Option<unsafe extern "C" fn(c_int, *mut X509_STORE_CTX) -> c_int>;
 
 /// `int pem_password_cb(char *buf, int size, int rwflag, void *userdata)`.
-pub(crate) type pem_password_cb =
+pub type pem_password_cb =
     unsafe extern "C" fn(*mut c_char, c_int, c_int, *mut c_void) -> c_int;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -727,6 +817,9 @@ unsafe extern "C" {
     );
 
     // ── BIO ──────────────────────────────────────────────────────────────
+    /// Create a connected BIO pair for non-blocking I/O.
+    /// Both `rbio` and `wbio` are allocated on success; caller must free them.
+    pub fn BIO_new_bio_pair(rbio: *mut *mut BIO, rbio_size: usize, wbio: *mut *mut BIO, wbio_size: usize) -> c_int;
     pub fn BIO_new(method: *const BIO_METHOD) -> *mut BIO;
     pub fn BIO_free(bio: *mut BIO) -> c_int;
     pub fn BIO_read(bio: *mut BIO, data: *mut c_void, len: c_int) -> c_int;
@@ -807,6 +900,27 @@ unsafe extern "C" {
         out_key: *mut u8,
     ) -> c_int;
 
+    // ── HKDF ────────────────────────────────────────────────────────────
+    pub fn HKDF(
+        out_key: *mut u8,
+        out_len: usize,
+        digest: *const EVP_MD,
+        salt: *const u8,
+        salt_len: usize,
+        ikm: *const u8,
+        ikm_len: usize,
+        info: *const u8,
+        info_len: usize,
+    ) -> c_int;
+    pub fn HKDF_expand(
+        out_key: *mut u8,
+        out_len: usize,
+        prk: *const u8,
+        prk_len: usize,
+        info: *const u8,
+        info_len: usize,
+    ) -> c_int;
+
     // ── RSA / PEM ────────────────────────────────────────────────────────
     pub fn RSA_free(rsa: *mut RSA);
     pub fn RSA_size(rsa: *const RSA) -> c_uint;
@@ -823,4 +937,298 @@ unsafe extern "C" {
         cb: Option<pem_password_cb>,
         u: *mut c_void,
     ) -> *mut RSA;
+
+    // ── X509 certificate / private key loading ──────────────────────────────
+
+    /// Parse a PEM-encoded X509 certificate from a BIO.
+    pub fn PEM_read_bio_X509(
+        bp: *mut BIO,
+        x: *mut *mut X509,
+        cb: Option<pem_password_cb>,
+        u: *mut c_void,
+    ) -> *mut X509;
+
+    /// Parse a PEM-encoded private key from a BIO.
+    pub fn PEM_read_bio_PrivateKey(
+        bp: *mut BIO,
+        x: *mut *mut EVP_PKEY,
+        cb: Option<pem_password_cb>,
+        u: *mut c_void,
+    ) -> *mut EVP_PKEY;
+    pub fn PEM_read_bio_PUBKEY(
+        bp: *mut BIO,
+        x: *mut *mut EVP_PKEY,
+        cb: Option<pem_password_cb>,
+        u: *mut c_void,
+    ) -> *mut EVP_PKEY;
+
+    /// Free an EVP_PKEY private key.
+    pub fn EVP_PKEY_free(pkey: *mut EVP_PKEY);
+
+    /// Set the leaf certificate for an SSL_CTX.
+    pub fn SSL_CTX_use_certificate(ctx: *mut SSL_CTX, x509: *mut X509) -> c_int;
+
+    /// Set the private key for an SSL_CTX.
+    pub fn SSL_CTX_use_PrivateKey(ctx: *mut SSL_CTX, pkey: *mut EVP_PKEY) -> c_int;
+
+    /// Add an additional certificate to SSL_CTX's chain.
+    pub fn SSL_CTX_add1_chain_cert(ctx: *mut SSL_CTX, x509: *mut X509) -> c_int;
+
+    /// Load a certificate from DER-encoded ASN1 data.
+    pub fn SSL_CTX_use_certificate_ASN1(ctx: *mut SSL_CTX, der_len: usize, der: *const u8) -> c_int;
+
+    /// Load a private key from DER-encoded ASN1 data.
+    pub fn SSL_CTX_use_PrivateKey_ASN1(pk: c_int, ctx: *mut SSL_CTX, der: *const u8, der_len: c_long) -> c_int;
+
+    // ── EVP_AEAD (AEAD encryption) ───────────────────────────────────────
+    pub safe fn EVP_aead_aes_128_gcm() -> *const EVP_AEAD;
+    pub safe fn EVP_aead_aes_256_gcm() -> *const EVP_AEAD;
+    pub safe fn EVP_aead_chacha20_poly1305() -> *const EVP_AEAD;
+    pub fn EVP_AEAD_key_length(aead: *const EVP_AEAD) -> usize;
+    pub fn EVP_AEAD_nonce_length(aead: *const EVP_AEAD) -> usize;
+    pub fn EVP_AEAD_max_overhead(aead: *const EVP_AEAD) -> usize;
+    pub fn EVP_AEAD_CTX_init(
+        ctx: *mut EVP_AEAD_CTX,
+        aead: *const EVP_AEAD,
+        key: *const u8,
+        key_len: usize,
+        tag_len: usize,
+        engine: *mut ENGINE,
+    ) -> c_int;
+    pub fn EVP_AEAD_CTX_seal(
+        ctx: *const EVP_AEAD_CTX,
+        out: *mut u8,
+        out_len: *mut usize,
+        max_out: usize,
+        nonce: *const u8,
+        nonce_len: usize,
+        in_: *const u8,
+        in_len: usize,
+        ad: *const u8,
+        ad_len: usize,
+    ) -> c_int;
+    pub fn EVP_AEAD_CTX_open(
+        ctx: *mut EVP_AEAD_CTX,
+        out: *mut u8,
+        out_len: *mut usize,
+        max_out: usize,
+        nonce: *const u8,
+        nonce_len: usize,
+        in_: *const u8,
+        in_len: usize,
+        ad: *const u8,
+        ad_len: usize,
+    ) -> c_int;
+    pub fn EVP_AEAD_CTX_cleanup(ctx: *mut EVP_AEAD_CTX);
+
+    // ── EVP_DigestSign/Verify ────────────────────────────────────────────
+    pub fn EVP_DigestSignInit(
+        ctx: *mut EVP_MD_CTX,
+        pctx: *mut *mut EVP_PKEY_CTX,
+        md: *const EVP_MD,
+        e: *mut ENGINE,
+        pkey: *mut EVP_PKEY,
+    ) -> c_int;
+    pub fn EVP_DigestSignUpdate(ctx: *mut EVP_MD_CTX, data: *const c_void, len: usize) -> c_int;
+    pub fn EVP_DigestSignFinal(ctx: *mut EVP_MD_CTX, sig: *mut u8, sig_len: *mut usize) -> c_int;
+    pub fn EVP_DigestVerifyInit(
+        ctx: *mut EVP_MD_CTX,
+        pctx: *mut *mut EVP_PKEY_CTX,
+        md: *const EVP_MD,
+        e: *mut ENGINE,
+        pkey: *mut EVP_PKEY,
+    ) -> c_int;
+    pub fn EVP_DigestVerifyUpdate(ctx: *mut EVP_MD_CTX, data: *const c_void, len: usize) -> c_int;
+    pub fn EVP_DigestVerifyFinal(ctx: *mut EVP_MD_CTX, sig: *const u8, sig_len: usize) -> c_int;
+
+    // ── EVP_PKEY key generation ──────────────────────────────────────────
+    pub fn EVP_PKEY_new() -> *mut EVP_PKEY;
+    pub fn EVP_PKEY_id(pkey: *const EVP_PKEY) -> c_int;
+    pub fn EVP_PKEY_CTX_new(pkey: *mut EVP_PKEY, e: *mut ENGINE) -> *mut EVP_PKEY_CTX;
+    pub fn EVP_PKEY_CTX_new_id(id: c_int) -> *mut EVP_PKEY_CTX;
+    pub fn EVP_PKEY_CTX_free(ctx: *mut EVP_PKEY_CTX);
+    pub fn EVP_PKEY_keygen_init(ctx: *mut EVP_PKEY_CTX) -> c_int;
+    pub fn EVP_PKEY_keygen(ctx: *mut EVP_PKEY_CTX, pkey: *mut *mut EVP_PKEY) -> c_int;
+    pub fn EVP_PKEY_CTX_ctrl(
+        ctx: *mut EVP_PKEY_CTX,
+        keytype: c_int,
+        optype: c_int,
+        cmd: c_int,
+        p1: c_int,
+        p2: *mut c_void,
+    ) -> c_int;
+    pub fn EVP_PKEY_CTX_set_signature_md(ctx: *mut EVP_PKEY_CTX, md: *const EVP_MD) -> c_int;
+    pub fn EVP_PKEY_CTX_set_rsa_padding(ctx: *mut EVP_PKEY_CTX, padding: c_int) -> c_int;
+    pub fn EVP_PKEY_CTX_set_rsa_pss_saltlen(ctx: *mut EVP_PKEY_CTX, saltlen: c_int) -> c_int;
+    pub fn EVP_PKEY_CTX_set_ec_paramgen_curve_nid(ctx: *mut EVP_PKEY_CTX, nid: c_int) -> c_int;
+
+    // ── EVP_PKEY key derivation (X25519/ECDH) ────────────────────────────
+    pub fn EVP_PKEY_derive_init(ctx: *mut EVP_PKEY_CTX) -> c_int;
+    pub fn EVP_PKEY_derive_set_peer(ctx: *mut EVP_PKEY_CTX, peer: *mut EVP_PKEY) -> c_int;
+    pub fn EVP_PKEY_derive(ctx: *mut EVP_PKEY_CTX, key: *mut u8, keylen: *mut usize) -> c_int;
+
+    // ── RSA key generation ───────────────────────────────────────────────
+    pub fn RSA_new() -> *mut RSA;
+    pub fn RSA_generate_key_ex(rsa: *mut RSA, bits: c_int, e: *mut BIGNUM, cb: *mut BN_GENCB) -> c_int;
+    pub fn EVP_PKEY_set1_RSA(pkey: *mut EVP_PKEY, rsa: *mut RSA) -> c_int;
+    pub fn EVP_PKEY_get0_RSA(pkey: *const EVP_PKEY) -> *mut RSA;
+
+    // ── BIGNUM ───────────────────────────────────────────────────────────
+    pub fn BN_new() -> *mut BIGNUM;
+    pub fn BN_free(bn: *mut BIGNUM);
+    pub fn BN_set_word(bn: *mut BIGNUM, w: c_ulong) -> c_int;
+    pub fn BN_num_bits(bn: *const BIGNUM) -> c_int;
+    pub fn BN_bn2bin(bn: *const BIGNUM, out: *mut u8) -> c_int;
+    pub fn BN_bin2bn(s: *const u8, len: usize, bn: *mut BIGNUM) -> *mut BIGNUM;
+
+    // ── BN_CTX ───────────────────────────────────────────────────────────
+    pub fn BN_CTX_new() -> *mut BN_CTX;
+    pub fn BN_CTX_free(ctx: *mut BN_CTX);
+
+    // ── EC_POINT ─────────────────────────────────────────────────────────
+    pub fn EC_POINT_new(group: *const EC_GROUP) -> *mut EC_POINT;
+    pub fn EC_POINT_free(point: *mut EC_POINT);
+    pub fn EC_POINT_point2oct(
+        group: *const EC_GROUP,
+        point: *const EC_POINT,
+        form: point_conversion_form_t,
+        buf: *mut u8,
+        len: usize,
+        ctx: *mut BN_CTX,
+    ) -> usize;
+    pub fn EC_POINT_oct2point(
+        group: *const EC_GROUP,
+        point: *mut EC_POINT,
+        buf: *const u8,
+        len: usize,
+        ctx: *mut BN_CTX,
+    ) -> c_int;
+
+    // ── ECDH ─────────────────────────────────────────────────────────────
+    pub fn ECDH_compute_key(
+        out: *mut c_void,
+        outlen: usize,
+        pub_key: *const EC_POINT,
+        eckey: *mut EC_KEY,
+        kdf: Option<unsafe extern "C" fn(*const c_void, usize, *mut c_void) -> c_int>,
+    ) -> c_int;
+
+    // ── EC_KEY ───────────────────────────────────────────────────────────
+    pub fn EC_KEY_new_by_curve_name(nid: c_int) -> *mut EC_KEY;
+    pub fn EC_KEY_free(key: *mut EC_KEY);
+    pub fn EC_KEY_generate_key(key: *mut EC_KEY) -> c_int;
+    pub fn EC_KEY_get0_group(key: *const EC_KEY) -> *const EC_GROUP;
+    pub fn EC_KEY_get0_private_key(key: *const EC_KEY) -> *const BIGNUM;
+    pub fn EC_KEY_get0_public_key(key: *const EC_KEY) -> *const EC_POINT;
+    pub fn EC_KEY_set_private_key(key: *mut EC_KEY, priv_key: *const BIGNUM) -> c_int;
+    pub fn EC_KEY_set_public_key(key: *mut EC_KEY, pub_key: *const EC_POINT) -> c_int;
+    pub fn EVP_PKEY_set1_EC_KEY(pkey: *mut EVP_PKEY, key: *mut EC_KEY) -> c_int;
+    pub fn EVP_PKEY_get0_EC_KEY(pkey: *const EVP_PKEY) -> *const EC_KEY;
+
+    // ── EC_POINT arithmetic ──────────────────────────────────────────────
+    pub fn EC_POINT_mul(
+        group: *const EC_GROUP,
+        r: *mut EC_POINT,
+        n: *const BIGNUM,
+        p: *const EC_POINT,
+        m: *const BIGNUM,
+        ctx: *mut BN_CTX,
+    ) -> c_int;
+
+    // ── Key serialization ────────────────────────────────────────────────
+    pub fn i2d_PrivateKey(pkey: *const EVP_PKEY, out: *mut *mut u8) -> c_int;
+    pub fn i2d_PUBKEY(pkey: *const EVP_PKEY, out: *mut *mut u8) -> c_int;
+    pub fn d2i_AutoPrivateKey(out: *mut *mut EVP_PKEY, inp: *mut *const u8, len: c_long) -> *mut EVP_PKEY;
+    pub fn d2i_PUBKEY(out: *mut *mut EVP_PKEY, inp: *mut *const u8, len: c_long) -> *mut EVP_PKEY;
+    pub fn PEM_write_bio_PKCS8PrivateKey(
+        bio: *mut BIO,
+        pkey: *mut EVP_PKEY,
+        enc: *const EVP_CIPHER,
+        kstr: *mut c_char,
+        klen: c_int,
+        cb: Option<pem_password_cb>,
+        u: *mut c_void,
+    ) -> c_int;
+    pub fn PEM_write_bio_PUBKEY(bio: *mut BIO, pkey: *const EVP_PKEY) -> c_int;
+
+    // ── RAND ─────────────────────────────────────────────────────────────
+    pub fn RAND_bytes(buf: *mut u8, len: usize) -> c_int;
+
+    // ── Ed25519 low-level API ────────────────────────────────────────────
+    pub fn ED25519_keypair(out_public_key: *mut u8, out_private_key: *mut u8);
+    pub fn ED25519_keypair_from_seed(
+        out_public_key: *mut u8,
+        out_private_key: *mut u8,
+        seed: *const u8,
+    );
+    pub fn ED25519_sign(
+        out_sig: *mut u8,
+        message: *const u8,
+        message_len: usize,
+        private_key: *const u8,
+    ) -> c_int;
+    pub fn ED25519_verify(
+        message: *const u8,
+        message_len: usize,
+        signature: *const u8,
+        public_key: *const u8,
+    ) -> c_int;
+
+    // ── EVP_PKEY raw key API ────────────────────────────────────────────
+    pub fn EVP_pkey_ed25519() -> *const c_void;
+    pub fn EVP_pkey_x25519() -> *const c_void;
+    pub fn EVP_PKEY_from_raw_private_key(
+        alg: *const c_void,
+        in_: *const u8,
+        in_len: usize,
+    ) -> *mut EVP_PKEY;
+    pub fn EVP_PKEY_from_raw_public_key(
+        alg: *const c_void,
+        in_: *const u8,
+        in_len: usize,
+    ) -> *mut EVP_PKEY;
+    pub fn EVP_PKEY_get_raw_private_key(
+        pkey: *const EVP_PKEY,
+        out: *mut u8,
+        out_len: *mut usize,
+    ) -> c_int;
+    pub fn EVP_PKEY_get_raw_public_key(
+        pkey: *const EVP_PKEY,
+        out: *mut u8,
+        out_len: *mut usize,
+    ) -> c_int;
+
+    // ── EVP_PKEY one-shot sign/verify ──────────────────────────────────
+    pub fn EVP_PKEY_sign_init(ctx: *mut EVP_PKEY_CTX) -> c_int;
+    pub fn EVP_PKEY_sign(
+        ctx: *mut EVP_PKEY_CTX,
+        sig: *mut u8,
+        sig_len: *mut usize,
+        digest: *const u8,
+        digest_len: usize,
+    ) -> c_int;
+    pub fn EVP_PKEY_verify_init(ctx: *mut EVP_PKEY_CTX) -> c_int;
+    pub fn EVP_PKEY_verify(
+        ctx: *mut EVP_PKEY_CTX,
+        sig: *const u8,
+        sig_len: usize,
+        digest: *const u8,
+        digest_len: usize,
+    ) -> c_int;
+
+    // ── EVP_DigestSign/Verify one-shot (for Ed25519) ─────────────────
+    pub fn EVP_DigestSign(
+        ctx: *mut EVP_MD_CTX,
+        out_sig: *mut u8,
+        out_sig_len: *mut usize,
+        data: *const u8,
+        data_len: usize,
+    ) -> c_int;
+    pub fn EVP_DigestVerify(
+        ctx: *mut EVP_MD_CTX,
+        sig: *const u8,
+        sig_len: usize,
+        data: *const u8,
+        data_len: usize,
+    ) -> c_int;
 }

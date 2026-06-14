@@ -3,6 +3,7 @@
 // @trace TEST-CDP-007 [req:REQ-CDP-005] [level:unit]
 
 use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeSender, BridgeResponse};
+use bao_cdp::DomainDispatch;
 use bao_cdp::domains::register_all_domains_into;
 use bao_cdp::DomainRegistry;
 use bao_cdp::CdpRouter;
@@ -77,9 +78,9 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
     }
 }
 
-fn setup() -> (DomainRegistry, BridgeSender) {
+fn setup() -> (DomainRegistry<DomainDispatch>, BridgeSender) {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_into(tx.clone(), TID.into(), &registry);
     // Keep an extra clone alive so the channel stays open after test drops tx
     let keeper = tx.clone();
@@ -101,7 +102,7 @@ fn setup() -> (DomainRegistry, BridgeSender) {
     (registry, tx)
 }
 
-fn dispatch(registry: &DomainRegistry, method: &str, params: Value) -> Result<Value, CdpError> {
+fn dispatch(registry: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> Result<Value, CdpError> {
     let es = NoopEventSender;
     registry.dispatch_command(method, params, &es)
         .ok_or_else(|| CdpError { code: -32601, message: format!("domain not found for '{}'", method) })

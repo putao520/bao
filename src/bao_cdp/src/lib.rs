@@ -1,4 +1,4 @@
-// REQ-CDP-003: CDP module public API and domain registry  @trace REQ-CDP-001 [entity:CdpServer]
+// REQ-CDP-003: CDP module public API and domain registry  @trace REQ-CDP-001 [entity:CdpRouter] [entity:CdpServer]
 // @trace REQ-IMPL-06
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
@@ -8,6 +8,103 @@ use std::sync::Arc;
 
 use tungstenite::accept;
 use tungstenite::protocol::WebSocket;
+
+// ---------------------------------------------------------------------------
+// §1 DomainDispatch Enum — compile-time exhaustiveness for CDP domains
+// ---------------------------------------------------------------------------
+
+/// Enum dispatch for all CDP domain handlers. Provides compile-time
+/// exhaustiveness checking when adding/removing domains, and direct
+/// dispatch without vtable indirection within DomainHandler trait methods.
+pub enum DomainDispatch {
+    Page(domains::PageHandler),
+    Runtime(domains::RuntimeHandler),
+    Dom(domains::DomHandler),
+    Network(domains::NetworkHandler),
+    Debugger(domains::DebuggerHandler),
+    Input(domains::InputHandler),
+    Emulation(domains::EmulationHandler),
+    Css(domains::CssHandler),
+    Overlay(domains::OverlayHandler),
+    Log(domains::LogHandler),
+    Fetch(domains::FetchHandler),
+    Target(domains::TargetHandler),
+}
+
+impl cdp_server::DomainHandler for DomainDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self {
+            Self::Page(h) => h.domain_name(),
+            Self::Runtime(h) => h.domain_name(),
+            Self::Dom(h) => h.domain_name(),
+            Self::Network(h) => h.domain_name(),
+            Self::Debugger(h) => h.domain_name(),
+            Self::Input(h) => h.domain_name(),
+            Self::Emulation(h) => h.domain_name(),
+            Self::Css(h) => h.domain_name(),
+            Self::Overlay(h) => h.domain_name(),
+            Self::Log(h) => h.domain_name(),
+            Self::Fetch(h) => h.domain_name(),
+            Self::Target(h) => h.domain_name(),
+        }
+    }
+
+    fn handle_command(
+        &self,
+        command: &str,
+        params: serde_json::Value,
+        event_sender: &dyn cdp_server::EventSender,
+    ) -> Result<serde_json::Value, cdp_server::CdpError> {
+        match self {
+            Self::Page(h) => h.handle_command(command, params, event_sender),
+            Self::Runtime(h) => h.handle_command(command, params, event_sender),
+            Self::Dom(h) => h.handle_command(command, params, event_sender),
+            Self::Network(h) => h.handle_command(command, params, event_sender),
+            Self::Debugger(h) => h.handle_command(command, params, event_sender),
+            Self::Input(h) => h.handle_command(command, params, event_sender),
+            Self::Emulation(h) => h.handle_command(command, params, event_sender),
+            Self::Css(h) => h.handle_command(command, params, event_sender),
+            Self::Overlay(h) => h.handle_command(command, params, event_sender),
+            Self::Log(h) => h.handle_command(command, params, event_sender),
+            Self::Fetch(h) => h.handle_command(command, params, event_sender),
+            Self::Target(h) => h.handle_command(command, params, event_sender),
+        }
+    }
+
+    fn on_session_created(&self, session_id: &str) {
+        match self {
+            Self::Page(h) => h.on_session_created(session_id),
+            Self::Runtime(h) => h.on_session_created(session_id),
+            Self::Dom(h) => h.on_session_created(session_id),
+            Self::Network(h) => h.on_session_created(session_id),
+            Self::Debugger(h) => h.on_session_created(session_id),
+            Self::Input(h) => h.on_session_created(session_id),
+            Self::Emulation(h) => h.on_session_created(session_id),
+            Self::Css(h) => h.on_session_created(session_id),
+            Self::Overlay(h) => h.on_session_created(session_id),
+            Self::Log(h) => h.on_session_created(session_id),
+            Self::Fetch(h) => h.on_session_created(session_id),
+            Self::Target(h) => h.on_session_created(session_id),
+        }
+    }
+
+    fn on_session_destroyed(&self, session_id: &str) {
+        match self {
+            Self::Page(h) => h.on_session_destroyed(session_id),
+            Self::Runtime(h) => h.on_session_destroyed(session_id),
+            Self::Dom(h) => h.on_session_destroyed(session_id),
+            Self::Network(h) => h.on_session_destroyed(session_id),
+            Self::Debugger(h) => h.on_session_destroyed(session_id),
+            Self::Input(h) => h.on_session_destroyed(session_id),
+            Self::Emulation(h) => h.on_session_destroyed(session_id),
+            Self::Css(h) => h.on_session_destroyed(session_id),
+            Self::Overlay(h) => h.on_session_destroyed(session_id),
+            Self::Log(h) => h.on_session_destroyed(session_id),
+            Self::Fetch(h) => h.on_session_destroyed(session_id),
+            Self::Target(h) => h.on_session_destroyed(session_id),
+        }
+    }
+}
 
 /// EventSender backed by the CDP command channel. When a domain handler
 /// calls `send_event`, the event is queued into the channel and later
@@ -39,7 +136,7 @@ pub use router::{CdpRouter, CdpSession, ExternalBrowser, BackendKind};
 pub use servo_bridge::{BridgeSender, BridgeReceiver, BridgeCommand, BridgeResponse, bridge_channel};
 
 // cdp-server integration — new domain-handler architecture
-pub use cdp_server::{CdpServer, ServerConfig, DomainRegistry, EventBroadcaster};
+pub use cdp_server::{CdpServer, ServerConfig, DomainRegistry, EventBroadcaster, BaoEvent, ConsoleMessage};
 
 pub struct CDPServer {
     port: u16,
@@ -48,7 +145,7 @@ pub struct CDPServer {
     cmd_tx: Sender<CDPCommand>,
     cmd_rx: Receiver<CDPCommand>,
     bridge: Option<BridgeSender>,
-    registry: Option<Arc<DomainRegistry>>,
+    registry: Option<Arc<DomainRegistry<DomainDispatch>>>,
 }
 
 #[derive(Debug)]
@@ -62,7 +159,7 @@ pub struct CDPSession {
     target_id: String,
     ws: WebSocket<ReplayStream>,
     bridge: Option<BridgeSender>,
-    registry: Option<Arc<DomainRegistry>>,
+    registry: Option<Arc<DomainRegistry<DomainDispatch>>>,
     cmd_tx: Sender<CDPCommand>,
 }
 
@@ -117,7 +214,7 @@ impl CDPServer {
     pub fn with_bridge(port: u16, bridge: BridgeSender) -> Self {
         let (cmd_tx, cmd_rx) = channel();
         let target_id = format!("{:016x}", rand_id());
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         domains::register_all_domains_with_target(bridge.clone(), target_id.clone(), &registry);
         CDPServer {
             port,
@@ -165,8 +262,8 @@ impl CDPServer {
             .set_nonblocking(true)
             .map_err(|e| CDPServerError::Io(e.to_string()))?;
 
-        eprintln!("CDP listening on ws://127.0.0.1:{}", self.port);
-        eprintln!("DevTools: {}", self.ws_url());
+        log::info!("CDP listening on ws://127.0.0.1:{}", self.port);
+        log::info!("DevTools: {}", self.ws_url());
 
         loop {
             // Drain command channel without dropping Shutdown.
@@ -177,7 +274,7 @@ impl CDPServer {
                 match self.cmd_rx.try_recv() {
                     Ok(CDPCommand::SendEvent(ev)) => self.broadcast_event(&ev),
                     Ok(CDPCommand::Shutdown) => {
-                        eprintln!("[server] run loop exiting");
+                        log::info!("[server] run loop exiting");
                         return Ok(());
                     }
                     Err(_) => break,
@@ -191,7 +288,7 @@ impl CDPServer {
                     }
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => eprintln!("CDP accept error: {}", e),
+                Err(e) => log::info!("CDP accept error: {}", e),
             }
 
             let mut to_remove = Vec::new();
@@ -291,7 +388,7 @@ impl CDPServer {
                     });
                 }
                 Err(e) => {
-                    eprintln!("CDP WebSocket accept error: {}", e);
+                    log::info!("CDP WebSocket accept error: {}", e);
                     return None;
                 }
             }

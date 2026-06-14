@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_imports)]
-// REQ-STL-007: Stealth engine integration and CDP stealth  @trace REQ-STL-001
+// REQ-STL-007: Stealth engine integration and CDP stealth  @trace REQ-STL-001 [entity:TlsProfile] [entity:StealthProfile]
 mod profile;
 mod tls;
 mod http2;

@@ -1,7 +1,7 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, FnArg, ItemFn, LitStr, Receiver};
+use syn::{parse_macro_input, FnArg, Ident, ItemFn, ItemStruct, LitStr, Receiver};
 
 #[derive(Default)]
 struct HostFnArgs {
@@ -16,6 +16,7 @@ enum HostFnKind {
     Getter,
     Setter,
     Method,
+    Constructor,
 }
 
 mod kw {
@@ -23,6 +24,7 @@ mod kw {
     syn::custom_keyword!(method);
     syn::custom_keyword!(getter);
     syn::custom_keyword!(setter);
+    syn::custom_keyword!(constructor);
 }
 
 impl syn::parse::Parse for HostFnArgs {
@@ -44,6 +46,9 @@ impl syn::parse::Parse for HostFnArgs {
             } else if lookahead.peek(kw::setter) {
                 input.parse::<kw::setter>()?;
                 args.kind = HostFnKind::Setter;
+            } else if lookahead.peek(kw::constructor) {
+                input.parse::<kw::constructor>()?;
+                args.kind = HostFnKind::Constructor;
             } else {
                 return Err(lookahead.error());
             }
@@ -106,6 +111,7 @@ fn expand_host_fn(args: &HostFnArgs, func: &ItemFn) -> syn::Result<TokenStream2>
         }
         HostFnKind::Getter => expand_getter_fn(&shim_ident, func, receiver_is_shared),
         HostFnKind::Setter => expand_setter_fn(&shim_ident, func, receiver_is_shared),
+        HostFnKind::Constructor => expand_constructor_fn(&shim_ident, func),
     }
 }
 
@@ -234,6 +240,43 @@ fn expand_getter_fn(
     })
 }
 
+fn expand_constructor_fn(
+    shim: &syn::Ident,
+    func: &ItemFn,
+) -> syn::Result<TokenStream2> {
+    let fn_name = &func.sig.ident;
+    let body = &func.block;
+
+    Ok(quote! {
+        #[allow(unsafe_op_in_unsafe_fn)]
+        pub unsafe extern "C" fn #shim(
+            cx: *mut ::mozjs::jsapi::JSContext,
+            argc: u32,
+            vp: *mut ::mozjs::jsval::JSVal,
+        ) -> bool {
+            let __args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
+            let __cx = unsafe {
+                ::mozjs::context::JSContext::from_ptr(
+                    ::std::ptr::NonNull::new_unchecked(cx)
+                )
+            };
+            match #fn_name(&__cx, argc, __args) {
+                ::std::result::Result::Ok(val) => {
+                    val.set_as_rval(&mut __args);
+                    true
+                }
+                ::std::result::Result::Err(err) => {
+                    err.throw_on(cx);
+                    false
+                }
+            }
+        }
+
+        #[allow(dead_code)]
+        fn #fn_name #body
+    })
+}
+
 fn expand_setter_fn(
     shim: &syn::Ident,
     func: &ItemFn,
@@ -272,4 +315,265 @@ fn expand_setter_fn(
         #[allow(dead_code)]
         fn #fn_name #body
     })
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// bao_engine::codegen_cached_accessors!("TypeName"; prop_a, prop_b, ...)
+//
+// Emits one `${snake}_get_cached` / `${snake}_set_cached` / `${snake}_take_cached`
+// triple per listed property, using SpiderMonkey ReservedSlot read/write instead
+// of JSC WriteBarrier. Each property maps to a consecutive slot index starting
+// from `CACHED_SLOT_OFFSET` (default 1; slot 0 is reserved for native private data).
+//
+// Also emits a `Gc` enum mirroring Bun's codegen pattern so that
+// `js_class_module!` callers get `Gc::$prop.get()/.set()/.clear()`.
+// ──────────────────────────────────────────────────────────────────────────
+
+struct CachedAccessorsInput {
+    type_name: LitStr,
+    props: Vec<Ident>,
+}
+
+impl syn::parse::Parse for CachedAccessorsInput {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let type_name: LitStr = input.parse()?;
+        if input.peek(syn::Token![;]) {
+            input.parse::<syn::Token![;]>()?;
+        } else if input.peek(syn::Token![,]) {
+            input.parse::<syn::Token![,]>()?;
+        }
+        let mut props = Vec::new();
+        while !input.is_empty() {
+            props.push(input.parse()?);
+            if input.peek(syn::Token![,]) {
+                input.parse::<syn::Token![,]>()?;
+            }
+        }
+        Ok(Self { type_name, props })
+    }
+}
+
+#[proc_macro]
+pub fn codegen_cached_accessors(input: TokenStream) -> TokenStream {
+    let CachedAccessorsInput { type_name, props } =
+        parse_macro_input!(input as CachedAccessorsInput);
+
+    let mut out = TokenStream2::new();
+
+    // Slot offset constant — slot 0 is private data, cached props start at 1
+    let ty_ident = format_ident!("{}", type_name.value().replace('-', "_"));
+    let slot_const = format_ident!("{}_CACHED_SLOT_OFFSET", ty_ident);
+    let prop_count = props.len() as u32;
+
+    out.extend(quote! {
+        /// First ReservedSlot index used for cached properties (slot 0 = private data).
+        pub const #slot_const: u32 = 1;
+    });
+
+    for (i, prop) in props.iter().enumerate() {
+        let prop_str = prop.to_string();
+        let snake = camel_to_snake(&prop_str);
+        let get_fn = format_ident!("{snake}_get_cached");
+        let set_fn = format_ident!("{snake}_set_cached");
+        let take_fn = format_ident!("{snake}_take_cached");
+        let slot_idx = 1u32 + i as u32;
+
+        out.extend(quote! {
+            /// Read a cached value from the object's ReservedSlot.
+            /// Returns `None` if the slot contains undefined (never assigned).
+            #[inline]
+            pub fn #get_fn(obj: *mut ::mozjs::jsapi::JSObject) -> ::core::option::Option<::mozjs::jsval::JSVal> {
+                let mut val = ::mozjs::jsval::UndefinedValue();
+                unsafe { ::mozjs::jsapi::JS_GetReservedSlot(obj, #slot_idx, &mut val); }
+                if val.is_undefined() || val.is_null() {
+                    ::core::option::Option::None
+                } else {
+                    ::core::option::Option::Some(val)
+                }
+            }
+
+            /// Write a value to the object's ReservedSlot (cache it).
+            #[inline]
+            pub fn #set_fn(
+                obj: *mut ::mozjs::jsapi::JSObject,
+                value: ::mozjs::jsval::JSVal,
+            ) {
+                unsafe { ::mozjs::jsapi::JS_SetReservedSlot(obj, #slot_idx, &value); }
+            }
+
+            /// Read-and-clear the ReservedSlot in one step.
+            /// Returns `Some(value)` and resets the slot to undefined iff a
+            /// value was cached; `None` if the slot was already empty.
+            #[inline]
+            pub fn #take_fn(
+                obj: *mut ::mozjs::jsapi::JSObject,
+            ) -> ::core::option::Option<::mozjs::jsval::JSVal> {
+                let v = #get_fn(obj)?;
+                #set_fn(obj, ::mozjs::jsval::UndefinedValue());
+                ::core::option::Option::Some(v)
+            }
+        });
+    }
+
+    // Emit the `Gc` enum mirroring Bun's codegen pattern
+    if !props.is_empty() {
+        let variants = props.iter();
+        let get_arms = props.iter().map(|p| {
+            let f = format_ident!("{}_get_cached", camel_to_snake(&p.to_string()));
+            quote! { Gc::#p => #f(obj), }
+        });
+        let set_arms = props.iter().map(|p| {
+            let f = format_ident!("{}_set_cached", camel_to_snake(&p.to_string()));
+            quote! { Gc::#p => #f(obj, value), }
+        });
+        let clear_arms = props.iter().map(|p| {
+            let f = format_ident!("{}_set_cached", camel_to_snake(&p.to_string()));
+            quote! { Gc::#p => #f(obj, ::mozjs::jsval::UndefinedValue()), }
+        });
+        out.extend(quote! {
+            /// GC-cached value slots on the JS wrapper (mirrors Bun's `js.gc.<field>.get/set/clear`).
+            #[allow(non_camel_case_types, dead_code)]
+            #[derive(Clone, Copy)]
+            #[repr(u8)]
+            pub(crate) enum Gc { #( #variants, )* }
+            #[allow(dead_code)]
+            impl Gc {
+                #[inline] pub fn get(self, obj: *mut ::mozjs::jsapi::JSObject) -> ::core::option::Option<::mozjs::jsval::JSVal> {
+                    match self { #( #get_arms )* }
+                }
+                #[inline] pub fn set(self, obj: *mut ::mozjs::jsapi::JSObject, value: ::mozjs::jsval::JSVal) {
+                    match self { #( #set_arms )* }
+                }
+                #[inline] pub fn clear(self, obj: *mut ::mozjs::jsapi::JSObject) {
+                    match self { #( #clear_arms )* }
+                }
+            }
+        });
+    }
+
+    let _ = type_name; // Used for slot offset constant naming
+    let _ = prop_count;
+    out.into()
+}
+
+fn camel_to_snake(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for (i, ch) in s.char_indices() {
+        if ch.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// jsc_abi! — JSC-compatible ABI shim macro
+// ---------------------------------------------------------------------------
+
+/// `jsc_abi!` macro: generates `#[no_mangle] extern "C"` shims that match
+/// the JSC calling convention but delegate to SpiderMonkey implementations.
+///
+/// This allows Bun's codegen (which emits `jsc_abi_extern!` references) to
+/// resolve against SpiderMonkey-backed symbols.
+#[proc_macro]
+pub fn jsc_abi(input: TokenStream) -> TokenStream {
+    let funcs = parse_macro_input!(input as syn::ItemFn);
+    let fn_name = &funcs.sig.ident;
+    let body = &funcs.block;
+    let inputs = &funcs.sig.inputs;
+    let output = &funcs.sig.output;
+
+    quote! {
+        #[no_mangle]
+        pub unsafe extern "C" fn #fn_name(#inputs) #output {
+            #body
+        }
+    }.into()
+}
+
+// ---------------------------------------------------------------------------
+// #[JsClass] — proc-macro for JS class boilerplate generation
+// ---------------------------------------------------------------------------
+
+/// `#[JsClass]` proc-macro for SpiderMonkey JS class registration.
+///
+/// Generates:
+/// - `{Struct}__create` constructor trampoline (JSNative)
+/// - `{Struct}__proto` prototype setup function
+/// - `HostObject` impl for reserved slot pointer storage
+///
+/// Usage:
+/// ```ignore
+/// #[bao_engine_macros::JsClass]
+/// pub struct MyClass { field1: String }
+///
+/// impl MyClass {
+///     #[host_fn(method)]
+///     fn my_method(&self, ...) -> JsResult<JsValue> { ... }
+/// }
+/// ```
+#[proc_macro_attribute]
+pub fn JsClass(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let struct_item = parse_macro_input!(item as ItemStruct);
+    let struct_name = &struct_item.ident;
+
+    let js_name = if attr.is_empty() {
+        struct_name.to_string()
+    } else {
+        let name_arg = parse_macro_input!(attr as LitStr);
+        name_arg.value()
+    };
+
+    let create_ident = format_ident!("{}__create", struct_name);
+    let proto_ident = format_ident!("{}__proto", struct_name);
+
+    let expanded = quote! {
+        #struct_item
+
+        impl ::bao_engine::host_fn::HostObject for #struct_name {}
+
+        impl #struct_name {
+            #[allow(unsafe_op_in_unsafe_fn)]
+            pub unsafe extern "C" fn #create_ident(
+                cx: *mut ::mozjs::jsapi::JSContext,
+                argc: u32,
+                vp: *mut ::mozjs::jsval::JSVal,
+            ) -> bool {
+                let __args = ::mozjs::jsapi::CallArgs::from_vp(vp, argc);
+                match <Self as ::bao_engine::host_fn::JsClassOps>::construct(cx, &__args) {
+                    ::std::result::Result::Ok(val) => {
+                        val.set_as_rval(&mut __args);
+                        true
+                    }
+                    ::std::result::Result::Err(err) => {
+                        err.throw_on(cx);
+                        false
+                    }
+                }
+            }
+
+            #[allow(unsafe_op_in_unsafe_fn)]
+            pub unsafe fn #proto_ident(
+                cx: &mut ::mozjs::context::JSContext,
+                global: ::mozjs::rust::Handle<*mut ::mozjs::jsapi::JSObject>,
+            ) {
+                let c_name = ::std::ffi::CString::new(#js_name).unwrap_or_default();
+                ::mozjs::rust::wrappers2::JS_DefineFunction(
+                    cx,
+                    global,
+                    c_name.as_ptr(),
+                    Some(Self::#create_ident),
+                    0,
+                    ::mozjs::jsapi::JSPROP_ENUMERATE as u32,
+                );
+            }
+        }
+    };
+
+    expanded.into()
 }

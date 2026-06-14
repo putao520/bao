@@ -4,7 +4,7 @@
 //
 // JS API: spawn, exec, execFile, execSync, execFileSync, spawnSync, fork
 // Internal: bun_spawn::sync::spawn for all sync ops
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -164,7 +164,7 @@ unsafe extern "C" fn cp_spawn(
     let args = CallArgs::from_vp(vp, argc);
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
-        let c_msg = CString::new(e).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(e.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -251,13 +251,13 @@ unsafe extern "C" fn cp_spawn(
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
             let msg = format!("spawn system error: {:?}", sys_err);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
         Err(e) => {
             let msg = format!("spawn failed: {:?}", e);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -306,7 +306,7 @@ unsafe extern "C" fn cp_exec(
     }
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
-        let c_msg = CString::new(e).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(e.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -339,13 +339,13 @@ unsafe extern "C" fn cp_exec(
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
             let msg = format!("exec system error: {:?}", sys_err);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
         Err(e) => {
             let msg = format!("exec failed: {:?}", e);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -359,7 +359,8 @@ unsafe extern "C" fn cp_exec(
 
     let child_h = child_obj.handle().into();
 
-    if let Ok(c_stdout) = CString::new(stdout_str.as_str()) {
+    let c_stdout = ZBox::from_bytes(stdout_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_stdout.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
@@ -367,7 +368,8 @@ unsafe extern "C" fn cp_exec(
             JS_DefineProperty(cx, child_h, c"stdout".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
         }
     }
-    if let Ok(c_stderr) = CString::new(stderr_str.as_str()) {
+    let c_stderr = ZBox::from_bytes(stderr_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_stderr.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
@@ -387,7 +389,8 @@ unsafe extern "C" fn cp_exec(
         let err_obj = if exit_code != 0 {
             let e = mozjs_sys::jsapi::JS_NewPlainObject(cx);
             if !e.is_null()
-                && let Ok(c_msg) = CString::new(format!("Command failed with exit code {}", exit_code)) {
+                {
+                    let c_msg = ZBox::from_vec(format!("Command failed with exit code {}", exit_code).into_bytes());
                     let msg_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
                     if !msg_str.is_null() {
                         let mv = StringValue(&*msg_str);
@@ -451,7 +454,7 @@ unsafe extern "C" fn cp_exec_sync(
     let cmd = crate::js_to_rust_string(cx, cmd_val);
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
-        let c_msg = CString::new(e).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(e.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -462,20 +465,21 @@ unsafe extern "C" fn cp_exec_sync(
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
             let msg = format!("execSync system error: {:?}", sys_err);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
         Err(e) => {
             let msg = format!("execSync failed: {:?}", e);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
     };
 
     let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
-    if let Ok(c_out) = CString::new(stdout_str.as_str()) {
+    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
         if !js_str.is_null() {
             args.rval().set(StringValue(&*js_str));
@@ -508,7 +512,7 @@ unsafe extern "C" fn cp_exec_file(
     let file_path = crate::js_to_rust_string(cx, file_val);
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
-        let c_msg = CString::new(e).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(e.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -551,13 +555,13 @@ unsafe extern "C" fn cp_exec_file(
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
             let msg = format!("execFile system error: {:?}", sys_err);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
         Err(e) => {
             let msg = format!("execFile failed: {:?}", e);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -583,7 +587,8 @@ unsafe extern "C" fn cp_exec_file(
     // Store stdout/stderr as properties
     let child_h = child_r.handle().into();
     let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    if let Ok(c_out) = CString::new(stdout_str.as_str()) {
+    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
@@ -592,7 +597,8 @@ unsafe extern "C" fn cp_exec_file(
         }
     }
     let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
-    if let Ok(c_err) = CString::new(stderr_str.as_str()) {
+    let c_err = ZBox::from_bytes(stderr_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
@@ -629,7 +635,7 @@ unsafe extern "C" fn cp_exec_file_sync(
     let file_path = crate::js_to_rust_string(cx, file_val);
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
-        let c_msg = CString::new(e).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(e.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -674,13 +680,13 @@ unsafe extern "C" fn cp_exec_file_sync(
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
             let msg = format!("execFileSync system error: {:?}", sys_err);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
         Err(e) => {
             let msg = format!("execFileSync failed: {:?}", e);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -690,12 +696,13 @@ unsafe extern "C" fn cp_exec_file_sync(
     if exit_code != 0 {
         let stderr_str = String::from_utf8_lossy(&spawn_result.stderr).into_owned();
         let msg = format!("execFileSync failed with status {}: {}", exit_code, stderr_str);
-        let c_msg = CString::new(msg).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
     let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
-    if let Ok(c_out) = CString::new(stdout_str.as_str()) {
+    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
         if !js_str.is_null() {
             args.rval().set(StringValue(&*js_str));
@@ -732,7 +739,7 @@ unsafe extern "C" fn cp_spawn_sync(
     let command = crate::js_to_rust_string(cx, cmd_val);
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
-        let c_msg = CString::new(e).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(e.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -775,7 +782,7 @@ unsafe extern "C" fn cp_spawn_sync(
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
             let msg = format!("spawnSync system error: {:?}", sys_err);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -787,7 +794,8 @@ unsafe extern "C" fn cp_spawn_sync(
             }
             let result_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &result_obj };
             let err_msg = format!("{:?}", e);
-            if let Ok(c_err) = CString::new(err_msg) {
+            let c_err = ZBox::from_vec(err_msg.into_bytes());
+            {
                 let js_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
                 if !js_str.is_null() {
                     let err_val = StringValue(&*js_str);
@@ -819,7 +827,8 @@ unsafe extern "C" fn cp_spawn_sync(
     JS_DefineProperty(cx, result_h, c"status".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
 
     let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    if let Ok(c_out) = CString::new(stdout_str.as_str()) {
+    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
         if !js_str.is_null() {
             let out_val = StringValue(&*js_str);
@@ -829,7 +838,8 @@ unsafe extern "C" fn cp_spawn_sync(
     }
 
     let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
-    if let Ok(c_err) = CString::new(stderr_str.as_str()) {
+    let c_err = ZBox::from_bytes(stderr_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
         if !js_str.is_null() {
             let err_val = StringValue(&*js_str);
@@ -873,7 +883,7 @@ unsafe extern "C" fn cp_fork(
     let module = crate::js_to_rust_string(cx, module_val);
 
     if let ::std::result::Result::Err(e) = crate::permission_bridge::check_run() {
-        let c_msg = CString::new(e).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(e.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -906,13 +916,13 @@ unsafe extern "C" fn cp_fork(
         Ok(Ok(r)) => r,
         Ok(Err(sys_err)) => {
             let msg = format!("fork system error: {:?}", sys_err);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
         Err(e) => {
             let msg = format!("fork failed: {:?}", e);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -931,7 +941,8 @@ unsafe extern "C" fn cp_fork(
 
     // Store stdout/stderr from fork (inherit mode may have empty output)
     let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
-    if let Ok(c_out) = CString::new(stdout_str.as_str()) {
+    let c_out = ZBox::from_bytes(stdout_str.as_bytes());
+    {
         let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);

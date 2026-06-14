@@ -208,8 +208,8 @@ impl DomainHandler for EchoHandler {
 
 #[test]
 fn test_registry_register_and_dispatch() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Test" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Test" }).unwrap();
     assert!(reg.has_domain("Test"));
     let result = reg.dispatch_command("Test.run", json!({"x": 1}), &NopSender).unwrap().unwrap();
     assert_eq!(result["echo"], "Test.run");
@@ -218,26 +218,26 @@ fn test_registry_register_and_dispatch() {
 
 #[test]
 fn test_registry_unknown_domain_returns_none() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<EchoHandler>::new();
     assert!(reg.dispatch_command("Unknown.method", json!({}), &NopSender).is_none());
 }
 
 #[test]
 fn test_registry_no_dot_returns_none() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<EchoHandler>::new();
     assert!(reg.dispatch_command("NoDotMethod", json!({}), &NopSender).is_none());
 }
 
 #[test]
 fn test_registry_empty_method_returns_none() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<EchoHandler>::new();
     assert!(reg.dispatch_command("", json!({}), &NopSender).is_none());
 }
 
 #[test]
 fn test_registry_dispatch_with_empty_params() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
     let result = reg.dispatch_command("Page.enable", json!({}), &NopSender).unwrap().unwrap();
     assert_eq!(result["echo"], "Page.enable");
 }

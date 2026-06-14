@@ -1,7 +1,7 @@
 // @trace REQ-CDP-002 [api:EventSender broadcast]
 // Tests for SessionEventSender replacing NoopEventSender — CDP event broadcasting
 
-use bao_cdp::{CDPCommand, SessionEventSender};
+use bao_cdp::{DomainDispatch,CDPCommand, SessionEventSender};
 use bao_cdp::domains::{
     RuntimeHandler, DebuggerHandler, PageHandler, NetworkHandler,
     TargetHandler, DomHandler, EmulationHandler, InputHandler,
@@ -51,17 +51,17 @@ fn session_event_sender_multiple_events_queued() {
 
 // --- Domain handler event broadcasting tests ---
 
-fn setup_registry_with_all_domains() -> DomainRegistry {
-    let registry = DomainRegistry::new();
+fn setup_registry_with_all_domains() -> DomainRegistry<DomainDispatch> {
+    let registry = DomainRegistry::<DomainDispatch>::new();
     let (bridge, rx) = bridge_channel(Duration::from_secs(5));
-    registry.register(Box::new(PageHandler::new(bridge.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(RuntimeHandler::new(bridge.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(DomHandler::new(bridge.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(NetworkHandler::new(bridge.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(DebuggerHandler::new(bridge.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(InputHandler::new(bridge.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(EmulationHandler::new(bridge.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(TargetHandler::new(bridge, "test-target-id".to_string()))).unwrap();
+    registry.register(DomainDispatch::Page(PageHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Runtime(RuntimeHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Dom(DomHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Network(NetworkHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Debugger(DebuggerHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Input(InputHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Emulation(EmulationHandler::new(bridge.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Target(TargetHandler::new(bridge, "test-target-id".to_string()))).unwrap();
 
     // Background responder: owns receiver exclusively
     std::thread::spawn(move || {

@@ -21,15 +21,17 @@ use crate::options::Format;
 /// format ESM import and export statements to always be top-level, so they
 /// can never be inside the wrapper.
 ///
-///      prefix - outer
-///      ...
-///      var init_foo = __esm(() => {
-///          prefix - inner
-///          ...
-///          suffix - inenr
-///      });
-///      ...
-///      suffix - outer
+/// ```text
+/// prefix - outer
+/// ...
+/// var init_foo = __esm(() => {
+///     prefix - inner
+///     ...
+///     suffix - inenr
+/// });
+/// ...
+/// suffix - outer
+/// ```
 ///
 /// Keep in mind that we may need to wrap ES modules in some cases too
 /// Consider:

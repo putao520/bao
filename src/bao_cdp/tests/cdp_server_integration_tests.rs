@@ -3,7 +3,7 @@
 
 use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeResponse};
 use bao_cdp::domains::register_all_domains_into;
-use bao_cdp::DomainRegistry;
+use bao_cdp::{DomainRegistry, DomainDispatch};
 use bao_cdp::CdpRouter;
 use cdp_server::{EventSender, CdpError};
 use serde_json::{json, Value};
@@ -76,9 +76,9 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
     }
 }
 
-fn setup_registry() -> DomainRegistry {
+fn setup_registry() -> DomainRegistry<DomainDispatch> {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_into(tx.clone(), TID.into(), &registry);
     thread::spawn(move || {
         let start = std::time::Instant::now();
@@ -94,7 +94,7 @@ fn setup_registry() -> DomainRegistry {
     registry
 }
 
-fn dispatch(registry: &DomainRegistry, method: &str, params: Value) -> Result<Value, CdpError> {
+fn dispatch(registry: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> Result<Value, CdpError> {
     let es = NoopEventSender;
     registry.dispatch_command(method, params, &es)
         .ok_or_else(|| CdpError { code: -32601, message: format!("domain not found for '{}'", method) })
@@ -198,7 +198,7 @@ fn test_fetch_domain_lifecycle() {
 }
 
 // ===========================================================================
-// §3 CdpRouter session + DomainRegistry integration (REQ-IMPL-06)
+// §3 CdpRouter session + DomainRegistry<DomainDispatch> integration (REQ-IMPL-06)
 // ===========================================================================
 
 #[test]

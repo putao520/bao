@@ -31,7 +31,7 @@ use core::ffi::{c_char, c_int, c_void};
 /// when the last SSL_CTX ref drops. The real implementation in Bun's
 /// SSLContextCache clears `entry.ctx = null`; this no-op is safe when the
 /// cache is not yet wired — every TLS handshake creates a fresh SSL_CTX.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn bun_ssl_ctx_cache_on_free(
     _parent: *mut c_void,
     _ptr: *mut c_void,
@@ -71,13 +71,13 @@ pub extern "C" fn bun_ssl_ctx_cache_on_free(
 /// Global flag: whether to load system CA certificates.
 /// In Bun, this is set by `--use-system-ca` CLI flag or `NODE_USE_SYSTEM_CA=1`.
 /// Default `true` — always load system CAs for TLS verification.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static mut Bun__Node__UseSystemCA: bool = true;
 
 /// Warning callback when loading extra CA files fails.
 /// Called by `root_certs.cpp` when a certificate file in the system CA
 /// directory cannot be parsed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
     filename: *const c_char,
     error_msg: *const c_char,

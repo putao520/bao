@@ -2,8 +2,8 @@
 // Bun.* namespace + process global + servers + test runner
 use ::std::cell::RefCell;
 use ::std::collections::HashMap;
-use ::std::ffi::CString;
-use ::std::fs;
+use bun_core::ZBox;
+use bun_sys::fs as bun_fs;
 use ::std::io::Read;
 use ::std::path;
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
@@ -78,8 +78,8 @@ unsafe fn populate_bun_object(
         rooted!(&in(cx) let env_obj = JS_NewPlainObject(cx));
         if !env_obj.get().is_null() {
             for (key, value) in ::std::env::vars() {
-                let Ok(c_key) = ::std::ffi::CString::new(key) else { continue };
-                let Ok(c_val) = ::std::ffi::CString::new(value) else { continue };
+                let c_key = ZBox::from_bytes(key.as_bytes());
+                let c_val = ZBox::from_bytes(value.as_bytes());
                 let val_str = JS_NewStringCopyZ(cx.raw_cx(), c_val.as_ptr());
                 if !val_str.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*val_str));
@@ -96,7 +96,7 @@ unsafe fn populate_bun_object(
         rooted!(&in(cx) let argv_arr = NewArrayObject1(cx, args.len()));
         if !argv_arr.get().is_null() {
             for (i, arg) in args.iter().enumerate() {
-                let Ok(c_arg) = ::std::ffi::CString::new(arg.as_str()) else { continue };
+                let c_arg = ZBox::from_bytes(arg.as_bytes());
                 let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_arg.as_ptr());
                 if !js_str.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*js_str));
@@ -156,7 +156,7 @@ unsafe fn populate_bun_object(
     {
         let main_path = crate::require::get_require_dir()
             .unwrap_or_else(|| ::std::env::current_dir().unwrap_or_default());
-        let c_main = CString::new(main_path.to_string_lossy().into_owned()).unwrap_or_default();
+        let c_main = ZBox::from_vec(main_path.to_string_lossy().into_owned().into_bytes());
         let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_main.as_ptr());
         if !js_str.is_null() {
             rooted!(&in(cx) let mv = StringValue(&*js_str));
@@ -242,7 +242,7 @@ unsafe fn populate_process_object(
     _global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     // process.arch
-    let arch_cstr = ::std::ffi::CString::new(::std::env::consts::ARCH).unwrap_or_default();
+    let arch_cstr = ZBox::from_bytes(::std::env::consts::ARCH.as_bytes());
     let arch_str = JS_NewStringCopyZ(cx.raw_cx(), arch_cstr.as_ptr());
     if !arch_str.is_null() {
         rooted!(&in(cx) let arch_val = StringValue(&*arch_str));
@@ -250,7 +250,7 @@ unsafe fn populate_process_object(
     }
 
     // process.platform
-    let plat_cstr = ::std::ffi::CString::new(::std::env::consts::OS).unwrap_or_default();
+    let plat_cstr = ZBox::from_bytes(::std::env::consts::OS.as_bytes());
     let platform_str = JS_NewStringCopyZ(cx.raw_cx(), plat_cstr.as_ptr());
     if !platform_str.is_null() {
         rooted!(&in(cx) let plat_val = StringValue(&*platform_str));
@@ -269,7 +269,7 @@ unsafe fn populate_process_object(
         rooted!(&in(cx) let argv_arr = NewArrayObject1(cx, args.len()));
         if !argv_arr.get().is_null() {
             for (i, arg) in args.iter().enumerate() {
-                let Ok(c_arg) = ::std::ffi::CString::new(arg.as_str()) else { continue };
+                let c_arg = ZBox::from_bytes(arg.as_bytes());
                 let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_arg.as_ptr());
                 if !js_str.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*js_str));
@@ -293,8 +293,8 @@ unsafe fn populate_process_object(
         rooted!(&in(cx) let env_target = JS_NewPlainObject(cx));
         if !env_target.get().is_null() {
             for (key, value) in ::std::env::vars() {
-                let Ok(c_key) = ::std::ffi::CString::new(key) else { continue };
-                let Ok(c_val) = ::std::ffi::CString::new(value) else { continue };
+                let c_key = ZBox::from_bytes(key.as_bytes());
+                let c_val = ZBox::from_bytes(value.as_bytes());
                 let val_str = JS_NewStringCopyZ(cx.raw_cx(), c_val.as_ptr());
                 if !val_str.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*val_str));
@@ -466,7 +466,7 @@ unsafe fn populate_process_object(
 
     // process.pid / process.ppid
     {
-        let pid_val = Int32Value(::std::process::id() as i32);
+        let pid_val = Int32Value(libc::getpid() as i32);
         rooted!(&in(cx) let pid = pid_val);
         JS_DefineProperty(cx.raw_cx(), proc_obj.into(), c"pid".as_ptr(), pid.handle().into(), JSPROP_ENUMERATE as u32);
     }
@@ -533,7 +533,8 @@ unsafe fn populate_process_object(
     {
         rooted!(&in(cx) let release_obj = JS_NewPlainObject(cx));
         if !release_obj.get().is_null() {
-            if let Ok(s) = ::std::ffi::CString::new("bao") {
+            let s = ZBox::from_bytes("bao".as_bytes());
+            {
                 let js_str = JS_NewStringCopyZ(cx.raw_cx(), s.as_ptr());
                 if !js_str.is_null() {
                     rooted!(&in(cx) let rv = StringValue(&*js_str));
@@ -553,7 +554,8 @@ unsafe fn populate_process_object(
     {
         let args: Vec<::std::string::String> = ::std::env::args().collect();
         if !args.is_empty()
-            && let Ok(c_arg) = ::std::ffi::CString::new(args[0].as_str()) {
+            {
+                let c_arg = ZBox::from_bytes(args[0].as_bytes());
                 let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_arg.as_ptr());
                 if !js_str.is_null() {
                     rooted!(&in(cx) let v = StringValue(&*js_str));
@@ -565,7 +567,8 @@ unsafe fn populate_process_object(
     // process.execPath
     {
         let exec_path = ::std::env::current_exe().unwrap_or_default();
-        if let Ok(c_path) = ::std::ffi::CString::new(exec_path.to_string_lossy().into_owned()) {
+        let c_path = ZBox::from_vec(exec_path.to_string_lossy().into_owned().into_bytes());
+        {
             let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_path.as_ptr());
             if !js_str.is_null() {
                 rooted!(&in(cx) let v = StringValue(&*js_str));
@@ -739,7 +742,7 @@ unsafe extern "C" fn bun_spawn(
         }
         Err(e) => {
             let msg = format!("Bun.spawn() failed: {}", e);
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             false
         }
@@ -804,7 +807,7 @@ unsafe extern "C" fn subproc_wait(
         }
         Err(e) => {
             let msg = format!("wait() failed: {}", e);
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -867,10 +870,7 @@ unsafe extern "C" fn subproc_stdout_read(
         use ::std::io::Read;
         stdout.read_to_end(&mut buf).ok();
         let s = String::from_utf8_lossy(&buf).into_owned();
-        let Ok(c_s) = ::std::ffi::CString::new(s.as_str()) else {
-            args.rval().set(NullValue());
-            return true;
-        };
+        let c_s = ZBox::from_vec(s.into_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
         args.rval().set(if js_str.is_null() { NullValue() } else { StringValue(&*js_str) });
     } else {
@@ -900,10 +900,7 @@ unsafe extern "C" fn subproc_stderr_read(
         use ::std::io::Read;
         stderr.read_to_end(&mut buf).ok();
         let s = String::from_utf8_lossy(&buf).into_owned();
-        let Ok(c_s) = ::std::ffi::CString::new(s.as_str()) else {
-            args.rval().set(NullValue());
-            return true;
-        };
+        let c_s = ZBox::from_vec(s.into_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
         args.rval().set(if js_str.is_null() { NullValue() } else { StringValue(&*js_str) });
     } else {
@@ -1289,7 +1286,8 @@ unsafe extern "C" fn bun_serve(
     let port_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &port_jsval };
     JS_DefineProperty(cx, srv_h, c"port".as_ptr(), port_h, JSPROP_ENUMERATE as u32);
 
-    if let Ok(c_hn) = CString::new(hostname.as_str()) {
+    let c_hn = ZBox::from_bytes(hostname.as_bytes());
+    {
         let hn_str = JS_NewStringCopyZ(cx, c_hn.as_ptr());
         if !hn_str.is_null() {
             let hn_v = StringValue(&*hn_str);
@@ -1306,7 +1304,8 @@ unsafe extern "C" fn bun_serve(
 
     // Store GcStore keys on the server object for cleanup in stop()
     if let Some(ref fk) = fetch_cb_key_for_js {
-        if let Ok(c_fk) = CString::new(fk.as_str()) {
+        let c_fk = ZBox::from_bytes(fk.as_bytes());
+        {
             let fk_str = JS_NewStringCopyZ(cx, c_fk.as_ptr());
             if !fk_str.is_null() {
                 let v = StringValue(&*fk_str);
@@ -1316,7 +1315,8 @@ unsafe extern "C" fn bun_serve(
         }
     }
     if let Some(ref wk) = websocket_cb_key_for_js {
-        if let Ok(c_wk) = CString::new(wk.as_str()) {
+        let c_wk = ZBox::from_bytes(wk.as_bytes());
+        {
             let wk_str = JS_NewStringCopyZ(cx, c_wk.as_ptr());
             if !wk_str.is_null() {
                 let v = StringValue(&*wk_str);
@@ -1475,7 +1475,7 @@ unsafe extern "C" fn bun_resolve(
             }
             None => {
                 let msg = format!("Cannot resolve '{}'", specifier);
-                let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+                let c_msg = ZBox::from_bytes(msg.as_bytes());
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                 return false;
             }
@@ -1517,10 +1517,7 @@ unsafe extern "C" fn bun_which(
         let candidate = ::std::path::Path::new(dir).join(&name);
         if candidate.exists() {
             let result = candidate.to_string_lossy().into_owned();
-            let Ok(c_result) = ::std::ffi::CString::new(result.as_str()) else {
-                args.rval().set(NullValue());
-                return true;
-            };
+            let c_result = ZBox::from_vec(result.into_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_result.as_ptr());
             if !js_str.is_null() {
                 args.rval().set(StringValue(&*js_str));
@@ -1534,10 +1531,7 @@ unsafe extern "C" fn bun_which(
             let candidate = ::std::path::Path::new(dir).join(&name);
             if candidate.exists() {
                 let result = candidate.to_string_lossy().into_owned();
-                let Ok(c_result) = ::std::ffi::CString::new(result.as_str()) else {
-                    args.rval().set(NullValue());
-                    return true;
-                };
+                let c_result = ZBox::from_vec(result.into_bytes());
                 let js_str = JS_NewStringCopyZ(cx, c_result.as_ptr());
                 if !js_str.is_null() {
                     args.rval().set(StringValue(&*js_str));
@@ -1587,10 +1581,7 @@ unsafe extern "C" fn bun_inspect(
     } else {
         "undefined".to_string()
     };
-    let Ok(c_s) = ::std::ffi::CString::new(s.as_str()) else {
-        args.rval().set(UndefinedValue());
-        return true;
-    };
+    let c_s = ZBox::from_vec(s.into_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
     if !js_str.is_null() {
         args.rval().set(StringValue(&*js_str));
@@ -1624,7 +1615,7 @@ unsafe extern "C" fn bun_build(
             let cfg = cfg_val.to_object();
             let cfg_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &cfg };
 
-            let ep_name = ::std::ffi::CString::new("entrypoints").expect("static ASCII");
+            let ep_name = ZBox::from_bytes("entrypoints".as_bytes());
             let mut has_ep: bool = false;
             JS_HasProperty(cx, cfg_h, ep_name.as_ptr(), &mut has_ep);
             if has_ep {
@@ -1635,7 +1626,7 @@ unsafe extern "C" fn bun_build(
                     let ep_obj = ep_val.to_object();
                     let mut len_val = UndefinedValue();
                     let len_rv = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val };
-                    let len_name = ::std::ffi::CString::new("length").expect("static ASCII");
+                    let len_name = ZBox::from_bytes("length".as_bytes());
                     let ep_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ep_obj };
                     JS_GetProperty(cx, ep_obj_h, len_name.as_ptr(), len_rv);
                     if len_val.is_number() {
@@ -1653,7 +1644,7 @@ unsafe extern "C" fn bun_build(
                 }
             }
 
-            let od_name = ::std::ffi::CString::new("outdir").expect("static ASCII");
+            let od_name = ZBox::from_bytes("outdir".as_bytes());
             let mut has_od: bool = false;
             JS_HasProperty(cx, cfg_h, od_name.as_ptr(), &mut has_od);
             if has_od {
@@ -1665,7 +1656,7 @@ unsafe extern "C" fn bun_build(
                 }
             }
 
-            let nm_name = ::std::ffi::CString::new("naming").expect("static ASCII");
+            let nm_name = ZBox::from_bytes("naming".as_bytes());
             let mut has_nm: bool = false;
             JS_HasProperty(cx, cfg_h, nm_name.as_ptr(), &mut has_nm);
             if has_nm {
@@ -1690,7 +1681,7 @@ unsafe extern "C" fn bun_build(
         // Phase 2: delegate to bao_bundler::build() via bao_cli (can't direct-dep
         //          due to cyclic dep: bao_bundler → bun_runtime → bao_bundler).
         let epath = path::Path::new(entry);
-        let content = match fs::read_to_string(epath) {
+        let content = match bun_fs::read_to_string(&epath.to_string_lossy()) {
             Ok(c) => c,
             Err(e) => {
                 success = false;
@@ -1704,7 +1695,7 @@ unsafe extern "C" fn bun_build(
         if artifact.is_null() { continue; }
         let art_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &artifact };
 
-        let Ok(c_path) = ::std::ffi::CString::new(entry.as_str()) else { continue };
+        let c_path = ZBox::from_bytes(entry.as_bytes());
         let path_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
         if !path_str.is_null() {
             let pv = StringValue(&*path_str);
@@ -1716,7 +1707,7 @@ unsafe extern "C" fn bun_build(
         let base = epath.file_stem().and_then(|s| s.to_str()).unwrap_or("index");
         let out_file = out_name.replace("[name]", base);
         let out_path = format!("{}/{}", outdir, out_file);
-        let Ok(c_out) = ::std::ffi::CString::new(out_path.as_str()) else { continue };
+        let c_out = ZBox::from_bytes(out_path.as_bytes());
         let out_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
         if !out_str.is_null() {
             let ov = StringValue(&*out_str);
@@ -1735,7 +1726,7 @@ unsafe extern "C" fn bun_build(
         } else {
             "js"
         };
-        let Ok(c_kind) = ::std::ffi::CString::new(kind_str) else { continue };
+        let c_kind = ZBox::from_bytes(kind_str.as_bytes());
         let kind_js = JS_NewStringCopyZ(cx, c_kind.as_ptr());
         if !kind_js.is_null() {
             let kv = StringValue(&*kind_js);
@@ -1760,10 +1751,7 @@ unsafe extern "C" fn bun_build(
         let logs_arr = mozjs_sys::jsapi::JS_NewPlainObject(cx);
         if !logs_arr.is_null() {
             let logs_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &logs_arr };
-            let Ok(c_err) = ::std::ffi::CString::new(error_msg.as_str()) else {
-                args.rval().set(ObjectValue(result_obj));
-                return true;
-            };
+            let c_err = ZBox::from_bytes(error_msg.as_bytes());
             let err_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
             if !err_str.is_null() {
                 let ev = StringValue(&*err_str);
@@ -1901,7 +1889,7 @@ unsafe extern "C" fn test_run(
         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let fail_arr = NewArrayObject1(&mut wrapped_cx, 0));
         for (i, fname) in failures.iter().enumerate() {
-            let Ok(c_name) = ::std::ffi::CString::new(fname.as_str()) else { continue };
+            let c_name = ZBox::from_bytes(fname.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
             if !js_str.is_null() {
                 let fval = StringValue(&*js_str);
@@ -1941,10 +1929,7 @@ unsafe extern "C" fn bun_file(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let c_path = match ::std::ffi::CString::new(s.as_str()) {
-        Ok(p) => p,
-        Err(_) => { args.rval().set(UndefinedValue()); return true; }
-    };
+    let c_path = ZBox::from_bytes(s.as_bytes());
     let path_js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
     if !path_js_str.is_null() {
         let val = StringValue(&*path_js_str);
@@ -1952,8 +1937,8 @@ unsafe extern "C" fn bun_file(
         let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &file_obj };
         JS_DefineProperty(cx, obj_handle, c"path".as_ptr(), val_handle, JSPROP_ENUMERATE as u32);
     }
-    if let Ok(meta) = ::std::fs::metadata(&s) {
-        let size_val = Int32Value(meta.len() as i32);
+    if let Ok(meta) = bun_sys::fs::metadata(&s) {
+        let size_val = Int32Value(meta.size as i32);
         let val_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &size_val };
         let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &file_obj };
         JS_DefineProperty(cx, obj_handle, c"size".as_ptr(), val_handle, JSPROP_ENUMERATE as u32);
@@ -1985,7 +1970,7 @@ unsafe extern "C" fn bun_write(
     }
     let fpath = crate::js_to_rust_string(cx, path_val);
     let content = crate::js_to_rust_string(cx, content_val);
-    match ::std::fs::write(fpath.as_str(), content.as_bytes()) {
+    match bun_sys::fs::write(fpath.as_str(), content.as_bytes()) {
         Ok(()) => {
             let written = Int32Value(content.len() as i32);
             args.rval().set(written);
@@ -1993,7 +1978,7 @@ unsafe extern "C" fn bun_write(
         }
         Err(e) => {
             let msg = format!("Bun.write failed: {}", e);
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             false
         }
@@ -2017,12 +2002,9 @@ unsafe extern "C" fn bun_read_file(
         return false;
     }
     let fpath = crate::js_to_rust_string(cx, path_val);
-    match ::std::fs::read_to_string(fpath.as_str()) {
+    match bun_sys::fs::read_to_string(fpath.as_str()) {
         Ok(content) => {
-            let Ok(c_content) = ::std::ffi::CString::new(content) else {
-                args.rval().set(UndefinedValue());
-                return true;
-            };
+            let c_content = ZBox::from_bytes(content.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_content.as_ptr());
             if !js_str.is_null() {
                 args.rval().set(StringValue(&*js_str));
@@ -2033,7 +2015,7 @@ unsafe extern "C" fn bun_read_file(
         }
         Err(e) => {
             let msg = format!("Bun.readFile failed: {}", e);
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             false
         }
@@ -2050,10 +2032,7 @@ unsafe extern "C" fn process_cwd(
     match ::std::env::current_dir() {
         Ok(dir) => {
             let s = dir.to_string_lossy().into_owned();
-            let Ok(c_s) = ::std::ffi::CString::new(s) else {
-                args.rval().set(UndefinedValue());
-                return true;
-            };
+            let c_s = ZBox::from_bytes(s.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
             if !js_str.is_null() {
                 args.rval().set(StringValue(&*js_str));
@@ -2115,7 +2094,7 @@ unsafe extern "C" fn process_chdir(
     let dir = jsstr_to_string(cx, NonNull::new_unchecked(dir_val.to_string()));
     if let Err(e) = ::std::env::set_current_dir(&dir) {
         let msg = format!("process.chdir failed: {}", e);
-        let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -2240,7 +2219,7 @@ unsafe extern "C" fn process_next_tick(
     let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
     let mut qmt_val = UndefinedValue();
     let qmt_rv = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut qmt_val };
-    let qmt_name = ::std::ffi::CString::new("queueMicrotask").unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+    let qmt_name = ZBox::from_bytes("queueMicrotask".as_bytes());
     JS_GetProperty(cx, global_h, qmt_name.as_ptr(), qmt_rv);
 
     if qmt_val.is_object() {
@@ -2255,13 +2234,13 @@ unsafe extern "C" fn process_next_tick(
         let _empty_args = HandleValueArray::empty();
 
         // Store cb in a global temporary, eval queueMicrotask to pick it up
-        let cb_name = ::std::ffi::CString::new("__nextTickCb").unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+        let cb_name = ZBox::from_bytes("__nextTickCb".as_bytes());
         let cb_h_val = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val_obj };
         JS_SetProperty(cx, global_h, cb_name.as_ptr(), cb_h_val);
 
         let eval_src = "queueMicrotask(__nextTickCb); delete globalThis.__nextTickCb;";
-        let _c_src = ::std::ffi::CString::new(eval_src).unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
-        let c_filename = ::std::ffi::CString::new("<nextTick>").unwrap_or_else(|_| ::std::ffi::CString::new("<eval>").unwrap());
+        let _c_src = ZBox::from_bytes(eval_src.as_bytes());
+        let c_filename = ZBox::from_bytes("<nextTick>".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
         if !opts.is_null() {
             let mut src = mozjs::rust::transform_str_to_source_text(eval_src);
@@ -2370,13 +2349,14 @@ unsafe extern "C" fn process_memory_usage(
         return true;
     }
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-    let rss = ::std::process::Command::new("ps")
-        .args(["-o", "rss=", "-p", &::std::process::id().to_string()])
-        .output()
+    // Read RSS from /proc/self/statm (resident pages * page_size) instead of shelling out to `ps`.
+    // statm format: size resident shared text lib data dt  (all in pages)
+    // Second field = resident set size in pages; multiply by 4096 (x86_64 page size) to get bytes.
+    let rss = bun_fs::read_to_string("/proc/self/statm")
         .ok()
-        .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<f64>().ok())
+        .and_then(|s| s.split_whitespace().nth(1).and_then(|v| v.parse::<f64>().ok()))
         .unwrap_or(0.0)
-        * 1024.0;
+        * 4096.0;
     let rss_val = mozjs::jsval::DoubleValue(rss);
     let rss_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &rss_val };
     JS_DefineProperty(cx, obj_h, c"rss".as_ptr(), rss_h, JSPROP_ENUMERATE as u32);
@@ -2558,8 +2538,8 @@ unsafe extern "C" fn bun_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
             out.to_vec()
         }
     };
-    let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
-    let c_hex = CString::new(hex).unwrap_or_default();
+    let hex: String = bun_core::fmt::bytes_to_hex_lower_string(&result);
+    let c_hex = ZBox::from_bytes(hex.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_hex.as_ptr());
     args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
     true

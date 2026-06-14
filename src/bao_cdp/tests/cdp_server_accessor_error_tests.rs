@@ -3,7 +3,8 @@
 // BackendKind exhaustive, BridgeCommand all variants, BridgeResponse,
 // bridge channel send/drain/fire-and-forget/is_alive.
 
-use bao_cdp::{CdpRouter, BackendKind, BridgeCommand, BridgeResponse, bridge_channel};
+use bao_cdp::{DomainDispatch, CdpRouter, BackendKind, BridgeCommand, BridgeResponse, bridge_channel};
+use bao_cdp::domains::{PageHandler, RuntimeHandler};
 use std::time::Duration;
 
 const TID: &str = "test-target";
@@ -79,7 +80,7 @@ fn test_server_config_builder_chained() {
 
 #[test]
 fn test_domain_registry_new_empty() {
-    let reg = cdp_server::DomainRegistry::new();
+    let reg = cdp_server::DomainRegistry::<DomainDispatch>::new();
     assert!(!reg.has_domain("Page"));
     assert!(!reg.has_domain("Runtime"));
     assert!(!reg.has_domain("DOM"));
@@ -87,45 +88,22 @@ fn test_domain_registry_new_empty() {
 
 #[test]
 fn test_domain_registry_register_and_has_domain() {
-    use cdp_server::DomainHandler;
-    use serde_json::Value;
-
-    struct TestHandler;
-    impl DomainHandler for TestHandler {
-        fn domain_name(&self) -> &'static str { "TestDomain" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn cdp_server::EventSender) -> Result<Value, cdp_server::CdpError> {
-            Ok(Value::Null)
-        }
-    }
-
-    let reg = cdp_server::DomainRegistry::new();
-    assert!(!reg.has_domain("TestDomain"));
-    let _ = reg.register(Box::new(TestHandler));
-    assert!(reg.has_domain("TestDomain"));
+    let reg = cdp_server::DomainRegistry::<DomainDispatch>::new();
+    let (bridge_tx, _) = bridge_channel(Duration::from_secs(1));
+    assert!(!reg.has_domain("Page"));
+    let _ = reg.register(DomainDispatch::Page(PageHandler::new(bridge_tx, "test".into())));
+    assert!(reg.has_domain("Page"));
     assert!(!reg.has_domain("OtherDomain"));
 }
 
 #[test]
 fn test_domain_registry_multiple_domains() {
-    use cdp_server::DomainHandler;
-    use serde_json::Value;
-
-    struct DomainA;
-    struct DomainB;
-    impl DomainHandler for DomainA {
-        fn domain_name(&self) -> &'static str { "A" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn cdp_server::EventSender) -> Result<Value, cdp_server::CdpError> { Ok(Value::Null) }
-    }
-    impl DomainHandler for DomainB {
-        fn domain_name(&self) -> &'static str { "B" }
-        fn handle_command(&self, _: &str, _: Value, _: &dyn cdp_server::EventSender) -> Result<Value, cdp_server::CdpError> { Ok(Value::Null) }
-    }
-
-    let reg = cdp_server::DomainRegistry::new();
-    let _ = reg.register(Box::new(DomainA));
-    let _ = reg.register(Box::new(DomainB));
-    assert!(reg.has_domain("A"));
-    assert!(reg.has_domain("B"));
+    let reg = cdp_server::DomainRegistry::<DomainDispatch>::new();
+    let (bridge_tx, _) = bridge_channel(Duration::from_secs(1));
+    let _ = reg.register(DomainDispatch::Page(PageHandler::new(bridge_tx.clone(), "test".into())));
+    let _ = reg.register(DomainDispatch::Runtime(RuntimeHandler::new(bridge_tx, "test".into())));
+    assert!(reg.has_domain("Page"));
+    assert!(reg.has_domain("Runtime"));
     assert!(!reg.has_domain("C"));
 }
 

@@ -2,7 +2,7 @@
 // P1-B.2: Replaced hand-written TcpListener + HTTP parsing with bun_uws::App<false>.
 // uWS C++ layer handles HTTP parsing; route handler bridges to JS callbacks.
 use ::std::cell::RefCell;
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU64, Ordering};
 
@@ -83,8 +83,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 ("500", "Internal Server Error"), ("502", "Bad Gateway"), ("503", "Service Unavailable"),
             ];
             for (code, msg) in codes {
-                let c_code = CString::new(*code).unwrap_or_default();
-                let c_msg = CString::new(*msg).unwrap_or_default();
+                let c_code = ZBox::from_bytes(code.as_bytes());
+                let c_msg = ZBox::from_bytes(msg.as_bytes());
                 let js_msg = JS_NewStringCopyZ(cx.raw_cx(), c_msg.as_ptr());
                 if !js_msg.is_null() {
                     let mv = StringValue(&*js_msg);
@@ -99,7 +99,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         {
             let methods = "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,TRACE";
-            let c_methods = CString::new(methods).unwrap_or_default();
+            let c_methods = ZBox::from_bytes(methods.as_bytes());
             let js_methods = JS_NewStringCopyZ(cx.raw_cx(), c_methods.as_ptr());
             if !js_methods.is_null() {
                 rooted!(&in(cx) let mv = StringValue(&*js_methods));
@@ -197,7 +197,7 @@ unsafe extern "C" fn uws_route_handler(
     rooted!(&in(cx_ref) let req_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
     if req_obj.get().is_null() { return; }
 
-    let Ok(c_method) = CString::new(method_str) else { return };
+    let c_method = ZBox::from_bytes(method_str.as_bytes());
     let js_method = JS_NewStringCopyZ(raw_cx, c_method.as_ptr());
     if !js_method.is_null() {
         let mv = StringValue(&*js_method);
@@ -205,7 +205,7 @@ unsafe extern "C" fn uws_route_handler(
         JS_DefineProperty(raw_cx, req_obj.handle().into(), c"method".as_ptr(), mvr.handle().into(), JSPROP_ENUMERATE as u32);
     }
 
-    let Ok(c_url) = CString::new(url_str) else { return };
+    let c_url = ZBox::from_bytes(url_str.as_bytes());
     let js_url = JS_NewStringCopyZ(raw_cx, c_url.as_ptr());
     if !js_url.is_null() {
         let uv = StringValue(&*js_url);
@@ -222,8 +222,8 @@ unsafe extern "C" fn uws_route_handler(
         ];
         for &name in common_headers {
             if let Some(value) = req_ref.header(name) {
-                let Ok(c_k) = CString::new(::std::str::from_utf8_unchecked(name)) else { continue };
-                let Ok(c_v) = CString::new(::std::str::from_utf8_unchecked(value)) else { continue };
+                let c_k = ZBox::from_bytes(name);
+                let c_v = ZBox::from_bytes(value);
                 let js_v = JS_NewStringCopyZ(raw_cx, c_v.as_ptr());
                 if !js_v.is_null() {
                     let hv = StringValue(&*js_v);
@@ -322,13 +322,13 @@ unsafe extern "C" fn res_write_head(
                             b"set-cookie", b"cache-control", b"x-",
                         ];
                         for &key in common {
-                            let Ok(c_key) = CString::new(::std::str::from_utf8_unchecked(key)) else { continue };
+                            let c_key = ZBox::from_bytes(key);
                             let mut hv = UndefinedValue();
                             JS_GetProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &hdrs_obj }, c_key.as_ptr(),
                                 MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hv });
                             if hv.is_string() {
                                 let val = crate::js_to_rust_string(cx, hv);
-                                let Ok(c_val) = CString::new(val.as_str()) else { continue };
+                                let c_val = ZBox::from_bytes(val.as_bytes());
                                 (*res_mut).write_header(key, c_val.as_bytes());
                             }
                         }
@@ -367,10 +367,7 @@ unsafe extern "C" fn res_write(
             };
             let mut combined = existing;
             combined.push_str(&data);
-            let Ok(c_combined) = CString::new(combined) else {
-                args.rval().set(ObjectValue(obj));
-                return true;
-            };
+            let c_combined = ZBox::from_bytes(combined.as_bytes());
             let js_combined = JS_NewStringCopyZ(cx, c_combined.as_ptr());
             if !js_combined.is_null() {
                 let cv = StringValue(&*js_combined);
@@ -407,10 +404,7 @@ unsafe extern "C" fn res_end(
             } else { String::new() };
             let mut combined = existing;
             combined.push_str(&data);
-            let Ok(c_combined) = CString::new(combined) else {
-                args.rval().set(ObjectValue(obj));
-                return true;
-            };
+            let c_combined = ZBox::from_bytes(combined.as_bytes());
             let js_combined = JS_NewStringCopyZ(cx, c_combined.as_ptr());
             if !js_combined.is_null() {
                 let cv = StringValue(&*js_combined);
@@ -538,7 +532,7 @@ unsafe extern "C" fn server_listen(
         Some(p) => p,
         None => {
             let msg = format!("Failed to create HTTP server on port {}", port);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -557,7 +551,7 @@ unsafe extern "C" fn server_listen(
     if global.is_null() || !handler_val.is_object() {
         // No handler — destroy app and return.
         App::<false>::destroy(app_ptr);
-        let msg = CString::new("http.createServer requires a request handler").unwrap_or_default();
+        let msg = ZBox::from_bytes("http.createServer requires a request handler".as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
         return false;
     }
@@ -691,7 +685,7 @@ unsafe extern "C" fn server_address(
         rooted!(&in(cx_ref) let pvr = Int32Value(p));
         JS_DefineProperty(cx, addr_obj.handle().into(), c"port".as_ptr(), pvr.handle().into(), JSPROP_ENUMERATE as u32);
 
-        let c_family = CString::new("IPv4").unwrap_or_default();
+        let c_family = ZBox::from_bytes("IPv4".as_bytes());
         let js_family = JS_NewStringCopyZ(cx, c_family.as_ptr());
         if !js_family.is_null() {
             let fv = StringValue(&*js_family);
@@ -699,7 +693,7 @@ unsafe extern "C" fn server_address(
             JS_DefineProperty(cx, addr_obj.handle().into(), c"family".as_ptr(), fvr.handle().into(), JSPROP_ENUMERATE as u32);
         }
 
-        let c_addr = CString::new("0.0.0.0").unwrap_or_default();
+        let c_addr = ZBox::from_bytes("0.0.0.0".as_bytes());
         let js_addr = JS_NewStringCopyZ(cx, c_addr.as_ptr());
         if !js_addr.is_null() {
             let av = StringValue(&*js_addr);
@@ -743,7 +737,7 @@ unsafe extern "C" fn http_request(
         } else { "GET".to_string() }
     } else { "GET".to_string() };
 
-    let c_url = CString::new(url_str).unwrap_or_default();
+    let c_url = ZBox::from_bytes(url_str.as_bytes());
     let js_url = JS_NewStringCopyZ(cx, c_url.as_ptr());
     if !js_url.is_null() {
         let uv = StringValue(&*js_url);
@@ -751,7 +745,7 @@ unsafe extern "C" fn http_request(
         JS_DefineProperty(cx, req_obj.handle().into(), c"url".as_ptr(), uvr.handle().into(), JSPROP_ENUMERATE as u32);
     }
 
-    let c_method = CString::new(method).unwrap_or_default();
+    let c_method = ZBox::from_bytes(method.as_bytes());
     let js_method = JS_NewStringCopyZ(cx, c_method.as_ptr());
     if !js_method.is_null() {
         let mv = StringValue(&*js_method);

@@ -42,10 +42,10 @@ fn escape_path(p: &str) -> String {
 
 #[test]
 fn test_bun_api_all() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     // --- C6: Bao.* is alias of Bun.* (same object) ---
     assert!(eval_bool(&mut ctx, "Bun === Bao"), "Bao should be same object as Bun");
@@ -186,5 +186,5 @@ fn test_bun_api_all() {
     "#), "process.release");
 
     // Leak the context to prevent mozjs drop-order crashes on thread exit
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

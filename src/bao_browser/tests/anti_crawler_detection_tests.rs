@@ -84,7 +84,7 @@ fn anti_crawler_detection_all() {
     let mut report = Report::default();
 
     let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     // ══════════════════════════════════════════════════════════════════════
     // Section 1: bot.sannysoft.com detection patterns

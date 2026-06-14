@@ -1,8 +1,9 @@
 // @trace REQ-ENG-007
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue};
+use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue, BooleanValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -22,7 +23,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, rl_mod.handle(), c"moveCursor".as_ptr(), Some(rl_move_cursor), 3, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, rl_mod.handle(), c"emitKeypressEvents".as_ptr(), Some(rl_emit_keypress), 1, JSPROP_ENUMERATE as u32);
 
-        let _ = ::std::ffi::CString::new(r#"
+        let _ = ZBox::from_bytes(b"
           (function(mod) {
             mod.promises = {
               createInterface: function(options) {
@@ -33,7 +34,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             };
             return mod;
           })
-        "#).unwrap_or_default();
+        ");
     }
 
     cache_builtin(cx, "readline", rl_mod.get());
@@ -72,9 +73,17 @@ unsafe extern "C" fn rl_create_interface(
     let paused_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &paused_val };
     JS_DefineProperty(cx, iface_h, c"paused".as_ptr(), paused_h, JSPROP_ENUMERATE as u32);
 
-    for name in &["on", "close", "pause", "resume", "write", "prompt", "setPrompt", "question"] {
-        let c_name = ::std::ffi::CString::new(*name).unwrap_or_default();
-        JS_DefineFunction(cx, iface_h, c_name.as_ptr(), Some(rl_noop), 0, JSPROP_ENUMERATE as u32);
+    // on — delegate to EventEmitter
+    JS_DefineFunction(cx, iface_h, c"on".as_ptr(), Some(crate::node_events::ee_on), 2, JSPROP_ENUMERATE as u32);
+    // close — mark as closed
+    JS_DefineFunction(cx, iface_h, c"close".as_ptr(), Some(rl_close), 0, JSPROP_ENUMERATE as u32);
+    // pause/resume — toggle paused flag
+    JS_DefineFunction(cx, iface_h, c"pause".as_ptr(), Some(rl_pause), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, iface_h, c"resume".as_ptr(), Some(rl_resume), 0, JSPROP_ENUMERATE as u32);
+    // write/prompt/setPrompt/question — return this for chaining
+    for name in &["write", "prompt", "setPrompt", "question"] {
+        let c_name = ZBox::from_bytes(name.as_bytes());
+        JS_DefineFunction(cx, iface_h, c_name.as_ptr(), Some(rl_chain), 0, JSPROP_ENUMERATE as u32);
     }
 
     args.rval().set(ObjectValue(iface.get()));
@@ -82,9 +91,52 @@ unsafe extern "C" fn rl_create_interface(
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn rl_noop(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn rl_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(UndefinedValue());
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let closed_v = BooleanValue(true);
+    let cv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &closed_v };
+    JS_DefineProperty(cx, obj_h, c"closed".as_ptr(), cv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn rl_pause(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let paused_v = BooleanValue(true);
+    let pv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &paused_v };
+    JS_DefineProperty(cx, obj_h, c"paused".as_ptr(), pv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn rl_resume(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let paused_v = BooleanValue(false);
+    let pv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &paused_v };
+    JS_DefineProperty(cx, obj_h, c"paused".as_ptr(), pv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn rl_chain(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if this.is_object() { args.rval().set(ObjectValue(this.to_object())); } else { args.rval().set(UndefinedValue()); }
     true
 }
 

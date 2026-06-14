@@ -36,9 +36,7 @@ pub fn install() {
 
 /// Create a Resolver with sensible defaults for the Bao runtime.
 fn create_resolver() -> Resolver<'static> {
-    let cwd = ::std::env::current_dir()
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| "/".to_string());
+    let cwd = bun_core_cwd();
 
     // Cache CWD bytes for resolve calls
     let cwd_bytes = cwd.as_bytes().to_vec();
@@ -56,13 +54,21 @@ fn create_resolver() -> Resolver<'static> {
     Resolver::init1(log_ptr, fs_ptr, BundleOptions::default())
 }
 
+/// Get current working directory via `bun_core::getcwd`, falling back to "/".
+fn bun_core_cwd() -> String {
+    let mut buf = bun_core::PathBuffer::default();
+    bun_core::getcwd(&mut buf)
+        .map(|z| String::from_utf8_lossy(z.as_bytes()).into_owned())
+        .unwrap_or_else(|_| "/".to_string())
+}
+
 /// Resolver function matching the signature expected by bao_engine.
 fn resolve_via_bun_resolver(specifier: &str, base_dir: Option<&Path>) -> Option<PathBuf> {
     // Compute source_dir as an owned Vec<u8> to avoid lifetime issues
     let source_dir = if let Some(dir) = base_dir {
         dir.to_str().map(|s| s.as_bytes().to_vec())
     } else {
-        ::std::env::current_dir().ok().and_then(|d| d.to_str().map(|s| s.as_bytes().to_vec()))
+        Some(bun_core_cwd().into_bytes())
     }.unwrap_or_else(|| b".".to_vec());
 
     RESOLVER.with(|r| {
@@ -122,7 +128,7 @@ mod tests {
     fn test_resolve_via_bun_resolver_not_found() {
         bao_native_stubs::force_link();
         install();
-        let result = resolve_via_bun_resolver("./nonexistent", Some(::std::env::current_dir().unwrap().as_path()));
+        let result = resolve_via_bun_resolver("./nonexistent", Some(PathBuf::from(bun_core_cwd()).as_path()));
         assert!(result.is_none());
     }
 

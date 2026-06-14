@@ -5,7 +5,7 @@
 
 use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeSender, BridgeResponse};
 use bao_cdp::domains::register_all_domains_into;
-use bao_cdp::DomainRegistry;
+use bao_cdp::{DomainRegistry, DomainDispatch};
 use cdp_server::{EventSender, CdpError};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -25,9 +25,9 @@ impl EventSender for NoopEventSender {
 
 /// Create a registry with all domains registered, plus a background thread
 /// that auto-responds to bridge commands.
-fn setup() -> (DomainRegistry, BridgeSender) {
+fn setup() -> (DomainRegistry<DomainDispatch>, BridgeSender) {
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_into(tx.clone(), TID.into(), &registry);
 
     // Keep an extra clone alive so the channel stays open after test drops tx
@@ -125,7 +125,7 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
     }
 }
 
-fn dispatch(registry: &DomainRegistry, method: &str, params: Value) -> Result<Value, CdpError> {
+fn dispatch(registry: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> Result<Value, CdpError> {
     let es = NoopEventSender;
     registry.dispatch_command(method, params, &es)
         .ok_or_else(|| CdpError { code: -32601, message: format!("domain not found for '{}'", method) })

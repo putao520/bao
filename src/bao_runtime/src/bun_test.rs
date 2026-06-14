@@ -1,6 +1,6 @@
 // @trace REQ-IMPL-01
 // bun:test + harness compatibility shims for Bun upstream test compat
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr;
 
 use mozjs::jsapi::*;
@@ -423,7 +423,7 @@ pub unsafe fn install_bun_test(cx: &mut mozjs::context::JSContext) {
 }
 
 unsafe fn eval_shim(raw: *mut JSContext, source: &str, label: &str) {
-    let c_filename = CString::new(format!("<{}-shim>", label)).unwrap_or_default();
+    let c_filename = ZBox::from_vec(format!("<{}-shim>", label).into_bytes());
     let opts = mozjs::glue::NewCompileOptions(raw, c_filename.as_ptr(), 1);
     if opts.is_null() {
         log::warn!("Failed to create compile options for {} shim", label);
@@ -443,7 +443,7 @@ unsafe fn eval_shim(raw: *mut JSContext, source: &str, label: &str) {
 }
 
 unsafe fn eval_shim_get_obj(raw: *mut JSContext, expr: &str) -> *mut JSObject {
-    let c_filename = CString::new("<shim-get>").unwrap_or_default();
+    let c_filename = ZBox::from_bytes("<shim-get>".as_bytes());
     let opts = mozjs::glue::NewCompileOptions(raw, c_filename.as_ptr(), 1);
     if opts.is_null() {
         return ptr::null_mut();

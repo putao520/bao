@@ -2,9 +2,9 @@
 // Domain handler command-level exhaustive tests: Runtime, Debugger, CSS, Overlay,
 // Log, Fetch — all static-response commands covered with param variations.
 
-use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse};
+use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse, DomainRegistry, DomainDispatch};
 use bao_cdp::domains::register_all_domains_into;
-use cdp_server::{DomainRegistry, EventSender, CdpError};
+use cdp_server::{EventSender, CdpError};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -53,8 +53,8 @@ fn mock_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
     }
 }
 
-fn setup_registry() -> DomainRegistry {
-    let registry = DomainRegistry::new();
+fn setup_registry() -> DomainRegistry<DomainDispatch> {
+    let registry = DomainRegistry::<DomainDispatch>::new();
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
     register_all_domains_into(tx, TID.into(), &registry);
 
@@ -71,7 +71,7 @@ fn setup_registry() -> DomainRegistry {
     registry
 }
 
-fn dispatch(registry: &DomainRegistry, method: &str, params: Value) -> Result<Value, CdpError> {
+fn dispatch(registry: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> Result<Value, CdpError> {
     registry.dispatch_command(method, params, &NopSender)
         .unwrap_or_else(|| Err(CdpError { code: -32601, message: "domain not found".into() }))
 }

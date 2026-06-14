@@ -52,6 +52,34 @@ impl DomainHandler for MultiCmdHandler {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// TestDispatch — enum dispatch for multi-handler tests
+// ---------------------------------------------------------------------------
+
+enum TestDispatch {
+    Echo(EchoHandler),
+    Error(ErrorHandler),
+    Multi(MultiCmdHandler),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self {
+            Self::Echo(h) => h.domain_name(),
+            Self::Error(h) => h.domain_name(),
+            Self::Multi(h) => h.domain_name(),
+        }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+        match self {
+            Self::Echo(h) => h.handle_command(cmd, params, sender),
+            Self::Error(h) => h.handle_command(cmd, params, sender),
+            Self::Multi(h) => h.handle_command(cmd, params, sender),
+        }
+    }
+}
+
 // --- CdpMessage construction ---
 
 #[test]
@@ -105,8 +133,8 @@ fn test_cdp_message_null_params() {
 
 #[test]
 fn test_registry_dispatch_echo() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { domain: "Test" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "Test" })).unwrap();
 
     let sender = CaptureEventSender;
     let result = reg.dispatch_command("Test.echo", json!({"key": "val"}), &sender);
@@ -115,7 +143,7 @@ fn test_registry_dispatch_echo() {
 
 #[test]
 fn test_registry_dispatch_unknown_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     let sender = CaptureEventSender;
     let result = reg.dispatch_command("Unknown.cmd", json!({}), &sender);
     assert!(result.is_none());
@@ -123,8 +151,8 @@ fn test_registry_dispatch_unknown_domain() {
 
 #[test]
 fn test_registry_dispatch_handler_error() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(ErrorHandler)).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Error(ErrorHandler)).unwrap();
 
     let sender = CaptureEventSender;
     let result = reg.dispatch_command("Error.fail", json!({}), &sender);
@@ -136,10 +164,10 @@ fn test_registry_dispatch_handler_error() {
 
 #[test]
 fn test_registry_multiple_domains() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { domain: "Page" })).unwrap();
-    reg.register(Box::new(EchoHandler { domain: "Runtime" })).unwrap();
-    reg.register(Box::new(EchoHandler { domain: "DOM" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "Page" })).unwrap();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "Runtime" })).unwrap();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "DOM" })).unwrap();
 
     assert!(reg.has_domain("Page"));
     assert!(reg.has_domain("Runtime"));
@@ -155,16 +183,16 @@ fn test_registry_multiple_domains() {
 
 #[test]
 fn test_registry_duplicate_registration() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { domain: "Test" })).unwrap();
-    let result = reg.register(Box::new(EchoHandler { domain: "Test" }));
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Echo(EchoHandler { domain: "Test" })).unwrap();
+    let result = reg.register(TestDispatch::Echo(EchoHandler { domain: "Test" }));
     assert!(result.is_err());
 }
 
 #[test]
 fn test_registry_multi_cmd_handler() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(MultiCmdHandler { domain: "Page" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Multi(MultiCmdHandler { domain: "Page" })).unwrap();
 
     let sender = CaptureEventSender;
     let enable = reg.dispatch_command("Page.enable", json!({}), &sender);
@@ -181,7 +209,7 @@ fn test_registry_multi_cmd_handler() {
 #[test]
 fn test_registry_empty_domain_name() {
     // Ensure has_domain works for empty string
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     assert!(!reg.has_domain(""));
 }
 

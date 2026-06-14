@@ -120,16 +120,38 @@ fn noop_sender() -> &'static dyn EventSender { &SENDER }
 
 // ---- DomainRegistry::new / default ----
 
+
+// TestDispatch — enum dispatch for multi-handler tests
+enum TestDispatch {
+    Mock(MockHandler),
+    Observed(ObservedHandler),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self { Self::Mock(h) => h.domain_name(), Self::Observed(h) => h.domain_name() }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+        match self { Self::Mock(h) => h.handle_command(cmd, params, sender), Self::Observed(h) => h.handle_command(cmd, params, sender) }
+    }
+    fn on_session_created(&self, session_id: &str) {
+        match self { Self::Mock(h) => h.on_session_created(session_id), Self::Observed(h) => h.on_session_created(session_id) }
+    }
+    fn on_session_destroyed(&self, session_id: &str) {
+        match self { Self::Mock(h) => h.on_session_destroyed(session_id), Self::Observed(h) => h.on_session_destroyed(session_id) }
+    }
+}
+
 #[test]
 fn test_registry_new_empty() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<MockHandler>::new();
     assert!(!reg.has_domain("Page"));
     assert!(!reg.has_domain("Runtime"));
 }
 
 #[test]
 fn test_registry_default_empty() {
-    let reg = DomainRegistry::default();
+    let reg = DomainRegistry::<MockHandler>::default();
     assert!(!reg.has_domain("Anything"));
 }
 
@@ -137,17 +159,17 @@ fn test_registry_default_empty() {
 
 #[test]
 fn test_register_single_handler() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
     assert!(reg.has_domain("Page"));
 }
 
 #[test]
 fn test_register_multiple_handlers() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
-    assert!(reg.register(Box::new(MockHandler::new("Runtime"))).is_ok());
-    assert!(reg.register(Box::new(MockHandler::new("DOM"))).is_ok());
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
+    assert!(reg.register(MockHandler::new("Runtime")).is_ok());
+    assert!(reg.register(MockHandler::new("DOM")).is_ok());
     assert!(reg.has_domain("Page"));
     assert!(reg.has_domain("Runtime"));
     assert!(reg.has_domain("DOM"));
@@ -155,18 +177,18 @@ fn test_register_multiple_handlers() {
 
 #[test]
 fn test_register_duplicate_fails() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
-    let result = reg.register(Box::new(MockHandler::new("Page")));
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
+    let result = reg.register(MockHandler::new("Page"));
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("already registered"));
 }
 
 #[test]
 fn test_register_duplicate_preserves_original() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::with_response("Page", Ok(json!({"v": 1}))))).is_ok());
-    let _ = reg.register(Box::new(MockHandler::new("Page")));
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::with_response("Page", Ok(json!({"v": 1})))).is_ok());
+    let _ = reg.register(MockHandler::new("Page"));
     let result = reg.dispatch_command("Page.navigate", json!({}), noop_sender());
     assert!(result.is_some());
     let inner = result.unwrap();
@@ -176,11 +198,11 @@ fn test_register_duplicate_preserves_original() {
 
 #[test]
 fn test_register_many_domains() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<MockHandler>::new();
     let domains = ["Page", "Runtime", "DOM", "Network", "CSS", "Emulation",
                    "Input", "Overlay", "Debugger", "Log", "Fetch"];
     for d in &domains {
-        assert!(reg.register(Box::new(MockHandler::new(d))).is_ok());
+        assert!(reg.register(MockHandler::new(d)).is_ok());
     }
     for d in &domains {
         assert!(reg.has_domain(d));
@@ -191,8 +213,8 @@ fn test_register_many_domains() {
 
 #[test]
 fn test_dispatch_known_domain() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
     let result = reg.dispatch_command("Page.navigate", json!({"url": "http://test"}), noop_sender());
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
@@ -200,7 +222,7 @@ fn test_dispatch_known_domain() {
 
 #[test]
 fn test_dispatch_unknown_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<ObservedHandler>::new();
     let result = reg.dispatch_command("UnknownDomain.method", json!({}), noop_sender());
     assert!(result.is_none());
 }
@@ -208,8 +230,8 @@ fn test_dispatch_unknown_domain() {
 #[test]
 fn test_dispatch_extracts_domain_correctly() {
     let mock = Arc::new(MockHandler::new("Runtime"));
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&mock)))).is_ok());
+    let reg = DomainRegistry::<ObservedHandler>::new();
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&mock))).is_ok());
 
     let _ = reg.dispatch_command("Runtime.evaluate", json!({"expression": "1+1"}), noop_sender());
     assert_eq!(mock.last_command(), "Runtime.evaluate");
@@ -217,12 +239,12 @@ fn test_dispatch_extracts_domain_correctly() {
 
 #[test]
 fn test_dispatch_handler_error() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<MockHandler>::new();
     let handler = MockHandler::with_response("Debugger", Err(CdpError {
         code: -32601,
         message: "not found".into(),
     }));
-    assert!(reg.register(Box::new(handler)).is_ok());
+    assert!(reg.register(handler).is_ok());
     let result = reg.dispatch_command("Debugger.invalidMethod", json!({}), noop_sender());
     assert!(result.is_some());
     let inner = result.unwrap();
@@ -232,9 +254,9 @@ fn test_dispatch_handler_error() {
 
 #[test]
 fn test_dispatch_multiple_domains() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
-    assert!(reg.register(Box::new(MockHandler::new("Runtime"))).is_ok());
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
+    assert!(reg.register(MockHandler::new("Runtime")).is_ok());
 
     let r1 = reg.dispatch_command("Page.enable", json!({}), noop_sender());
     let r2 = reg.dispatch_command("Runtime.evaluate", json!({}), noop_sender());
@@ -246,15 +268,15 @@ fn test_dispatch_multiple_domains() {
 
 #[test]
 fn test_dispatch_no_dot_in_method() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
     let result = reg.dispatch_command("Page", json!({}), noop_sender());
     assert!(result.is_some());
 }
 
 #[test]
 fn test_dispatch_empty_method() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<MockHandler>::new();
     let result = reg.dispatch_command("", json!({}), noop_sender());
     assert!(result.is_none());
 }
@@ -263,20 +285,20 @@ fn test_dispatch_empty_method() {
 
 #[test]
 fn test_has_domain_false_before_register() {
-    assert!(!DomainRegistry::new().has_domain("Page"));
+    assert!(!DomainRegistry::<MockHandler>::new().has_domain("Page"));
 }
 
 #[test]
 fn test_has_domain_true_after_register() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Network"))).is_ok());
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::new("Network")).is_ok());
     assert!(reg.has_domain("Network"));
 }
 
 #[test]
 fn test_has_domain_case_sensitive() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
+    let reg = DomainRegistry::<MockHandler>::new();
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
     assert!(reg.has_domain("Page"));
     assert!(!reg.has_domain("page"));
     assert!(!reg.has_domain("PAGE"));
@@ -287,8 +309,8 @@ fn test_has_domain_case_sensitive() {
 #[test]
 fn test_notify_session_created_calls_handler() {
     let mock = Arc::new(MockHandler::new("Page"));
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&mock)))).is_ok());
+    let reg = DomainRegistry::<ObservedHandler>::new();
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&mock))).is_ok());
 
     reg.notify_session_created("Page", "sess-1");
     assert_eq!(mock.created_count(), 1);
@@ -296,7 +318,7 @@ fn test_notify_session_created_calls_handler() {
 
 #[test]
 fn test_notify_session_created_unknown_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<ObservedHandler>::new();
     reg.notify_session_created("Unknown", "sess-1");
     // No panic
 }
@@ -304,8 +326,8 @@ fn test_notify_session_created_unknown_domain() {
 #[test]
 fn test_notify_session_created_multiple() {
     let mock = Arc::new(MockHandler::new("Runtime"));
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&mock)))).is_ok());
+    let reg = DomainRegistry::<ObservedHandler>::new();
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&mock))).is_ok());
 
     reg.notify_session_created("Runtime", "s1");
     reg.notify_session_created("Runtime", "s2");
@@ -317,9 +339,9 @@ fn test_notify_session_created_multiple() {
 fn test_notify_session_created_only_matching_domain() {
     let m_page = Arc::new(MockHandler::new("Page"));
     let m_runtime = Arc::new(MockHandler::new("Runtime"));
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&m_page)))).is_ok());
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&m_runtime)))).is_ok());
+    let reg = DomainRegistry::<ObservedHandler>::new();
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&m_page))).is_ok());
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&m_runtime))).is_ok());
 
     reg.notify_session_created("Page", "s1");
     assert_eq!(m_page.created_count(), 1);
@@ -332,9 +354,9 @@ fn test_notify_session_created_only_matching_domain() {
 fn test_notify_session_destroyed_calls_matching() {
     let m_page = Arc::new(MockHandler::new("Page"));
     let m_runtime = Arc::new(MockHandler::new("Runtime"));
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&m_page)))).is_ok());
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&m_runtime)))).is_ok());
+    let reg = DomainRegistry::<ObservedHandler>::new();
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&m_page))).is_ok());
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&m_runtime))).is_ok());
 
     reg.notify_session_destroyed(&["Page".to_string()], "s1");
     assert_eq!(m_page.destroyed_count(), 1);
@@ -345,9 +367,9 @@ fn test_notify_session_destroyed_calls_matching() {
 fn test_notify_session_destroyed_multiple_domains() {
     let m1 = Arc::new(MockHandler::new("Page"));
     let m2 = Arc::new(MockHandler::new("Runtime"));
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&m1)))).is_ok());
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&m2)))).is_ok());
+    let reg = DomainRegistry::<ObservedHandler>::new();
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&m1))).is_ok());
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&m2))).is_ok());
 
     reg.notify_session_destroyed(&["Page".to_string(), "Runtime".to_string()], "s1");
     assert_eq!(m1.destroyed_count(), 1);
@@ -357,8 +379,8 @@ fn test_notify_session_destroyed_multiple_domains() {
 #[test]
 fn test_notify_session_destroyed_empty_list() {
     let m = Arc::new(MockHandler::new("Page"));
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&m)))).is_ok());
+    let reg = DomainRegistry::<ObservedHandler>::new();
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&m))).is_ok());
 
     reg.notify_session_destroyed(&[], "s1");
     assert_eq!(m.destroyed_count(), 0);
@@ -366,7 +388,7 @@ fn test_notify_session_destroyed_empty_list() {
 
 #[test]
 fn test_notify_session_destroyed_unknown_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<ObservedHandler>::new();
     reg.notify_session_destroyed(&["Fake".to_string()], "s1");
     // No panic
 }
@@ -374,21 +396,12 @@ fn test_notify_session_destroyed_unknown_domain() {
 #[test]
 fn test_notify_session_destroyed_repeated() {
     let m = Arc::new(MockHandler::new("DOM"));
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(ObservedHandler::new(Arc::clone(&m)))).is_ok());
+    let reg = DomainRegistry::<ObservedHandler>::new();
+    assert!(reg.register(ObservedHandler::new(Arc::clone(&m))).is_ok());
 
     reg.notify_session_destroyed(&["DOM".to_string()], "s1");
     reg.notify_session_destroyed(&["DOM".to_string()], "s2");
     assert_eq!(m.destroyed_count(), 2);
-}
-
-// ---- DomainRegistry::get (placeholder, returns None) ----
-
-#[test]
-fn test_get_returns_none_placeholder() {
-    let reg = DomainRegistry::new();
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
-    assert!(reg.get("Page").is_none());
 }
 
 // ---- SessionState enum ----
@@ -434,12 +447,12 @@ fn test_session_state_eq() {
     assert_eq!(SessionState::Closed, SessionState::Closed);
 }
 
-// ---- SharedRegistry (Arc<DomainRegistry>) ----
+// ---- SharedRegistry () ----
 
 #[test]
 fn test_shared_registry_arc() {
-    let reg = Arc::new(DomainRegistry::new());
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
+    let reg = Arc::new(DomainRegistry::<MockHandler>::new());
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
 
     let reg2 = Arc::clone(&reg);
     assert!(reg2.has_domain("Page"));
@@ -450,9 +463,9 @@ fn test_shared_registry_arc() {
 #[test]
 fn test_shared_registry_thread_safety() {
     use std::thread;
-    let reg = Arc::new(DomainRegistry::new());
-    assert!(reg.register(Box::new(MockHandler::new("Page"))).is_ok());
-    assert!(reg.register(Box::new(MockHandler::new("Runtime"))).is_ok());
+    let reg = Arc::new(DomainRegistry::<MockHandler>::new());
+    assert!(reg.register(MockHandler::new("Page")).is_ok());
+    assert!(reg.register(MockHandler::new("Runtime")).is_ok());
 
     let reg1 = Arc::clone(&reg);
     let reg2 = Arc::clone(&reg);

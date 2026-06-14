@@ -8,7 +8,10 @@ use bao_browser::{Permission, PermissionGuard};
 use bao_stealth::StealthProfile;
 use bao_cdp::servo_bridge::bridge_channel;
 use bao_cdp::domains::{register_all_domains_into, ServoTargetProvider};
+use bao_cdp::DomainDispatch;
+use cdp_server::DomainRegistry;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 // ---- Pure data tests (no servo init) ----
@@ -105,8 +108,9 @@ fn test_cdp_server_with_bridge_and_domains() {
         .host("127.0.0.1")
         .port(0)
         .build();
-    let mut server = bao_cdp::CdpServer::new(config);
-    register_all_domains_into(bridge_tx.clone(), "test-target-id".into(), server.registry());
+    let registry = std::sync::Arc::new(cdp_server::DomainRegistry::<bao_cdp::DomainDispatch>::new());
+    register_all_domains_into(bridge_tx.clone(), "test-target-id".into(), &registry);
+    let mut server = bao_cdp::CdpServer::with_registry(config, registry);
 
     let provider = std::sync::Arc::new(
         ServoTargetProvider::new(bridge_tx, "test-target-id".into(), "127.0.0.1".into(), 0)

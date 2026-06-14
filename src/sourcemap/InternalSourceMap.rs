@@ -2,11 +2,13 @@
 //! It exists because the standard pipeline is a bad fit when both the producer
 //! (`js_printer`) and the consumer (stack remapping, coverage) are us:
 //!
-//!     js_printer emits VLQ text
-//!       -> SavedSourceMap stores the VLQ bytes
-//!       -> first .stack lookup decodes the *entire* string into a
-//!          Mapping.List (MultiArrayList, 20 bytes/mapping)
-//!       -> every later lookup binary-searches that array
+//! ```text
+//! js_printer emits VLQ text
+//!   -> SavedSourceMap stores the VLQ bytes
+//!   -> first .stack lookup decodes the *entire* string into a
+//!      Mapping.List (MultiArrayList, 20 bytes/mapping)
+//!   -> every later lookup binary-searches that array
+//! ```
 //!
 //! That round-trip through a text wire format costs three times: base64 encode
 //! during printing, a full-file decode on the first stack trace, and a ~4x
@@ -39,12 +41,14 @@
 //!
 //! ## vs. VLQ + Mapping.List
 //!
+//! ```text
 //!                      VLQ -> Mapping.List           InternalSourceMap
 //!     encode           base64-VLQ per mapping        buffer K, flush window
 //!     first lookup     decode entire file            none
 //!     resident size    20 B/mapping after decode     ~2.4 B/mapping, constant
 //!     per-lookup       bsearch over N (8B keys)      bsearch N/64 + <=63 deltas
 //!     interop .map     yes (it *is* the spec)        no -- call appendVLQTo()
+//! ```
 //!
 //! ## What this is not
 //!
@@ -56,30 +60,35 @@
 //!
 //! ## Blob layout (single allocation, byte-addressed; no alignment assumed):
 //!
-//!     [ 0.. 8]  total_len:         u64   -- written by Chunk.Builder.generateChunk
-//!     [ 8..16]  mapping_count:     u64   -- written by Chunk.Builder.generateChunk
-//!     [16..24]  input_line_count:  u64   -- written by Chunk.Builder.generateChunk
-//!     [24..28]  sync_count:        u32
-//!     [28..32]  stream_offset:     u32   -- byte offset from blob start to stream
-//!     [32..  ]  SyncEntry[sync_count]    -- 24 bytes each
-//!     [stream_offset..total_len-stream_tail_pad]  Window[sync_count]
-//!     [total_len-stream_tail_pad..total_len]      zero bytes (read-past pad)
+//! ```text
+//! [ 0.. 8]  total_len:         u64   -- written by Chunk.Builder.generateChunk
+//! [ 8..16]  mapping_count:     u64   -- written by Chunk.Builder.generateChunk
+//! [16..24]  input_line_count:  u64   -- written by Chunk.Builder.generateChunk
+//! [24..28]  sync_count:        u32
+//! [28..32]  stream_offset:     u32   -- byte offset from blob start to stream
+//! [32..  ]  SyncEntry[sync_count]    -- 24 bytes each
+//! [stream_offset..total_len-stream_tail_pad]  Window[sync_count]
+//! [total_len-stream_tail_pad..total_len]      zero bytes (read-past pad)
+//! ```
 //!
 //! SyncEntry: absolute state of this window's first mapping plus stream offset
 //!            (i32 gen_line/col, u32 byte_offset, i32 orig_line/col/src_idx).
 //!
 //! Window (fixed 32-byte header then variable streams; see `win_hdr`):
-//!     count: u8, flags: u8 (bit2 has_gen_line_exceptions, bit3 has_src_idx)
-//!     gen_col_len / orig_line_len / orig_col_len: 3 × u16 LE
-//!     gen_line_mask / orig_line_eq_mask / orig_col_eq_mask: 3 × 8 bytes
-//!       (bit i=1 ⇒ d_gen_line>=1 / d_orig_line==d_gen_line / d_orig_col==d_gen_col)
-//!     gen_col_lane:          count-1 zig-zag varints (d_gen_col)
-//!     orig_line_exceptions:  one varint per 0-bit in orig_line_eq_mask
-//!     orig_col_exceptions:   one varint per 0-bit in orig_col_eq_mask
-//!     if has_gen_line_exceptions:
-//!       (idx:u8, varint d_gen_line) pairs for d_gen_line>1, 0xFF-terminated
-//!     if has_src_idx:
-//!       8-byte mask (bit=1 ⇒ d_src_idx==0) + varint per 0-bit
+//!
+//! ```text
+//! count: u8, flags: u8 (bit2 has_gen_line_exceptions, bit3 has_src_idx)
+//! gen_col_len / orig_line_len / orig_col_len: 3 × u16 LE
+//! gen_line_mask / orig_line_eq_mask / orig_col_eq_mask: 3 × 8 bytes
+//!   (bit i=1 ⇒ d_gen_line>=1 / d_orig_line==d_gen_line / d_orig_col==d_gen_col)
+//! gen_col_lane:          count-1 zig-zag varints (d_gen_col)
+//! orig_line_exceptions:  one varint per 0-bit in orig_line_eq_mask
+//! orig_col_exceptions:   one varint per 0-bit in orig_col_eq_mask
+//! if has_gen_line_exceptions:
+//!   (idx:u8, varint d_gen_line) pairs for d_gen_line>1, 0xFF-terminated
+//! if has_src_idx:
+//!   8-byte mask (bit=1 ⇒ d_src_idx==0) + varint per 0-bit
+//! ```
 //!
 //! Delta indices are 0..count-2 (first mapping is the seed; only count-1
 //! deltas are encoded).

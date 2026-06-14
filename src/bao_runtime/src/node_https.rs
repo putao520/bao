@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
@@ -195,10 +195,7 @@ unsafe extern "C" fn https_request(
 
     let result = perform_https_request(&url, &method, &headers_json, &body);
 
-    let Ok(c_result) = CString::new(result.as_str()) else {
-        args.rval().set(UndefinedValue());
-        return true;
-    };
+    let c_result = ZBox::from_bytes(result.as_bytes());
     let js_result = JS_NewStringCopyZ(cx, c_result.as_ptr());
     if !js_result.is_null() {
         args.rval().set(StringValue(&*js_result));
@@ -294,7 +291,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             0,
         );
 
-        let c_filename = CString::new("node:https").unwrap_or_default();
+        let c_filename = ZBox::from_bytes("node:https".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if opts.is_null() {
             return;
@@ -333,7 +330,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             "Server",
             "createServer",
         ] {
-            let cname = CString::new(*name).unwrap_or_default();
+            let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
             JS_GetProperty(
                 cx_raw,

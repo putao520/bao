@@ -485,13 +485,13 @@ pub union Value {
     pub none: (),
 
     /// "bin" is a string
-    /// ```
+    /// ```text
     /// "bin": "./bin/foo",
     /// ```
     pub file: String,
 
     // Single-entry map
-    ///```
+    ///```text
     /// "bin": {
     ///     "babel": "./cli.js",
     /// }
@@ -499,14 +499,14 @@ pub union Value {
     pub named_file: [String; 2],
 
     /// "bin" is a directory
-    ///```
+    ///```text
     /// "dirs": {
     ///     "bin": "./bin",
     /// }
     ///```
     pub dir: String,
     // "bin" is a map
-    ///```
+    ///```text
     /// "bin": {
     ///     "babel": "./cli.js",
     ///     "babel-cli": "./cli.js",
@@ -556,13 +556,13 @@ pub enum Tag {
     None = 0,
 
     /// "bin" is a string
-    /// ```
+    /// ```text
     /// "bin": "./bin/foo",
     /// ```
     File = 1,
 
     // Single-entry map
-    ///```
+    ///```text
     /// "bin": {
     ///     "babel": "./cli.js",
     /// }
@@ -570,7 +570,7 @@ pub enum Tag {
     NamedFile = 2,
 
     /// "bin" is a directory
-    ///```
+    ///```text
     /// "dirs": {
     ///     "bin": "./bin",
     /// }
@@ -578,7 +578,7 @@ pub enum Tag {
     Dir = 3,
 
     // "bin" is a map of more than one
-    ///```
+    ///```text
     /// "bin": {
     ///     "babel": "./cli.js",
     ///     "babel-cli": "./cli.js",

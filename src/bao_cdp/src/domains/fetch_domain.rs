@@ -10,7 +10,7 @@ use crate::servo_bridge::BridgeSender;
 /// JS interceptor script injected into the page when Fetch.enable is called.
 /// Patches window.fetch and XMLHttpRequest to emit intercept events via
 /// a special console.log prefix that the CDP Log->Fetch bridge can detect.
-const FETCH_INTERCEPTOR_JS: &str = r#"
+pub const FETCH_INTERCEPTOR_JS: &str = r#"
 (function() {
     if (window.__bao_fetch_interceptor_active) return;
     window.__bao_fetch_interceptor_active = true;
@@ -27,9 +27,9 @@ const FETCH_INTERCEPTOR_JS: &str = r#"
         const headers = init.headers || {};
         const postData = init.body ? String(init.body) : undefined;
 
-        // Emit intercept event via special console prefix
+        // Emit intercept event via standardized console transport
         const payload = JSON.stringify({id, url, method, headers, postData, resourceType: 'Fetch'});
-        console.log('__BAO_FETCH_INTERCEPT__' + payload);
+        console.log('__BAO_EVT__Fetch.requestPaused\n' + payload);
 
         return origFetch.apply(this, args);
     };
@@ -48,7 +48,7 @@ const FETCH_INTERCEPTOR_JS: &str = r#"
             id, url: this.__bao_url, method: this.__bao_method,
             postData: body ? String(body) : undefined, resourceType: 'XHR',
         });
-        console.log('__BAO_FETCH_INTERCEPT__' + payload);
+        console.log('__BAO_EVT__Fetch.requestPaused\n' + payload);
         return origSend.apply(this, arguments);
     };
 })();
@@ -276,7 +276,7 @@ mod tests {
             assert!(!FETCH_INTERCEPTOR_JS.is_empty());
             assert!(FETCH_INTERCEPTOR_JS.contains("window.fetch"));
             assert!(FETCH_INTERCEPTOR_JS.contains("XMLHttpRequest"));
-            assert!(FETCH_INTERCEPTOR_JS.contains("__BAO_FETCH_INTERCEPT__"));
+            assert!(FETCH_INTERCEPTOR_JS.contains("__BAO_EVT__Fetch.requestPaused"));
         });
         assert!(result.is_ok());
     }

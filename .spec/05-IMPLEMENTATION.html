@@ -12,7 +12,7 @@
 <h2>§1 总览</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>阶段总览</h3>
 <table>
 <tr><td>阶段</td><td>名称</td><td>核心 REQ</td><td>新建 Crate</td><td>修改范围</td></tr>
@@ -28,7 +28,7 @@
 <h2>§2 Phase 1: SpiderMonkey 替换 JSC</h2>
 <!-- ============================================================ -->
 
-<div id="req-impl-01" data-req="REQ-IMPL-01" data-req-api="GET /impl/phase1-status" data-req-category="business" data-req-domain="IMPL" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-status="implemented">
+<div data-req-api="GET /impl/phase1-status" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-01" id="req-impl-01">
 <h3>Phase 1 详细任务（已完成）</h3>
 
 <h4>1.1 集成 mozjs crate</h4>
@@ -93,7 +93,7 @@
 <h2>§3 Phase 2: servo 引擎集成 + 渲染</h2>
 <!-- ============================================================ -->
 
-<div id="req-impl-02" data-req="REQ-IMPL-02" data-req-api="GET /impl/phase2-status" data-req-category="business" data-req-domain="IMPL" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-status="implemented">
+<div data-req-api="GET /impl/phase2-status" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-02" id="req-impl-02">
 <h3>Phase 2 详细任务</h3>
 
 <h4>2.1 servo path 依赖集成</h4>
@@ -167,7 +167,7 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <h2>§4 Phase 3: CDP Server</h2>
 <!-- ============================================================ -->
 
-<div id="req-impl-03" data-req="REQ-IMPL-03" data-req-api="GET /impl/phase3-status" data-req-category="business" data-req-domain="IMPL" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-status="implemented">
+<div data-req-api="GET /impl/phase3-status" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-03" id="req-impl-03">
 <h3>Phase 3 详细任务</h3>
 <table>
 <tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
@@ -210,7 +210,7 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <h2>§5 Phase 4: Stealth 反指纹</h2>
 <!-- ============================================================ -->
 
-<div id="req-impl-04" data-req="REQ-IMPL-04" data-req-api="GET /impl/phase4-status" data-req-category="business" data-req-domain="IMPL" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-status="implemented">
+<div data-req-api="GET /impl/phase4-status" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-04" id="req-impl-04">
 <h3>Phase 4 详细任务</h3>
 <table>
 <tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
@@ -253,7 +253,7 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <h2>§6 Phase 5: 集成测试与发布</h2>
 <!-- ============================================================ -->
 
-<div id="req-impl-05" data-req="REQ-IMPL-05" data-req-api="GET /impl/phase5-status" data-req-category="business" data-req-domain="IMPL" data-req-entity="PagePool,CdpRouter,Permission" data-req-status="implemented">
+<div data-req-api="GET /impl/phase5-status" data-req-entity="PagePool,CdpRouter,Permission" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-05" id="req-impl-05">
 <h3>Phase 5 详细任务</h3>
 <table>
 <tr><td>任务</td><td>描述</td></tr>
@@ -284,7 +284,7 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <h2>§7 复用分析</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>组件复用矩阵</h3>
 <table>
 <tr><td>组件</td><td>来源</td><td>复用率</td><td>需要的适配工作</td></tr>
@@ -310,7 +310,7 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 <h2>§8 风险矩阵</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>风险与缓解措施</h3>
 <table>
 <tr><td>风险</td><td>等级</td><td>缓解措施</td></tr>
@@ -324,5 +324,5 @@ notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready<
 </table>
 </div>
 
-</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div id="test-impl-01" data-req-ref="REQ-IMPL-01" data-test-categories="unit" data-test="TEST-IMPL-01"><h4>TEST-IMPL-01: REQ-IMPL-01 单元测试</h4><p>TODO: 为 REQ-IMPL-01 编写测试用例</p></div><div id="test-impl-02" data-req-ref="REQ-IMPL-02" data-test-categories="unit" data-test="TEST-IMPL-02"><h4>TEST-IMPL-02: REQ-IMPL-02 单元测试</h4><p>TODO: 为 REQ-IMPL-02 编写测试用例</p></div><div id="test-impl-03" data-req-ref="REQ-IMPL-03" data-test-categories="unit" data-test="TEST-IMPL-03"><h4>TEST-IMPL-03: REQ-IMPL-03 单元测试</h4><p>TODO: 为 REQ-IMPL-03 编写测试用例</p></div><div id="test-impl-04" data-req-ref="REQ-IMPL-04" data-test-categories="unit" data-test="TEST-IMPL-04"><h4>TEST-IMPL-04: REQ-IMPL-04 单元测试</h4><p>TODO: 为 REQ-IMPL-04 编写测试用例</p></div><div id="test-impl-05" data-req-ref="REQ-IMPL-05" data-test-categories="unit" data-test="TEST-IMPL-05"><h4>TEST-IMPL-05: REQ-IMPL-05 单元测试</h4><p>TODO: 为 REQ-IMPL-05 编写测试用例</p></div></section></body>
+</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-IMPL-01" data-test="TEST-IMPL-01" id="test-impl-01"><h4>TEST-IMPL-01: REQ-IMPL-01 单元测试</h4><p>TODO: 为 REQ-IMPL-01 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-IMPL-02" data-test="TEST-IMPL-02" id="test-impl-02"><h4>TEST-IMPL-02: REQ-IMPL-02 单元测试</h4><p>TODO: 为 REQ-IMPL-02 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-IMPL-03" data-test="TEST-IMPL-03" id="test-impl-03"><h4>TEST-IMPL-03: REQ-IMPL-03 单元测试</h4><p>TODO: 为 REQ-IMPL-03 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-IMPL-04" data-test="TEST-IMPL-04" id="test-impl-04"><h4>TEST-IMPL-04: REQ-IMPL-04 单元测试</h4><p>TODO: 为 REQ-IMPL-04 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-IMPL-05" data-test="TEST-IMPL-05" id="test-impl-05"><h4>TEST-IMPL-05: REQ-IMPL-05 单元测试</h4><p>TODO: 为 REQ-IMPL-05 编写测试用例</p></div></section></body>
 </html>

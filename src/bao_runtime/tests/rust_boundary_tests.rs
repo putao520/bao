@@ -2,7 +2,7 @@
 // Pure Rust boundary tests for bao_runtime modules that don't require JSContext.
 // Tests permission_bridge, node_os::sys_info, stealth_http pure functions.
 
-use bao_runtime::permission_bridge::{self, PermissionCheck};
+use bun_runtime::permission_bridge::{self, PermissionCheck};
 
 // ---- permission_bridge: no permission set (default allow-all) ----
 
@@ -238,7 +238,7 @@ fn test_permission_net_error_message_contains_host() {
 
 #[test]
 fn test_stealth_ordered_headers_no_profile_passthrough() {
-    use bao_runtime::stealth_http;
+    use bun_runtime::stealth_http;
     let headers = vec![
         ("content-type".into(), "text/html".into()),
         ("accept".into(), "*/*".into()),
@@ -251,19 +251,19 @@ fn test_stealth_ordered_headers_no_profile_passthrough() {
 
 #[test]
 fn test_stealth_ja3_hash_none() {
-    use bao_runtime::stealth_http;
+    use bun_runtime::stealth_http;
     assert!(stealth_http::ja3_hash(&None).is_none());
 }
 
 #[test]
 fn test_stealth_akamai_fingerprint_none() {
-    use bao_runtime::stealth_http;
+    use bun_runtime::stealth_http;
     assert!(stealth_http::akamai_fingerprint(&None).is_none());
 }
 
 #[test]
 fn test_stealth_ja3_firefox_starts_with_771() {
-    use bao_runtime::stealth_http;
+    use bun_runtime::stealth_http;
     use bao_stealth::StealthProfile;
     let profile = StealthProfile::firefox_default();
     let hash = stealth_http::ja3_hash(&Some(profile)).unwrap();
@@ -272,7 +272,7 @@ fn test_stealth_ja3_firefox_starts_with_771() {
 
 #[test]
 fn test_stealth_ja3_chrome_starts_with_771() {
-    use bao_runtime::stealth_http;
+    use bun_runtime::stealth_http;
     use bao_stealth::StealthProfile;
     let profile = StealthProfile::chrome_default();
     let hash = stealth_http::ja3_hash(&Some(profile)).unwrap();
@@ -281,7 +281,7 @@ fn test_stealth_ja3_chrome_starts_with_771() {
 
 #[test]
 fn test_stealth_profiles_different_ja3() {
-    use bao_runtime::stealth_http;
+    use bun_runtime::stealth_http;
     use bao_stealth::StealthProfile;
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();
@@ -292,7 +292,7 @@ fn test_stealth_profiles_different_ja3() {
 
 #[test]
 fn test_stealth_profiles_different_akamai() {
-    use bao_runtime::stealth_http;
+    use bun_runtime::stealth_http;
     use bao_stealth::StealthProfile;
     let ff = StealthProfile::firefox_default();
     let ch = StealthProfile::chrome_default();

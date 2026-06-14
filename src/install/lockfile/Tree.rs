@@ -199,11 +199,13 @@ pub struct IteratorNext<'a> {
 
     /// depth of the node_modules folder in the tree
     ///
+    /// ```text
     ///            0 (./node_modules)
     ///           / \
     ///          1   1
     ///         /
     ///        2
+    /// ```
     pub depth: usize,
 }
 

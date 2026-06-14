@@ -243,21 +243,21 @@ impl DomainHandler for TestDomain {
 
 #[test]
 fn test_registry_new() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDomain>::new();
     assert!(!reg.has_domain("Test"));
 }
 
 #[test]
 fn test_registry_register_and_has() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(TestDomain { name: "Test" })).unwrap();
+    let reg = DomainRegistry::<TestDomain>::new();
+    reg.register(TestDomain { name: "Test" }).unwrap();
     assert!(reg.has_domain("Test"));
 }
 
 #[test]
 fn test_registry_dispatch_registered() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(TestDomain { name: "Test" })).unwrap();
+    let reg = DomainRegistry::<TestDomain>::new();
+    reg.register(TestDomain { name: "Test" }).unwrap();
     struct Nop;
     impl EventSender for Nop {
         fn send_event(&self, _: &str, _: Value) {}
@@ -271,7 +271,7 @@ fn test_registry_dispatch_registered() {
 
 #[test]
 fn test_registry_dispatch_unknown_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDomain>::new();
     struct Nop;
     impl EventSender for Nop {
         fn send_event(&self, _: &str, _: Value) {}
@@ -282,8 +282,8 @@ fn test_registry_dispatch_unknown_domain() {
 
 #[test]
 fn test_registry_dispatch_unknown_command() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(TestDomain { name: "Test" })).unwrap();
+    let reg = DomainRegistry::<TestDomain>::new();
+    reg.register(TestDomain { name: "Test" }).unwrap();
     struct Nop;
     impl EventSender for Nop {
         fn send_event(&self, _: &str, _: Value) {}
@@ -295,10 +295,10 @@ fn test_registry_dispatch_unknown_command() {
 
 #[test]
 fn test_registry_multiple_domains() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(TestDomain { name: "Alpha" })).unwrap();
-    reg.register(Box::new(TestDomain { name: "Beta" })).unwrap();
-    reg.register(Box::new(TestDomain { name: "Gamma" })).unwrap();
+    let reg = DomainRegistry::<TestDomain>::new();
+    reg.register(TestDomain { name: "Alpha" }).unwrap();
+    reg.register(TestDomain { name: "Beta" }).unwrap();
+    reg.register(TestDomain { name: "Gamma" }).unwrap();
     assert!(reg.has_domain("Alpha"));
     assert!(reg.has_domain("Beta"));
     assert!(reg.has_domain("Gamma"));
@@ -307,8 +307,8 @@ fn test_registry_multiple_domains() {
 
 #[test]
 fn test_registry_case_sensitive() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(TestDomain { name: "Test" })).unwrap();
+    let reg = DomainRegistry::<TestDomain>::new();
+    reg.register(TestDomain { name: "Test" }).unwrap();
     assert!(reg.has_domain("Test"));
     assert!(!reg.has_domain("test"));
     assert!(!reg.has_domain("TEST"));

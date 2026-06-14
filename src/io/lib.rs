@@ -143,6 +143,19 @@ bun_dispatch::link_interface! {
 
 pub type EventLoopKind = EventLoopCtxKind;
 
+impl Default for EventLoopCtxKind {
+    fn default() -> Self { Self::Mini }
+}
+
+impl Default for EventLoopCtx {
+    fn default() -> Self {
+        Self {
+            kind: EventLoopCtxKind::Mini,
+            owner: core::ptr::null_mut(),
+        }
+    }
+}
+
 impl EventLoopCtx {
     /// SAFETY: caller must not hold another live `&mut` to the same loop
     /// across this borrow (resolver-style accessor; the loop is per-thread).

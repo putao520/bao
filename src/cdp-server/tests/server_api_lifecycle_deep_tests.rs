@@ -280,14 +280,14 @@ impl DomainHandler for TrackedHandler {
 
 #[test]
 fn test_registry_notify_session_created() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<TrackedHandler>::new();
     let created: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let destroyed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    registry.register(Box::new(TrackedHandler {
+    registry.register(TrackedHandler {
         domain: "TestDomain",
         created: created.clone(),
         destroyed: destroyed.clone(),
-    })).unwrap();
+    }).unwrap();
 
     registry.notify_session_created("TestDomain", "sess-1");
     let c = created.lock().unwrap();
@@ -297,14 +297,14 @@ fn test_registry_notify_session_created() {
 
 #[test]
 fn test_registry_notify_session_created_unknown_domain() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<TrackedHandler>::new();
     let created: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let destroyed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    registry.register(Box::new(TrackedHandler {
+    registry.register(TrackedHandler {
         domain: "Foo",
         created: created.clone(),
         destroyed: destroyed.clone(),
-    })).unwrap();
+    }).unwrap();
 
     registry.notify_session_created("Bar", "sess-1");
     assert!(created.lock().unwrap().is_empty());
@@ -312,22 +312,22 @@ fn test_registry_notify_session_created_unknown_domain() {
 
 #[test]
 fn test_registry_notify_session_destroyed_multiple_domains() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<TrackedHandler>::new();
     let created_a: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let destroyed_a: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let created_b: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let destroyed_b: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
-    registry.register(Box::new(TrackedHandler {
+    registry.register(TrackedHandler {
         domain: "Alpha",
         created: created_a.clone(),
         destroyed: destroyed_a.clone(),
-    })).unwrap();
-    registry.register(Box::new(TrackedHandler {
+    }).unwrap();
+    registry.register(TrackedHandler {
         domain: "Beta",
         created: created_b.clone(),
         destroyed: destroyed_b.clone(),
-    })).unwrap();
+    }).unwrap();
 
     registry.notify_session_destroyed(&["Alpha".into(), "Beta".into()], "sess-99");
     assert_eq!(destroyed_a.lock().unwrap().len(), 1);
@@ -338,13 +338,13 @@ fn test_registry_notify_session_destroyed_multiple_domains() {
 
 #[test]
 fn test_registry_notify_session_destroyed_empty() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<TrackedHandler>::new();
     let destroyed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    registry.register(Box::new(TrackedHandler {
+    registry.register(TrackedHandler {
         domain: "Gamma",
         created: Arc::new(Mutex::new(Vec::new())),
         destroyed: destroyed.clone(),
-    })).unwrap();
+    }).unwrap();
 
     registry.notify_session_destroyed(&[], "sess-x");
     assert!(destroyed.lock().unwrap().is_empty());
@@ -352,13 +352,13 @@ fn test_registry_notify_session_destroyed_empty() {
 
 #[test]
 fn test_registry_notify_session_destroyed_unknown_domain() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<TrackedHandler>::new();
     let destroyed: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-    registry.register(Box::new(TrackedHandler {
+    registry.register(TrackedHandler {
         domain: "Delta",
         created: Arc::new(Mutex::new(Vec::new())),
         destroyed: destroyed.clone(),
-    })).unwrap();
+    }).unwrap();
 
     registry.notify_session_destroyed(&["NonExistent".into()], "sess-z");
     assert!(destroyed.lock().unwrap().is_empty());
@@ -370,41 +370,40 @@ fn test_registry_notify_session_destroyed_unknown_domain() {
 
 #[test]
 fn test_registry_register_duplicate_returns_err() {
-    let registry = DomainRegistry::new();
     struct H;
     impl DomainHandler for H {
         fn domain_name(&self) -> &'static str { "Dupe" }
         fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({})) }
     }
-    assert!(registry.register(Box::new(H)).is_ok());
-    let result = registry.register(Box::new(H));
+    let registry = DomainRegistry::<H>::new();
+    assert!(registry.register(H).is_ok());
+    let result = registry.register(H);
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("already registered"));
 }
 
 #[test]
 fn test_registry_has_domain_after_register() {
-    let registry = DomainRegistry::new();
     struct H;
     impl DomainHandler for H {
         fn domain_name(&self) -> &'static str { "Check" }
         fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({})) }
     }
+    let registry = DomainRegistry::<H>::new();
     assert!(!registry.has_domain("Check"));
-    registry.register(Box::new(H)).unwrap();
+    registry.register(H).unwrap();
     assert!(registry.has_domain("Check"));
 }
 
 #[test]
 fn test_registry_dispatch_unknown_domain() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<cdp_server::EmptyHandler>::new();
     let result = registry.dispatch_command("Unknown.method", json!({}), &NoopEventSender);
     assert!(result.is_none());
 }
 
 #[test]
 fn test_registry_dispatch_returns_handler_result() {
-    let registry = DomainRegistry::new();
     struct H;
     impl DomainHandler for H {
         fn domain_name(&self) -> &'static str { "Echo" }
@@ -412,7 +411,8 @@ fn test_registry_dispatch_returns_handler_result() {
             Ok(json!({"echo": cmd}))
         }
     }
-    registry.register(Box::new(H)).unwrap();
+    let registry = DomainRegistry::<H>::new();
+    registry.register(H).unwrap();
     let result = registry.dispatch_command("Echo.test", json!({}), &NoopEventSender);
     assert!(result.is_some());
     let inner = result.unwrap();
@@ -422,7 +422,6 @@ fn test_registry_dispatch_returns_handler_result() {
 
 #[test]
 fn test_registry_dispatch_handler_error() {
-    let registry = DomainRegistry::new();
     struct H;
     impl DomainHandler for H {
         fn domain_name(&self) -> &'static str { "Fail" }
@@ -430,7 +429,8 @@ fn test_registry_dispatch_handler_error() {
             Err(CdpError { code: -32000, message: "custom error".into() })
         }
     }
-    registry.register(Box::new(H)).unwrap();
+    let registry = DomainRegistry::<H>::new();
+    registry.register(H).unwrap();
     let result = registry.dispatch_command("Fail.cmd", json!({}), &NoopEventSender);
     let err = result.unwrap().unwrap_err();
     assert_eq!(err.code, -32000);
@@ -439,13 +439,13 @@ fn test_registry_dispatch_handler_error() {
 
 #[test]
 fn test_registry_dispatch_no_dot_in_method() {
-    let registry = DomainRegistry::new();
     struct H;
     impl DomainHandler for H {
         fn domain_name(&self) -> &'static str { "" }
         fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({})) }
     }
-    registry.register(Box::new(H)).unwrap();
+    let registry = DomainRegistry::<H>::new();
+    registry.register(H).unwrap();
     // Method without dot → domain is whole string → won't match empty domain
     let result = registry.dispatch_command("NoMethod", json!({}), &NoopEventSender);
     assert!(result.is_none());
@@ -453,7 +453,7 @@ fn test_registry_dispatch_no_dot_in_method() {
 
 #[test]
 fn test_registry_default_trait() {
-    let registry = DomainRegistry::default();
+    let registry = DomainRegistry::<cdp_server::EmptyHandler>::default();
     assert!(!registry.has_domain("Any"));
 }
 
@@ -1085,13 +1085,14 @@ fn test_server_with_provider_ws_url() {
 
 #[test]
 fn test_server_registry_with_handler() {
-    let server = CdpServer::new(ServerConfig::default());
     struct H;
     impl DomainHandler for H {
         fn domain_name(&self) -> &'static str { "Custom" }
         fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender) -> Result<Value, CdpError> { Ok(json!({"ok": true})) }
     }
-    server.registry().register(Box::new(H)).unwrap();
+    let reg = Arc::new(DomainRegistry::<H>::new());
+    reg.register(H).unwrap();
+    let server = CdpServer::with_registry(ServerConfig::default(), reg);
     assert!(server.registry().has_domain("Custom"));
     let result = server.registry().dispatch_command("Custom.test", json!({}), &NoopEventSender);
     assert_eq!(result.unwrap().unwrap()["ok"], true);

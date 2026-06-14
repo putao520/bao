@@ -1,6 +1,6 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
-use ::std::net::ToSocketAddrs;
+use bun_core::ZBox;
+use ::std::net::{SocketAddr, ToSocketAddrs};
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
@@ -160,7 +160,8 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
                 let ip = addr.ip().to_string();
                 let family = if addr.is_ipv4() { 4 } else { 6 };
 
-                if let Ok(c_ip) = CString::new(ip.as_str()) {
+                let c_ip = ZBox::from_bytes(ip.as_bytes());
+                {
                     let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
                     if !js_str.is_null() {
                         let ip_val = StringValue(&*js_str);
@@ -260,7 +261,8 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let mut idx = 0u32;
         for addr in addrs {
             let ip = addr.ip().to_string();
-            if let Ok(c_ip) = CString::new(ip.as_str()) {
+            let c_ip = ZBox::from_bytes(ip.as_bytes());
+            {
                 let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
                 if !js_str.is_null() {
                     let val = StringValue(&*js_str);
@@ -282,12 +284,52 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn dns_resolve6(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"dns.resolve6 requires a hostname argument".as_ptr());
+        return false;
+    }
+
+    let hostname_val = *args.get(0).ptr;
+    if !hostname_val.is_string() {
+        JS_ReportErrorUTF8(cx, c"dns.resolve6 hostname must be a string".as_ptr());
+        return false;
+    }
+
+    let hostname = jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
+
     let mut cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let arr_obj = w2::NewArrayObject1(&mut cx_wrap, 0);
     if arr_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
+    let arr_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &arr_obj,
+    };
+
+    if let Ok(addrs) = (hostname.as_str(), 0u16).to_socket_addrs() {
+        let mut idx = 0u32;
+        for addr in addrs {
+            if let SocketAddr::V6(v6) = addr {
+                let ip = v6.ip().to_string();
+                let c_ip = ZBox::from_bytes(ip.as_bytes());
+                {
+                    let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+                    if !js_str.is_null() {
+                        let val = StringValue(&*js_str);
+                        let val_h = Handle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData,
+                            ptr: &val,
+                        };
+                        JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
+                        idx += 1;
+                    }
+                }
+            }
+        }
+    }
+
     args.rval().set(ObjectValue(arr_obj));
     true
 }
@@ -329,7 +371,8 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     if let Ok(_addr) = ip_str.parse::<::std::net::IpAddr>() {
         // Standard library does not provide reverse DNS directly.
         // Return the IP itself as the hostname in the array.
-        if let Ok(c_ip) = CString::new(ip_str.as_str()) {
+        let c_ip = ZBox::from_bytes(ip_str.as_bytes());
+        {
             let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
             if !js_str.is_null() {
                 let val = StringValue(&*js_str);
@@ -398,7 +441,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         );
         JS_DefineFunction(cx_raw, mod_h, c"__dns_reverse".as_ptr(), Some(dns_reverse), 1, 0);
 
-        let c_filename = CString::new("node:dns").unwrap_or_default();
+        let c_filename = ZBox::from_bytes("node:dns".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if opts.is_null() {
             return;
@@ -440,7 +483,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             "setServers",
             "Resolver",
         ] {
-            let cname = CString::new(*name).unwrap_or_default();
+            let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
             JS_GetProperty(
                 cx_raw,

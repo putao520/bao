@@ -17,10 +17,10 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 
 #[test]
 fn test_fs_write_buffer_bytes_preserved() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     let tmp = ::std::env::temp_dir();
     let dir = tmp.join("bao_fs_buffer_write_test");
@@ -115,5 +115,5 @@ fn test_fs_write_buffer_bytes_preserved() {
     assert!(pass >= 7, "Expected 7 passes, got {}", pass);
 
     let _ = ::std::fs::remove_dir_all(&dir);
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

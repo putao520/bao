@@ -47,8 +47,9 @@ fn start_server(port: u16) -> thread::JoinHandle<()> {
             .host("127.0.0.1")
             .port(port)
             .build();
-        let mut server = CdpServer::new(config);
-        server.registry().register(Box::new(TestHandler)).unwrap();
+        let reg = Arc::new(DomainRegistry::<TestHandler>::new());
+        reg.register(TestHandler).unwrap();
+        let mut server = CdpServer::with_registry(config, reg);
         // Run for a limited time then stop
         let _ = server.run();
     })

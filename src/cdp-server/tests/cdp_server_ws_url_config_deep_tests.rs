@@ -457,7 +457,7 @@ fn test_is_ws_upgrade_partial() {
 fn test_registry_arc_thread_safety() {
     use std::sync::Arc;
     use std::thread;
-    let reg = Arc::new(DomainRegistry::new());
+    let reg = Arc::new(DomainRegistry::<cdp_server::EmptyHandler>::new());
     let mut handles = vec![];
     for _ in 0..4 {
         let r = Arc::clone(&reg);

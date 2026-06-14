@@ -15,10 +15,10 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 
 #[test]
 fn test_node_timers_all() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     let results = eval_string(&mut ctx, r#"
         var timers = require('timers');
@@ -75,5 +75,5 @@ fn test_node_timers_all() {
         }
     }
     assert!(all_passed, "All timers tests should pass. Results: {}", results);
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

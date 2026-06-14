@@ -1,6 +1,6 @@
 // @trace REQ-ENG-006
 // Global object installation entry point + Buffer + Crypto
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -360,24 +360,24 @@ fn install_file_globals_from_cache(
     let (filename, dirname) = FILE_GLOBALS.with(|f| f.borrow().clone());
     unsafe {
         let raw = cx.raw_cx();
-        if let Some(fn_str) = filename
-            && let Ok(c_fn) = ::std::ffi::CString::new(fn_str) {
-                let js_str = JS_NewStringCopyZ(raw, c_fn.as_ptr());
-                if !js_str.is_null() {
-                    let v = StringValue(&*js_str);
-                    let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-                    JS_DefineProperty(raw, global.into(), c"__filename".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
-                }
+        if let Some(fn_str) = filename {
+            let c_fn = ZBox::from_bytes(fn_str.as_bytes());
+            let js_str = JS_NewStringCopyZ(raw, c_fn.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+                JS_DefineProperty(raw, global.into(), c"__filename".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
             }
-        if let Some(dir_str) = dirname
-            && let Ok(c_dir) = ::std::ffi::CString::new(dir_str) {
-                let js_str = JS_NewStringCopyZ(raw, c_dir.as_ptr());
-                if !js_str.is_null() {
-                    let v = StringValue(&*js_str);
-                    let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-                    JS_DefineProperty(raw, global.into(), c"__dirname".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
-                }
+        }
+        if let Some(dir_str) = dirname {
+            let c_dir = ZBox::from_bytes(dir_str.as_bytes());
+            let js_str = JS_NewStringCopyZ(raw, c_dir.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+                JS_DefineProperty(raw, global.into(), c"__dirname".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
             }
+        }
     }
 }
 
@@ -685,7 +685,7 @@ pub fn install_buffer_global(
 "#;
     unsafe {
         let raw = cx.raw_cx();
-        let c_filename = ::std::ffi::CString::new("<buffer-proto>").unwrap_or_default();
+        let c_filename = ZBox::from_bytes("<buffer-proto>".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(raw, c_filename.as_ptr(), 1);
         if !opts.is_null() {
             let mut src = mozjs::rust::transform_str_to_source_text(proto_src);
@@ -970,7 +970,7 @@ unsafe extern "C" fn buffer_to_string(
     let enc_lower = encoding.to_lowercase();
 
     let output = match enc_lower.as_str() {
-        "hex" => bytes.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(""),
+        "hex" => bun_core::fmt::bytes_to_hex_lower_string(&bytes),
         "base64" => {
             // @trace REQ-ENG-005 [algorithm:base64]
             let bytes_out = bun_base64::encode_alloc(&bytes);
@@ -997,10 +997,7 @@ unsafe extern "C" fn buffer_to_string(
         _ => String::from_utf8_lossy(&bytes).into_owned(),
     };
 
-    let Ok(c_s) = ::std::ffi::CString::new(output) else {
-        args.rval().set(UndefinedValue());
-        return true;
-    };
+    let c_s = ZBox::from_bytes(output.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
     if !js_str.is_null() {
         args.rval().set(StringValue(&*js_str));
@@ -1444,10 +1441,7 @@ unsafe extern "C" fn crypto_random_uuid(_cx: *mut JSContext, _argc: u32, vp: *mu
         (rand::random::<u16>() & 0x0fff) | 0x4000,
         (rand::random::<u16>() & 0x3fff) | 0x8000,
         rand::random::<u64>() & 0xffffffffffff);
-    let Ok(c_uuid) = ::std::ffi::CString::new(uuid) else {
-        args.rval().set(UndefinedValue());
-        return true;
-    };
+    let c_uuid = ZBox::from_bytes(uuid.as_bytes());
     let js_str = JS_NewStringCopyZ(_cx, c_uuid.as_ptr());
     if !js_str.is_null() {
         args.rval().set(StringValue(&*js_str));
@@ -1558,7 +1552,7 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
         }
         _ => {
             let msg = format!("Unsupported algorithm: {}", algo);
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -1866,21 +1860,21 @@ unsafe fn install_file_globals_on_target(
 ) {
     let (filename, dirname) = FILE_GLOBALS.with(|f| f.borrow().clone());
     let raw = cx.raw_cx();
-    if let Some(fn_str) = filename
-        && let Ok(c_fn) = ::std::ffi::CString::new(fn_str) {
-            let js_str = JS_NewStringCopyZ(raw, c_fn.as_ptr());
-            if !js_str.is_null() {
-                let v = StringValue(&*js_str);
-                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-                JS_DefineProperty(raw, target.into(), c"__filename".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
-            }
+    if let Some(fn_str) = filename {
+        let c_fn = ZBox::from_bytes(fn_str.as_bytes());
+        let js_str = JS_NewStringCopyZ(raw, c_fn.as_ptr());
+        if !js_str.is_null() {
+            let v = StringValue(&*js_str);
+            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+            JS_DefineProperty(raw, target.into(), c"__filename".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
         }
-    if let Some(dir_str) = dirname
-        && let Ok(c_dir) = ::std::ffi::CString::new(dir_str) {
-            let js_str = JS_NewStringCopyZ(raw, c_dir.as_ptr());
-            if !js_str.is_null() {
-                let v = StringValue(&*js_str);
-                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+    }
+    if let Some(dir_str) = dirname {
+        let c_dir = ZBox::from_bytes(dir_str.as_bytes());
+        let js_str = JS_NewStringCopyZ(raw, c_dir.as_ptr());
+        if !js_str.is_null() {
+            let v = StringValue(&*js_str);
+            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
                 JS_DefineProperty(raw, target.into(), c"__dirname".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
             }
         }
@@ -1946,7 +1940,7 @@ pub unsafe fn create_node_api_scope_values(
     // flags=0 means: non-enumerable, configurable, writable (SpiderMonkey defaults).
     // The randomized name prevents adversarial enumeration — page JS cannot
     // guess `__bao_7f3a9c2e` since it's generated after page JS runs.
-    let scope_name_c = ::std::ffi::CString::new(scope_name).unwrap_or_default();
+    let scope_name_c = ZBox::from_bytes(scope_name.as_bytes());
     JS_DefineProperty3(
         cx,
         global,

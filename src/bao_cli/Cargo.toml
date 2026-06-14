@@ -1,0 +1,15 @@
+[package]
+name = "bao_cli"
+version = "0.1.0"
+description = "Bao CLI command dispatch — clap parsing + all run_* handlers"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bun_runtime.workspace = true
+bao_browser = { path = "../bao_browser" }
+bao_stealth = { path = "../bao_stealth" }
+bao_bundler = { path = "../bao_bundler" }
+bun_ast = { path = "../ast" }
+bun_options_types = { path = "../options_types" }
+clap = { version = "4", features = ["derive"] }

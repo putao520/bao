@@ -4,11 +4,29 @@
 
 use cdp_server::{
     CdpServer, ServerConfig, TargetInfo, DomainRegistry,
+    DomainHandler, EventSender,
     CdpError, CdpMessage,
 };
 use serde_json::{Value, json};
 
 // ---- CdpServer construction ----
+
+
+// TestDispatch — enum dispatch for multi-handler tests
+enum TestDispatch {
+    Page(PageDomain),
+    Runtime(RuntimeDomain),
+    Dom(DomDomain),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self { Self::Page(h) => h.domain_name(), Self::Runtime(h) => h.domain_name(), Self::Dom(h) => h.domain_name() }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+        match self { Self::Page(h) => h.handle_command(cmd, params, sender), Self::Runtime(h) => h.handle_command(cmd, params, sender), Self::Dom(h) => h.handle_command(cmd, params, sender) }
+    }
+}
 
 #[test]
 fn test_cdp_server_from_config() {
@@ -204,10 +222,10 @@ impl cdp_server::EventSender for NopSender {
 
 #[test]
 fn test_multi_domain_registry_dispatch() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(PageDomain)).unwrap();
-    reg.register(Box::new(RuntimeDomain)).unwrap();
-    reg.register(Box::new(DomDomain)).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Page(PageDomain)).unwrap();
+    reg.register(TestDispatch::Runtime(RuntimeDomain)).unwrap();
+    reg.register(TestDispatch::Dom(DomDomain)).unwrap();
     let sender = NopSender;
 
     // Page domain
@@ -225,8 +243,8 @@ fn test_multi_domain_registry_dispatch() {
 
 #[test]
 fn test_multi_domain_unknown_command_in_known_domain() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(PageDomain)).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Page(PageDomain)).unwrap();
     let sender = NopSender;
 
     let result = reg.dispatch_command("Page.nonexistent", json!({}), &sender);
@@ -236,8 +254,8 @@ fn test_multi_domain_unknown_command_in_known_domain() {
 
 #[test]
 fn test_multi_domain_unknown_domain_returns_none() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(PageDomain)).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Page(PageDomain)).unwrap();
     let sender = NopSender;
 
     let result = reg.dispatch_command("Network.enable", json!({}), &sender);
@@ -246,9 +264,9 @@ fn test_multi_domain_unknown_domain_returns_none() {
 
 #[test]
 fn test_multi_domain_duplicate_registration_fails() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(PageDomain)).unwrap();
-    let result = reg.register(Box::new(PageDomain));
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Page(PageDomain)).unwrap();
+    let result = reg.register(TestDispatch::Page(PageDomain));
     assert!(result.is_err());
 }
 
@@ -335,8 +353,8 @@ fn test_server_config_no_optional_fields_default_none() {
 
 #[test]
 fn test_full_cdp_roundtrip_page_navigate() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(PageDomain)).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Page(PageDomain)).unwrap();
     let sender = NopSender;
 
     let raw = r#"{"id":42,"method":"Page.navigate","params":{"url":"https://example.com"}}"#;
@@ -349,8 +367,8 @@ fn test_full_cdp_roundtrip_page_navigate() {
 
 #[test]
 fn test_full_cdp_roundtrip_runtime_evaluate() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(RuntimeDomain)).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Runtime(RuntimeDomain)).unwrap();
     let sender = NopSender;
 
     let raw = r#"{"id":100,"method":"Runtime.evaluate","params":{"expression":"document.title"}}"#;
@@ -362,8 +380,8 @@ fn test_full_cdp_roundtrip_runtime_evaluate() {
 
 #[test]
 fn test_full_cdp_roundtrip_dom_getdocument() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(DomDomain)).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Dom(DomDomain)).unwrap();
     let sender = NopSender;
 
     let raw = r#"{"id":200,"method":"DOM.getDocument","params":{}}"#;

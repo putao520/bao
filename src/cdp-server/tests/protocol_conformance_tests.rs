@@ -209,14 +209,14 @@ fn test_server_config_max_sessions() {
 
 #[test]
 fn test_registry_new_empty() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<cdp_server::EmptyHandler>::new();
     assert!(!reg.has_domain("Page"));
     assert!(!reg.has_domain("Runtime"));
 }
 
 #[test]
 fn test_registry_dispatch_unknown_returns_none() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<cdp_server::EmptyHandler>::new();
     struct Nop;
     impl EventSender for Nop { fn send_event(&self, _: &str, _: Value) {} }
     assert!(reg.dispatch_command("Unknown.method", json!({}), &Nop).is_none());

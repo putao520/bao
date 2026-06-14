@@ -1,4 +1,4 @@
-// @trace REQ-BRW-003  REQ-BRW-001: Bridge between servo browser context and Node.js APIs
+// @trace REQ-BRW-003 [entity:CdpRouter] [entity:CdpSession]  REQ-BRW-001: Bridge between servo browser context and Node.js APIs
 // REQ-ENG-007: Unified runtime coordination
 //
 // Architecture: dual-Realm isolation via SpiderMonkey compartments
@@ -424,8 +424,8 @@ unsafe fn create_node_realm_native(cx_ptr: *mut std::ffi::c_void, page_global_pt
     let realm_cx: &mut JSContext = &mut realm;
     JS_FireOnNewGlobalObject(realm_cx.raw_cx(), global.handle().into());
 
-    bao_runtime::globals::install_node_apis(realm_cx, global.handle());
-    bao_runtime::globals::install_web_apis(realm_cx, global.handle());
+    bun_runtime::globals::install_node_apis(realm_cx, global.handle());
+    bun_runtime::globals::install_web_apis(realm_cx, global.handle());
 
     if !page_global.is_null() {
         // Install lazy getters that dynamically fetch from Page Realm on every access.
@@ -616,7 +616,7 @@ unsafe fn lazy_dom_getter_impl(
 /// Uses `servo::register_script_thread_callback` to queue a callback that will
 /// be drained on servo's script thread during `handle_evaluate_javascript`.
 /// The callback casts the raw pointers to mozjs types and calls
-/// `bao_runtime::globals::install_all` to register all Node.js/Bun host functions
+/// `bun_runtime::globals::install_all` to register all Node.js/Bun host functions
 /// natively — zero JS polyfill strings, maximum performance.
 ///
 /// Also installs stealth anti-fingerprinting properties as PERMANENT engine-layer
@@ -711,7 +711,7 @@ unsafe fn install_all_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std
     // Set stealth profile before installing (install_stealth_props reads from thread-local)
     if let Some(profile) = stealth_profile {
         bao_stealth::engine_props::set_profile(profile);
-        bao_runtime::fetch_api::set_fetch_stealth_profile(Some(profile.clone()));
+        bun_runtime::fetch_api::set_fetch_stealth_profile(Some(profile.clone()));
         // Set canvas noise at servo rendering layer (REQ-STL-003)
         // This is undetectable from JS since noise is applied in CanvasData::read_pixels
         servo::set_canvas_noise_seed(
@@ -719,7 +719,7 @@ unsafe fn install_all_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std
             bao_stealth::engine_props::canvas_amplitude(),
         );
     } else {
-        bao_runtime::fetch_api::set_fetch_stealth_profile(None);
+        bun_runtime::fetch_api::set_fetch_stealth_profile(None);
     }
 
     // Install stealth properties using raw JSAPI (no Handle wrapper needed)
@@ -735,19 +735,19 @@ unsafe fn install_all_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std
     let global_handle = rooted_global.handle();
 
     // Install Web APIs using properly rooted handle
-    bao_runtime::fetch_api::install_fetch_global(&mut cx, global_handle);
-    bao_runtime::fetch_api::install_response_constructor(&mut cx, global_handle);
-    bao_runtime::fetch_api::install_headers_constructor(&mut cx, global_handle);
-    bao_runtime::fetch_api::install_request_constructor(&mut cx, global_handle);
-    bao_runtime::timers::install_timer_globals(&mut cx, global_handle);
-    bao_runtime::web_api::install_performance(&mut cx, global_handle);
-    bao_runtime::web_api::install_websocket_constructor(&mut cx, global_handle);
-    bao_runtime::globals::install_crypto_global(&mut cx, global_handle);
-    bao_runtime::web_api::install_web_encodings(&mut cx, global_handle);
-    bao_runtime::web_api::install_atob_btoa(&mut cx, global_handle);
-    bao_runtime::web_api::install_queue_microtask(&mut cx, global_handle);
-    bao_runtime::globals::install_structured_clone(&mut cx, global_handle);
-    bao_runtime::globals::install_web_api_constructors(&mut cx, global_handle);
+    bun_runtime::fetch_api::install_fetch_global(&mut cx, global_handle);
+    bun_runtime::fetch_api::install_response_constructor(&mut cx, global_handle);
+    bun_runtime::fetch_api::install_headers_constructor(&mut cx, global_handle);
+    bun_runtime::fetch_api::install_request_constructor(&mut cx, global_handle);
+    bun_runtime::timers::install_timer_globals(&mut cx, global_handle);
+    bun_runtime::web_api::install_performance(&mut cx, global_handle);
+    bun_runtime::web_api::install_websocket_constructor(&mut cx, global_handle);
+    bun_runtime::globals::install_crypto_global(&mut cx, global_handle);
+    bun_runtime::web_api::install_web_encodings(&mut cx, global_handle);
+    bun_runtime::web_api::install_atob_btoa(&mut cx, global_handle);
+    bun_runtime::web_api::install_queue_microtask(&mut cx, global_handle);
+    bun_runtime::globals::install_structured_clone(&mut cx, global_handle);
+    bun_runtime::globals::install_web_api_constructors(&mut cx, global_handle);
 
     // REQ-ENG-001 criterion 5: Ensure WebAssembly global is available.
     // SpiderMonkey provides WebAssembly as a standard global class. It is lazily
@@ -1630,6 +1630,7 @@ impl RuntimeBridge {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::OnceLock;
     // ─── Polyfill validation ──────────────────────────────────────
     // @trace REQ-BRW-003 [req:REQ-BRW-003] [level:unit]
 
@@ -2515,11 +2516,11 @@ mod tests {
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
         assert!(
-            func_body.contains("bao_runtime::fetch_api::install_fetch_global"),
+            func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
         );
         assert!(
-            func_body.contains("bao_runtime::timers::install_timer_globals"),
+            func_body.contains("bun_runtime::timers::install_timer_globals"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
         );
         assert!(
@@ -2562,7 +2563,7 @@ mod tests {
             "REQ-SEC-002 REGRESSION: create_node_realm_native must use AutoRealm"
         );
         assert!(
-            func_body.contains("bao_runtime::globals::install_node_apis"),
+            func_body.contains("bun_runtime::globals::install_node_apis"),
             "REQ-SEC-002 REGRESSION: Node APIs must be installed on Node Realm global"
         );
     }
@@ -2727,11 +2728,11 @@ mod tests {
         let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
-            func_body.contains("bao_runtime::fetch_api::install_fetch_global"),
+            func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
         );
         assert!(
-            func_body.contains("bao_runtime::timers::install_timer_globals"),
+            func_body.contains("bun_runtime::timers::install_timer_globals"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
         );
         assert!(
@@ -2762,7 +2763,7 @@ mod tests {
         let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
-            func_body.contains("bao_runtime::globals::install_node_apis"),
+            func_body.contains("bun_runtime::globals::install_node_apis"),
             "REQ-SEC-003 REGRESSION: Node Realm must install Node APIs (install_node_apis)"
         );
         assert!(

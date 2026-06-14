@@ -58,10 +58,10 @@ fn test_uws_create_app_symbol_resolves_to_cpp_binary() {
 
 #[test]
 fn test_uws_link_smoke() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     // Smoke test: http module loads, createServer is a function, listen is a function.
     // This validates that the JS bridge code referencing uws_* symbols via FFI
@@ -76,5 +76,5 @@ fn test_uws_link_smoke() {
     };
 
     assert!(result, "http.createServer + server.listen must be callable");
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

@@ -2,9 +2,11 @@
 //! A: This struct segments the `OutputFile` list into 3 separate spaces so
 //!    chunk indexing remains the same:
 //!
-//!      1. chunks
-//!      2. sourcemaps, bytecode, and module_info
-//!      3. additional output files
+//! ```text
+//! 1. chunks
+//! 2. sourcemaps, bytecode, and module_info
+//! 3. additional output files
+//! ```
 //!
 //!    We can calculate the space ahead of time and avoid having to do something
 //!    more complicated or which requires extra work.

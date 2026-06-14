@@ -3,7 +3,8 @@
 
 use bao_cdp::servo_bridge::{bridge_channel, BridgeResponse};
 use bao_cdp::domains::register_all_domains_into;
-use cdp_server::{CdpError, DomainRegistry, EventSender};
+use bao_cdp::{DomainRegistry, DomainDispatch};
+use cdp_server::{CdpError, EventSender};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -14,10 +15,10 @@ impl EventSender for NoopSender {
     fn send_event(&self, _: &str, _: Value) {}
 }
 
-fn make_registry() -> DomainRegistry {
-    let mut reg = DomainRegistry::new();
+fn make_registry() -> DomainRegistry<DomainDispatch> {
+    let reg = DomainRegistry::<DomainDispatch>::new();
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    register_all_domains_into(tx, TID.into(), &mut reg);
+    register_all_domains_into(tx, TID.into(), &reg);
     // Background thread drains bridge commands with generic OK responses
     std::thread::spawn(move || {
         let start = std::time::Instant::now();
@@ -32,26 +33,26 @@ fn make_registry() -> DomainRegistry {
 }
 
 /// Registry with no bridge responder — used to test bridge timeout error propagation.
-fn make_registry_no_responder() -> DomainRegistry {
-    let mut reg = DomainRegistry::new();
+fn make_registry_no_responder() -> DomainRegistry<DomainDispatch> {
+    let reg = DomainRegistry::<DomainDispatch>::new();
     let (tx, _rx) = bridge_channel(Duration::from_millis(50));
-    register_all_domains_into(tx, TID.into(), &mut reg);
+    register_all_domains_into(tx, TID.into(), &reg);
     // _rx is dropped — bridge commands will timeout
     reg
 }
 
-fn cmd(reg: &DomainRegistry, method: &str, params: Value) -> Option<Result<Value, CdpError>> {
+fn cmd(reg: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> Option<Result<Value, CdpError>> {
     reg.dispatch_command(method, params, &NoopSender)
 }
 
-fn ok_cmd(reg: &DomainRegistry, method: &str, params: Value) -> Value {
+fn ok_cmd(reg: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> Value {
     match cmd(reg, method, params) {
         Some(Ok(v)) => v,
         other => panic!("expected ok for {}, got: {:?}", method, other),
     }
 }
 
-fn err_cmd(reg: &DomainRegistry, method: &str, params: Value) -> CdpError {
+fn err_cmd(reg: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> CdpError {
     match cmd(reg, method, params) {
         Some(Err(e)) => e,
         other => panic!("expected error for {}, got: {:?}", method, other),

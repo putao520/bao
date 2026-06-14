@@ -19,9 +19,7 @@
 //! - WTF__DumpStackTrace: real backtrace output
 //!
 //! ## Remaining no-op stubs (require architecture work)
-//! - UpgradedDuplex (10): needs real TLS pipeline
 //! - URL (2): needs bun_url integration
-//! - SSL_set_ciphersuites (1): needs full BoringSSL SSL API
 //!
 //! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load time,
 //! so integration tests don't need explicit force_link() calls.
@@ -29,13 +27,13 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use core::ffi::{c_char, c_int, c_short, c_uint, c_void};
+use core::ffi::{c_char, c_int, c_long, c_short, c_void};
 
 mod c_lib_stubs;
 
 /// Get the C `environ` pointer portably.
 unsafe fn extern_environ() -> *mut *mut c_char {
-    extern "C" {
+    unsafe extern "C" {
         static environ: *mut *mut c_char;
     }
     unsafe { environ }
@@ -49,7 +47,7 @@ unsafe fn extern_environ() -> *mut *mut c_char {
 /// functions that require full process initialization.
 #[inline(never)]
 pub fn force_link() {
-    // Wave 74-LOOP-A: pull in bao_uloop's `#[no_mangle] extern "C"` loop
+    // Wave 74-LOOP-A: pull in bao_uloop's `#[unsafe(no_mangle)] extern "C"` loop
     // symbols (uws_get_loop / us_wakeup_loop / us_loop_run_bun_tick / ...).
     // Without this, the linker strips them and any code path that touches
     // `bun_event_loop::MiniEventLoop` fails to link.
@@ -72,8 +70,6 @@ pub fn force_link() {
         let _ = BunString__fromBytes(core::ptr::null(), 0);
         Bun__WTFStringImpl__destroy(core::ptr::null());
 
-        let _ = UpgradedDuplex__is_established as *const () as usize;
-
         // URL FFI fallback (referenced by bun_url)
         let mut url_a = BunStringValue { tag: 0, _impl: [0, 0] };
         let mut url_b = BunStringValue { tag: 0, _impl: [0, 0] };
@@ -90,19 +86,22 @@ pub fn force_link() {
         Bun__registerSignalsForForwarding(0, core::ptr::null(), 0);
         Bun__unregisterSignalsForForwarding();
 
-        // SSL extension stubs (not yet in compiled BoringSSL)
-        let _ = SSL_set_ciphersuites as *const () as usize;
-
         // bun_perf / bun_resolver / bun_core dependency chain
         let _ = Bun__linux_trace_init();
         Bun__linux_trace_emit(0, core::ptr::null(), core::ptr::null(), 0, 0, 0, 0, core::ptr::null());
         let _ = Bun__StackCheck__getMaxStack();
-        let _ = __bun_resolver_init_package_manager(
-            core::ptr::null(), core::ptr::null(), core::ptr::null(),
-        );
-
         // Force-link all c_lib_stubs symbols
         c_lib_stubs::force_c_lib_stubs();
+}
+
+// Entry point for downstream crates to force-link bao_native_stubs.
+// Downstream crates place `#[used] static F: unsafe extern "C" fn() =
+// bao_native_stubs::__force_link_entry;` in their lib.rs so the linker
+// pulls in the entire bao_native_stubs compilation unit (which contains
+// all dispatch stubs and C library replacements).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn __force_link_entry() {
+    force_link();
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -111,39 +110,12 @@ pub fn force_link() {
 // ──────────────────────────────────────────────────────────────
 
 // ──────────────────────────────────────────────────────────────
-// UpgradedDuplex — link-time dispatch stubs
+// UpgradedDuplex — real implementations in src/bao_boringssl_bridge/src/socket.rs
 // ──────────────────────────────────────────────────────────────
-// bun_uws_sys/lib.rs declares these as `extern "C"` and bun_http calls them
-// through the UpgradedDuplex opaque handle. Real implementations exist in
-// bun_runtime (Bun's runtime) but Bao hasn't ported the TLS socket path yet.
-// These stubs satisfy the linker until the TLS pipeline is wired.
-
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__ssl_error(_: *const c_void) -> c_int { 0 }
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__is_established(_: *const c_void) -> bool { false }
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__is_closed(_: *const c_void) -> bool { true }
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__is_shutdown(_: *const c_void) -> bool { true }
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__ssl(_: *const c_void) -> *mut c_void {
-    core::ptr::null_mut()
-}
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__set_timeout(_: *mut c_void, _seconds: c_uint) {}
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__flush(_: *mut c_void) {}
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__encode_and_write(_: *mut c_void, _ptr: *const u8, _len: usize) -> i32 { -1 }
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__raw_write(_: *mut c_void, _ptr: *const u8, _len: usize) -> i32 { -1 }
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__shutdown(_: *mut c_void) {}
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__shutdown_read(_: *mut c_void) {}
-#[no_mangle]
-pub extern "C" fn UpgradedDuplex__close(_: *mut c_void) {}
+// All 12 UpgradedDuplex__* functions (ssl_error, is_established, is_closed,
+// is_shutdown, ssl, set_timeout, flush, encode_and_write, raw_write, shutdown,
+// shutdown_read, close) are provided by bao_boringssl_bridge with #[unsafe(no_mangle)].
+// The linker picks those versions instead of these stubs.
 
 // ──────────────────────────────────────────────────────────────
 // URL — referenced by bun_url (C FFI fallback path)
@@ -163,13 +135,13 @@ pub struct BunStringValue {
     _impl: [u64; 2],
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn URL__getHref(_input: &mut BunStringValue) -> BunStringValue {
     // Return input unchanged — bun_url's callers handle the dead-tag fallback.
     *_input
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn URL__getHrefJoin(
     _base: &mut BunStringValue,
     _relative: &mut BunStringValue,
@@ -178,11 +150,85 @@ pub extern "C" fn URL__getHrefJoin(
     BunStringValue { tag: 0, _impl: [0, 0] }
 }
 
+/// Opaque URL handle — matches `bun_url::whatwg::URL` (`#[repr(C)]` ZST).
+#[repr(C)]
+pub struct OpaqueURL {
+    _opaque: [u8; 0],
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__fromString(_str: &mut BunStringValue) -> Option<core::ptr::NonNull<OpaqueURL>> {
+    None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__pathname(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__protocol(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__hostname(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__hash(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__host(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__password(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__username(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__search(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__fragmentIdentifier(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__getFileURLString(_input: &mut BunStringValue) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__pathFromFileURL(_input: &mut BunStringValue) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__port(_url: &OpaqueURL) -> u32 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__deinit(_url: &mut OpaqueURL) {}
+
 // ──────────────────────────────────────────────────────────────
 // bun_restore_stdio — referenced by bun_core::output::stdio
 // ──────────────────────────────────────────────────────────────
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn bun_restore_stdio() {
     // Flush stdout/stderr before any fd restoration
     use std::io::Write;
@@ -194,7 +240,7 @@ pub extern "C" fn bun_restore_stdio() {
 // ares_inet_pton — referenced by bun_core::string (IP address check)
 // ──────────────────────────────────────────────────────────────
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn ares_inet_pton(af: c_int, src: *const c_char, dst: *mut c_void) -> c_int {
     if src.is_null() || dst.is_null() {
         return 0;
@@ -236,7 +282,7 @@ pub extern "C" fn ares_inet_pton(af: c_int, src: *const c_char, dst: *mut c_void
 // ──────────────────────────────────────────────────────────────
 
 // bun_crash_handler calls WTF__DumpStackTrace
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn WTF__DumpStackTrace() {
     let bt = std::backtrace::Backtrace::capture();
     if bt.status() == std::backtrace::BacktraceStatus::Captured {
@@ -244,8 +290,38 @@ pub extern "C" fn WTF__DumpStackTrace() {
     }
 }
 
+// ──────────────────────────────────────────────────────────────
+// WTF numeric parsers — referenced by bun_core::wtf / bun_core::fmt
+// ──────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__parseES5Date(_bytes: *const u8, _length: usize) -> f64 {
+    f64::NAN
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__parseDouble(_bytes: *const u8, _length: usize, _counted: *mut usize) -> f64 {
+    unsafe { *_counted = 0 };
+    f64::NAN
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__dtoa(_value: f64, _buffer: *mut u8) -> usize {
+    // Return 0 length — caller should fall back to std::fmt
+    0
+}
+
+// ──────────────────────────────────────────────────────────────
+// Regex drop — referenced by bun_install_types::NodeLinker
+// ──────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __bun_regex_drop(_regex: core::ptr::NonNull<()>) {
+    // No-op — regex cleanup not needed without JSC regex engine
+}
+
 // bun_core::util::StackCheck calls initialize
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn Bun__StackCheck__initialize() -> usize { 8 * 1024 * 1024 }
 
 // bun_spawn::process calls signal forwarding
@@ -253,17 +329,17 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 static FORWARDED_PID: AtomicI32 = AtomicI32::new(-1);
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn Bun__registerSignalsForForwarding(pid: i32, _signals: *const c_int, _count: usize) {
     FORWARDED_PID.store(pid, Ordering::SeqCst);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn Bun__unregisterSignalsForForwarding() {
     FORWARDED_PID.store(-1, Ordering::SeqCst);
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn Bun__sendPendingSignalIfNecessary() {
     let pid = FORWARDED_PID.load(Ordering::SeqCst);
     if pid > 0 {
@@ -272,12 +348,9 @@ pub extern "C" fn Bun__sendPendingSignalIfNecessary() {
     }
 }
 
-// bun_http references SSL_set_ciphersuites (BoringSSL extension, not yet in compiled lib)
-#[no_mangle]
-pub extern "C" fn SSL_set_ciphersuites(_ssl: *mut c_void, _str: *const c_char) -> c_int { 0 }
-
+// SSL_set_ciphersuites — real implementation in src/bao_boringssl_bridge/src/socket.rs
 // bun_core::util::reload_process references this
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn on_before_reload_process_linux() {
     // Sync filesystem buffers before exec() — matches Bun's behavior
     unsafe { libc::sync(); }
@@ -336,7 +409,7 @@ const ACTION_OPEN: u8 = 3;
 /// Bao's version converts `BunSpawnRequest` actions to standard
 /// `posix_spawn_file_actions_t` and calls `posix_spawnp`, avoiding
 /// the glibc 2.39 clone3+CLONE_INTO_CGROUP EBADF bug on cgroup v2 systems.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn posix_spawn_bun(
     pid: *mut c_int,
     path: *const c_char,
@@ -436,7 +509,7 @@ pub extern "C" fn posix_spawn_bun(
     }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn bun_cpu_features() -> u64 {
     let mut flags: u64 = 0;
     flags |= 1 << 1; // SSE2 (guaranteed on x86_64)
@@ -452,7 +525,7 @@ pub extern "C" fn bun_cpu_features() -> u64 {
     flags
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn is_executable_file(path: *const c_char) -> bool {
     if path.is_null() {
         return false;
@@ -474,7 +547,7 @@ pub extern "C" fn is_executable_file(path: *const c_char) -> bool {
 /// Original: Zig-compiled C function in bun_core/string.
 /// Bao: allocate and copy bytes into a Rust String, returned as a pointer.
 /// Note: This is a simplified stub — the real implementation handles Latin1 vs UTF-16.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn BunString__fromBytes(bytes: *const u8, len: usize) -> *mut c_void {
     if bytes.is_null() || len == 0 {
         return core::ptr::null_mut();
@@ -489,7 +562,7 @@ pub extern "C" fn BunString__fromBytes(bytes: *const u8, len: usize) -> *mut c_v
 /// Bun__WTFStringImpl__destroy: destroy a WTFStringImpl
 /// Original: Zig-compiled C function that decrements refcount and frees.
 /// Bao: free the allocated String.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn Bun__WTFStringImpl__destroy(this: *const c_void) {
     if this.is_null() {
         return;
@@ -507,11 +580,11 @@ pub extern "C" fn Bun__WTFStringImpl__destroy(this: *const c_void) {
 /// Original: Zig-compiled C++ AtomicI64 global variable accessed via .store()/.load().
 /// Bao: provides an AtomicI64 static that bun_spawn_sys::ffi expects.
 #[cfg(target_os = "linux")]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
 
 #[cfg(not(target_os = "linux"))]
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(-1);
 
 // ──────────────────────────────────────────────────────────────
@@ -538,17 +611,17 @@ pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic
 // Misc stubs
 // ──────────────────────────────────────────────────────────────
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn __bun_crash_handler_out_of_memory() -> *mut c_void { unsafe { libc::abort() } }
 
 // ──────────────────────────────────────────────────────────────
 // bun_perf Linux trace — no-op stubs (Bao uses log crate instead)
 // ──────────────────────────────────────────────────────────────
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn Bun__linux_trace_init() -> bool { false }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn Bun__linux_trace_emit(
     _id: u32,
     _name: *const c_char,
@@ -564,7 +637,7 @@ pub extern "C" fn Bun__linux_trace_emit(
 // bun_core::StackCheck — returns stack end pointer
 // ──────────────────────────────────────────────────────────────
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
     unsafe {
         let mut attr: libc::pthread_attr_t = core::mem::zeroed();
@@ -583,20 +656,8 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
     }
 }
 
-// ──────────────────────────────────────────────────────────────
-// bun_resolver package manager init — no-op stub
-// Bao does not auto-install packages at resolve time.
-// ──────────────────────────────────────────────────────────────
-
-#[no_mangle]
-pub extern "C" fn __bun_resolver_init_package_manager(
-    _log: *const c_void,
-    _install: *const c_void,
-    _env: *const c_void,
-) -> *mut c_void {
-    // Return null — no package manager available (auto-install disabled)
-    core::ptr::null_mut()
-}
+// __bun_resolver_init_package_manager — provided by bun_install (#[unsafe(no_mangle)])
+// bao_runtime depends on bun_install, the linker resolves the symbol from there.
 // All highway_* symbols resolved by libhighway.a + libhighway_strings.a at link time.
 // ──────────────────────────────────────────────────────────────
 
@@ -608,3 +669,95 @@ pub extern "C" fn __bun_resolver_init_package_manager(
 // libboringssl.a (bun_boringssl_sys build.rs). Includes:
 //   SSL_set_cipher_list, SSL_set_ciphersuites, SSL_set1_curves_list,
 //   SSL_set1_sigalgs_list, and all other SSL_*/BIO_*/ERR_* symbols.
+
+// ──────────────────────────────────────────────────────────────
+// §0  Closed-set dispatch no-op stubs via bun_dispatch::link_noop_*
+// ──────────────────────────────────────────────────────────────
+// The proc-macro `link_interface!` auto-generates `link_noop_<Iface>!` which
+// produces `#[unsafe(no_mangle)] extern "Rust"` stubs for every listed variant.
+// Symbols live in this compilation unit, so the linker pulls them in automatically.
+
+bun_io::link_noop_BufferedReaderParentLink!(
+    SubprocessPipeReader, ShellPipeReader, ShellIoReader, FileReader,
+    FileResponseStream, Terminal, CronRegister, CronRemove,
+    FilterRunHandle, MultiRunPipeReader, TestParallelWorkerPipe,
+    LifecycleScript, SecurityScan
+);
+
+bun_spawn::link_noop_ProcessExit!(
+    Subprocess, LifecycleScript, SecurityScan, Shell,
+    FilterRunHandle, MultiRunHandle, TestParallelWorker,
+    CronRegister, CronRemove, ChromeProcess, HostProcess
+);
+
+// ──────────────────────────────────────────────────────────────
+// §3  Miscellaneous extern "C" stubs
+// ──────────────────────────────────────────────────────────────
+
+// ── JSC regex FFI no-op stubs (bun_jsc::RegularExpression replacement) ──
+// Bao uses SpiderMonkey instead of JSC, so these Yarr FFI symbols are unused.
+// `bun_install::PnpmMatcher` calls them; returning None/false is safe —
+// PnpmMatcher falls back to exact string comparison when regex fails.
+// NOTE: uses BunStringValue (24 bytes, #[repr(C)]) which is ABI-compatible
+// with bun_core::String. Cannot import bun_core directly (circular dep).
+
+#[unsafe(no_mangle)]
+pub fn __bun_regex_compile(_pattern: BunStringValue) -> Option<core::ptr::NonNull<()>> {
+    None
+}
+
+#[unsafe(no_mangle)]
+pub fn __bun_regex_matches(_regex: core::ptr::NonNull<()>, _input: &BunStringValue) -> bool {
+    false
+}
+
+// NOTE: __bun_regex_drop already defined in §2 above (line 319).
+
+// ── DNS prefetch no-op stub ──
+// `bun_install` calls `bun_dns::__bun_dns_prefetch` to warm the DNS cache
+// before fetching packages. In Bao's non-JSC context this is handled by
+// `bun_dns::internal::prefetch` directly; this stub prevents linker errors
+// when the JSC-tier definition is absent.
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __bun_dns_prefetch(
+    _loop_: *mut c_void,
+    _hostname: *const u8,
+    _len: usize,
+    _port: u16,
+) {
+    // No-op: DNS prefetch is non-critical for package installation.
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __bun_get_vm_ctx(
+    _kind: bun_io::AllocatorType,
+) -> bun_io::EventLoopCtx {
+    bun_io::EventLoopCtx {
+        kind: bun_io::EventLoopCtxKind::Mini,
+        owner: std::ptr::null_mut(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[unsafe(no_mangle)]
+pub extern "C" fn sys_preadv2(
+    _fd: c_int,
+    _iov: *const std::ffi::c_void,
+    _iovcnt: c_int,
+    _offset: c_long,
+    _flags: c_uint,
+) -> c_long {
+    -1
+}
+
+#[cfg(target_os = "linux")]
+use std::ffi::c_uint;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__numberOfProcessorCores() -> c_int {
+    1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__releaseFastMallocFreeMemoryForThisThread() {}

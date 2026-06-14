@@ -12,6 +12,28 @@ use serde_json::{json, Value};
 
 // ---- CdpServer constructor + accessors ----
 
+
+// TestDispatch — enum dispatch for multi-handler tests
+enum TestDispatch {
+    Echo(EchoDomain),
+    Lifecycle(LifecycleDomain),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self { Self::Echo(h) => h.domain_name(), Self::Lifecycle(h) => h.domain_name() }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+        match self { Self::Echo(h) => h.handle_command(cmd, params, sender), Self::Lifecycle(h) => h.handle_command(cmd, params, sender) }
+    }
+    fn on_session_created(&self, session_id: &str) {
+        match self { Self::Echo(h) => h.on_session_created(session_id), Self::Lifecycle(h) => h.on_session_created(session_id) }
+    }
+    fn on_session_destroyed(&self, session_id: &str) {
+        match self { Self::Echo(h) => h.on_session_destroyed(session_id), Self::Lifecycle(h) => h.on_session_destroyed(session_id) }
+    }
+}
+
 #[test]
 fn test_cdp_server_new_default_config() {
     let server = CdpServer::new(ServerConfig::default());
@@ -199,48 +221,40 @@ impl DomainHandler for LifecycleDomain {
 
 #[test]
 fn test_registry_notify_session_created() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(LifecycleDomain { name: "Test" })).unwrap();
+    let reg = DomainRegistry::<LifecycleDomain>::new();
+    reg.register(LifecycleDomain { name: "Test" }).unwrap();
     reg.notify_session_created("Test", "sess-001");
     // No panic = success
 }
 
 #[test]
 fn test_registry_notify_session_destroyed() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(LifecycleDomain { name: "Test" })).unwrap();
+    let reg = DomainRegistry::<LifecycleDomain>::new();
+    reg.register(LifecycleDomain { name: "Test" }).unwrap();
     reg.notify_session_destroyed(&["Test".to_string()], "sess-001");
     // No panic = success
 }
 
 #[test]
 fn test_registry_notify_unknown_domain_no_panic() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<LifecycleDomain>::new();
     reg.notify_session_created("Unknown", "sess-001");
     reg.notify_session_destroyed(&["Unknown".to_string()], "sess-001");
 }
 
 #[test]
 fn test_registry_notify_multiple_domains_destroyed() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(LifecycleDomain { name: "Alpha" })).unwrap();
-    reg.register(Box::new(LifecycleDomain { name: "Beta" })).unwrap();
+    let reg = DomainRegistry::<LifecycleDomain>::new();
+    reg.register(LifecycleDomain { name: "Alpha" }).unwrap();
+    reg.register(LifecycleDomain { name: "Beta" }).unwrap();
     reg.notify_session_destroyed(&["Alpha".to_string(), "Beta".to_string(), "Gamma".to_string()], "sess-x");
 }
 
 #[test]
-fn test_registry_get_returns_none() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(LifecycleDomain { name: "Test" })).unwrap();
-    // get() is a placeholder that returns None
-    assert!(reg.get("Test").is_none());
-}
-
-#[test]
 fn test_registry_double_register_fails() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(LifecycleDomain { name: "Test" })).unwrap();
-    let result = reg.register(Box::new(LifecycleDomain { name: "Test" }));
+    let reg = DomainRegistry::<LifecycleDomain>::new();
+    reg.register(LifecycleDomain { name: "Test" }).unwrap();
+    let result = reg.register(LifecycleDomain { name: "Test" });
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("already registered"));
 }
@@ -683,8 +697,8 @@ fn test_registry_dispatch_echo() {
     impl EventSender for Nop {
         fn send_event(&self, _: &str, _: Value) {}
     }
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoDomain)).unwrap();
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
     let result = reg.dispatch_command("Echo.hello", json!({"msg": "world"}), &Nop);
     assert!(result.is_some());
     let val = result.unwrap().unwrap();
@@ -698,7 +712,7 @@ fn test_registry_dispatch_no_domain() {
     impl EventSender for Nop {
         fn send_event(&self, _: &str, _: Value) {}
     }
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     let result = reg.dispatch_command("Unknown.cmd", json!({}), &Nop);
     assert!(result.is_none());
 }
@@ -709,7 +723,7 @@ fn test_registry_dispatch_dot_only() {
     impl EventSender for Nop {
         fn send_event(&self, _: &str, _: Value) {}
     }
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     let result = reg.dispatch_command(".", json!({}), &Nop);
     assert!(result.is_none());
 }
@@ -720,7 +734,7 @@ fn test_registry_dispatch_empty_method() {
     impl EventSender for Nop {
         fn send_event(&self, _: &str, _: Value) {}
     }
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     let result = reg.dispatch_command("", json!({}), &Nop);
     assert!(result.is_none());
 }
@@ -826,9 +840,9 @@ fn test_registry_multiple_dispatch() {
     impl EventSender for Nop {
         fn send_event(&self, _: &str, _: Value) {}
     }
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(LifecycleDomain { name: "Alpha" })).unwrap();
-    reg.register(Box::new(LifecycleDomain { name: "Beta" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Alpha" })).unwrap();
+    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Beta" })).unwrap();
 
     // LifecycleDomain matches "Test.ping", not "Alpha.ping"
     let r1 = reg.dispatch_command("Alpha.ping", json!({}), &Nop);
@@ -836,7 +850,7 @@ fn test_registry_multiple_dispatch() {
     assert!(r1.unwrap().is_err()); // Unknown command for Alpha domain
 
     // EchoDomain matches any command
-    reg.register(Box::new(EchoDomain)).unwrap();
+    reg.register(TestDispatch::Echo(EchoDomain)).unwrap();
     let r2 = reg.dispatch_command("Echo.hello", json!({"msg": "world"}), &Nop);
     assert!(r2.is_some());
     let val = r2.unwrap().unwrap();

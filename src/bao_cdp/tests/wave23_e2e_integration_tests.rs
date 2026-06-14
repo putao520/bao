@@ -5,7 +5,7 @@
 use bao_cdp::domains::{register_all_domains_with_target, ServoTargetProvider};
 
 const TID: &str = "test-target";
-use bao_cdp::{BridgeCommand, BridgeResponse, bridge_channel};
+use bao_cdp::{DomainDispatch,BridgeCommand, BridgeResponse, bridge_channel};
 
 use cdp_server::{DomainRegistry, EventBroadcaster, TargetProvider};
 
@@ -55,7 +55,7 @@ fn full_12_domain_registry_dispatch_chain() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let responder = mock_responder(rx, done.clone());
 
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_with_target(bridge, "e2e-target-id".into(), &registry);
 
     let expected = [
@@ -80,7 +80,7 @@ fn cross_domain_command_routing_unknown_returns_32601() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let responder = mock_responder(rx, done.clone());
 
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_with_target(bridge, "routing-target".into(), &registry);
 
     let known_commands: &[(&str, serde_json::Value)] = &[
@@ -133,7 +133,7 @@ fn target_handler_and_provider_share_id_e2e() {
 
     let provider = ServoTargetProvider::new(sender.clone(), shared_id.clone(), "127.0.0.1".into(), 9222);
 
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_with_target(sender, shared_id.clone(), &registry);
 
     let targets = provider.list_targets();
@@ -162,7 +162,7 @@ fn event_broadcasting_through_registry_dispatch() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let responder = mock_responder(rx, done.clone());
 
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_with_target(bridge, "event-target".into(), &registry);
 
     let sessions: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<cdp_server::CdpSession>>>>> =
@@ -198,7 +198,7 @@ fn bridge_channel_relay_navigate_evaluate_close() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let responder = mock_responder(rx, done.clone());
 
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_with_target(bridge.clone(), "relay-target".into(), &registry);
 
     // Page.navigate sends Navigate to bridge, returns synthetic frameId
@@ -239,7 +239,7 @@ fn target_attach_generates_session_id() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let responder = mock_responder(rx, done.clone());
 
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_with_target(bridge, "attach-target-123".into(), &registry);
 
     let result = registry.dispatch_command("Target.attachToTarget", json!({ "targetId": "attach-target-123" }), &NoopSender);
@@ -262,7 +262,7 @@ fn target_auto_attach_and_discover_are_noop() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let responder = mock_responder(rx, done.clone());
 
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     register_all_domains_with_target(bridge, "noop-target".into(), &registry);
 
     let result = registry.dispatch_command("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": false }), &NoopSender);

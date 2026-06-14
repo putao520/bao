@@ -2918,7 +2918,6 @@ mod spawn_process_body {
         impl Drop for SignalForwarding {
             fn drop(&mut self) {
                 Bun__unregisterSignalsForForwarding();
-                bun_crash_handler::reset_on_posix();
             }
         }
 

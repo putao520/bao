@@ -1,7 +1,7 @@
 // @trace TEST-CDS-010-STRESS [req:REQ-CDS-001,REQ-CDS-004,REQ-CDS-006,REQ-CDS-007] [level:stress]
 // Stress tests + error recovery: high-frequency dispatch, concurrent registry, session state recovery
 
-use cdp_server::{CdpMessage, CdpError, CdpResponse, DomainRegistry, EventSender, ServerConfig};
+use cdp_server::{CdpMessage, CdpError, CdpResponse, DomainRegistry, DomainHandler, EventSender, ServerConfig};
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -82,14 +82,30 @@ impl cdp_server::DomainHandler for StatefulHandler {
 
 // ---- High-frequency dispatch ----
 
+
+// TestDispatch — enum dispatch for multi-handler tests
+enum TestDispatch {
+    Stress(StressHandler),
+    Stateful(StatefulHandler),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self { Self::Stress(h) => h.domain_name(), Self::Stateful(h) => h.domain_name() }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+        match self { Self::Stress(h) => h.handle_command(cmd, params, sender), Self::Stateful(h) => h.handle_command(cmd, params, sender) }
+    }
+}
+
 #[test]
 fn test_stress_1000_echo_dispatches() {
     let call_count = Arc::new(AtomicUsize::new(0));
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(StressHandler {
+    let reg = DomainRegistry::<StressHandler>::new();
+    reg.register(StressHandler {
         name: "Stress",
         call_count: call_count.clone(),
-    })).unwrap();
+    }).unwrap();
 
     let sender = CountingSender::new();
 
@@ -111,11 +127,11 @@ fn test_stress_1000_echo_dispatches() {
 #[test]
 fn test_stress_mixed_commands() {
     let call_count = Arc::new(AtomicUsize::new(0));
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(StressHandler {
+    let reg = DomainRegistry::<StressHandler>::new();
+    reg.register(StressHandler {
         name: "Stress",
         call_count: call_count.clone(),
-    })).unwrap();
+    }).unwrap();
 
     let sender = CountingSender::new();
     let mut ok_count = 0usize;
@@ -149,11 +165,11 @@ fn test_stress_mixed_commands() {
 
 #[test]
 fn test_stress_unknown_domain_returns_none() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(StressHandler {
+    let reg = DomainRegistry::<StressHandler>::new();
+    reg.register(StressHandler {
         name: "Stress",
         call_count: Arc::new(AtomicUsize::new(0)),
-    })).unwrap();
+    }).unwrap();
 
     let sender = CountingSender::new();
 
@@ -165,11 +181,11 @@ fn test_stress_unknown_domain_returns_none() {
 #[test]
 fn test_stress_stateful_handler_consistency() {
     let state = Arc::new(AtomicUsize::new(0));
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(StatefulHandler {
+    let reg = DomainRegistry::<StatefulHandler>::new();
+    reg.register(StatefulHandler {
         name: "Stateful",
         state: state.clone(),
-    })).unwrap();
+    }).unwrap();
 
     let sender = CountingSender::new();
 
@@ -196,11 +212,11 @@ fn test_stress_stateful_handler_consistency() {
 
 #[test]
 fn test_error_recovery_continues_after_error() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(StressHandler {
+    let reg = DomainRegistry::<StressHandler>::new();
+    reg.register(StressHandler {
         name: "Stress",
         call_count: Arc::new(AtomicUsize::new(0)),
-    })).unwrap();
+    }).unwrap();
 
     let sender = CountingSender::new();
 
@@ -215,11 +231,11 @@ fn test_error_recovery_continues_after_error() {
 
 #[test]
 fn test_error_recovery_unknown_command_then_known() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(StressHandler {
+    let reg = DomainRegistry::<StressHandler>::new();
+    reg.register(StressHandler {
         name: "Stress",
         call_count: Arc::new(AtomicUsize::new(0)),
-    })).unwrap();
+    }).unwrap();
 
     let sender = CountingSender::new();
 
@@ -235,11 +251,11 @@ fn test_error_recovery_unknown_command_then_known() {
 
 #[test]
 fn test_error_recovery_sequential_errors() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(StressHandler {
+    let reg = DomainRegistry::<StressHandler>::new();
+    reg.register(StressHandler {
         name: "Stress",
         call_count: Arc::new(AtomicUsize::new(0)),
-    })).unwrap();
+    }).unwrap();
 
     let sender = CountingSender::new();
 
@@ -354,16 +370,16 @@ fn test_server_config_builder_zero_port() {
 
 #[test]
 fn test_registry_10_domains_dispatch() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<StressHandler>::new();
     let counters: Vec<Arc<AtomicUsize>> = (0..10)
         .map(|_| Arc::new(AtomicUsize::new(0)))
         .collect();
 
     for i in 0..10 {
-        reg.register(Box::new(StressHandler {
+        reg.register(StressHandler {
             name: Box::leak(format!("Domain{}", i).into_boxed_str()),
             call_count: counters[i].clone(),
-        })).unwrap();
+        }).unwrap();
     }
 
     let sender = CountingSender::new();
@@ -389,13 +405,13 @@ fn test_registry_10_domains_dispatch() {
 
 #[test]
 fn test_registry_has_domain_after_register() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<StressHandler>::new();
     assert!(!reg.has_domain("Test"));
 
-    reg.register(Box::new(StressHandler {
+    reg.register(StressHandler {
         name: "Test",
         call_count: Arc::new(AtomicUsize::new(0)),
-    })).unwrap();
+    }).unwrap();
 
     assert!(reg.has_domain("Test"));
     assert!(!reg.has_domain("test")); // case-sensitive

@@ -73,7 +73,7 @@ fn cdp_stealth_diagnostic_all() {
     // ---- Phase 1: Firefox profile CDP stealth ----
     {
         let mut ctx = JsContext::for_test().expect("JsContext");
-        ctx.set_global_setup(bao_runtime::globals::install_all);
+        ctx.set_global_setup(bun_runtime::globals::install_all);
 
         // chrome.runtime must not be accessible
         let chrome_runtime = match ctx.eval(
@@ -109,7 +109,7 @@ fn cdp_stealth_diagnostic_all() {
         bao_stealth::engine_props::set_profile(&profile);
 
         let mut ctx = JsContext::for_test().expect("JsContext");
-        ctx.set_global_setup(bao_runtime::globals::install_all);
+        ctx.set_global_setup(bun_runtime::globals::install_all);
 
         let chrome_runtime = match ctx.eval(
             "try { typeof chrome !== 'undefined' && typeof chrome.runtime !== 'undefined' } catch(e) { false }",

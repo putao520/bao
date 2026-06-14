@@ -1,9 +1,10 @@
 // @trace TEST-CDP-CHAIN [req:REQ-CDP-001] [level:integration]
-// CDP full-chain integration: DomainRegistry + DomainHandler command routing
+// CDP full-chain integration: DomainRegistry<DomainDispatch> + DomainHandler command routing
 
 use bao_cdp::domains::register_all_domains_into;
 use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeResponse};
-use cdp_server::{DomainRegistry, EventSender, CdpError};
+use bao_cdp::{DomainRegistry, DomainDispatch};
+use cdp_server::{EventSender, CdpError};
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -14,10 +15,10 @@ impl EventSender for NoopSender {
     fn send_event(&self, _method: &str, _params: Value) {}
 }
 
-fn make_registry() -> DomainRegistry {
-    let mut reg = DomainRegistry::new();
+fn make_registry() -> DomainRegistry<DomainDispatch> {
+    let reg = DomainRegistry::<DomainDispatch>::new();
     let (tx, rx) = bridge_channel(Duration::from_secs(5));
-    register_all_domains_into(tx, TID.into(), &mut reg);
+    register_all_domains_into(tx, TID.into(), &reg);
 
     // Background responder: owns receiver exclusively
     std::thread::spawn(move || {
@@ -32,12 +33,12 @@ fn make_registry() -> DomainRegistry {
     reg
 }
 
-fn cmd(reg: &DomainRegistry, method: &str, params: Value) -> Option<Result<Value, CdpError>> {
+fn cmd(reg: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> Option<Result<Value, CdpError>> {
     reg.dispatch_command(method, params, &NoopSender)
 }
 
 /// Returns true if the dispatch succeeded (Some(Ok)).
-fn ok(reg: &DomainRegistry, method: &str, params: Value) -> bool {
+fn ok(reg: &DomainRegistry<DomainDispatch>, method: &str, params: Value) -> bool {
     matches!(cmd(reg, method, params), Some(Ok(_)))
 }
 

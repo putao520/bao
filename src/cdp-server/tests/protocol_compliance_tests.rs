@@ -325,8 +325,8 @@ impl cdp_server::EventSender for NopSender {
 
 #[test]
 fn test_full_roundtrip_success() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoDomain)).unwrap();
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
     let msg: CdpMessage = serde_json::from_str(r#"{"id":100,"method":"Echo.ping","params":{}}"#).unwrap();
@@ -338,8 +338,8 @@ fn test_full_roundtrip_success() {
 
 #[test]
 fn test_full_roundtrip_echo() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoDomain)).unwrap();
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
     let msg: CdpMessage = serde_json::from_str(
@@ -353,8 +353,8 @@ fn test_full_roundtrip_echo() {
 
 #[test]
 fn test_full_roundtrip_handler_error() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoDomain)).unwrap();
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
     let msg: CdpMessage = serde_json::from_str(r#"{"id":200,"method":"Echo.fail","params":{}}"#).unwrap();
@@ -365,8 +365,8 @@ fn test_full_roundtrip_handler_error() {
 
 #[test]
 fn test_full_roundtrip_unknown_method_in_domain() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoDomain)).unwrap();
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
     let msg: CdpMessage = serde_json::from_str(r#"{"id":201,"method":"Echo.nonexistent","params":{}}"#).unwrap();
@@ -377,7 +377,7 @@ fn test_full_roundtrip_unknown_method_in_domain() {
 
 #[test]
 fn test_full_roundtrip_unknown_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<EchoDomain>::new();
     let sender = NopSender;
 
     let msg: CdpMessage = serde_json::from_str(r#"{"id":300,"method":"Foo.bar","params":{}}"#).unwrap();
@@ -387,8 +387,8 @@ fn test_full_roundtrip_unknown_domain() {
 
 #[test]
 fn test_full_roundtrip_notification() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoDomain)).unwrap();
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
     // Notification (no id) — dispatch still works
@@ -447,8 +447,8 @@ fn test_server_config_builder_partial() {
 
 #[test]
 fn test_dispatch_with_missing_params_uses_default() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoDomain)).unwrap();
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
     // CdpMessage parsed from JSON without params → params is None → unwrap_or_default() gives Null
@@ -459,8 +459,8 @@ fn test_dispatch_with_missing_params_uses_default() {
 
 #[test]
 fn test_dispatch_after_multiple_errors_recovers() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoDomain)).unwrap();
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
     let sender = NopSender;
 
     // Multiple errors

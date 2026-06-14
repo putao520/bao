@@ -90,19 +90,20 @@ impl EventSender for CapturingEventSender {
 fn test_registry_concurrent_registration() {
     use std::thread;
 
-    let registry = Arc::new(DomainRegistry::new());
+    struct Handler { name: &'static str }
+    impl DomainHandler for Handler {
+        fn domain_name(&self) -> &'static str { self.name }
+        fn handle_command(&self, _cmd: &str, _p: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
+            Ok(json!({}))
+        }
+    }
+
+    let registry = Arc::new(DomainRegistry::<Handler>::new());
     let mut handles = Vec::new();
 
     for i in 0..5 {
         let reg = Arc::clone(&registry);
         handles.push(thread::spawn(move || {
-            struct Handler { name: &'static str }
-            impl DomainHandler for Handler {
-                fn domain_name(&self) -> &'static str { self.name }
-                fn handle_command(&self, _cmd: &str, _p: Value, _es: &dyn EventSender) -> Result<Value, CdpError> {
-                    Ok(json!({}))
-                }
-            }
             let domain_name = match i {
                 0 => "Domain0",
                 1 => "Domain1",
@@ -112,11 +113,11 @@ fn test_registry_concurrent_registration() {
             };
             // Create handler with unique name
             let result = match i {
-                0 => reg.register(Box::new(Handler { name: "Domain0" })),
-                1 => reg.register(Box::new(Handler { name: "Domain1" })),
-                2 => reg.register(Box::new(Handler { name: "Domain2" })),
-                3 => reg.register(Box::new(Handler { name: "Domain3" })),
-                _ => reg.register(Box::new(Handler { name: "Domain4" })),
+                0 => reg.register(Handler { name: "Domain0" }),
+                1 => reg.register(Handler { name: "Domain1" }),
+                2 => reg.register(Handler { name: "Domain2" }),
+                3 => reg.register(Handler { name: "Domain3" }),
+                _ => reg.register(Handler { name: "Domain4" }),
             };
             assert!(result.is_ok());
         }));
@@ -134,7 +135,7 @@ fn test_registry_concurrent_registration() {
 
 #[test]
 fn test_registry_dispatch_unregistered() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<cdp_server::EmptyHandler>::new();
     let es = NoopEventSender;
     let result = registry.dispatch_command("Unregistered.method", json!({}), &es);
     assert!(result.is_none());
@@ -148,8 +149,8 @@ fn test_registry_dispatch_unregistered() {
 fn test_session_created_callback() {
     let handler = LifecycleHandler::new();
     let created = Arc::clone(&handler.session_created);
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(handler)).unwrap();
+    let registry = DomainRegistry::<LifecycleHandler>::new();
+    registry.register(handler).unwrap();
 
     registry.notify_session_created("Lifecycle", "sess-1");
 
@@ -162,8 +163,8 @@ fn test_session_created_callback() {
 fn test_session_destroyed_callback() {
     let handler = LifecycleHandler::new();
     let destroyed = Arc::clone(&handler.session_destroyed);
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(handler)).unwrap();
+    let registry = DomainRegistry::<LifecycleHandler>::new();
+    registry.register(handler).unwrap();
 
     let domains = vec!["Lifecycle".to_string()];
     registry.notify_session_destroyed(&domains, "sess-1");
@@ -176,8 +177,8 @@ fn test_session_destroyed_callback() {
 #[test]
 fn test_lifecycle_dispatch_command() {
     let handler = LifecycleHandler::new();
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(handler)).unwrap();
+    let registry = DomainRegistry::<LifecycleHandler>::new();
+    registry.register(handler).unwrap();
 
     let es = NoopEventSender;
     let result = registry.dispatch_command("Lifecycle.status", json!({}), &es);
@@ -190,8 +191,8 @@ fn test_lifecycle_dispatch_command() {
 fn test_lifecycle_unknown_domain_no_callback() {
     let handler = LifecycleHandler::new();
     let created = Arc::clone(&handler.session_created);
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(handler)).unwrap();
+    let registry = DomainRegistry::<LifecycleHandler>::new();
+    registry.register(handler).unwrap();
 
     // Notify a domain that doesn't have a handler
     registry.notify_session_created("NonExistent", "sess-1");
@@ -249,8 +250,8 @@ fn test_handler_with_event_sender() {
 
     let captor = EventCaptor::new();
     let sender = captor.sender();
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(EventEmitHandler)).unwrap();
+    let registry = DomainRegistry::<EventEmitHandler>::new();
+    registry.register(EventEmitHandler).unwrap();
 
     let result = registry.dispatch_command("Emit.trigger", json!({}), &sender);
     assert!(result.is_some());
@@ -407,7 +408,7 @@ fn test_cdp_error_debug_format() {
 
 #[test]
 fn test_registry_dispatch_multiple_domains_order() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<OrderHandler>::new();
 
     struct OrderHandler { name: &'static str, order: Arc<Mutex<Vec<&'static str>>> }
     impl DomainHandler for OrderHandler {
@@ -420,9 +421,9 @@ fn test_registry_dispatch_multiple_domains_order() {
 
     let order = Arc::new(Mutex::new(Vec::new()));
 
-    registry.register(Box::new(OrderHandler { name: "Alpha", order: Arc::clone(&order) })).unwrap();
-    registry.register(Box::new(OrderHandler { name: "Beta", order: Arc::clone(&order) })).unwrap();
-    registry.register(Box::new(OrderHandler { name: "Gamma", order: Arc::clone(&order) })).unwrap();
+    registry.register(OrderHandler { name: "Alpha", order: Arc::clone(&order) }).unwrap();
+    registry.register(OrderHandler { name: "Beta", order: Arc::clone(&order) }).unwrap();
+    registry.register(OrderHandler { name: "Gamma", order: Arc::clone(&order) }).unwrap();
 
     let es = NoopEventSender;
     registry.dispatch_command("Alpha.ping", json!({}), &es).unwrap().unwrap();
@@ -460,8 +461,8 @@ fn test_notify_destroyed_multiple_domains() {
     let h1 = LifecycleHandler::new();
     let destroyed1 = Arc::clone(&h1.session_destroyed);
 
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(h1)).unwrap();
+    let registry = DomainRegistry::<LifecycleHandler>::new();
+    registry.register(h1).unwrap();
 
     registry.notify_session_destroyed(
         &["Lifecycle".to_string()],

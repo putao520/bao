@@ -112,7 +112,7 @@ impl TlsFingerprint {
     /// JA4 fingerprint: <tls_version><num_suites><num_exts><alpn_hash>
     /// where alpn_hash is first 12 chars of SHA256 of sorted ALPN values
     pub fn compute_ja4(&self) -> String {
-        use sha2::{Sha256, Digest};
+        use bun_sha_hmac::SHA256;
 
         let num_suites = self.cipher_suites.len();
         let num_exts = self.extensions.len();
@@ -129,10 +129,11 @@ impl TlsFingerprint {
         alpn_sorted.sort();
         let alpn_joined = alpn_sorted.join(",");
         let alpn_hash = {
-            let mut hasher = Sha256::new();
+            let mut hasher = SHA256::init();
             hasher.update(alpn_joined.as_bytes());
-            let result = hasher.finalize();
-            format!("{:x}", result)
+            let mut out = [0u8; SHA256::DIGEST];
+            hasher.r#final(&mut out);
+            out.iter().map(|b| format!("{:02x}", b)).collect::<String>()
         };
 
         format!(

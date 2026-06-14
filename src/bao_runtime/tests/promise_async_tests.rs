@@ -35,13 +35,13 @@ unsafe fn install_test_globals(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut mozjs::jsapi::JSObject>,
 ) {
-    bao_runtime::globals::install_all(cx, global);
+    bun_runtime::globals::install_all(cx, global);
 }
 
 #[test]
 fn test_promise_async_deep() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
     ctx.set_global_setup(install_test_globals);
 
@@ -288,5 +288,5 @@ fn test_promise_async_deep() {
             instanceof Promise
     "#), "catch chain should recover");
 
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

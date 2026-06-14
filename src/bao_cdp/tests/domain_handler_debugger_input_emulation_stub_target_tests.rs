@@ -2,15 +2,15 @@
 // DebuggerHandler, InputHandler, EmulationHandler, CssHandler, OverlayHandler,
 // LogHandler, FetchHandler, ServoTargetProvider command routing and field verification.
 
-use bao_cdp::{BridgeCommand, BridgeResponse, BridgeSender, BridgeReceiver, bridge_channel};
-use cdp_server::{CdpError, EventSender, TargetProvider};
+use bao_cdp::{BridgeCommand, BridgeResponse, BridgeSender, BridgeReceiver, bridge_channel, DomainDispatch};
+use cdp_server::{CdpError, EventSender, TargetProvider, DomainRegistry};
 use serde_json::{json, Value};
 use std::time::Duration;
 
 const TID: &str = "test-target";
 
 // Access stub types via register_all_domains_into (they're private modules)
-// We test them through DomainRegistry dispatch.
+// We test them through DomainRegistry<DomainDispatch> dispatch.
 
 struct NoopSender;
 impl EventSender for NoopSender {
@@ -24,7 +24,7 @@ fn bridge(timeout_ms: u64) -> (BridgeSender, BridgeReceiver) {
 }
 
 // Helper: dispatch_command returns Option<Result>, flatten to Result for ergonomics
-fn dispatch_cmd(registry: &cdp_server::DomainRegistry, cmd: &str, params: Value) -> Result<Value, CdpError> {
+fn dispatch_cmd(registry: &DomainRegistry<DomainDispatch>, cmd: &str, params: Value) -> Result<Value, CdpError> {
     registry.dispatch_command(cmd, params, noop_es())
         .unwrap_or(Err(CdpError { code: -32601, message: format!("Domain not found for '{}'", cmd) }))
 }
@@ -33,9 +33,9 @@ fn dispatch_cmd(registry: &cdp_server::DomainRegistry, cmd: &str, params: Value)
 // Test via DomainRegistry: register all domains and dispatch commands
 // ============================================================================
 
-fn setup_registry() -> (BridgeSender, cdp_server::DomainRegistry) {
+fn setup_registry() -> (BridgeSender, DomainRegistry<DomainDispatch>) {
     let (tx, rx) = bridge(500);
-    let registry = cdp_server::DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     bao_cdp::domains::register_all_domains_into(tx.clone(), TID.into(), &registry);
 
     // Background thread responds to all bridge commands so Debugger BridgeCommands don't timeout
@@ -82,7 +82,7 @@ fn default_bridge_response(cmd: BridgeCommand) -> BridgeResponse {
 #[test]
 fn test_debugger_domain_name() {
     let (tx, _) = bridge(50);
-    let registry = cdp_server::DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
     assert!(registry.has_domain("Debugger"));
 }
@@ -180,7 +180,7 @@ fn test_input_domain_name() {
 #[test]
 fn test_input_dispatch_mouse_event() {
     let (tx, rx) = bridge(500);
-    let registry = cdp_server::DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -223,7 +223,7 @@ fn test_input_dispatch_mouse_event() {
 #[test]
 fn test_input_dispatch_key_event() {
     let (tx, rx) = bridge(500);
-    let registry = cdp_server::DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -268,7 +268,7 @@ fn test_input_dispatch_touch_event() {
 #[test]
 fn test_input_insert_text() {
     let (tx, rx) = bridge(500);
-    let registry = cdp_server::DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -345,7 +345,7 @@ fn test_emulation_domain_name() {
 #[test]
 fn test_emulation_set_device_metrics_override() {
     let (tx, rx) = bridge(500);
-    let registry = cdp_server::DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -383,7 +383,7 @@ fn test_emulation_set_device_metrics_override() {
 #[test]
 fn test_emulation_set_device_metrics_defaults() {
     let (tx, rx) = bridge(500);
-    let registry = cdp_server::DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let processed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -425,7 +425,7 @@ fn test_emulation_clear_device_metrics() {
 #[test]
 fn test_emulation_set_user_agent_override() {
     let (tx, rx) = bridge(200);
-    let registry = cdp_server::DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     bao_cdp::domains::register_all_domains_into(tx, TID.into(), &registry);
 
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

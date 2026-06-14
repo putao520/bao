@@ -1,0 +1,26 @@
+[package]
+name = "bun_sm"
+version = "0.1.0"
+description = "SpiderMonkey-backed API compatibility layer replacing bun_jsc"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# NOTE: bun_sm is the bottom layer — it does NOT depend on bao_engine.
+# bao_engine depends on bun_sm and re-exports its types.
+bao_engine_macros = { path = "../bao_engine_macros" }
+mozjs.workspace = true
+mozjs_sys.workspace = true
+bun_core = { path = "../bun_core" }
+bun_event_loop = { path = "../event_loop" }
+bun_io = { path = "../io" }
+bun_collections = { path = "../collections" }
+bun_threading = { path = "../threading" }
+bun_sys = { path = "../sys" }
+libc = "0.2"
+log = "0.4"
+
+[lints.rust]
+# Stub types have unused fields/imports during development — allow temporarily
+dead_code = "allow"
+unused_imports = "allow"

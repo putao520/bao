@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -73,7 +73,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                     rooted!(&in(cx) let rv = v);
                     let sig_ptr = sig_obj.get();
                     let sig_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sig_ptr };
-                    JS_DefineProperty(raw, sig_h, CString::new(*name).unwrap_or_default().as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(raw, sig_h, ZBox::from_bytes(name.as_bytes()).as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
                 }
                 w2::JS_DefineProperty3(cx, constants_obj.handle(), c"signals".as_ptr(), sig_obj.handle(), JSPROP_ENUMERATE as u32);
             }
@@ -196,7 +196,7 @@ unsafe extern "C" fn os_cpus(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> 
             rooted!(&in(cx_ref) let times = mozjs_sys::jsapi::JS_NewPlainObject(cx));
             if !times.get().is_null() {
                 for &(name, val) in &[("user", 0i32), ("nice", 0), ("sys", 0), ("idle", 0), ("irq", 0)] {
-                    let Ok(c_name) = CString::new(name) else { continue };
+                    let c_name = ZBox::from_bytes(name.as_bytes());
                     rooted!(&in(cx_ref) let tv = Int32Value(val));
                     JS_DefineProperty(cx, times.handle().into(), c_name.as_ptr(), tv.handle().into(), JSPROP_ENUMERATE as u32);
                 }
@@ -225,9 +225,11 @@ unsafe extern "C" fn os_network_interfaces(cx: *mut JSContext, _argc: u32, vp: *
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_homedir(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let home = ::std::env::var("HOME")
-        .or_else(|_| ::std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| "/root".to_string());
+    let home = bun_core::getenv_z(bun_core::zstr!("HOME"))
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .or_else(|| bun_core::getenv_z(bun_core::zstr!("USERPROFILE"))
+            .map(|s| String::from_utf8_lossy(s).into_owned()))
+        .unwrap_or_else(|| "/root".to_string());
     return_string(cx, &home, &args);
     true
 }
@@ -235,9 +237,11 @@ unsafe extern "C" fn os_homedir(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn os_tmpdir(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let tmp = ::std::env::var("TMPDIR")
-        .or_else(|_| ::std::env::var("TEMP"))
-        .unwrap_or_else(|_| "/tmp".to_string());
+    let tmp = bun_core::getenv_z(bun_core::zstr!("TMPDIR"))
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .or_else(|| bun_core::getenv_z(bun_core::zstr!("TEMP"))
+            .map(|s| String::from_utf8_lossy(s).into_owned()))
+        .unwrap_or_else(|| "/tmp".to_string());
     return_string(cx, &tmp, &args);
     true
 }
@@ -251,11 +255,15 @@ unsafe extern "C" fn os_user_info(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
         let username = libc_binding::get_username();
         let uid = unsafe { libc::getuid() };
         let gid = unsafe { libc::getgid() };
-        let home = ::std::env::var("HOME").unwrap_or_else(|_| String::new());
-        let shell = ::std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        let home = bun_core::getenv_z(bun_core::zstr!("HOME"))
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .unwrap_or_else(|| String::new());
+        let shell = bun_core::getenv_z(bun_core::zstr!("SHELL"))
+            .map(|s| String::from_utf8_lossy(s).into_owned())
+            .unwrap_or_else(|| "/bin/sh".to_string());
 
         for (name, val_str) in &[("username", &username), ("homedir", &home), ("shell", &shell)] {
-            let Ok(c_name) = CString::new(*name) else { continue };
+            let c_name = ZBox::from_bytes(name.as_bytes());
             let utf16: Vec<u16> = val_str.encode_utf16().collect();
             let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
             if !js_str.is_null() {
@@ -265,7 +273,7 @@ unsafe extern "C" fn os_user_info(cx: *mut JSContext, _argc: u32, vp: *mut JSVal
             }
         }
         for (name, val) in &[("uid", uid as i32), ("gid", gid as i32)] {
-            let Ok(c_name) = CString::new(*name) else { continue };
+            let c_name = ZBox::from_bytes(name.as_bytes());
             rooted!(&in(wrapped_cx) let v = Int32Value(*val));
             JS_DefineProperty(cx, obj.handle().into(), c_name.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
         }
@@ -355,9 +363,11 @@ pub(crate) mod libc_binding {
                 let name = ::std::ffi::CStr::from_ptr((*pw).pw_name);
                 name.to_string_lossy().into_owned()
             } else {
-                ::std::env::var("USER")
-                    .or_else(|_| ::std::env::var("LOGNAME"))
-                    .unwrap_or_else(|_| "unknown".to_string())
+                bun_core::getenv_z(bun_core::zstr!("USER"))
+                    .map(|s| String::from_utf8_lossy(s).into_owned())
+                    .or_else(|| bun_core::getenv_z(bun_core::zstr!("LOGNAME"))
+                        .map(|s| String::from_utf8_lossy(s).into_owned()))
+                    .unwrap_or_else(|| "unknown".to_string())
             }
         }
     }
@@ -426,7 +436,7 @@ pub(crate) mod libc_binding {
     }
 
     pub fn get_cpu_model() -> String {
-        if let Ok(content) = ::std::fs::read_to_string("/proc/cpuinfo") {
+        if let Ok(content) = bun_sys::fs::read_to_string("/proc/cpuinfo") {
             for line in content.lines() {
                 if line.starts_with("model name")
                     && let Some((_, val)) = line.split_once(':') {

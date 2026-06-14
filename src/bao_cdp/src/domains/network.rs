@@ -9,7 +9,7 @@ use crate::servo_bridge::BridgeSender;
 
 /// JS interceptor script injected into the page when Network.enable is called.
 /// Monitors fetch and XMLHttpRequest, reports real network events via console channel.
-const NETWORK_INTERCEPTOR_JS: &str = r#"
+pub const NETWORK_INTERCEPTOR_JS: &str = r#"
 (function() {
     if (window.__bao_network_interceptor_active) return;
     window.__bao_network_interceptor_active = true;
@@ -38,7 +38,7 @@ const NETWORK_INTERCEPTOR_JS: &str = r#"
             request: { url, method, headers },
             timestamp: ts,
         });
-        console.log('__BAO_NETWORK_REQUEST__' + payload);
+        console.log('__BAO_EVT__Network.requestWillBeSent\n' + payload);
 
         return origFetch.apply(this, args).then(response => {
             // Report response
@@ -48,7 +48,7 @@ const NETWORK_INTERCEPTOR_JS: &str = r#"
                 type: 'Fetch',
                 timestamp: Date.now() / 1000,
             });
-            console.log('__BAO_NETWORK_RESPONSE__' + respPayload);
+            console.log('__BAO_EVT__Network.responseReceived\n' + respPayload);
             return response;
         });
     };
@@ -69,20 +69,20 @@ const NETWORK_INTERCEPTOR_JS: &str = r#"
             request: { url: this.__bao_url, method: this.__bao_method },
             timestamp: ts,
         });
-        console.log('__BAO_NETWORK_REQUEST__' + payload);
+        console.log('__BAO_EVT__Network.requestWillBeSent\n' + payload);
 
         this.addEventListener('load', function() {
             const respPayload = JSON.stringify({
                 id, url: this.__bao_url, status: this.status, statusText: this.statusText,
                 type: 'XHR', timestamp: Date.now() / 1000,
             });
-            console.log('__BAO_NETWORK_RESPONSE__' + respPayload);
+            console.log('__BAO_EVT__Network.responseReceived\n' + respPayload);
         });
         this.addEventListener('error', function() {
             const errPayload = JSON.stringify({
                 id, url: this.__bao_url, error: true, type: 'XHR', timestamp: Date.now() / 1000,
             });
-            console.log('__BAO_NETWORK_LOADING_FAILED__' + errPayload);
+            console.log('__BAO_EVT__Network.loadingFailed\n' + errPayload);
         });
         return origSend.apply(this, arguments);
     };
@@ -93,8 +93,8 @@ const NETWORK_INTERCEPTOR_JS: &str = r#"
 ///
 /// When Network.enable is called, injects a JS interceptor that patches window.fetch
 /// and XMLHttpRequest to report real request/response data through the console channel.
-/// The CDP server detects __BAO_NETWORK_REQUEST__/__BAO_NETWORK_RESPONSE__ prefixes
-/// and broadcasts them as Network.requestWillBeSent / Network.responseReceived events.
+/// The CDP server detects __BAO_EVT__Network.* prefixes and broadcasts them as
+/// Network.requestWillBeSent / Network.responseReceived / Network.loadingFailed events.
 pub struct NetworkHandler {
     bridge: BridgeSender,
     target_id: String,
@@ -345,9 +345,9 @@ mod tests {
     #[test]
     fn network_interceptor_js_is_valid() {
         assert!(NETWORK_INTERCEPTOR_JS.contains("__bao_network_interceptor_active"));
-        assert!(NETWORK_INTERCEPTOR_JS.contains("__BAO_NETWORK_REQUEST__"));
-        assert!(NETWORK_INTERCEPTOR_JS.contains("__BAO_NETWORK_RESPONSE__"));
-        assert!(NETWORK_INTERCEPTOR_JS.contains("__BAO_NETWORK_LOADING_FAILED__"));
+        assert!(NETWORK_INTERCEPTOR_JS.contains("__BAO_EVT__Network.requestWillBeSent"));
+        assert!(NETWORK_INTERCEPTOR_JS.contains("__BAO_EVT__Network.responseReceived"));
+        assert!(NETWORK_INTERCEPTOR_JS.contains("__BAO_EVT__Network.loadingFailed"));
     }
 
     #[test]

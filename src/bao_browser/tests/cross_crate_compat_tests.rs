@@ -143,8 +143,8 @@ impl cdp_server::EventSender for NopSender {
 
 #[test]
 fn test_domain_registry_cross_crate_dispatch() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(CrossDomain)).unwrap();
+    let reg = DomainRegistry::<CrossDomain>::new();
+    reg.register(CrossDomain).unwrap();
     let sender = NopSender;
     let result = reg.dispatch_command("Cross.ping", json!({}), &sender);
     assert!(result.is_some());

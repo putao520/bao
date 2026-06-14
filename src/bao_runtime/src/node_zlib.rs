@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::io::Read;
 use ::std::io::Write;
 use ::std::ptr::NonNull;
@@ -258,7 +258,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"gzipSync".as_ptr(), Some(zlib_gzip_sync), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"gunzipSync".as_ptr(), Some(zlib_gunzip_sync), 1, JSPROP_ENUMERATE as u32);
 
-        let c_filename = CString::new("node:zlib").unwrap_or_default();
+        let c_filename = ZBox::from_bytes("node:zlib".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if opts.is_null() {
             return;
@@ -290,7 +290,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         for name in &["Deflate", "Inflate", "Gzip", "Gunzip", "DeflateRaw", "InflateRaw",
                        "createDeflate", "createInflate", "createGzip", "createGunzip",
                        "createDeflateRaw", "createInflateRaw", "constants"] {
-            let cname = CString::new(*name).unwrap_or_default();
+            let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
             JS_GetProperty(cx_raw, exports_h, cname.as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut val,

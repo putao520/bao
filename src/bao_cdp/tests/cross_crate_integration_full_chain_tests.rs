@@ -3,12 +3,10 @@
 // Full CDP command lifecycle exercising all 11 domains through both internal and cdp-server paths.
 
 use bao_cdp::CdpRouter;
-use bao_cdp::BackendKind;
-use bao_cdp::{CDPResponse, CDPError, CDPEvent};
-use bao_cdp::{parse_message, serialize_response, serialize_event};
-use bao_cdp::{BridgeResponse, bridge_channel};
+use bao_cdp::{BackendKind, DomainDispatch, CDPResponse, CDPError, CDPEvent, parse_message, serialize_response, serialize_event, BridgeResponse, bridge_channel};
 use cdp_server::{CdpServer, ServerConfig, DomainRegistry, EventBroadcaster, TargetInfo};
 use serde_json::json;
+use std::sync::Arc;
 use std::time::Duration;
 
 const TID: &str = "test-target";
@@ -188,17 +186,16 @@ fn test_cdp_server_with_domain_registration() {
         .port(0)
         .host("127.0.0.1")
         .build();
-    let server = CdpServer::new(config);
-
-    assert_eq!(server.port(), 0);
-
-    let reg = server.registry();
+    let reg = Arc::new(DomainRegistry::<DomainDispatch>::new());
     assert!(!reg.has_domain("Page"));
     assert!(!reg.has_domain("Runtime"));
 
     // Register all bao_cdp domain handlers
     let (bridge_tx, _bridge_rx) = bridge_channel(Duration::from_millis(500));
-    bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), reg);
+    bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), &reg);
+
+    let server = CdpServer::with_registry(config, Arc::clone(&reg));
+    assert_eq!(server.port(), 0);
 
     assert!(reg.has_domain("Page"));
     assert!(reg.has_domain("Runtime"));
@@ -382,7 +379,7 @@ fn test_server_config_full_build() {
 
 #[test]
 fn test_registry_dispatch_all_known_commands() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_millis(500));
     bao_cdp::domains::register_all_domains_into(bridge_tx.clone(), TID.into(), &registry);
 
@@ -425,7 +422,7 @@ fn test_registry_dispatch_all_known_commands() {
 
 #[test]
 fn test_registry_dispatch_unknown_domain() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     let (bridge_tx, _bridge_rx) = bridge_channel(Duration::from_millis(500));
     bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), &registry);
 
@@ -446,7 +443,7 @@ fn test_router_and_registry_consistent_domains() {
     let router = CdpRouter::new();
     let session = router.create_internal_session("consistency-target");
 
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<DomainDispatch>::new();
     let (bridge_tx, _bridge_rx) = bridge_channel(Duration::from_millis(500));
     bao_cdp::domains::register_all_domains_into(bridge_tx, TID.into(), &registry);
 

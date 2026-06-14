@@ -22,8 +22,9 @@
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
 use std::ptr::{self, NonNull};
+use std::sync::OnceLock;
 
-use mozjs::jsapi::{JSObject, JSContext as RawJSContext, OnNewGlobalHookOption};
+use mozjs::jsapi::{JSContext as RawJSContext, JS_ShutDown, OnNewGlobalHookOption};
 use mozjs::jsval::UndefinedValue;
 use mozjs::realm::AutoRealm;
 use mozjs::rooted;
@@ -36,8 +37,9 @@ use crate::job_queue::JobQueue;
 use crate::module_loader::ModuleLoader;
 use crate::value::{JsValue, jsval_to_jsvalue};
 
-pub type GlobalSetupFn = unsafe fn(&mut mozjs::context::JSContext, mozjs::rust::Handle<*mut JSObject>);
-pub type PostEvalHook = fn(&mut mozjs::context::JSContext) -> bool;
+// Re-export GlobalSetupFn and PostEvalHook from bun_sm (canonical definitions).
+// These were previously defined here but moved to bun_sm::module_loader.
+pub use crate::module_loader::{GlobalSetupFn, PostEvalHook};
 
 /// Parasitic JSContext — borrows servo's JSContext pointer.
 /// Does NOT own a mozjs::rust::Runtime; servo owns that lifetime.
@@ -50,16 +52,14 @@ pub struct JsContext {
     post_eval_hook: Option<PostEvalHook>,
 }
 
-/// Owns the SM Runtime+Engine for CLI/test mode.
+/// Owns the SM Runtime for CLI/test mode.
 /// Browser mode never constructs this — servo owns the lifetime there.
 ///
-/// 字段顺序即 drop 顺序：runtime 先 drop（JS_DestroyContext + handle 计数归零），
-/// engine 后 drop（断言 outstanding_handles==0 通过 → JS_ShutDown）。
-/// 反序即 panic。Rust 保证 struct 字段按声明顺序析构。
+/// The JSEngine is a process-wide singleton (handle in ENGINE_HANDLE, engine in ENGINE_TLS).
+/// This guard owns the Runtime (JSContext) which is destroyed on drop.
 pub struct SmRuntimeGuard {
     #[allow(dead_code)]
     runtime: mozjs::rust::Runtime,
-    _engine: mozjs::rust::JSEngine,
 }
 
 /// TLS wrapper that never drops its content.
@@ -99,8 +99,20 @@ impl<T> NeverDrop<T> {
 
 // No Drop impl — ManuallyDrop ensures nothing runs when TLS is destroyed.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-wide flag: true after `shutdown_engine()` has been called.
+/// Prevents `for_test()` from creating new Runtimes on a shut-down engine.
+static ENGINE_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Process-singleton JSEngine handle. JSEngineHandle is Send+Sync (Arc<AtomicU32>).
+/// The first thread to call ensure_engine_handle() initializes the JSEngine
+/// (stored in ENGINE_TLS on that thread) and stores a cloned handle here.
+/// Other threads obtain the handle without calling JSEngine::init() again.
+static ENGINE_HANDLE: OnceLock<mozjs::rust::JSEngineHandle> = OnceLock::new();
+
 thread_local! {
-    /// Process-singleton JSEngine. Never dropped by TLS destruction.
+    /// Per-thread JSEngine (only the initializing thread stores it here).
     static ENGINE_TLS: NeverDrop<mozjs::rust::JSEngine> = NeverDrop::new();
 
     /// Per-thread Runtime (JSContext). ManuallyDrop prevents TLS destructor.
@@ -131,12 +143,21 @@ thread_local! {
 // (mozjs C++ TLS MutexImpl destructors crash on freed memory). This is by
 // design — it forces correct lifecycle management.
 
-/// Get or initialize the per-process JSEngine from TLS, returning a handle.
+/// Get or initialize the per-process JSEngine, returning a handle.
+/// The first thread to call this initializes the JSEngine (stored in ENGINE_TLS
+/// on that thread for lifetime), and stores a cloned handle in ENGINE_HANDLE
+/// (process-wide OnceLock). Subsequent threads just clone the handle.
 fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
-    ENGINE_TLS.with(|tls| {
+    // Fast path: engine already initialized, just clone the handle.
+    if let Some(handle) = ENGINE_HANDLE.get() {
+        return Ok(handle.clone());
+    }
+    // Slow path: this thread must initialize the engine.
+    // First check if this thread already has it in TLS (unlikely on first call).
+    let (engine, handle) = ENGINE_TLS.with(|tls| {
         if tls.is_some() {
             let handle = tls.0.borrow().as_ref().expect("ENGINE_TLS is Some but inner is None").handle();
-            return Ok(handle);
+            return Ok((None, handle));
         }
         let engine = mozjs::rust::JSEngine::init().map_err(|e| JsError {
             message: format!("Failed to init JSEngine: {:?}", e).into(),
@@ -145,17 +166,22 @@ fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
         })?;
         let handle = engine.handle();
         tls.set(Some(engine));
+        Ok((Some(handle.clone()), handle))
+    })?;
+    // Store the handle in the global OnceLock so other threads can access it.
+    if let Some(handle_to_store) = engine {
+        let global_handle = ENGINE_HANDLE.get_or_init(|| handle_to_store);
+        Ok(global_handle.clone())
+    } else {
         Ok(handle)
-    })
+    }
 }
 
 impl JsContext {
     /// Initialize SpiderMonkey Runtime for CLI mode.
     ///
     /// Returns `(JsContext, Option<SmRuntimeGuard>)`. The guard owns the
-    /// Engine+Runtime lifetime. Caller must hold the guard until done with
-    /// all JS execution. When guard drops, orderly shutdown occurs:
-    /// Runtime → JS_DestroyContext, Engine → JS_ShutDown.
+    /// Runtime lifetime. The JSEngine is a process-wide singleton (never dropped).
     ///
     /// If servo already initialized the Runtime (browser mode ran first),
     /// returns `(JsContext, None)` — servo owns the lifetime.
@@ -167,15 +193,9 @@ impl JsContext {
             return Ok((ctx, None));
         }
 
-        // CLI mode: create a fresh JSEngine + Runtime.
-        // SmRuntimeGuard owns both and will JS_DestroyContext + JS_ShutDown on drop.
-        let engine = mozjs::rust::JSEngine::init()
-            .map_err(|e| JsError {
-                message: format!("Failed to init JSEngine: {:?}", e).into(),
-                filename: "<engine>".into(),
-                line: 0, column: 0, stack: None,
-            })?;
-        let runtime = mozjs::rust::Runtime::new(engine.handle());
+        // CLI mode: get or init the process-wide JSEngine, then create a Runtime.
+        let handle = ensure_engine_handle()?;
+        let runtime = mozjs::rust::Runtime::new(handle);
 
         let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
             message: "Runtime::new failed to set CONTEXT TLS".into(),
@@ -189,7 +209,11 @@ impl JsContext {
         }
         ModuleLoader::init_thread_local(&cx_wrap);
 
-        let guard = SmRuntimeGuard { runtime, _engine: engine };
+        // Register the job queue drain callback so bun_sm::module_loader can drain microtasks
+        // without depending on bao_engine (avoids circular dependency).
+        crate::module_loader::set_job_queue_drain(JobQueue::drain);
+
+        let guard = SmRuntimeGuard { runtime };
 
         crate::dispatch_sm::BaoEventLoop::register_js_context(cx.as_ptr().cast());
 
@@ -213,6 +237,7 @@ impl JsContext {
             return Err(JsError { message: "Failed to init job queue".into(), filename: "<engine>".into(), line: 0, column: 0, stack: None });
         }
         ModuleLoader::init_thread_local(&cx_wrap);
+        crate::module_loader::set_job_queue_drain(JobQueue::drain);
 
         crate::dispatch_sm::BaoEventLoop::register_js_context(cx.as_ptr().cast());
 
@@ -229,6 +254,16 @@ impl JsContext {
     /// SIGSEGV in mozjs's C++ TLS teardown (`mozilla::detail::MutexImpl`).
     #[doc(hidden)]
     pub fn for_test() -> Result<Self, JsError> {
+        // Refuse to create a new Runtime after the engine has been shut down.
+        // JS_ShutDown is irreversible — calling Runtime::new after it will crash.
+        if ENGINE_SHUTDOWN.load(Ordering::SeqCst) {
+            return Err(JsError {
+                message: "JSEngine has been shut down — cannot create Runtime".into(),
+                filename: "<engine>".into(),
+                line: 0, column: 0, stack: None,
+            });
+        }
+
         // If Runtime is already alive on this thread, parasitize it.
         // This handles both servo-initialized runtimes and prior for_test() calls.
         if mozjs::rust::Runtime::get().is_some() {
@@ -250,6 +285,7 @@ impl JsContext {
             return Err(JsError { message: "Failed to init job queue".into(), filename: "<engine>".into(), line: 0, column: 0, stack: None });
         }
         ModuleLoader::init_thread_local(&cx_wrap);
+        crate::module_loader::set_job_queue_drain(JobQueue::drain);
 
         // Store runtime in TLS. ManuallyDrop ensures no destructor runs on thread exit.
         RUNTIME_TLS.with(|tls| tls.set(Some(runtime)));
@@ -261,31 +297,89 @@ impl JsContext {
 
     /// Explicitly shut down the test Runtime stored in thread_local.
     ///
-    /// This must be called on the same thread that created the Runtime,
-    /// before that thread exits. It drops the Runtime in a safe context
-    /// No-op. See `shutdown_thread_sm()` for rationale.
+    /// Equivalent to `shutdown_thread_sm()`. Must be called on the same thread
+    /// that created the Runtime, before that thread exits.
     #[doc(hidden)]
     pub fn shutdown_test_runtime() {
-        // Intentionally empty — same reason as shutdown_thread_sm().
+        Self::shutdown_thread_sm();
     }
 
     /// Shut down the SpiderMonkey Runtime on the current thread.
     ///
-    /// In practice, this is a **no-op**. SpiderMonkey's C++ TLS state
-    /// (`mozilla::detail::MutexImpl`) is shared across all threads in the process.
-    /// Calling `JS_DestroyContext` on the main thread while libtest's thread-pool
-    /// threads still hold references to the same C++ TLS state causes
-    /// `pthread_mutex_destroy: Device or resource busy` followed by SIGSEGV.
+    /// Drops the Runtime (calling `JS_DestroyContext`) stored in TLS.
+    /// Does NOT call `JS_ShutDown` — the JSEngine remains alive so that
+    /// subsequent `for_test()` calls on the same thread can create a new Runtime.
     ///
-    /// The Runtime and Engine stay alive in TLS via `ManuallyDrop`. They are
-    /// leaked by design — the OS reclaims all memory on process exit, and the
-    /// C++ TLS destructors are skipped (NeverDrop wrapper). This is the only
-    /// safe approach for test cleanup with mozjs + libtest's multi-threaded harness.
+    /// This is safe to call multiple times per thread (e.g., between tests).
+    /// `JS_ShutDown` is deferred to `shutdown_engine()` which should only be
+    /// called at process exit.
     #[doc(hidden)]
     pub fn shutdown_thread_sm() {
-        // Intentionally empty. The Runtime and Engine stay alive in TLS.
-        // ManuallyDrop + NeverDrop prevents any destructor from running.
-        // The OS reclaims all resources on process exit.
+        // 0. Clear all rooted traceables on this thread before destroying the
+        //    JSContext. Without this, stale pointers in ROOTED_TRACEABLES TLS
+        //    would be traced during C++ TLS teardown after JS_DestroyContext,
+        //    causing SIGSEGV (js::gc::HeaderWord::get on freed GC heap).
+        unsafe {
+            mozjs::gc::RootedTraceableSet::clear();
+        }
+
+        // 1. Drop Runtime — calls JS_DestroyContext, clears mozjs CONTEXT TLS.
+        RUNTIME_TLS.with(|tls| {
+            if tls.is_some() {
+                let _ = tls.take(); // ManuallyDrop::take + drop → Runtime::drop → JS_DestroyContext
+            }
+        });
+
+        // 2. Reset SIGSEGV/SIGBUS/SIGILL handlers to SIG_DFL.
+        //    If a custom handler is installed (e.g., by bun_crash_handler
+        //    via spawn's SignalForwarding), the SIGSEGV would be caught and
+        //    converted to panic→abort(SIGILL), hiding the real crash location.
+        //    Reset to SIG_DFL so late SIGSEGVs terminate immediately.
+        #[cfg(unix)]
+        {
+            let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
+            unsafe {
+                sa.sa_sigaction = libc::SIG_DFL as usize;
+                libc::sigemptyset(&mut sa.sa_mask);
+                libc::sigaction(libc::SIGSEGV, &sa, std::ptr::null_mut());
+                libc::sigaction(libc::SIGBUS, &sa, std::ptr::null_mut());
+                libc::sigaction(libc::SIGILL, &sa, std::ptr::null_mut());
+            }
+        }
+    }
+
+    /// Shut down the SpiderMonkey engine entirely (process exit only).
+    ///
+    /// Calls `JS_ShutDown` to clean up SpiderMonkey's process-wide C++ state.
+    /// After this, no new Runtime/JSContext can be created on any thread.
+    ///
+    /// This should only be called at process exit (e.g., via `atexit`).
+    /// Tests should use `shutdown_thread_sm()` instead, which only destroys
+    /// the per-thread Runtime without shutting down the engine.
+    pub fn shutdown_engine() {
+        if ENGINE_SHUTDOWN.swap(true, Ordering::SeqCst) {
+            return; // Already shut down
+        }
+
+        // Destroy any remaining Runtime on this thread first.
+        Self::shutdown_thread_sm();
+
+        // Call JS_ShutDown to clean up the engine's C++ TLS state.
+        // We cannot drop the JSEngine stored in ENGINE_TLS directly because
+        // ENGINE_HANDLE (OnceLock) still holds a JSEngineHandle, making
+        // outstanding_handles > 0, which triggers JSEngine::drop()'s assert.
+        // Instead, call JS_ShutDown directly — this is what JSEngine::drop()
+        // does internally after the assert.
+        ENGINE_TLS.with(|tls| {
+            if tls.is_some() {
+                unsafe {
+                    JS_ShutDown();
+                }
+                if let Some(engine) = tls.take() {
+                    std::mem::forget(engine);
+                }
+            }
+        });
     }
 
     /// Create a JSContext value wrapper from the stored pointer.
@@ -388,14 +482,11 @@ mod tests {
     }
 
     #[test]
-    fn sm_runtime_guard_field_order_ensures_drop_order() {
-        // Runtime must be declared before Engine so it drops first.
-        // This test documents the invariant — if field order changes,
-        // this test must be updated accordingly.
-        let offset_runtime = std::mem::offset_of!(SmRuntimeGuard, runtime);
-        let offset_engine = std::mem::offset_of!(SmRuntimeGuard, _engine);
-        assert!(offset_runtime < offset_engine,
-            "SmRuntimeGuard: runtime (offset {}) must precede _engine (offset {}) for correct drop order",
-            offset_runtime, offset_engine);
+    fn sm_runtime_guard_holds_runtime_only() {
+        // SmRuntimeGuard now only owns the Runtime.
+        // The JSEngine is a process-wide singleton (handle in ENGINE_HANDLE, engine in ENGINE_TLS).
+        // This test documents the new invariant.
+        let size = std::mem::size_of::<SmRuntimeGuard>();
+        assert!(size > 0, "SmRuntimeGuard must be non-zero sized");
     }
 }

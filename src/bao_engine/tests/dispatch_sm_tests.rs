@@ -36,11 +36,11 @@ fn _force_native_stubs_link() {
 #[used]
 static NATIVE_STUBS_LINKER_ANCHOR: fn() = _force_native_stubs_link;
 
-// Force bao_runtime's __bun_run_file_poll (extern "Rust") into the link graph.
-// bun_io::FilePoll::on_update references this symbol; without bao_runtime linked,
+// Force bun_runtime's __bun_run_file_poll (extern "Rust") into the link graph.
+// bun_io::FilePoll::on_update references this symbol; without bun_runtime linked,
 // the test binary gets "undefined symbol: __bun_run_file_poll".
 fn _force_runtime_dispatch_link() {
-    let _ = bao_runtime::dispatch::__bun_run_file_poll as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
+    let _ = bun_runtime::dispatch::__bun_run_file_poll as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
 }
 #[used]
 static RUNTIME_DISPATCH_LINKER_ANCHOR: fn() = _force_runtime_dispatch_link;
@@ -129,13 +129,13 @@ fn test_pipe_read_buffer_non_null() {
 
 #[test]
 fn test_env_initially_null() {
-    // Wave 73-E: `env()` returns the env loader pointer. Until bao_runtime
+    // Wave 73-E: `env()` returns the env loader pointer. Until bun_runtime
     // registers one, it must be null (not a dangling pointer).
     let el = bun_event_loop::JsEventLoop::current();
     let env = el.env();
     assert!(
         env.is_null(),
-        "env must be null until bao_runtime registration (got {:p})",
+        "env must be null until bun_runtime registration (got {:p})",
         env
     );
 }
@@ -143,7 +143,7 @@ fn test_env_initially_null() {
 #[test]
 fn test_global_object_initially_null() {
     // Wave 73-E: `global_object()` returns SpiderMonkey global pointer.
-    // Until bao_runtime JsContext wires up, it must be null.
+    // Until bun_runtime JsContext wires up, it must be null.
     let el = bun_event_loop::JsEventLoop::current();
     let g = el.global_object();
     assert!(g.is_null(), "global_object must be null until JsContext registration");
@@ -152,7 +152,7 @@ fn test_global_object_initially_null() {
 #[test]
 fn test_bun_vm_initially_null() {
     // Wave 73-E: `bun_vm()` returns SpiderMonkey VM wrapper. Until
-    // bao_runtime wires up, it must be null.
+    // bun_runtime wires up, it must be null.
     let el = bun_event_loop::JsEventLoop::current();
     let vm = el.bun_vm();
     assert!(vm.is_null(), "bun_vm must be null until JsContext registration");

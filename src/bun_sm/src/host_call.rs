@@ -1,0 +1,85 @@
+// @trace REQ-ENG-001
+//! Host call utilities — cross-module JS function invocation.
+//!
+//! Wraps `JS_CallFunctionValue` for host→JS and JS→host value passing.
+//! The identity-pass functions (to_js_host_call/from_js_host_call) remain
+//! for simple value passthrough; the full call variants use SM API.
+
+use crate::js_value::JSValue;
+use crate::js_error::JsResult;
+
+pub fn to_js_host_call(value: &JSValue) -> JSValue {
+    value.clone()
+}
+
+pub fn from_js_host_call(value: &JSValue) -> JsResult<JSValue> {
+    Ok(value.clone())
+}
+
+pub fn to_js_host_fn_result(result: JsResult<JSValue>) -> JSValue {
+    result.unwrap_or(JSValue::UNDEFINED)
+}
+
+/// Call a named method on a JS object, passing a single JSValue argument.
+///
+/// Returns the method's return value, or UNDEFINED if the call fails.
+pub unsafe fn call_method_on_object(
+    cx: *mut mozjs::jsapi::JSContext,
+    obj: *mut mozjs::jsapi::JSObject,
+    method_name: &str,
+    args: &[mozjs::jsapi::Value],
+) -> mozjs::jsapi::Value {
+    if cx.is_null() || obj.is_null() {
+        return mozjs::jsval::UndefinedValue();
+    }
+
+    let c_method = ::std::ffi::CString::new(method_name).unwrap_or_default();
+    let mut method_val = mozjs::jsval::UndefinedValue();
+    let obj_h = mozjs::jsapi::Handle::<*mut mozjs::jsapi::JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &obj,
+    };
+    mozjs::jsapi::JS_GetProperty(
+        cx,
+        obj_h,
+        c_method.as_ptr(),
+        mozjs::jsapi::MutableHandle::<mozjs::jsapi::Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut method_val,
+        },
+    );
+
+    if !method_val.is_object() {
+        return mozjs::jsval::UndefinedValue();
+    }
+
+    let global = mozjs::jsapi::CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return mozjs::jsval::UndefinedValue();
+    }
+
+    let cb_val = method_val;
+    let cb_h = mozjs::jsapi::Handle::<mozjs::jsapi::Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &cb_val,
+    };
+    let global_h = mozjs::jsapi::Handle::<*mut mozjs::jsapi::JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &global,
+    };
+
+    let call_args = if args.is_empty() {
+        mozjs::jsapi::HandleValueArray::empty()
+    } else {
+        mozjs::jsapi::HandleValueArray { length_: args.len(), elements_: args.as_ptr() }
+    };
+
+    let mut rval = mozjs::jsval::UndefinedValue();
+    let rval_h = mozjs::jsapi::MutableHandle::<mozjs::jsapi::Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    mozjs::jsapi::JS_CallFunctionValue(cx, global_h, cb_h, &call_args, rval_h);
+    mozjs::jsapi::JS_ClearPendingException(cx);
+    rval
+}

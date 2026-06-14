@@ -1,4 +1,4 @@
-// @trace REQ-BRW-001
+// @trace REQ-BRW-001 [entity:BrowserContext] [entity:PageHandle]
 // @trace REQ-CLI-002
 #![allow(dead_code, unused_imports)]
 // REQ-BRW-001: Browser engine integration with servo
@@ -34,6 +34,11 @@ use bao_cdp::servo_bridge::bridge_channel;
 use bao_cdp::{CdpServer, ServerConfig};
 use bao_cdp::domains::{register_all_domains_with_target, ServoTargetProvider};
 
+// Force-link bao_native_stubs (dispatch no-op stubs + C library bridges).
+// Without this anchor, the linker GCs the entire bao_native_stubs compilation
+// unit, causing undefined __bun_dispatch__* and C symbol errors in test binaries.
+#[used]
+static BAO_NATIVE_STUBS_ANCHOR: unsafe extern "C" fn() = bao_native_stubs::__force_link_entry;
 
 pub struct BaoRuntime {
     servo: Rc<Servo>,
@@ -95,7 +100,7 @@ impl BaoRuntime {
 
     /// Set the console log forwarding channel on the servo delegate.
     /// Console messages from servo will be sent to this channel.
-    pub fn set_console_log_channel(&self, tx: std::sync::mpsc::Sender<(String, String)>) {
+    pub fn set_console_log_channel(&self, tx: std::sync::mpsc::Sender<cdp_server::ConsoleMessage>) {
         self.delegate.set_console_log_tx(tx);
     }
 
@@ -109,11 +114,7 @@ impl BaoRuntime {
             std::thread::sleep(Duration::from_millis(10));
         }
 
-        let stats = self.page_pool.stats();
-        eprintln!("=== Bao Runtime ===");
-        eprintln!("Pages: {}/{} active/idle", stats.active, stats.idle);
-        eprintln!("Total created: {}", stats.total_created);
-        eprintln!("Total destroyed: {}", stats.total_destroyed);
+        let _stats = self.page_pool.stats();
 
         Ok(())
     }
@@ -160,9 +161,9 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         stealth_profile: None,
         ..Default::default()
     };
-    let page = runtime.create_page(&page_config)?;
+    let _page = runtime.create_page(&page_config)?;
     if let Some(ref page_url) = url {
-        eprintln!("[bao] navigating to {}", page_url);
+        log::debug!("[bao] navigating to {}", page_url);
     }
 
     if let Some(port) = cdp_port {
@@ -170,7 +171,7 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         let (bridge_tx, bridge_rx) = bridge_channel(Duration::from_secs(30));
 
         // Create console log forwarding channel: servo delegate → CDP Log domain
-        let (console_tx, console_rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (console_tx, console_rx) = std::sync::mpsc::channel::<cdp_server::ConsoleMessage>();
         runtime.set_console_log_channel(console_tx);
 
         let handle = std::thread::spawn(move || {
@@ -182,8 +183,11 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64);
-            let mut server = CdpServer::new(config);
-            register_all_domains_with_target(bridge_tx.clone(), target_id.clone(), server.registry());
+            // Build DomainDispatch registry, register all CDP domain handlers,
+            // then inject into CdpServer via with_registry().
+            let registry = std::sync::Arc::new(cdp_server::DomainRegistry::<bao_cdp::DomainDispatch>::new());
+            register_all_domains_with_target(bridge_tx.clone(), target_id.clone(), &registry);
+            let mut server = CdpServer::with_registry(config, registry);
             let provider = std::sync::Arc::new(
                 ServoTargetProvider::new(bridge_tx, target_id, "127.0.0.1".into(), port)
             );

@@ -18,34 +18,34 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 fn test_stealth_http_rust_api() {
     let profile = bao_stealth::StealthProfile::chrome_default();
 
-    let hash = bao_runtime::stealth_http::ja3_hash(&Some(profile.clone()));
+    let hash = bun_runtime::stealth_http::ja3_hash(&Some(profile.clone()));
     assert!(hash.is_some(), "ja3_hash should return Some with profile");
     assert!(!hash.unwrap().is_empty(), "ja3_hash should be non-empty");
 
-    let fp = bao_runtime::stealth_http::akamai_fingerprint(&Some(profile.clone()));
+    let fp = bun_runtime::stealth_http::akamai_fingerprint(&Some(profile.clone()));
     assert!(fp.is_some(), "akamai_fingerprint should return Some with profile");
 
-    let none_hash = bao_runtime::stealth_http::ja3_hash(&None);
+    let none_hash = bun_runtime::stealth_http::ja3_hash(&None);
     assert!(none_hash.is_none(), "ja3_hash should return None without profile");
 
     let headers = vec![
         ("accept".to_string(), "*/*".to_string()),
         ("host".to_string(), "example.com".to_string()),
     ];
-    let ordered = bao_runtime::stealth_http::ordered_headers(&None, &headers);
+    let ordered = bun_runtime::stealth_http::ordered_headers(&None, &headers);
     assert_eq!(ordered.len(), 2);
     assert_eq!(ordered[0].0, "accept");
     assert_eq!(ordered[1].0, "host");
 
-    let ordered_stealth = bao_runtime::stealth_http::ordered_headers(&Some(profile), &headers);
+    let ordered_stealth = bun_runtime::stealth_http::ordered_headers(&Some(profile), &headers);
     assert_eq!(ordered_stealth.len(), 2);
 
-    let config_none = bao_runtime::stealth_http::create_stealth_request(&None, bun_http::Method::GET, "https://example.com", &headers, None);
+    let config_none = bun_runtime::stealth_http::create_stealth_request(&None, bun_http::Method::GET, "https://example.com", &headers, None);
     assert_eq!(config_none.method.as_str(), "GET");
     assert!(config_none.user_agent.is_none());
 
     let profile2 = bao_stealth::StealthProfile::firefox_default();
-    let config_stealth = bao_runtime::stealth_http::create_stealth_request(&Some(profile2), bun_http::Method::POST, "https://example.com", &headers, Some(b"test"));
+    let config_stealth = bun_runtime::stealth_http::create_stealth_request(&Some(profile2), bun_http::Method::POST, "https://example.com", &headers, Some(b"test"));
     assert_eq!(config_stealth.method.as_str(), "POST");
     assert!(config_stealth.user_agent.is_some());
 }
@@ -54,19 +54,19 @@ fn test_stealth_http_rust_api() {
 fn test_stealth_http_firefox_profile() {
     let profile = bao_stealth::StealthProfile::firefox_default();
 
-    let hash = bao_runtime::stealth_http::ja3_hash(&Some(profile.clone()));
+    let hash = bun_runtime::stealth_http::ja3_hash(&Some(profile.clone()));
     assert!(hash.is_some());
 
-    let fp = bao_runtime::stealth_http::akamai_fingerprint(&Some(profile));
+    let fp = bun_runtime::stealth_http::akamai_fingerprint(&Some(profile));
     assert!(fp.is_some());
 }
 
 #[test]
 fn test_gc_store_via_require() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     let result = eval_string(&mut ctx, r#"
         var results = [];
@@ -111,5 +111,5 @@ fn test_gc_store_via_require() {
         }
     }
     assert!(all_passed, "GC store / require caching tests should pass. Results: {}", result);
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

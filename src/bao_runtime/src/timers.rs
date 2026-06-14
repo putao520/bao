@@ -13,7 +13,13 @@ thread_local! {
 
     /// Per-thread MiniEventLoop holder. Lazily initialized on first access
     /// via `with_event_loop`.
-    static BAO_RUNTIME_LOOP: RefCell<::std::option::Option<bun_event_loop::MiniEventLoop::MiniEventLoop<'static>>> =
+    ///
+    /// Wrapped in `ManuallyDrop` to prevent TLS destructor from calling
+    /// `MiniEventLoop::drop`, which closes the underlying uSockets loop and
+    /// can trigger SpiderMonkey TLS teardown races (SIGSEGV/SIGILL) when
+    /// libtest's thread pool exits. The OS reclaims all resources on process
+    /// exit — same strategy as `bao_engine::NeverDrop`.
+    static BAO_RUNTIME_LOOP: RefCell<::std::option::Option<::std::mem::ManuallyDrop<bun_event_loop::MiniEventLoop::MiniEventLoop<'static>>>> =
         const { RefCell::new(::std::option::Option::None) };
 
     /// Thread-local pointer to the current `JSContext*`. Registered by
@@ -90,10 +96,10 @@ where
             // referenced — without this the linker may GC uSockets loop
             // entrypoints that MiniEventLoop::init reaches via UwsLoop::get().
             bao_uloop::force_link();
-            *guard = ::std::option::Option::Some(bun_event_loop::MiniEventLoop::MiniEventLoop::init());
+            *guard = ::std::option::Option::Some(::std::mem::ManuallyDrop::new(bun_event_loop::MiniEventLoop::MiniEventLoop::init()));
         }
         let opt = guard.as_mut().expect("just initialized");
-        f(opt)
+        f(&mut **opt)
     })
 }
 
@@ -307,8 +313,11 @@ pub fn schedule_raw(cx: *mut JSContext, callback: *mut JSObject, delay_ms: u64, 
     let effective_delay = if delay_ms == 0 && repeating { 1 } else { delay_ms };
 
     // GC-safe: store callback in GcStore, keep only the string key.
+    // Guard: test code may pass null cx; skip GC registration in that case.
     let callback_key = format!("cb_{}", id);
-    gc_store_insert_ns(cx, "timer", &callback_key, callback);
+    if !cx.is_null() {
+        gc_store_insert_ns(cx, "timer", &callback_key, callback);
+    }
 
     let mut bao_obj = Box::new(BaoTimeoutObject::new_paused());
     bao_obj.timer_id = id;

@@ -13,10 +13,12 @@ mod event;
 mod session;
 mod transport;
 mod server;
+pub mod bao_event;
 
 pub use protocol::{CdpMessage, CdpResponse, CdpError, CdpEvent, SessionError};
-pub use registry::DomainRegistry;
+pub use registry::{DomainRegistry, EmptyHandler, RegistryDispatch, SharedRegistry};
 pub use event::EventBroadcaster;
+pub use bao_event::{BaoEvent, ConsoleMessage};
 pub use session::{CdpSession, SessionState};
 pub use server::CdpServer;
 pub use transport::{

@@ -1,7 +1,7 @@
-// @trace REQ-ENG-005
+// @trace REQ-ENG-005 [entity:ModuleSource]
 use ::std::cell::RefCell;
-use ::std::ffi::CString;
-use ::std::fs;
+use bun_core::ZBox;
+use bun_sys::fs as bun_fs;
 use ::std::path::{Path, PathBuf};
 use ::std::ptr;
 
@@ -46,7 +46,7 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
             ("fail", 0), ("ifError", 1),
         ] {
             let mut fn_val = UndefinedValue();
-            let c_name = CString::new(*name).unwrap_or_default();
+            let c_name = ZBox::from_bytes(name.as_bytes());
             JS_GetProperty(cx.raw_cx(), assert_h, c_name.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val });
             if fn_val.is_object() {
                 let fn_obj = fn_val.to_object();
@@ -144,7 +144,7 @@ unsafe extern "C" fn require_fn(
         let global = JS::CurrentGlobalOrNull(cx);
         if !global.is_null() {
             let mut val = mozjs::jsval::UndefinedValue();
-            let c_prop = CString::new("process").unwrap_or_default();
+            let c_prop = ZBox::from_bytes("process".as_bytes());
             unsafe {
                 JS_GetProperty(
                     cx,
@@ -160,13 +160,33 @@ unsafe extern "C" fn require_fn(
         }
     }
 
+    // Check bun: built-in modules (bun:sqlite, bun:ffi, bun:test, bun:wrap, etc.)
+    // These are registered in gc_store as "builtin:bun:<name>" by their install functions.
+    if let Some(bun_name) = specifier.strip_prefix("bun:") {
+        let bun_cache_key = format!("builtin:bun:{}", bun_name);
+        let cached = gc_store::gc_store_get(cx, &bun_cache_key);
+        if let Some(existing) = cached
+            && !existing.is_null() {
+                args.rval().set(mozjs::jsval::ObjectValue(existing));
+                return true;
+            }
+        // bun:test is registered via node_module as "builtin:bun:test" (without extra bun: prefix)
+        let alt_cache_key = format!("builtin:bun:{}", specifier);
+        let alt_cached = gc_store::gc_store_get(cx, &alt_cache_key);
+        if let Some(existing) = alt_cached
+            && !existing.is_null() {
+                args.rval().set(mozjs::jsval::ObjectValue(existing));
+                return true;
+            }
+    }
+
     let base_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
 
     let resolved = match resolve_specifier(&specifier, base_dir.as_deref()) {
         Some(p) => p,
         None => {
             let msg = format!("Cannot find module '{}'", specifier);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -194,11 +214,11 @@ unsafe extern "C" fn require_fn(
             return true;
         }
 
-    let content = match fs::read_to_string(&resolved) {
+    let content = match bun_fs::read_to_string(&resolved.to_string_lossy()) {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("Cannot read module '{}': {}", specifier, e);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -208,7 +228,7 @@ unsafe extern "C" fn require_fn(
         let obj = load_json_module(cx, &content, &specifier);
         if obj.is_null() {
             let msg = format!("Failed to parse JSON module '{}'", specifier);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -218,7 +238,7 @@ unsafe extern "C" fn require_fn(
             Some(val) => val,
             None => {
                 let msg = format!("Failed to load module '{}'", specifier);
-                let c_msg = CString::new(msg).unwrap_or_default();
+                let c_msg = ZBox::from_bytes(msg.as_bytes());
                 JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
                 return false;
             }
@@ -247,7 +267,7 @@ unsafe extern "C" fn require_fn(
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn load_json_module(cx: *mut JSContext, content: &str, specifier: &str) -> *mut JSObject {
-    let js_str = JS_NewStringCopyZ(cx, CString::new(content.as_bytes()).unwrap_or_default().as_ptr());
+    let js_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(content.as_bytes()).as_ptr());
     if js_str.is_null() {
         return ptr::null_mut();
     }
@@ -260,7 +280,7 @@ unsafe fn load_json_module(cx: *mut JSContext, content: &str, specifier: &str) -
     }
     JS_ClearPendingException(cx);
     let msg = format!("Invalid JSON in module '{}'", specifier);
-    let c_msg = CString::new(msg).unwrap_or_default();
+    let c_msg = ZBox::from_bytes(msg.as_bytes());
     JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
     ptr::null_mut()
 }
@@ -355,8 +375,7 @@ unsafe fn load_cjs_module(
 
     // Compile and evaluate the module source.
     let filename_str = path.to_string_lossy().into_owned();
-    let c_filename = CString::new(filename_str)
-        .unwrap_or_else(|_| CString::new("<module>").unwrap());
+    let c_filename = ZBox::from_vec(filename_str.into_bytes());
     let opts = NewCompileOptions(cx, c_filename.as_ptr(), 1);
     if opts.is_null() {
         JS_DeleteProperty1(cx, global_h, c"exports".as_ptr());

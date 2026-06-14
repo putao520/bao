@@ -81,7 +81,7 @@ pub mod Command {
     /// process-global `*ContextData`. The static itself lives in tier-6
     /// (`cli.rs`); install only needs a pointer for the bundler hook in
     /// `update_package_json_and_install`. Registered once at startup by bun_cli.
-    pub(crate) static GLOBAL_CTX: core::sync::atomic::AtomicPtr<ContextData> =
+    pub static GLOBAL_CTX: core::sync::atomic::AtomicPtr<ContextData> =
         core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
     /// Returns the raw process-global `*mut ContextData` (Zig: `Command.get()

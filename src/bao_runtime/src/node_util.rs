@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
@@ -744,7 +744,7 @@ unsafe extern "C" fn util_parse_args(cx: *mut JSContext, _argc: u32, vp: *mut JS
 unsafe extern "C" fn assert_ok(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        let msg = CString::new("No value argument passed to assert.ok()").unwrap_or_default();
+        let msg = ZBox::from_bytes(b"No value argument passed to assert.ok()");
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
         return false;
     }
@@ -760,7 +760,7 @@ unsafe extern "C" fn assert_ok(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     } else { !(val.is_null() || val.is_undefined()) };
     if !is_truthy {
         let msg = if argc > 1 { jsval_to_display(cx, *args.get(1).ptr) } else { "The expression evaluated to a falsy value".to_string() };
-        let c_msg = CString::new(msg).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
         JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -776,7 +776,7 @@ unsafe extern "C" fn assert_equal(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         let b = jsval_to_display(cx, *args.get(1).ptr);
         if a != b {
             let msg = format!("{} == {}", a, b);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -793,7 +793,7 @@ unsafe extern "C" fn assert_not_equal(cx: *mut JSContext, argc: u32, vp: *mut JS
         let b = jsval_to_display(cx, *args.get(1).ptr);
         if a == b {
             let msg = format!("{} != {}", a, b);
-            let c_msg = CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -809,7 +809,7 @@ unsafe extern "C" fn assert_deep_equal(cx: *mut JSContext, argc: u32, vp: *mut J
         let a = jsval_to_display(cx, *args.get(0).ptr);
         let b = jsval_to_display(cx, *args.get(1).ptr);
         if a != b {
-            let c_msg = CString::new("Expected values to be deeply equal".to_string()).unwrap_or_default();
+            let c_msg = ZBox::from_vec("Expected values to be deeply equal".to_string().into_bytes());
             JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -848,7 +848,7 @@ unsafe extern "C" fn assert_strict_equal(cx: *mut JSContext, argc: u32, vp: *mut
         && !values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
             let a = jsval_to_display(cx, *args.get(0).ptr);
             let b = jsval_to_display(cx, *args.get(1).ptr);
-            let c_msg = CString::new(format!("Expected {} to strictly equal {}", a, b)).unwrap_or_default();
+            let c_msg = ZBox::from_vec(format!("Expected {} to strictly equal {}", a, b).into_bytes());
             JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -861,7 +861,7 @@ unsafe extern "C" fn assert_not_strict_equal(cx: *mut JSContext, argc: u32, vp: 
     let args = CallArgs::from_vp(vp, argc);
     if argc >= 2
         && values_equal_strict(cx, *args.get(0).ptr, *args.get(1).ptr) {
-            let c_msg = CString::new("Expected values to be strictly unequal".to_string()).unwrap_or_default();
+            let c_msg = ZBox::from_vec("Expected values to be strictly unequal".to_string().into_bytes());
             JS_ReportErrorUTF8(cx, c"AssertionError: %s".as_ptr(), c_msg.as_ptr());
             return false;
         }

@@ -8,35 +8,35 @@ use std::path::PathBuf;
 
 #[test]
 fn test_require_dir_default_is_none() {
-    bao_runtime::require::set_require_dir(PathBuf::new());
+    bun_runtime::require::set_require_dir(PathBuf::new());
     // After clearing with empty, verify the roundtrip works
-    let retrieved = bao_runtime::require::get_require_dir();
+    let retrieved = bun_runtime::require::get_require_dir();
     assert!(retrieved.is_some());
 }
 
 #[test]
 fn test_require_dir_set_and_get() {
     let path = PathBuf::from("/tmp/test_require_dir");
-    bao_runtime::require::set_require_dir(path.clone());
-    let retrieved = bao_runtime::require::get_require_dir();
+    bun_runtime::require::set_require_dir(path.clone());
+    let retrieved = bun_runtime::require::get_require_dir();
     assert!(retrieved.is_some());
     assert_eq!(retrieved.unwrap(), path);
     // Clean up
-    bao_runtime::require::set_require_dir(PathBuf::new());
+    bun_runtime::require::set_require_dir(PathBuf::new());
 }
 
 #[test]
 fn test_require_dir_overwrite() {
-    bao_runtime::require::set_require_dir(PathBuf::from("/first"));
-    bao_runtime::require::set_require_dir(PathBuf::from("/second"));
-    let retrieved = bao_runtime::require::get_require_dir();
+    bun_runtime::require::set_require_dir(PathBuf::from("/first"));
+    bun_runtime::require::set_require_dir(PathBuf::from("/second"));
+    let retrieved = bun_runtime::require::get_require_dir();
     assert_eq!(retrieved.unwrap(), PathBuf::from("/second"));
 }
 
 #[test]
 fn test_require_dir_empty_path() {
-    bao_runtime::require::set_require_dir(PathBuf::new());
-    let retrieved = bao_runtime::require::get_require_dir();
+    bun_runtime::require::set_require_dir(PathBuf::new());
+    let retrieved = bun_runtime::require::get_require_dir();
     assert!(retrieved.is_some());
     assert!(retrieved.unwrap().as_os_str().is_empty());
 }
@@ -44,21 +44,21 @@ fn test_require_dir_empty_path() {
 #[test]
 fn test_require_dir_unicode_path() {
     let path = PathBuf::from("/tmp/日本語/路径");
-    bao_runtime::require::set_require_dir(path.clone());
-    assert_eq!(bao_runtime::require::get_require_dir().unwrap(), path);
+    bun_runtime::require::set_require_dir(path.clone());
+    assert_eq!(bun_runtime::require::get_require_dir().unwrap(), path);
 }
 
 #[test]
 fn test_require_dir_long_path() {
     let long = format!("/tmp/{}", "a".repeat(1000));
     let path = PathBuf::from(long);
-    bao_runtime::require::set_require_dir(path.clone());
-    assert_eq!(bao_runtime::require::get_require_dir().unwrap(), path);
+    bun_runtime::require::set_require_dir(path.clone());
+    assert_eq!(bun_runtime::require::get_require_dir().unwrap(), path);
 }
 
 // ---- permission_bridge advanced scenarios ----
 
-use bao_runtime::permission_bridge::{self, PermissionCheck};
+use bun_runtime::permission_bridge::{self, PermissionCheck};
 
 #[test]
 fn test_permission_multiple_paths_whitelist() {
@@ -218,7 +218,7 @@ fn test_permission_switching_multiple_times() {
 
 // ---- stealth_http deep validation ----
 
-use bao_runtime::stealth_http;
+use bun_runtime::stealth_http;
 use bao_stealth::StealthProfile;
 
 #[test]
@@ -383,7 +383,7 @@ fn test_permission_check_clone_equality() {
 #[test]
 fn test_resolve_node_modules_nonexistent_specifier() {
     // Should return None for a module that doesn't exist
-    let result = bao_runtime::require::resolve_node_modules(
+    let result = bun_runtime::require::resolve_node_modules(
         "nonexistent-module-xyz-12345",
         Some(std::path::Path::new("/tmp")),
     );
@@ -392,7 +392,7 @@ fn test_resolve_node_modules_nonexistent_specifier() {
 
 #[test]
 fn test_resolve_node_modules_empty_specifier() {
-    let result = bao_runtime::require::resolve_node_modules(
+    let result = bun_runtime::require::resolve_node_modules(
         "",
         Some(std::path::Path::new("/tmp")),
     );
@@ -401,7 +401,7 @@ fn test_resolve_node_modules_empty_specifier() {
 
 #[test]
 fn test_resolve_node_modules_with_dot_specifier() {
-    let result = bao_runtime::require::resolve_node_modules(
+    let result = bun_runtime::require::resolve_node_modules(
         ".",
         Some(std::path::Path::new("/tmp")),
     );
@@ -411,7 +411,7 @@ fn test_resolve_node_modules_with_dot_specifier() {
 
 #[test]
 fn test_resolve_node_modules_scoped_specifier() {
-    let result = bao_runtime::require::resolve_node_modules(
+    let result = bun_runtime::require::resolve_node_modules(
         "@types/node",
         Some(std::path::Path::new("/tmp")),
     );

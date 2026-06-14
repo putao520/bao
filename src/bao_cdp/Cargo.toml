@@ -13,3 +13,4 @@ base64 = "0.22"
 sha1 = "0.10"
 tungstenite = { version = "0.26", features = ["handshake"] }
 cdp-protocol = "0.3"
+log = "0.4"

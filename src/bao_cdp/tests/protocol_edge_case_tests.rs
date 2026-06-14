@@ -551,6 +551,21 @@ impl DomainHandler for EdgeDomain {
     }
 }
 
+
+// TestDispatch — enum dispatch for EdgeDomain in registry tests
+enum TestDispatch {
+    Edge(EdgeDomain),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self { Self::Edge(h) => h.domain_name() }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, ServerCdpError> {
+        match self { Self::Edge(h) => h.handle_command(cmd, params, sender) }
+    }
+}
+
 struct NopSender;
 impl EventSender for NopSender {
     fn send_event(&self, _method: &str, _params: Value) {}
@@ -558,7 +573,7 @@ impl EventSender for NopSender {
 
 #[test]
 fn registry_dispatch_empty_domain_name() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     // Empty domain: method is ".command"
     let result = reg.dispatch_command(".enable", json!({}), &NopSender);
     assert!(result.is_none(), "empty domain should not match any handler");
@@ -566,8 +581,8 @@ fn registry_dispatch_empty_domain_name() {
 
 #[test]
 fn registry_dispatch_empty_command_name() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "TestDomain" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" })).unwrap();
     // Method "TestDomain." — command part is empty
     let result = reg.dispatch_command("TestDomain.", json!({}), &NopSender);
     assert!(result.is_some(), "domain is registered, dispatch should attempt");
@@ -576,8 +591,8 @@ fn registry_dispatch_empty_command_name() {
 
 #[test]
 fn registry_dispatch_very_long_command_name() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "TestDomain" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" })).unwrap();
     let long_cmd = format!("TestDomain.{}", "x".repeat(10000));
     let result = reg.dispatch_command(&long_cmd, json!({}), &NopSender);
     assert!(result.is_some());
@@ -586,8 +601,8 @@ fn registry_dispatch_very_long_command_name() {
 
 #[test]
 fn registry_dispatch_no_dot_in_method() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "TestDomain" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "TestDomain" })).unwrap();
     // Method without dot: split('.').next() returns "TestDomain" as domain,
     // so the handler IS found (dispatch_command returns Some), but the
     // command part is empty — the handler will see "TestDomain" as the
@@ -601,8 +616,8 @@ fn registry_dispatch_no_dot_in_method() {
 
 #[test]
 fn registry_dispatch_case_sensitive_domain() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Page" })).unwrap();
     assert!(reg.has_domain("Page"));
     assert!(!reg.has_domain("page"));
     assert!(!reg.has_domain("PAGE"));
@@ -613,8 +628,8 @@ fn registry_dispatch_case_sensitive_domain() {
 
 #[test]
 fn registry_dispatch_with_null_params() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "Echo" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Echo" })).unwrap();
     let result = reg.dispatch_command("Echo.echo", json!(null), &NopSender);
     assert!(result.is_some());
     assert!(result.unwrap().is_ok());
@@ -622,8 +637,8 @@ fn registry_dispatch_with_null_params() {
 
 #[test]
 fn registry_dispatch_with_large_params() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "Echo" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Echo" })).unwrap();
     let large_array: Vec<i32> = (0..10000).collect();
     let result = reg.dispatch_command("Echo.echo", json!({"data": large_array}), &NopSender);
     assert!(result.is_some());
@@ -633,8 +648,8 @@ fn registry_dispatch_with_large_params() {
 
 #[test]
 fn registry_dispatch_handler_returns_error() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "Fail" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Fail" })).unwrap();
     let result = reg.dispatch_command("Fail.fail", json!({}), &NopSender);
     assert!(result.is_some());
     let err = result.unwrap().unwrap_err();
@@ -644,7 +659,7 @@ fn registry_dispatch_handler_returns_error() {
 
 #[test]
 fn registry_dispatch_unicode_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     // register only accepts &'static str, so we use ASCII here
     // but dispatch receives a &str, so test with unicode in method
     let result = reg.dispatch_command("ページ.enable", json!({}), &NopSender);
@@ -653,8 +668,8 @@ fn registry_dispatch_unicode_domain() {
 
 #[test]
 fn registry_dispatch_multiple_dots_in_method() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "A" })).unwrap();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "A" })).unwrap();
     // "A.B.C" — domain is "A", command is "B.C"
     let result = reg.dispatch_command("A.B.C", json!({}), &NopSender);
     assert!(result.is_some(), "domain A is registered");
@@ -663,28 +678,28 @@ fn registry_dispatch_multiple_dots_in_method() {
 
 #[test]
 fn registry_notify_session_created_unregistered_no_panic() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     // Should not panic for unregistered domain
     reg.notify_session_created("NonExistent", "sess-1");
 }
 
 #[test]
 fn registry_notify_session_destroyed_empty_list_no_panic() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     reg.notify_session_destroyed(&[], "sess-1");
 }
 
 #[test]
 fn registry_register_duplicate_returns_error() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EdgeDomain { name: "Dup" })).unwrap();
-    let err = reg.register(Box::new(EdgeDomain { name: "Dup" })).unwrap_err();
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Edge(EdgeDomain { name: "Dup" })).unwrap();
+    let err = reg.register(TestDispatch::Edge(EdgeDomain { name: "Dup" })).unwrap_err();
     assert!(err.contains("Dup"));
 }
 
 #[test]
 fn registry_many_domains_registered() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<TestDispatch>::new();
     for i in 0..50 {
         // &'static str from string literals only, so use numbered static names
         // We can't dynamically create &'static str, so test with a few
@@ -696,7 +711,7 @@ fn registry_many_domains_registered() {
         "B1", "B2", "B3", "B4", "B5",
     ];
     for &name in names {
-        reg.register(Box::new(EdgeDomain { name })).unwrap();
+        reg.register(TestDispatch::Edge(EdgeDomain { name })).unwrap();
     }
     for &name in names {
         assert!(reg.has_domain(name));

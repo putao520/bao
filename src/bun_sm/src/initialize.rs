@@ -1,0 +1,49 @@
+// @trace REQ-ENG-001
+//! Initialize — JS runtime initialization utilities.
+
+use ::std::ffi::CString;
+use ::std::ptr::NonNull;
+
+use mozjs::jsapi::*;
+use mozjs::jsval::UndefinedValue;
+
+pub unsafe fn eval_and_print(cx: *mut JSContext, source: &str, filename: &str) {
+    let c_filename = CString::new(filename).unwrap_or_default();
+    let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr(), 1);
+    if opts.is_null() {
+        return;
+    }
+
+    let mut src = mozjs::rust::transform_str_to_source_text(source);
+    let mut rval = UndefinedValue();
+    let rval_handle = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_handle);
+    libc::free(opts as *mut _);
+
+    if !ok {
+        return;
+    }
+
+    if !rval.is_undefined() {
+        if rval.is_string() {
+            let raw_handle = mozjs::rust::HandleValue::from_marked_location(&rval);
+            let js_str = mozjs::rust::ToString(cx, raw_handle);
+            if !js_str.is_null() {
+                let rust_str = mozjs::conversions::jsstr_to_string(cx, NonNull::new_unchecked(js_str));
+                println!("{}", rust_str);
+            }
+        } else if rval.is_number() {
+            println!("{}", rval.to_number());
+        } else if rval.is_boolean() {
+            let b = rval.to_boolean();
+            println!("{}", if b { "true" } else { "false" });
+        }
+    }
+}
+
+pub fn initialize() {
+    // JS runtime initialization is handled by bao_engine::context.
+}

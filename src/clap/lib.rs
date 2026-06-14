@@ -94,11 +94,7 @@ macro_rules! comptime_table {
     // `bun_core::err!`'s `.bun_err` clustering). Use sparingly — only
     // `AUTO_TABLE` should take this arm; everything else passes `, cold`.
     ($params:expr) => {
-        $crate::comptime_table!(
-            @build
-            { #[cfg_attr(any(target_os = "linux", target_os = "android"), unsafe(link_section = ".rodata.startup"))] }
-            $params
-        )
+        $crate::comptime_table!(@build { } $params)
     };
     // Cold tables — `bun run` / `bun build` / `bun test` / `bun install` /
     // `bun pm` / `bun x` and friends. `.rodata.startup` is deliberately one

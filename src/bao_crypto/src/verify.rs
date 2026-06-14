@@ -1,188 +1,154 @@
+use crate::sign::{raw_ecdsa_sig_to_der, RsaHash, SignAlgorithm, SignatureFormat};
 use crate::CryptoError;
-use ecdsa::signature::Verifier as VerifierTrait;
-use ecdsa::VerifyingKey;
-use pkcs8::DecodePrivateKey;
-use rsa::pkcs1v15;
-use rsa::pss;
-use rsa::RsaPrivateKey;
-use sha2::{Sha256, Sha384, Sha512};
-
-use crate::sign::{RsaHash, SignAlgorithm, SignatureFormat};
-
-enum VerifierInner {
-    RsaPkcs1v15Sha256(pkcs1v15::VerifyingKey<Sha256>),
-    RsaPkcs1v15Sha384(pkcs1v15::VerifyingKey<Sha384>),
-    RsaPkcs1v15Sha512(pkcs1v15::VerifyingKey<Sha512>),
-    RsaPssSha256(pss::VerifyingKey<Sha256>),
-    RsaPssSha384(pss::VerifyingKey<Sha384>),
-    RsaPssSha512(pss::VerifyingKey<Sha512>),
-    EcdsaP256(VerifyingKey<p256::NistP256>),
-    EcdsaP384(VerifyingKey<p384::NistP384>),
-    Ed25519(ed25519_dalek::VerifyingKey),
-}
+use bun_boringssl_sys::*;
+use core::ffi::{c_long, c_void};
+use core::ptr;
 
 pub struct Verifier {
-    inner: VerifierInner,
+    pkey: *mut EVP_PKEY,
+    algo: SignAlgorithm,
 }
 
-fn parse_rsa_private_key_pem(pem: &str) -> Result<RsaPrivateKey, CryptoError> {
-    RsaPrivateKey::from_pkcs8_pem(pem)
-        .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse RSA PEM key: {}", e)))
+impl Drop for Verifier {
+    fn drop(&mut self) {
+        if !self.pkey.is_null() {
+            unsafe { EVP_PKEY_free(self.pkey) };
+        }
+    }
 }
 
-fn parse_rsa_private_key_der(der: &[u8]) -> Result<RsaPrivateKey, CryptoError> {
-    RsaPrivateKey::from_pkcs8_der(der)
-        .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse RSA DER key: {}", e)))
+unsafe impl Send for Verifier {}
+
+fn algo_md(algo: &SignAlgorithm) -> *const EVP_MD {
+    match algo {
+        SignAlgorithm::RsaPkcs1v15 { hash } | SignAlgorithm::RsaPss { hash } => match hash {
+            RsaHash::Sha256 => EVP_sha256(),
+            RsaHash::Sha384 => EVP_sha384(),
+            RsaHash::Sha512 => EVP_sha512(),
+        },
+        SignAlgorithm::EcdsaP256 => EVP_sha256(),
+        SignAlgorithm::EcdsaP384 => EVP_sha384(),
+        SignAlgorithm::Ed25519 => ptr::null(),
+    }
 }
 
 impl Verifier {
     pub fn from_pkcs8_pem(algo: &SignAlgorithm, pem: &str) -> Result<Verifier, CryptoError> {
-        match algo {
-            SignAlgorithm::RsaPkcs1v15 { .. } | SignAlgorithm::RsaPss { .. } => {
-                let rsa_key = parse_rsa_private_key_pem(pem)?;
-                Verifier::from_rsa_public_key(algo, &rsa_key.to_public_key())
+        let pkey = unsafe {
+            let bio = BIO_new_mem_buf(pem.as_ptr() as *const c_void, pem.len() as isize);
+            if bio.is_null() {
+                return Err(CryptoError::InvalidKey("BIO_new_mem_buf failed".into()));
             }
-            SignAlgorithm::EcdsaP256 => {
-                let sk = ecdsa::SigningKey::<p256::NistP256>::from_pkcs8_pem(pem)
-                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse ECDSA P-256 PEM key: {}", e)))?;
-                Ok(Verifier { inner: VerifierInner::EcdsaP256(sk.verifying_key().clone()) })
+            let pkey = PEM_read_bio_PrivateKey(
+                bio,
+                ptr::null_mut(),
+                None::<pem_password_cb>,
+                ptr::null_mut(),
+            );
+            BIO_free(bio);
+            if pkey.is_null() {
+                return Err(CryptoError::InvalidKey("PEM_read_bio_PrivateKey failed".into()));
             }
-            SignAlgorithm::EcdsaP384 => {
-                let sk = ecdsa::SigningKey::<p384::NistP384>::from_pkcs8_pem(pem)
-                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse ECDSA P-384 PEM key: {}", e)))?;
-                Ok(Verifier { inner: VerifierInner::EcdsaP384(sk.verifying_key().clone()) })
-            }
-            SignAlgorithm::Ed25519 => {
-                let sk = ed25519_dalek::SigningKey::from_pkcs8_pem(pem)
-                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse Ed25519 PEM key: {}", e)))?;
-                Ok(Verifier { inner: VerifierInner::Ed25519(sk.verifying_key()) })
-            }
-        }
+            pkey
+        };
+        Ok(Verifier { pkey, algo: algo.clone() })
     }
 
     pub fn from_pkcs8_der(algo: &SignAlgorithm, der: &[u8]) -> Result<Verifier, CryptoError> {
-        match algo {
-            SignAlgorithm::RsaPkcs1v15 { .. } | SignAlgorithm::RsaPss { .. } => {
-                let rsa_key = parse_rsa_private_key_der(der)?;
-                Verifier::from_rsa_public_key(algo, &rsa_key.to_public_key())
+        let pkey = unsafe {
+            let mut inp = der.as_ptr();
+            let pkey = d2i_AutoPrivateKey(ptr::null_mut(), &mut inp, der.len() as c_long);
+            if pkey.is_null() {
+                return Err(CryptoError::InvalidKey("d2i_AutoPrivateKey failed".into()));
             }
-            SignAlgorithm::EcdsaP256 => {
-                let sk = ecdsa::SigningKey::<p256::NistP256>::from_pkcs8_der(der)
-                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse ECDSA P-256 DER key: {}", e)))?;
-                Ok(Verifier { inner: VerifierInner::EcdsaP256(sk.verifying_key().clone()) })
+            pkey
+        };
+        Ok(Verifier { pkey, algo: algo.clone() })
+    }
+
+    pub fn from_pkey(pkey: *mut EVP_PKEY, algo: &SignAlgorithm) -> Result<Verifier, CryptoError> {
+        if pkey.is_null() {
+            return Err(CryptoError::InvalidKey("null EVP_PKEY".into()));
+        }
+        Ok(Verifier { pkey, algo: algo.clone() })
+    }
+
+    pub fn verify(
+        &self,
+        data: &[u8],
+        signature: &[u8],
+        format: SignatureFormat,
+    ) -> Result<bool, CryptoError> {
+        // Ed25519: one-shot EVP_PKEY_verify (streaming not supported by BoringSSL)
+        if self.algo == SignAlgorithm::Ed25519 {
+            return self.verify_ed25519(data, signature);
+        }
+
+        unsafe {
+            let mut md_ctx: EVP_MD_CTX = core::mem::zeroed();
+            EVP_MD_CTX_init(&mut md_ctx);
+
+            let md = algo_md(&self.algo);
+            let mut pctx: *mut EVP_PKEY_CTX = ptr::null_mut();
+
+            let init_result = if md.is_null() {
+                EVP_DigestVerifyInit(
+                    &mut md_ctx,
+                    &mut pctx,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    self.pkey,
+                )
+            } else {
+                EVP_DigestVerifyInit(&mut md_ctx, &mut pctx, md, ptr::null_mut(), self.pkey)
+            };
+
+            if init_result != 1 {
+                EVP_MD_CTX_cleanup(&mut md_ctx);
+                return Err(CryptoError::VerifyFailed("EVP_DigestVerifyInit failed".into()));
             }
-            SignAlgorithm::EcdsaP384 => {
-                let sk = ecdsa::SigningKey::<p384::NistP384>::from_pkcs8_der(der)
-                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse ECDSA P-384 DER key: {}", e)))?;
-                Ok(Verifier { inner: VerifierInner::EcdsaP384(sk.verifying_key().clone()) })
+
+            if let SignAlgorithm::RsaPss { .. } = self.algo {
+                if !pctx.is_null() {
+                    EVP_PKEY_CTX_set_rsa_padding(pctx, RSA_PKCS1_PSS_PADDING);
+                    EVP_PKEY_CTX_set_rsa_pss_saltlen(pctx, RSA_PSS_SALTLEN_DIGEST);
+                }
             }
-            SignAlgorithm::Ed25519 => {
-                let sk = ed25519_dalek::SigningKey::from_pkcs8_der(der)
-                    .map_err(|e| CryptoError::InvalidKey(format!("Failed to parse Ed25519 DER key: {}", e)))?;
-                Ok(Verifier { inner: VerifierInner::Ed25519(sk.verifying_key()) })
+
+            if EVP_DigestVerifyUpdate(&mut md_ctx, data.as_ptr() as *const c_void, data.len()) != 1 {
+                EVP_MD_CTX_cleanup(&mut md_ctx);
+                return Err(CryptoError::VerifyFailed("EVP_DigestVerifyUpdate failed".into()));
             }
+
+            let sig_bytes = match self.algo {
+                SignAlgorithm::EcdsaP256 | SignAlgorithm::EcdsaP384 => match format {
+                    SignatureFormat::Der => signature.to_vec(),
+                    SignatureFormat::Raw => raw_ecdsa_sig_to_der(signature)?,
+                },
+                _ => signature.to_vec(),
+            };
+
+            let result = EVP_DigestVerifyFinal(&mut md_ctx, sig_bytes.as_ptr(), sig_bytes.len());
+            EVP_MD_CTX_cleanup(&mut md_ctx);
+
+            Ok(result == 1)
         }
     }
 
-    fn from_rsa_public_key(algo: &SignAlgorithm, pub_key: &rsa::RsaPublicKey) -> Result<Verifier, CryptoError> {
-        match algo {
-            SignAlgorithm::RsaPkcs1v15 { hash } => {
-                let inner = match hash {
-                    RsaHash::Sha256 => VerifierInner::RsaPkcs1v15Sha256(pkcs1v15::VerifyingKey::<Sha256>::new(pub_key.clone())),
-                    RsaHash::Sha384 => VerifierInner::RsaPkcs1v15Sha384(pkcs1v15::VerifyingKey::<Sha384>::new(pub_key.clone())),
-                    RsaHash::Sha512 => VerifierInner::RsaPkcs1v15Sha512(pkcs1v15::VerifyingKey::<Sha512>::new(pub_key.clone())),
-                };
-                Ok(Verifier { inner })
-            }
-            SignAlgorithm::RsaPss { hash } => {
-                let inner = match hash {
-                    RsaHash::Sha256 => VerifierInner::RsaPssSha256(pss::VerifyingKey::<Sha256>::new(pub_key.clone())),
-                    RsaHash::Sha384 => VerifierInner::RsaPssSha384(pss::VerifyingKey::<Sha384>::new(pub_key.clone())),
-                    RsaHash::Sha512 => VerifierInner::RsaPssSha512(pss::VerifyingKey::<Sha512>::new(pub_key.clone())),
-                };
-                Ok(Verifier { inner })
-            }
-            _ => Err(CryptoError::UnsupportedAlgorithm(format!("{:?}", algo))),
-        }
-    }
+    fn verify_ed25519(&self, data: &[u8], signature: &[u8]) -> Result<bool, CryptoError> {
+        unsafe {
+            let mut md_ctx: EVP_MD_CTX = core::mem::zeroed();
+            EVP_MD_CTX_init(&mut md_ctx);
 
-    pub fn verify(&self, data: &[u8], signature: &[u8], format: SignatureFormat) -> Result<bool, CryptoError> {
-        match &self.inner {
-            VerifierInner::RsaPkcs1v15Sha256(vk) => {
-                let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA PKCS1v15 signature: {}", e)))?;
-                Ok(vk.verify(data, &sig).is_ok())
+            if EVP_DigestVerifyInit(&mut md_ctx, ptr::null_mut(), ptr::null(), ptr::null_mut(), self.pkey) != 1 {
+                EVP_MD_CTX_cleanup(&mut md_ctx);
+                return Err(CryptoError::VerifyFailed("EVP_DigestVerifyInit failed".into()));
             }
-            VerifierInner::RsaPkcs1v15Sha384(vk) => {
-                let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA PKCS1v15 signature: {}", e)))?;
-                Ok(vk.verify(data, &sig).is_ok())
-            }
-            VerifierInner::RsaPkcs1v15Sha512(vk) => {
-                let sig = rsa::pkcs1v15::Signature::try_from(signature)
-                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA PKCS1v15 signature: {}", e)))?;
-                Ok(vk.verify(data, &sig).is_ok())
-            }
-            VerifierInner::RsaPssSha256(vk) => {
-                let sig = rsa::pss::Signature::try_from(signature)
-                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA-PSS signature: {}", e)))?;
-                Ok(vk.verify(data, &sig).is_ok())
-            }
-            VerifierInner::RsaPssSha384(vk) => {
-                let sig = rsa::pss::Signature::try_from(signature)
-                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA-PSS signature: {}", e)))?;
-                Ok(vk.verify(data, &sig).is_ok())
-            }
-            VerifierInner::RsaPssSha512(vk) => {
-                let sig = rsa::pss::Signature::try_from(signature)
-                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid RSA-PSS signature: {}", e)))?;
-                Ok(vk.verify(data, &sig).is_ok())
-            }
-            VerifierInner::EcdsaP256(vk) => {
-                let sig = decode_p256_signature(signature, format)?;
-                Ok(vk.verify(data, &sig).is_ok())
-            }
-            VerifierInner::EcdsaP384(vk) => {
-                let sig = decode_p384_signature(signature, format)?;
-                Ok(vk.verify(data, &sig).is_ok())
-            }
-            VerifierInner::Ed25519(vk) => {
-                let sig = ed25519_dalek::Signature::try_from(signature)
-                    .map_err(|e| CryptoError::DecodingFailed(format!("Invalid Ed25519 signature: {}", e)))?;
-                Ok(vk.verify(data, &sig).is_ok())
-            }
-        }
-    }
-}
 
-fn decode_p256_signature(
-    bytes: &[u8],
-    format: SignatureFormat,
-) -> Result<ecdsa::Signature<p256::NistP256>, CryptoError> {
-    match format {
-        SignatureFormat::Der => {
-            ecdsa::Signature::<p256::NistP256>::from_der(bytes)
-                .map_err(|e| CryptoError::DecodingFailed(format!("Invalid DER ECDSA P256 signature: {}", e)))
-        }
-        SignatureFormat::Raw => {
-            ecdsa::Signature::<p256::NistP256>::from_slice(bytes)
-                .map_err(|e| CryptoError::DecodingFailed(format!("Invalid raw ECDSA P256 signature: {}", e)))
-        }
-    }
-}
+            let result = EVP_DigestVerify(&mut md_ctx, signature.as_ptr(), signature.len(), data.as_ptr(), data.len());
+            EVP_MD_CTX_cleanup(&mut md_ctx);
 
-fn decode_p384_signature(
-    bytes: &[u8],
-    format: SignatureFormat,
-) -> Result<ecdsa::Signature<p384::NistP384>, CryptoError> {
-    match format {
-        SignatureFormat::Der => {
-            ecdsa::Signature::<p384::NistP384>::from_der(bytes)
-                .map_err(|e| CryptoError::DecodingFailed(format!("Invalid DER ECDSA P384 signature: {}", e)))
-        }
-        SignatureFormat::Raw => {
-            ecdsa::Signature::<p384::NistP384>::from_slice(bytes)
-                .map_err(|e| CryptoError::DecodingFailed(format!("Invalid raw ECDSA P384 signature: {}", e)))
+            Ok(result == 1)
         }
     }
 }

@@ -204,10 +204,10 @@ Bun 的 SpiderMonkey 引擎分支，融合 servo 浏览器引擎，所有能力�
 
 ### mozjs 构建规则
 
-1. **必须用 `MOZJS_FROM_SOURCE=1`**：bao 的 `mozjs` crate 默认启用 `intl` feature → `should_build_from_source()` 返回 `false` → build.rs 下载 GitHub 预编译版 → 不含 EBUSY patch。必须设 `MOZJS_FROM_SOURCE=1` 强制从源码编译
+1. **已内置从源码编译**：`mozjs-sys/build.rs` 的 `should_build_from_source()` 已硬编码返回 `true`，无需设置 `MOZJS_FROM_SOURCE=1` 环境变量。这确保了 EBUSY patch 和其他本地修复始终生效
 2. **rlib 包含 native 代码**：`libmozjs_sys-*.rlib` 打包了 `libjs_static.a` 中的所有 C++ 符号。修改 `.a` 不够——必须删 rlib 重新编译
 3. **mozjs make 增量构建 bug**：make 会编译新的 `.o` 但不重新打包 `libjs_static.a`。需要手动 `ar -d` + `ar -q` 替换，或删整个 build output 目录
-4. **清理顺序**：删 `.fingerprint/mozjs_sys-*` + `deps/libmozjs*` + `build/mozjs_sys-*` + `incremental/mozjs*`，然后 `MOZJS_FROM_SOURCE=1 cargo build`
+4. **清理顺序**：删 `.fingerprint/mozjs_sys-*` + `deps/libmozjs*` + `build/mozjs_sys-*` + `incremental/mozjs*`，然后 `cargo build`
 
 ### 多线程测试
 

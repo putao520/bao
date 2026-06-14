@@ -22,10 +22,10 @@ fn eval_str(ctx: &mut JsContext, code: &str) -> String {
 
 #[test]
 fn test_bug354_stop_does_not_crash() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext init");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     // ── T1: Bun.serve + stop — BUG-354 pointer preservation ──
     eprintln!("== T1: serve+stop ==");
@@ -100,5 +100,5 @@ fn test_bug354_stop_does_not_crash() {
     "#);
     assert_eq!(t6, "ok", "T6 concurrent servers: {}", t6);
 
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

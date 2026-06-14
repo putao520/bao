@@ -6,12 +6,15 @@ members = [
     "src/bao_crypto",
     "src/bao_runtime",
     "src/bao_browser",
+    "src/bao_cli",
+    "src/bao_bundler",
     "src/bao_bin",
     "src/bao_cdp",
-    "src/bao_tls",
+    "src/bao_boringssl_bridge",
     "src/bao_stealth",
     "src/bao_native_stubs",
     "src/bao_uloop",
+    "src/bun_sm",
     "src/jsc_macros",
     "src/opaque",
     "src/bun_alloc",
@@ -33,7 +36,6 @@ members = [
     "src/exe_format",
     "src/which",
     "src/perf",
-    "src/s3_signing",
     "src/sha_hmac",
     "src/url",
     "src/hash",
@@ -61,6 +63,7 @@ members = [
     "src/http_types",
     "src/event_loop",
     "src/sql",
+    "src/s3_signing",
     "src/sourcemap",
     "src/semver",
     "src/resolver",
@@ -70,6 +73,7 @@ members = [
     "src/install",
     "src/output",
     "src/transpiler",
+    "src/bun_sm",
     "src/lsquic_sys",
     "src/lolhtml_sys",
 ]
@@ -84,7 +88,7 @@ repository = "https://github.com/user/bao"
 mozjs = { path = "../mozjs/mozjs" }
 mozjs_sys = { path = "../mozjs/mozjs-sys" }
 bao_crypto = { path = "src/bao_crypto" }
-bao_tls = { path = "src/bao_tls" }
+bao_boringssl_bridge = { path = "src/bao_boringssl_bridge" }
 bao_native_stubs = { path = "src/bao_native_stubs" }
 bao_uloop = { path = "src/bao_uloop" }
 
@@ -144,7 +148,6 @@ bun_resolver = { path = "src/resolver" }
 bun_safety = { path = "src/safety" }
 bun_semver = { path = "src/semver" }
 bun_sourcemap = { path = "src/sourcemap" }
-bun_sql = { path = "src/sql" }
 bun_sys = { path = "src/sys" }
 bun_threading = { path = "src/threading" }
 bun_watcher = { path = "src/watcher" }
@@ -188,7 +191,7 @@ bun_zstd = { path = "src/zstd" }
 bun_options_types = { path = "src/options_types" }
 bun_bunfig = { path = "src/bunfig" }
 bun_output = { path = "src/output" }
-bun_runtime = { path = "src/runtime", default-features = false }
+bun_runtime = { path = "src/bao_runtime" }
 bun_which = { path = "src/which" }
 bun_transpiler = { path = "src/transpiler" }
 

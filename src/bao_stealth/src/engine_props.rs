@@ -323,8 +323,15 @@ unsafe fn define_permanent_getter(
     // Remove existing property (servo defines navigator.userAgent etc.
     // as configurable). SpiderMonkey forbids changing configurable:true
     // to configurable:false (PERMANENT), so we must delete first.
+    // However, if the property is already PERMANENT (e.g., from a prior
+    // install_stealth_props call), delete will fail silently — skip it.
     let mut op_result = ObjectOpResult::default();
-    JS_DeleteProperty(cx, obj, c_name.as_ptr(), &mut op_result);
+    let deleted = JS_DeleteProperty(cx, obj, c_name.as_ptr(), &mut op_result);
+    if !deleted || !op_result.ok() {
+        // Delete failed — property may already be PERMANENT.
+        // The subsequent JS_DefineProperty1 will also fail safely,
+        // returning false without corrupting state.
+    }
     let attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
     let ok = JS_DefineProperty1(cx, obj, c_name.as_ptr(), getter, None, attrs);
     ok

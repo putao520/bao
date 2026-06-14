@@ -11,7 +11,7 @@
 <h2>§1 引擎需求</h2>
 <!-- ============================================================ -->
 
-<div id="req-eng-001" data-req="REQ-ENG-001" data-req-api="POST /runtime/eval" data-req-category="business" data-req-domain="ENG" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-status="implemented">
+<div data-req-api="POST /runtime/eval" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-001" id="req-eng-001">
 <h3>REQ-ENG-001: SpiderMonkey 引擎集成</h3>
 <p>通过 mozjs crate (v0.15.14) 集成 SpiderMonkey JS 引擎，替代 Bun 原有的 JavaScriptCore。</p>
 <h4>验收标准</h4>
@@ -30,7 +30,7 @@
 <p>关联测试: <span data-xref-id="TEST-ENG-001" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-eng-002" data-req="REQ-ENG-002" data-req-api="POST /codegen/generate" data-req-category="business" data-req-domain="ENG" data-req-entity="BaoRuntime" data-req-status="implemented">
+<div data-req-api="POST /codegen/generate" data-req-entity="BaoRuntime" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-002" id="req-eng-002">
 <h3>REQ-ENG-002: 代码生成后端重写</h3>
 <p>重写 Bun 的 .classes.ts 代码生成后端，将 JSC C++ 模板改为 SpiderMonkey 绑定生成。30 个 .classes.ts 定义文件复用 95%。</p>
 <h4>验收标准</h4>
@@ -45,7 +45,7 @@
 <p>关联测试: <span data-xref-id="TEST-ENG-002" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-eng-003" data-req="REQ-ENG-003" data-req-api="POST /host-fn/call" data-req-category="business" data-req-domain="ENG" data-req-entity="JsCallback,BaoRuntime" data-req-status="implemented">
+<div data-req-api="POST /host-fn/call" data-req-entity="JsCallback,BaoRuntime" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-003" id="req-eng-003">
 <h3>REQ-ENG-003: host_fn 抽象层</h3>
 <p>新建 mozjs safe FFI wrapper，替代 bun_jsc 的 host_fn 安全抽象。提供 JS 函数调用、类型转换、异常处理的 Rust 安全封装。</p>
 <h4>验收标准</h4>
@@ -59,7 +59,7 @@
 <p data-xref-id="REQ-ENG-003" data-xref-type="req">关联实体: <span data-xref-id="JsCallback" data-xref-type="entity">JsCallback</span>
 <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span></p><p>关联测试: <span data-xref-id="TEST-ENG-003" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-eng-004" data-req="REQ-ENG-004" data-req-api="POST /event-loop/drain" data-req-category="business" data-req-domain="ENG" data-req-entity="BaoRuntime" data-req-status="implemented">
+<div data-req-api="POST /event-loop/drain" data-req-entity="BaoRuntime" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-004" id="req-eng-004">
 <h3>REQ-ENG-004: Event Loop 桥接</h3>
 <p>实现 SpiderMonkey JS::JobQueue → Bun uSockets I/O 的事件循环桥接。</p>
 <h4>验收标准</h4>
@@ -74,7 +74,7 @@
 <p>关联测试: <span data-xref-id="TEST-ENG-004" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-eng-005" data-req="REQ-ENG-005" data-req-api="POST /module/resolve" data-req-category="business" data-req-domain="ENG" data-req-entity="ModuleSource" data-req-status="implemented">
+<div data-req-api="POST /module/resolve" data-req-entity="ModuleSource" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-005" id="req-eng-005">
 <h3>REQ-ENG-005: Module Loader 桥接</h3>
 <p>实现 SpiderMonkey ESM hooks → Bun resolver 的模块加载桥接。</p>
 <h4>验收标准</h4>
@@ -90,7 +90,7 @@
 <p>关联测试: <span data-xref-id="TEST-ENG-005" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-eng-006" data-req="REQ-ENG-006" data-req-api="GET /api/bun-compat" data-req-category="business" data-req-domain="ENG" data-req-entity="BaoRuntime" data-req-status="implemented">
+<div data-req-api="GET /api/bun-compat" data-req-entity="BaoRuntime" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-006" id="req-eng-006">
 <h3>REQ-ENG-006: Bun API 适配</h3>
 <p>将 Bun.* JS API 从 JSC 绑定适配到 SpiderMonkey 绑定。</p>
 <h4>验收标准</h4>
@@ -107,28 +107,53 @@
 <p>关联测试: <span data-xref-id="TEST-ENG-006" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-eng-007" data-req="REQ-ENG-007" data-req-api="GET /api/node-compat" data-req-category="business" data-req-domain="ENG" data-req-entity="BaoRuntime,BaoRuntime" data-req-status="implemented">
+<div data-req-api="GET /api/node-compat" data-req-entity="TlsProfile,TlsConnection" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-007" id="req-eng-007">
 <h3>REQ-ENG-007: Node.js 兼容层适配</h3>
-<p>将现有 Node.js 兼容 API (node:fs, node:path, node:http 等) 从 JSC 移植到 SpiderMonkey。</p>
+<p data-req-description="">将现有 Node.js 兼容 API (node:fs, node:path, node:http, node:crypto, node:tls 等) 从 JSC 移植到 SpiderMonkey。TLS 实现路径：bao_boringssl_bridge (BoringSSL) 替代 bao_tls (rustls)，提供 TLS 1.2/1.3 支持。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="node:fs-读写操作正常" data-criterion="node:fs 读写操作正常" data-criterion-id="REQ-ENG-007-C1">node:fs 读写操作正常</li>
-<li id="node:path-路径操作正常" data-criterion="node:path 路径操作正常" data-criterion-id="REQ-ENG-007-C2">node:path 路径操作正常</li>
-<li id="node:http-服务端正常" data-criterion="node:http 服务端正常" data-criterion-id="REQ-ENG-007-C3">node:http 服务端正常</li>
-<li id="node:crypto-加密操作正常" data-criterion="node:crypto 加密操作正常" data-criterion-id="REQ-ENG-007-C4">node:crypto 加密操作正常</li>
-<li id="buffer-全局对象正常工作" data-criterion="Buffer 全局对象正常工作" data-criterion-id="REQ-ENG-007-C5">Buffer 全局对象正常工作</li>
-<li id="process-全局对象正常工作" data-criterion="process 全局对象正常工作" data-criterion-id="REQ-ENG-007-C6">process 全局对象正常工作</li>
+<li>node:fs 读写操作正常</li>
+<li>node:path 路径操作正常</li>
+<li>node:http 服务端正常</li>
+<li>node:crypto 加密操作正常</li>
+<li>node:tls 通过 bao_boringssl_bridge 提供 TLS 1.2/1.3</li>
+<li>Buffer 全局对象正常工作</li>
+<li>process 全局对象正常工作</li>
 </ul>
-
-<p data-xref-id="REQ-ENG-007" data-xref-type="req">关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span></p>
-<p>关联测试: <span data-xref-id="TEST-ENG-007" data-xref-type="test"></span></p>
-<div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
+<p data-xref-id="REQ-ENG-007" data-xref-type="req">关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span> <span data-xref-id="TlsProfile" data-xref-type="entity">TlsProfile</span></p>
+<p>关联 API: <span data-xref-id="GET /api/node-compat" data-xref-type="api">GET /api/node-compat</span></p>
+<div data-criteria=""><strong>验收标准：</strong><ol><li>node:fs 读写操作正常</li><li>node:path 路径操作正常</li><li>node:http 服务端正常</li><li>node:crypto 加密操作正常</li><li>node:tls 通过 bao_boringssl_bridge 提供 TLS 1.2/1.3</li><li>Buffer 全局对象正常工作</li><li>process 全局对象正常工作</li></ol></div>
+</div><div data-req-api="GET /api/sqlite-bridge" data-req-entity="SqliteDatabase" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-008" id="req-eng-008">
+<h3>REQ-ENG-008: bun:sqlite SpiderMonkey bridge</h3>
+<p data-req-description="">将 bun:sqlite 模块从 JSC 移植到 SpiderMonkey。bun:sqlite 是 Bun 内置的 SQLite3 绑定，提供同步/异步数据库访问。需要在 SpiderMonkey 中正确处理 GC root 和 JSVal 到 Rust 值的转换。</p>
+<h4>验收标准</h4>
+<ul>
+<li>bun:sqlite API 在 SpiderMonkey 上下文中正常工作</li>
+<li>Database/Statement 对象 GC root 正确注册</li>
+<li>事务/查询/迭代器正常</li>
+<li>cargo test 通过</li>
+</ul>
+<p data-xref-id="REQ-ENG-008" data-xref-type="req">关联实体: <span data-xref-id="SqliteDatabase" data-xref-type="entity">SqliteDatabase</span></p>
+<div data-criteria=""><strong>验收标准：</strong><ol><li>bun:sqlite API 在 SpiderMonkey 上下文中正常工作</li><li>Database/Statement 对象 GC root 正确注册</li><li>事务/查询/迭代器正常</li><li>cargo test 通过</li></ol></div>
+</div>
 
 <!-- ============================================================ -->
 <h2>§2 CLI 需求</h2>
 <!-- ============================================================ -->
 
-<div id="req-cli-001" data-req="REQ-CLI-001" data-req-api="POST /cli/exec" data-req-category="business" data-req-domain="CLI" data-req-entity="BaoRuntime" data-req-status="implemented">
+<div data-req-api="GET /api/ffi-bridge" data-req-entity="FfiLibrary" data-req-category="business" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-ENG-009" id="req-eng-009">
+<h3>REQ-ENG-009: bun:ffi SpiderMonkey bridge</h3>
+<p data-req-description="">将 bun:ffi 模块从 JSC 移植到 SpiderMonkey。bun:ffi 是 Bun 内置的 FFI (Foreign Function Interface) 绑定，允许 JS 代码直接调用 C 动态库函数。需要在 SpiderMonkey 中正确处理 FFI callback 和 JSVal 到 C 类型的转换。</p>
+<h4>验收标准</h4>
+<ul>
+<li>bun:ffi API 在 SpiderMonkey 上下文中正常工作</li>
+<li>FFI callback 正确注册和调用</li>
+<li>C 类型转换（指针/结构体/枚举）正常</li>
+<li>cargo test 通过</li>
+</ul>
+<p data-xref-id="REQ-ENG-009" data-xref-type="req">关联实体: <span data-xref-id="FfiBinding" data-xref-type="entity">FfiBinding</span></p>
+<div data-criteria=""><strong>验收标准：</strong><ol><li>bun:ffi API 在 SpiderMonkey 上下文中正常工作</li><li>FFI callback 正确注册和调用</li><li>C 类型转换（指针/结构体/枚举）正常</li><li>cargo test 通过</li></ol></div>
+</div><div data-req-api="POST /cli/exec" data-req-entity="BaoRuntime" data-req-category="business" data-req-domain="CLI" data-req-status="implemented" data-req="REQ-CLI-001" id="req-cli-001">
 <h3>REQ-CLI-001: bao 品牌替换</h3>
 <p>用户可见的命令和输出从 bun 替换为 bao。</p>
 <h4>验收标准</h4>
@@ -146,7 +171,7 @@
 <p>关联测试: <span data-xref-id="TEST-CLI-001" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-cli-002" data-req="REQ-CLI-002" data-req-api="POST /cli/browser" data-req-category="business" data-req-domain="CLI" data-req-entity="BrowserContext,Viewport,CdpRouter,BrowserContext,Viewport,PixelBuffer" data-req-status="implemented">
+<div data-req-api="POST /cli/browser" data-req-entity="BrowserContext,Viewport,CdpRouter,BrowserContext,Viewport,PixelBuffer" data-req-category="business" data-req-domain="CLI" data-req-status="implemented" data-req="REQ-CLI-002" id="req-cli-002">
 <h3>REQ-CLI-002: bao browser 子命令</h3>
 <p>新增 bao browser 子命令，便捷启动 servo + CDP。</p>
 <h4>验收标准</h4>
@@ -167,7 +192,7 @@
 <h2>§3 浏览器能力需求</h2>
 <!-- ============================================================ -->
 
-<div id="req-brw-001" data-req="REQ-BRW-001" data-req-api="POST /browser/create-page" data-req-category="business" data-req-domain="BRW" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-status="implemented">
+<div data-req-api="POST /browser/create-page" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-category="business" data-req-domain="BRW" data-req-status="implemented" data-req="REQ-BRW-001" id="req-brw-001">
 <h3>REQ-BRW-001: libservo 集成</h3>
 <p>集成 servo crate 作为浏览器引擎核心，实现 ServoDelegate + WebViewDelegate trait，使用 SoftwareRenderingContext CPU 无头渲染。</p>
 <h4>验收标准</h4>
@@ -189,7 +214,7 @@
 <p>关联测试: <span data-xref-id="TEST-BRW-001" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-brw-002" data-req="REQ-BRW-002" data-req-api="POST /browser/screenshot" data-req-category="business" data-req-domain="BRW" data-req-entity="PixelBuffer,Viewport" data-req-status="implemented">
+<div data-req-api="POST /browser/screenshot" data-req-entity="PixelBuffer,Viewport" data-req-category="business" data-req-domain="BRW" data-req-status="implemented" data-req="REQ-BRW-002" id="req-brw-002">
 <h3>REQ-BRW-002: 内存渲染</h3>
 <p>基于 servo 内置 webrender 渲染管线，支持 SoftwareRenderingContext（无头场景）和 servo 原有渲染后端（尊重 servo 原有设计）。通过 take_screenshot() 获取 RgbaImage 后编码输出。</p>
 <h4>验收标准</h4>
@@ -213,7 +238,7 @@ WebView::take_screenshot() → image crate 编码输出。
 <p data-xref-id="REQ-BRW-002" data-xref-type="req">关联实体: <span data-xref-id="PixelBuffer" data-xref-type="entity">PixelBuffer</span>
 <span data-xref-id="Viewport" data-xref-type="entity">Viewport</span></p><p>关联测试: <span data-xref-id="TEST-BRW-002" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-brw-003" data-req="REQ-BRW-003" data-req-api="POST /browser/jscontext-fuse" data-req-category="business" data-req-domain="BRW" data-req-entity="BaoRuntime,CdpRouter,CdpSession" data-req-status="implemented">
+<div data-req-api="POST /browser/jscontext-fuse" data-req-entity="BaoRuntime,CdpRouter,CdpSession" data-req-category="business" data-req-domain="BRW" data-req-status="implemented" data-req="REQ-BRW-003" id="req-brw-003">
 <h3>REQ-BRW-003: SpiderMonkey JSContext 融合</h3>
 <p>servo 拥有唯一 JSContext，Bao 的 Node.js/Bun host functions 直接注册到 servo 的 JSContext 中。选择 SpiderMonkey 的目的就是与 servo 共享同一引擎，实现真正融合。</p>
 <h4>架构原则</h4>
@@ -240,7 +265,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <h2>§4 CDP 需求</h2>
 <!-- ============================================================ -->
 
-<div id="req-cdp-001" data-req="REQ-CDP-001" data-req-api="GET /json/version,GET /json/list" data-req-category="business" data-req-domain="CDP" data-req-entity="CdpRouter,CdpSession,CdpServer,ServerConfig,DomainRegistry" data-req-status="implemented">
+<div data-req-api="GET /json/version,GET /json/list" data-req-entity="CdpRouter,CdpSession,CdpServer,ServerConfig,DomainRegistry" data-req-category="business" data-req-domain="CDP" data-req-status="implemented" data-req="REQ-CDP-001" id="req-cdp-001">
 <h3>REQ-CDP-001: CDP WebSocket Server</h3>
 <p>实现 CDP WebSocket 服务端，支持 Playwright/Puppeteer 连接。</p>
 <h4>验收标准</h4>
@@ -255,7 +280,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p data-xref-id="REQ-CDP-001" data-xref-type="req">关联实体: <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>
 <span data-xref-id="CdpSession" data-xref-type="entity">CdpSession</span></p><p>关联测试: <span data-xref-id="TEST-CDP-001" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-cdp-002" data-req="REQ-CDP-002" data-req-api="POST /cdp/runtime" data-req-category="business" data-req-domain="CDP" data-req-entity="CdpRouter,CdpCommand,CdpResponse" data-req-status="implemented">
+<div data-req-api="POST /cdp/runtime" data-req-entity="CdpRouter,CdpCommand,CdpResponse" data-req-category="business" data-req-domain="CDP" data-req-status="implemented" data-req="REQ-CDP-002" id="req-cdp-002">
 <h3>REQ-CDP-002: Runtime Domain</h3>
 <p>实现 CDP Runtime domain，映射到 SpiderMonkey Debugger API (JS 层)。</p>
 <h4>验收标准</h4>
@@ -273,7 +298,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>关联测试: <span data-xref-id="TEST-CDP-002" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-cdp-003" data-req="REQ-CDP-003" data-req-api="POST /cdp/debugger" data-req-category="business" data-req-domain="CDP" data-req-entity="CdpRouter,CdpCommand" data-req-status="implemented">
+<div data-req-api="POST /cdp/debugger" data-req-entity="CdpRouter,CdpCommand" data-req-category="business" data-req-domain="CDP" data-req-status="implemented" data-req="REQ-CDP-003" id="req-cdp-003">
 <h3>REQ-CDP-003: Debugger Domain</h3>
 <p>实现 CDP Debugger domain，映射到 SpiderMonkey JS 层 Debugger API。</p>
 <h4>验收标准</h4>
@@ -289,7 +314,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p data-xref-id="REQ-CDP-003" data-xref-type="req">关联实体: <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>
 <span data-xref-id="CdpCommand" data-xref-type="entity">CdpCommand</span></p><p>关联测试: <span data-xref-id="TEST-CDP-003" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-cdp-004" data-req="REQ-CDP-004" data-req-api="POST /cdp/page" data-req-category="business" data-req-domain="CDP" data-req-entity="CdpRouter,PixelBuffer,Viewport" data-req-status="implemented">
+<div data-req-api="POST /cdp/page" data-req-entity="CdpRouter,PixelBuffer,Viewport" data-req-category="business" data-req-domain="CDP" data-req-status="implemented" data-req="REQ-CDP-004" id="req-cdp-004">
 <h3>REQ-CDP-004: Page Domain</h3>
 <p>实现 CDP Page domain，映射到 servo WebView（导航 + 截图）。</p>
 <h4>验收标准</h4>
@@ -307,7 +332,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>关联测试: <span data-xref-id="TEST-CDP-004" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-cdp-005" data-req="REQ-CDP-005" data-req-api="POST /cdp/dom" data-req-category="business" data-req-domain="CDP" data-req-entity="CdpRouter,CdpCommand" data-req-status="implemented">
+<div data-req-api="POST /cdp/dom" data-req-entity="CdpRouter,CdpCommand" data-req-category="business" data-req-domain="CDP" data-req-status="implemented" data-req="REQ-CDP-005" id="req-cdp-005">
 <h3>REQ-CDP-005: DOM Domain</h3>
 <p>实现 CDP DOM domain，映射到 libservo DOM 树查询。</p>
 <h4>验收标准</h4>
@@ -323,7 +348,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p data-xref-id="REQ-CDP-005" data-xref-type="req">关联实体: <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>
 <span data-xref-id="CdpCommand" data-xref-type="entity">CdpCommand</span></p><p>关联测试: <span data-xref-id="TEST-CDP-005" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-cdp-006" data-req="REQ-CDP-006" data-req-api="POST /cdp/network" data-req-category="business" data-req-domain="CDP" data-req-entity="CdpRouter,CdpCommand" data-req-status="implemented">
+<div data-req-api="POST /cdp/network" data-req-entity="CdpRouter,CdpCommand" data-req-category="business" data-req-domain="CDP" data-req-status="implemented" data-req="REQ-CDP-006" id="req-cdp-006">
 <h3>REQ-CDP-006: Network Domain</h3>
 <p>实现 CDP Network domain，映射到 Bun HTTP 栈 hook。</p>
 <h4>验收标准</h4>
@@ -339,7 +364,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p data-xref-id="REQ-CDP-006" data-xref-type="req">关联实体: <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>
 <span data-xref-id="CdpCommand" data-xref-type="entity">CdpCommand</span></p><p>关联测试: <span data-xref-id="TEST-CDP-006" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-cdp-007" data-req="REQ-CDP-007" data-req-api="POST /cdp/emulation" data-req-category="business" data-req-domain="CDP" data-req-entity="CdpRouter,CdpCommand" data-req-status="implemented">
+<div data-req-api="POST /cdp/emulation" data-req-entity="CdpRouter,CdpCommand" data-req-category="business" data-req-domain="CDP" data-req-status="implemented" data-req="REQ-CDP-007" id="req-cdp-007">
 <h3>REQ-CDP-007: CSS/Input/Emulation/Overlay Domain</h3>
 <p>实现辅助 CDP domain。</p>
 <h4>验收标准</h4>
@@ -355,7 +380,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p data-xref-id="REQ-CDP-007" data-xref-type="req">关联实体: <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>
 <span data-xref-id="CdpCommand" data-xref-type="entity">CdpCommand</span></p><p>关联测试: <span data-xref-id="TEST-CDP-007" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-cdp-008" data-req="REQ-CDP-008" data-req-api="GET /json/new,GET /json/close/{targetId},GET /json/activate/{targetId}" data-req-category="business" data-req-domain="CDP" data-req-entity="CdpRouter,CdpSession,TlsProfile,StealthProfile" data-req-status="implemented">
+<div data-req-api="GET /json/new,GET /json/close/{targetId},GET /json/activate/{targetId}" data-req-entity="CdpRouter,CdpSession,TlsProfile,StealthProfile" data-req-category="business" data-req-domain="CDP" data-req-status="implemented" data-req="REQ-CDP-008" id="req-cdp-008">
 <h3>REQ-CDP-008: Target Domain</h3>
 <p>实现 CDP Target domain，支持 Context/Target 发现。</p>
 <h4>验收标准</h4>
@@ -373,7 +398,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <h2>§5 Stealth 需求</h2>
 <!-- ============================================================ -->
 
-<div id="req-stl-001" data-req="REQ-STL-001" data-req-api="POST /stealth/tls" data-req-category="business" data-req-domain="STL" data-req-entity="TlsProfile,StealthProfile" data-req-status="implemented">
+<div data-req-api="POST /stealth/tls" data-req-entity="TlsProfile,StealthProfile" data-req-category="business" data-req-domain="STL" data-req-status="implemented" data-req="REQ-STL-001" id="req-stl-001">
 <h3>REQ-STL-001: TLS 指纹模拟</h3>
 <p>通过 rustls cipher suite + extension 顺序配置模拟 Firefox 的 JA3/JA4 TLS 指纹。</p>
 <h4>验收标准</h4>
@@ -388,7 +413,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p data-xref-id="REQ-STL-001" data-xref-type="req">关联实体: <span data-xref-id="TlsProfile" data-xref-type="entity">TlsProfile</span>
 <span data-xref-id="StealthProfile" data-xref-type="entity">StealthProfile</span></p><p>关联测试: <span data-xref-id="TEST-STL-001" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-stl-002" data-req="REQ-STL-002" data-req-api="POST /stealth/http2" data-req-category="business" data-req-domain="STL" data-req-entity="StealthProfile" data-req-status="implemented">
+<div data-req-api="POST /stealth/http2" data-req-entity="StealthProfile" data-req-category="business" data-req-domain="STL" data-req-status="implemented" data-req="REQ-STL-002" id="req-stl-002">
 <h3>REQ-STL-002: HTTP/2 指纹匹配</h3>
 <p>通过 hyper 配置调优，使 HTTP/2 SETTINGS 帧参数匹配 Firefox。</p>
 <h4>验收标准</h4>
@@ -403,7 +428,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>关联测试: <span data-xref-id="TEST-STL-002" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-stl-003" data-req="REQ-STL-003" data-req-api="POST /stealth/canvas" data-req-category="business" data-req-domain="STL" data-req-entity="StealthProfile,PixelBuffer" data-req-status="implemented">
+<div data-req-api="POST /stealth/canvas" data-req-entity="StealthProfile,PixelBuffer" data-req-category="business" data-req-domain="STL" data-req-status="implemented" data-req="REQ-STL-003" id="req-stl-003">
 <h3>REQ-STL-003: Canvas 指纹防护</h3>
 <p>在 servo webrender 渲染层注入确定性随机噪声，使 Canvas toDataURL/toBlob 输出包含不可检测的微小差异。</p>
 <h4>验收标准</h4>
@@ -418,7 +443,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p data-xref-id="REQ-STL-003" data-xref-type="req">关联实体: <span data-xref-id="StealthProfile" data-xref-type="entity">StealthProfile</span>
 <span data-xref-id="PixelBuffer" data-xref-type="entity">PixelBuffer</span></p><p>关联测试: <span data-xref-id="TEST-STL-003" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-stl-004" data-req="REQ-STL-004" data-req-api="POST /stealth/navigator" data-req-category="business" data-req-domain="STL" data-req-entity="NavigatorProfile,StealthProfile" data-req-status="implemented">
+<div data-req-api="POST /stealth/navigator" data-req-entity="NavigatorProfile,StealthProfile" data-req-category="business" data-req-domain="STL" data-req-status="implemented" data-req="REQ-STL-004" id="req-stl-004">
 <h3>REQ-STL-004: Navigator/Screen 构造</h3>
 <p>在 SpiderMonkey 引擎层构造 Navigator 和 Screen 属性，使 JS 层读取的值与目标浏览器一致且不可篡改检测。</p>
 <h4>验收标准</h4>
@@ -436,7 +461,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p data-xref-id="REQ-STL-004" data-xref-type="req">关联实体: <span data-xref-id="NavigatorProfile" data-xref-type="entity">NavigatorProfile</span>
 <span data-xref-id="StealthProfile" data-xref-type="entity">StealthProfile</span></p><p>关联测试: <span data-xref-id="TEST-STL-004" data-xref-type="test"></span></p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-stl-005" data-req="REQ-STL-005" data-req-api="POST /stealth/webgl-audio" data-req-category="business" data-req-domain="STL" data-req-entity="StealthProfile" data-req-status="implemented">
+<div data-req-api="POST /stealth/webgl-audio" data-req-entity="StealthProfile" data-req-category="business" data-req-domain="STL" data-req-status="implemented" data-req="REQ-STL-005" id="req-stl-005">
 <h3>REQ-STL-005: WebGL/Audio 指纹防护</h3>
 <p>WebGL vendor/renderer 信息和 AudioContext 浮点运算噪声注入。</p>
 <h4>验收标准</h4>
@@ -451,7 +476,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>关联测试: <span data-xref-id="TEST-STL-005" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-stl-006" data-req="REQ-STL-006" data-req-api="POST /stealth/behavior" data-req-category="business" data-req-domain="STL" data-req-entity="StealthProfile" data-req-status="implemented">
+<div data-req-api="POST /stealth/behavior" data-req-entity="StealthProfile" data-req-category="business" data-req-domain="STL" data-req-status="implemented" data-req="REQ-STL-006" id="req-stl-006">
 <h3>REQ-STL-006: 行为模拟</h3>
 <p>模拟人类鼠标轨迹、打字节奏和滚动模式。</p>
 <h4>验收标准</h4>
@@ -466,7 +491,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>关联测试: <span data-xref-id="TEST-STL-006" data-xref-type="test"></span></p>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-stl-007" data-req="REQ-STL-007" data-req-api="GET /stealth/cdp-stealth" data-req-category="business" data-req-domain="STL" data-req-entity="StealthProfile,PageHandle,PagePool,BrowserContext" data-req-status="implemented">
+<div data-req-api="GET /stealth/cdp-stealth" data-req-entity="StealthProfile,PageHandle,PagePool,BrowserContext" data-req-category="business" data-req-domain="STL" data-req-status="implemented" data-req="REQ-STL-007" id="req-stl-007">
 <h3>REQ-STL-007: CDP 隐蔽性</h3>
 <p>CDP 通道不暴露到页面 JS 环境，页面无法检测自动化。</p>
 <h4>验收标准</h4>
@@ -486,7 +511,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <h2>§5.5 多页面库需求</h2>
 <!-- ============================================================ -->
 
-<div id="req-lib-001" data-req="REQ-LIB-001" data-req-api="POST /pagepool/create" data-req-category="business" data-req-domain="LIB" data-req-entity="PageHandle,PagePool,BaoRuntime" data-req-status="implemented">
+<div data-req-api="POST /pagepool/create" data-req-entity="PageHandle,PagePool,BaoRuntime" data-req-category="business" data-req-domain="LIB" data-req-status="implemented" data-req="REQ-LIB-001" id="req-lib-001">
 <h3>REQ-LIB-001: 多页面管理</h3>
 <p>支持在单个 BaoRuntime 中创建、管理和销毁多个隔离的 Page。每个 Page 对应一个 servo WebView，拥有独立的 SM Realm（JS 全局对象隔离）。</p>
 <h4>验收标准</h4>
@@ -507,7 +532,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
  <span data-xref-id="TEST-LIB-010" data-xref-type="test"></span>
 </p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-lib-002" data-req="REQ-LIB-002" data-req-api="GET /pagepool/stats" data-req-category="business" data-req-domain="LIB" data-req-entity="PagePool,PageHandle" data-req-status="implemented">
+<div data-req-api="GET /pagepool/stats" data-req-entity="PagePool,PageHandle" data-req-category="business" data-req-domain="LIB" data-req-status="implemented" data-req="REQ-LIB-002" id="req-lib-002">
 <h3>REQ-LIB-002: PagePool 资源管理</h3>
 <p>实现分层资源管理策略，防止爬虫等长期运行场景下的内存泄漏。</p>
 <h4>验收标准</h4>
@@ -527,7 +552,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
  <span data-xref-id="TEST-LIB-004" data-xref-type="test"></span>
 </p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-lib-003" data-req="REQ-LIB-003" data-req-api="GET /api/bao-runtime,GET /api/bao-runtime-js" data-req-category="business" data-req-domain="LIB" data-req-entity="CdpRouter,CdpBackendInternal,CdpBackendExternal,CdpSession" data-req-status="implemented">
+<div data-req-api="GET /api/bao-runtime,GET /api/bao-runtime-js" data-req-entity="CdpRouter,CdpBackendInternal,CdpBackendExternal,CdpSession" data-req-category="business" data-req-domain="LIB" data-req-status="implemented" data-req="REQ-LIB-003" id="req-lib-003">
 <h3>REQ-LIB-003: CDP 双层抽象 API</h3>
 <p>提供高性能 Rust/JS API（内部直调）和 CDP 兼容层（Playwright/Puppeteer 连接），支持内部 servo 和外部 CDP 端点。</p>
 <h4>验收标准</h4>
@@ -549,7 +574,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
  <span data-xref-id="TEST-LIB-007" data-xref-type="test"></span>
 </p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
-<div id="req-lib-004" data-req="REQ-LIB-004" data-req-api="POST /permission/set" data-req-category="business" data-req-domain="LIB" data-req-entity="Permission,PageHandle" data-req-status="implemented">
+<div data-req-api="POST /permission/set" data-req-entity="Permission,PageHandle" data-req-category="business" data-req-domain="LIB" data-req-status="implemented" data-req="REQ-LIB-004" id="req-lib-004">
 <h3>REQ-LIB-004: Permission 可选沙箱</h3>
 <p>基于 host_fn 层拦截的可选权限系统，浏览器页面和 Bun 脚本都可复用。默认不启用（零开销），启用后为白名单模式。</p>
 <h4>验收标准</h4>
@@ -664,7 +689,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <h2>§7 需求追溯矩阵</h2>
 <!-- ============================================================ -->
 
-<div data-type="document" id="table" data-artifact-type="table">
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
 <h3>REQ ↔ 架构模块映射</h3>
 <table>
 <tr><td>需求</td><td>架构模块</td><td>影响 Crate</td><td>Phase</td></tr>
@@ -702,5 +727,5 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </table>
 </div>
 
-</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div id="test-eng-001" data-req-ref="REQ-ENG-001" data-test-categories="unit" data-test="TEST-ENG-001"><h4>TEST-ENG-001: REQ-ENG-001 单元测试</h4><p>TODO: 为 REQ-ENG-001 编写测试用例</p></div><div id="test-eng-002" data-req-ref="REQ-ENG-002" data-test-categories="unit" data-test="TEST-ENG-002"><h4>TEST-ENG-002: REQ-ENG-002 单元测试</h4><p>TODO: 为 REQ-ENG-002 编写测试用例</p></div><div id="test-eng-003" data-req-ref="REQ-ENG-003" data-test-categories="unit" data-test="TEST-ENG-003"><h4>TEST-ENG-003: REQ-ENG-003 单元测试</h4><p>TODO: 为 REQ-ENG-003 编写测试用例</p></div><div id="test-eng-004" data-req-ref="REQ-ENG-004" data-test-categories="unit" data-test="TEST-ENG-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div id="test-eng-005" data-req-ref="REQ-ENG-005" data-test-categories="unit" data-test="TEST-ENG-005"><h4>TEST-ENG-005: REQ-ENG-005 单元测试</h4><p>TODO: 为 REQ-ENG-005 编写测试用例</p></div><div id="test-eng-006" data-req-ref="REQ-ENG-006" data-test-categories="unit" data-test="TEST-ENG-006"><h4>TEST-ENG-006: REQ-ENG-006 单元测试</h4><p>TODO: 为 REQ-ENG-006 编写测试用例</p></div><div id="test-eng-007" data-req-ref="REQ-ENG-007" data-test-categories="unit" data-test="TEST-ENG-007"><h4>TEST-ENG-007: REQ-ENG-007 单元测试</h4><p>TODO: 为 REQ-ENG-007 编写测试用例</p></div><div id="test-cli-001" data-req-ref="REQ-CLI-001" data-test-categories="unit" data-test="TEST-CLI-001"><h4>TEST-CLI-001: REQ-CLI-001 单元测试</h4><p>TODO: 为 REQ-CLI-001 编写测试用例</p></div><div id="test-cli-002" data-req-ref="REQ-CLI-002" data-test-categories="unit" data-test="TEST-CLI-002"><h4>TEST-CLI-002: REQ-CLI-002 单元测试</h4><p>TODO: 为 REQ-CLI-002 编写测试用例</p></div><div id="test-brw-001" data-req-ref="REQ-BRW-001" data-test-categories="unit" data-test="TEST-BRW-001"><h4>TEST-BRW-001: REQ-BRW-001 单元测试</h4><p>TODO: 为 REQ-BRW-001 编写测试用例</p></div><div id="test-brw-002" data-req-ref="REQ-BRW-002" data-test-categories="unit" data-test="TEST-BRW-002"><h4>TEST-BRW-002: REQ-BRW-002 单元测试</h4><p>TODO: 为 REQ-BRW-002 编写测试用例</p></div><div id="test-brw-003" data-req-ref="REQ-BRW-003" data-test-categories="unit" data-test="TEST-BRW-003"><h4>TEST-BRW-003: REQ-BRW-003 单元测试</h4><p>TODO: 为 REQ-BRW-003 编写测试用例</p></div><div id="test-cdp-001" data-req-ref="REQ-CDP-001" data-test-categories="unit" data-test="TEST-CDP-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div id="test-cdp-002" data-req-ref="REQ-CDP-002" data-test-categories="unit" data-test="TEST-CDP-002"><h4>TEST-CDP-002: REQ-CDP-002 单元测试</h4><p>TODO: 为 REQ-CDP-002 编写测试用例</p></div><div id="test-cdp-003" data-req-ref="REQ-CDP-003" data-test-categories="unit" data-test="TEST-CDP-003"><h4>TEST-CDP-003: REQ-CDP-003 单元测试</h4><p>TODO: 为 REQ-CDP-003 编写测试用例</p></div><div id="test-cdp-004" data-req-ref="REQ-CDP-004" data-test-categories="unit" data-test="TEST-CDP-004"><h4>TEST-CDP-004: REQ-CDP-004 单元测试</h4><p>TODO: 为 REQ-CDP-004 编写测试用例</p></div><div id="test-cdp-005" data-req-ref="REQ-CDP-005" data-test-categories="unit" data-test="TEST-CDP-005"><h4>TEST-CDP-005: REQ-CDP-005 单元测试</h4><p>TODO: 为 REQ-CDP-005 编写测试用例</p></div><div id="test-cdp-006" data-req-ref="REQ-CDP-006" data-test-categories="unit" data-test="TEST-CDP-006"><h4>TEST-CDP-006: REQ-CDP-006 单元测试</h4><p>TODO: 为 REQ-CDP-006 编写测试用例</p></div><div id="test-cdp-007" data-req-ref="REQ-CDP-007" data-test-categories="unit" data-test="TEST-CDP-007"><h4>TEST-CDP-007: REQ-CDP-007 单元测试</h4><p>TODO: 为 REQ-CDP-007 编写测试用例</p></div><div id="test-cdp-008" data-req-ref="REQ-CDP-008" data-test-categories="unit" data-test="TEST-CDP-008"><h4>TEST-CDP-008: REQ-CDP-008 单元测试</h4><p>TODO: 为 REQ-CDP-008 编写测试用例</p></div><div id="test-stl-001" data-req-ref="REQ-STL-001" data-test-categories="unit" data-test="TEST-STL-001"><h4>TEST-STL-001: REQ-STL-001 单元测试</h4><p>TODO: 为 REQ-STL-001 编写测试用例</p></div><div id="test-stl-002" data-req-ref="REQ-STL-002" data-test-categories="unit" data-test="TEST-STL-002"><h4>TEST-STL-002: REQ-STL-002 单元测试</h4><p>TODO: 为 REQ-STL-002 编写测试用例</p></div><div id="test-stl-003" data-req-ref="REQ-STL-003" data-test-categories="unit" data-test="TEST-STL-003"><h4>TEST-STL-003: REQ-STL-003 单元测试</h4><p>TODO: 为 REQ-STL-003 编写测试用例</p></div><div id="test-stl-004" data-req-ref="REQ-STL-004" data-test-categories="unit" data-test="TEST-STL-004"><h4>TEST-STL-004: REQ-STL-004 单元测试</h4><p>TODO: 为 REQ-STL-004 编写测试用例</p></div><div id="test-stl-005" data-req-ref="REQ-STL-005" data-test-categories="unit" data-test="TEST-STL-005"><h4>TEST-STL-005: REQ-STL-005 单元测试</h4><p>TODO: 为 REQ-STL-005 编写测试用例</p></div><div id="test-stl-006" data-req-ref="REQ-STL-006" data-test-categories="unit" data-test="TEST-STL-006"><h4>TEST-STL-006: REQ-STL-006 单元测试</h4><p>TODO: 为 REQ-STL-006 编写测试用例</p></div><div id="test-stl-007" data-req-ref="REQ-STL-007" data-test-categories="unit" data-test="TEST-STL-007"><h4>TEST-STL-007: REQ-STL-007 单元测试</h4><p>TODO: 为 REQ-STL-007 编写测试用例</p></div><div id="test-lib-001" data-req-ref="REQ-LIB-001" data-test-categories="unit" data-test="TEST-LIB-001"><h4>TEST-LIB-001: REQ-LIB-001 单元测试</h4><p>TODO: 为 REQ-LIB-001 编写测试用例</p></div><div id="test-lib-002" data-req-ref="REQ-LIB-002" data-test-categories="unit" data-test="TEST-LIB-002"><h4>TEST-LIB-002: REQ-LIB-002 单元测试</h4><p>TODO: 为 REQ-LIB-002 编写测试用例</p></div><div id="test-lib-003" data-req-ref="REQ-LIB-003" data-test-categories="unit" data-test="TEST-LIB-003"><h4>TEST-LIB-003: REQ-LIB-003 单元测试</h4><p>TODO: 为 REQ-LIB-003 编写测试用例</p></div><div id="test-lib-004" data-req-ref="REQ-LIB-004" data-test-categories="unit" data-test="TEST-LIB-004"><h4>TEST-LIB-004: REQ-LIB-004 单元测试</h4><p>TODO: 为 REQ-LIB-004 编写测试用例</p></div></section></body>
+</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-ENG-001" data-test="TEST-ENG-001" id="test-eng-001"><h4>TEST-ENG-001: REQ-ENG-001 单元测试</h4><p>TODO: 为 REQ-ENG-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-002" data-test="TEST-ENG-002" id="test-eng-002"><h4>TEST-ENG-002: REQ-ENG-002 单元测试</h4><p>TODO: 为 REQ-ENG-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-003" data-test="TEST-ENG-003" id="test-eng-003"><h4>TEST-ENG-003: REQ-ENG-003 单元测试</h4><p>TODO: 为 REQ-ENG-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-005" data-test="TEST-ENG-005" id="test-eng-005"><h4>TEST-ENG-005: REQ-ENG-005 单元测试</h4><p>TODO: 为 REQ-ENG-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-006" data-test="TEST-ENG-006" id="test-eng-006"><h4>TEST-ENG-006: REQ-ENG-006 单元测试</h4><p>TODO: 为 REQ-ENG-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-007" data-test="TEST-ENG-007" id="test-eng-007"><h4>TEST-ENG-007: REQ-ENG-007 单元测试</h4><p>TODO: 为 REQ-ENG-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CLI-001" data-test="TEST-CLI-001" id="test-cli-001"><h4>TEST-CLI-001: REQ-CLI-001 单元测试</h4><p>TODO: 为 REQ-CLI-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CLI-002" data-test="TEST-CLI-002" id="test-cli-002"><h4>TEST-CLI-002: REQ-CLI-002 单元测试</h4><p>TODO: 为 REQ-CLI-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-001" data-test="TEST-BRW-001" id="test-brw-001"><h4>TEST-BRW-001: REQ-BRW-001 单元测试</h4><p>TODO: 为 REQ-BRW-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-002" data-test="TEST-BRW-002" id="test-brw-002"><h4>TEST-BRW-002: REQ-BRW-002 单元测试</h4><p>TODO: 为 REQ-BRW-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-003" data-test="TEST-BRW-003" id="test-brw-003"><h4>TEST-BRW-003: REQ-BRW-003 单元测试</h4><p>TODO: 为 REQ-BRW-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-002" data-test="TEST-CDP-002" id="test-cdp-002"><h4>TEST-CDP-002: REQ-CDP-002 单元测试</h4><p>TODO: 为 REQ-CDP-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-003" data-test="TEST-CDP-003" id="test-cdp-003"><h4>TEST-CDP-003: REQ-CDP-003 单元测试</h4><p>TODO: 为 REQ-CDP-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-004" data-test="TEST-CDP-004" id="test-cdp-004"><h4>TEST-CDP-004: REQ-CDP-004 单元测试</h4><p>TODO: 为 REQ-CDP-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-005" data-test="TEST-CDP-005" id="test-cdp-005"><h4>TEST-CDP-005: REQ-CDP-005 单元测试</h4><p>TODO: 为 REQ-CDP-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-006" data-test="TEST-CDP-006" id="test-cdp-006"><h4>TEST-CDP-006: REQ-CDP-006 单元测试</h4><p>TODO: 为 REQ-CDP-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-007" data-test="TEST-CDP-007" id="test-cdp-007"><h4>TEST-CDP-007: REQ-CDP-007 单元测试</h4><p>TODO: 为 REQ-CDP-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-008" data-test="TEST-CDP-008" id="test-cdp-008"><h4>TEST-CDP-008: REQ-CDP-008 单元测试</h4><p>TODO: 为 REQ-CDP-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-001" data-test="TEST-STL-001" id="test-stl-001"><h4>TEST-STL-001: REQ-STL-001 单元测试</h4><p>TODO: 为 REQ-STL-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-002" data-test="TEST-STL-002" id="test-stl-002"><h4>TEST-STL-002: REQ-STL-002 单元测试</h4><p>TODO: 为 REQ-STL-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-003" data-test="TEST-STL-003" id="test-stl-003"><h4>TEST-STL-003: REQ-STL-003 单元测试</h4><p>TODO: 为 REQ-STL-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-004" data-test="TEST-STL-004" id="test-stl-004"><h4>TEST-STL-004: REQ-STL-004 单元测试</h4><p>TODO: 为 REQ-STL-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-005" data-test="TEST-STL-005" id="test-stl-005"><h4>TEST-STL-005: REQ-STL-005 单元测试</h4><p>TODO: 为 REQ-STL-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-006" data-test="TEST-STL-006" id="test-stl-006"><h4>TEST-STL-006: REQ-STL-006 单元测试</h4><p>TODO: 为 REQ-STL-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-007" data-test="TEST-STL-007" id="test-stl-007"><h4>TEST-STL-007: REQ-STL-007 单元测试</h4><p>TODO: 为 REQ-STL-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-001" data-test="TEST-LIB-001" id="test-lib-001"><h4>TEST-LIB-001: REQ-LIB-001 单元测试</h4><p>TODO: 为 REQ-LIB-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-002" data-test="TEST-LIB-002" id="test-lib-002"><h4>TEST-LIB-002: REQ-LIB-002 单元测试</h4><p>TODO: 为 REQ-LIB-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-003" data-test="TEST-LIB-003" id="test-lib-003"><h4>TEST-LIB-003: REQ-LIB-003 单元测试</h4><p>TODO: 为 REQ-LIB-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-004" data-test="TEST-LIB-004" id="test-lib-004"><h4>TEST-LIB-004: REQ-LIB-004 单元测试</h4><p>TODO: 为 REQ-LIB-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-008" data-test="TEST-ENG-008" id="test-eng-008"><h4>TEST-ENG-008: REQ-ENG-008 单元测试</h4><p>TODO: 为 REQ-ENG-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-009" data-test="TEST-ENG-009" id="test-eng-009"><h4>TEST-ENG-009: REQ-ENG-009 单元测试</h4><p>TODO: 为 REQ-ENG-009 编写测试用例</p></div><div id="test-orphan-59" data-req-ref="REQ-ORPHAN-59" data-test-categories="unit" data-test="TEST-ORPHAN-59"><h4>TEST-ORPHAN-59: REQ-ORPHAN-59 单元测试</h4><p>TODO: 为 REQ-ORPHAN-59 编写测试用例</p></div><div id="test-orphan-60" data-req-ref="REQ-ORPHAN-60" data-test-categories="unit" data-test="TEST-ORPHAN-60"><h4>TEST-ORPHAN-60: REQ-ORPHAN-60 单元测试</h4><p>TODO: 为 REQ-ORPHAN-60 编写测试用例</p></div><div id="test-orphan-61" data-req-ref="REQ-ORPHAN-61" data-test-categories="unit" data-test="TEST-ORPHAN-61"><h4>TEST-ORPHAN-61: REQ-ORPHAN-61 单元测试</h4><p>TODO: 为 REQ-ORPHAN-61 编写测试用例</p></div><div id="test-orphan-62" data-req-ref="REQ-ORPHAN-62" data-test-categories="unit" data-test="TEST-ORPHAN-62"><h4>TEST-ORPHAN-62: REQ-ORPHAN-62 单元测试</h4><p>TODO: 为 REQ-ORPHAN-62 编写测试用例</p></div><div id="test-orphan-63" data-req-ref="REQ-ORPHAN-63" data-test-categories="unit" data-test="TEST-ORPHAN-63"><h4>TEST-ORPHAN-63: REQ-ORPHAN-63 单元测试</h4><p>TODO: 为 REQ-ORPHAN-63 编写测试用例</p></div><div id="test-orphan-64" data-req-ref="REQ-ORPHAN-64" data-test-categories="unit" data-test="TEST-ORPHAN-64"><h4>TEST-ORPHAN-64: REQ-ORPHAN-64 单元测试</h4><p>TODO: 为 REQ-ORPHAN-64 编写测试用例</p></div><div id="test-orphan-65" data-req-ref="REQ-ORPHAN-65" data-test-categories="unit" data-test="TEST-ORPHAN-65"><h4>TEST-ORPHAN-65: REQ-ORPHAN-65 单元测试</h4><p>TODO: 为 REQ-ORPHAN-65 编写测试用例</p></div><div id="test-orphan-66" data-req-ref="REQ-ORPHAN-66" data-test-categories="unit" data-test="TEST-ORPHAN-66"><h4>TEST-ORPHAN-66: REQ-ORPHAN-66 单元测试</h4><p>TODO: 为 REQ-ORPHAN-66 编写测试用例</p></div><div id="test-orphan-67" data-req-ref="REQ-ORPHAN-67" data-test-categories="unit" data-test="TEST-ORPHAN-67"><h4>TEST-ORPHAN-67: REQ-ORPHAN-67 单元测试</h4><p>TODO: 为 REQ-ORPHAN-67 编写测试用例</p></div><div id="test-orphan-68" data-req-ref="REQ-ORPHAN-68" data-test-categories="unit" data-test="TEST-ORPHAN-68"><h4>TEST-ORPHAN-68: REQ-ORPHAN-68 单元测试</h4><p>TODO: 为 REQ-ORPHAN-68 编写测试用例</p></div><div id="test-orphan-69" data-req-ref="REQ-ORPHAN-69" data-test-categories="unit" data-test="TEST-ORPHAN-69"><h4>TEST-ORPHAN-69: REQ-ORPHAN-69 单元测试</h4><p>TODO: 为 REQ-ORPHAN-69 编写测试用例</p></div><div id="test-orphan-70" data-req-ref="REQ-ORPHAN-70" data-test-categories="unit" data-test="TEST-ORPHAN-70"><h4>TEST-ORPHAN-70: REQ-ORPHAN-70 单元测试</h4><p>TODO: 为 REQ-ORPHAN-70 编写测试用例</p></div><div id="test-orphan-71" data-req-ref="REQ-ORPHAN-71" data-test-categories="unit" data-test="TEST-ORPHAN-71"><h4>TEST-ORPHAN-71: REQ-ORPHAN-71 单元测试</h4><p>TODO: 为 REQ-ORPHAN-71 编写测试用例</p></div><div id="test-orphan-72" data-req-ref="REQ-ORPHAN-72" data-test-categories="unit" data-test="TEST-ORPHAN-72"><h4>TEST-ORPHAN-72: REQ-ORPHAN-72 单元测试</h4><p>TODO: 为 REQ-ORPHAN-72 编写测试用例</p></div><div id="test-orphan-73" data-req-ref="REQ-ORPHAN-73" data-test-categories="unit" data-test="TEST-ORPHAN-73"><h4>TEST-ORPHAN-73: REQ-ORPHAN-73 单元测试</h4><p>TODO: 为 REQ-ORPHAN-73 编写测试用例</p></div><div id="test-orphan-74" data-req-ref="REQ-ORPHAN-74" data-test-categories="unit" data-test="TEST-ORPHAN-74"><h4>TEST-ORPHAN-74: REQ-ORPHAN-74 单元测试</h4><p>TODO: 为 REQ-ORPHAN-74 编写测试用例</p></div><div id="test-orphan-75" data-req-ref="REQ-ORPHAN-75" data-test-categories="unit" data-test="TEST-ORPHAN-75"><h4>TEST-ORPHAN-75: REQ-ORPHAN-75 单元测试</h4><p>TODO: 为 REQ-ORPHAN-75 编写测试用例</p></div><div id="test-orphan-76" data-req-ref="REQ-ORPHAN-76" data-test-categories="unit" data-test="TEST-ORPHAN-76"><h4>TEST-ORPHAN-76: REQ-ORPHAN-76 单元测试</h4><p>TODO: 为 REQ-ORPHAN-76 编写测试用例</p></div><div id="test-orphan-77" data-req-ref="REQ-ORPHAN-77" data-test-categories="unit" data-test="TEST-ORPHAN-77"><h4>TEST-ORPHAN-77: REQ-ORPHAN-77 单元测试</h4><p>TODO: 为 REQ-ORPHAN-77 编写测试用例</p></div><div id="test-cdp-001@process" data-req-ref="REQ-CDP-001@PROCESS" data-test-categories="unit" data-test="TEST-CDP-001@PROCESS"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 时序约束测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div id="test-eng-004@process" data-req-ref="REQ-ENG-004@PROCESS" data-test-categories="unit" data-test="TEST-ENG-004@PROCESS"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 时序约束测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div></section><div data-req-api="POST /cdp/session" data-req-entity="CdpSessionGeneric" id="req-orphan-59" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-59"><h4>REQ-ORPHAN-59: Orphan entity "CdpSessionGeneric" needs REQ</h4><p>TODO: 为 entity "CdpSessionGeneric" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="GET /json/list" data-req-entity="CdpTarget" id="req-orphan-60" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-60"><h4>REQ-ORPHAN-60: Orphan entity "CdpTarget" needs REQ</h4><p>TODO: 为 entity "CdpTarget" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /cdp/events" data-req-entity="EventSubscription" id="req-orphan-61" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-61"><h4>REQ-ORPHAN-61: Orphan entity "EventSubscription" needs REQ</h4><p>TODO: 为 entity "EventSubscription" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /cdp/error" data-req-entity="CdpError" id="req-orphan-62" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-62"><h4>REQ-ORPHAN-62: Orphan entity "CdpError" needs REQ</h4><p>TODO: 为 entity "CdpError" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /evaluate-js" data-req-entity="NodeRealm" id="req-orphan-63" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-63"><h4>REQ-ORPHAN-63: Orphan entity "NodeRealm" needs REQ</h4><p>TODO: 为 entity "NodeRealm" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="GET /api/bao-library-mode" data-req-entity="BaoRuntime" id="req-orphan-64" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-64"><h4>REQ-ORPHAN-64: Orphan api "GET /api/bao-library-mode" needs REQ</h4><p>TODO: 为 api "GET /api/bao-library-mode" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /compress/brotli" data-req-entity="BrotliEngine" id="req-orphan-65" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-65"><h4>REQ-ORPHAN-65: Orphan api "POST /compress/brotli" needs REQ</h4><p>TODO: 为 api "POST /compress/brotli" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /compress/zstd" data-req-entity="ZstdEngine" id="req-orphan-66" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-66"><h4>REQ-ORPHAN-66: Orphan api "POST /compress/zstd" needs REQ</h4><p>TODO: 为 api "POST /compress/zstd" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /compress/zlib" data-req-entity="ZlibEngine" id="req-orphan-67" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-67"><h4>REQ-ORPHAN-67: Orphan api "POST /compress/zlib" needs REQ</h4><p>TODO: 为 api "POST /compress/zlib" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="GET /config/allocator" data-req-entity="AllocatorConfig" id="req-orphan-68" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-68"><h4>REQ-ORPHAN-68: Orphan api "GET /config/allocator" needs REQ</h4><p>TODO: 为 api "GET /config/allocator" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /hash/simd" data-req-entity="SimdHash" id="req-orphan-69" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-69"><h4>REQ-ORPHAN-69: Orphan api "POST /hash/simd" needs REQ</h4><p>TODO: 为 api "POST /hash/simd" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /network/quic" data-req-entity="QuicConnection" id="req-orphan-70" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-70"><h4>REQ-ORPHAN-70: Orphan api "POST /network/quic" needs REQ</h4><p>TODO: 为 api "POST /network/quic" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /transform/html" data-req-entity="HtmlRewriter" id="req-orphan-71" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-71"><h4>REQ-ORPHAN-71: Orphan api "POST /transform/html" needs REQ</h4><p>TODO: 为 api "POST /transform/html" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="POST /http/serve" data-req-entity="HttpServer" id="req-orphan-72" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-72"><h4>REQ-ORPHAN-72: Orphan api "POST /http/serve" needs REQ</h4><p>TODO: 为 api "POST /http/serve" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="GET /perf/http-response" data-req-entity="HttpResponse" id="req-orphan-73" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-73"><h4>REQ-ORPHAN-73: Orphan api "GET /perf/http-response" needs REQ</h4><p>TODO: 为 api "GET /perf/http-response" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="GET /perf/cdp-handler" data-req-entity="DomainHandler" id="req-orphan-74" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-74"><h4>REQ-ORPHAN-74: Orphan api "GET /perf/cdp-handler" needs REQ</h4><p>TODO: 为 api "GET /perf/cdp-handler" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="GET /perf/buffer" data-req-entity="BufferManager" id="req-orphan-75" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-75"><h4>REQ-ORPHAN-75: Orphan api "GET /perf/buffer" needs REQ</h4><p>TODO: 为 api "GET /perf/buffer" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="GET /perf/cdp-dispatch" data-req-entity="DomainDispatch" id="req-orphan-76" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-76"><h4>REQ-ORPHAN-76: Orphan api "GET /perf/cdp-dispatch" needs REQ</h4><p>TODO: 为 api "GET /perf/cdp-dispatch" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div><div data-req-api="GET /perf/code-pattern" data-req-entity="CodePattern" id="req-orphan-77" data-req-domain="ORPHAN" data-req-status="draft" data-req="REQ-ORPHAN-77"><h4>REQ-ORPHAN-77: Orphan api "GET /perf/code-pattern" needs REQ</h4><p>TODO: 为 api "GET /perf/code-pattern" 定义需求</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div></body>
 </html>

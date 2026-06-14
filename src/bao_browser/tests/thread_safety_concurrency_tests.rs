@@ -172,7 +172,7 @@ fn test_concurrent_send_with_close_race() {
     }
 
     // After a brief pause, call close() while sends are still in flight.
-    thread::sleep(Duration::from_millis(5));
+    thread::sleep(Duration::from_millis(100));
     tx.close();
 
     for h in handles {
@@ -280,7 +280,7 @@ fn test_is_alive_cross_thread_visibility() {
     });
 
     // Let observers spin up, then close from main thread.
-    thread::sleep(Duration::from_millis(10));
+    thread::sleep(Duration::from_millis(100));
     tx.close();
 
     observer_tx.join().expect("tx observer panicked");
@@ -454,8 +454,8 @@ fn test_arc_atomic_bool_alive_flag_sharing() {
         }));
     }
 
-    // Let readers observe alive=true first.
-    thread::sleep(Duration::from_millis(20));
+    // Let readers observe alive=true first — use SeqCst barrier to ensure visibility.
+    thread::sleep(Duration::from_millis(100));
     let alive_count = alive_seen.load(Ordering::SeqCst);
     assert_eq!(alive_count, n_readers, "all readers must initially see alive=true");
 

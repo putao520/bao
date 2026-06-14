@@ -1,0 +1,2840 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Bao - 系统架构</title>
+</head>
+<body><main data-spec-content="">
+<h1>Bao 系统架构</h1>
+<p>Bao = Bun Runtime + SpiderMonkey Engine + Servo Browser Engine + CDP Server + Stealth Module</p>
+
+<!-- ============================================================ -->
+<h2>§1 整体架构</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>架构总览</h3>
+<pre>
+┌──────────────────────────────────────────────────────────┐
+│                       Bao Runtime                         │
+│              统一库 · 单进程 · 多线程 · Rust                │
+├──────────────────────────────────────────────────────────┤
+│  CLI Layer: bao run | bao test | bao build | bao browser  │
+├──────────────────────────────────────────────────────────┤
+│  Capability Layer (所有能力始终可用)                         │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ Bun.* API + Node.js compat (require/fs/path/...)   │  │
+│  │ Bundler · Test Runner · Package Manager · Transpiler│  │
+│  └────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ servo 浏览器引擎 (DOM/CSS/Layout/webrender 渲染)    │  │
+│  │ CDP Server · 截图 · DOM 查询 · 页面导航              │  │
+│  └────────────────────────────────────────────────────┘  │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │ Stealth 反指纹 (TLS/HTTP/Canvas/Navigator/行为)     │  │
+│  └────────────────────────────────────────────────────┘  │
+│                                                          │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  SpiderMonkey (统一 JS 引擎，与 servo 共享 JSContext) │  │
+│  │  mozjs crate · JS::JobQueue · ESM hooks             │  │
+│  │  Debugger API (JS层) · WebAssembly · Promise         │  │
+│  └────────────────────────────────────────────────────┘  │
+│                          │                                │
+│  ┌────────────────────────────────────────────────────┐  │
+│  │  Bun Infrastructure (100% 复用, 零修改)              │  │
+│  │  HTTP栈 · Resolver · FS · Bundler · uSockets · Timer│  │
+│  └────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§1.1 BaoRuntime 公共 API</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-runtime" data-type="document" id="interface-protocol">
+<p>关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span>,
+<span data-xref-id="PagePool" data-xref-type="entity">PagePool</span>,
+<span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>,
+<span data-xref-id="PageHandle" data-xref-type="entity">PageHandle</span>,
+<span data-xref-id="CdpSession" data-xref-type="entity">CdpSession</span>,
+<span data-xref-id="Permission" data-xref-type="entity">Permission</span>,
+<span data-xref-id="StealthProfile" data-xref-type="entity">StealthProfile</span></p>
+<h3>Rust 公共 API 接口</h3>
+<pre>
+// ── BaoRuntime 初始化 ──────────────────────────────────────
+
+impl BaoRuntime {
+    /// 创建 BaoRuntime 实例（单例模式）
+    /// 内部初始化: SpiderMonkey JSContext + Servo + Event Loop
+    pub fn new(config: BaoConfig) -&gt; Result&lt;Self, BaoError&gt;
+
+    /// 获取 PagePool 引用
+    pub fn page_pool(&amp;self) -&gt; &amp;PagePool
+
+    /// 获取 CdpRouter 引用
+    pub fn cdp_router(&amp;self) -&gt; &amp;CdpRouter
+}
+
+// ── BaoConfig ──────────────────────────────────────────────
+
+pub struct BaoConfig {
+    pub cdp_port: Option&lt;u16&gt;,           // CDP 服务端口 (None = 不启动)
+    pub max_pages: usize,                  // PagePool max_total (默认 50)
+    pub idle_ttl_seconds: u64,             // 空闲页面回收超时 (默认 60)
+    pub default_viewport: (u32, u32),      // 默认视口尺寸 (1920, 1080)
+}
+
+// ── PagePool ───────────────────────────────────────────────
+
+impl PagePool {
+    /// 创建新 Page
+    pub fn create_page(&amp;self, config: PageConfig) -&gt; Result&lt;PageHandle, BaoError&gt;
+
+    /// 获取指定 Page
+    pub fn get_page(&amp;self, id: WebViewId) -&gt; Option&lt;PageHandle&gt;
+
+    /// 关闭指定 Page (显式释放)
+    pub fn close_page(&amp;self, id: WebViewId) -&gt; Result&lt;(), BaoError&gt;
+
+    /// 获取统计信息
+    pub fn stats(&amp;self) -&gt; PoolStats
+}
+
+pub struct PageConfig {
+    pub url: Option&lt;String&gt;,               // 初始 URL
+    pub viewport_width: Option&lt;u32&gt;,       // 视口宽度 (默认取 BaoConfig)
+    pub viewport_height: Option&lt;u32&gt;,      // 视口高度
+    pub permission: Option&lt;Permission&gt;,    // 可选权限配置
+    pub stealth_profile: Option&lt;StealthProfile&gt;, // 可选反指纹
+}
+
+// ── PageHandle (Rc&lt;Page&gt;) ─────────────────────────────────
+
+impl Page {
+    /// 高性能 API: 导航到 URL
+    pub async fn goto(&amp;self, url: &amp;str) -&gt; Result&lt;(), BaoError&gt;
+
+    /// 高性能 API: 执行 JS 表达式
+    pub async fn evaluate(&amp;self, script: &amp;str) -&gt; Result&lt;JsValue, BaoError&gt;
+
+    /// 高性能 API: 截图
+    pub async fn screenshot(&amp;self, format: ScreenshotFormat) -&gt; Result&lt;Vec&lt;u8&gt;, BaoError&gt;
+
+    /// 高性能 API: 获取页面标题
+    pub fn title(&amp;self) -&gt; Option&lt;String&gt;
+
+    /// 高性能 API: 获取当前 URL
+    pub fn url(&amp;self) -&gt; Option&lt;String&gt;
+
+    /// CDP 兼容层: 创建 CDP Session
+    pub fn create_cdp_session(&amp;self) -&gt; CdpSession
+
+    /// 显式关闭页面
+    pub fn close(&amp;self) -&gt; Result&lt;(), BaoError&gt;
+
+    /// 页面 ID
+    pub fn id(&amp;self) -&gt; WebViewId
+
+    /// 页面状态
+    pub fn state(&amp;self) -&gt; PageState
+}
+
+// ── CdpRouter ──────────────────────────────────────────────
+
+impl CdpRouter {
+    /// 创建 CDP Session (内部后端)
+    pub fn create_internal_session(&amp;self, page: &amp;PageHandle) -&gt; CdpSession
+
+    /// 连接外部 CDP 端点
+    pub async fn connect_external(&amp;self, endpoint: &amp;str) -&gt; Result&lt;ExternalBrowser, BaoError&gt;
+}
+
+// ── CdpSession (CDP 兼容层) ────────────────────────────────
+
+impl CdpSession {
+    /// 发送 CDP 命令
+    pub async fn send(&amp;self, method: &amp;str, params: Value) -&gt; Result&lt;Value, CdpError&gt;
+
+    /// 监听 CDP 事件
+    pub fn on(&amp;self, event: &amp;str, callback: impl Fn(Value))
+
+    /// 断开 CDP Session
+    pub fn detach(&amp;self)
+}
+
+// ── Permission ─────────────────────────────────────────────
+
+pub struct Permission {
+    pub read: Option&lt;Vec&lt;String&gt;&gt;,    // None = 允许全部
+    pub write: Option&lt;Vec&lt;String&gt;&gt;,   // None = 允许全部
+    pub net: Option&lt;Vec&lt;String&gt;&gt;,     // None = 允许全部
+    pub env: Option&lt;bool&gt;,            // None = 允许
+    pub run: Option&lt;bool&gt;,            // None = 允许
+}
+</pre>
+
+<p data-xref-id="GET /api/bao-runtime" data-xref-type="api">关联需求: <span data-xref-id="REQ-ENG-001" data-xref-type="req">REQ-ENG-001</span>
+<span data-xref-id="REQ-ENG-006" data-xref-type="req">REQ-ENG-006</span>, <span data-xref-id="REQ-CLI-002" data-xref-type="req">REQ-CLI-002</span>
+<span data-xref-id="REQ-CDP-001" data-xref-type="req">REQ-CDP-001</span></p><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
+
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-runtime-js" data-type="document" id="interface-protocol">
+<h3>JS 公共 API 接口</h3>
+<pre>
+// ── Bao 全局对象 ──────────────────────────────────────────
+
+// 初始化 Runtime
+const runtime = new Bao.Runtime({
+  cdpPort: 9222,           // optional
+  maxPages: 50,            // optional
+  idleTtl: 60,             // seconds, optional
+});
+
+// ── Page 操作 ─────────────────────────────────────────────
+
+const page = runtime.createPage({
+  url: 'https://example.com',    // optional
+  viewport: [1920, 1080],       // optional
+  permission: { read: ['/tmp'] }, // optional
+  stealth: 'firefox',           // optional
+});
+
+await page.goto('https://example.com');
+const result = await page.evaluate('document.title');
+const png = await page.screenshot({ format: 'png' });
+console.log(page.title());
+console.log(page.url());
+await page.close();
+
+// ── CDP 兼容层 ────────────────────────────────────────────
+
+const cdp = page.createCDPSession();
+const { result } = await cdp.send('Runtime.evaluate', {
+  expression: '1 + 1'
+});
+cdp.on('Page.loadEventFired', () =&gt; console.log('loaded'));
+cdp.detach();
+
+// ── 外部连接 ──────────────────────────────────────────────
+
+const browser = await Bao.connect('ws://127.0.0.1:9222');
+const extPage = await browser.newPage();
+await extPage.goto('https://example.com');
+
+// ── Permission ─────────────────────────────────────────────
+
+const perm = new Bao.Permission({
+  read: ['/tmp/data'],
+  net: ['api.example.com'],
+  env: false,
+  run: false,
+});
+const restrictedPage = runtime.createPage({ permission: perm });
+</pre>
+
+<p data-xref-id="GET /api/bao-runtime-js" data-xref-type="api">关联需求: <span data-xref-id="REQ-ENG-006" data-xref-type="req">REQ-ENG-006</span></p><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
+
+<!-- ============================================================ -->
+<h2>§1.2 库模式 (In-Process) API 契约 — 零配置路径</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-library-mode" data-type="document" id="interface-protocol">
+<p>Bao 是<strong>库优先</strong>的设计：CLI (<code>bao run</code>) 只是库的一个消费者。
+所有能力（SpiderMonkey JSContext、Node.js/Bun API、Web API、Stealth 反指纹、CDP、浏览器引擎）均可
+<strong>作为 Rust 库直接在进程中调用</strong>，无需子进程、无需 display server、无需独立二进制。</p>
+
+<h3>Rust 库 API 接口（零配置路径）</h3>
+<pre>
+// ── 1. 纯 JS 模式（无浏览器）───────────────────────────────
+//
+// 用户场景：在 Rust 项目中嵌入 Bao JS 运行时（替代 Deno_core / rusty_v8）
+// 一行初始化，所有默认值就绪：
+//   - SpiderMonkey JSContext
+//   - Node.js 兼容层 (require, fs, path, http, crypto, dns, net, ...)
+//   - Bun/Bao 全局对象
+//   - Stealth 反指纹默认启用（Firefox profile）
+//
+// 调用顺序：用户代码 → ctx.set_global_setup(globals::install_all)
+//   install_all 内部幂等初始化：
+//     bao_stealth::engine_props::ensure_default_profile()
+//     bao_stealth::engine_props::install_stealth_props(cx, global)
+//     bao_runtime::fetch_api::ensure_default_fetch_stealth_profile()
+
+use bao_engine::context::JsContext;
+use bao_engine::value::JsValue;
+
+let mut ctx = JsContext::for_test()?;            // 或 JsContext::from_servo_runtime()
+ctx.set_global_setup(bao_runtime::globals::install_all);
+
+let ua: String = match ctx.eval("navigator.userAgent", "&lt;app&gt;")? {
+    JsValue::String(s) =&gt; s,
+    _ =&gt; panic!("expected string"),
+};
+assert!(ua.contains("Firefox"));   // 默认 stealth profile 自动注入
+
+// ── 2. 浏览器模式（servo 集成）─────────────────────────────
+//
+// 用户场景：headless 浏览器自动化（替代 Playwright/CDP 直接驱动 Chrome）
+//
+use bao_browser::BaoRuntime;
+
+let runtime = BaoRuntime::new(BaoConfig::default())?;   // servo + PagePool + 事件循环
+let page = runtime.page_pool().create_page(PageConfig {
+    url: Some("https://example.com".into()),
+    stealth_profile: Some(StealthProfile::chrome_default()),  // per-page 覆盖默认 Firefox
+    ..Default::default()
+})?;
+
+page.goto("https://example.com").await?;
+let title: String = page.evaluate("document.title").await?;
+let png: Vec&lt;u8&gt; = page.screenshot(ScreenshotFormat::Png).await?;
+page.close()?;
+
+// ── 3. CDP 外接模式（驱动外部 Chrome）─────────────────────
+//
+let cdp = runtime.cdp_router().connect_external("ws://127.0.0.1:9222").await?;
+let ext_page = cdp.new_page().await?;
+</pre>
+
+<h3>Stealth 反指纹 — 默认启用契约</h3>
+<table data-api-table="stealth-default">
+<tr><th>API</th><th>语义</th><th>调用方</th></tr>
+<tr><td><code>engine_props::ensure_default_profile()</code></td>
+    <td>幂等：若 thread_local 未设置，注入 <code>StealthProfile::firefox_default()</code>。
+        浏览器模式（PageHandle 创建时显式 <code>set_profile</code>）会跳过默认初始化，
+        实现 per-page 隔离</td>
+    <td><code>globals::install_all</code></td></tr>
+<tr><td><code>fetch_api::ensure_default_fetch_stealth_profile()</code></td>
+    <td>幂等：若 thread_local 未设置，注入 Firefox TLS/HTTP2 指纹。
+        <code>fetch()</code> 自动应用 — 无需手动配置</td>
+    <td><code>globals::install_all</code></td></tr>
+<tr><td><code>engine_props::install_stealth_props(cx, global)</code></td>
+    <td>注入 navigator.{userAgent,vendor,platform,hardwareConcurrency,webdriver,...}
+        和 screen.{width,height,colorDepth,...} 为 PERMANENT accessor getters。
+        对 servo DOM 上已存在的 navigator/screen 直接覆盖；
+        对最小化 JsContext 自动创建空对象</td>
+    <td><code>globals::install_all</code></td></tr>
+</table>
+
+<h3>关键不变量</h3>
+<ul>
+<li><strong>反爬虫默认全开</strong>：库用户无需手动 <code>set_profile</code>，
+    <code>ctx.set_global_setup(install_all)</code> 一行完成全部初始化</li>
+<li><strong>幂等</strong>：<code>ensure_default_profile</code> / <code>ensure_default_fetch_stealth_profile</code>
+    不会覆盖已显式设置的 profile（包括 PageHandle 的 per-page 配置）</li>
+<li><strong>进程内可用</strong>：所有 API 在同一 SpiderMonkey Runtime 中工作，
+    无子进程开销，无 display server 依赖（servo 用 headless rendering）</li>
+<li><strong>mozjs 单线程</strong>：mozjs Runtime 是 per-thread singleton，
+    每个 <code>#[test]</code> 函数独占一个线程；同一线程上多次
+    <code>JsContext::for_test()</code> 返回同一 Runtime 的 wrapper</li>
+</ul>
+
+<p data-xref-id="GET /api/bao-library-mode" data-xref-type="api">关联需求:
+<span data-xref-id="REQ-ENG-001" data-xref-type="req">REQ-ENG-001</span>
+<span data-xref-id="REQ-ENG-006" data-xref-type="req">REQ-ENG-006</span>
+<span data-xref-id="REQ-CLI-001" data-xref-type="req">REQ-CLI-001</span>
+<span data-xref-id="REQ-STL-001" data-xref-type="req">REQ-STL-001</span>
+<span data-xref-id="REQ-STL-002" data-xref-type="req">REQ-STL-002</span>
+<span data-xref-id="REQ-STL-007" data-xref-type="req">REQ-STL-007</span></p><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
+
+<!-- ============================================================ -->
+<h2>§2 Bun 源项目 Crate 架构</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>§2.1 Crate 依赖 DAG (13 层)</h3>
+<pre>
+L0  FOUNDATION (零内部依赖)
+    bun_opaque bun_windows_sys bun_output_tags bun_wyhash
+    bun_highway bun_simdutf_sys bun_js bun_dispatch
+    bun_jsc_macros bun_css_derive
+
+L1  bun_mimalloc_sys bun_core_macros bun_hash bun_brotli_sys bun_clap_macros
+
+L2  bun_alloc ← 全局分配器 (mimalloc + arena + hashbrown)
+
+L3  bun_core ← ★ 中心枢纽 (strings/env/logging/error)
+
+L4  bun_paths bun_ptr bun_platform bun_output bun_safety
+    bun_zstd bun_picohttp bun_lolhtml_sys bun_zlib_sys
+    bun_boringssl_sys bun_valkey bun_libuv_sys
+
+L5  bun_collections bun_errno bun_cares_sys
+
+L6  bun_sys ← ★ 系统调用层 (File/Fd/Dir/Error)
+    bun_semver bun_url bun_base64
+
+L7  bun_ast bun_http_types bun_glob bun_dns bun_sql
+    bun_boringssl bun_sha_hmac bun_spawn_sys bun_which bun_perf
+
+L8  bun_io bun_threading bun_dotenv bun_clap bun_parsers
+    bun_install_types bun_zlib bun_brotli bun_shell_parser
+    bun_uws_sys bun_md bun_csrf bun_s3_signing bun_tcc_sys
+
+L9  bun_js_parser bun_sourcemap bun_event_loop bun_uws
+    bun_options_types bun_resolve_builtins bun_libarchive
+    bun_watcher bun_analytics bun_crash_handler
+
+L10 bun_js_printer bun_http bun_resolver bun_router
+    bun_api bun_patch bun_ini bun_spawn bun_bunfig
+
+L11 bun_install bun_bundler bun_css bun_standalone_graph
+    bun_transpiler
+    ─────── JSC 边界线 ───────
+    bun_jsc ← ★ JSC FFI 核心
+
+L12 *_JSC 桥接层 (全部依赖 bun_jsc)
+    bun_ast_jsc bun_bundler_jsc bun_css_jsc bun_http_jsc
+    bun_install_jsc bun_js_parser_jsc bun_patch_jsc
+    bun_semver_jsc bun_sourcemap_jsc bun_sql_jsc bun_sys_jsc
+
+L13 bun_runtime ← 应用层 (~75 个依赖)
+    bun_bin (staticlib → libbun_rust.a)
+</pre>
+</div>
+
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>§2.2 JSC 依赖边界</h3>
+<p>关键发现：Bun 采用 <strong>foo + foo_jsc 两维分离模式</strong>，每个需要暴露给 JS 的功能域都有独立的纯 Rust crate 和 JSC 绑定 crate。</p>
+
+<table data-entity-table="BunJscBridge">
+<tr data-field="crate" data-required="true" data-type="string"><td>纯 Rust Crate</td><td>功能</td><td>JSC 桥接 Crate</td></tr>
+<tr><td>bun_ast</td><td>AST 节点</td><td>bun_ast_jsc</td></tr>
+<tr><td>bun_css</td><td>CSS 处理</td><td>bun_css_jsc</td></tr>
+<tr><td>bun_http</td><td>HTTP 协议</td><td>bun_http_jsc</td></tr>
+<tr><td>bun_install</td><td>包管理</td><td>bun_install_jsc</td></tr>
+<tr><td>bun_js_parser</td><td>JS 解析</td><td>bun_js_parser_jsc</td></tr>
+<tr><td>bun_semver</td><td>版本解析</td><td>bun_semver_jsc</td></tr>
+<tr><td>bun_sourcemap</td><td>源码映射</td><td>bun_sourcemap_jsc</td></tr>
+<tr><td>bun_sql</td><td>SQL 数据库</td><td>bun_sql_jsc</td></tr>
+<tr><td>bun_sys</td><td>系统调用</td><td>bun_sys_jsc</td></tr>
+<tr><td>bun_bundler</td><td>打包器</td><td>bun_bundler_jsc</td></tr>
+<tr><td>bun_patch</td><td>包补丁</td><td>bun_patch_jsc</td></tr>
+</table>
+
+<p>SpiderMonkey 迁移影响范围：<strong>仅 L11-L13 的 13 个 crate</strong>。L0-L10 的 ~85 个纯 Rust crate 完全不受影响。</p>
+</div>
+
+<div data-artifact-type="table" data-type="document" id="table">
+<h3>§2.3 Crate 统计</h3>
+<table>
+<tr><td>指标</td><td>数量</td></tr>
+<tr><td>Workspace members</td><td>105</td></tr>
+<tr><td>JSC 依赖 crate</td><td>13 (bun_jsc + 12 个 *_jsc)</td></tr>
+<tr><td>JSC 无关 crate</td><td>~85</td></tr>
+<tr><td>依赖层级深度</td><td>13 层</td></tr>
+<tr><td>两维分离对数</td><td>11 对 (foo + foo_jsc)</td></tr>
+<tr><td>循环依赖</td><td>0（严格 DAG）</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§3 Servo 源项目组件架构</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>§3.1 组件分层</h3>
+<pre>
+┌─────────────────────────────────────────────────────────┐
+│  SERVOSHELL (ports/servoshell)                          │
+│  CLI 入口, Embedder 实现, 窗口管理                        │
+├─────────────────────────────────────────────────────────┤
+│  SERVO (components/servo)                               │
+│  libservo API, Embedder trait, 公共接口导出               │
+│  ★ 嵌入入口点 — Bao 通过此 crate 接入                    │
+├───────────────┬─────────────────┬───────────────────────┤
+│  SCRIPT       │  LAYOUT         │  STYLE                │
+│  (280K LOC)   │  (42K LOC)      │  (Stylo, CSS计算)     │
+│  DOM 实现      │  布局引擎        │  ★ Firefox 共用       │
+│  ★ 依赖 mozjs │  依赖 script    │  依赖 selectors       │
+├───────────────┴─────────────────┴───────────────────────┤
+│  SCRIPT_BINDINGS (9K LOC)                               │
+│  SpiderMonkey ↔ DOM 桥接, WebIDL 代码生成                 │
+│  ★ DOM 对象通过 SM GC 管理                                │
+├─────────────────────────────────────────────────────────┤
+│  NET (21K LOC)                                          │
+│  Fetch 实现, HTTP 栈 (hyper), CORS, HSTS, Cookie         │
+│  ★ WHATWG Fetch 规范 step-by-step 实现                    │
+├─────────────────────────────────────────────────────────┤
+│  CONSTELLATION (8K LOC)                                 │
+│  中央协调器, 管理所有组件间消息                             │
+│  ★ IPC 中枢 (单进程模式下自动优化为线程间通信)              │
+├─────────────────────────────────────────────────────────┤
+│  DEVTOOLS | PAINT | FONTS | MEDIA | CANVAS | WEBGL      │
+│  WEBGPU | WEBXR | BLUETOOTH | STORAGE | GEOMETRY        │
+│  URL | TIMERS | SHARED | CONFIG | METRICS | PROFILE     │
+└─────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<div data-artifact-type="table" data-type="document" id="table">
+<h3>§3.2 组件依赖关系</h3>
+<table>
+<tr><td>组件</td><td>Rust LOC</td><td>依赖 mozjs</td><td>依赖 IPC</td><td>独立性</td></tr>
+<tr><td>script</td><td>280,436</td><td>是</td><td>是</td><td>深度耦合</td></tr>
+<tr><td>layout</td><td>42,637</td><td>间接</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>shared</td><td>31,872</td><td>否</td><td>否</td><td>独立</td></tr>
+<tr><td>net</td><td>21,890</td><td>否</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>script_bindings</td><td>9,032</td><td>是</td><td>否</td><td>深度耦合</td></tr>
+<tr><td>servo (libservo)</td><td>8,787</td><td>间接</td><td>是</td><td>嵌入入口</td></tr>
+<tr><td>constellation</td><td>8,082</td><td>否</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>devtools</td><td>10,092</td><td>间接</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>fonts</td><td>9,724</td><td>否</td><td>否</td><td>独立</td></tr>
+<tr><td>paint</td><td>5,688</td><td>否</td><td>是</td><td>中度耦合</td></tr>
+<tr><td>其他 26 个</td><td>~40,000</td><td>否</td><td>部分</td><td>各异</td></tr>
+</table>
+</div>
+
+<div data-artifact-type="table" data-type="document" id="table">
+<h3>§3.3 Servo 关键数据</h3>
+<table>
+<tr><td>指标</td><td>值</td></tr>
+<tr><td>组件数量</td><td>36</td></tr>
+<tr><td>总 Rust LOC</td><td>~500,000</td></tr>
+<tr><td>依赖 mozjs 的组件</td><td>2 (script, servo)</td></tr>
+<tr><td>依赖 IPC 的组件</td><td>7</td></tr>
+<tr><td>最大组件</td><td>script (280K LOC, DOM 实现)</td></tr>
+<tr><td>默认模式</td><td>单进程 (--multiprocess 启用多进程)</td></tr>
+<tr><td>IPC 单进程优化</td><td>自动降级为 Arc&lt;Mutex&lt;Queue&gt;&gt;</td></tr>
+<tr><td>libservo 版本</td><td>0.1.0 (LTS)</td></tr>
+<tr><td>许可证</td><td>MPL-2.0</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4 Bao 融合架构</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>§4.1 Bun ↔ Servo 融合映射</h3>
+<pre>
+                    Bao 项目 Cargo Workspace
+┌────────────────────────────────────────────────────────┐
+│                                                         │
+│  ┌─ 复用 Bun (零修改) ──────────────────────────────┐  │
+│  │ L0-L10: ~85 个纯 Rust crate                       │  │
+│  │ HTTP 栈 · Resolver · FS · Bundler · Transpiler    │  │
+│  │ JS Parser/Printer · Collections · Syscall · Crypto│  │
+│  │ Install · Shell · SQL · Semver · Sourcemap        │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ 新建 (SpiderMonkey 适配) ───────────────────────┐  │
+│  │ bao_engine ← 替代 bun_jsc (mozjs crate 封装)      │  │
+│  │ bao_engine_ast ← 替代 bun_ast_jsc                 │  │
+│  │ bao_engine_http ← 替代 bun_http_jsc               │  │
+│  │ bao_engine_install ← 替代 bun_install_jsc          │  │
+│  │ bao_engine_js_parser ← 替代 bun_js_parser_jsc      │  │
+│  │ bao_engine_sql ← 替代 bun_sql_jsc                 │  │
+│  │ bao_engine_sys ← 替代 bun_sys_jsc                 │  │
+│  │ bao_engine_bundler ← 替代 bun_bundler_jsc          │  │
+│  │ bao_engine_css ← 替代 bun_css_jsc                 │  │
+│  │ bao_engine_semver ← 替代 bun_semver_jsc            │  │
+│  │ bao_engine_sourcemap ← 替代 bun_sourcemap_jsc      │  │
+│  │ bao_engine_patch ← 替代 bun_patch_jsc              │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ 新建 (运行时) ──────────────────────────────────┐  │
+│  │ bao_runtime ← 替代 bun_runtime                    │  │
+│  │  .classes.ts 定义复用 95%, 生成后端重写            │  │
+│  │  Event loop: SM JS::JobQueue → Bun uSockets       │  │
+│  │  Module loader: SM hooks → Bun resolver           │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ 新建 (浏览器能力) ──────────────────────────────┐  │
+│  │ bao_browser ← servo crate 封装                     │  │
+│  │ bao_cdp ← CDP WebSocket Server                     │  │
+│  │ bao_stealth ← 反指纹模块                           │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+└────────────────────────────────────────────────────────┘
+</pre>
+</div>
+
+<div data-integration-auth="none" data-integration-protocol="ffi" data-integration="SpiderMonkey" data-artifact-type="external-integration" data-type="document" id="external-integration">
+<h3>§4.2 引擎集成: SpiderMonkey via mozjs</h3>
+<script type="application/ld+json">
+{
+  "@type": "Integration",
+  "name": "SpiderMonkey",
+  "protocol": "ffi",
+  "auth": "none",
+  "source": "servo/mozjs crate",
+  "license": "MPL-2.0",
+  "apiCoverage": {
+    "jsContext": "complete",
+    "gc": "complete",
+    "value": "complete",
+    "typedArray": "complete",
+    "promise": "header-only",
+    "modules": "header-only",
+    "debugger": "not-bound",
+    "wasm": "header-only"
+  },
+  "missingBindings": ["Debugger API (js/debugger/*.h)", "JobQueue Rust wrapper", "Module loader callback"]
+}
+</script>
+</div>
+
+<div data-integration-auth="none" data-integration-protocol="embed" data-integration="libservo" data-artifact-type="external-integration" data-type="document" id="external-integration">
+<h3>§4.3 浏览器引擎集成: libservo</h3>
+<script type="application/ld+json">
+{
+  "@type": "Integration",
+  "name": "libservo",
+  "protocol": "embed",
+  "auth": "none",
+  "source": "servo crate v0.1.0",
+  "license": "MPL-2.0",
+  "provides": ["DOM (script 280K LOC)", "CSS/Stylo", "Layout", "HTML parsing (html5ever)", "Fetch (WHATWG compliant)"],
+  "ipcBehavior": "single-process default, auto-optimize to thread-safe queue",
+  "embeddingAPI": "Embedder trait + WindowMethods trait"
+}
+</script>
+</div>
+
+<div data-integration-auth="none" data-integration-protocol="embed" data-integration="servo_webrender" data-artifact-type="external-integration" data-type="document" id="external-integration">
+<h3>§4.4 渲染集成: servo webrender</h3>
+<script type="application/ld+json">
+{
+  "@type": "Integration",
+  "name": "servo_webrender",
+  "protocol": "embed",
+  "auth": "none",
+  "source": "servo crate (内置)",
+  "license": "MPL-2.0",
+  "provides": ["Stylo CSS 计算", "LayoutThread 布局引擎", "webrender 光栅化", "SoftwareRenderingContext 无头渲染", "WindowRenderingContext GPU 渲染"],
+  "outputFormat": "RgbaImage (image crate)",
+  "note": "servo 内置完整渲染管线，尊重 servo 原有设计，有 GPU 用 GPU，无头场景用 SoftwareRenderingContext"
+}
+</script>
+</div>
+
+<div data-integration-auth="none" data-integration-protocol="ws" data-integration="CDPProtocol" data-artifact-type="external-integration" data-type="document" id="external-integration">
+<h3>§4.5 CDP 协议集成</h3>
+<script type="application/ld+json">
+{
+  "@type": "Integration",
+  "name": "CDPProtocol",
+  "protocol": "websocket",
+  "auth": "none",
+  "source": "cdp-protocol crate",
+  "license": "MIT",
+  "domains": {
+    "jsEngine": ["Runtime", "Debugger", "Profiler", "HeapProfiler"],
+    "renderEngine": ["Page", "DOM", "CSS", "Overlay", "Input", "Emulation"],
+    "httpStack": ["Network", "Fetch"],
+    "standalone": ["Target", "IO"]
+  },
+  "referenceImplementation": "Firefox remote/cdp/ (MPL-2.0, deprecated but referenceable)"
+}
+</script>
+</div>
+
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>§4.6 CDP 双层抽象架构</h3>
+<pre>
+双层 API 设计:
+
+  第一层：高性能 Rust/JS API（内部优先）
+  ┌──────────────────────────────────────────────┐
+  │  const page = runtime.createPage();          │
+  │  await page.goto('https://example.com');     │
+  │  const png = await page.screenshot();        │
+  │  const title = await page.title();           │
+  │  await page.evaluate('1+1');                 │
+  │  await page.close();                         │
+  └──────────────────────────────────────────────┘
+         │ 直接调用 bao_browser Rust API
+         │ 零序列化开销
+         ↓
+  ┌─ bao_browser ────────────────────────────┐
+  │  WebView.evaluate_javascript()            │
+  │  WebView.take_screenshot()                │
+  │  WebView.load(url)                        │
+  └──────────────────────────────────────────┘
+
+  第二层：CDP 兼容层（Playwright/Puppeteer 连接用）
+  ┌──────────────────────────────────────────────┐
+  │  // 从现有 Page 创建 CDP Session             │
+  │  const cdp = page.createCDPSession();        │
+  │  cdp.send('Page.navigate', {url: '...'});   │
+  │  cdp.on('Page.loadEventFired', callback);    │
+  │                                               │
+  │  // 外部 CDP 端点连接                         │
+  │  const browser = Bao.connect('ws://host:9222');│
+  └──────────────────────────────────────────────┘
+         │ CdpRouter 分发
+         ├────────────────────┐
+         ↓                    ↓
+  CdpBackend(Internal)  CdpBackend(External)
+  CDP 消息 → Rust API   CDP 消息 → WebSocket
+  映射 (零网络开销)       → 外部 Chrome/Edge
+
+  CdpRouter 选择逻辑:
+    backend: "internal"  → 内部模式 (默认)
+    endpoint: "ws://..." → 外部模式 (自动推断)
+    无参数              → 内部模式
+</pre>
+<p>关联实体: <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>,
+<span data-xref-id="CdpBackendInternal" data-xref-type="entity">CdpBackendInternal</span>,
+<span data-xref-id="CdpBackendExternal" data-xref-type="entity">CdpBackendExternal</span>,
+<span data-xref-id="CdpSession" data-xref-type="entity">CdpSession</span>,
+<span data-xref-id="CdpCommand" data-xref-type="entity">CdpCommand</span>,
+<span data-xref-id="CdpResponse" data-xref-type="entity">CdpResponse</span>,
+<span data-xref-id="CdpError" data-xref-type="entity">CdpError</span></p>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4.5 多页面管理架构</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>多页面管理架构</h3>
+<pre>
+┌─ BaoRuntime (顶层协调器) ──────────────────────────────────────┐
+│                                                                │
+│  Servo (单实例)                                                 │
+│  └── WebViewCollection (servo 原生多 WebView 管理)              │
+│      ├── Page #1 → WebView + RenderingContext + Realm #1       │
+│      ├── Page #2 → WebView + RenderingContext + Realm #2       │
+│      └── Page #N → WebView + RenderingContext + Realm #N       │
+│                                                                │
+│  PagePool (资源管理器)                                           │
+│  ├── create_page(config) → PageHandle (Rc&lt;Page&gt;)               │
+│  ├── close_page(id) → WebView::drop → Realm 释放               │
+│  ├── 活跃 Page: 引用计数 &gt; 0，无上限                            │
+│  ├── 空闲 Page: 引用计数 = 0，idle_ttl (默认 60s) 后回收        │
+│  └── max_total: 硬上限 (默认 50)，超出拒绝创建                   │
+│                                                                │
+│  CdpRouter (CDP 抽象层)                                         │
+│  PermissionManager (可选沙箱)                                    │
+└────────────────────────────────────────────────────────────────┘
+
+隔离模型: 每个 Page = 一个 servo WebView (自带 SM Realm 隔离)
+  - 独立全局对象 (window / document / navigator)
+  - 独立模块缓存 (import 不跨 Page 污染)
+  - 独立异常处理
+  - GC 在同一 JSContext 内统一管理
+</pre>
+<p>关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span>,
+<span data-xref-id="PagePool" data-xref-type="entity">PagePool</span>,
+<span data-xref-id="PageHandle" data-xref-type="entity">PageHandle</span>,
+<span data-xref-id="BrowserContext" data-xref-type="entity">BrowserContext</span>,
+<span data-xref-id="Viewport" data-xref-type="entity">Viewport</span>,
+<span data-xref-id="PixelBuffer" data-xref-type="entity">PixelBuffer</span>,
+<span data-xref-id="Permission" data-xref-type="entity">Permission</span></p>
+</div>
+
+<div data-artifact-type="use-case-diagram" data-state-machine="PageLifecycle" data-type="document" id="use-case-diagram">
+<h3>Page 生命周期状态机</h3>
+<script type="application/ld+json">
+{
+  "@type": "StateMachine",
+  "name": "PageLifecycle",
+  "states": ["Created", "Navigating", "Interactive", "Idle", "Closing", "Closed"],
+  "initialState": "Created",
+  "transitions": [
+    {"from": "Created", "to": "Navigating", "on": "navigate"},
+    {"from": "Navigating", "to": "Interactive", "on": "load_complete"},
+    {"from": "Navigating", "to": "Closing", "on": "close_during_load"},
+    {"from": "Interactive", "to": "Navigating", "on": "navigate"},
+    {"from": "Interactive", "to": "Idle", "on": "handle_dropped"},
+    {"from": "Idle", "to": "Interactive", "on": "handle_reacquired"},
+    {"from": "Idle", "to": "Closing", "on": "idle_ttl_expired"},
+    {"from": "Interactive", "to": "Closing", "on": "close"},
+    {"from": "Closing", "to": "Closed", "on": "cleanup_complete"}
+  ]
+}
+</script>
+<pre>
+Created ──navigate──→ Navigating ──load_complete──→ Interactive
+                       │                               │
+                       │ close_during_load             │ navigate (重新导航)
+                       ↓                               ↓
+                     Closing ←──close─── Interactive ←──┘
+                                        ↑  │
+                       handle_reacquired   │ handle_dropped
+                                        ↑  ↓
+                                      Idle ──idle_ttl_expired──→ Closing
+                                                                  │
+                                                          cleanup_complete
+                                                                  ↓
+                                                                Closed
+
+资源回收:
+  Closing → Closed:
+    1. WebView::drop → servo CloseWebView 消息
+    2. RenderingContext 释放
+    3. SM Realm GC 回收
+    4. PixelBuffer 释放
+    5. 从 PagePool 移除
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§5 外部依赖矩阵</h2>
+<!-- ============================================================ -->
+
+<div data-delivery="D8" data-artifact-type="table" data-type="document" id="table">
+<table>
+<tr><td>依赖</td><td>版本</td><td>许可证</td><td>用途</td><td>复用方式</td></tr>
+<tr><td>mozjs / mozjs-sys</td><td>0.15.14 / 140.10.1</td><td>MPL-2.0</td><td>SpiderMonkey FFI</td><td>git dep</td></tr>
+<tr><td>servo (libservo)</td><td>0.1.0</td><td>MPL-2.0</td><td>浏览器引擎 (含渲染)</td><td>path dep</td></tr>
+<tr><td>cdp-protocol</td><td>latest</td><td>MIT</td><td>CDP 类型</td><td>cargo dep</td></tr>
+<tr><td>html5ever</td><td>0.29</td><td>MIT/Apache</td><td>HTML 解析</td><td>cargo dep</td></tr>
+<tr><td>cssparser + selectors</td><td>latest</td><td>MPL-2.0</td><td>CSS 解析</td><td>cargo dep</td></tr>
+<tr><td>euclid + app_units</td><td>latest</td><td>MIT/MPL</td><td>几何/单位</td><td>cargo dep</td></tr>
+<tr><td>hyper + rustls</td><td>latest</td><td>MIT</td><td>HTTP + TLS</td><td>cargo dep</td></tr>
+<tr><td>crown</td><td>latest</td><td>MPL-2.0</td><td>GC 安全 lint</td><td>考虑 fork</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§6 错误处理策略</h2>
+<!-- ============================================================ -->
+
+<div data-delivery="D7" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>错误处理分层</h3>
+<pre>
+JS 层错误 → SpiderMonkey Exception → JS 可捕获
+Rust 层错误 → Result<t, E=""> → 上抛到 JS 层或日志
+C++ FFI 错误 → panic → Rust catch_unwind → JS Error
+网络错误 → 自定义 Error enum → 重试/降级/上报
+渲染错误 → Option<pixelbuffer> → 降级为空白截图
+CDP 错误 → JSON-RPC Error Response → 客户端处理
+</pixelbuffer></t,></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§7 运行时状态图</h2>
+<!-- ============================================================ -->
+
+<div data-delivery="D4" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>运行时生命周期状态</h3>
+<pre>
+Uninitialized → Initializing → Ready → Running → ShuttingDown → Terminated
+
+Initializing:
+  1. SpiderMonkey JSContext 创建
+  2. Bun Event Loop 初始化
+  3. Module Loader hooks 注册
+  4. Bun.* / Bao.* 全局对象注入
+  5. servo 初始化（ServoBuilder + WebView 创建）
+  6. Node.js host functions 注册到 servo JSContext
+  7. CDP Server 启动（按需）
+  8. Stealth 模块加载（按需）
+
+Ready:
+  等待 JS 代码执行请求
+
+Running:
+  Event Loop 运行中
+  ├─ I/O 轮询 (epoll/kqueue)
+  ├─ Timer 检查
+  ├─ Microtask drain (SM JobQueue)
+  ├─ servo 事件循环 (spin_event_loop)
+  ├─ PagePool 空闲回收检查 (每次 tick)
+  │   └─ 遍历 idle_pages，idle_ttl 到期 → Closing → Closed
+  ├─ CDP 命令处理
+  └─ 渲染请求处理
+
+ShuttingDown:
+  1. 停止接受新请求
+  2. drain 所有 pending 任务
+  3. 关闭 CDP 连接
+  4. 销毁 libservo 实例
+  5. 销毁 JSContext
+  6. 释放所有资源
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§8 数据管道</h2>
+<!-- ============================================================ -->
+
+<div data-pipeline-type="execution" data-pipeline="JSExecutionPipeline" data-artifact-type="data-pipeline" data-type="document" id="data-pipeline">
+<h3>PIPE-SYS-001: JS 执行管道 (概要)</h3>
+<script type="application/ld+json">
+{
+  "@type": "Pipeline",
+  "name": "JSExecutionPipeline",
+  "type": "execution",
+  "stages": [
+    {"name": "源码输入", "input": "文件路径", "output": "源码字符串"},
+    {"name": "转译", "input": "TS/JSX 源码", "output": "JS 源码"},
+    {"name": "模块解析", "input": "import 路径", "output": "绝对路径"},
+    {"name": "SM 编译", "input": "JS 源码", "output": "JSScript"},
+    {"name": "SM 执行", "input": "JSScript", "output": "JS Value"}
+  ],
+  "detail": "参见 03-PROCESS.html §1"
+}
+</script>
+</div>
+
+<div data-pipeline-type="render" data-pipeline="RenderPipelineSummary" data-artifact-type="data-pipeline" data-type="document" id="data-pipeline">
+<h3>PIPE-SYS-002: 渲染管道 (概要)</h3>
+<script type="application/ld+json">
+{
+  "@type": "Pipeline",
+  "name": "RenderPipelineSummary",
+  "type": "render",
+  "stages": [
+    {"name": "HTML 解析", "input": "HTML", "output": "DOM 树"},
+    {"name": "样式计算", "input": "DOM + CSS", "output": "ComputedStyle"},
+    {"name": "布局", "input": "ComputedStyle", "output": "Layout Box"},
+    {"name": "光栅化", "input": "Display List", "output": "RGBA 像素"},
+    {"name": "编码", "input": "RGBA", "output": "PNG/JPEG/WebP"}
+  ],
+  "detail": "参见 03-PROCESS.html §2"
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§9 接口协议图</h2>
+<!-- ============================================================ -->
+
+<div data-delivery="D5" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>内部接口协议</h3>
+<pre>
+┌─ bao_engine ─┐     FFI (C ABI)     ┌─ mozjs-sys ─┐
+│  Rust 封装    │ ←────────────────→ │ SpiderMonkey │
+│  host_fn      │   JS::Rooted       │  C++ 引擎    │
+│  GC 管理      │   JS::Handle       │              │
+└──────┬───────┘                     └──────────────┘
+       │ Rust trait
+       ▼
+┌─ bao_runtime ─┐
+│ JobQueue impl │ ← SM JS::JobQueue trait
+│ ModuleLoader  │ ← SM hook callbacks
+│ Bun API 绑定  │ ← .classes.ts 生成
+└──────┬────────┘
+       │ crossbeam channel
+       ▼
+┌─ bao_cdp ─────┐    WebSocket      ┌─ CDP Client ─┐
+│ Domain Router │ ←───────────────→ │ Playwright    │
+│ JSON-RPC 2.0  │   ws://host:port  │ Puppeteer     │
+└──────┬────────┘                   └───────────────┘
+       │ Rust trait / function call
+       ▼
+┌─ bao_browser ─┐   ServoDelegate    ┌─ servo crate ─┐
+│ BaoServo      │ ←───────────────→ │ Servo API      │
+│ WebView       │   WebViewDelegate │ WebViewBuilder │
+│ Delegate      │                    │ RenderingCtx   │
+└───────────────┘                    └────────────────┘
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§9 事件/消息目录</h2>
+<!-- ============================================================ -->
+
+<div data-delivery="D6" data-artifact-type="table" data-type="document" id="table">
+<h3>内部事件/消息类型</h3>
+<table>
+<tr><td>事件</td><td>方向</td><td>载体</td><td>触发条件</td></tr>
+<tr><td>SM Promise Microtask</td><td>SM → Event Loop</td><td>JS::JobQueue</td><td>Promise resolve/reject</td></tr>
+<tr><td>I/O 就绪</td><td>OS → Event Loop</td><td>epoll/kqueue</td><td>socket 可读/可写</td></tr>
+<tr><td>Timer 到期</td><td>Timer Heap → Event Loop</td><td>回调函数</td><td>setTimeout/setInterval</td></tr>
+<tr><td>CDP Command</td><td>CDP Thread → Main Thread</td><td>crossbeam channel</td><td>WebSocket 消息到达</td></tr>
+<tr><td>CDP Event</td><td>Main Thread → CDP Thread</td><td>crossbeam channel</td><td>DOM 变更/JS 异常/网络事件</td></tr>
+<tr><td>Render Request</td><td>Main Thread → Render Thread</td><td>Display List + Viewport</td><td>captureScreenshot / 页面变更</td></tr>
+<tr><td>Render Complete</td><td>Render Thread → Main Thread</td><td>PixelBuffer</td><td>光栅化完成</td></tr>
+<tr><td>Page Load</td><td>libservo → BaoEmbedder</td><td>Embedder callback</td><td>HTML 解析完成</td></tr>
+<tr><td>DOM Mutation</td><td>libservo → BaoEmbedder</td><td>Embedder callback</td><td>DOM 变更</td></tr>
+<tr><td>Network Request</td><td>Bun HTTP 栈 → bao_cdp</td><td>hook callback</td><td>HTTP 请求发起</td></tr>
+<tr><td>Network Response</td><td>Bun HTTP 栈 → bao_cdp</td><td>hook callback</td><td>HTTP 响应到达</td></tr>
+<tr><td>Page Created</td><td>PagePool → CdpRouter</td><td>WebViewId</td><td>create_page() 成功</td></tr>
+<tr><td>Page Idle TTL Expired</td><td>Event Loop Tick → PagePool</td><td>WebViewId</td><td>空闲页面超时</td></tr>
+<tr><td>Page Closed</td><td>PagePool → Servo</td><td>CloseWebView 消息</td><td>页面资源回收</td></tr>
+<tr><td>Page Total Limit</td><td>PagePool → 调用方</td><td>Error</td><td>超过 max_total 硬上限</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2>§4.7 Permission 沙箱架构</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<h3>Permission 沙箱 — host_fn 层拦截</h3>
+<pre>
+实现层级: 复用 REQ-ENG-003 host_fn 抽象层
+作用域: per-Page / per-Bun-Script
+默认: 无 Permission 配置 → 跳过检查 → 零开销
+启用: 传入 Permission 配置 → 白名单模式
+
+Permission 配置:
+  {
+    read: ["/tmp/data"],       // 允许读取的路径
+    write: ["/tmp/output"],    // 允许写入的路径
+    net: ["api.example.com"],  // 允许网络访问的域名
+    env: false,                // 环境变量访问
+    run: false                 // 子进程执行
+  }
+
+拦截流程:
+  JS 调用 host function (如 Bun.file('/etc/passwd'))
+    → bao_engine host_fn 入口
+      → 检查 Page/Script 关联的 Permission
+        → 无配置: 直接执行 (短路, 零开销)
+        → 有配置: 检查对应权限类别 (read)
+          → 允许: 执行
+          → 拒绝: 抛出 PermissionDenied Error
+
+复用策略:
+  - 复用 bao_engine host_fn 抽象层 (REQ-ENG-003) 作为统一拦截点
+  - Permission 是一个 Rc&lt;Option&lt;PermissionConfig&gt;&gt;
+    None → 无限制 (零分支)
+    Some(config) → 白名单检查
+  - 浏览器页面和 Bun 脚本共享同一 Permission trait
+  - 不修改现有 bao_runtime 的任何 host function 实现
+    只在 host_fn 入口统一检查
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2>§10 非功能需求</h2>
+<!-- ============================================================ -->
+
+<div data-nfr-category="performance" data-nfr="StartupPerformance" data-artifact-type="non-functional-requirements" data-type="document" id="non-functional-requirements">
+<h3>NFR-SYS-PERF-001: 启动性能</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "StartupPerformance",
+  "category": "performance",
+  "metrics": {
+    "cold_start_node": {"target": "≤ 100ms"},
+    "cold_start_browser": {"target": "≤ 500ms"},
+    "warm_start": {"target": "≤ 20ms"}
+  },
+  "detail": "完整 NFR 定义参见 10-REQUIREMENTS.html §6"
+}
+</script>
+</div>
+
+<div data-nfr-category="compatibility" data-nfr="BunAPICompatibility" data-artifact-type="non-functional-requirements" data-type="document" id="non-functional-requirements">
+<h3>NFR-SYS-COMPAT-001: 兼容性</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "BunAPICompatibility",
+  "category": "compatibility",
+  "metrics": {
+    "bun_api": {"target": "≥ 95%"},
+    "node_api": {"target": "≥ 90%"},
+    "playwright": {"target": "≥ 95%"}
+  }
+}
+</script>
+</div>
+
+<div data-nfr-category="security" data-nfr="SecurityRequirements" data-artifact-type="non-functional-requirements" data-type="document" id="non-functional-requirements">
+<h3>NFR-SYS-SEC-001: 安全</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "SecurityRequirements",
+  "category": "security",
+  "metrics": {
+    "cdp_binding": {"target": "localhost only"},
+    "js_sandbox": {"target": "zero escape"},
+    "stealth_detectability": {"target": "≤ 5%"}
+  }
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2>§11 SLA 矩阵</h2>
+<!-- ============================================================ -->
+
+<div data-artifact-type="sla" data-type="document" id="sla">
+<h3>服务等级目标</h3>
+<script type="application/ld+json">
+{
+  "@type": "SLA",
+  "name": "BaoRuntimeSLA",
+  "metrics": [
+    {"name": "cold_start_script", "target": "≤ 100ms", "description": "冷启动（纯脚本）"},
+    {"name": "cold_start_servo", "target": "≤ 500ms", "description": "冷启动（含 servo）"},
+    {"name": "hot_start", "target": "≤ 20ms", "description": "热启动"},
+    {"name": "js_exec_latency", "target": "≤ 1ms", "description": "JS 执行延迟"},
+    {"name": "cdp_response", "target": "≤ 50ms", "description": "CDP 命令响应（非截图）"},
+    {"name": "screenshot_1080p", "target": "≤ 500ms", "description": "截图延迟 (1080p)"},
+    {"name": "memory_baseline", "target": "≤ 80MB", "description": "内存开销（基线）"},
+    {"name": "stealth_detect_rate", "target": "≤ 5%", "description": "指纹检测率（启用 Stealth 时）"},
+    {"name": "playwright_compat", "target": "≥ 95%", "description": "Playwright API 兼容"}
+  ]
+}
+</script>
+<table data-sla-table="BaoRuntimeSLA">
+<tr><th>指标</th><th>目标值</th><th>说明</th></tr>
+<tr data-desc="冷启动（纯脚本）" data-metric="cold_start_script" data-target="≤ 100ms"></tr>
+<tr data-desc="冷启动（含 servo）" data-metric="cold_start_servo" data-target="≤ 500ms"></tr>
+<tr data-desc="热启动" data-metric="hot_start" data-target="≤ 20ms"></tr>
+<tr data-desc="JS 执行延迟" data-metric="js_exec_latency" data-target="≤ 1ms"></tr>
+<tr data-desc="CDP 命令响应（非截图）" data-metric="cdp_response" data-target="≤ 50ms"></tr>
+<tr data-desc="截图延迟 (1080p)" data-metric="screenshot_1080p" data-target="≤ 500ms"></tr>
+<tr data-desc="内存开销（基线）" data-metric="memory_baseline" data-target="≤ 80MB"></tr>
+<tr data-desc="指纹检测率（启用 Stealth 时）" data-metric="stealth_detect_rate" data-target="≤ 5%"></tr>
+<tr data-desc="Playwright API 兼容" data-metric="playwright_compat" data-target="≥ 95%"></tr>
+</table>
+</div>
+
+<div data-artifact-type="mock-strategy" data-type="document" id="mock-strategy">
+<h3>Mock 策略</h3>
+<p>运行时引擎项目，无外部服务依赖。所有测试直接使用真实模块，无需 Mock。</p>
+<ul>
+<li>Node API 模块：直接调用真实实现</li>
+<li>Servo 引擎：本地嵌入，无远程依赖</li>
+<li>CDP 协议：本地 WebSocket 连接</li>
+</ul>
+</div>
+
+<section data-req-api="POST /fetch" data-req-entity="FetchResponse" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-001" id="req-sec-001"><h3>REQ-SEC-001 CORS 安全策略禁用</h3><p>bao 内置浏览器的所有 HTTP 请求不受 CORS（跨域资源共享）限制。修改 servo net 模块的 CORS 检查逻辑，使其在 bao 模式下跳过 CORS 验证。效果等同 Chromium --disable-web-security。页面 JS 和可信脚本的 fetch/XMLHttpRequest 均可自由访问任意域名的响应体。</p><div id="页面-js-中-fetch('https://任意域名/api')-能直接读取-response.json()，不触发-cors-preflight-也不报错" data-criterion="页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错">页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错</div><div id="xmlhttprequest-跨域请求返回完整响应（非-opaque-response）" data-criterion="XMLHttpRequest 跨域请求返回完整响应（非 opaque response）">XMLHttpRequest 跨域请求返回完整响应（非 opaque response）</div><div id="servo-net-模块的-cors-check()-在-bao-模式下返回-ok(())-跳过所有-cors-验证" data-criterion="servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证">servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证</div><div id="cors-preflight-(options)-请求不再发送" data-criterion="CORS preflight (OPTIONS) 请求不再发送">CORS preflight (OPTIONS) 请求不再发送</div><div id="cors-缓存-(corscache)-不再生效" data-criterion="CORS 缓存 (CorsCache) 不再生效">CORS 缓存 (CorsCache) 不再生效</div><div id="修改仅限于-servo/components/net/-的-cors-相关函数，不影响-servo-其他模块" data-criterion="修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块">修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-api="POST /evaluate-js,POST /evaluate-js-web" data-req-entity="BaoRuntime,EvaluateResult" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-002" id="req-sec-002"><h3>REQ-SEC-002 双层 JS 执行模型 — 双 Realm 架构级隔离</h3><p data-req-description="">bao 的 evaluate_js 支持两种执行模式：
+1. 页面模式（受限）：网页自身的 JS 运行在 servo 原生 Window Realm（Page Realm）内，只有前端 API（window/document/navigator/fetch 等），无法访问 Node.js API。SpiderMonkey Compartment 隔离保证物理上不可见。
+2. 可信模式（全权限）：通过 PageHandle.evaluate_js() 执行的脚本运行在独立的 Node Realm 中，拥有完整 Node.js/Bun 运行时权限（require/fs/crypto/Bun.*/process/Buffer），同时通过 JS_WrapObject 跨 Realm proxy 访问当前页面的 DOM（window/document/navigator）。
+
+实现机制：双 Realm 架构级隔离。
+- Page Realm：servo 原生 Window global，每个 Page 有独立的 Window Realm（REQ-LIB-001 已保证）。页面 JS 在此执行。
+- Node Realm：Bao 在 Page 创建时用 JS_NewGlobalObject 创建的独立 Realm，拥有独立 global 对象。evaluate_js() 的可信脚本在此执行。
+- 隔离保证：两个 Realm 处于不同 SpiderMonkey Compartment。Page Realm 的 JS 通过任何手段都无法枚举或发现 Node Realm 的存在。跨 Compartment 访问必须经过 JS_WrapObject，而 Page Realm 没有任何指向 Node Realm 对象的引用。
+- DOM 访问：Node Realm 中通过预先 wrap 的 window/document Proxy 访问 Page Realm 的 DOM 对象。wrap 在 EnterRealm(Node) 时创建，LeaveRealm 时释放。
+- 生命周期：Node Realm 与 Page 绑定，Page 关闭时同时销毁 Node Realm。</p><p>bao 的 evaluate_js 支持两种执行模式：
+1. 页面模式（受限）：网页自身的 JS 运行在标准 web 安全沙箱内，只有前端 API（window/document/navigator/fetch 等），无法访问 Node.js API
+2. 可信模式（全权限）：通过 PageHandle.evaluate_js() 执行的脚本拥有完整 Node.js/Bun 运行时权限（require/fs/crypto/Bun.*/process/Buffer），同时可访问当前页面的 DOM（window/document/navigator）
+
+实现机制：单 realm + CommonJS 包裹函数。evaluate_js 将用户脚本包装为 (function(require, module, exports, Bun, process, Buffer, __filename, __dirname){ &lt;user_script&gt; })，通过 JS_CallFunction 传入预先创建的 Node API JSValue 作为实参。Node API 从不写入 Window global，页面 JS 物理上无法访问。</p><div id="页面-js-中-typeof-require-===-'undefined'，无论使用任何手段（reflect.ownkeys/proxy/getownpropertynames/for...in-等）都无法发现或访问-node.js-api" data-criterion="页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API">页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API</div><div id="页面-js-中-typeof-bun-===-'undefined'，无法访问-bun-运行时" data-criterion="页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时">页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时</div><div id="可信脚本中-require('fs')-可正常读写文件" data-criterion="可信脚本中 require('fs') 可正常读写文件">可信脚本中 require('fs') 可正常读写文件</div><div id="可信脚本中-bun.file()-/-bun.write()-可正常工作" data-criterion="可信脚本中 Bun.file() / Bun.write() 可正常工作">可信脚本中 Bun.file() / Bun.write() 可正常工作</div><div id="可信脚本中-window-/-document-/-navigator-可正常访问-dom（通过-js-wrapobject-跨-realm-proxy）" data-criterion="可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）">可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）</div><div id="可信脚本中-fetch()-可正常发请求（结合-req-sec-001-无-cors-限制）" data-criterion="可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）">可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）</div><div id="可信脚本的-promise-可正常-await，与页面-js-的微任务队列兼容" data-criterion="可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容">可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容</div><div id="node-realm-与-page-realm-处于不同-spidermonkey-compartment，物理隔离而非逻辑隔离" data-criterion="Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离">Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离</div><div id="evaluate-js()-执行流程：enterrealm(node)-→-执行-→-leaverealm-→-回到-page-realm" data-criterion="evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm">evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm</div><div id="evaluate-js-web()-直接在-page-realm-执行，无-realm-切换" data-criterion="evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换">evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-api="GET /sandbox-status" data-req-entity="PageHandle" data-req-priority="P0" data-req-category="security" data-req-domain="sec" data-req-status="implemented" data-req="REQ-SEC-003" id="req-sec-003"><h3>REQ-SEC-003 Node API 沙箱隔离 — 移除页面全局注入</h3><p data-req-description="">在双 Realm 架构下，Node.js API 的隔离是架构级保证而非代码逻辑保证。
+
+修复原有安全漏洞：runtime_bridge.rs 中 install_all_native() 将 require/fs/crypto/Bun.* 等 Node.js API 直接挂在 Window global 上。
+
+双 Realm 方案下的修复：
+1. Node.js API 只安装在 Node Realm 的 global 上，不再挂在 Page Realm 的 Window global 上
+2. Node Realm 是独立 Compartment，Page Realm 物理上无法枚举或发现 Node Realm 的存在
+3. 保留 Page Realm 的标准 Web API（console/fetch/URL/URLSearchParams/WebSocket 等）
+4. Node Realm 拥有 require/module/exports/Bun/process/Buffer 等全部 Node.js API
+5. evaluate_js() 通过 EnterRealm(Node) 切换到 Node Realm 执行，LeaveRealm 切回 Page Realm</p><p>修复现有安全漏洞：runtime_bridge.rs 中 install_all_native() 将 require/fs/crypto/Bun.* 等 Node.js API 直接挂在 Window global 上，导致任意网页 JS 可调用 require('fs') 读写磁盘。
+
+修复方案：
+1. 移除 install_all_native() 中对所有 Node.js API 的全局注入
+2. 改为按需创建 Node API JSValue 对象（不挂 global），供可信脚本的 CommonJS 包裹函数使用
+3. 页面 JS 仅保留标准 Web API（console/fetch/URL/URLSearchParams/WebSocket 等）
+4. 保留 console 注入（页面 JS 需要 console.log）
+5. 保留 Web 标准 API（fetch/Headers/Request/Response/URL/URLSearchParams）</p><div id="runtime-bridge.rs-不再调用-install-all-native()-将-node.js-api-挂在-window-global" data-criterion="runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global">runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global</div><div id="页面-js-中-typeof-require-===-'undefined'，reflect.ownkeys(globalthis)-中无任何-node-api" data-criterion="页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API">页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API</div><div id="页面-js-中-typeof-process-===-'undefined'" data-criterion="页面 JS 中 typeof process === 'undefined'">页面 JS 中 typeof process === 'undefined'</div><div id="页面-js-中-typeof-buffer-===-'undefined'" data-criterion="页面 JS 中 typeof Buffer === 'undefined'">页面 JS 中 typeof Buffer === 'undefined'</div><div id="页面-js-中-typeof-bun-===-'undefined'" data-criterion="页面 JS 中 typeof Bun === 'undefined'">页面 JS 中 typeof Bun === 'undefined'</div><div id="页面-js-中-console.log()-正常工作（console-保留在-global）" data-criterion="页面 JS 中 console.log() 正常工作（console 保留在 global）">页面 JS 中 console.log() 正常工作（console 保留在 global）</div><div id="页面-js-中-fetch()-正常工作（web-api-保留在-global）" data-criterion="页面 JS 中 fetch() 正常工作（Web API 保留在 global）">页面 JS 中 fetch() 正常工作（Web API 保留在 global）</div><div id="页面-js-中-url/urlsearchparams-正常工作" data-criterion="页面 JS 中 URL/URLSearchParams 正常工作">页面 JS 中 URL/URLSearchParams 正常工作</div><div id="node-api-只存在于-node-realm-的-global-上，不在-page-realm-的-window-global-上存在任何痕迹" data-criterion="Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹">Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹</div><div id="install-all-native()-重构为-create-node-api-scope-values()-创建-node-realm-global-上的属性" data-criterion="install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性">install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section id="api-evaluate-js" data-api="POST /evaluate-js" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /evaluate-js — 可信脚本执行 — Node Realm (全权限)</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="code" data-required="true" data-type="string"><td>code</td><td>string</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "value": {
+        "type": "string"
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "code": {
+      "type": "string",
+      "required": true
+    },
+    "args": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-evaluate-js-web" data-api="POST /evaluate-js-web" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /evaluate-js-web — 页面脚本执行 — Page Realm (仅 Web API)</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="code" data-required="true" data-type="string"><td>code</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "value": {
+        "type": "string"
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "code": {
+      "type": "string",
+      "required": true
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-sandbox-status" data-api="GET /sandbox-status" data-api-response="{&quot;fields&quot;:{&quot;node_api_visible&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm_isolated&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;require_available&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /sandbox-status — 安全沙箱状态查询</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "page_realm": {
+        "type": "string"
+      },
+      "node_realm": {
+        "type": "string"
+      },
+      "isolation": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-runtime-eval" data-api="POST /runtime/eval" data-api-request="{&quot;script&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;filename&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /runtime/eval — SpiderMonkey 引擎集成 — JS 执行 API</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="script" data-required="true" data-type="string"><td>script</td><td>string</td><td>是</td><td></td></tr><tr data-param="filename" data-required="true" data-type="string"><td>filename</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "string"
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "code": {
+      "type": "string",
+      "required": true
+    },
+    "filename": {
+      "type": "string"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-codegen-generate" data-api="POST /codegen/generate" data-api-request="{&quot;classes_file&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;output_dir&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;generated_files&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;success&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /codegen/generate — 代码生成后端 — SpiderMonkey 绑定生成</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="classes_file" data-required="true" data-type="string"><td>classes_file</td><td>string</td><td>是</td><td></td></tr><tr data-param="output_dir" data-required="true" data-type="string"><td>output_dir</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "code": {
+        "type": "string"
+      },
+      "sourcemap": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "input": {
+      "type": "string",
+      "required": true
+    },
+    "target": {
+      "type": "string"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-host-fn-call" data-api="POST /host-fn/call" data-api-request="{&quot;name&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;callback&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /host-fn/call — host_fn 抽象层 — Rust 安全 JS 调用</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="name" data-required="true" data-type="string"><td>name</td><td>string</td><td>是</td><td></td></tr><tr data-param="callback" data-required="true" data-type="json"><td>callback</td><td>json</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "fn_name": {
+      "type": "string",
+      "required": true
+    },
+    "args": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-event-loop-drain" data-api="POST /event-loop/drain" data-api-request="{&quot;tick&quot;:{&quot;type&quot;:&quot;integer&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;microtask_count&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;macrotask_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /event-loop/drain — Event Loop 桥接 — 事件循环 tick</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="tick" data-required="false" data-type="integer"><td>tick</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "ticks_executed": {
+        "type": "integer"
+      },
+      "timers_fired": {
+        "type": "integer"
+      }
+    }
+  },
+  "request": {
+    "max_ticks": {
+      "type": "integer"
+    },
+    "timeout_ms": {
+      "type": "integer"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-module-resolve" data-api="POST /module/resolve" data-api-request="{&quot;specifier&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;referrer&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;source&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /module/resolve — Module Loader 桥接 — ESM/CJS 模块解析</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="specifier" data-required="true" data-type="string"><td>specifier</td><td>string</td><td>是</td><td></td></tr><tr data-param="referrer" data-required="false" data-type="string"><td>referrer</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "resolved_path": {
+        "type": "string"
+      },
+      "module_type": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "specifier": {
+      "type": "string",
+      "required": true
+    },
+    "referrer": {
+      "type": "string"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-bun-compat" data-api="GET /api/bun-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /api/bun-compat — Bun API 适配 — Bun.* 别名兼容</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "compatible": {
+        "type": "boolean"
+      },
+      "apis": {
+        "type": "json"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-node-compat" data-api="GET /api/node-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /api/node-compat — Node.js 兼容层 — require/fs/crypto 适配</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "compatible": {
+        "type": "boolean"
+      },
+      "apis": {
+        "type": "json"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-cli-exec" data-api="POST /cli/exec" data-api-request="{&quot;command&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;exit_code&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stdout&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cli/exec — bao CLI 品牌替换 — bao run/test/build/browser</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="command" data-required="true" data-type="string"><td>command</td><td>string</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "exit_code": {
+        "type": "integer"
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "stderr": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "command": {
+      "type": "string",
+      "required": true
+    },
+    "args": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-cli-browser" data-api="POST /cli/browser" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;cdp_port&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stealth&quot;:{&quot;type&quot;:&quot;boolean&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;pid&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;cdp_url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cli/browser — bao browser 子命令 — 启动浏览器模式</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td></tr><tr data-param="cdp_port" data-required="false" data-type="integer"><td>cdp_port</td><td>integer</td><td>否</td><td></td></tr><tr data-param="stealth" data-required="false" data-type="boolean"><td>stealth</td><td>boolean</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "started": {
+        "type": "boolean"
+      },
+      "cdp_url": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "url": {
+      "type": "string"
+    },
+    "cdp_port": {
+      "type": "integer"
+    },
+    "stealth": {
+      "type": "boolean"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-browser-create-page" data-api="POST /browser/create-page" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;viewport&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;state&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/create-page — libservo 集成 — 创建 WebView 页面</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td></tr><tr data-param="viewport" data-required="false" data-type="json"><td>viewport</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "page_id": {
+        "type": "string"
+      },
+      "created": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "url": {
+      "type": "string"
+    },
+    "viewport": {
+      "type": "json"
+    },
+    "stealth_profile": {
+      "type": "string"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-browser-screenshot" data-api="POST /browser/screenshot" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;format&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;data&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;width&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;height&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/screenshot — 内存渲染 — 截图输出</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="format" data-required="false" data-type="string"><td>format</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "data": {
+        "type": "string"
+      },
+      "format": {
+        "type": "string"
+      },
+      "width": {
+        "type": "integer"
+      },
+      "height": {
+        "type": "integer"
+      }
+    }
+  },
+  "request": {
+    "format": {
+      "type": "string"
+    },
+    "full_page": {
+      "type": "boolean"
+    },
+    "selector": {
+      "type": "string"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-browser-jscontext-fuse" data-api="POST /browser/jscontext-fuse" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;fused&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/jscontext-fuse — SpiderMonkey JSContext 融合 — Page/Node 双 Realm</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "fused": {
+        "type": "boolean"
+      },
+      "jscontext_ptr": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "page_id": {
+      "type": "string",
+      "required": true
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-cdp-runtime" data-api="POST /cdp/runtime" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/runtime — Runtime Domain — JS 执行/控制/Console</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-cdp-debugger" data-api="POST /cdp/debugger" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/debugger — Debugger Domain — 断点/源码/单步调试</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-cdp-page" data-api="POST /cdp/page" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/page — Page Domain — 导航/截图/事件</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-cdp-dom" data-api="POST /cdp/dom" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/dom — DOM Domain — 节点查询/修改/事件</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-cdp-network" data-api="POST /cdp/network" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/network — Network Domain — 请求/响应拦截/Cookie</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-cdp-emulation" data-api="POST /cdp/emulation" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/emulation — CSS/Input/Emulation/Overlay Domain — 设备模拟</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "result": {
+        "type": "json"
+      },
+      "error": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "method": {
+      "type": "string",
+      "required": true
+    },
+    "params": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-stealth-tls" data-api="POST /stealth/tls" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;ja3_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;tls_version&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/tls — TLS 指纹模拟 — JA3/JA4 伪造</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "ja3_hash": {
+        "type": "string"
+      },
+      "configured": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "profile": {
+      "type": "string"
+    },
+    "ja3_override": {
+      "type": "string"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-stealth-http2" data-api="POST /stealth/http2" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;akamai_fingerprint&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;settings_frame&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/http2 — HTTP/2 指纹匹配 — Akamai 规避</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "fingerprint": {
+        "type": "string"
+      },
+      "configured": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "profile": {
+      "type": "string"
+    },
+    "settings_override": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-stealth-canvas" data-api="POST /stealth/canvas" data-api-request="{&quot;seed&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;intensity&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;noise_applied&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/canvas — Canvas 指纹防护 — 像素噪声注入</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="seed" data-required="false" data-type="integer"><td>seed</td><td>integer</td><td>否</td><td></td></tr><tr data-param="intensity" data-required="false" data-type="string"><td>intensity</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "noise_applied": {
+        "type": "boolean"
+      },
+      "seed": {
+        "type": "integer"
+      }
+    }
+  },
+  "request": {
+    "seed": {
+      "type": "integer"
+    },
+    "noise_level": {
+      "type": "float"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-stealth-navigator" data-api="POST /stealth/navigator" data-api-request="{&quot;ua&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;navigator&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/navigator — Navigator/Screen 构造 — UA/屏幕模拟</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="ua" data-required="false" data-type="string"><td>ua</td><td>string</td><td>否</td><td></td></tr><tr data-param="screen" data-required="false" data-type="json"><td>screen</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "user_agent": {
+        "type": "string"
+      },
+      "platform": {
+        "type": "string"
+      },
+      "configured": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "user_agent": {
+      "type": "string"
+    },
+    "platform": {
+      "type": "string"
+    },
+    "screen": {
+      "type": "json"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-stealth-webgl-audio" data-api="POST /stealth/webgl-audio" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;webgl_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;audio_hash&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/webgl-audio — WebGL/Audio 指纹防护 — 渲染器/音频指纹伪造</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "webgl_vendor": {
+        "type": "string"
+      },
+      "audio_noise_applied": {
+        "type": "boolean"
+      }
+    }
+  },
+  "request": {
+    "webgl_vendor": {
+      "type": "string"
+    },
+    "audio_noise": {
+      "type": "boolean"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-stealth-behavior" data-api="POST /stealth/behavior" data-api-request="{&quot;action_type&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;path&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;delays&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/behavior — 行为模拟 — 鼠标轨迹/打字延迟/滚动</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="action_type" data-required="true" data-type="string"><td>action_type</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "mouse_path": {
+        "type": "json"
+      },
+      "typing_delays": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "mouse_speed_wpm": {
+      "type": "integer"
+    },
+    "typing_wpm": {
+      "type": "integer"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-stealth-cdp-stealth" data-api="GET /stealth/cdp-stealth" data-api-response="{&quot;fields&quot;:{&quot;stealth_active&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;patches_applied&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /stealth/cdp-stealth — CDP 隐蔽性 — 反检测补丁</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "domains": {
+        "type": "json"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-pagepool-create" data-api="POST /pagepool/create" data-api-request="{&quot;config&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /pagepool/create — 多页面管理 — PagePool 创建/销毁/复用</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="config" data-required="true" data-type="json"><td>config</td><td>json</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "page_id": {
+        "type": "string"
+      },
+      "pool_size": {
+        "type": "integer"
+      }
+    }
+  },
+  "request": {
+    "url": {
+      "type": "string"
+    },
+    "count": {
+      "type": "integer"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-pagepool-stats" data-api="GET /pagepool/stats" data-api-response="{&quot;fields&quot;:{&quot;active&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;idle&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;max_total&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /pagepool/stats — PagePool 资源管理 — 统计/回收/限制</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "active": {
+        "type": "integer"
+      },
+      "idle": {
+        "type": "integer"
+      },
+      "total": {
+        "type": "integer"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-permission-set" data-api="POST /permission/set" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;permissions&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;granted&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /permission/set — Permission 可选沙箱 — 权限配置与执行</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="permissions" data-required="true" data-type="json"><td>permissions</td><td>json</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "updated": {
+        "type": "boolean"
+      },
+      "permissions": {
+        "type": "json"
+      }
+    }
+  },
+  "request": {
+    "permissions": {
+      "type": "json",
+      "required": true
+    },
+    "mode": {
+      "type": "string"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-impl-phase1-status" data-api="GET /impl/phase1-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase1-status — Phase 1 SpiderMonkey 替换 JSC — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-impl-phase2-status" data-api="GET /impl/phase2-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase2-status — Phase 2 servo 引擎集成 — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-impl-phase3-status" data-api="GET /impl/phase3-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase3-status — Phase 3 CDP Server — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-impl-phase4-status" data-api="GET /impl/phase4-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase4-status — Phase 4 Stealth 反指纹 — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-impl-phase5-status" data-api="GET /impl/phase5-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase5-status — Phase 5 Headless 多页面库 — 实施状态</h4><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "phase": {
+        "type": "string"
+      },
+      "progress": {
+        "type": "float"
+      },
+      "completed": {
+        "type": "boolean"
+      }
+    }
+  }
+}
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="api-fetch" data-api="POST /fetch"><h4>POST /fetch — POST /fetch — CORS 安全策略禁用 — 直接 HTTP 请求</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td>目标 URL</td></tr><tr data-param="method" data-required="false" data-type="string"><td>method</td><td>string</td><td>否</td><td>HTTP 方法</td></tr><tr data-param="headers" data-required="false" data-type="json"><td>headers</td><td>json</td><td>否</td><td>请求头</td></tr><tr data-param="body" data-required="false" data-type="string"><td>body</td><td>string</td><td>否</td><td>请求体</td></tr></table><script type="application/ld+json">
+{
+  "@type": "ApiResponse",
+  "source": "example",
+  "body": {
+    "fields": {
+      "status_code": {
+        "type": "integer"
+      },
+      "body": {
+        "type": "string"
+      },
+      "headers": {
+        "type": "json"
+      },
+      "url": {
+        "type": "string"
+      },
+      "status_text": {
+        "type": "string"
+      }
+    }
+  },
+  "request": {
+    "url": {
+      "type": "string",
+      "required": true
+    },
+    "method": {
+      "type": "string"
+    },
+    "headers": {
+      "type": "json"
+    },
+    "body": {
+      "type": "string"
+    }
+  }
+}
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-001" id="req-pure-001"><h3>REQ-PURE-001 REQ-PURE-001: boringssl → rustls 纯 Rust TLS</h3><p>删除 vendor/boringssl/ (94MB) 及 bun_boringssl/bun_boringssl_sys crate，全部 TLS 功能由 bao_tls (rustls) 提供。Bao 已有 bao_tls 完整实现（JA3/JA4 指纹模拟、cipher suite 配置），boringssl 仅因 bun_runtime 残留依赖而存在。删除 bun_runtime 后即可彻底移除。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-002" id="req-pure-002"><h3>REQ-PURE-002 REQ-PURE-002: brotli → rust-brotli 纯 Rust 压缩</h3><p>删除 vendor/brotli/ 及 bun_brotli_sys，替换为 rust-brotli (crates.io 纯 Rust 实现)。brotli 压缩/解压缩用于 HTTP content-encoding 和 Bun.compress API。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-003" id="req-pure-003"><h3>REQ-PURE-003 REQ-PURE-003: zstd → zstd-rs 纯 Rust Zstandard</h3><p>删除 vendor/zstd/ 及 bun_zstd_sys，替换为 zstd-rs (crates.io，官方纯 Rust binding)。zstd 用于 Bun.compress API 和 Node.js zlib 模块的 zstd 压缩。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-004" id="req-pure-004"><h3>REQ-PURE-004 REQ-PURE-004: zlib/libdeflate → miniz_oxide/flate2 纯 Rust</h3><p>删除 vendor/zlib/ vendor/libdeflate/ 及 bun_zlib_sys/bun_libdeflate_sys，替换为 miniz_oxide/flate2 (crates.io 纯 Rust)。用于 HTTP gzip content-encoding、Bun.compress('gzip')、Node.js zlib 模块。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-005" id="req-pure-005"><h3>REQ-PURE-005 REQ-PURE-005: mimalloc → jemallocator/Rust 默认 allocator</h3><p>删除 vendor/mimalloc/ 及 bun_mimalloc_sys，通过 Cargo.toml 的 [profile] 配置切换到 Rust 默认 allocator 或 tikv-jemallocator (crates.io 纯 Rust)。mimalloc 仅是性能优化，不影响功能正确性。配置方式: [profile.release] package = { tikv-jemallocator } 或保持默认。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-006" id="req-pure-006"><h3>REQ-PURE-006 REQ-PURE-006: highway → wide/std::simd 纯 Rust SIMD</h3><p>删除 vendor/highway/ 及 bun_highway 中对 C highway 库的依赖，替换为 Rust SIMD 抽象: wide crate (crates.io) 或 std::simd (nightly)。highway 用于哈希/校验和的 SIMD 加速，bao_hash/bun_hash 中使用。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-007" id="req-pure-007"><h3>REQ-PURE-007 REQ-PURE-007: lsquic → quinn 纯 Rust QUIC/HTTP3</h3><p>删除 vendor/lsquic/ vendor/lsqpack/ vendor/lshpack/ 及 bun_lsquic_sys/bun_lshpack_sys，替换为 quinn (crates.io 纯 Rust QUIC 实现)。lsquic 是 C 语言的 QUIC/HTTP3 库，18.5MB。quinn 已被大量生产项目验证 (h3 crate 提供 HTTP/3 层)。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-008" id="req-pure-008"><h3>REQ-PURE-008 REQ-PURE-008: lolhtml → html5ever (servo 内置) 纯 Rust HTML 重写</h3><p>删除 vendor/lolhtml/ 及 bun_lolhtml_sys，替换为 servo 内置的 html5ever (已随 servo 引入)。lolhtml 是 C 语言的 HTML 重写器，用于 Bun.transform API。servo 的 html5ever 提供完整的 HTML5 解析 + 序列化能力，Bao 已嵌入 servo。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-009" id="req-pure-009"><h3>REQ-PURE-009 REQ-PURE-009: uWS C++ → hyper 纯 Rust HTTP server/client</h3><p>删除 src/uws/ 中对 C++ uSockets/uWS 二进制的依赖 (libuwsockets.cpp)，替换为 hyper (crates.io 纯 Rust HTTP)。Bao 已在 bao_runtime/fetch_api 中用 hyper 实现 HTTP client，需扩展为 HTTP server: Bun.serve() API 用 hyper 替代 uWS C++ server。这是最后一个 C++ 编译依赖。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="pure" data-req-status="unknown" data-req="REQ-PURE-010" id="req-pure-010"><h3>REQ-PURE-010 REQ-PURE-010: 删除 bun_runtime — 零 Zig/零 JSC</h3><p>删除 src/runtime/ (bun_runtime) 全部 398 个 Zig 文件和 JSC 残留代码。Bao 已有 bao_runtime (37 个 Rust 文件) 完整替代，提供所有 Node.js/Bun/Web API。bun_runtime 是唯一残留 Zig 代码的地方，删除后 Bao 实现零 Zig 依赖。同时删除所有 bun_*_jsc crate 引用和 JSC re-export (pub mod jsc { pub use bun_jsc::* })。</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-nfr-category="compliance" data-nfr="纯Rust依赖合规性" id="纯rust依赖合规性"><h3>纯 Rust 依赖合规性</h3><p>所有 C/C++/Zig 原生依赖必须替换为纯 Rust 实现，消除供应链攻击面、简化交叉编译、统一内存安全模型。目标：零 unsafe FFI 调用点（除 mozjs_sys SpiderMonkey 绑定外），零 C/C++ 构建工具链依赖。</p><script type="application/ld+json">{
+  "@type": "NFR",
+  "name": "纯Rust依赖合规性",
+  "category": "compliance",
+  "metrics": [
+    {
+      "name": "performance",
+      "target": "TBD",
+      "unit": "ms"
+    }
+  ]
+}</script></section><section data-req-priority="P0" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-001" id="req-perf-001"><h3>REQ-PERF-001 HTTP 响应路径零拷贝</h3><p>## 问题
+HTTP 响应路径上 HttpResponse 结构体使用 String/Vec&lt;u8&gt; clone()，每次响应至少 3 次堆分配：
+1. status_text: String（通常 "OK"，2 字节却分配 24 字节 + heap）
+2. headers: Vec&lt;(String, String)&gt;（每个 header name/value 都分配 String）
+3. body: Vec&lt;u8&gt; clone()（MB 级响应体完整拷贝）
+
+## 验收标准
+- [ ] HttpResponse.status_text 改为 CompactString 或 &amp;'static str
+- [ ] HttpResponse.headers 改为 SmallVec&lt;[(CompactString, CompactString); 8]&gt;
+- [ ] HttpResponse.body 通过 MutableString::take() 零拷贝获取，消除 clone()
+- [ ] HTTP 响应路径零 MB 级内存拷贝
+- [ ] cargo test 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P0" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-002" id="req-perf-002"><h3>REQ-PERF-002 CDP Domain Handler 去锁化 — Mutex&lt;bool&gt;/Mutex&lt;f64&gt; → Cell</h3><p>## 问题
+CDP Domain Handler 使用 std::sync::Mutex 包装单个标量字段（Mutex&lt;bool&gt;、Mutex&lt;f64&gt;、Mutex&lt;u64&gt;），这是 Java 程序员思维：
+- CDP domain handler 在 servo script thread 单线程上运行
+- Mutex 的 lock/unlock 涉及 futex syscall，每个 CDP 命令 2-4 次系统调用
+- Cell&lt;bool&gt;/Cell&lt;f64&gt; 是零开销内部可变性
+
+受影响文件：
+- bao_cdp/domains/emulation.rs: Mutex&lt;bool&gt; ×2, Mutex&lt;f64&gt; ×1
+- bao_cdp/domains/network.rs: Mutex&lt;bool&gt; ×2, Mutex&lt;Value&gt; ×1, Mutex&lt;Option&lt;NetworkConditions&gt;&gt; ×1
+- bao_cdp/domains/debugger.rs: Mutex&lt;u64&gt; ×1
+
+## 验收标准
+- [ ] emulation.rs: 3 个 Mutex → Cell
+- [ ] network.rs: cache_disabled/extra_headers/network_conditions 改为单 RefCell 或 Cell
+- [ ] debugger.rs: Mutex&lt;u64&gt; → Cell&lt;u64&gt;
+- [ ] 所有 DomainHandler 可变状态用 Cell/RefCell 替代 Mutex
+- [ ] cargo test -p bao_cdp 全部通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-003" id="req-perf-003"><h3>REQ-PERF-003 引入 bytes/compact_str/smallvec/dashmap 成熟库</h3><p>## 问题
+项目没有使用 bytes crate，所有 HTTP buffer 都是手动 Vec&lt;u8&gt; + clone() 管理。bytes::Bytes 提供零拷贝 slice 引用（Bytes::slice() 不分配），BytesMut 提供 inline 小 buffer。
+
+## 成熟库引入
+1. `bytes` — 零拷贝 buffer 管理，替换 HTTP body/response/request 的 Vec&lt;u8&gt;
+2. `compact_str` — 短字符串内联存储（24字节内无堆分配），替换 CDP session ID / HTTP header name / URL pathname
+3. `smallvec` — 已在 workspace deps 但未使用，替换小集合堆分配（HTTP headers &lt;8对, event listeners &lt;10个）
+4. `dashmap` — 替换 Mutex&lt;HashMap&gt;（runtime_bridge Realm 映射、fetch 状态等）
+
+## 验收标准
+- [ ] bytes: HttpResponse.body 改为 Bytes，HTTP request buffer 用 BytesMut
+- [ ] compact_str: CDP session ID / HTTP header name / URL pathname 改为 CompactString
+- [ ] smallvec: HTTP headers 改为 SmallVec&lt;[(CompactString, CompactString); 8]&gt;
+- [ ] dashmap: runtime_bridge NODE_REALMS/PAGE_GLOBALS 改为 DashMap
+- [ ] cargo test 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="architecture" data-req-domain="ENG" data-req-status="implemented" data-req="REQ-PERF-004" id="req-perf-004"><h3>REQ-PERF-004 CDP enum dispatch + OnceLock 替代 Arc&lt;Mutex&lt;&gt;&gt;</h3><p>## 问题
+CDP Domain Handler 使用 Box&lt;dyn DomainHandler&gt; 动态分发（11 个 vtable 调用 + 堆分配），这是 Go interface 翻译。domain 数量固定，应用 enum dispatch 消除 vtable。
+
+同样，Arc&lt;Mutex&lt;EvaluateResult&gt;&gt; 用于 JS 评估结果传递，但 EvaluateResult 是一次性写入（write-once, read-once），应改为 Arc&lt;OnceLock&lt;EvaluateResult&gt;&gt;。
+
+## 验收标准
+- [x] DomainHandler trait → enum DomainDispatch { Page(PageHandler), ... } 消除 vtable
+- [x] Registry 改为 DomainRegistry&lt;DomainDispatch&gt; + RegistryDispatch trait
+- [ ] Arc&lt;Mutex&lt;EvaluateResult&gt;&gt; → Arc&lt;OnceLock&lt;EvaluateResult&gt;&gt;
+- [ ] cargo test -p bao_cdp 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P2" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-PERF-005" id="req-perf-005"><h3>REQ-PERF-005 消除 Bun 翻译残留反模式</h3><p>## 问题
+Bun 翻译代码中大量反模式：
+1. Box::new([]) 空数组（Go nil slice 翻译）— 12 处，应改为 Vec::new() 或 Option&lt;Vec&gt;
+2. Option&lt;Box&lt;T&gt;&gt; 不必要堆分配 — 4+ 处（UrlState, EmitterState, LibdeflateState, HeapRequestBodyBuffer），应改为 Option&lt;T&gt;
+3. C 风格索引循环 for i in 0..argc — 15+ 处，应改为迭代器适配器
+4. thread_local RefCell&lt;Vec&lt;u8&gt;&gt; clone() — node_crypto 5 处，应 take()+replace() 零拷贝交换
+5. CURRENT_DIR RefCell&lt;PathBuf&gt; clone() — module_loader 4 处，应就地带引用
+
+## 验收标准
+- [ ] 12 处 Box::new([]) → Vec::new() 或 Option&lt;Vec&gt;
+- [ ] 4+ 处 Option&lt;Box&lt;T&gt;&gt; → Option&lt;T&gt;（UrlState 等小型结构体）
+- [ ] 15+ 处 C 风格索引循环 → 迭代器适配器
+- [ ] node_crypto 5 处 thread_local clone → take()/replace() 零拷贝
+- [ ] module_loader CURRENT_DIR clone → 就地带引用
+- [ ] cargo test 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P0" data-req-category="security" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-001" id="req-rfq-001"><h3>REQ-RFQ-001 Miri CI 集成 — unsafe UB 检测基础设施</h3><p>## 目标
+将 Miri（Rust 未定义行为检测器）集成到 CI 管线，自动检测 unsafe 代码中的内存安全问题。
+
+## 背景
+Bun 翻译的 Rust 代码包含 28,053 处 unsafe，是最大的质量风险。Miri 能在编译时检测：
+- use-after-free / double-free
+- out-of-bounds access
+- invalid uninitialized memory reads
+- data races (ThreadSanitizer mode)
+- violation of Rust aliasing rules
+
+## 验收标准
+- [ ] .github/workflows/miri.yml 配置完成，nightly + miri
+- [ ] bao_engine / bao_runtime / bao_cdp / bao_browser / bao_stealth 5 个核心 crate 的 miri test 通过
+- [ ] 检测到的 UB 按 Phase 1-2 修复清单归档
+- [ ] CI 阻断：新 PR 引入 UB → miri 失败 → merge blocked
+- [ ] 文档：MIRI_SUPPRESSIONS.md 记录已知 false positive
+
+## 影响范围
+- CI 配置文件（新增）
+- 测试辅助（可能需要 #[cfg_attr(miri, ignore)] 标注不支持的操作）
+
+## 依赖
+无前置依赖，可立即开始</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P0" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-002" id="req-rfq-002"><h3>REQ-RFQ-002 基准测试框架搭建 — criterion 基准 + 回归检测</h3><p>## 目标
+建立 criterion 基准测试框架，为 Phase 4 零拷贝重构提供量化基线。
+
+## 背景
+当前项目无任何基准测试，性能回归只能靠人工感知。Phase 4 的零拷贝重构需要精确的 before/after 对比数据。
+
+## 关键基准点
+1. HTTP 响应构建（HttpResponse → Bytes 序列化）
+2. CDP 消息解析/序列化（JSON → Rust struct）
+3. JS→Rust 字符串转换（JSString → String）
+4. Module resolve（specifier → PathBuf）
+5. Crypto hash（SHA-256/512 单块吞吐）
+6. Timer 调度（IntrusiveHeap 插入/弹出）
+
+## 验收标准
+- [ ] benches/ 目录建立，criterion 依赖添加
+- [ ] 6 个关键路径基准测试实现
+- [ ] CI 集成：cargo bench 自动运行，结果上传 artifact
+- [ ] 基线数据持久化到 benches/baseline.json
+- [ ] 文档：BENCHMARKING.md 说明如何运行和对比
+
+## 影响范围
+- Cargo.toml（添加 criterion dev-dep + [[bench]]）
+- benches/ 目录（新增）
+- CI 配置（新增 step）
+
+## 依赖
+无前置依赖，可立即开始</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P0" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-003" id="req-rfq-003"><h3>REQ-RFQ-003 代码质量审计工具链 — lint 规则 + 自动化扫描</h3><p>## 目标
+建立自动化代码质量扫描工具链，持续监控 Zig→Rust 翻译残留反模式。
+
+## 背景
+当前审计数据（基于 workspace 全量扫描）：
+- 28,053 unsafe 块
+- 9,979 unwrap() 调用
+- 4,214 clone() 调用
+- 1,419 #[repr(C)] 注解
+- 3,154 Vec::new() 无容量预分配
+- 19,407 PORT 注解
+
+需要自动化工具持续跟踪这些指标的改善进度。
+
+## 工具链设计
+1. custom clippy lints：检测 unwrap-in-unsafe、clone-on-large-type、vec-new-without-capacity
+2. cargo-deny 配置：禁止引入新的 C 依赖（纯 Rust 替代策略）
+3. 质量门控脚本：scripts/quality-audit.sh 输出指标报告
+4. CI 集成：每个 PR 自动运行质量扫描
+
+## 验收标准
+- [ ] .clippy.toml 配置自定义 lint 规则
+- [ ] cargo-deny 配置完成
+- [ ] scripts/quality-audit.sh 可运行，输出 6 项指标
+- [ ] CI 集成：质量回归 → PR check failed
+- [ ] 初始基线数据记录到 quality-baseline.json
+
+## 影响范围
+- .clippy.toml（新增/修改）
+- deny.toml（新增）
+- scripts/quality-audit.sh（新增）
+- CI 配置（修改）
+
+## 依赖
+无前置依赖，可立即开始</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P0" data-req-category="security" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-4" id="req-rfq-4"><h3>REQ-RFQ-4 消除 detach_lifetime — lifetime UB 根治</h3><p>## 目标
+消除所有 detach_lifetime() 调用，改用安全的 lifetime 约束或索引模式。
+
+## 背景
+detach_lifetime 是 Bun Zig 层翻译残留，通过 transmute 将带 lifetime 的引用转为 'static，造成 use-after-free UB。这是整个安全重构的最高优先级。
+
+## 典型模式
+```rust
+// 翻译前（危险）
+fn detach_lifetime&lt;'a, T&gt;(r: &amp;T) -&gt; &amp;'a T {
+    unsafe { std::mem::transmute(r) }
+}
+
+// 翻译后（安全）
+// 1. 索引模式：返回 usize index，通过 &amp;arena[index] 访问
+// 2. Arena 模式：typed-arena 或 bumpalo 统一管理 lifetime
+// 3. 所有权转移：传 move 而非传引用
+```
+
+## 验收标准
+- [ ] 0 处 detach_lifetime/transmute_lifetime 调用
+- [ ] 所有受影响的 API 改为安全的 lifetime 约束或索引模式
+- [ ] Miri 检测通过（零 UB 报告）
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bao_engine（核心引擎层）
+- bao_runtime（JS→Rust 桥接层）
+- bun_core（Arena 分配器）
+
+## 依赖
+REQ-RFQ-001（Miri 必须先就绪用于验证）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="security" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-5" id="req-rfq-5"><h3>REQ-RFQ-5 raw pointer 安全化 — 缩小 unsafe 范围</h3><p>## 目标
+限制裸指针使用范围，建立安全抽象层，减少 unsafe 块数量。
+
+## 背景
+28,053 处 unsafe 中大量是裸指针操作，可分类为：
+1. **必要 unsafe**：SpiderMonkey FFI（mozjs_sys 绑定）— 不可消除
+2. **可消除 unsafe**：手动指针算术、手动内存管理 — 改用安全抽象
+3. **可缩小 unsafe**：大块 unsafe 块中只有 1-2 行实际需要 unsafe — 缩小 unsafe 范围
+
+## 安全抽象策略
+1. Cell/RefCell 替代 Mutex（单线程场景）
+2. NonNull&lt;T&gt; + PhantomData 替代 *mut T（明确所有权）
+3. MaybeUninit&lt;T&gt; 替代 mem::uninitialized（安全初始化）
+4. slice::from_raw_parts → slice::from_ref/from_mut（安全切片构造）
+
+## 验收标准
+- [ ] unsafe 块数量减少 ≥30%（目标：28,053 → ≤19,600）
+- [ ] 每个 unsafe 块有 SAFETY 注释说明不变量
+- [ ] 非FFI unsafe 块 Miri 检测通过
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bao_engine（最大 unsafe 集中地）
+- bao_runtime（JS 桥接层）
+- bao_browser（servo FFI 层）
+- bao_cdp（CDP domain handlers）
+
+## 依赖
+REQ-RFQ-001（Miri）+ REQ-RFQ-011（detach_lifetime 先消除）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="security" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-6" id="req-rfq-6"><h3>REQ-RFQ-6 transmute 安全化 — 消除类型双关 UB</h3><p>## 目标
+消除所有 std::mem::transmute 调用，改用 bytemuck::cast 或安全 API。
+
+## 背景
+transmute 是 Rust 中最危险的操作，可绕过所有类型安全检查。Bun 翻译代码中存在大量 transmute：
+- &amp;T → &amp;[u8] 类型双关（应改用 bytemuck::bytes_of）
+- *mut T → *mut U 指针类型转换（应改用 cast/NonNull）
+- &amp;[u8; N] → Struct 网络数据解析（应改用 zerocopy::read_from）
+
+## 替代方案
+| transmute 场景 | 安全替代 |
+|----------------|----------|
+| 类型双关 | bytemuck::cast_slice / bytes_of |
+| 指针转换 | ptr::cast / NonNull::cast |
+| 网络解析 | zerocopy::FromBytes |
+| lifetime 欺骗 | 索引模式/arena |
+| 整数类型转换 | From/TryFrom trait |
+
+## 验收标准
+- [ ] 0 处 std::mem::transmute（FFI 绑定除外）
+- [ ] bytemuck/zerocopy 依赖添加到 Cargo.toml
+- [ ] 所有替代方案 Miri 检测通过
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bao_engine（最密集 transmute 区域）
+- bao_runtime（JS 值转换）
+- bun_http（网络数据解析）
+- bun_install（包数据解析）
+
+## 依赖
+REQ-RFQ-011（先消除 detach_lifetime）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="security" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-7" id="req-rfq-7"><h3>REQ-RFQ-7 消除 &amp;mut self + raw pointer 别名冲突</h3><p>## 目标
+消除 &amp;mut self + raw pointer 同时指向同一数据的别名冲突。
+
+## 背景
+Rust 的引用安全模型要求：同一时刻，同一数据只能有 1 个 &amp;mut 或 N 个 &amp;。Bun 翻译代码中大量模式违反此规则：
+```rust
+// 危险模式：&amp;mut self 持有可变引用，同时通过裸指针写入
+fn push(&amp;mut self, val: u8) {
+    unsafe {
+        (*self.ptr).write(val); // self.ptr 和 &amp;mut self 指向同一数据
+    }
+}
+```
+
+## 修复策略
+1. **方法拆分**：将 raw pointer 操作提取到独立方法，避免 &amp;mut self + raw pointer 共存
+2. **UnsafeCell 封装**：内部可变性通过 UnsafeCell 明确表达
+3. **Pin 约束**：自引用结构体用 Pin&lt;Box&lt;T&gt;&gt; 表达
+
+## 验收标准
+- [ ] Miri Stacked Borrows 检测通过（零 aliasing violation）
+- [ ] 所有 &amp;mut self + raw pointer 模式消除
+- [ ] UnsafeCell 使用点有 SAFETY 注释
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bao_engine（JS 值栈操作）
+- bun_http（buffer 管理）
+- bun_uws（uSockets FFI 封装）
+
+## 依赖
+REQ-RFQ-011 + REQ-RFQ-012（先消除 detach_lifetime 和缩小 unsafe 范围）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="security" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-8" id="req-rfq-8"><h3>REQ-RFQ-8 slice 别名冲突消除 — 网络数据路径安全</h3><p>## 目标
+消除 slice 别名冲突：避免 &amp;[] 和 &amp;mut [] 同时指向同一内存区域。
+
+## 背景
+HTTP body 解析和网络 buffer 管理中常见模式：
+```rust
+// 危险：同时持有不可变切片和可变切片
+let read_buf: &amp;[u8] = &amp;self.buffer[consumed..];
+let write_buf: &amp;mut [u8] = &amp;mut self.buffer[written..]; // aliasing violation!
+```
+
+## 修复策略
+1. **split_at_mut**：使用 split_at_mut / split_first_mut 安全分割
+2. **Cell&lt;[u8]&gt;**：共享可变 slice 用 Cell 包装
+3. **索引模式**：传 (start, len) 索引而非切片引用
+4. **bytes::Bytes**：不可变 slice 引用通过 Bytes::slice 零拷贝
+
+## 验收标准
+- [ ] 所有 slice aliasing 模式消除
+- [ ] Miri Tree Borrows 检测通过
+- [ ] 网络数据路径 Miri 测试通过
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bun_http（HTTP body 解析）
+- bun_picohttp（HTTP 协议解析）
+- bao_runtime/fetch_api（fetch buffer 管理）
+- bao_runtime/http_client（HTTP 客户端）
+
+## 依赖
+REQ-RFQ-021（先消除 &amp;mut + raw pointer 别名）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-9" id="req-rfq-9"><h3>REQ-RFQ-9 UnsafeCell 安全封装 — interior mutability 规范化</h3><p>## 目标
+所有 interior mutability 必须通过 UnsafeCell 安全封装，禁止裸 UnsafeCell::get().read/write。
+
+## 背景
+UnsafeCell 是 Rust 内部可变性的原语，绕过 &amp;T → &amp;mut T 禁止规则。Bun 翻译代码中直接使用 UnsafeCell 而未正确封装，导致 Miri 报错和潜在 UB。
+
+## 封装策略
+1. **Cell&lt;T&gt;**：Copy 类型用 Cell（零开销）
+2. **RefCell&lt;T&gt;**：非 Copy 类型用 RefCell（运行时借用检查）
+3. **OnceCell&lt;T&gt;**：一次性写入用 OnceCell
+4. **AtomicBool/AtomicUsize**：跨线程共享用原子类型
+5. 仅在性能关键路径且有充分 SAFETY 证明时直接使用 UnsafeCell
+
+## 验收标准
+- [ ] 裸 UnsafeCell::get().read/write 调用数 → 0（或有 SAFETY 注释）
+- [ ] 所有 interior mutability 通过标准封装类型访问
+- [ ] Miri 检测通过
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bao_engine（GC root 管理）
+- bao_runtime（thread_local 状态）
+- bao_cdp（domain handler 状态）
+- bun_core（全局状态管理）
+
+## 依赖
+REQ-RFQ-021 + REQ-RFQ-022（别名问题先解决）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="security" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-10" id="req-rfq-10"><h3>REQ-RFQ-10 unwrap/expect 消除 — 9,979 处 panic 风险清理</h3><p>## 目标
+消除 9,979 处 unwrap()/expect() 调用，改为 Result 传播或显式错误处理。
+
+## 背景
+unwrap() 在 None/Err 时 panic，在生产环境中导致进程崩溃。Bun 翻译代码中 unwrap() 密集是因为 Zig 不区分 null 和 error，翻译时图省事全部 unwrap。
+
+## 分类处理策略
+1. **FFI 绑定层**（mozjs_sys 回调）：unwrap 保留，但添加 SAFETY 注释说明不变量
+2. **JS 桥接层**（bao_engine/bao_runtime）：改为 Result + JS 异常抛出
+3. **网络/IO 层**（bun_http/bun_uws）：改为 Result + 错误日志
+4. **解析层**（bun_resolver/bun_install）：改为 Result + 用户友好错误消息
+
+## 验收标准
+- [ ] unwrap() 数量减少 ≥90%（目标：9,979 → ≤1,000）
+- [ ] 剩余 unwrap 有 SAFETY/invariant 注释
+- [ ] 所有错误路径有合理的错误消息
+- [ ] cargo test 全量通过（无新增 panic 测试）
+
+## 影响范围
+- 全 workspace ~80 个 crate
+- 重点：bao_engine, bao_runtime, bun_install, bun_resolver
+
+## 依赖
+REQ-RFQ-011~013（先消除 UB，再做错误处理改进）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P2" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-11" id="req-rfq-11"><h3>REQ-RFQ-11 Panic 边界定义 — 哪些 panic 合理化</h3><p>## 目标
+明确 panic 边界：定义哪些 panic 是合理的（如 OOM、逻辑不变量违反），其余全部改为 Result。
+
+## 背景
+Rust 中 panic 的合理场景有限：
+1. OOM（内存耗尽，无法恢复）
+2. 逻辑不变量违反（如 index out of bounds 说明调用方有 bug）
+3. 测试代码（assert! 是测试的基本工具）
+
+其余场景（文件不存在、网络断开、解析失败、用户输入错误）必须用 Result 传播。
+
+## Panic 边界定义
+| 层级 | 允许 panic | 必须用 Result |
+|------|-----------|-------------|
+| FFI 绑定 | 是（不变量违反） | — |
+| JS 桥接 | — | JS 异常 |
+| 网络/IO | — | Error enum |
+| 解析层 | — | Error enum |
+| 测试 | 是 | — |
+
+## 验收标准
+- [ ] PANIC_BOUNDARY.md 文档定义 panic 边界规则
+- [ ] 所有非测试代码的 panic 都有 // PANIC: 注释说明原因
+- [ ] panic 数量减少 ≥95%（除 FFI + 测试外）
+- [ ] cargo test 全量通过
+
+## 影响范围
+- 文档新增
+- 全 workspace panic 审计和分类
+
+## 依赖
+REQ-RFQ-031（先消除 unwrap）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P2" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-12" id="req-rfq-12"><h3>REQ-RFQ-12 错误类型标准化 — typed Error enum 替代 String error</h3><p>## 目标
+统一错误类型体系，消除 String/Box&lt;dyn Error&gt; 错误，建立 typed Error enum 层级。
+
+## 背景
+Bun 翻译代码中错误处理混乱：
+- `return Err("some error".to_string())` — 无类型信息
+- `return Err(Box::new(std::io::Error::new(...)))` — 丢失具体错误类型
+- `panic!("error: {}", msg)` — panic 代替错误传播
+
+## 错误类型层级
+```rust
+// bao_errors crate（新建议）
+pub enum BaoError {
+    Engine(EngineError),
+    Network(NetworkError),
+    Crypto(CryptoError),
+    Resolve(ResolveError),
+    Io(std::io::Error),
+}
+
+pub enum EngineError {
+    JsEvalFailed { message: String },
+    ModuleNotFound { specifier: String },
+    GcRootOverflow,
+}
+```
+
+## 验收标准
+- [ ] bao_errors crate 创建（或使用 thiserror 定义在 bao_engine 中）
+- [ ] 所有 Err(String) 替换为 typed Error enum
+- [ ] Display/Debug/Error trait 实现
+- [ ] JS 错误消息保留用户友好格式
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bao_engine（核心错误类型）
+- bao_runtime（JS 错误桥接）
+- bao_cdp（CDP 错误响应）
+- bun_http/bun_resolver（网络/解析错误）
+
+## 依赖
+REQ-RFQ-031（先消除 unwrap，才能定义 Result 类型签名）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-13" id="req-rfq-13"><h3>REQ-RFQ-13 Bytes/BytesMut 引入 — HTTP 零拷贝</h3><p>## 目标
+引入 bytes::Bytes/BytesMut，消除 HTTP body 和网络 buffer 的 Vec&lt;u8&gt; clone()。
+
+## 背景
+当前 HTTP 响应体使用 Vec&lt;u8&gt;，每次传递都 clone 整个 buffer。MB 级响应体可能 clone 数十次。
+bytes::Bytes 提供引用计数零拷贝 slice，BytesMut 提供 inline 小 buffer（≤4KB 无堆分配）。
+
+## 迁移目标
+| 当前 | 替换为 | 收益 |
+|------|--------|------|
+| Vec&lt;u8&gt; body | Bytes | 零拷贝传递 |
+| String response | Bytes (utf8) | 零拷贝传递 |
+| Vec::clone() | Bytes::slice() | O(1) vs O(n) |
+| Arc&lt;Vec&lt;u8&gt;&gt; | Bytes | 无 Arc 开销 |
+
+## 验收标准
+- [ ] bytes 依赖添加到 workspace Cargo.toml
+- [ ] HttpResponse.body 改为 Bytes
+- [ ] fetch_api 响应体零拷贝
+- [ ] HTTP 客户端请求/响应 buffer 用 BytesMut
+- [ ] criterion 基准对比：零拷贝路径 ≥5x 吞吐提升
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bun_http（HTTP 类型定义）
+- bao_runtime/fetch_api（fetch 实现）
+- bao_runtime/http_client（HTTP 客户端）
+- bao_cdp（CDP 响应体）
+
+## 依赖
+REQ-RFQ-002（benchmark 先建立基线）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-14" id="req-rfq-14"><h3>REQ-RFQ-14 CompactString/SmallVec — 短字符串和小集合优化</h3><p>## 目标
+引入 CompactString 和 SmallVec，消除短字符串和小集合的堆分配。
+
+## 背景
+HTTP header name/value、CDP session ID、URL pathname 等都是短字符串（&lt;24字节），但当前全部使用 String（24 字节栈上 + 堆分配）。CompactString 在 24 字节内内联存储，无堆分配。
+
+## 迁移目标
+| 当前 | 替换为 | 触发条件 |
+|------|--------|----------|
+| String | CompactString | ≤24 字节内联 |
+| Vec&lt;T&gt; | SmallVec&lt;[T; N]&gt; | ≤N 个内联 |
+| Vec&lt;(String,String)&gt; | SmallVec&lt;[(CompactString,CompactString); 8]&gt; | HTTP headers |
+
+## 验收标准
+- [ ] compact_str + smallvec 依赖确认（已存在于 workspace deps）
+- [ ] CDP session ID / event method 改为 CompactString
+- [ ] HTTP headers 改为 SmallVec&lt;[(CompactString, CompactString); 8]&gt;
+- [ ] URL pathname / query string 改为 CompactString
+- [ ] criterion 基准：短字符串操作堆分配减少 ≥80%
+- [ ] cargo test 全量通过
+
+## 影响范围
+- bao_cdp（CDP 协议层）
+- bun_http（HTTP 类型）
+- bun_url（URL 类型）
+- bao_runtime（JS 字符串桥接）
+
+## 依赖
+REQ-RFQ-002（benchmark 基线）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P1" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-15" id="req-rfq-15"><h3>REQ-RFQ-15 clone() 消除 — 4,214 处不必要克隆审计</h3><p>## 目标
+审计并消除 4,214 处不必要的 clone() 调用。
+
+## 背景
+clone() 在 Bun 翻译代码中泛滥是因为 Zig 的 copy-on-assign 语义。很多 clone 是不必要的：
+1. 所有权转移可用 move 替代（最后一次使用时 move 而非 clone）
+2. 只读引用可用 &amp; 替代（borrow 而非 clone）
+3. 大 buffer 零拷贝可用 Bytes::slice 替代
+4. thread_local 状态可用 take()/replace() 零拷贝交换
+
+## clone 分类
+| 类型 | 数量(估) | 策略 |
+|------|----------|------|
+| 可 move | ~1,500 | 改为 move |
+| 可 borrow | ~1,200 | 改为 &amp; |
+| 零拷贝 | ~800 | Bytes::slice / take() |
+| 必须保留 | ~700 | 添加注释说明 |
+
+## 验收标准
+- [ ] clone() 数量减少 ≥80%（目标：4,214 → ≤850）
+- [ ] 剩余 clone 有注释说明为何必须 clone
+- [ ] criterion 基准：clone 热点路径内存分配减少 ≥50%
+- [ ] cargo test 全量通过
+
+## 影响范围
+- 全 workspace ~80 个 crate
+- 重点：bao_engine, bao_runtime, bun_http, bun_install
+
+## 依赖
+REQ-RFQ-041（Bytes 引入后才能替换 buffer clone）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P2" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-16" id="req-rfq-16"><h3>REQ-RFQ-16 Vec::new() → with_capacity — 3,154 处预分配修复</h3><p>## 目标
+修复 3,154 处 Vec::new() / Vec::with_capacity(0)，改为合理的容量预分配。
+
+## 背景
+Vec::new() 创建空 Vec，首次 push 时分配堆内存。如果已知元素数量，with_capacity(N) 一次分配，避免多次 realloc。
+
+## 预分配策略
+| 场景 | 当前 | 修复 |
+|------|------|------|
+| HTTP headers | Vec::new() | with_capacity(8) |
+| CDP params | Vec::new() | with_capacity(4) |
+| JS args | Vec::new() | with_capacity(argc) |
+| Query results | Vec::new() | with_capacity(estimated) |
+| 已知大小的解析 | Vec::new() | with_capacity(known_len) |
+
+## 验收标准
+- [ ] Vec::new() 无预分配数量减少 ≥90%（目标：3,154 → ≤315）
+- [ ] 剩余 Vec::new() 有注释说明为何无法预知大小
+- [ ] criterion 基准：热路径 Vec 操作 realloc 次数减少 ≥70%
+- [ ] cargo test 全量通过
+
+## 影响范围
+- 全 workspace
+- 重点：bao_engine（JS 栈）、bao_runtime（模块加载）、bun_http（解析器）
+
+## 依赖
+无严格依赖，可与 Phase 3-4 并行</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P2" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-17" id="req-rfq-17"><h3>REQ-RFQ-17 repr(C) 审计 — 1,419 处 FFI 必要性验证</h3><p>## 目标
+审计 1,419 处 #[repr(C)]，只保留 FFI 边界必需的，其余删除。
+
+## 背景
+repr(C) 保证 C 内存布局，但代价是：
+1. 阻止编译器重排字段优化（padding 浪费）
+2. 阻止 niche optimization（Option&lt;Box&lt;T&gt;&gt; 从 16 字节变为 8 字节）
+3. 增加代码理解负担（每个 repr(C) 都暗示“这个结构体被 C 代码访问”）
+
+Bun 翻译代码中大量 repr(C) 是 Zig 结构体的机械翻译，并非实际需要 C 兼容布局。
+
+## 分类策略
+| 场景 | 处理 |
+|------|------|
+| SpiderMonkey FFI 结构体 | 保留 repr(C)，添加注释 |
+| uSockets/uWS FFI 结构体 | 保留 repr(C)，添加注释 |
+| 纯 Rust 内部结构体 | 删除 repr(C) |
+| Bun API 类型（跨 crate 传递） | 评估：如无 C 依赖则删除 |
+
+## 验收标准
+- [ ] repr(C) 数量减少 ≥70%（目标：1,419 → ≤425）
+- [ ] 保留的 repr(C) 有注释说明 FFI 目标
+- [ ] sizeof 对比：关键结构体删除 repr(C) 后内存占用减少
+- [ ] cargo test 全量通过
+
+## 影响范围
+- 全 workspace ~80 个 crate
+- 重点：bun_core, bun_http, bun_resolver, bun_install
+
+## 依赖
+REQ-RFQ-013（transmute 消除后 repr(C) 不再被 transmute 依赖）</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P2" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-18" id="req-rfq-18"><h3>REQ-RFQ-18 PORT 注解清理 — 19,407 处翻译标记评估</h3><p>## 目标
+评估并清理 19,407 处 PORT 注解（Zig→Rust 翻译标记）。
+
+## 背景
+PORT 注解是 Bun 翻译过程中标记“这里是 Zig 原始代码”的注释。它们在翻译初期有价值，但翻译完成后变成噪音：
+1. 占据大量行数（19,407 处）
+2. 信息价值递减（翻译完成后不再需要追溯 Zig 源）
+3. 干扰代码审查和搜索
+
+## 分类处理
+| PORT 类型 | 处理 |
+|-----------|------|
+| 已验证翻译正确 | 删除 PORT 注解 |
+| 翻译有已知问题 | 保留 PORT + 添加 ISSUE 链接 |
+| 正在重构中 | 保留 PORT + 添加 REQ-RFQ-* 链接 |
+
+## 验收标准
+- [ ] PORT 注解减少 ≥90%（目标：19,407 → ≤1,940）
+- [ ] 剩余 PORT 注解关联到具体 REQ 或 ISSUE
+- [ ] 代码搜索 PORT 不再产生大量噪音结果
+- [ ] cargo test 全量通过
+
+## 影响范围
+- 全 workspace（纯注释变更，无行为影响）
+
+## 依赖
+无严格依赖，可与任何 Phase 并行</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-priority="P2" data-req-category="architecture" data-req-domain="ENG" data-req-status="unknown" data-req="REQ-RFQ-19" id="req-rfq-19"><h3>REQ-RFQ-19 死代码消除 — 未使用代码/TODO/import 清理</h3><p>## 目标
+消除死代码、未使用的 #[cfg]、注释掉的代码块、多余 import。
+
+## 背景
+翻译过程中产生的冗余代码：
+1. 注释掉的代码块（// TODO: re-enable when...）
+2. 未使用的 #[cfg(feature = "...")] 门控
+3. 多余的 use 导入
+4. 已被新实现替代但未删除的旧代码
+5. 空实现（fn foo() {} 或 fn foo() { unimplemented!() }）
+
+## 检测工具
+- `cargo +nightly udeps`：检测未使用的依赖
+- `cargo machete`：检测未使用的 import
+- `rust-analyzer dead code`：检测未使用的函数/类型
+- 手动 grep：TODO/FIXME/stub/unimplemented!
+
+## 验收标准
+- [ ] TODO/FIXME 数量 → 0（全部实现或删除）
+- [ ] 未使用 import 全部清理（cargo machete 通过）
+- [ ] 注释掉的代码块全部删除
+- [ ] 空实现全部替换为真实实现或删除
+- [ ] 编译 warning 数量 → 0（deny warnings in CI）
+- [ ] cargo test 全量通过
+
+## 影响范围
+- 全 workspace
+
+## 依赖
+无严格依赖，可与任何 Phase 并行</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-nfr-category="reliability" data-nfr="内存安全 — 零 UB" id="nfr-memory-safety"><h3>内存安全 — 零 UB</h3><p>## 目标
+消除所有 Zig→Rust 翻译引入的内存安全 UB（Undefined Behavior）。
+
+## 量化目标
+| 指标 | 基线 | 目标 |
+|------|------|------|
+| unsafe 块 | 28,053 | ≤19,600 (-30%) |
+| transmute | ~200+ | ≤10 (仅FFI) |
+| detach_lifetime | ~30+ | 0 |
+| Miri UB 报告 | 未检测 | 0 |
+
+## 关联 REQ
+REQ-RFQ-011/012/013/021/022/023
+
+## 验证方式
+Miri CI 集成（REQ-RFQ-001），每个 Phase 完成后 Miri 全量检测</p><script type="application/ld+json">{
+  "@type": "NFR",
+  "name": "内存安全 — 零 UB",
+  "category": "reliability",
+  "metrics": [
+    {
+      "name": "performance",
+      "target": "TBD",
+      "unit": "ms"
+    }
+  ]
+}</script></section><section data-nfr-category="reliability" data-nfr="Panic 收敛 — 生产零意外崩溃" id="nfr-panic-convergence"><h3>Panic 收敛 — 生产零意外崩溃</h3><p>## 目标
+生产环境零意外 panic，所有可恢复错误通过 Result 传播。
+
+## 量化目标
+| 指标 | 基线 | 目标 |
+|------|------|------|
+| unwrap() | 9,979 | ≤1,000 (-90%) |
+| expect() | ~500+ | ≤100 (仅FFI+测试) |
+| 非 FFI/测试 panic | ~3,000+ | ≤150 (-95%) |
+
+## 关联 REQ
+REQ-RFQ-031/032/033
+
+## 验证方式
+cargo test panic hook 检测 + panic 边界审计脚本</p><script type="application/ld+json">{
+  "@type": "NFR",
+  "name": "Panic 收敛 — 生产零意外崩溃",
+  "category": "reliability",
+  "metrics": [
+    {
+      "name": "performance",
+      "target": "TBD",
+      "unit": "ms"
+    }
+  ]
+}</script></section><section data-nfr-category="performance" data-nfr="零拷贝热路径 — 原生 Rust 性能" id="nfr-zero-copy-hotpath"><h3>零拷贝热路径 — 原生 Rust 性能</h3><p>## 目标
+热路径零不必要内存分配和拷贝，达到原生 Rust 性能水平。
+
+## 量化目标
+| 指标 | 基线 | 目标 |
+|------|------|------|
+| clone() 调用 | 4,214 | ≤850 (-80%) |
+| Vec::new() 无预分配 | 3,154 | ≤315 (-90%) |
+| HTTP 响应 clone | 每次 O(n) | 零拷贝 |
+| 短字符串堆分配 | ~100% | ≤20% |
+
+## 关联 REQ
+REQ-RFQ-041/042/043/044
+
+## 验证方式
+criterion 基准对比（REQ-RFQ-002），每个 REQ 完成后跑基准验证</p><script type="application/ld+json">{
+  "@type": "NFR",
+  "name": "零拷贝热路径 — 原生 Rust 性能",
+  "category": "performance",
+  "metrics": [
+    {
+      "name": "performance",
+      "target": "TBD",
+      "unit": "ms"
+    }
+  ]
+}</script></section><section data-nfr-category="compliance" data-nfr="代码惯用性 — Zig 翻译痕迹清除" id="nfr-idiomatic-code"><h3>代码惯用性 — Zig 翻译痕迹清除</h3><p>## 目标
+代码达到原生 Rust 惯用风格，消除 Zig 翻译残留痕迹。
+
+## 量化目标
+| 指标 | 基线 | 目标 |
+|------|------|------|
+| repr(C) | 1,419 | ≤425 (-70%) |
+| PORT 注解 | 19,407 | ≤1,940 (-90%) |
+| TODO/FIXME | ~50+ | 0 |
+| 编译 warnings | ~100+ | 0 |
+
+## 关联 REQ
+REQ-RFQ-051/052/053
+
+## 验证方式
+clippy pedantic + 自定义 lint + cargo machete</p><script type="application/ld+json">{
+  "@type": "NFR",
+  "name": "代码惯用性 — Zig 翻译痕迹清除",
+  "category": "compliance",
+  "metrics": [
+    {
+      "name": "performance",
+      "target": "TBD",
+      "unit": "ms"
+    }
+  ]
+}</script></section><section data-module-kind="module" data-module="bao_engine" id="bao-engine"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-ENGINE-001",
+  "name": "bao_engine",
+  "dependsOn": [
+    "mozjs-sys",
+    "bun_resolver"
+  ],
+  "description": "SpiderMonkey engine wrapper that replaces bun_jsc. Provides JSContext lifecycle management, script compilation, evaluation, and module loading. The core bridge between SpiderMonkey FFI and Bao's Rust runtime. Shares JSContext with servo for DOM↔Node.js object interop."
+}</script></section><section data-module-kind="module" data-module="bao_runtime" id="bao-runtime"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-RUNTIME-001",
+  "name": "bao_runtime",
+  "dependsOn": [
+    "bao_engine",
+    "bun_uws",
+    "bun_io",
+    "bun_base64",
+    "bun_resolver"
+  ],
+  "description": "Node.js/Bun API compatibility layer. Implements require(), fetch(), setTimeout(), and all node:* built-in modules. Bridges SpiderMonkey JS values to Rust I/O via Bun infrastructure crates. No JSC dependency — pure SM + Bun Rust crates."
+}</script></section><section data-module-kind="module" data-module="bao_browser" id="bao-browser"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-BROWSER-001",
+  "name": "bao_browser",
+  "dependsOn": [
+    "servo",
+    "bao_engine"
+  ],
+  "description": "servo browser engine integration. Implements ServoDelegate and WebViewDelegate for servo embedding. Manages page lifecycle (PageHandle), multi-page pool (PagePool), screenshot capture, and JSContext fusion between servo's DOM realm and Bao's Node realm."
+}</script></section><section data-module-kind="module" data-module="bao_cdp" id="bao-cdp"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-CDP-001",
+  "name": "bao_cdp",
+  "dependsOn": [
+    "cdp-server",
+    "bao_browser"
+  ],
+  "description": "CDP protocol server implementing 11 domains (Runtime, Debugger, Page, DOM, Network, Emulation, CSS, Input, Overlay, Log, Console). Uses DomainDispatch 12-variant enum for zero-allocation dispatch. Bridges BaoEvent typed events to CDP protocol responses."
+}</script></section><section data-module-kind="module" data-module="bao_stealth" id="bao-stealth"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-STEALTH-001",
+  "name": "bao_stealth",
+  "dependsOn": [
+    "rustls",
+    "bao_engine"
+  ],
+  "description": "Anti-fingerprinting module. Provides StealthProfile configuration for TLS (JA3/JA4), HTTP/2 (Akamai fingerprint), Canvas (pixel noise), Navigator/Screen (UA simulation), WebGL/Audio (renderer fingerprint), and behavior simulation (mouse/typing/scroll). Also patches CDP detectability."
+}</script></section><section data-module-kind="module" data-module="cdp-server" id="cdp-server"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-CDP-SERVER-001",
+  "name": "cdp-server",
+  "dependsOn": [
+    "hyper",
+    "tokio",
+    "serde_json"
+  ],
+  "description": "Generic CDP framework providing WebSocket server, domain registry, event broadcasting, and session management. Framework-agnostic — bao_cdp provides the Bao-specific domain implementations while cdp-server handles protocol mechanics."
+}</script></section><section data-module-kind="module" data-module="DomainDispatch" id="domaindispatch"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-DISPATCH-001",
+  "name": "DomainDispatch",
+  "dependsOn": [
+    "MOD-CDP-001"
+  ],
+  "description": "12-variant enum dispatch for bao_cdp domain handlers. Replaces dynamic dispatch (Box<dyn DomainHandler>) with static enum dispatch for zero-allocation command routing. Variants: Runtime, Debugger, Page, DOM, Network, Emulation, CSS, Input, Overlay, Log, Console, Bao (custom)."
+}</script></section><section data-interface-kind="component" data-interface="RustRuntime public API" id="rustruntime-public-api"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-RT-API-001",
+  "name": "RustRuntime public API",
+  "contract": "new(config: RuntimeConfig) → Result<RustRuntime>; run(&mut self) → Result<()>; eval_js(&self, code: &str, realm: Realm) → Result<JsValue>; browser(&self) → Option<&BaoBrowser>; cdp_server(&self) → Option<&CdpServer>",
+  "description": "RustRuntime public API — the top-level entry point for Bao. Manages JSContext lifecycle, event loop, and optional browser/CDP subsystems. Single ownership model — one RustRuntime per process."
+}</script></section><section data-interface-kind="component" data-interface="JS global API" id="js-global-api"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-JS-API-001",
+  "name": "JS global API",
+  "contract": "Bun.write(file, data); Bun.serve(options); Bao.* (alias); require(module); fetch(url, init); setTimeout(fn, ms); setInterval(fn, ms); setImmediate(fn); process.*; Buffer.*; console.*",
+  "description": "JS global API available in both Node and Page realms. Bun.* preserves upstream compatibility; Bao.* is an alias to the same object. Node realm gets full API; Page realm gets Web API subset per REQ-SEC-002."
+}</script></section><section data-interface-kind="component" data-interface="Library mode API" id="library-mode-api"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-LIB-API-001",
+  "name": "Library mode API",
+  "contract": "BaoBuilder::new() → BaoBuilder; .with_servo(config: ServoConfig) → BaoBuilder; .with_cdp(port: u16) → BaoBuilder; .with_stealth(profile: StealthProfile) → BaoBuilder; .build() → Result<BaoInstance>",
+  "description": "Library mode API for programmatic Bao usage. BaoBuilder follows the builder pattern for zero-config defaults with opt-in subsystems. BaoInstance provides runtime control (run, eval, create_page, shutdown)."
+}</script></section><section data-interface-kind="component" data-interface="CDP Internal backend" id="cdp-internal-backend"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-CDP-INT-001",
+  "name": "CDP Internal backend",
+  "contract": "EventBroadcaster::send(event: BaoEvent) → (); domain.on_event(event: &BaoEvent) → (); DomainDispatch::dispatch(msg: CdpMessage) → CdpResponse",
+  "description": "CDP Internal backend — zero-serialization dispatch for browser-internal communication. BaoEvent typed enum replaces 8 __BAO_* string prefixes. Domain handlers receive events directly without JSON parse/serialize overhead."
+}</script></section><section data-interface-kind="component" data-interface="CDP External backend" id="cdp-external-backend"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-CDP-EXT-001",
+  "name": "CDP External backend",
+  "contract": "WebSocket JSON-RPC 2.0: {id, method, params} → {id, result} | {id, error}; Events: {method, params} (no id)",
+  "description": "CDP External backend — standard Chrome DevTools Protocol over WebSocket. JSON-RPC 2.0 request/response pattern with async event notifications. Compatible with Chrome DevTools, Puppeteer, and Playwright."
+}</script></section><section data-interface-kind="component" data-interface="JS→Rust event transport wire format" id="js→rust-event-transport-wire-format"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-EVT-WIRE-001",
+  "name": "JS→Rust event transport wire format",
+  "contract": "Wire format: __BAO_EVT__<CDP.Method>\\n{json_payload}; Parse: split on first newline → method + JSON; Route: BaoEvent::from_method(method, payload) → EventBroadcaster",
+  "description": "JS→Rust event transport wire format. Replaces 8 separate __BAO_* console.log prefixes with unified __BAO_EVT__<method>\\n{json} format. Single parse point, typed dispatch, supports all CDP event types."
+}</script></section><section data-interface-kind="component" data-interface="SpiderMonkey FFI" id="spidermonkey-ffi"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-SM-FFI-001",
+  "name": "SpiderMonkey FFI",
+  "contract": "JS_CompileScript(cx, source, filename) → JSScript; JS_ExecuteScript(cx, script) → JsValue; JS_CallFunctionName(cx, obj, name, args) → JsValue; JS_NewGlobalObject(cx, class) → JSObject; JS_SetProperty(cx, obj, name, value) → bool",
+  "description": "SpiderMonkey FFI interface via mozjs-sys crate. Low-level C API bindings for JS compilation, execution, property access, and GC root management. bao_engine wraps these in safe Rust abstractions (host_fn module)."
+}</script></section><section data-interface-kind="component" data-interface="servo WebViewDelegate" id="servo-webviewdelegate"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-SERVO-DELEGATE-001",
+  "name": "servo WebViewDelegate",
+  "contract": "show_console_message(msg: ConsoleMessage); notify_load_status_changed(status: LoadStatus); page_title_changed(title: String); allow_navigation(url: Url) → bool; handle_http_fetch(request: Request) → Response",
+  "description": "servo WebViewDelegate trait implementation. BaoBrowser implements these callbacks to bridge servo's internal events to Bao's event system. Console messages are forwarded to CDP Console domain; load status changes trigger Page domain events."
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-SM-001" id="dec-sm-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-SM-001",
+  "context": "Bao needs a JS engine that works with servo's DOM. servo already depends on mozjs (SpiderMonkey bindings) for its script component. Using the same engine avoids dual-engine complexity."
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-ARCH-001" id="dec-arch-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-ARCH-001",
+  "context": "Browser engines traditionally use multi-process for isolation, but Bao is a headless/embedded browser — crash isolation is less critical than performance and simplicity."
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-ARCH-002" id="dec-arch-002"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-ARCH-002",
+  "context": "Bao needs a full browser engine for headless browsing. The engine must provide DOM, CSS, Layout, and rendering capabilities with CDP support."
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-CDP-001" id="dec-cdp-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-CDP-001",
+  "context": "CDP commands come from two sources: (1) browser-internal (e.g., stealth module requesting page info), (2) external DevTools/Puppeteer connections. These have very different performance requirements."
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-CDP-002" id="dec-cdp-002"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-CDP-002",
+  "context": "Originally 8 separate __BAO_* console.log prefixes (__BAO_CONSOLE__, __BAO_NETWORK__, etc.) each with different parse logic. This creates maintenance burden and string matching fragility."
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-REUSE-001" id="dec-reuse-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-REUSE-001",
+  "context": "Bao needs HTTP, DNS, resolver, bundler, transpiler, and many other infrastructure capabilities. These are complex, production-tested systems that would take years to replicate."
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-PERF-001" id="dec-perf-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-PERF-001",
+  "context": "Bao needs high-performance HTTP for both server and client modes. Bun's uSockets/uWS implementation provides C++ binary performance with epoll-based I/O."
+}</script></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-PURE-001" data-test="TEST-PURE-001" id="test-pure-001"><h4>TEST-PURE-001: REQ-PURE-001 单元测试</h4><p>TODO: 为 REQ-PURE-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-002" data-test="TEST-PURE-002" id="test-pure-002"><h4>TEST-PURE-002: REQ-PURE-002 单元测试</h4><p>TODO: 为 REQ-PURE-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-003" data-test="TEST-PURE-003" id="test-pure-003"><h4>TEST-PURE-003: REQ-PURE-003 单元测试</h4><p>TODO: 为 REQ-PURE-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-004" data-test="TEST-PURE-004" id="test-pure-004"><h4>TEST-PURE-004: REQ-PURE-004 单元测试</h4><p>TODO: 为 REQ-PURE-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-005" data-test="TEST-PURE-005" id="test-pure-005"><h4>TEST-PURE-005: REQ-PURE-005 单元测试</h4><p>TODO: 为 REQ-PURE-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-006" data-test="TEST-PURE-006" id="test-pure-006"><h4>TEST-PURE-006: REQ-PURE-006 单元测试</h4><p>TODO: 为 REQ-PURE-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-007" data-test="TEST-PURE-007" id="test-pure-007"><h4>TEST-PURE-007: REQ-PURE-007 单元测试</h4><p>TODO: 为 REQ-PURE-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-008" data-test="TEST-PURE-008" id="test-pure-008"><h4>TEST-PURE-008: REQ-PURE-008 单元测试</h4><p>TODO: 为 REQ-PURE-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-009" data-test="TEST-PURE-009" id="test-pure-009"><h4>TEST-PURE-009: REQ-PURE-009 单元测试</h4><p>TODO: 为 REQ-PURE-009 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-010" data-test="TEST-PURE-010" id="test-pure-010"><h4>TEST-PURE-010: REQ-PURE-010 单元测试</h4><p>TODO: 为 REQ-PURE-010 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-001" data-test="TEST-PERF-001" id="test-perf-001"><h4>TEST-PERF-001: REQ-PERF-001 单元测试</h4><p>TODO: 为 REQ-PERF-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-002" data-test="TEST-PERF-002" id="test-perf-002"><h4>TEST-PERF-002: REQ-PERF-002 单元测试</h4><p>TODO: 为 REQ-PERF-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-003" data-test="TEST-PERF-003" id="test-perf-003"><h4>TEST-PERF-003: REQ-PERF-003 单元测试</h4><p>TODO: 为 REQ-PERF-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-004" data-test="TEST-PERF-004" id="test-perf-004"><h4>TEST-PERF-004: REQ-PERF-004 单元测试</h4><p>TODO: 为 REQ-PERF-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-005" data-test="TEST-PERF-005" id="test-perf-005"><h4>TEST-PERF-005: REQ-PERF-005 单元测试</h4><p>TODO: 为 REQ-PERF-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-001" data-test="TEST-SEC-001" id="test-sec-001"><h4>TEST-SEC-001: REQ-SEC-001 单元测试</h4><p>TODO: 为 REQ-SEC-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-002" data-test="TEST-SEC-002" id="test-sec-002"><h4>TEST-SEC-002: REQ-SEC-002 单元测试</h4><p>TODO: 为 REQ-SEC-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-003" data-test="TEST-SEC-003" id="test-sec-003"><h4>TEST-SEC-003: REQ-SEC-003 单元测试</h4><p>TODO: 为 REQ-SEC-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-001" data-test="TEST-RFQ-001" id="test-rfq-001"><h4>TEST-RFQ-001: REQ-RFQ-001 单元测试</h4><p>TODO: 为 REQ-RFQ-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-002" data-test="TEST-RFQ-002" id="test-rfq-002"><h4>TEST-RFQ-002: REQ-RFQ-002 单元测试</h4><p>TODO: 为 REQ-RFQ-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-003" data-test="TEST-RFQ-003" id="test-rfq-003"><h4>TEST-RFQ-003: REQ-RFQ-003 单元测试</h4><p>TODO: 为 REQ-RFQ-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-4" data-test="TEST-RFQ-4" id="test-rfq-4"><h4>TEST-RFQ-4: REQ-RFQ-4 单元测试</h4><p>TODO: 为 REQ-RFQ-4 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-5" data-test="TEST-RFQ-5" id="test-rfq-5"><h4>TEST-RFQ-5: REQ-RFQ-5 单元测试</h4><p>TODO: 为 REQ-RFQ-5 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-6" data-test="TEST-RFQ-6" id="test-rfq-6"><h4>TEST-RFQ-6: REQ-RFQ-6 单元测试</h4><p>TODO: 为 REQ-RFQ-6 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-7" data-test="TEST-RFQ-7" id="test-rfq-7"><h4>TEST-RFQ-7: REQ-RFQ-7 单元测试</h4><p>TODO: 为 REQ-RFQ-7 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-8" data-test="TEST-RFQ-8" id="test-rfq-8"><h4>TEST-RFQ-8: REQ-RFQ-8 单元测试</h4><p>TODO: 为 REQ-RFQ-8 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-9" data-test="TEST-RFQ-9" id="test-rfq-9"><h4>TEST-RFQ-9: REQ-RFQ-9 单元测试</h4><p>TODO: 为 REQ-RFQ-9 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-10" data-test="TEST-RFQ-10" id="test-rfq-10"><h4>TEST-RFQ-10: REQ-RFQ-10 单元测试</h4><p>TODO: 为 REQ-RFQ-10 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-11" data-test="TEST-RFQ-11" id="test-rfq-11"><h4>TEST-RFQ-11: REQ-RFQ-11 单元测试</h4><p>TODO: 为 REQ-RFQ-11 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-12" data-test="TEST-RFQ-12" id="test-rfq-12"><h4>TEST-RFQ-12: REQ-RFQ-12 单元测试</h4><p>TODO: 为 REQ-RFQ-12 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-13" data-test="TEST-RFQ-13" id="test-rfq-13"><h4>TEST-RFQ-13: REQ-RFQ-13 单元测试</h4><p>TODO: 为 REQ-RFQ-13 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-14" data-test="TEST-RFQ-14" id="test-rfq-14"><h4>TEST-RFQ-14: REQ-RFQ-14 单元测试</h4><p>TODO: 为 REQ-RFQ-14 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-15" data-test="TEST-RFQ-15" id="test-rfq-15"><h4>TEST-RFQ-15: REQ-RFQ-15 单元测试</h4><p>TODO: 为 REQ-RFQ-15 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-16" data-test="TEST-RFQ-16" id="test-rfq-16"><h4>TEST-RFQ-16: REQ-RFQ-16 单元测试</h4><p>TODO: 为 REQ-RFQ-16 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-17" data-test="TEST-RFQ-17" id="test-rfq-17"><h4>TEST-RFQ-17: REQ-RFQ-17 单元测试</h4><p>TODO: 为 REQ-RFQ-17 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-18" data-test="TEST-RFQ-18" id="test-rfq-18"><h4>TEST-RFQ-18: REQ-RFQ-18 单元测试</h4><p>TODO: 为 REQ-RFQ-18 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-RFQ-19" data-test="TEST-RFQ-19" id="test-rfq-19"><h4>TEST-RFQ-19: REQ-RFQ-19 单元测试</h4><p>TODO: 为 REQ-RFQ-19 编写测试用例</p></div></section></body>
+</html>

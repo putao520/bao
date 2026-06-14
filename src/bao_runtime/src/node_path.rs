@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
 use mozjs::jsapi::*;
@@ -28,7 +28,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, path_obj.handle(), c"format".as_ptr(), Some(path_format), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, path_obj.handle(), c"toNamespacedPath".as_ptr(), Some(path_to_namespaced), 1, JSPROP_ENUMERATE as u32);
 
-        let sep_cstr = CString::new(if MAIN_SEPARATOR == '/' { "/" } else { "\\" }).unwrap_or_default();
+        let sep_cstr = ZBox::from_bytes(if MAIN_SEPARATOR == '/' { "/" } else { "\\" }.as_bytes());
         let sep_str = JS_NewStringCopyZ(cx.raw_cx(), sep_cstr.as_ptr());
         if !sep_str.is_null() {
             let sep_val = mozjs::jsval::StringValue(&*sep_str);
@@ -36,7 +36,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             JS_DefineProperty(cx.raw_cx(), path_obj.handle().into(), c"sep".as_ptr(), sep_root.handle().into(), JSPROP_ENUMERATE as u32);
         }
 
-        let delim_cstr = CString::new(if cfg!(windows) { ";" } else { ":" }).unwrap_or_default();
+        let delim_cstr = ZBox::from_bytes(if cfg!(windows) { b";" } else { b":" });
         let delim_str = JS_NewStringCopyZ(cx.raw_cx(), delim_cstr.as_ptr());
         if !delim_str.is_null() {
             let delim_val = mozjs::jsval::StringValue(&*delim_str);
@@ -70,7 +70,7 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> ::std::option::Option
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
-    let c_str = CString::new(s).unwrap_or_default();
+    let c_str = ZBox::from_bytes(s.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
     if js_str.is_null() {
         args.rval().set(UndefinedValue());
@@ -84,9 +84,8 @@ unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
 unsafe extern "C" fn path_join(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let mut parts: Vec<::std::string::String> = Vec::new();
-    for i in 0..argc {
-        let val = *args.get(i).ptr;
-        match arg_to_string(cx, val) {
+    for val in ::std::slice::from_raw_parts(args.argv_, argc as usize) {
+        match arg_to_string(cx, *val) {
             Some(s) => parts.push(s),
             None => {
                 JS_ReportErrorUTF8(cx, c"The \"path\" argument must be of type string".as_ptr());
@@ -101,12 +100,16 @@ unsafe extern "C" fn path_join(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn path_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let cwd = ::std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let cwd = {
+        let mut buf = bun_core::PathBuffer::default();
+        bun_core::getcwd(&mut buf)
+            .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
+            .unwrap_or_else(|_| PathBuf::from("."))
+    };
     let mut resolved = cwd;
 
-    for i in 0..argc {
-        let val = *args.get(i).ptr;
-        match arg_to_string(cx, val) {
+    for val in ::std::slice::from_raw_parts(args.argv_, argc as usize) {
+        match arg_to_string(cx, *val) {
             Some(s) => {
                 let p = Path::new(&s);
                 if p.is_absolute() {
@@ -476,14 +479,25 @@ pub(crate) fn make_absolute(s: &str) -> PathBuf {
     if p.is_absolute() {
         normalize_path(&p)
     } else {
-        let cwd = ::std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let cwd = {
+            let mut buf = bun_core::PathBuffer::default();
+            bun_core::getcwd(&mut buf)
+                .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
+                .unwrap_or_else(|_| PathBuf::from("."))
+        };
         normalize_path(&cwd.join(&p))
     }
 }
 
 pub(crate) fn pathdiff(to: &Path, from: &Path) -> ::std::option::Option<PathBuf> {
-    let to_abs = if to.is_absolute() { to.to_path_buf() } else { ::std::env::current_dir().ok()?.join(to) };
-    let from_abs = if from.is_absolute() { from.to_path_buf() } else { ::std::env::current_dir().ok()?.join(from) };
+    let cwd = {
+        let mut buf = bun_core::PathBuffer::default();
+        bun_core::getcwd(&mut buf)
+            .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
+            .ok()
+    };
+    let to_abs = if to.is_absolute() { to.to_path_buf() } else { cwd.as_ref()?.join(to) };
+    let from_abs = if from.is_absolute() { from.to_path_buf() } else { cwd.as_ref()?.join(from) };
 
     let mut to_components: Vec<_> = to_abs.components().collect();
     let mut from_components: Vec<_> = from_abs.components().collect();
@@ -505,8 +519,8 @@ pub(crate) fn pathdiff(to: &Path, from: &Path) -> ::std::option::Option<PathBuf>
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn define_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: &str, value: &str) {
-    let c_name = CString::new(name).unwrap_or_default();
-    let c_val = CString::new(value).unwrap_or_default();
+    let c_name = ZBox::from_bytes(name.as_bytes());
+    let c_val = ZBox::from_bytes(value.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_val.as_ptr());
     if !js_str.is_null() {
         let val = mozjs::jsval::StringValue(&*js_str);
@@ -517,7 +531,7 @@ unsafe fn define_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, nam
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn get_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: &str) -> ::std::option::Option<::std::string::String> {
-    let c_name = CString::new(name).unwrap_or_default();
+    let c_name = ZBox::from_bytes(name.as_bytes());
     let mut val = UndefinedValue();
     let handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
     JS_GetProperty(cx, obj, c_name.as_ptr(), handle);

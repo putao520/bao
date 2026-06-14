@@ -6,7 +6,8 @@ use std::time::Duration;
 
 use bao_cdp::servo_bridge::{bridge_channel, BridgeCommand, BridgeResponse};
 use bao_cdp::domains::{register_all_domains_with_target, ServoTargetProvider};
-use cdp_server::{CdpServer, ServerConfig, TargetProvider};
+use bao_cdp::DomainDispatch;
+use cdp_server::{CdpServer, ServerConfig, TargetProvider, DomainRegistry};
 use serde_json::json;
 
 fn mock_responder(
@@ -46,8 +47,9 @@ impl cdp_server::EventSender for NoopSender {
 fn cdp_server_registry_has_all_12_domains() {
     let (bridge_tx, _rx) = bridge_channel(Duration::from_millis(100));
     let config = ServerConfig::builder().host("127.0.0.1").port(0).build();
-    let server = CdpServer::new(config);
-    register_all_domains_with_target(bridge_tx, "registry-test".into(), server.registry());
+    let registry = Arc::new(DomainRegistry::<DomainDispatch>::new());
+    register_all_domains_with_target(bridge_tx, "registry-test".into(), &registry);
+    let server = CdpServer::with_registry(config, registry);
 
     let expected = [
         "Page", "Runtime", "DOM", "Network", "Debugger",
@@ -96,8 +98,9 @@ fn multiple_commands_through_registry_dispatch() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let _responder = mock_responder(bridge_rx, "Multi", "https://multi.test", done.clone());
 
-    let server = CdpServer::new(ServerConfig::default());
-    register_all_domains_with_target(bridge_tx, target_id, server.registry());
+    let registry = Arc::new(DomainRegistry::<DomainDispatch>::new());
+    register_all_domains_with_target(bridge_tx, target_id, &registry);
+    let server = CdpServer::with_registry(ServerConfig::default(), registry);
 
     // Page.enable
     let r = server.registry().dispatch_command("Page.enable", json!({}), &NoopSender);
@@ -175,8 +178,9 @@ fn cdp_server_config_builder_with_target_provider() {
     let _responder = mock_responder(bridge_rx, "WS Test", "https://ws.test", done.clone());
 
     let config = ServerConfig::builder().host("127.0.0.1").port(9333).build();
-    let mut server = CdpServer::new(config);
-    register_all_domains_with_target(bridge_tx.clone(), target_id.clone(), server.registry());
+    let registry = Arc::new(DomainRegistry::<DomainDispatch>::new());
+    register_all_domains_with_target(bridge_tx.clone(), target_id.clone(), &registry);
+    let mut server = CdpServer::with_registry(config, registry);
 
     let provider = Arc::new(ServoTargetProvider::new(
         bridge_tx,
@@ -215,8 +219,9 @@ fn all_domain_enable_disable_cycle() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let _responder = mock_responder(bridge_rx, "Cycle", "https://cycle.test", done.clone());
 
-    let server = CdpServer::new(ServerConfig::default());
-    register_all_domains_with_target(bridge_tx, "cycle-target".into(), server.registry());
+    let registry = Arc::new(DomainRegistry::<DomainDispatch>::new());
+    register_all_domains_with_target(bridge_tx, "cycle-target".into(), &registry);
+    let server = CdpServer::with_registry(ServerConfig::default(), registry);
 
     let enable_commands = [
         "Page.enable", "Runtime.enable", "DOM.enable", "Network.enable",
@@ -243,8 +248,9 @@ fn target_domain_consistent_ids_across_commands() {
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let _responder = mock_responder(bridge_rx, "Shared", "https://shared.test", done.clone());
 
-    let server = CdpServer::new(ServerConfig::default());
-    register_all_domains_with_target(bridge_tx, shared_id.clone(), server.registry());
+    let registry = Arc::new(DomainRegistry::<DomainDispatch>::new());
+    register_all_domains_with_target(bridge_tx, shared_id.clone(), &registry);
+    let server = CdpServer::with_registry(ServerConfig::default(), registry);
 
     let r = server.registry().dispatch_command("Target.getTargets", json!({}), &NoopSender);
     let resp = r.unwrap().unwrap();

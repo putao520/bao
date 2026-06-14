@@ -1,4 +1,5 @@
 // @trace REQ-ENG-007
+use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{UndefinedValue, Int32Value, ObjectValue};
 use mozjs::rooted;
@@ -51,7 +52,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         // SlowBuffer = Buffer.alloc alias via JS
         let slow_buf_src = "Buffer.alloc";
-        let c_filename = ::std::ffi::CString::new("node:buffer").unwrap_or_default();
+        let c_filename = ZBox::from_bytes("node:buffer".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if !opts.is_null() {
             let mut src = mozjs::rust::transform_str_to_source_text(slow_buf_src);

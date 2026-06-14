@@ -42,7 +42,7 @@ fn test_bridge_channel_long_timeout() {
 fn test_send_navigate_success() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::Navigate { url, .. } => {
                     assert_eq!(url, "https://example.com");
@@ -60,7 +60,7 @@ fn test_send_navigate_success() {
 fn test_send_evaluate_js_success() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::EvaluateJs { expression, return_by_value, .. } => {
                     assert_eq!(expression, "1+1");
@@ -79,7 +79,7 @@ fn test_send_evaluate_js_success() {
 fn test_send_take_screenshot() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::TakeScreenshot { format, quality, .. } => {
                     assert_eq!(format, "png");
@@ -98,7 +98,7 @@ fn test_send_take_screenshot() {
 fn test_send_screenshot_with_quality() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::TakeScreenshot { format, quality, .. } => {
                     assert_eq!(format, "jpeg");
@@ -117,7 +117,7 @@ fn test_send_screenshot_with_quality() {
 fn test_send_get_title() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("Test Page")) },
                 _ => panic!("Unexpected"),
@@ -132,7 +132,7 @@ fn test_send_get_title() {
 fn test_send_get_url() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://example.com")) },
                 _ => panic!("Unexpected"),
@@ -171,7 +171,7 @@ fn test_send_query_selector() {
 fn test_send_query_selector_all() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::QuerySelectorAll { selector, .. } => {
                     assert_eq!(selector, "li");
@@ -189,7 +189,7 @@ fn test_send_query_selector_all() {
 fn test_send_dispatch_mouse_event() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count, .. } => {
                     assert_eq!(event_type, "mousePressed");
@@ -214,7 +214,7 @@ fn test_send_dispatch_mouse_event() {
 fn test_send_dispatch_key_event() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::DispatchKeyEvent { event_type, key, code, text, .. } => {
                     assert_eq!(event_type, "keyDown");
@@ -238,7 +238,7 @@ fn test_send_dispatch_key_event() {
 fn test_send_insert_text() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::InsertText { text, .. } => {
                     assert_eq!(text, "hello world");
@@ -256,7 +256,7 @@ fn test_send_insert_text() {
 fn test_send_set_viewport() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::SetViewport { width, height, device_scale_factor, .. } => {
                     assert_eq!(width, 1920);
@@ -276,7 +276,7 @@ fn test_send_set_viewport() {
 fn test_send_get_cookies() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::GetCookies { urls, .. } => {
                     assert_eq!(urls, vec!["https://example.com"]);
@@ -294,7 +294,7 @@ fn test_send_get_cookies() {
 fn test_send_set_cookie() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::SetCookie { name, value, url, domain, .. } => {
                     assert_eq!(name, "session");
@@ -318,7 +318,7 @@ fn test_send_set_cookie() {
 fn test_send_delete_cookie() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::DeleteCookie { name, url: _, .. } => {
                     assert_eq!(name, "session");
@@ -336,7 +336,7 @@ fn test_send_delete_cookie() {
 fn test_send_reload() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::Reload { ignore_cache, .. } => {
                     assert!(ignore_cache);
@@ -354,7 +354,7 @@ fn test_send_reload() {
 fn test_send_go_back() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::GoBack { .. } => BridgeResponse { result: Ok(json!({})) },
                 _ => panic!("Unexpected"),
@@ -369,7 +369,7 @@ fn test_send_go_back() {
 fn test_send_go_forward() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::GoForward { .. } => BridgeResponse { result: Ok(json!({})) },
                 _ => panic!("Unexpected"),
@@ -384,7 +384,7 @@ fn test_send_go_forward() {
 fn test_send_stop_loading() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::StopLoading { .. } => BridgeResponse { result: Ok(json!({})) },
                 _ => panic!("Unexpected"),
@@ -399,7 +399,7 @@ fn test_send_stop_loading() {
 fn test_send_close_page() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::ClosePage { .. } => BridgeResponse { result: Ok(json!({})) },
                 _ => panic!("Unexpected"),
@@ -414,7 +414,7 @@ fn test_send_close_page() {
 fn test_send_add_script() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::AddScriptToEvaluateOnNewDocument { source, .. } => {
                     assert!(source.contains("navigator"));
@@ -433,7 +433,7 @@ fn test_send_add_script() {
 fn test_send_set_attribute_value() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::SetAttributeValue { node_id, name, value, .. } => {
                     assert_eq!(node_id, 5);
@@ -453,7 +453,7 @@ fn test_send_set_attribute_value() {
 fn test_send_get_outer_html() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::GetOuterHtml { node_id, .. } => {
                     assert_eq!(node_id, Some(3));
@@ -471,7 +471,7 @@ fn test_send_get_outer_html() {
 fn test_send_get_response_body() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::GetResponseBody { request_id, .. } => {
                     assert_eq!(request_id, "req-123");
@@ -489,7 +489,7 @@ fn test_send_get_response_body() {
 fn test_send_set_user_agent() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::SetUserAgent { user_agent, .. } => {
                     assert!(user_agent.contains("Firefox"));
@@ -509,7 +509,7 @@ fn test_send_set_user_agent() {
 fn test_send_error_response() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|_| BridgeResponse {
+        rx.recv_and_process(Duration::from_secs(5), |_| BridgeResponse {
             result: Err("page not found".into()),
         });
     });
@@ -615,7 +615,7 @@ fn test_bridge_response_debug_err() {
 fn test_navigate_unicode_url() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::Navigate { url, .. } => {
                     assert!(url.contains("日本語"));
@@ -633,7 +633,7 @@ fn test_navigate_unicode_url() {
 fn test_evaluate_js_special_chars() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::EvaluateJs { expression, .. } => {
                     assert!(expression.contains("\\n"));
@@ -653,7 +653,7 @@ fn test_evaluate_js_special_chars() {
 fn test_insert_text_multibyte() {
     let (tx, rx) = bridge_channel(Duration::from_secs(2));
     thread::spawn(move || {
-        rx.try_process(|cmd| {
+        rx.recv_and_process(Duration::from_secs(5), |cmd| {
             match cmd {
                 BridgeCommand::InsertText { text, .. } => {
                     assert_eq!(text, "こんにちは世界");
@@ -680,7 +680,7 @@ fn test_concurrent_sends() {
         let mut count = 0;
         for _ in 0..5 {
             let guard = rx.lock().unwrap();
-            guard.try_process(|_| {
+            guard.recv_and_process(Duration::from_secs(5), |_| {
                 BridgeResponse { result: Ok(json!({})) }
             });
             drop(guard);

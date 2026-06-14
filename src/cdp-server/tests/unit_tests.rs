@@ -53,6 +53,42 @@ impl DomainHandler for StatefulHandler {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TestDispatch — enum dispatch for multi-handler tests
+// ---------------------------------------------------------------------------
+
+enum TestDispatch {
+    Echo(EchoHandler),
+    Stateful(StatefulHandler),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self {
+            Self::Echo(h) => h.domain_name(),
+            Self::Stateful(h) => h.domain_name(),
+        }
+    }
+    fn handle_command(&self, cmd: &str, params: Value, sender: &dyn EventSender) -> Result<Value, CdpError> {
+        match self {
+            Self::Echo(h) => h.handle_command(cmd, params, sender),
+            Self::Stateful(h) => h.handle_command(cmd, params, sender),
+        }
+    }
+    fn on_session_created(&self, session_id: &str) {
+        match self {
+            Self::Echo(h) => h.on_session_created(session_id),
+            Self::Stateful(h) => h.on_session_created(session_id),
+        }
+    }
+    fn on_session_destroyed(&self, session_id: &str) {
+        match self {
+            Self::Echo(h) => h.on_session_destroyed(session_id),
+            Self::Stateful(h) => h.on_session_destroyed(session_id),
+        }
+    }
+}
+
 // ===========================================================================
 // §1 Protocol parsing tests (TEST-CDS-001)
 // ===========================================================================
@@ -103,8 +139,8 @@ fn test_parse_with_session_id() {
 
 #[test]
 fn test_registry_register_and_dispatch() {
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(EchoHandler)).unwrap();
+    let registry = DomainRegistry::<TestDispatch>::new();
+    registry.register(TestDispatch::Echo(EchoHandler)).unwrap();
 
     let es = NoopEventSender;
     let result = registry.dispatch_command("Echo.ping", json!({}), &es);
@@ -115,34 +151,34 @@ fn test_registry_register_and_dispatch() {
 
 #[test]
 fn test_registry_duplicate_registration_fails() {
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(EchoHandler)).unwrap();
-    let err = registry.register(Box::new(EchoHandler));
+    let registry = DomainRegistry::<TestDispatch>::new();
+    registry.register(TestDispatch::Echo(EchoHandler)).unwrap();
+    let err = registry.register(TestDispatch::Echo(EchoHandler));
     assert!(err.is_err());
     assert!(err.unwrap_err().contains("already registered"));
 }
 
 #[test]
 fn test_registry_unknown_domain_returns_none() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<TestDispatch>::new();
     let es = NoopEventSender;
     assert!(registry.dispatch_command("Unknown.method", json!({}), &es).is_none());
 }
 
 #[test]
 fn test_registry_has_domain() {
-    let registry = DomainRegistry::new();
+    let registry = DomainRegistry::<TestDispatch>::new();
     assert!(!registry.has_domain("Echo"));
-    registry.register(Box::new(EchoHandler)).unwrap();
+    registry.register(TestDispatch::Echo(EchoHandler)).unwrap();
     assert!(registry.has_domain("Echo"));
 }
 
 #[test]
 fn test_registry_multiple_domains() {
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(StatefulHandler { name: "Page" })).unwrap();
-    registry.register(Box::new(StatefulHandler { name: "Runtime" })).unwrap();
-    registry.register(Box::new(StatefulHandler { name: "DOM" })).unwrap();
+    let registry = DomainRegistry::<TestDispatch>::new();
+    registry.register(TestDispatch::Stateful(StatefulHandler { name: "Page" })).unwrap();
+    registry.register(TestDispatch::Stateful(StatefulHandler { name: "Runtime" })).unwrap();
+    registry.register(TestDispatch::Stateful(StatefulHandler { name: "DOM" })).unwrap();
 
     let es = NoopEventSender;
 
@@ -158,8 +194,8 @@ fn test_registry_multiple_domains() {
 
 #[test]
 fn test_registry_command_not_found() {
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(EchoHandler)).unwrap();
+    let registry = DomainRegistry::<TestDispatch>::new();
+    registry.register(TestDispatch::Echo(EchoHandler)).unwrap();
 
     let es = NoopEventSender;
     let result = registry.dispatch_command("Echo.nonexistent", json!({}), &es);
@@ -170,8 +206,8 @@ fn test_registry_command_not_found() {
 
 #[test]
 fn test_registry_dispatch_extracts_domain() {
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(EchoHandler)).unwrap();
+    let registry = DomainRegistry::<TestDispatch>::new();
+    registry.register(TestDispatch::Echo(EchoHandler)).unwrap();
 
     let es = NoopEventSender;
     let result = registry.dispatch_command("Echo.reflect", json!({"key": "value"}), &es);

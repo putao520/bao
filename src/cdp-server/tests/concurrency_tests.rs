@@ -31,9 +31,9 @@ impl EventSender for CollectingSender {
     }
 }
 
-fn make_registry() -> Arc<DomainRegistry> {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler));
+fn make_registry() -> Arc<DomainRegistry<EchoHandler>> {
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler);
     Arc::new(reg)
 }
 

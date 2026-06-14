@@ -24,10 +24,10 @@ fn escape_path(p: &str) -> String {
 // Single #[test] — mozjs Runtime is per-thread singleton.
 #[test]
 fn test_realworld_data_pipeline_all() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     // Build per-pid temp directory: /tmp/bao_pipeline_test_<pid>
     let pid = std::process::id();
@@ -478,5 +478,5 @@ fn test_realworld_data_pipeline_all() {
     // Leak the JsContext to avoid mozjs GC/TLS destructor crash on drop.
     // mozjs's C++ TLS teardown (mozilla::detail::MutexImpl) segfaults if
     // the Runtime is dropped after JS_ShutDown — intentional skip.
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

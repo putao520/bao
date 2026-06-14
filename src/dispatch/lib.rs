@@ -47,8 +47,8 @@ use syn::fold::Fold;
 use syn::parse::{Parse, ParseStream};
 use syn::punctuated::Punctuated;
 use syn::{
-    Ident, Lifetime, ReturnType, Token, Type, TypeReference, Visibility, braced, bracketed,
-    parenthesized,
+    Ident, Lifetime, ReturnType, Token, Type, TypePath, TypePtr, TypeReference, Visibility,
+    braced, bracketed, parenthesized,
 };
 
 struct Interface {
@@ -295,6 +295,118 @@ pub fn link_interface(input: TokenStream) -> TokenStream {
         }
     });
 
+    // ── noop default body for a given return type ──
+    // Returns a token stream representing the default/no-op expression.
+    // For types that need Default, the caller should splice in a $crate-qualified
+    // path. `needs_default` signals whether the caller must emit the Default call.
+    fn noop_body(ret: &ReturnType) -> (proc_macro2::TokenStream, bool) {
+        match ret {
+            ReturnType::Default => (quote! {}, false),
+            ReturnType::Type(_, ty) => {
+                let ty: &Type = ty;
+                if let Type::Path(TypePath { path, .. }) = ty {
+                    if let Some(seg) = path.segments.last() {
+                        match seg.ident.to_string().as_str() {
+                            "bool" => return (quote! { false }, false),
+                            "Option" => return (quote! { None }, false),
+                            _ => {}
+                        }
+                    }
+                }
+                if let Type::Ptr(TypePtr { mutability: Some(_), .. }) = ty {
+                    return (quote! { core::ptr::null_mut() }, false);
+                }
+                if let Type::Ptr(TypePtr { mutability: None, .. }) = ty {
+                    return (quote! { core::ptr::null() }, false);
+                }
+                (quote! {}, true) // caller must emit <... as Default>::default()
+            }
+        }
+    }
+
+    // ── link_noop_<Iface>! macro ──
+    // TT-muncher: one arm per variant. Each arm generates all no-op functions
+    // for that variant and recurses with the remaining tokens.
+    let noop_macro_name = format_ident!("link_noop_{}", name);
+    let noop_arms: Vec<_> = variants
+        .iter()
+        .map(|v| {
+            let noop_fns: Vec<_> = methods
+                .iter()
+                .map(|m| {
+                    let s = sym(name, v, &m.name);
+                    let ret_alias = format_ident!("__{}__{}__ret", name, m.name);
+                    let (body, needs_default) = noop_body(&m.ret);
+                    // When needs_default, emit <$crate::ret_alias as Default>::default()
+                    // using a $crate-qualified path so the type resolves in the impl crate.
+                    let default_expr = if needs_default {
+                        quote! { <$crate::#ret_alias as Default>::default() }
+                    } else {
+                        quote! {}
+                    };
+                    let at_alias: Vec<_> = m
+                        .args
+                        .iter()
+                        .map(|(an, _)| format_ident!("__{}__{}__arg_{}", name, m.name, an))
+                        .collect();
+                    let an_mv: Vec<_> = m
+                        .args
+                        .iter()
+                        .map(|(n, _)| format_ident!("{}_{}", m.name, n))
+                        .collect();
+                    let arg_defs: Vec<_> = an_mv
+                        .iter()
+                        .zip(at_alias.iter())
+                        .map(|(mv, alias)| quote! { #mv: $crate::#alias<'_> })
+                        .collect();
+                    if arg_defs.is_empty() {
+                        quote! {
+                            #[unsafe(no_mangle)]
+                            #[doc(hidden)]
+                            #[allow(non_snake_case)]
+                            unsafe fn #s(
+                                __owner: *mut (),
+                            ) -> $crate::#ret_alias {
+                                let _ = __owner;
+                                #body
+                                #default_expr
+                            }
+                        }
+                    } else {
+                        quote! {
+                            #[unsafe(no_mangle)]
+                            #[doc(hidden)]
+                            #[allow(non_snake_case)]
+                            unsafe fn #s(
+                                __owner: *mut () #(, #arg_defs)*
+                            ) -> $crate::#ret_alias {
+                                let _ = __owner;
+                                #(let _ = #an_mv;)*
+                                #body
+                                #default_expr
+                            }
+                        }
+                    }
+                })
+                .collect();
+            quote! {
+                ( #v $(, $rest:ident)* ) => {
+                    const _: () = { #(#noop_fns)* };
+                    $crate::#noop_macro_name!($($rest),*);
+                };
+            }
+        })
+        .collect();
+
+    let noop_macro = quote! {
+        #[macro_export]
+        #[doc(hidden)]
+        macro_rules! #noop_macro_name {
+            #(#noop_arms)*
+            () => {};
+        }
+    };
+
     quote! {
         #[repr(u8)]
         #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -341,6 +453,21 @@ pub fn link_interface(input: TokenStream) -> TokenStream {
         macro_rules! #impl_macro {
             #(#entry_arms)*
         }
+
+        // ── link_noop_<Iface>! ──────────────────────────────────────────
+        // Generates no-op stub implementations for closed-set dispatch variants
+        // that don't have real implementations. Uses a TT-muncher pattern so
+        // callers can list variants in any order.
+        //
+        // Usage:
+        //   bun_io::link_noop_BufferedReaderParentLink!(
+        //       SubprocessPipeReader, FileReader, ...
+        //   );
+        //
+        // This replaces hand-written #[no_mangle] stub functions and the
+        // #[used] static / force_link hacks previously needed to force the
+        // linker to pull in the no-op symbols from a separate rlib.
+        #noop_macro
     }
     .into()
 }

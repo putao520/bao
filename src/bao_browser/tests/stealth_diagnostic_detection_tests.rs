@@ -114,7 +114,7 @@ fn stealth_diagnostic_detection_all() {
     // ---- Phase 1: BrowserLeaks Navigator (Firefox default profile) ----
     {
         let mut ctx = JsContext::for_test().expect("JsContext");
-        ctx.set_global_setup(bao_runtime::globals::install_all);
+        ctx.set_global_setup(bun_runtime::globals::install_all);
 
         let ua = str_eval(&mut ctx, "navigator.userAgent");
         report.check("browserleaks::firefox_ua_contains_firefox", ua.contains("Firefox"),
@@ -287,7 +287,7 @@ fn stealth_diagnostic_detection_all() {
         bao_stealth::engine_props::set_profile(&profile);
 
         let mut ctx = JsContext::for_test().expect("JsContext");
-        ctx.set_global_setup(bao_runtime::globals::install_all);
+        ctx.set_global_setup(bun_runtime::globals::install_all);
 
         let ua = str_eval(&mut ctx, "navigator.userAgent");
         report.check("browserleaks::chrome_ua_contains_chrome", ua.contains("Chrome"),
@@ -322,7 +322,7 @@ fn stealth_diagnostic_detection_all() {
         bao_stealth::engine_props::set_profile(&firefox);
 
         let mut ctx_ff = JsContext::for_test().expect("JsContext");
-        ctx_ff.set_global_setup(bao_runtime::globals::install_all);
+        ctx_ff.set_global_setup(bun_runtime::globals::install_all);
 
         let ff_ua = str_eval(&mut ctx_ff, "navigator.userAgent");
         let ff_vendor = str_eval(&mut ctx_ff, "navigator.vendor");
@@ -336,7 +336,7 @@ fn stealth_diagnostic_detection_all() {
         bao_stealth::engine_props::set_profile(&chrome);
 
         let mut ctx_ch = JsContext::for_test().expect("JsContext");
-        ctx_ch.set_global_setup(bao_runtime::globals::install_all);
+        ctx_ch.set_global_setup(bun_runtime::globals::install_all);
 
         let ch_ua = str_eval(&mut ctx_ch, "navigator.userAgent");
         let ch_vendor = str_eval(&mut ctx_ch, "navigator.vendor");

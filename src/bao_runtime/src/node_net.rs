@@ -7,7 +7,7 @@
 
 use ::std::cell::{Cell, RefCell};
 use ::std::collections::HashMap;
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::{self, NonNull};
 
 use mozjs::conversions::jsstr_to_string;
@@ -395,13 +395,13 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let group_ptr = ensure_server_group(loop_);
     let group: &mut SocketGroup = unsafe { &mut *group_ptr };
 
-    let host_cstr = CString::new(addr.as_str()).unwrap_or_default();
+    let host_cstr = ZBox::from_bytes(addr.as_bytes());
     let mut err: ::std::ffi::c_int = 0;
 
     let listen_socket = group.listen(
         SocketKind::UwsHttp, // plain TCP kind
         None,                // no SSL
-        Some(host_cstr.as_c_str()),
+        Some((*host_cstr).as_cstr()),
         port,
         0, // LIBUS_LISTEN_DEFAULT
         0, // socket_ext_size (no per-socket ext for listen sockets)
@@ -446,7 +446,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     group.init(loop_, Some(&NET_VTABLE), ptr::null_mut());
     let group_ptr = Box::into_raw(group);
 
-    let host_cstr = CString::new(addr.as_str()).unwrap_or_default();
+    let host_cstr = ZBox::from_bytes(addr.as_bytes());
 
     // Reset connect state.
     CONNECT_RESULT.with(|r| r.set(None));
@@ -455,7 +455,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let result = (*group_ptr).connect(
         SocketKind::UwsHttp,
         None,
-        host_cstr.as_c_str(),
+        (*host_cstr).as_cstr(),
         port,
         0,
         0, // socket_ext_size
@@ -589,7 +589,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         JS_DefineFunction(cx_raw, mod_h, c"__net_write".as_ptr(), Some(net_write), 2, 0);
         JS_DefineFunction(cx_raw, mod_h, c"__net_close".as_ptr(), Some(net_close), 1, 0);
 
-        let c_filename = CString::new("node:net").unwrap_or_default();
+        let c_filename = ZBox::from_bytes("node:net".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if opts.is_null() {
             return;
@@ -618,7 +618,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let mod_h2 = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr2 };
 
         for name in &["Socket", "Server", "createServer", "connect", "createConnection", "isIP", "isIPv4", "isIPv6"] {
-            let cname = CString::new(*name).unwrap_or_default();
+            let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
             JS_GetProperty(cx_raw, exports_h, cname.as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,

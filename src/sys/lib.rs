@@ -1305,6 +1305,9 @@ pub use file::{File, ReadToEndResult};
 pub mod dir;
 pub use dir::*;
 
+/// High-level filesystem convenience functions (read_to_string, write, metadata, OpenOptions).
+pub mod fs;
+
 /// `std.fs.cwd()` — Zig callers do `bun_sys::cwd()` for the process cwd `Dir`.
 #[inline]
 pub fn cwd() -> Dir {

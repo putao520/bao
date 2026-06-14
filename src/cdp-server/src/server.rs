@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use tungstenite::accept;
 
+use crate::bao_event::ConsoleMessage;
 use crate::event::EventBroadcaster;
 use crate::registry::SharedRegistry;
 use crate::session::{CdpSession, ReplayStream};
@@ -25,18 +26,30 @@ pub struct CdpServer {
     target_provider: Option<Arc<dyn TargetProvider>>,
     broadcaster: Arc<EventBroadcaster>,
     sessions: Arc<Mutex<HashMap<String, Arc<Mutex<CdpSession>>>>>,
-    /// Receiver for console messages forwarded from servo delegates.
-    /// Each message is (level, text) — e.g. ("info", "hello world").
-    console_rx: Option<std::sync::mpsc::Receiver<(String, String)>>,
+    /// Receiver for typed console messages forwarded from servo delegates.
+    /// Each message is either a structured CDP event (ConsoleMessage::Event)
+    /// or a plain log (ConsoleMessage::Log).
+    console_rx: Option<std::sync::mpsc::Receiver<ConsoleMessage>>,
 }
 
 impl CdpServer {
+    /// Create CdpServer with an empty domain registry.
+    /// For production use, prefer `with_registry()` with a pre-built registry
+    /// (e.g. `DomainRegistry<DomainDispatch>` for enum dispatch).
     pub fn new(config: ServerConfig) -> Self {
+        let registry: Arc<crate::DomainRegistry<crate::EmptyHandler>> =
+            Arc::new(crate::DomainRegistry::new());
+        Self::with_registry(config, registry)
+    }
+
+    /// Create CdpServer with a pre-built registry (e.g. DomainRegistry<DomainDispatch>
+    /// for enum dispatch). Any `Arc<R>` where `R: RegistryDispatch` is accepted.
+    pub fn with_registry<R: crate::RegistryDispatch + 'static>(config: ServerConfig, registry: Arc<R>) -> Self {
         let sessions = Arc::new(Mutex::new(HashMap::new()));
         let broadcaster = Arc::new(EventBroadcaster::new(Arc::clone(&sessions)));
         CdpServer {
             config,
-            registry: Arc::new(crate::registry::DomainRegistry::new()),
+            registry,
             target_provider: None,
             broadcaster,
             sessions,
@@ -56,9 +69,9 @@ impl CdpServer {
         self.target_provider = Some(provider);
     }
 
-    /// Set the console message receiver. Messages are (level, text) tuples
-    /// forwarded from servo's show_console_message callbacks.
-    pub fn set_console_receiver(&mut self, rx: std::sync::mpsc::Receiver<(String, String)>) {
+    /// Set the typed console message receiver. Messages are ConsoleMessage
+    /// variants forwarded from servo's show_console_message callbacks.
+    pub fn set_console_receiver(&mut self, rx: std::sync::mpsc::Receiver<ConsoleMessage>) {
         self.console_rx = Some(rx);
     }
 
@@ -81,7 +94,7 @@ impl CdpServer {
             .set_nonblocking(true)
             .map_err(|e| format!("nonblocking: {}", e))?;
 
-        eprintln!("CDP listening on ws://{}:{}", self.config.host, self.config.port);
+        log::info!("CDP listening on ws://{}:{}", self.config.host, self.config.port);
 
         loop {
             // Drain session events (not used currently, but placeholder for future command channel).
@@ -93,7 +106,7 @@ impl CdpServer {
                     self.handle_connection(stream);
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => eprintln!("CDP accept error: {}", e),
+                Err(e) => log::warn!("CDP accept error: {}", e),
             }
 
             // Process existing sessions.
@@ -127,180 +140,49 @@ impl CdpServer {
                 }
             }
 
-            // Drain console messages from servo delegates and broadcast as CDP events.
-            // Special prefixes are routed to domain-specific events:
-            //   __BAO_FETCH_INTERCEPT__ → Fetch.requestPaused
-            //   __BAO_NETWORK_REQUEST__ → Network.requestWillBeSent
-            //   __BAO_NETWORK_RESPONSE__ → Network.responseReceived
-            //   __BAO_NETWORK_LOADING_FAILED__ → Network.loadingFailed
-            //   __BAO_DEBUGGER_SCRIPT__ → Debugger.scriptParsed
-            // All others → Log.entryAdded
+            // Drain typed console messages from servo delegates and broadcast as CDP events.
+            // ConsoleMessage::Event variants are routed to domain-specific events via BaoEvent::broadcast().
+            // ConsoleMessage::Log variants are forwarded as Runtime.consoleAPICalled + Log.entryAdded.
             if let Some(ref rx) = self.console_rx {
-                while let Ok((level, text)) = rx.try_recv() {
-                    if let Some(payload) = text.strip_prefix("__BAO_FETCH_INTERCEPT__") {
-                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
+                while let Ok(msg) = rx.try_recv() {
+                    match msg {
+                        ConsoleMessage::Event(event) => {
+                            event.broadcast(&*self.broadcaster);
+                        }
+                        ConsoleMessage::Log { level, text } => {
                             self.broadcaster.send_event(
-                                "Fetch.requestPaused",
+                                "Runtime.consoleAPICalled",
                                 serde_json::json!({
-                                    "requestId": info["id"],
-                                    "request": {
-                                        "url": info["url"],
-                                        "method": info["method"],
-                                        "headers": info.get("headers").unwrap_or(&serde_json::json!({})),
+                                    "type": match level.as_str() {
+                                        "debug" => "debug",
+                                        "info" => "info",
+                                        "warning" => "warning",
+                                        "error" => "error",
+                                        "verbose" => "verbose",
+                                        _ => "log",
                                     },
-                                    "resourceType": info.get("resourceType").unwrap_or(&serde_json::json!("Other")),
-                                    "networkStage": "Request",
-                                }),
-                            );
-                        }
-                    } else if let Some(payload) = text.strip_prefix("__BAO_NETWORK_REQUEST__") {
-                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
-                            self.broadcaster.send_event(
-                                "Network.requestWillBeSent",
-                                serde_json::json!({
-                                    "requestId": info["id"],
-                                    "request": info.get("request").cloned().unwrap_or(serde_json::json!({
-                                        "url": info["url"],
-                                        "method": info["method"],
-                                    })),
-                                    "timestamp": info.get("timestamp").cloned().unwrap_or(serde_json::json!(0.0)),
-                                    "type": info.get("type").cloned().unwrap_or(serde_json::json!("Other")),
-                                }),
-                            );
-                        }
-                    } else if let Some(payload) = text.strip_prefix("__BAO_NETWORK_RESPONSE__") {
-                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
-                            self.broadcaster.send_event(
-                                "Network.responseReceived",
-                                serde_json::json!({
-                                    "requestId": info["id"],
-                                    "response": {
-                                        "url": info["url"],
-                                        "status": info["status"],
-                                        "statusText": info["statusText"],
-                                        "headers": info.get("headers").unwrap_or(&serde_json::json!({})),
-                                    },
-                                    "timestamp": info.get("timestamp").cloned().unwrap_or(serde_json::json!(0.0)),
-                                    "type": info.get("type").cloned().unwrap_or(serde_json::json!("Other")),
-                                }),
-                            );
-                            self.broadcaster.send_event(
-                                "Network.loadingFinished",
-                                serde_json::json!({
-                                    "requestId": info["id"],
-                                    "timestamp": info.get("timestamp").cloned().unwrap_or(serde_json::json!(0.0)),
-                                }),
-                            );
-                        }
-                    } else if let Some(payload) = text.strip_prefix("__BAO_NETWORK_LOADING_FAILED__") {
-                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
-                            self.broadcaster.send_event(
-                                "Network.loadingFailed",
-                                serde_json::json!({
-                                    "requestId": info["id"],
-                                    "type": info.get("type").cloned().unwrap_or(serde_json::json!("Other")),
-                                    "errorText": "Network error",
-                                    "timestamp": info.get("timestamp").cloned().unwrap_or(serde_json::json!(0.0)),
-                                }),
-                            );
-                        }
-                    } else if let Some(payload) = text.strip_prefix("__BAO_DEBUGGER_SCRIPT__") {
-                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
-                            self.broadcaster.send_event(
-                                "Debugger.scriptParsed",
-                                serde_json::json!({
-                                    "scriptId": info["id"],
-                                    "url": info["url"],
-                                    "startLine": info.get("startLine").unwrap_or(&serde_json::json!(0)),
-                                    "endLine": info.get("endLine").unwrap_or(&serde_json::json!(0)),
-                                }),
-                            );
-                        }
-                    } else if let Some(payload) = text.strip_prefix("__BAO_RUNTIME_EXCEPTION__") {
-                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
-                            self.broadcaster.send_event(
-                                "Runtime.exceptionThrown",
-                                serde_json::json!({
-                                    "timestamp": info.get("timestamp").unwrap_or(&serde_json::json!(0.0)),
-                                    "exceptionDetails": {
-                                        "text": info.get("text").unwrap_or(&serde_json::json!("")),
-                                        "url": info.get("url").unwrap_or(&serde_json::json!("")),
-                                        "lineNumber": info.get("line").unwrap_or(&serde_json::json!(0)),
-                                        "columnNumber": info.get("column").unwrap_or(&serde_json::json!(0)),
-                                        "stackTrace": info.get("stackTrace").unwrap_or(&serde_json::json!(null)),
-                                    },
-                                }),
-                            );
-                        }
-                    } else if let Some(payload) = text.strip_prefix("__BAO_PAGE_LOAD__") {
-                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
-                            self.broadcaster.send_event(
-                                "Page.loadEventFired",
-                                serde_json::json!({
-                                    "timestamp": info.get("timestamp").unwrap_or(&serde_json::json!(0.0)),
-                                }),
-                            );
-                        }
-                    } else if let Some(payload) = text.strip_prefix("__BAO_DEBUGGER_PAUSED__") {
-                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(payload) {
-                            self.broadcaster.send_event(
-                                "Debugger.paused",
-                                serde_json::json!({
-                                    "callFrames": info.get("callFrames").unwrap_or(&serde_json::json!([])),
-                                    "reason": info.get("reason").unwrap_or(&serde_json::json!("other")),
-                                    "hitBreakpoints": info.get("hitBreakpoints").unwrap_or(&serde_json::json!([])),
-                                }),
-                            );
-                        }
-                    } else if !text.starts_with("__BAO_") {
-                        // Non-prefixed console messages → Runtime.consoleAPICalled
-                        self.broadcaster.send_event(
-                            "Runtime.consoleAPICalled",
-                            serde_json::json!({
-                                "type": match level.as_str() {
-                                    "debug" => "debug",
-                                    "info" => "info",
-                                    "warning" => "warning",
-                                    "error" => "error",
-                                    "verbose" => "verbose",
-                                    _ => "log",
-                                },
-                                "args": [serde_json::json!(text)],
-                                "timestamp": std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap_or_default()
-                                    .as_millis() as f64,
-                            }),
-                        );
-                        self.broadcaster.send_event(
-                            "Log.entryAdded",
-                            serde_json::json!({
-                                "entry": {
-                                    "source": "javascript",
-                                    "level": level,
-                                    "text": text,
+                                    "args": [serde_json::json!(text)],
                                     "timestamp": std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .unwrap_or_default()
                                         .as_millis() as f64,
-                                }
-                            }),
-                        );
-                    } else {
-                        self.broadcaster.send_event(
-                            "Log.entryAdded",
-                            serde_json::json!({
-                                "entry": {
-                                    "source": "javascript",
-                                    "level": level,
-                                    "text": text,
-                                    "timestamp": std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default()
-                                        .as_millis() as f64,
-                                }
-                            }),
-                        );
+                                }),
+                            );
+                            self.broadcaster.send_event(
+                                "Log.entryAdded",
+                                serde_json::json!({
+                                    "entry": {
+                                        "source": "javascript",
+                                        "level": level,
+                                        "text": text,
+                                        "timestamp": std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis() as f64,
+                                    }
+                                }),
+                            );
+                        }
                     }
                 }
             }
@@ -392,7 +274,7 @@ impl CdpServer {
             let ws = match accept(replay) {
                 Ok(ws) => ws,
                 Err(e) => {
-                    eprintln!("CDP WebSocket accept error: {}", e);
+                    log::warn!("CDP WebSocket accept error: {}", e);
                     return;
                 }
             };
@@ -401,7 +283,7 @@ impl CdpServer {
             let session = CdpSession::new(session_id.clone(), target_id, ws, is_browser);
             let session_count = self.sessions.lock().map(|m| m.len()).unwrap_or(0);
             if session_count >= self.config.max_sessions {
-                eprintln!("CDP max sessions reached, rejecting");
+                log::warn!("CDP max sessions reached, rejecting");
                 return;
             }
             if let Ok(mut sessions) = self.sessions.lock() {
@@ -439,6 +321,7 @@ fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bao_event::BaoEvent;
 
     #[test]
     fn cdp_server_config_stores_host_port_browser_name() {
@@ -526,90 +409,159 @@ mod tests {
     #[test]
     fn cdp_server_set_console_receiver_stores_receiver() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         server.set_console_receiver(rx);
         assert!(server.console_rx.is_some());
-        // Send a message through the channel
-        tx.send(("info".into(), "hello".into())).unwrap();
-        let (level, text) = server.console_rx.as_ref().unwrap().try_recv().unwrap();
-        assert_eq!(level, "info");
-        assert_eq!(text, "hello");
+        // Send a Log message through the channel
+        tx.send(ConsoleMessage::Log { level: "info".into(), text: "hello".into() }).unwrap();
+        let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Log { level, text } => {
+                assert_eq!(level, "info");
+                assert_eq!(text, "hello");
+            }
+            ConsoleMessage::Event(_) => panic!("expected Log, got Event"),
+        }
     }
 
     #[test]
     fn cdp_server_console_rx_drain_multiple_messages() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         server.set_console_receiver(rx);
-        tx.send(("info".into(), "msg1".into())).unwrap();
-        tx.send(("error".into(), "msg2".into())).unwrap();
-        tx.send(("warning".into(), "msg3".into())).unwrap();
+        tx.send(ConsoleMessage::Log { level: "info".into(), text: "msg1".into() }).unwrap();
+        tx.send(ConsoleMessage::Log { level: "error".into(), text: "msg2".into() }).unwrap();
+        tx.send(ConsoleMessage::Log { level: "warning".into(), text: "msg3".into() }).unwrap();
         let rx_ref = server.console_rx.as_ref().unwrap();
         let mut messages = Vec::new();
-        while let Ok((level, text)) = rx_ref.try_recv() {
-            messages.push((level, text));
+        while let Ok(msg) = rx_ref.try_recv() {
+            messages.push(msg);
         }
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0], ("info".into(), "msg1".into()));
-        assert_eq!(messages[1], ("error".into(), "msg2".into()));
-        assert_eq!(messages[2], ("warning".into(), "msg3".into()));
     }
 
     #[test]
-    fn cdp_server_console_rx_runtime_exception_prefix() {
+    fn cdp_server_console_rx_event_variant() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         server.set_console_receiver(rx);
-        tx.send(("error".into(), "__BAO_RUNTIME_EXCEPTION__{\"text\":\"TypeError: x is not a function\",\"url\":\"test.js\",\"line\":10,\"column\":5}".into())).unwrap();
-        let rx_ref = server.console_rx.as_ref().unwrap();
-        let (level, text) = rx_ref.try_recv().unwrap();
-        assert!(text.starts_with("__BAO_RUNTIME_EXCEPTION__"));
+        tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp: 12345.0 })).unwrap();
+        let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp }) => {
+                assert_eq!(timestamp, 12345.0);
+            }
+            other => panic!("expected Event(PageLoadEventFired), got {:?}", other),
+        }
     }
 
     #[test]
-    fn cdp_server_console_rx_page_load_prefix() {
+    fn cdp_server_console_rx_debugger_script_parsed_event() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         server.set_console_receiver(rx);
-        tx.send(("info".into(), "__BAO_PAGE_LOAD__{\"timestamp\":12345.0}".into())).unwrap();
-        let rx_ref = server.console_rx.as_ref().unwrap();
-        let (level, text) = rx_ref.try_recv().unwrap();
-        assert!(text.starts_with("__BAO_PAGE_LOAD__"));
+        tx.send(ConsoleMessage::Event(BaoEvent::DebuggerScriptParsed {
+            script_id: "1".into(),
+            url: "test.js".into(),
+            start_line: 0,
+            end_line: 10,
+        })).unwrap();
+        let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Event(BaoEvent::DebuggerScriptParsed { script_id, url, .. }) => {
+                assert_eq!(script_id, "1");
+                assert_eq!(url, "test.js");
+            }
+            other => panic!("expected Event(DebuggerScriptParsed), got {:?}", other),
+        }
     }
 
     #[test]
-    fn cdp_server_console_rx_debugger_pause_prefix() {
+    fn cdp_server_console_rx_debugger_paused_event() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         server.set_console_receiver(rx);
-        tx.send(("info".into(), "__BAO_DEBUGGER_PAUSED__{\"reason\":\"breakpoint\",\"callFrames\":[]}".into())).unwrap();
-        let rx_ref = server.console_rx.as_ref().unwrap();
-        let (level, text) = rx_ref.try_recv().unwrap();
-        assert!(text.starts_with("__BAO_DEBUGGER_PAUSED__"));
+        tx.send(ConsoleMessage::Event(BaoEvent::DebuggerPaused {
+            call_frames: serde_json::json!([]),
+            reason: "breakpoint".into(),
+            hit_breakpoints: serde_json::json!([]),
+        })).unwrap();
+        let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Event(BaoEvent::DebuggerPaused { reason, .. }) => {
+                assert_eq!(reason, "breakpoint");
+            }
+            other => panic!("expected Event(DebuggerPaused), got {:?}", other),
+        }
     }
 
     #[test]
-    fn cdp_server_console_rx_known_bao_prefixes_are_recognized() {
+    fn cdp_server_console_rx_runtime_exception_event() {
         let mut server = CdpServer::new(ServerConfig::default());
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         server.set_console_receiver(rx);
-        let prefixes = vec![
-            "__BAO_NETWORK_REQUEST__{}",
-            "__BAO_NETWORK_RESPONSE__{}",
-            "__BAO_NETWORK_LOADING_FAILED__{}",
-            "__BAO_FETCH_INTERCEPT__{}",
-            "__BAO_DEBUGGER_SCRIPT__{}",
-            "__BAO_RUNTIME_EXCEPTION__{}",
-            "__BAO_PAGE_LOAD__{}",
-            "__BAO_DEBUGGER_PAUSED__{}",
+        tx.send(ConsoleMessage::Event(BaoEvent::RuntimeExceptionThrown {
+            timestamp: 100.0,
+            text: "TypeError: x is not a function".into(),
+            url: "test.js".into(),
+            line: 10,
+            column: 5,
+            stack_trace: serde_json::Value::Null,
+        })).unwrap();
+        let msg = server.console_rx.as_ref().unwrap().try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Event(BaoEvent::RuntimeExceptionThrown { text, .. }) => {
+                assert_eq!(text, "TypeError: x is not a function");
+            }
+            other => panic!("expected Event(RuntimeExceptionThrown), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn cdp_server_console_rx_all_event_variants() {
+        let mut server = CdpServer::new(ServerConfig::default());
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        server.set_console_receiver(rx);
+        let events = vec![
+            ConsoleMessage::Event(BaoEvent::FetchRequestPaused {
+                request_id: "r1".into(), url: "http://test.com".into(),
+                method: "GET".into(), headers: serde_json::json!({}),
+                post_data: None, resource_type: "Document".into(),
+            }),
+            ConsoleMessage::Event(BaoEvent::NetworkRequestWillBeSent {
+                request_id: "req1".into(), url: "http://test.com".into(),
+                method: "GET".into(), headers: serde_json::json!({}),
+                request: serde_json::json!({}), timestamp: 0.0, resource_type: "Document".into(),
+            }),
+            ConsoleMessage::Event(BaoEvent::NetworkResponseReceived {
+                request_id: "req2".into(), url: "http://test.com".into(),
+                status: 200, status_text: "OK".into(), headers: serde_json::json!({}),
+                timestamp: 0.0, resource_type: "Document".into(),
+            }),
+            ConsoleMessage::Event(BaoEvent::NetworkLoadingFailed {
+                request_id: "req3".into(), resource_type: "XHR".into(),
+                error_text: "Network error".into(), timestamp: 0.0,
+            }),
+            ConsoleMessage::Event(BaoEvent::DebuggerScriptParsed {
+                script_id: "1".into(), url: "test.js".into(), start_line: 0, end_line: 10,
+            }),
+            ConsoleMessage::Event(BaoEvent::DebuggerPaused {
+                call_frames: serde_json::json!([]), reason: "other".into(),
+                hit_breakpoints: serde_json::json!([]),
+            }),
+            ConsoleMessage::Event(BaoEvent::RuntimeExceptionThrown {
+                timestamp: 0.0, text: String::new(), url: String::new(),
+                line: 0, column: 0, stack_trace: serde_json::Value::Null,
+            }),
+            ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp: 0.0 }),
         ];
-        for msg in &prefixes {
-            tx.send(("info".into(), msg.to_string())).unwrap();
+        for evt in &events {
+            tx.send(evt.clone()).unwrap();
         }
         let rx_ref = server.console_rx.as_ref().unwrap();
         let mut count = 0;
-        while let Ok((_, text)) = rx_ref.try_recv() {
-            assert!(text.starts_with("__BAO_"));
+        while let Ok(msg) = rx_ref.try_recv() {
+            assert!(matches!(msg, ConsoleMessage::Event(_)));
             count += 1;
         }
         assert_eq!(count, 8);

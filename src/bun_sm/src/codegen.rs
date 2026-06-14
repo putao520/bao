@@ -1,0 +1,1043 @@
+// @trace REQ-ENG-002 [entity:CodegenBackend]
+// Code generation backend: parses Bun .classes.ts definitions and generates SpiderMonkey bindings.
+// Replaces JSC C++ template generation with SM Rust binding generation.
+
+use ::std::collections::HashMap;
+
+/// Parsed class definition from .classes.ts format.
+#[derive(Debug, Clone)]
+pub struct ClassDef {
+    pub name: String,
+    pub construct: bool,
+    pub no_constructor: bool,
+    pub finalize: bool,
+    pub configurable: bool,
+    pub has_pending_activity: bool,
+    pub proto: Vec<PropertyDef>,
+    pub static_props: Vec<PropertyDef>,
+}
+
+/// Property definition (getter, setter, method, or value).
+#[derive(Debug, Clone)]
+pub struct PropertyDef {
+    pub name: String,
+    pub kind: PropertyKind,
+}
+
+#[derive(Debug, Clone)]
+pub enum PropertyKind {
+    Getter { fn_name: String, cache: bool },
+    Setter { fn_name: String },
+    Accessor { getter: String, setter: String, cache: bool },
+    Method { fn_name: String, length: u32 },
+    Value { value: String },
+}
+
+/// Parse result containing all class definitions from a .classes.ts file.
+#[derive(Debug)]
+pub struct ParseResult {
+    pub classes: Vec<ClassDef>,
+    pub source_file: String,
+}
+
+/// Parse a .classes.ts file content and extract class definitions.
+pub fn parse_classes(source: &str, file_name: &str) -> Result<ParseResult, String> {
+    let mut classes = Vec::new();
+
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("name:") {
+            let name = rest.trim().trim_matches('"').trim_matches(',').trim_matches('"').trim().to_string();
+            if !name.is_empty() {
+                classes.push(ClassDef {
+                    name,
+                    construct: source.contains("construct: true"),
+                    no_constructor: source.contains("noConstructor: true"),
+                    finalize: source.contains("finalize: true"),
+                    configurable: !source.contains("configurable: false"),
+                    has_pending_activity: source.contains("hasPendingActivity: true"),
+                    proto: parse_block_properties(source, "proto"),
+                    static_props: parse_block_properties(source, "klass"),
+                });
+            }
+        }
+    }
+
+    Ok(ParseResult {
+        classes,
+        source_file: file_name.to_string(),
+    })
+}
+
+fn parse_block_properties(source: &str, block_name: &str) -> Vec<PropertyDef> {
+    let mut props = Vec::new();
+    let mut in_block = false;
+    let prefix_owned = format!("{}:", block_name);
+    let prefix_brace = format!("{} {{", block_name);
+
+    let lines: Vec<&str> = source.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let trimmed = lines[i].trim();
+
+        if trimmed.starts_with(&prefix_owned) || trimmed.starts_with(&prefix_brace) {
+            in_block = true;
+            i += 1;
+            continue;
+        }
+        if in_block && (trimmed.starts_with("}") || trimmed.starts_with("klass:") || trimmed.starts_with("proto:")) {
+            in_block = false;
+            i += 1;
+            continue;
+        }
+        if !in_block {
+            i += 1;
+            continue;
+        }
+
+        if let Some(colon_pos) = trimmed.find(':') {
+            let name = trimmed[..colon_pos].trim().to_string();
+            if name.is_empty() || name == block_name {
+                i += 1;
+                continue;
+            }
+
+            let value_part = trimmed[colon_pos + 1..].trim();
+            if value_part.starts_with('{') {
+                // Collect multi-line block content
+                let mut block = value_part.to_string();
+                let mut depth = block.chars().filter(|c| *c == '{').count() as i32
+                    - block.chars().filter(|c| *c == '}').count() as i32;
+                let mut j = i + 1;
+                while depth > 0 && j < lines.len() {
+                    let next = lines[j].trim();
+                    depth += next.chars().filter(|c| *c == '{').count() as i32
+                        - next.chars().filter(|c| *c == '}').count() as i32;
+                    block.push(' ');
+                    block.push_str(next);
+                    j += 1;
+                }
+
+                if block.contains("getter:") {
+                    let fn_name = extract_string_value(&block, "getter");
+                    let cache = block.contains("cache: true");
+                    if block.contains("setter:") {
+                        let setter = extract_string_value(&block, "setter");
+                        props.push(PropertyDef {
+                            name,
+                            kind: PropertyKind::Accessor { getter: fn_name, setter, cache },
+                        });
+                    } else {
+                        props.push(PropertyDef {
+                            name,
+                            kind: PropertyKind::Getter { fn_name, cache },
+                        });
+                    }
+                } else if block.contains("setter:") {
+                    let fn_name = extract_string_value(&block, "setter");
+                    props.push(PropertyDef {
+                        name,
+                        kind: PropertyKind::Setter { fn_name },
+                    });
+                } else if block.contains("fn:") {
+                    let fn_name = extract_string_value(&block, "fn");
+                    let length = extract_number_value(&block, "length");
+                    props.push(PropertyDef {
+                        name,
+                        kind: PropertyKind::Method { fn_name, length },
+                    });
+                }
+                i = j;
+                continue;
+            } else if value_part.starts_with('"') || value_part.starts_with('\'') {
+                props.push(PropertyDef {
+                    name,
+                    kind: PropertyKind::Value {
+                        value: value_part.trim_matches('"').trim_matches('\'').to_string(),
+                    },
+                });
+            }
+        }
+        i += 1;
+    }
+
+    props
+}
+
+#[allow(clippy::collapsible_if)]
+fn extract_string_value(source: &str, key: &str) -> String {
+    let pattern = format!("{}:", key);
+    if let Some(pos) = source.find(&pattern) {
+        let rest = source[pos + pattern.len()..].trim();
+        if let Some(quoted) = rest.strip_prefix('"') {
+            if let Some(end) = quoted.find('"') {
+                return quoted[..end].to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn extract_number_value(source: &str, key: &str) -> u32 {
+    let pattern = format!("{}:", key);
+    if let Some(pos) = source.find(&pattern) {
+        let rest = &source[pos + pattern.len()..].trim();
+        rest.chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+/// Code generator output for a single class.
+#[derive(Debug)]
+pub struct GeneratedBindings {
+    pub class_name: String,
+    pub js_class_def: String,
+    pub class_ops_def: Option<String>,
+    pub constructor_fn: Option<String>,
+    pub finalize_fn: Option<String>,
+    pub init_class_fn: String,
+    pub function_specs: Vec<String>,
+    pub property_specs: Vec<String>,
+    pub static_function_specs: Vec<String>,
+    pub static_property_specs: Vec<String>,
+}
+
+/// Generate SpiderMonkey binding code from a parsed class definition.
+pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
+    let class_name = &class_def.name;
+    let js_name = format!("{}_Class", class_name);
+    let ops_name = format!("{}_ClassOps", class_name);
+
+    // Generate class ops with finalizer when finalize is enabled
+    let (class_ops_def, finalize_fn, js_class_flags, c_ops_ref) = if class_def.finalize {
+        let ops = format!(
+            r#"static {ops_name}: JSClassOps = JSClassOps {{
+    addProperty: None,
+    delProperty: None,
+    enumerate: None,
+    newEnumerate: None,
+    resolve: None,
+    mayResolve: None,
+    finalize: Some({class_name}_finalize),
+    call: None,
+    construct: None,
+    trace: None,
+}};"#,
+            ops_name = ops_name,
+            class_name = class_name,
+        );
+        let fin = format!(
+            r#"unsafe extern "C" fn {class_name}_finalize(gcx: *mut GCContext, obj: *mut JSObject) {{
+    let mut slot = UndefinedValue();
+    JS_GetReservedSlot(obj, 0, &mut slot);
+    let ptr = slot.to_private() as *mut std::ffi::c_void;
+    if !ptr.is_null() {{
+        let _ = Box::from_raw(ptr);
+    }}
+    let _ = gcx;
+}}"#,
+            class_name = class_name,
+        );
+        (
+            Some(ops),
+            Some(fin),
+            "JSCLASS_FOREGROUND_FINALIZE as u32",
+            format!("&{ops_name} as *const JSClassOps"),
+        )
+    } else {
+        (
+            None,
+            None,
+            "0u32",
+            "std::ptr::null()".to_owned(),
+        )
+    };
+
+    let js_class_def = format!(
+        r#"static {js_name}: JSClass = JSClass {{
+    name: c"{class_name}".as_ptr(),
+    flags: {flags},
+    cOps: {c_ops},
+    ..Default::default()
+}};"#,
+        js_name = js_name,
+        class_name = class_name,
+        flags = js_class_flags,
+        c_ops = c_ops_ref,
+    );
+
+    // Slot 0 is used for native data; slot 1 reserved for future use
+    let constructor_fn = if class_def.construct && !class_def.no_constructor {
+        Some(format!(
+            r#"unsafe extern "C" fn {class_name}_constructor(cx: *mut JSContext, argc: u32, vp: *mut JS::Value) -> bool {{
+    let args = CallArgs::from_vp(vp, argc);
+    let obj = JS_NewObjectForConstructor(cx, &{js_name}, &args);
+    if obj.is_null() {{
+        return false;
+    }}
+    let native: Box<std::ffi::c_void> = Box::new(std::ffi::c_void::new(0));
+    let ptr = Box::into_raw(native) as *const std::ffi::c_void;
+    let private_val = PrivateValue(ptr);
+    JS_SetReservedSlot(obj, 0, &private_val);
+    args.rval().set(ObjectValue(obj));
+    true
+}}"#,
+            class_name = class_name,
+            js_name = js_name,
+        ))
+    } else {
+        None
+    };
+
+    let (function_specs, property_specs) = collect_specs(&class_def.proto);
+    let (static_function_specs, static_property_specs) = collect_specs(&class_def.static_props);
+
+    let proto_count = function_specs.len() + property_specs.len();
+    let static_count = static_function_specs.len() + static_property_specs.len();
+
+    let constructor_ref_str = if constructor_fn.is_some() {
+        format!("Some({class_name}_constructor)")
+    } else {
+        "None".to_owned()
+    };
+    let proto_array_name = format!("{class_name}_proto_specs");
+    let static_array_name = format!("{class_name}_static_specs");
+
+    let init_class_fn = format!(
+        r#"pub unsafe fn init_{class_name}(cx: *mut JSContext, global: JS::HandleObject) -> bool {{
+    let proto = JS_InitClass(
+        cx,
+        global,
+        None,
+        &{js_name},
+        {constructor_ref},
+        0,
+        &{proto_array}[..{proto_count}],
+        &{static_array}[..{static_count}],
+    );
+    !proto.is_null()
+}}"#,
+        class_name = class_name,
+        js_name = js_name,
+        constructor_ref = constructor_ref_str,
+        proto_array = proto_array_name,
+        static_array = static_array_name,
+        proto_count = proto_count,
+        static_count = static_count,
+    );
+
+    GeneratedBindings {
+        class_name: class_name.clone(),
+        js_class_def,
+        class_ops_def,
+        constructor_fn,
+        finalize_fn,
+        init_class_fn,
+        function_specs,
+        property_specs,
+        static_function_specs,
+        static_property_specs,
+    }
+}
+
+fn collect_specs(props: &[PropertyDef]) -> (Vec<String>, Vec<String>) {
+    let mut function_specs = Vec::new();
+    let mut property_specs = Vec::new();
+
+    for prop in props {
+        match &prop.kind {
+            PropertyKind::Method { fn_name, length } => {
+                function_specs.push(format!(
+                    r#"JSFunctionSpec {{
+    name: c"{name}".as_ptr(),
+    call: Some({fn_name}),
+    nargs: {length},
+    flags: JSPROP_ENUMERATE as u16,
+    ..Default::default()
+}}"#,
+                    name = prop.name,
+                    fn_name = fn_name,
+                    length = length,
+                ));
+            }
+            PropertyKind::Getter { fn_name, .. } => {
+                property_specs.push(format!(
+                    r#"JSPropertySpec {{
+    name: c"{name}".as_ptr(),
+    getter: JSPropertySpec_AccessorOrValue {{
+        accessors: JSPropertySpec_Accessor {{
+            getter: Some({fn_name}),
+            ..Default::default()
+        }}
+    }},
+    ..Default::default()
+}}"#,
+                    name = prop.name,
+                    fn_name = fn_name,
+                ));
+            }
+            PropertyKind::Setter { fn_name } => {
+                property_specs.push(format!(
+                    r#"JSPropertySpec {{
+    name: c"{name}".as_ptr(),
+    setter: JSPropertySpec_AccessorOrValue {{
+        accessors: JSPropertySpec_Accessor {{
+            setter: Some({fn_name}),
+            ..Default::default()
+        }}
+    }},
+    ..Default::default()
+}}"#,
+                    name = prop.name,
+                    fn_name = fn_name,
+                ));
+            }
+            PropertyKind::Accessor { getter, setter, .. } => {
+                property_specs.push(format!(
+                    r#"JSPropertySpec {{
+    name: c"{name}".as_ptr(),
+    getter: JSPropertySpec_AccessorOrValue {{
+        accessors: JSPropertySpec_Accessor {{
+            getter: Some({getter}),
+            setter: Some({setter}),
+            ..Default::default()
+        }}
+    }},
+    ..Default::default()
+}}"#,
+                    name = prop.name,
+                    getter = getter,
+                    setter = setter,
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    (function_specs, property_specs)
+}
+
+/// Batch generate bindings for all class definitions.
+pub fn generate_all(class_defs: &[ClassDef]) -> HashMap<String, GeneratedBindings> {
+    class_defs
+        .iter()
+        .map(|cd| (cd.name.clone(), generate_bindings(cd)))
+        .collect()
+}
+
+/// Generate a complete Rust module file for all class bindings.
+pub fn generate_module(bindings: &[GeneratedBindings], module_name: &str) -> String {
+    let mut out = String::new();
+    out.push_str("// @trace REQ-ENG-002 — Auto-generated by bao_engine codegen\n");
+    out.push_str(&format!("// Module: {module_name}\n\n"));
+    out.push_str("use mozjs::jsapi::*;\nuse mozjs::jsval::*;\n\n");
+
+    for b in bindings {
+        out.push_str(&format!("// ---- {} ----\n\n", b.class_name));
+
+        if let Some(ref class_ops) = b.class_ops_def {
+            out.push_str(class_ops);
+            out.push_str("\n\n");
+        }
+
+        if let Some(ref finalize) = b.finalize_fn {
+            out.push_str(finalize);
+            out.push_str("\n\n");
+        }
+
+        out.push_str(&b.js_class_def);
+        out.push_str("\n\n");
+
+        if let Some(ref ctor) = b.constructor_fn {
+            out.push_str(ctor);
+            out.push_str("\n\n");
+        }
+
+        // Proto specs array
+        if !b.function_specs.is_empty() || !b.property_specs.is_empty() {
+            out.push_str(&format!(
+                "static {}_proto_specs: [JSPropertySpec; {}] = [\n",
+                b.class_name,
+                b.function_specs.len() + b.property_specs.len()
+            ));
+            for spec in &b.function_specs {
+                out.push_str(&format!("    {spec},\n"));
+            }
+            for spec in &b.property_specs {
+                out.push_str(&format!("    {spec},\n"));
+            }
+            out.push_str("];\n\n");
+        }
+
+        // Static specs array
+        if !b.static_function_specs.is_empty() || !b.static_property_specs.is_empty() {
+            out.push_str(&format!(
+                "static {}_static_specs: [JSPropertySpec; {}] = [\n",
+                b.class_name,
+                b.static_function_specs.len() + b.static_property_specs.len()
+            ));
+            for spec in &b.static_function_specs {
+                out.push_str(&format!("    {spec},\n"));
+            }
+            for spec in &b.static_property_specs {
+                out.push_str(&format!("    {spec},\n"));
+            }
+            out.push_str("];\n\n");
+        }
+
+        out.push_str(&b.init_class_fn);
+        out.push_str("\n\n");
+    }
+
+    // Module init function
+    out.push_str(&format!("/// Initialize all {module_name} classes.\n"));
+    out.push_str("pub unsafe fn init_all(cx: *mut JSContext, global: JS::HandleObject) -> bool {\n");
+    for b in bindings {
+        out.push_str(&format!("    if !init_{}(cx, global) {{ return false; }}\n", b.class_name));
+    }
+    out.push_str("    true\n}\n");
+
+    out
+}
+
+/// Macro to implement a JS class using generated bindings.
+///
+/// Given a `GeneratedBindings` instance, this macro emits:
+/// - The `JSClass` / `JSClassOps` statics
+/// - The constructor and finalizer functions
+/// - The `init_<class>` function
+///
+/// # Usage
+/// ```ignore
+/// let bindings = generate_bindings(&class_def);
+/// impl_js_class_via_generated!(bindings);
+/// ```
+#[macro_export]
+macro_rules! impl_js_class_via_generated {
+    ($bindings:expr) => {
+        compile_error!(
+            "impl_js_class_via_generated! must be used with a const ClassDef; \
+             use generate_bindings() at build time and include! the generated module instead."
+        );
+    };
+    ($class_name:ident, $cx:expr, $global:expr) => {
+        unsafe { $crate::codegen::init_class($cx, $global, stringify!($class_name)) }
+    };
+}
+
+/// Initialize a single generated class by name on the given global.
+///
+/// # Safety
+/// `cx` must be a valid JSContext. `global` must be a valid global object handle.
+#[allow(unsafe_op_in_unsafe_fn)]
+pub unsafe fn init_class(
+    _cx: *mut mozjs::jsapi::JSContext,
+    _global: mozjs::jsapi::Handle<*mut mozjs::jsapi::JSObject>,
+    _class_name: &str,
+) -> bool {
+    // This is a placeholder — actual init is done by the generated `init_<Class>` functions.
+    // The macro form `impl_js_class_via_generated!(MyClass, cx, global)` calls the
+    // generated `init_MyClass(cx, global)` directly.
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_simple_class() {
+        let source = r#"
+define({
+    name: "TestResource",
+    construct: true,
+    finalize: true,
+    configurable: false,
+    proto: {
+        count: {
+            getter: "getCount",
+            cache: true,
+        },
+        reset: {
+            fn: "resetCount",
+            length: 0,
+        },
+    },
+    klass: {},
+});
+"#;
+        let result = parse_classes(source, "test.classes.ts").unwrap();
+        assert_eq!(result.classes.len(), 1);
+        let class = &result.classes[0];
+        assert_eq!(class.name, "TestResource");
+        assert!(class.construct);
+        assert!(class.finalize);
+        assert!(!class.configurable);
+        assert_eq!(class.proto.len(), 2);
+
+        match &class.proto[0].kind {
+            PropertyKind::Getter { fn_name, cache } => {
+                assert_eq!(fn_name, "getCount");
+                assert!(cache);
+            }
+            _ => panic!("expected getter"),
+        }
+        match &class.proto[1].kind {
+            PropertyKind::Method { fn_name, length } => {
+                assert_eq!(fn_name, "resetCount");
+                assert_eq!(*length, 0);
+            }
+            _ => panic!("expected method"),
+        }
+    }
+
+    #[test]
+    fn test_generate_bindings() {
+        let class = ClassDef {
+            name: "MyClass".into(),
+            construct: true,
+            no_constructor: false,
+            finalize: true,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![
+                PropertyDef {
+                    name: "value".into(),
+                    kind: PropertyKind::Getter { fn_name: "getValue".into(), cache: false },
+                },
+                PropertyDef {
+                    name: "compute".into(),
+                    kind: PropertyKind::Method { fn_name: "computeValue".into(), length: 2 },
+                },
+            ],
+            static_props: vec![],
+        };
+        let bindings = generate_bindings(&class);
+        assert_eq!(bindings.class_name, "MyClass");
+        assert!(bindings.js_class_def.contains("MyClass"));
+        assert_eq!(bindings.function_specs.len(), 1);
+        assert_eq!(bindings.property_specs.len(), 1);
+        assert!(bindings.static_function_specs.is_empty());
+        assert!(bindings.static_property_specs.is_empty());
+    }
+
+    #[test]
+    fn test_generate_all() {
+        let classes = vec![
+            ClassDef {
+                name: "A".into(),
+                construct: false,
+                no_constructor: false,
+                finalize: false,
+                configurable: true,
+                has_pending_activity: false,
+                proto: vec![],
+                static_props: vec![],
+            },
+            ClassDef {
+                name: "B".into(),
+                construct: true,
+                no_constructor: false,
+                finalize: false,
+                configurable: true,
+                has_pending_activity: false,
+                proto: vec![],
+                static_props: vec![],
+            },
+        ];
+        let all = generate_all(&classes);
+        assert_eq!(all.len(), 2);
+        assert!(all.contains_key("A"));
+        assert!(all.contains_key("B"));
+    }
+
+    #[test]
+    fn test_parse_accessor_property() {
+        let source = r#"
+define({
+    name: "TestAccessor",
+    proto: {
+        data: {
+            accessor: { getter: "getData", setter: "setData" },
+            cache: true,
+        },
+    },
+});
+"#;
+        let result = parse_classes(source, "accessor.classes.ts").unwrap();
+        let class = &result.classes[0];
+        assert_eq!(class.proto.len(), 1);
+        match &class.proto[0].kind {
+            PropertyKind::Accessor { getter, setter, cache } => {
+                assert_eq!(getter, "getData");
+                assert_eq!(setter, "setData");
+                assert!(cache);
+            }
+            _ => panic!("expected accessor"),
+        }
+    }
+
+    #[test]
+    fn test_parse_empty_proto() {
+        let source = r#"
+define({
+    name: "EmptyProto",
+    proto: {},
+});
+"#;
+        let result = parse_classes(source, "empty.classes.ts").unwrap();
+        assert_eq!(result.classes[0].proto.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_static_props() {
+        let source = r#"
+define({
+    name: "StaticTest",
+    proto: {
+        instance_method: {
+            fn: "doWork",
+            length: 1,
+        },
+    },
+    klass: {
+        create: {
+            fn: "createFrom",
+            length: 2,
+        },
+        version: {
+            getter: "getVersion",
+            cache: true,
+        },
+    },
+});
+"#;
+        let result = parse_classes(source, "static.classes.ts").unwrap();
+        let class = &result.classes[0];
+        assert_eq!(class.name, "StaticTest");
+
+        assert_eq!(class.proto.len(), 1);
+        match &class.proto[0].kind {
+            PropertyKind::Method { fn_name, length } => {
+                assert_eq!(fn_name, "doWork");
+                assert_eq!(*length, 1);
+            }
+            _ => panic!("expected method in proto"),
+        }
+
+        assert_eq!(class.static_props.len(), 2);
+        match &class.static_props[0].kind {
+            PropertyKind::Method { fn_name, length } => {
+                assert_eq!(fn_name, "createFrom");
+                assert_eq!(*length, 2);
+            }
+            _ => panic!("expected method in static_props"),
+        }
+        match &class.static_props[1].kind {
+            PropertyKind::Getter { fn_name, cache } => {
+                assert_eq!(fn_name, "getVersion");
+                assert!(cache);
+            }
+            _ => panic!("expected getter in static_props"),
+        }
+    }
+
+    #[test]
+    fn test_generate_bindings_setter() {
+        let class = ClassDef {
+            name: "SetterOnly".into(),
+            construct: false,
+            no_constructor: false,
+            finalize: false,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "data".into(),
+                kind: PropertyKind::Setter { fn_name: "setData".into() },
+            }],
+            static_props: vec![],
+        };
+        let bindings = generate_bindings(&class);
+        assert_eq!(bindings.class_name, "SetterOnly");
+        assert_eq!(bindings.property_specs.len(), 1);
+        assert!(bindings.property_specs[0].contains("setter: Some(setData)"));
+    }
+
+    #[test]
+    fn test_parse_multiple_classes() {
+        let source = r#"
+define({
+    name: "First",
+    proto: { run: { fn: "run", length: 0 } },
+});
+define({
+    name: "Second",
+    proto: { stop: { fn: "stop", length: 0 } },
+});
+"#;
+        let result = parse_classes(source, "multi.classes.ts").unwrap();
+        assert_eq!(result.classes.len(), 2);
+        assert_eq!(result.classes[0].name, "First");
+        assert_eq!(result.classes[1].name, "Second");
+    }
+
+    #[test]
+    fn test_generate_bindings_with_static_props() {
+        let class = ClassDef {
+            name: "File".into(),
+            construct: true,
+            no_constructor: false,
+            finalize: true,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "size".into(),
+                kind: PropertyKind::Getter { fn_name: "getSize".into(), cache: true },
+            }],
+            static_props: vec![
+                PropertyDef {
+                    name: "open".into(),
+                    kind: PropertyKind::Method { fn_name: "fileOpen".into(), length: 2 },
+                },
+                PropertyDef {
+                    name: "defaultEncoding".into(),
+                    kind: PropertyKind::Accessor {
+                        getter: "getDefaultEncoding".into(),
+                        setter: "setDefaultEncoding".into(),
+                        cache: false,
+                    },
+                },
+            ],
+        };
+        let bindings = generate_bindings(&class);
+        assert_eq!(bindings.function_specs.len(), 0);
+        assert_eq!(bindings.property_specs.len(), 1);
+        assert!(bindings.property_specs[0].contains("getSize"));
+        assert_eq!(bindings.static_function_specs.len(), 1);
+        assert!(bindings.static_function_specs[0].contains("fileOpen"));
+        assert_eq!(bindings.static_property_specs.len(), 1);
+        assert!(bindings.static_property_specs[0].contains("getDefaultEncoding"));
+        assert!(bindings.static_property_specs[0].contains("setDefaultEncoding"));
+    }
+
+    #[test]
+    fn test_parse_boolean_flags() {
+        let source = r#"
+define({
+    name: "FlagTest",
+    construct: true,
+    noConstructor: false,
+    finalize: true,
+    hasPendingActivity: true,
+    configurable: false,
+    proto: {},
+});
+"#;
+        let result = parse_classes(source, "flags.classes.ts").unwrap();
+        let class = &result.classes[0];
+        assert!(class.construct);
+        assert!(!class.no_constructor);
+        assert!(class.finalize);
+        assert!(class.has_pending_activity);
+        assert!(!class.configurable);
+    }
+
+    // ---- New tests for constructor, finalize, init_class, generate_module ----
+
+    #[test]
+    fn test_bindings_with_constructor() {
+        let class = ClassDef {
+            name: "Buffer".into(),
+            construct: true,
+            no_constructor: false,
+            finalize: true,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "length".into(),
+                kind: PropertyKind::Getter { fn_name: "getLength".into(), cache: true },
+            }],
+            static_props: vec![],
+        };
+        let bindings = generate_bindings(&class);
+        assert!(bindings.constructor_fn.is_some());
+        let ctor = bindings.constructor_fn.unwrap();
+        assert!(ctor.contains("Buffer_constructor"));
+        assert!(ctor.contains("JS_NewObjectForConstructor"));
+        assert!(ctor.contains("JS_SetReservedSlot"));
+        assert!(ctor.contains("PrivateValue"));
+
+        assert!(bindings.finalize_fn.is_some());
+        let fin = bindings.finalize_fn.unwrap();
+        assert!(fin.contains("Buffer_finalize"));
+        assert!(fin.contains("GCContext"));
+        assert!(fin.contains("JS_GetReservedSlot"));
+        assert!(fin.contains("Box::from_raw"));
+
+        assert!(bindings.class_ops_def.is_some());
+        let ops = bindings.class_ops_def.unwrap();
+        assert!(ops.contains("Buffer_ClassOps"));
+        assert!(ops.contains("Some(Buffer_finalize)"));
+        assert!(bindings.js_class_def.contains("JSCLASS_FOREGROUND_FINALIZE"));
+
+        assert!(bindings.init_class_fn.contains("init_Buffer"));
+        assert!(bindings.init_class_fn.contains("Some(Buffer_constructor)"));
+    }
+
+    #[test]
+    fn test_bindings_without_constructor() {
+        let class = ClassDef {
+            name: "Math".into(),
+            construct: false,
+            no_constructor: false,
+            finalize: false,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "PI".into(),
+                kind: PropertyKind::Getter { fn_name: "getPI".into(), cache: true },
+            }],
+            static_props: vec![],
+        };
+        let bindings = generate_bindings(&class);
+        assert!(bindings.constructor_fn.is_none());
+        assert!(bindings.finalize_fn.is_none());
+        assert!(bindings.init_class_fn.contains("None"));
+    }
+
+    #[test]
+    fn test_bindings_no_constructor_flag() {
+        let class = ClassDef {
+            name: "Singleton".into(),
+            construct: true,
+            no_constructor: true,
+            finalize: false,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![],
+            static_props: vec![],
+        };
+        let bindings = generate_bindings(&class);
+        assert!(bindings.constructor_fn.is_none(), "noConstructor should suppress constructor");
+    }
+
+    #[test]
+    fn test_generate_module_single_class() {
+        let class = ClassDef {
+            name: "Resource".into(),
+            construct: true,
+            no_constructor: false,
+            finalize: true,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![
+                PropertyDef {
+                    name: "id".into(),
+                    kind: PropertyKind::Getter { fn_name: "getId".into(), cache: false },
+                },
+                PropertyDef {
+                    name: "close".into(),
+                    kind: PropertyKind::Method { fn_name: "closeResource".into(), length: 0 },
+                },
+            ],
+            static_props: vec![PropertyDef {
+                name: "open".into(),
+                kind: PropertyKind::Method { fn_name: "openResource".into(), length: 1 },
+            }],
+        };
+        let bindings = generate_bindings(&class);
+        let module = generate_module(&[bindings], "resource_module");
+
+        assert!(module.contains("// @trace REQ-ENG-002"));
+        assert!(module.contains("use mozjs::jsapi::*"));
+        assert!(module.contains("Resource_Class"));
+        assert!(module.contains("Resource_ClassOps"));
+        assert!(module.contains("Resource_constructor"));
+        assert!(module.contains("Resource_finalize"));
+        assert!(module.contains("Resource_proto_specs"));
+        assert!(module.contains("Resource_static_specs"));
+        assert!(module.contains("init_Resource"));
+        assert!(module.contains("init_all"));
+        assert!(module.contains("getId"));
+        assert!(module.contains("closeResource"));
+        assert!(module.contains("openResource"));
+    }
+
+    #[test]
+    fn test_generate_module_multiple_classes() {
+        let classes = vec![
+            ClassDef {
+                name: "File".into(),
+                construct: true,
+                no_constructor: false,
+                finalize: true,
+                configurable: true,
+                has_pending_activity: false,
+                proto: vec![],
+                static_props: vec![],
+            },
+            ClassDef {
+                name: "Dir".into(),
+                construct: true,
+                no_constructor: false,
+                finalize: false,
+                configurable: true,
+                has_pending_activity: false,
+                proto: vec![],
+                static_props: vec![],
+            },
+        ];
+        let bindings: Vec<GeneratedBindings> = classes.iter().map(generate_bindings).collect();
+        let module = generate_module(&bindings, "fs_module");
+
+        assert!(module.contains("init_File"));
+        assert!(module.contains("init_Dir"));
+        assert!(module.contains("init_all"));
+        assert!(module.contains("File_constructor"));
+        assert!(module.contains("File_finalize"));
+        assert!(module.contains("File_ClassOps"));
+        assert!(module.contains("Dir_constructor"));
+        assert!(module.contains("Dir_finalize") == false, "Dir has no finalize");
+        assert!(module.contains("Dir_ClassOps") == false, "Dir has no ClassOps");
+    }
+
+    #[test]
+    fn test_generate_module_empty_classes() {
+        let module = generate_module(&[], "empty_module");
+        assert!(module.contains("init_all"));
+        assert!(module.contains("true"));
+    }
+
+    #[test]
+    fn test_init_class_fn_content() {
+        let class = ClassDef {
+            name: "Stream".into(),
+            construct: true,
+            no_constructor: false,
+            finalize: true,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "bytesRead".into(),
+                kind: PropertyKind::Getter { fn_name: "getBytesRead".into(), cache: false },
+            }],
+            static_props: vec![PropertyDef {
+                name: "create".into(),
+                kind: PropertyKind::Method { fn_name: "streamCreate".into(), length: 1 },
+            }],
+        };
+        let bindings = generate_bindings(&class);
+        let init = &bindings.init_class_fn;
+
+        assert!(init.contains("unsafe fn init_Stream"));
+        assert!(init.contains("JS_InitClass"));
+        assert!(init.contains("Some(Stream_constructor)"));
+        assert!(init.contains("Stream_proto_specs"));
+        assert!(init.contains("Stream_static_specs"));
+    }
+}

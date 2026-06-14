@@ -1,19 +1,20 @@
-// @trace REQ-CDP-001 [entity:DomainRegistry]
+// @trace REQ-CDP-002 [entity:CdpCommand]
 mod page;
 mod runtime;
 mod dom;
-mod network;
+pub mod network;
 mod debugger;
 mod input;
 mod emulation;
 mod css;
 mod overlay;
 mod log_domain;
-mod fetch_domain;
+pub mod fetch_domain;
 mod target;
 
 use cdp_server::DomainRegistry;
 use crate::servo_bridge::BridgeSender;
+use crate::DomainDispatch;
 
 pub use target::ServoTargetProvider;
 pub use target::TargetHandler;
@@ -30,24 +31,26 @@ pub use log_domain::LogHandler;
 pub use fetch_domain::FetchHandler;
 
 /// Register all CDP domain handlers into an existing DomainRegistry.
-pub fn register_all_domains_into(bridge: BridgeSender, target_id: String, registry: &DomainRegistry) {
-    registry.register(Box::new(page::PageHandler::new(bridge.clone(), target_id.clone()))).expect("register Page");
-    registry.register(Box::new(runtime::RuntimeHandler::new(bridge.clone(), target_id.clone()))).expect("register Runtime");
-    registry.register(Box::new(dom::DomHandler::new(bridge.clone(), target_id.clone()))).expect("register DOM");
-    registry.register(Box::new(network::NetworkHandler::new(bridge.clone(), target_id.clone()))).expect("register Network");
-    registry.register(Box::new(debugger::DebuggerHandler::new(bridge.clone(), target_id.clone()))).expect("register Debugger");
-    registry.register(Box::new(input::InputHandler::new(bridge.clone(), target_id.clone()))).expect("register Input");
-    registry.register(Box::new(emulation::EmulationHandler::new(bridge.clone(), target_id.clone()))).expect("register Emulation");
-    registry.register(Box::new(css::CssHandler::new(bridge.clone(), target_id.clone()))).expect("register CSS");
-    registry.register(Box::new(overlay::OverlayHandler::new(bridge.clone(), target_id.clone()))).expect("register Overlay");
-    registry.register(Box::new(log_domain::LogHandler::new())).expect("register Log");
-    registry.register(Box::new(fetch_domain::FetchHandler::new(bridge, target_id.clone()))).expect("register Fetch");
+/// Uses DomainDispatch enum for compile-time exhaustiveness — no vtable indirection.
+pub fn register_all_domains_into(bridge: BridgeSender, target_id: String, registry: &DomainRegistry<DomainDispatch>) {
+    registry.register(DomainDispatch::Page(page::PageHandler::new(bridge.clone(), target_id.clone()))).expect("register Page");
+    registry.register(DomainDispatch::Runtime(runtime::RuntimeHandler::new(bridge.clone(), target_id.clone()))).expect("register Runtime");
+    registry.register(DomainDispatch::Dom(dom::DomHandler::new(bridge.clone(), target_id.clone()))).expect("register DOM");
+    registry.register(DomainDispatch::Network(network::NetworkHandler::new(bridge.clone(), target_id.clone()))).expect("register Network");
+    registry.register(DomainDispatch::Debugger(debugger::DebuggerHandler::new(bridge.clone(), target_id.clone()))).expect("register Debugger");
+    registry.register(DomainDispatch::Input(input::InputHandler::new(bridge.clone(), target_id.clone()))).expect("register Input");
+    registry.register(DomainDispatch::Emulation(emulation::EmulationHandler::new(bridge.clone(), target_id.clone()))).expect("register Emulation");
+    registry.register(DomainDispatch::Css(css::CssHandler::new(bridge.clone(), target_id.clone()))).expect("register CSS");
+    registry.register(DomainDispatch::Overlay(overlay::OverlayHandler::new(bridge.clone(), target_id.clone()))).expect("register Overlay");
+    registry.register(DomainDispatch::Log(log_domain::LogHandler::new())).expect("register Log");
+    registry.register(DomainDispatch::Fetch(fetch_domain::FetchHandler::new(bridge, target_id.clone()))).expect("register Fetch");
 }
 
 /// Register all 12 CDP domain handlers (including Target) into a DomainRegistry.
-pub fn register_all_domains_with_target(bridge: BridgeSender, target_id: String, registry: &DomainRegistry) {
+/// Uses DomainDispatch enum for compile-time exhaustiveness — no vtable indirection.
+pub fn register_all_domains_with_target(bridge: BridgeSender, target_id: String, registry: &DomainRegistry<DomainDispatch>) {
     register_all_domains_into(bridge.clone(), target_id.clone(), registry);
-    registry.register(Box::new(target::TargetHandler::new(bridge, target_id))).expect("register Target");
+    registry.register(DomainDispatch::Target(target::TargetHandler::new(bridge, target_id))).expect("register Target");
 }
 
 // @trace TEST-CDP-DOM-001 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
@@ -70,7 +73,7 @@ mod tests {
     #[test]
     fn register_all_domains_into_registers_11_domains() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_into(bridge, "test-target".into(), &registry);
 
         let expected_domains = [
@@ -87,7 +90,7 @@ mod tests {
     #[test]
     fn all_domains_have_correct_names_and_respond_to_known_commands() {
         let (bridge, rx) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_into(bridge.clone(), "test-target".into(), &registry);
 
         // Background responder for bridge commands (Debugger.enable sends BridgeCommand)
@@ -128,7 +131,7 @@ mod tests {
     #[test]
     fn page_domain_responds_to_non_bridge_commands() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_into(bridge, "test-target".into(), &registry);
 
         // Page.setContent doesn't require bridge
@@ -147,7 +150,7 @@ mod tests {
     #[test]
     fn css_domain_returns_computed_style_structure() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_into(bridge, "test-target".into(), &registry);
 
         let result = registry.dispatch_command("CSS.getComputedStyleForNode", json!({ "nodeId": 1 }), &NoopSender);
@@ -160,7 +163,7 @@ mod tests {
     #[test]
     fn overlay_domain_returns_highlight_structure() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_into(bridge, "test-target".into(), &registry);
 
         let result = registry.dispatch_command("Overlay.highlightNode", json!({ "nodeId": 1 }), &NoopSender);
@@ -173,7 +176,7 @@ mod tests {
     #[test]
     fn log_domain_handles_enable_disable_clear() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_into(bridge, "test-target".into(), &registry);
 
         let result = registry.dispatch_command("Log.enable", json!({}), &NoopSender);
@@ -193,7 +196,7 @@ mod tests {
     #[test]
     fn fetch_domain_handles_enable_with_patterns() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_into(bridge, "test-target".into(), &registry);
 
         let result = registry.dispatch_command(
@@ -210,7 +213,7 @@ mod tests {
     #[test]
     fn unknown_command_returns_method_not_found_error() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_into(bridge, "test-target".into(), &registry);
 
         let result = registry.dispatch_command("Page.unknownMethod", json!({}), &NoopSender);
@@ -223,7 +226,7 @@ mod tests {
     // 9. Domain not registered returns None
     #[test]
     fn unregistered_domain_returns_none() {
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         // Don't register any domains
         let result = registry.dispatch_command("Page.enable", json!({}), &NoopSender);
         assert!(result.is_none());
@@ -233,13 +236,13 @@ mod tests {
     #[test]
     fn all_domains_are_distinct() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
 
         // First registration should succeed
         register_all_domains_into(bridge.clone(), "test-target".into(), &registry);
 
-        // Attempting to register Page again should fail
-        let duplicate_result = registry.register(Box::new(page::PageHandler::new(bridge, "test-target".into())));
+        // Attempting to register Page again should fail (using DomainDispatch)
+        let duplicate_result = registry.register(DomainDispatch::Page(page::PageHandler::new(bridge, "test-target".into())));
         assert!(duplicate_result.is_err());
         assert!(duplicate_result.unwrap_err().contains("already registered"));
     }
@@ -248,7 +251,7 @@ mod tests {
     #[test]
     fn register_all_domains_with_target_registers_12_domains() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_with_target(bridge, "test-target-id".into(), &registry);
 
         let expected_domains = [
@@ -265,7 +268,7 @@ mod tests {
     #[test]
     fn target_domain_handles_get_targets_via_registry() {
         let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry = DomainRegistry::new();
+        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
         register_all_domains_with_target(bridge, "my-target-123".into(), &registry);
 
         let result = registry.dispatch_command("Target.getTargets", json!({}), &NoopSender);

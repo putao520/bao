@@ -613,7 +613,7 @@ use bao_engine::value::JsValue;
 #[test]
 fn test_stealth_props_injected_all() {
     let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     let ua = match ctx.eval("navigator.userAgent", "<stealth-test>") {
         Ok(JsValue::String(s)) => s,

@@ -1,7 +1,7 @@
-// @trace REQ-ENG-001
+// @trace REQ-ENG-001 [entity:BaoRuntime]
 use ::std::cell::RefCell;
 use ::std::collections::HashSet;
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr;
 
 use mozjs::jsapi::*;
@@ -27,11 +27,11 @@ impl GcStore {
 
     /// Format a namespaced property name: `__gc_{namespace}_{key}`.
     /// If namespace is empty, falls back to `__gc_cache_{key}` for backward compat.
-    fn prop_name(namespace: &str, key: &str) -> CString {
+    fn prop_name(namespace: &str, key: &str) -> ZBox {
         if namespace.is_empty() {
-            CString::new(format!("__gc_cache_{}", key)).unwrap_or_default()
+            ZBox::from_vec(format!("__gc_cache_{}", key).into_bytes())
         } else {
-            CString::new(format!("__gc_{}_{}", namespace, key)).unwrap_or_default()
+            ZBox::from_vec(format!("__gc_{}_{}", namespace, key).into_bytes())
         }
     }
 
@@ -198,6 +198,7 @@ pub fn gc_store_unique_key(namespace: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bun_core::ByteSlice;
 
     #[test]
     fn prop_name_empty_namespace_uses_cache_prefix() {
@@ -253,9 +254,11 @@ mod tests {
 
     #[test]
     fn gc_store_unique_key_counter_increments() {
-        let initial = GC_KEY_COUNTER.load(Ordering::Relaxed);
+        // Use fetch_add return value instead of global counter comparison,
+        // since other test threads also increment the shared AtomicU64.
+        let before = GC_KEY_COUNTER.fetch_add(0, Ordering::SeqCst);
         let _ = gc_store_unique_key("test_ns");
-        let after = GC_KEY_COUNTER.load(Ordering::Relaxed);
-        assert_eq!(after, initial + 1);
+        let after = GC_KEY_COUNTER.fetch_add(0, Ordering::SeqCst);
+        assert!(after > before, "counter must increment: before={before}, after={after}");
     }
 }

@@ -107,7 +107,7 @@ unsafe fn install_test_globals(
     cx: &mut mozjs::context::JSContext,
     global: mozjs::rust::Handle<*mut mozjs::jsapi::JSObject>,
 ) {
-    use bao_engine::define_host_fn;
+    use bun_sm::define_host_fn;
 
     bao_engine::host_fn::install_console(cx, global);
 

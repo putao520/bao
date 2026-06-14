@@ -10,7 +10,7 @@ use bao_cdp::domains::{
     DebuggerHandler, NetworkHandler, PageHandler, DomHandler,
     RuntimeHandler, EmulationHandler, InputHandler,
 };
-use bao_cdp::DomainRegistry;
+use bao_cdp::{DomainRegistry, DomainDispatch};
 use cdp_server::{DomainHandler, EventSender};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -693,10 +693,10 @@ fn test_input_unknown_command() {
 #[test]
 fn test_registry_dispatches_to_correct_domain() {
     let b = TestBridge::new();
-    let registry = DomainRegistry::new();
-    registry.register(Box::new(PageHandler::new(b.sender.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(RuntimeHandler::new(b.sender.clone(), TID.into()))).unwrap();
-    registry.register(Box::new(DomHandler::new(b.sender.clone(), TID.into()))).unwrap();
+    let registry = DomainRegistry::<DomainDispatch>::new();
+    registry.register(DomainDispatch::Page(PageHandler::new(b.sender.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Runtime(RuntimeHandler::new(b.sender.clone(), TID.into()))).unwrap();
+    registry.register(DomainDispatch::Dom(DomHandler::new(b.sender.clone(), TID.into()))).unwrap();
 
     // Page.enable — no bridge needed, just routing
     assert!(registry.dispatch_command("Page.enable", json!({}), noop_es()).unwrap().is_ok());

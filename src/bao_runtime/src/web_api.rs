@@ -1,7 +1,7 @@
 // @trace REQ-ENG-006
 // WebSocket + Performance + TextEncoder/TextDecoder + atob/btoa + queueMicrotask
 use ::std::cell::RefCell;
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::io::{Read, Write};
 use ::std::net::TcpStream;
 use ::std::ptr::NonNull;
@@ -209,7 +209,7 @@ pub fn install_websocket_constructor(
 
                 let ctor_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ctor_obj };
                 for (name, value) in &[("CONNECTING", 0i32), ("OPEN", 1), ("CLOSING", 2), ("CLOSED", 3)] {
-                    let c_name = ::std::ffi::CString::new(*name).unwrap_or_default();
+                    let c_name = ZBox::from_bytes(name.as_bytes());
                     let v = Int32Value(*value);
                     let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
                     JS_DefineProperty(cx.raw_cx(), ctor_h, c_name.as_ptr(), v_h, (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
@@ -226,7 +226,7 @@ unsafe fn ws_trigger_event(cx: *mut JSContext, ws_obj_key: &str, event_name: &st
     };
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ws_obj };
     let mut handler_val = UndefinedValue();
-    let c_name = ::std::ffi::CString::new(event_name).unwrap_or_default();
+    let c_name = ZBox::from_bytes(event_name.as_bytes());
     JS_GetProperty(cx, obj_h, c_name.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut handler_val });
     if handler_val.is_object() {
         let handler_obj = handler_val.to_object();
@@ -280,7 +280,7 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
 
     if let Err(e) = send_result {
         let msg = format!("WebSocket send failed: {}", e);
-        let c_msg = CString::new(msg).unwrap_or_default();
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
         JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
         return false;
     }
@@ -338,7 +338,8 @@ unsafe extern "C" fn websocket_constructor(
 
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ws_obj.get() };
 
-    if let Ok(c_url) = ::std::ffi::CString::new(url.as_str()) {
+    {
+        let c_url = ZBox::from_bytes(url.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_url.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
@@ -356,7 +357,7 @@ unsafe extern "C" fn websocket_constructor(
     JS_DefineProperty(cx, obj_h, c"bufferedAmount".as_ptr(), ba_h, JSPROP_ENUMERATE as u32);
 
     for name in &["onopen", "onmessage", "onerror", "onclose"] {
-        let c_name = ::std::ffi::CString::new(*name).unwrap_or_default();
+        let c_name = ZBox::from_bytes(name.as_bytes());
         let ud = UndefinedValue();
         let ud_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ud };
         JS_DefineProperty(cx, obj_h, c_name.as_ptr(), ud_h, JSPROP_ENUMERATE as u32);
@@ -385,7 +386,8 @@ unsafe extern "C" fn websocket_constructor(
             loop {
                 match client.read_message() {
                     Ok(WsMessage::Text(text)) => {
-                        if let Ok(c_text) = ::std::ffi::CString::new(text.as_str()) {
+                        {
+                            let c_text = ZBox::from_bytes(text.as_bytes());
                             let js_str = JS_NewStringCopyZ(cx, c_text.as_ptr());
                             if !js_str.is_null() {
                                 let dv = StringValue(&*js_str);
@@ -420,7 +422,7 @@ unsafe extern "C" fn websocket_constructor(
         }
         Err(e) => {
             let msg = format!("WebSocket connection failed: {}", e);
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_default();
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
             JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
             return false;
         }
@@ -516,7 +518,7 @@ unsafe extern "C" fn atob_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     match bun_base64::decode_alloc(s.as_bytes()) {
         Ok(bytes) => {
             let decoded = String::from_utf8_lossy(&bytes);
-            let c_str = ::std::ffi::CString::new(decoded.into_owned()).unwrap_or_default();
+            let c_str = ZBox::from_vec(decoded.into_owned().into_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
             if js_str.is_null() { args.rval().set(UndefinedValue()); }
             else { args.rval().set(StringValue(&*js_str)); }
@@ -539,7 +541,7 @@ unsafe extern "C" fn btoa_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()));
     let encoded_bytes = bun_base64::encode_alloc(s.as_bytes());
     let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("");
-    let c_str = ::std::ffi::CString::new(encoded).unwrap_or_default();
+    let c_str = ZBox::from_bytes(encoded.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
     if js_str.is_null() { args.rval().set(UndefinedValue()); }
     else { args.rval().set(StringValue(&*js_str)); }
@@ -645,7 +647,7 @@ unsafe extern "C" fn text_decoder_constructor(cx: *mut JSContext, argc: u32, vp:
         "utf-8".to_string()
     };
     let encoding_lower = encoding.to_lowercase();
-    let encoding_str = JS_NewStringCopyZ(cx, ::std::ffi::CString::new(encoding_lower).unwrap_or_default().as_ptr());
+    let encoding_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(encoding_lower.as_bytes()).as_ptr());
     if !encoding_str.is_null() {
         let val = StringValue(&*encoding_str);
         let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
@@ -685,7 +687,7 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
         let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
         JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
         let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { 0 };
-        let mut result = Vec::new();
+        let mut result = Vec::with_capacity(len as usize);
         for i in 0..len {
             let mut elem = UndefinedValue();
             JS_GetElement(cx, obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });

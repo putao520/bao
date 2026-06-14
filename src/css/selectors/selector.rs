@@ -1790,7 +1790,7 @@ pub(crate) struct CombinatorIter<'a> {
 
 impl<'a> CombinatorIter<'a> {
     /// Original source has this iterator defined like so:
-    /// ```rs
+    /// ```ignore
     /// selector
     ///   .iter_raw_match_order() // just returns an iterator
     ///   .rev() // reverses the iterator
@@ -1823,7 +1823,7 @@ impl<'a> CompoundSelectorIter<'a> {
     /// ```
     ///
     /// The iterator would return:
-    /// ```
+    /// ```text
     /// First slice:
     /// .{
     ///   .{ .local_name = "div" }
@@ -1839,7 +1839,7 @@ impl<'a> CompoundSelectorIter<'a> {
     /// BUT, the selectors are stored in reverse order, so this code needs to split the components backwards.
     ///
     /// Original source has this iterator defined like so:
-    /// ```rs
+    /// ```ignore
     /// selector
     ///  .iter_raw_match_order()
     ///  .as_slice()

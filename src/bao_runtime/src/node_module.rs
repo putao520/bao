@@ -1,5 +1,5 @@
 // @trace REQ-ENG-005
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -70,7 +70,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         rooted!(&in(cx) let arr = w2::NewArrayObject1(cx, builtins.len()));
         if !arr.get().is_null() {
             for (i, name) in builtins.iter().enumerate() {
-                let c_name = CString::new(*name).unwrap_or_default();
+                let c_name = ZBox::from_bytes(name.as_bytes());
                 let js_str = JS_NewStringCopyZ(cx.raw_cx(), c_name.as_ptr());
                 if !js_str.is_null() {
                     rooted!(&in(cx) let v = mozjs::jsval::StringValue(&*js_str));

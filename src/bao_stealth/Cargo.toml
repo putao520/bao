@@ -6,11 +6,11 @@ edition = "2021"
 [dependencies]
 bao_engine = { path = "../bao_engine" }
 bun_core.workspace = true
+bun_sha_hmac = { path = "../sha_hmac" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
 
 [dev-dependencies]
-bao_runtime = { path = "../bao_runtime" }
+bun_runtime.workspace = true

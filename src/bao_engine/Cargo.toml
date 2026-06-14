@@ -6,9 +6,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bun_sm = { path = "../bun_sm" }
+bao_engine_macros = { path = "../bao_engine_macros" }
 mozjs.workspace = true
 mozjs_sys.workspace = true
-bao_engine_macros = { path = "../bao_engine_macros" }
 libc = "0.2"
 log = "0.4"
 
@@ -27,7 +28,7 @@ bun_collections = { path = "../collections" }
 # Wave 73-G: tests need bao_native_stubs to pull in C-library stubs (uSockets uws_get_loop, etc.)
 bao_native_stubs = { path = "../bao_native_stubs" }
 # bao_runtime provides __bun_run_file_poll (extern "Rust") referenced by bun_io::FilePoll::on_update.
-bao_runtime = { path = "../bao_runtime" }
+bun_runtime.workspace = true
 
 [features]
 live_uws_loop = []

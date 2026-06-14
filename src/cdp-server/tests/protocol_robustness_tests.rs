@@ -1,7 +1,7 @@
 // @trace TEST-CDS-009-ROBUST [req:REQ-CDS-001,REQ-CDS-004,REQ-CDS-006] [level:unit]
 // Protocol robustness: edge cases for message parsing, dispatch, registry lifecycle
 
-use cdp_server::{CdpMessage, CdpError, CdpResponse, CdpEvent, DomainRegistry, EventSender};
+use cdp_server::{CdpMessage, CdpError, CdpResponse, CdpEvent, DomainRegistry, DomainHandler, EventSender};
 use serde_json::{Value, json};
 
 // ---- NoopEventSender for testing ----
@@ -14,6 +14,22 @@ impl EventSender for NoopSender {
 }
 
 // ---- CdpMessage parsing edge cases ----
+
+
+// TestDispatch — enum dispatch for multi-handler tests
+enum TestDispatch {
+    Echo(EchoHandler),
+    Error(ErrorAlwaysHandler),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self { Self::Echo(h) => h.domain_name(), Self::Error(h) => h.domain_name() }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+        match self { Self::Echo(h) => h.handle_command(cmd, params, sender), Self::Error(h) => h.handle_command(cmd, params, sender) }
+    }
+}
 
 #[test]
 fn test_cdp_message_parse_missing_method() {
@@ -129,8 +145,8 @@ impl cdp_server::DomainHandler for EchoHandler {
 
 #[test]
 fn test_dispatch_no_dot_in_method() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
     let result = reg.dispatch_command("Page", json!({}), &NoopSender);
     // "Page" has no dot, split('.').next() gives "Page" → handler found
     assert!(result.is_some());
@@ -138,8 +154,8 @@ fn test_dispatch_no_dot_in_method() {
 
 #[test]
 fn test_dispatch_multiple_dots_in_method() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
     let result = reg.dispatch_command("Page.navigate.to.url", json!({}), &NoopSender);
     // split('.').next() gives "Page" → handler found
     assert!(result.is_some());
@@ -149,32 +165,32 @@ fn test_dispatch_multiple_dots_in_method() {
 
 #[test]
 fn test_dispatch_empty_method() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
     let result = reg.dispatch_command("", json!({}), &NoopSender);
     assert!(result.is_none(), "Empty method should not dispatch");
 }
 
 #[test]
 fn test_dispatch_unregistered_domain() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
     let result = reg.dispatch_command("Network.enable", json!({}), &NoopSender);
     assert!(result.is_none(), "Unregistered domain should return None");
 }
 
 #[test]
 fn test_dispatch_case_sensitive_domain() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
     let result = reg.dispatch_command("page.navigate", json!({}), &NoopSender);
     assert!(result.is_none(), "Domain names are case-sensitive");
 }
 
 #[test]
 fn test_registry_empty_name_handler() {
-    let reg = DomainRegistry::new();
-    let result = reg.register(Box::new(EchoHandler { name: "" }));
+    let reg = DomainRegistry::<EchoHandler>::new();
+    let result = reg.register(EchoHandler { name: "" });
     // Empty domain name should register (no validation against it)
     assert!(result.is_ok());
 }
@@ -235,10 +251,10 @@ fn test_cdp_event_without_params() {
 
 #[test]
 fn test_registry_multiple_handlers_independent() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
-    reg.register(Box::new(EchoHandler { name: "Runtime" })).unwrap();
-    reg.register(Box::new(EchoHandler { name: "DOM" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
+    reg.register(EchoHandler { name: "Runtime" }).unwrap();
+    reg.register(EchoHandler { name: "DOM" }).unwrap();
 
     let p = reg.dispatch_command("Page.enable", json!({}), &NoopSender);
     assert!(p.is_some());
@@ -253,9 +269,9 @@ fn test_registry_multiple_handlers_independent() {
 
 #[test]
 fn test_registry_duplicate_rejected() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
-    let dup = reg.register(Box::new(EchoHandler { name: "Page" }));
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
+    let dup = reg.register(EchoHandler { name: "Page" });
     assert!(dup.is_err());
     assert!(dup.unwrap_err().contains("already registered"));
 }
@@ -264,24 +280,24 @@ fn test_registry_duplicate_rejected() {
 
 #[test]
 fn test_notify_session_created_unknown_domain() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
     // Should not panic for unknown domain
     reg.notify_session_created("UnknownDomain", "sess-1");
 }
 
 #[test]
 fn test_notify_session_destroyed_empty_list() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
     reg.notify_session_destroyed(&[], "sess-1");
 }
 
 #[test]
 fn test_notify_session_destroyed_multiple_domains() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(EchoHandler { name: "Page" })).unwrap();
-    reg.register(Box::new(EchoHandler { name: "Runtime" })).unwrap();
+    let reg = DomainRegistry::<EchoHandler>::new();
+    reg.register(EchoHandler { name: "Page" }).unwrap();
+    reg.register(EchoHandler { name: "Runtime" }).unwrap();
     let domains: Vec<String> = vec!["Page".into(), "Runtime".into(), "Unknown".into()];
     reg.notify_session_destroyed(&domains, "sess-1");
 }
@@ -299,8 +315,8 @@ impl cdp_server::DomainHandler for ErrorAlwaysHandler {
 
 #[test]
 fn test_handler_error_propagates() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(ErrorAlwaysHandler)).unwrap();
+    let reg = DomainRegistry::<ErrorAlwaysHandler>::new();
+    reg.register(ErrorAlwaysHandler).unwrap();
     let result = reg.dispatch_command("ErrorDomain.doStuff", json!({}), &NoopSender);
     assert!(result.is_some());
     let inner = result.unwrap();

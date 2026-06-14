@@ -43,35 +43,57 @@ impl EventSender for NopSender {
 
 // ---- has_domain ----
 
+
+// TestDispatch — enum dispatch for multi-handler tests
+enum TestDispatch {
+    Counting(CountingDomain),
+    Error(ErrorDomain),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self { Self::Counting(h) => h.domain_name(), Self::Error(h) => h.domain_name() }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+        match self { Self::Counting(h) => h.handle_command(cmd, params, sender), Self::Error(h) => h.handle_command(cmd, params, sender) }
+    }
+    fn on_session_created(&self, session_id: &str) {
+        match self { Self::Counting(h) => h.on_session_created(session_id), Self::Error(h) => h.on_session_created(session_id) }
+    }
+    fn on_session_destroyed(&self, session_id: &str) {
+        match self { Self::Counting(h) => h.on_session_destroyed(session_id), Self::Error(h) => h.on_session_destroyed(session_id) }
+    }
+}
+
 #[test]
 fn test_has_domain_empty_registry() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountingDomain>::new();
     assert!(!reg.has_domain("Page"));
     assert!(!reg.has_domain(""));
 }
 
 #[test]
 fn test_has_domain_after_register() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountingDomain>::new();
     let create = Arc::new(AtomicUsize::new(0));
     let destroy = Arc::new(AtomicUsize::new(0));
-    reg.register(Box::new(CountingDomain {
+    reg.register(CountingDomain {
         name: "Page",
         create_count: create,
         destroy_count: destroy,
-    })).unwrap();
+    }).unwrap();
     assert!(reg.has_domain("Page"));
     assert!(!reg.has_domain("Runtime"));
 }
 
 #[test]
 fn test_has_domain_multiple() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountingDomain>::new();
     let c = Arc::new(AtomicUsize::new(0));
     let d = Arc::new(AtomicUsize::new(0));
-    reg.register(Box::new(CountingDomain { name: "Page", create_count: c.clone(), destroy_count: d.clone() })).unwrap();
-    reg.register(Box::new(CountingDomain { name: "Runtime", create_count: c.clone(), destroy_count: d.clone() })).unwrap();
-    reg.register(Box::new(CountingDomain { name: "DOM", create_count: c.clone(), destroy_count: d.clone() })).unwrap();
+    reg.register(CountingDomain { name: "Page", create_count: c.clone(), destroy_count: d.clone() }).unwrap();
+    reg.register(CountingDomain { name: "Runtime", create_count: c.clone(), destroy_count: d.clone() }).unwrap();
+    reg.register(CountingDomain { name: "DOM", create_count: c.clone(), destroy_count: d.clone() }).unwrap();
     assert!(reg.has_domain("Page"));
     assert!(reg.has_domain("Runtime"));
     assert!(reg.has_domain("DOM"));
@@ -82,7 +104,7 @@ fn test_has_domain_multiple() {
 
 #[test]
 fn test_dispatch_no_dot_in_method() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<ErrorDomain>::new();
     // "noDotMethod" → domain = "noDotMethod" (full string before '.')
     let result = reg.dispatch_command("noDotMethod", json!({}), &NopSender);
     // No handler registered for "noDotMethod" domain
@@ -91,22 +113,22 @@ fn test_dispatch_no_dot_in_method() {
 
 #[test]
 fn test_dispatch_empty_method() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<ErrorDomain>::new();
     let result = reg.dispatch_command("", json!({}), &NopSender);
     assert!(result.is_none());
 }
 
 #[test]
 fn test_dispatch_unregistered_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<ErrorDomain>::new();
     let result = reg.dispatch_command("Unknown.method", json!({}), &NopSender);
     assert!(result.is_none());
 }
 
 #[test]
 fn test_dispatch_error_domain() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(ErrorDomain)).unwrap();
+    let reg = DomainRegistry::<ErrorDomain>::new();
+    reg.register(ErrorDomain).unwrap();
     let result = reg.dispatch_command("Error.fail", json!({}), &NopSender);
     assert!(result.is_some());
     let err = result.unwrap().unwrap_err();
@@ -116,12 +138,12 @@ fn test_dispatch_error_domain() {
 
 #[test]
 fn test_dispatch_multiple_commands_same_domain() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(CountingDomain {
+    let reg = DomainRegistry::<CountingDomain>::new();
+    reg.register(CountingDomain {
         name: "Page",
         create_count: Arc::new(AtomicUsize::new(0)),
         destroy_count: Arc::new(AtomicUsize::new(0)),
-    })).unwrap();
+    }).unwrap();
     for i in 0..20 {
         let result = reg.dispatch_command("Page.navigate", json!({"url": format!("https://{}.com", i)}), &NopSender);
         assert!(result.is_some());
@@ -135,12 +157,12 @@ fn test_dispatch_multiple_commands_same_domain() {
 fn test_session_created_callback() {
     let create_count = Arc::new(AtomicUsize::new(0));
     let destroy_count = Arc::new(AtomicUsize::new(0));
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(CountingDomain {
+    let reg = DomainRegistry::<CountingDomain>::new();
+    reg.register(CountingDomain {
         name: "Page",
         create_count: create_count.clone(),
         destroy_count: destroy_count.clone(),
-    })).unwrap();
+    }).unwrap();
 
     reg.notify_session_created("Page", "session-1");
     assert_eq!(create_count.load(Ordering::SeqCst), 1);
@@ -151,12 +173,12 @@ fn test_session_created_callback() {
 fn test_session_destroyed_callback() {
     let create_count = Arc::new(AtomicUsize::new(0));
     let destroy_count = Arc::new(AtomicUsize::new(0));
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(CountingDomain {
+    let reg = DomainRegistry::<CountingDomain>::new();
+    reg.register(CountingDomain {
         name: "Page",
         create_count: create_count.clone(),
         destroy_count: destroy_count.clone(),
-    })).unwrap();
+    }).unwrap();
 
     reg.notify_session_destroyed(&["Page".to_string()], "session-1");
     assert_eq!(destroy_count.load(Ordering::SeqCst), 1);
@@ -166,12 +188,12 @@ fn test_session_destroyed_callback() {
 fn test_multiple_session_lifecycle() {
     let create_count = Arc::new(AtomicUsize::new(0));
     let destroy_count = Arc::new(AtomicUsize::new(0));
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(CountingDomain {
+    let reg = DomainRegistry::<CountingDomain>::new();
+    reg.register(CountingDomain {
         name: "Page",
         create_count: create_count.clone(),
         destroy_count: destroy_count.clone(),
-    })).unwrap();
+    }).unwrap();
 
     for i in 0..10 {
         reg.notify_session_created("Page", &format!("s-{}", i));
@@ -187,7 +209,7 @@ fn test_multiple_session_lifecycle() {
 
 #[test]
 fn test_notify_unregistered_domain_noop() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountingDomain>::new();
     // Should not panic
     reg.notify_session_created("NonExistent", "s-1");
     reg.notify_session_destroyed(&["NonExistent".to_string()], "s-1");
@@ -197,11 +219,11 @@ fn test_notify_unregistered_domain_noop() {
 
 #[test]
 fn test_duplicate_registration_returns_error() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountingDomain>::new();
     let c = Arc::new(AtomicUsize::new(0));
     let d = Arc::new(AtomicUsize::new(0));
-    reg.register(Box::new(CountingDomain { name: "Page", create_count: c.clone(), destroy_count: d.clone() })).unwrap();
-    let result = reg.register(Box::new(CountingDomain { name: "Page", create_count: c.clone(), destroy_count: d.clone() }));
+    reg.register(CountingDomain { name: "Page", create_count: c.clone(), destroy_count: d.clone() }).unwrap();
+    let result = reg.register(CountingDomain { name: "Page", create_count: c.clone(), destroy_count: d.clone() });
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("already registered"));
 }
@@ -210,14 +232,14 @@ fn test_duplicate_registration_returns_error() {
 
 #[test]
 fn test_concurrent_dispatch() {
-    let reg = Arc::new(DomainRegistry::new());
+    let reg = Arc::new(DomainRegistry::<CountingDomain>::new());
     let c = Arc::new(AtomicUsize::new(0));
     let d = Arc::new(AtomicUsize::new(0));
-    reg.register(Box::new(CountingDomain {
+    reg.register(CountingDomain {
         name: "Page",
         create_count: c,
         destroy_count: d,
-    })).unwrap();
+    }).unwrap();
 
     let handles: Vec<_> = (0..10)
         .map(|i| {
@@ -240,17 +262,17 @@ fn test_concurrent_dispatch() {
 
 #[test]
 fn test_concurrent_register_different_domains() {
-    let reg = Arc::new(DomainRegistry::new());
+    let reg = Arc::new(DomainRegistry::<CountingDomain>::new());
     let handles: Vec<_> = (0..5)
         .map(|i| {
             let reg = reg.clone();
             thread::spawn(move || {
                 let name = Box::leak(format!("Domain{}", i).into_boxed_str());
-                reg.register(Box::new(CountingDomain {
+                reg.register(CountingDomain {
                     name,
                     create_count: Arc::new(AtomicUsize::new(0)),
                     destroy_count: Arc::new(AtomicUsize::new(0)),
-                })).unwrap();
+                }).unwrap();
             })
         })
         .collect();
@@ -268,7 +290,7 @@ use std::thread;
 
 #[test]
 fn test_domain_registry_default() {
-    let reg = DomainRegistry::default();
+    let reg = DomainRegistry::<CountingDomain>::default();
     assert!(!reg.has_domain("Page"));
 }
 
@@ -276,9 +298,9 @@ fn test_domain_registry_default() {
 
 #[test]
 fn test_shared_registry_arc() {
-    let reg: Arc<DomainRegistry> = Arc::new(DomainRegistry::new());
+    let reg: Arc<DomainRegistry<TestDispatch>> = Arc::new(DomainRegistry::<TestDispatch>::new());
     assert!(!reg.has_domain("Page"));
-    reg.register(Box::new(CountingDomain {
+    reg.register(TestDispatch::Counting(CountingDomain {
         name: "Test",
         create_count: Arc::new(AtomicUsize::new(0)),
         destroy_count: Arc::new(AtomicUsize::new(0)),
@@ -290,12 +312,12 @@ fn test_shared_registry_arc() {
 
 #[test]
 fn test_multi_domain_interleaved_dispatch() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountingDomain>::new();
     let c = Arc::new(AtomicUsize::new(0));
     let d = Arc::new(AtomicUsize::new(0));
-    reg.register(Box::new(CountingDomain { name: "Page", create_count: c.clone(), destroy_count: d.clone() })).unwrap();
-    reg.register(Box::new(CountingDomain { name: "Runtime", create_count: c.clone(), destroy_count: d.clone() })).unwrap();
-    reg.register(Box::new(CountingDomain { name: "DOM", create_count: c.clone(), destroy_count: d.clone() })).unwrap();
+    reg.register(CountingDomain { name: "Page", create_count: c.clone(), destroy_count: d.clone() }).unwrap();
+    reg.register(CountingDomain { name: "Runtime", create_count: c.clone(), destroy_count: d.clone() }).unwrap();
+    reg.register(CountingDomain { name: "DOM", create_count: c.clone(), destroy_count: d.clone() }).unwrap();
 
     let commands = vec![
         "Page.enable", "Runtime.enable", "DOM.enable",

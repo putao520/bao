@@ -678,11 +678,11 @@ mod tests {
         let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
 
         assert!(
-            func_body.contains("bao_runtime::fetch_api::install_fetch_global"),
+            func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (fetch)"
         );
         assert!(
-            func_body.contains("bao_runtime::timers::install_timer_globals"),
+            func_body.contains("bun_runtime::timers::install_timer_globals"),
             "REQ-SEC-003 REGRESSION: install_all_native must install Web APIs (timers)"
         );
         assert!(
@@ -708,11 +708,11 @@ mod tests {
         let func_body = &source[func_start..func_start + func_end];
 
         assert!(
-            func_body.contains("bao_runtime::globals::install_node_apis"),
+            func_body.contains("bun_runtime::globals::install_node_apis"),
             "REQ-SEC-002 REGRESSION: create_node_realm_native must install Node APIs on Node Realm global"
         );
         assert!(
-            func_body.contains("bao_runtime::globals::install_web_apis"),
+            func_body.contains("bun_runtime::globals::install_web_apis"),
             "REQ-SEC-002: Node Realm must also have Web APIs for trusted scripts"
         );
     }

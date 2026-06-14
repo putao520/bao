@@ -8,6 +8,22 @@ use serde_json::json;
 
 // ---- Path detection logic (unit tests of string matching) ----
 
+
+// TestDispatch — enum dispatch for multi-handler tests
+enum TestDispatch {
+    Count(CountHandler),
+    Fail(FailHandler),
+}
+
+impl DomainHandler for TestDispatch {
+    fn domain_name(&self) -> &'static str {
+        match self { Self::Count(h) => h.domain_name(), Self::Fail(h) => h.domain_name() }
+    }
+    fn handle_command(&self, cmd: &str, params: serde_json::Value, sender: &dyn EventSender) -> Result<serde_json::Value, CdpError> {
+        match self { Self::Count(h) => h.handle_command(cmd, params, sender), Self::Fail(h) => h.handle_command(cmd, params, sender) }
+    }
+}
+
 #[test]
 fn test_path_version_exact() {
     let req = "GET /json/version HTTP/1.1";
@@ -506,10 +522,10 @@ impl EventSender for NopSender {
 
 #[test]
 fn test_registry_multiple_domains() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(CountHandler { name: "Alpha" })).unwrap();
-    reg.register(Box::new(CountHandler { name: "Beta" })).unwrap();
-    reg.register(Box::new(CountHandler { name: "Gamma" })).unwrap();
+    let reg = DomainRegistry::<CountHandler>::new();
+    reg.register(CountHandler { name: "Alpha" }).unwrap();
+    reg.register(CountHandler { name: "Beta" }).unwrap();
+    reg.register(CountHandler { name: "Gamma" }).unwrap();
     assert!(reg.has_domain("Alpha"));
     assert!(reg.has_domain("Beta"));
     assert!(reg.has_domain("Gamma"));
@@ -518,8 +534,8 @@ fn test_registry_multiple_domains() {
 
 #[test]
 fn test_registry_dispatch_success() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(CountHandler { name: "Page" })).unwrap();
+    let reg = DomainRegistry::<CountHandler>::new();
+    reg.register(CountHandler { name: "Page" }).unwrap();
     let result = reg.dispatch_command("Page.navigate", json!({"url": "https://example.com"}), &NopSender);
     let resp = result.unwrap().unwrap();
     assert_eq!(resp["cmd"], "Page.navigate");
@@ -528,8 +544,8 @@ fn test_registry_dispatch_success() {
 
 #[test]
 fn test_registry_dispatch_error() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(FailHandler)).unwrap();
+    let reg = DomainRegistry::<FailHandler>::new();
+    reg.register(FailHandler).unwrap();
     let result = reg.dispatch_command("Fail.run", json!({}), &NopSender);
     let err = result.unwrap().unwrap_err();
     assert_eq!(err.code, -32000);
@@ -538,26 +554,26 @@ fn test_registry_dispatch_error() {
 
 #[test]
 fn test_registry_dispatch_unknown_domain() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountHandler>::new();
     assert!(reg.dispatch_command("Unknown.method", json!({}), &NopSender).is_none());
 }
 
 #[test]
 fn test_registry_dispatch_no_dot() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountHandler>::new();
     assert!(reg.dispatch_command("NoDotMethod", json!({}), &NopSender).is_none());
 }
 
 #[test]
 fn test_registry_dispatch_empty_command() {
-    let reg = DomainRegistry::new();
+    let reg = DomainRegistry::<CountHandler>::new();
     assert!(reg.dispatch_command("", json!({}), &NopSender).is_none());
 }
 
 #[test]
 fn test_registry_dispatch_empty_params() {
-    let reg = DomainRegistry::new();
-    reg.register(Box::new(CountHandler { name: "Test" })).unwrap();
+    let reg = DomainRegistry::<CountHandler>::new();
+    reg.register(CountHandler { name: "Test" }).unwrap();
     let result = reg.dispatch_command("Test.run", json!({}), &NopSender);
     assert!(result.is_some());
 }

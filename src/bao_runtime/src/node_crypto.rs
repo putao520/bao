@@ -1,6 +1,6 @@
 // @trace REQ-ENG-007 [entity:BaoRuntime]
 use ::std::cell::RefCell;
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use bun_sha_hmac;
@@ -86,7 +86,7 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> Option<String> {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
-    let c_str = CString::new(s).unwrap_or_default();
+    let c_str = ZBox::from_bytes(s.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
     if js_str.is_null() {
         args.rval().set(UndefinedValue());
@@ -98,7 +98,7 @@ unsafe fn return_string(cx: *mut JSContext, args: &CallArgs, s: &str) -> bool {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn throw_type_error(cx: *mut JSContext, msg: &str) -> bool {
-    let c_msg = CString::new(msg).unwrap_or_default();
+    let c_msg = ZBox::from_bytes(msg.as_bytes());
     JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
     false
 }
@@ -220,13 +220,13 @@ unsafe extern "C" fn hash_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     match encoding.as_str() {
-        "hex" => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
+        "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
             let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
         }
-        _ => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
+        _ => return_string(cx, &args, &hex::encode(&result)),
     }
 }
 
@@ -327,13 +327,13 @@ unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     match encoding.as_str() {
-        "hex" => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
+        "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
             let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
         }
-        _ => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
+        _ => return_string(cx, &args, &hex::encode(&result)),
     }
 }
 
@@ -477,11 +477,10 @@ unsafe extern "C" fn crypto_scrypt_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         let v = *args.get(3).ptr;
         if v.is_int32() { (v.to_int32() as f64).log2() as u8 } else { 14 }
     } else { 14 };
-    let params = bao_crypto::reexports::scrypt::Params::new(log_n, 8, 1, key_len)
-        .unwrap_or_else(|_| bao_crypto::reexports::scrypt::Params::new(14, 8, 1, key_len).expect("default scrypt params"));
+    let n = 1u64 << log_n;
 
     let mut out = vec![0u8; key_len];
-    if let Err(e) = bao_crypto::reexports::scrypt::scrypt(&password, &salt, &params, &mut out) {
+    if let Err(e) = bao_crypto::kdf::scrypt(&password, &salt, n, 8, 1, key_len) {
         return throw_type_error(cx, &format!("scryptSync() failed: {}", e));
     }
 
@@ -648,7 +647,7 @@ unsafe extern "C" fn cipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let key = CIPHER_KEY.with(|k| k.borrow().clone());
     let iv = CIPHER_IV.with(|v| v.borrow().clone());
     let encrypted = xor_cipher(&data, &key, &iv);
-    return_string(cx, &args, &bao_crypto::reexports::hex::encode(&encrypted))
+    return_string(cx, &args, &hex::encode(&encrypted))
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -665,7 +664,7 @@ unsafe extern "C" fn decipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSV
     let hex_data = if input.is_string() {
         crate::js_to_rust_string(cx, input)
     } else { String::new() };
-    let data = bao_crypto::reexports::hex::decode(&hex_data).unwrap_or_default();
+    let data = hex::decode(&hex_data).unwrap_or_default();
     let key = CIPHER_KEY.with(|k| k.borrow().clone());
     let iv = CIPHER_IV.with(|v| v.borrow().clone());
     let decrypted = xor_cipher(&data, &key, &iv);
@@ -719,7 +718,7 @@ unsafe extern "C" fn crypto_get_hashes(cx: *mut JSContext, _argc: u32, vp: *mut 
     rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, hashes.len()));
     if !arr.get().is_null() {
         for (i, name) in hashes.iter().enumerate() {
-            let c_name = CString::new(*name).unwrap_or_default();
+            let c_name = ZBox::from_bytes(name.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
             if !js_str.is_null() {
                 rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
@@ -750,7 +749,7 @@ unsafe extern "C" fn crypto_get_ciphers(cx: *mut JSContext, _argc: u32, vp: *mut
     rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, ciphers.len()));
     if !arr.get().is_null() {
         for (i, name) in ciphers.iter().enumerate() {
-            let c_name = CString::new(*name).unwrap_or_default();
+            let c_name = ZBox::from_bytes(name.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
             if !js_str.is_null() {
                 rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
@@ -839,13 +838,13 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
     };
     match encoding.to_lowercase().as_str() {
-        "hex" => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
+        "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
             let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
         }
-        _ => return_string(cx, &args, &bao_crypto::reexports::hex::encode(&result)),
+        _ => return_string(cx, &args, &hex::encode(&result)),
     }
 }
 
@@ -878,9 +877,9 @@ unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     };
     let sig_hex = match arg_to_string(cx, *args.get(1).ptr) {
         Some(s) => s,
-        None => bao_crypto::reexports::hex::encode(extract_buffer_bytes(cx, *args.get(1).ptr)),
+        None => hex::encode(extract_buffer_bytes(cx, *args.get(1).ptr)),
     };
-    let expected = bao_crypto::reexports::hex::decode(&sig_hex).unwrap_or_default();
+    let expected = hex::decode(&sig_hex).unwrap_or_default();
     let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
     let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
     let computed = match algo.as_str() {
@@ -927,7 +926,7 @@ unsafe extern "C" fn crypto_create_secret_key(cx: *mut JSContext, argc: u32, vp:
         } else {
             Vec::new()
         };
-        let exported = bao_crypto::reexports::hex::encode(&bytes);
+        let exported = hex::encode(&bytes);
         let exp_str = JS_NewStringCopyN(cx, exported.as_ptr() as *const ::std::os::raw::c_char, exported.len());
         if !exp_str.is_null() {
             rooted!(&in(cx_ref) let ev = mozjs::jsval::StringValue(&*exp_str));

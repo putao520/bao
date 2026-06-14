@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
@@ -117,13 +117,13 @@ unsafe extern "C" fn tty_read_stream_ctor(
     JS_DefineProperty(cx, obj.handle().into(), c"readable".as_ptr(), readable_v.handle().into(), JSPROP_ENUMERATE as u32);
 
     w2::JS_DefineFunction(cx_ref, obj.handle(), c"setRawMode".as_ptr(), Some(tty_set_raw_mode), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"ref".as_ptr(), Some(tty_noop), 0, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"unref".as_ptr(), Some(tty_noop), 0, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"on".as_ptr(), Some(tty_noop), 1, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"emit".as_ptr(), Some(tty_noop), 1, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"resume".as_ptr(), Some(tty_noop), 0, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"pause".as_ptr(), Some(tty_noop), 0, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"destroy".as_ptr(), Some(tty_noop), 0, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"ref".as_ptr(), Some(tty_ref), 0, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"unref".as_ptr(), Some(tty_unref), 0, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"on".as_ptr(), Some(crate::node_events::ee_on), 1, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"emit".as_ptr(), Some(crate::node_events::ee_emit), 1, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"resume".as_ptr(), Some(tty_resume), 0, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"pause".as_ptr(), Some(tty_pause), 0, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"destroy".as_ptr(), Some(tty_destroy), 0, 0);
 
     args.rval().set(ObjectValue(obj.get()));
     true
@@ -179,10 +179,10 @@ unsafe extern "C" fn tty_write_stream_ctor(
         JS_DefineProperty(cx, obj.handle().into(), c"rows".as_ptr(), rows.handle().into(), JSPROP_ENUMERATE as u32);
     }
 
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"clearLine".as_ptr(), Some(tty_noop), 2, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"clearScreenDown".as_ptr(), Some(tty_noop), 1, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"cursorTo".as_ptr(), Some(tty_noop), 3, 0);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"moveCursor".as_ptr(), Some(tty_noop), 3, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"clearLine".as_ptr(), Some(tty_clear_line), 2, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"clearScreenDown".as_ptr(), Some(tty_clear_screen_down), 1, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"cursorTo".as_ptr(), Some(tty_cursor_to), 3, 0);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"moveCursor".as_ptr(), Some(tty_move_cursor), 3, 0);
     w2::JS_DefineFunction(cx_ref, obj.handle(), c"write".as_ptr(), Some(tty_write_stream_write), 1, JSPROP_ENUMERATE as u32);
 
     args.rval().set(ObjectValue(obj.get()));
@@ -316,8 +316,150 @@ unsafe extern "C" fn tty_write_stream_write(
     true
 }
 
-unsafe extern "C" fn tty_noop(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+/// ref() — no-op for TTY streams (Node.js compatible: stream.ref() returns this)
+unsafe extern "C" fn tty_ref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if this.is_object() { args.rval().set(ObjectValue(this.to_object())); } else { args.rval().set(UndefinedValue()); }
+    true
+}
+
+/// unref() — no-op for TTY streams (Node.js compatible: stream.unref() returns this)
+unsafe extern "C" fn tty_unref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if this.is_object() { args.rval().set(ObjectValue(this.to_object())); } else { args.rval().set(UndefinedValue()); }
+    true
+}
+
+/// resume() — mark stream as readable and emit 'resume' event
+unsafe extern "C" fn tty_resume(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(UndefinedValue());
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let readable_v = BooleanValue(true);
+    let rv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &readable_v };
+    JS_DefineProperty(cx, obj_h, c"readable".as_ptr(), rv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+/// pause() — mark stream as not readable
+unsafe extern "C" fn tty_pause(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let readable_v = BooleanValue(false);
+    let rv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &readable_v };
+    JS_DefineProperty(cx, obj_h, c"readable".as_ptr(), rv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+/// destroy() — mark stream as destroyed
+unsafe extern "C" fn tty_destroy(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let destroyed_v = BooleanValue(true);
+    let dv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &destroyed_v };
+    JS_DefineProperty(cx, obj_h, c"destroyed".as_ptr(), dv_h, JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+/// clearLine(dir) — write ANSI escape to clear line. dir: -1=left, 1=right, 0=entire line
+unsafe extern "C" fn tty_clear_line(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+
+    let dir = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
+    let esc = match dir {
+        -1 => "\x1b[1K",
+        1 => "\x1b[0K",
+        _ => "\x1b[2K",
+    };
+
+    let mut fd_val = UndefinedValue();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    JS_GetProperty(cx, obj_h, c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { 1 };
+
+    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+/// clearScreenDown() — write ANSI escape to clear from cursor to end of screen
+unsafe extern "C" fn tty_clear_screen_down(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+
+    let esc = "\x1b[J";
+    let mut fd_val = UndefinedValue();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    JS_GetProperty(cx, obj_h, c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { 1 };
+
+    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+/// cursorTo(x, y) — write ANSI escape to move cursor
+unsafe extern "C" fn tty_cursor_to(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+
+    let col = if argc > 0 { (*args.get(0).ptr).to_int32().max(0) as u32 } else { 0 };
+    let row = if argc > 1 { (*args.get(1).ptr).to_int32().max(0) as u32 } else { 0 };
+    let esc = format!("\x1b[{};{}H", row + 1, col + 1);
+
+    let mut fd_val = UndefinedValue();
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    JS_GetProperty(cx, obj_h, c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { 1 };
+
+    libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
+    args.rval().set(ObjectValue(this_obj));
+    true
+}
+
+/// moveCursor(dx, dy) — write ANSI escape to move cursor relative
+unsafe extern "C" fn tty_move_cursor(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
+    let this_obj = this.to_object();
+
+    let dx = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
+    let dy = if argc > 1 { (*args.get(1).ptr).to_int32() } else { 0 };
+
+    let mut esc = String::new();
+    if dy > 0 { esc.push_str(&format!("\x1b[{}A", dy)); }
+    if dy < 0 { esc.push_str(&format!("\x1b[{}B", -dy)); }
+    if dx > 0 { esc.push_str(&format!("\x1b[{}C", dx)); }
+    if dx < 0 { esc.push_str(&format!("\x1b[{}D", -dx)); }
+
+    if !esc.is_empty() {
+        let mut fd_val = UndefinedValue();
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+        JS_GetProperty(cx, obj_h, c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
+        let fd = if fd_val.is_int32() { fd_val.to_int32() } else { 1 };
+        libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
+    }
+    args.rval().set(ObjectValue(this_obj));
     true
 }

@@ -1,4 +1,4 @@
-// @trace REQ-BRW-001  REQ-CDP-006: Servo delegate hooks for CDP event forwarding
+// @trace REQ-BRW-001 [entity:BrowserContext]  REQ-CDP-006: Servo delegate hooks for CDP event forwarding
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -9,6 +9,9 @@ use servo::{
     NavigationRequest, PermissionRequest, ScreenGeometry, ServoDelegate,
     ServoError, WebView, WebViewDelegate,
 };
+
+use bao_cdp::{BaoEvent, ConsoleMessage};
+
 pub struct BaoWebViewState {
     pub url: Option<url::Url>,
     pub title: Option<String>,
@@ -18,7 +21,7 @@ pub struct BaoWebViewState {
     /// evaluate_js checks this flag and refreshes stale DOM proxies before executing scripts.
     pub dom_proxies_dirty: bool,
     /// Channel for forwarding per-webview console messages to CDP Log domain.
-    pub console_log_tx: Option<std::sync::mpsc::Sender<(String, String)>>,
+    pub console_log_tx: Option<std::sync::mpsc::Sender<ConsoleMessage>>,
 }
 
 impl Default for BaoWebViewState {
@@ -38,7 +41,7 @@ pub struct BaoServoDelegate {
     last_error: RefCell<Option<String>>,
     /// Channel for forwarding console messages to CDP Log domain.
     /// Set via `set_console_log_tx` when CDP server starts.
-    console_log_tx: RefCell<Option<std::sync::mpsc::Sender<(String, String)>>>,
+    console_log_tx: RefCell<Option<std::sync::mpsc::Sender<ConsoleMessage>>>,
 }
 
 impl Default for BaoServoDelegate {
@@ -61,13 +64,13 @@ impl BaoServoDelegate {
 
     /// Set the channel for forwarding console messages to CDP.
     /// Called when CDP server starts.
-    pub fn set_console_log_tx(&self, tx: std::sync::mpsc::Sender<(String, String)>) {
+    pub fn set_console_log_tx(&self, tx: std::sync::mpsc::Sender<ConsoleMessage>) {
         *self.console_log_tx.borrow_mut() = Some(tx);
     }
 
     /// Get a clone of the console log sender, if one has been set.
     /// Used to propagate the channel to per-webview state.
-    pub fn console_log_tx(&self) -> Option<std::sync::mpsc::Sender<(String, String)>> {
+    pub fn console_log_tx(&self) -> Option<std::sync::mpsc::Sender<ConsoleMessage>> {
         self.console_log_tx.borrow().clone()
     }
 }
@@ -86,9 +89,13 @@ impl ServoDelegate for BaoServoDelegate {
             ConsoleLogLevel::Error => "error",
             ConsoleLogLevel::Trace => "verbose",
         };
-        eprintln!("[servo] {message}");
+        log::trace!("[servo] {message}");
         if let Some(ref tx) = *self.console_log_tx.borrow() {
-            let _ = tx.send((level_str.to_string(), message));
+            let msg = match BaoEvent::from_console_text(&message) {
+                Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
+                _ => ConsoleMessage::Log { level: level_str.to_string(), text: message },
+            };
+            let _ = tx.send(msg);
         }
     }
 
@@ -140,6 +147,15 @@ impl WebViewDelegate for BaoWebViewDelegate {
         self.state.borrow_mut().load_status = status;
         if matches!(status, LoadStatus::Complete) {
             self.state.borrow_mut().dom_proxies_dirty = true;
+            // Emit PageLoadEventFired directly via the console channel,
+            // no longer relying on JS injection.
+            if let Some(ref tx) = self.state.borrow().console_log_tx {
+                let timestamp = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64();
+                let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp }));
+            }
         }
     }
 
@@ -171,9 +187,13 @@ impl WebViewDelegate for BaoWebViewDelegate {
             ConsoleLogLevel::Error => "error",
             ConsoleLogLevel::Trace => "verbose",
         };
-        eprintln!("[webview] {message}");
+        log::trace!("[webview] {message}");
         if let Some(ref tx) = self.state.borrow().console_log_tx {
-            let _ = tx.send((level_str.to_string(), message));
+            let msg = match BaoEvent::from_console_text(&message) {
+                Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
+                _ => ConsoleMessage::Log { level: level_str.to_string(), text: message },
+            };
+            let _ = tx.send(msg);
         }
     }
 
@@ -182,7 +202,7 @@ impl WebViewDelegate for BaoWebViewDelegate {
     fn hide_embedder_control(&self, _webview: WebView, _id: EmbedderControlId) {}
 
     fn notify_crashed(&self, _webview: WebView, reason: String, _backtrace: Option<String>) {
-        eprintln!("[webview] crashed: {reason}");
+        log::error!("[webview] crashed: {reason}");
     }
 }
 
@@ -321,7 +341,7 @@ mod tests {
     fn test_servo_delegate_console_log_channel_set_and_get() {
         let delegate = BaoServoDelegate::new();
         assert!(delegate.console_log_tx().is_none());
-        let (tx, _rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, _rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         delegate.set_console_log_tx(tx);
         assert!(delegate.console_log_tx().is_some());
     }
@@ -329,28 +349,38 @@ mod tests {
     #[test]
     fn test_servo_delegate_console_log_tx_clones() {
         let delegate = BaoServoDelegate::new();
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         delegate.set_console_log_tx(tx);
         // Get a clone and send through it
         let cloned = delegate.console_log_tx().unwrap();
-        cloned.send(("info".into(), "hello".into())).unwrap();
-        let (level, text) = rx.try_recv().unwrap();
-        assert_eq!(level, "info");
-        assert_eq!(text, "hello");
+        cloned.send(ConsoleMessage::Log { level: "info".into(), text: "hello".into() }).unwrap();
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Log { level, text } => {
+                assert_eq!(level, "info");
+                assert_eq!(text, "hello");
+            }
+            ConsoleMessage::Event(_) => panic!("expected Log, got Event"),
+        }
     }
 
     #[test]
     fn test_webview_state_console_log_tx_propagation() {
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         let mut state = BaoWebViewState::default();
         state.console_log_tx = Some(tx);
         // Simulate what show_console_message does
         if let Some(ref tx) = state.console_log_tx {
-            tx.send(("warning".into(), "test message".into())).unwrap();
+            tx.send(ConsoleMessage::Log { level: "warning".into(), text: "test message".into() }).unwrap();
         }
-        let (level, text) = rx.try_recv().unwrap();
-        assert_eq!(level, "warning");
-        assert_eq!(text, "test message");
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Log { level, text } => {
+                assert_eq!(level, "warning");
+                assert_eq!(text, "test message");
+            }
+            ConsoleMessage::Event(_) => panic!("expected Log, got Event"),
+        }
     }
 
     #[test]
@@ -362,7 +392,7 @@ mod tests {
     #[test]
     fn test_console_log_all_level_mappings() {
         let delegate = BaoServoDelegate::new();
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, _rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         delegate.set_console_log_tx(tx);
 
         // Verify all ConsoleLogLevel variants map correctly via the delegate's show_console_message
@@ -386,12 +416,11 @@ mod tests {
             };
             assert_eq!(mapped, expected_str, "level {:?} should map to {}", level, expected_str);
         }
-        drop(rx);
     }
 
     #[test]
     fn test_webview_delegate_console_log_forwarding() {
-        let (tx, rx) = std::sync::mpsc::channel::<(String, String)>();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
         let state = Rc::new(RefCell::new(BaoWebViewState {
             console_log_tx: Some(tx),
             ..Default::default()
@@ -401,10 +430,15 @@ mod tests {
 
         // Simulate sending through state's channel (what show_console_message does)
         if let Some(ref tx) = _delegate.state().borrow().console_log_tx {
-            tx.send(("error".into(), "crash!".into())).unwrap();
+            tx.send(ConsoleMessage::Log { level: "error".into(), text: "crash!".into() }).unwrap();
         }
-        let (level, text) = rx.try_recv().unwrap();
-        assert_eq!(level, "error");
-        assert_eq!(text, "crash!");
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Log { level, text } => {
+                assert_eq!(level, "error");
+                assert_eq!(text, "crash!");
+            }
+            ConsoleMessage::Event(_) => panic!("expected Log, got Event"),
+        }
     }
 }

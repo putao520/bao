@@ -31,10 +31,10 @@ fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 
 #[test]
 fn test_realworld_http_service_all() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     // ═══════════════════════════════════════════════════════════════
     // 1. http module surface — what the library user sees
@@ -676,5 +676,5 @@ fn test_realworld_http_service_all() {
 
     // JsContext is zero-sized newtype over a pointer; the test Runtime is
     // intentionally leaked by for_test() to avoid mozjs TLS destructor crashes.
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

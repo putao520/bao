@@ -21,10 +21,10 @@ fn eval_bool(ctx: &mut JsContext, source: &str) -> bool {
 
 #[test]
 fn test_http_client_deep() {
-    bao_runtime::install_exit_handler();
-    bao_runtime::bun_api::init_process_start();
+    bun_runtime::install_exit_handler();
+    bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("JsContext");
-    ctx.set_global_setup(bao_runtime::globals::install_all);
+    ctx.set_global_setup(bun_runtime::globals::install_all);
 
     // === http module API surface ===
     assert!(eval_bool(&mut ctx, "typeof require('http') === 'object'"), "http should be object");
@@ -143,5 +143,5 @@ fn test_http_client_deep() {
         typeof fetch === 'function' && fetch.length >= 1
     "#), "fetch should be a function with at least 1 parameter");
 
-    bao_runtime::shutdown_thread_sm();
+    bun_runtime::shutdown_thread_sm();
 }

@@ -1,4 +1,5 @@
 // @trace REQ-ENG-007
+use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
 use mozjs::rooted;
@@ -97,7 +98,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
     unsafe {
         let cx_raw = cx.raw_cx();
-        let c_filename = ::std::ffi::CString::new("node:querystring").unwrap_or_default();
+        let c_filename = ZBox::from_bytes("node:querystring".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
         if opts.is_null() {
             return;
@@ -126,7 +127,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr };
 
         for name in &["parse", "stringify", "escape", "unescape"] {
-            let cname = ::std::ffi::CString::new(*name).unwrap_or_default();
+            let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
             JS_GetProperty(cx_raw, exports_h, cname.as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,

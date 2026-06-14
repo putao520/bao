@@ -1,5 +1,5 @@
 // @trace REQ-ENG-007
-use ::std::ffi::CString;
+use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
@@ -124,7 +124,7 @@ unsafe extern "C" fn vm_script_ctor(
 
 fn eval_code(cx: *mut JSContext, code: &str, filename: &str) -> Option<*mut JSObject> {
     unsafe {
-        let c_filename = CString::new(filename.as_bytes()).unwrap_or_default();
+        let c_filename = ZBox::from_bytes(filename.as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr() as *const _, 1);
         if opts.is_null() {
             return None;
@@ -256,7 +256,7 @@ unsafe extern "C" fn vm_create_context(
                 return dst;
             })
         "#;
-        let c_filename = CString::new("<vm>").unwrap_or_default();
+        let c_filename = ZBox::from_bytes("<vm>".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr() as *const _, 1);
         if !opts.is_null() {
             let mut src = mozjs::rust::transform_str_to_source_text(js_code);
@@ -329,7 +329,7 @@ unsafe extern "C" fn vm_compile_function(
     // Wrap in a function expression
     let wrapped = format!("(function {}() {{ {} }})", fn_name, code);
 
-    let c_filename = CString::new("vm.js").unwrap_or_default();
+    let c_filename = ZBox::from_bytes("vm.js".as_bytes());
     let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr() as *const _, 1);
     if opts.is_null() {
         args.rval().set(UndefinedValue());
