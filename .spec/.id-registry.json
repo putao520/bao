@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "types": {
+    "REQ": {
+      "domains": {}
+    },
+    "TEST": {
+      "domains": {}
+    },
+    "BUG": {
+      "domains": {}
+    },
+    "MOD": {
+      "domains": {}
+    },
+    "IF": {
+      "domains": {}
+    },
+    "DEC": {
+      "domains": {}
+    },
+    "DF": {
+      "domains": {}
+    },
+    "CF": {
+      "domains": {}
+    }
+  }
+}

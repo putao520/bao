@@ -1121,7 +1121,7 @@ Permission 配置:
 2. 改为按需创建 Node API JSValue 对象（不挂 global），供可信脚本的 CommonJS 包裹函数使用
 3. 页面 JS 仅保留标准 Web API（console/fetch/URL/URLSearchParams/WebSocket 等）
 4. 保留 console 注入（页面 JS 需要 console.log）
-5. 保留 Web 标准 API（fetch/Headers/Request/Response/URL/URLSearchParams）</p><div id="runtime-bridge.rs-不再调用-install-all-native()-将-node.js-api-挂在-window-global" data-criterion="runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global">runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global</div><div id="页面-js-中-typeof-require-===-'undefined'，reflect.ownkeys(globalthis)-中无任何-node-api" data-criterion="页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API">页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API</div><div id="页面-js-中-typeof-process-===-'undefined'" data-criterion="页面 JS 中 typeof process === 'undefined'">页面 JS 中 typeof process === 'undefined'</div><div id="页面-js-中-typeof-buffer-===-'undefined'" data-criterion="页面 JS 中 typeof Buffer === 'undefined'">页面 JS 中 typeof Buffer === 'undefined'</div><div id="页面-js-中-typeof-bun-===-'undefined'" data-criterion="页面 JS 中 typeof Bun === 'undefined'">页面 JS 中 typeof Bun === 'undefined'</div><div id="页面-js-中-console.log()-正常工作（console-保留在-global）" data-criterion="页面 JS 中 console.log() 正常工作（console 保留在 global）">页面 JS 中 console.log() 正常工作（console 保留在 global）</div><div id="页面-js-中-fetch()-正常工作（web-api-保留在-global）" data-criterion="页面 JS 中 fetch() 正常工作（Web API 保留在 global）">页面 JS 中 fetch() 正常工作（Web API 保留在 global）</div><div id="页面-js-中-url/urlsearchparams-正常工作" data-criterion="页面 JS 中 URL/URLSearchParams 正常工作">页面 JS 中 URL/URLSearchParams 正常工作</div><div id="node-api-只存在于-node-realm-的-global-上，不在-page-realm-的-window-global-上存在任何痕迹" data-criterion="Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹">Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹</div><div id="install-all-native()-重构为-create-node-api-scope-values()-创建-node-realm-global-上的属性" data-criterion="install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性">install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section id="POST-evaluate-js" data-api="POST /evaluate-js" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /evaluate-js — 可信脚本执行 — Node Realm (全权限)</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="code" data-required="true" data-type="string"><td>code</td><td>string</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+5. 保留 Web 标准 API（fetch/Headers/Request/Response/URL/URLSearchParams）</p><div id="runtime-bridge.rs-不再调用-install-all-native()-将-node.js-api-挂在-window-global" data-criterion="runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global">runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global</div><div id="页面-js-中-typeof-require-===-'undefined'，reflect.ownkeys(globalthis)-中无任何-node-api" data-criterion="页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API">页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API</div><div id="页面-js-中-typeof-process-===-'undefined'" data-criterion="页面 JS 中 typeof process === 'undefined'">页面 JS 中 typeof process === 'undefined'</div><div id="页面-js-中-typeof-buffer-===-'undefined'" data-criterion="页面 JS 中 typeof Buffer === 'undefined'">页面 JS 中 typeof Buffer === 'undefined'</div><div id="页面-js-中-typeof-bun-===-'undefined'" data-criterion="页面 JS 中 typeof Bun === 'undefined'">页面 JS 中 typeof Bun === 'undefined'</div><div id="页面-js-中-console.log()-正常工作（console-保留在-global）" data-criterion="页面 JS 中 console.log() 正常工作（console 保留在 global）">页面 JS 中 console.log() 正常工作（console 保留在 global）</div><div id="页面-js-中-fetch()-正常工作（web-api-保留在-global）" data-criterion="页面 JS 中 fetch() 正常工作（Web API 保留在 global）">页面 JS 中 fetch() 正常工作（Web API 保留在 global）</div><div id="页面-js-中-url/urlsearchparams-正常工作" data-criterion="页面 JS 中 URL/URLSearchParams 正常工作">页面 JS 中 URL/URLSearchParams 正常工作</div><div id="node-api-只存在于-node-realm-的-global-上，不在-page-realm-的-window-global-上存在任何痕迹" data-criterion="Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹">Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹</div><div id="install-all-native()-重构为-create-node-api-scope-values()-创建-node-realm-global-上的属性" data-criterion="install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性">install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section id="post-/evaluate-js" data-api="POST /evaluate-js" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /evaluate-js — 可信脚本执行 — Node Realm (全权限)</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="code" data-required="true" data-type="string"><td>code</td><td>string</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1145,7 +1145,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-evaluate-js-web" data-api="POST /evaluate-js-web" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /evaluate-js-web — 页面脚本执行 — Page Realm (仅 Web API)</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="code" data-required="true" data-type="string"><td>code</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/evaluate-js-web" data-api="POST /evaluate-js-web" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /evaluate-js-web — 页面脚本执行 — Page Realm (仅 Web API)</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="code" data-required="true" data-type="string"><td>code</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1166,7 +1166,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-sandbox-status" data-api="GET /sandbox-status" data-api-response="{&quot;fields&quot;:{&quot;node_api_visible&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm_isolated&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;require_available&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /sandbox-status — 安全沙箱状态查询</h4><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/sandbox-status" data-api="GET /sandbox-status" data-api-response="{&quot;fields&quot;:{&quot;node_api_visible&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm_isolated&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;require_available&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /sandbox-status — 安全沙箱状态查询</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1184,7 +1184,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-runtime-eval" data-api="POST /runtime/eval" data-api-request="{&quot;script&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;filename&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /runtime/eval — SpiderMonkey 引擎集成 — JS 执行 API</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="script" data-required="true" data-type="string"><td>script</td><td>string</td><td>是</td><td></td></tr><tr data-param="filename" data-required="true" data-type="string"><td>filename</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/runtime/eval" data-api="POST /runtime/eval" data-api-request="{&quot;script&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;filename&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /runtime/eval — SpiderMonkey 引擎集成 — JS 执行 API</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="script" data-required="true" data-type="string"><td>script</td><td>string</td><td>是</td><td></td></tr><tr data-param="filename" data-required="true" data-type="string"><td>filename</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1208,7 +1208,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-codegen-generate" data-api="POST /codegen/generate" data-api-request="{&quot;classes_file&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;output_dir&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;generated_files&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;success&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /codegen/generate — 代码生成后端 — SpiderMonkey 绑定生成</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="classes_file" data-required="true" data-type="string"><td>classes_file</td><td>string</td><td>是</td><td></td></tr><tr data-param="output_dir" data-required="true" data-type="string"><td>output_dir</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/codegen/generate" data-api="POST /codegen/generate" data-api-request="{&quot;classes_file&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;output_dir&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;generated_files&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;success&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /codegen/generate — 代码生成后端 — SpiderMonkey 绑定生成</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="classes_file" data-required="true" data-type="string"><td>classes_file</td><td>string</td><td>是</td><td></td></tr><tr data-param="output_dir" data-required="true" data-type="string"><td>output_dir</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1232,7 +1232,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-host-fn-call" data-api="POST /host-fn/call" data-api-request="{&quot;name&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;callback&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /host-fn/call — host_fn 抽象层 — Rust 安全 JS 调用</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="name" data-required="true" data-type="string"><td>name</td><td>string</td><td>是</td><td></td></tr><tr data-param="callback" data-required="true" data-type="json"><td>callback</td><td>json</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/host-fn/call" data-api="POST /host-fn/call" data-api-request="{&quot;name&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;callback&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}"><h4>POST /host-fn/call — host_fn 抽象层 — Rust 安全 JS 调用</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="name" data-required="true" data-type="string"><td>name</td><td>string</td><td>是</td><td></td></tr><tr data-param="callback" data-required="true" data-type="json"><td>callback</td><td>json</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1256,7 +1256,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-event-loop-drain" data-api="POST /event-loop/drain" data-api-request="{&quot;tick&quot;:{&quot;type&quot;:&quot;integer&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;microtask_count&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;macrotask_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /event-loop/drain — Event Loop 桥接 — 事件循环 tick</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="tick" data-required="false" data-type="integer"><td>tick</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/event-loop/drain" data-api="POST /event-loop/drain" data-api-request="{&quot;tick&quot;:{&quot;type&quot;:&quot;integer&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;microtask_count&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;macrotask_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /event-loop/drain — Event Loop 桥接 — 事件循环 tick</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="tick" data-required="false" data-type="integer"><td>tick</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1279,7 +1279,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-module-resolve" data-api="POST /module/resolve" data-api-request="{&quot;specifier&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;referrer&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;source&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /module/resolve — Module Loader 桥接 — ESM/CJS 模块解析</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="specifier" data-required="true" data-type="string"><td>specifier</td><td>string</td><td>是</td><td></td></tr><tr data-param="referrer" data-required="false" data-type="string"><td>referrer</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/module/resolve" data-api="POST /module/resolve" data-api-request="{&quot;specifier&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;referrer&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;source&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /module/resolve — Module Loader 桥接 — ESM/CJS 模块解析</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="specifier" data-required="true" data-type="string"><td>specifier</td><td>string</td><td>是</td><td></td></tr><tr data-param="referrer" data-required="false" data-type="string"><td>referrer</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1303,7 +1303,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-api-bun-compat" data-api="GET /api/bun-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /api/bun-compat — Bun API 适配 — Bun.* 别名兼容</h4><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/api/bun-compat" data-api="GET /api/bun-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /api/bun-compat — Bun API 适配 — Bun.* 别名兼容</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1318,7 +1318,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-api-node-compat" data-api="GET /api/node-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /api/node-compat — Node.js 兼容层 — require/fs/crypto 适配</h4><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/api/node-compat" data-api="GET /api/node-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /api/node-compat — Node.js 兼容层 — require/fs/crypto 适配</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1333,7 +1333,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-cli-exec" data-api="POST /cli/exec" data-api-request="{&quot;command&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;exit_code&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stdout&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cli/exec — bao CLI 品牌替换 — bao run/test/build/browser</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="command" data-required="true" data-type="string"><td>command</td><td>string</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/cli/exec" data-api="POST /cli/exec" data-api-request="{&quot;command&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;exit_code&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stdout&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cli/exec — bao CLI 品牌替换 — bao run/test/build/browser</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="command" data-required="true" data-type="string"><td>command</td><td>string</td><td>是</td><td></td></tr><tr data-param="args" data-required="false" data-type="json"><td>args</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1360,7 +1360,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-cli-browser" data-api="POST /cli/browser" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;cdp_port&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stealth&quot;:{&quot;type&quot;:&quot;boolean&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;pid&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;cdp_url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cli/browser — bao browser 子命令 — 启动浏览器模式</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td></tr><tr data-param="cdp_port" data-required="false" data-type="integer"><td>cdp_port</td><td>integer</td><td>否</td><td></td></tr><tr data-param="stealth" data-required="false" data-type="boolean"><td>stealth</td><td>boolean</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/cli/browser" data-api="POST /cli/browser" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;cdp_port&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stealth&quot;:{&quot;type&quot;:&quot;boolean&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;pid&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;cdp_url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cli/browser — bao browser 子命令 — 启动浏览器模式</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td></tr><tr data-param="cdp_port" data-required="false" data-type="integer"><td>cdp_port</td><td>integer</td><td>否</td><td></td></tr><tr data-param="stealth" data-required="false" data-type="boolean"><td>stealth</td><td>boolean</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1386,7 +1386,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-browser-create-page" data-api="POST /browser/create-page" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;viewport&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;state&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/create-page — libservo 集成 — 创建 WebView 页面</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td></tr><tr data-param="viewport" data-required="false" data-type="json"><td>viewport</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/browser/create-page" data-api="POST /browser/create-page" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;viewport&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;state&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/create-page — libservo 集成 — 创建 WebView 页面</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td></tr><tr data-param="viewport" data-required="false" data-type="json"><td>viewport</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1412,7 +1412,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-browser-screenshot" data-api="POST /browser/screenshot" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;format&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;data&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;width&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;height&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/screenshot — 内存渲染 — 截图输出</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="format" data-required="false" data-type="string"><td>format</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/browser/screenshot" data-api="POST /browser/screenshot" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;format&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;data&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;width&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;height&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/screenshot — 内存渲染 — 截图输出</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="format" data-required="false" data-type="string"><td>format</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1444,7 +1444,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-browser-jscontext-fuse" data-api="POST /browser/jscontext-fuse" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;fused&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/jscontext-fuse — SpiderMonkey JSContext 融合 — Page/Node 双 Realm</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/browser/jscontext-fuse" data-api="POST /browser/jscontext-fuse" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;fused&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /browser/jscontext-fuse — SpiderMonkey JSContext 融合 — Page/Node 双 Realm</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1465,7 +1465,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-cdp-runtime" data-api="POST /cdp/runtime" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/runtime — Runtime Domain — JS 执行/控制/Console</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/cdp/runtime" data-api="POST /cdp/runtime" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/runtime — Runtime Domain — JS 执行/控制/Console</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1489,7 +1489,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-cdp-debugger" data-api="POST /cdp/debugger" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/debugger — Debugger Domain — 断点/源码/单步调试</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/cdp/debugger" data-api="POST /cdp/debugger" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/debugger — Debugger Domain — 断点/源码/单步调试</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1513,7 +1513,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-cdp-page" data-api="POST /cdp/page" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/page — Page Domain — 导航/截图/事件</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/cdp/page" data-api="POST /cdp/page" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/page — Page Domain — 导航/截图/事件</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1537,7 +1537,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-cdp-dom" data-api="POST /cdp/dom" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/dom — DOM Domain — 节点查询/修改/事件</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/cdp/dom" data-api="POST /cdp/dom" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/dom — DOM Domain — 节点查询/修改/事件</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1561,7 +1561,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-cdp-network" data-api="POST /cdp/network" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/network — Network Domain — 请求/响应拦截/Cookie</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/cdp/network" data-api="POST /cdp/network" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/network — Network Domain — 请求/响应拦截/Cookie</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1585,7 +1585,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-cdp-emulation" data-api="POST /cdp/emulation" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/emulation — CSS/Input/Emulation/Overlay Domain — 设备模拟</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/cdp/emulation" data-api="POST /cdp/emulation" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /cdp/emulation — CSS/Input/Emulation/Overlay Domain — 设备模拟</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="session_id" data-required="true" data-type="string"><td>session_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1609,7 +1609,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-stealth-tls" data-api="POST /stealth/tls" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;ja3_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;tls_version&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/tls — TLS 指纹模拟 — JA3/JA4 伪造</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/stealth/tls" data-api="POST /stealth/tls" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;ja3_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;tls_version&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/tls — TLS 指纹模拟 — JA3/JA4 伪造</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1632,7 +1632,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-stealth-http2" data-api="POST /stealth/http2" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;akamai_fingerprint&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;settings_frame&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/http2 — HTTP/2 指纹匹配 — Akamai 规避</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/stealth/http2" data-api="POST /stealth/http2" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;akamai_fingerprint&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;settings_frame&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/http2 — HTTP/2 指纹匹配 — Akamai 规避</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1655,7 +1655,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-stealth-canvas" data-api="POST /stealth/canvas" data-api-request="{&quot;seed&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;intensity&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;noise_applied&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/canvas — Canvas 指纹防护 — 像素噪声注入</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="seed" data-required="false" data-type="integer"><td>seed</td><td>integer</td><td>否</td><td></td></tr><tr data-param="intensity" data-required="false" data-type="string"><td>intensity</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/stealth/canvas" data-api="POST /stealth/canvas" data-api-request="{&quot;seed&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;intensity&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;noise_applied&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/canvas — Canvas 指纹防护 — 像素噪声注入</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="seed" data-required="false" data-type="integer"><td>seed</td><td>integer</td><td>否</td><td></td></tr><tr data-param="intensity" data-required="false" data-type="string"><td>intensity</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1678,7 +1678,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-stealth-navigator" data-api="POST /stealth/navigator" data-api-request="{&quot;ua&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;navigator&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/navigator — Navigator/Screen 构造 — UA/屏幕模拟</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="ua" data-required="false" data-type="string"><td>ua</td><td>string</td><td>否</td><td></td></tr><tr data-param="screen" data-required="false" data-type="json"><td>screen</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/stealth/navigator" data-api="POST /stealth/navigator" data-api-request="{&quot;ua&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;navigator&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/navigator — Navigator/Screen 构造 — UA/屏幕模拟</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="ua" data-required="false" data-type="string"><td>ua</td><td>string</td><td>否</td><td></td></tr><tr data-param="screen" data-required="false" data-type="json"><td>screen</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1707,7 +1707,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-stealth-webgl-audio" data-api="POST /stealth/webgl-audio" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;webgl_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;audio_hash&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/webgl-audio — WebGL/Audio 指纹防护 — 渲染器/音频指纹伪造</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/stealth/webgl-audio" data-api="POST /stealth/webgl-audio" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;webgl_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;audio_hash&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/webgl-audio — WebGL/Audio 指纹防护 — 渲染器/音频指纹伪造</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="profile_name" data-required="false" data-type="string"><td>profile_name</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1730,7 +1730,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-stealth-behavior" data-api="POST /stealth/behavior" data-api-request="{&quot;action_type&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;path&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;delays&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/behavior — 行为模拟 — 鼠标轨迹/打字延迟/滚动</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="action_type" data-required="true" data-type="string"><td>action_type</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/stealth/behavior" data-api="POST /stealth/behavior" data-api-request="{&quot;action_type&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;path&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;delays&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /stealth/behavior — 行为模拟 — 鼠标轨迹/打字延迟/滚动</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="action_type" data-required="true" data-type="string"><td>action_type</td><td>string</td><td>是</td><td></td></tr><tr data-param="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1753,7 +1753,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-stealth-cdp-stealth" data-api="GET /stealth/cdp-stealth" data-api-response="{&quot;fields&quot;:{&quot;stealth_active&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;patches_applied&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /stealth/cdp-stealth — CDP 隐蔽性 — 反检测补丁</h4><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/stealth/cdp-stealth" data-api="GET /stealth/cdp-stealth" data-api-response="{&quot;fields&quot;:{&quot;stealth_active&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;patches_applied&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /stealth/cdp-stealth — CDP 隐蔽性 — 反检测补丁</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1768,7 +1768,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-pagepool-create" data-api="POST /pagepool/create" data-api-request="{&quot;config&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /pagepool/create — 多页面管理 — PagePool 创建/销毁/复用</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="config" data-required="true" data-type="json"><td>config</td><td>json</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/pagepool/create" data-api="POST /pagepool/create" data-api-request="{&quot;config&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /pagepool/create — 多页面管理 — PagePool 创建/销毁/复用</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="config" data-required="true" data-type="json"><td>config</td><td>json</td><td>是</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1791,7 +1791,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-pagepool-stats" data-api="GET /pagepool/stats" data-api-response="{&quot;fields&quot;:{&quot;active&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;idle&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;max_total&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /pagepool/stats — PagePool 资源管理 — 统计/回收/限制</h4><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/pagepool/stats" data-api="GET /pagepool/stats" data-api-response="{&quot;fields&quot;:{&quot;active&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;idle&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;max_total&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /pagepool/stats — PagePool 资源管理 — 统计/回收/限制</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1809,7 +1809,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-permission-set" data-api="POST /permission/set" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;permissions&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;granted&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /permission/set — Permission 可选沙箱 — 权限配置与执行</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="permissions" data-required="true" data-type="json"><td>permissions</td><td>json</td><td>是</td><td></td></tr></table><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/permission/set" data-api="POST /permission/set" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;permissions&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;granted&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>POST /permission/set — Permission 可选沙箱 — 权限配置与执行</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td></tr><tr data-param="permissions" data-required="true" data-type="json"><td>permissions</td><td>json</td><td>是</td><td></td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1833,7 +1833,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-impl-phase1-status" data-api="GET /impl/phase1-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase1-status — Phase 1 SpiderMonkey 替换 JSC — 实施状态</h4><script type="application/ld+json">
+</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/impl/phase1-status" data-api="GET /impl/phase1-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase1-status — Phase 1 SpiderMonkey 替换 JSC — 实施状态</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1851,7 +1851,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-impl-phase2-status" data-api="GET /impl/phase2-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase2-status — Phase 2 servo 引擎集成 — 实施状态</h4><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/impl/phase2-status" data-api="GET /impl/phase2-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase2-status — Phase 2 servo 引擎集成 — 实施状态</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1869,7 +1869,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-impl-phase3-status" data-api="GET /impl/phase3-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase3-status — Phase 3 CDP Server — 实施状态</h4><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/impl/phase3-status" data-api="GET /impl/phase3-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase3-status — Phase 3 CDP Server — 实施状态</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1887,7 +1887,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-impl-phase4-status" data-api="GET /impl/phase4-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase4-status — Phase 4 Stealth 反指纹 — 实施状态</h4><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/impl/phase4-status" data-api="GET /impl/phase4-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase4-status — Phase 4 Stealth 反指纹 — 实施状态</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1905,7 +1905,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="GET-impl-phase5-status" data-api="GET /impl/phase5-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase5-status — Phase 5 Headless 多页面库 — 实施状态</h4><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="get-/impl/phase5-status" data-api="GET /impl/phase5-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}"><h4>GET /impl/phase5-status — Phase 5 Headless 多页面库 — 实施状态</h4><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -1923,7 +1923,7 @@ Permission 配置:
     }
   }
 }
-</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="POST-fetch" data-api="POST /fetch"><h4>POST /fetch — POST /fetch — CORS 安全策略禁用 — 直接 HTTP 请求</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td>目标 URL</td></tr><tr data-param="method" data-required="false" data-type="string"><td>method</td><td>string</td><td>否</td><td>HTTP 方法</td></tr><tr data-param="headers" data-required="false" data-type="json"><td>headers</td><td>json</td><td>否</td><td>请求头</td></tr><tr data-param="body" data-required="false" data-type="string"><td>body</td><td>string</td><td>否</td><td>请求体</td></tr></table><script type="application/ld+json">
+</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section id="post-/fetch" data-api="POST /fetch"><h4>POST /fetch — POST /fetch — CORS 安全策略禁用 — 直接 HTTP 请求</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-param="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td>目标 URL</td></tr><tr data-param="method" data-required="false" data-type="string"><td>method</td><td>string</td><td>否</td><td>HTTP 方法</td></tr><tr data-param="headers" data-required="false" data-type="json"><td>headers</td><td>json</td><td>否</td><td>请求头</td></tr><tr data-param="body" data-required="false" data-type="string"><td>body</td><td>string</td><td>否</td><td>请求体</td></tr></table><script type="application/ld+json">
 {
   "@type": "ApiResponse",
   "source": "example",
@@ -2070,7 +2070,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
 | bun_event_loop | workspace | MIT | 事件循环 | 100% 复用 |
 | bun_http | workspace | MIT | HTTP 服务 | 100% 复用 |
 | bun_io | workspace | MIT | I/O 抽象 | 100% 复用 |
-| bun_base64 | workspace | MIT | Base64 | 100% 复用 |</div></section><section data-api="POST /compress/brotli" id="POST-compress-brotli"><h4>POST /compress/brotli</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-param="quality"><td>quality</td><td>integer</td><td>否</td><td></td></tr><tr data-required="true" data-type="blob" data-param="input"><td>input</td><td>blob</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
+| bun_base64 | workspace | MIT | Base64 | 100% 复用 |</div></section><section data-api="POST /compress/brotli" id="post-/compress/brotli"><h4>POST /compress/brotli</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-param="quality"><td>quality</td><td>integer</td><td>否</td><td></td></tr><tr data-required="true" data-type="blob" data-param="input"><td>input</td><td>blob</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2080,7 +2080,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/zstd" id="POST-compress-zstd"><h4>POST /compress/zstd</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-param="level"><td>level</td><td>integer</td><td>否</td><td></td></tr><tr data-required="true" data-type="blob" data-param="input"><td>input</td><td>blob</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/zstd" id="post-/compress/zstd"><h4>POST /compress/zstd</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-param="level"><td>level</td><td>integer</td><td>否</td><td></td></tr><tr data-required="true" data-type="blob" data-param="input"><td>input</td><td>blob</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2090,7 +2090,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/zlib" id="POST-compress-zlib"><h4>POST /compress/zlib</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-param="level"><td>level</td><td>integer</td><td>否</td><td></td></tr><tr data-required="true" data-type="blob" data-param="input"><td>input</td><td>blob</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/zlib" id="post-/compress/zlib"><h4>POST /compress/zlib</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-param="level"><td>level</td><td>integer</td><td>否</td><td></td></tr><tr data-required="true" data-type="blob" data-param="input"><td>input</td><td>blob</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2100,7 +2100,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /config/allocator" id="GET-config-allocator"><h4>GET /config/allocator</h4><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /config/allocator" id="get-/config/allocator"><h4>GET /config/allocator</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2111,7 +2111,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /hash/simd" id="POST-hash-simd"><h4>POST /hash/simd</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="blob" data-param="input"><td>input</td><td>blob</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /hash/simd" id="post-/hash/simd"><h4>POST /hash/simd</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="blob" data-param="input"><td>input</td><td>blob</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2122,7 +2122,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /network/quic" id="POST-network-quic"><h4>POST /network/quic</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="hostname"><td>hostname</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="integer" data-param="port"><td>port</td><td>integer</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /network/quic" id="post-/network/quic"><h4>POST /network/quic</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="hostname"><td>hostname</td><td>string</td><td>是</td><td></td></tr><tr data-required="true" data-type="integer" data-param="port"><td>port</td><td>integer</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2132,7 +2132,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /transform/html" id="POST-transform-html"><h4>POST /transform/html</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="text" data-param="input"><td>input</td><td>text</td><td>是</td><td></td></tr><tr data-required="false" data-type="string" data-param="mode"><td>mode</td><td>string</td><td>否</td><td></td></tr><tr data-required="false" data-type="json" data-param="selectors"><td>selectors</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /transform/html" id="post-/transform/html"><h4>POST /transform/html</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="text" data-param="input"><td>input</td><td>text</td><td>是</td><td></td></tr><tr data-required="false" data-type="string" data-param="mode"><td>mode</td><td>string</td><td>否</td><td></td></tr><tr data-required="false" data-type="json" data-param="selectors"><td>selectors</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2142,7 +2142,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /http/serve" id="POST-http-serve"><h4>POST /http/serve</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="string" data-param="hostname"><td>hostname</td><td>string</td><td>否</td><td></td></tr><tr data-required="true" data-type="integer" data-param="port"><td>port</td><td>integer</td><td>是</td><td></td></tr><tr data-required="false" data-type="string" data-param="protocol"><td>protocol</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /http/serve" id="post-/http/serve"><h4>POST /http/serve</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="false" data-type="string" data-param="hostname"><td>hostname</td><td>string</td><td>否</td><td></td></tr><tr data-required="true" data-type="integer" data-param="port"><td>port</td><td>integer</td><td>是</td><td></td></tr><tr data-required="false" data-type="string" data-param="protocol"><td>protocol</td><td>string</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2152,7 +2152,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/http-response" id="GET-perf-http-response"><h4>GET /perf/http-response</h4><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/http-response" id="get-/perf/http-response"><h4>GET /perf/http-response</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2163,7 +2163,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/cdp-handler" id="GET-perf-cdp-handler"><h4>GET /perf/cdp-handler</h4><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/cdp-handler" id="get-/perf/cdp-handler"><h4>GET /perf/cdp-handler</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2174,7 +2174,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/buffer" id="GET-perf-buffer"><h4>GET /perf/buffer</h4><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/buffer" id="get-/perf/buffer"><h4>GET /perf/buffer</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2185,7 +2185,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/cdp-dispatch" id="GET-perf-cdp-dispatch"><h4>GET /perf/cdp-dispatch</h4><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/cdp-dispatch" id="get-/perf/cdp-dispatch"><h4>GET /perf/cdp-dispatch</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2196,7 +2196,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/code-pattern" id="GET-perf-code-pattern"><h4>GET /perf/code-pattern</h4><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/code-pattern" id="get-/perf/code-pattern"><h4>GET /perf/code-pattern</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2207,7 +2207,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     },
     "status": 200
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/brotli" id="POST-compress-brotli"><h4>POST /compress/brotli</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="blob" data-param="data"><td>data</td><td>blob</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="quality"><td>quality</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/brotli" id="post-/compress/brotli"><h4>POST /compress/brotli</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="blob" data-param="data"><td>data</td><td>blob</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="quality"><td>quality</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2219,7 +2219,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/zstd" id="POST-compress-zstd"><h4>POST /compress/zstd</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="blob" data-param="data"><td>data</td><td>blob</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="level"><td>level</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/zstd" id="post-/compress/zstd"><h4>POST /compress/zstd</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="blob" data-param="data"><td>data</td><td>blob</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="level"><td>level</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2231,7 +2231,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/zlib" id="POST-compress-zlib"><h4>POST /compress/zlib</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="blob" data-param="data"><td>data</td><td>blob</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="level"><td>level</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /compress/zlib" id="post-/compress/zlib"><h4>POST /compress/zlib</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="blob" data-param="data"><td>data</td><td>blob</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="level"><td>level</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2243,7 +2243,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /config/allocator" id="GET-config-allocator"><h4>GET /config/allocator</h4><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /config/allocator" id="get-/config/allocator"><h4>GET /config/allocator</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2255,7 +2255,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /hash/simd" id="POST-hash-simd"><h4>POST /hash/simd</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="blob" data-param="data"><td>data</td><td>blob</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /hash/simd" id="post-/hash/simd"><h4>POST /hash/simd</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="blob" data-param="data"><td>data</td><td>blob</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2267,7 +2267,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /network/quic" id="POST-network-quic"><h4>POST /network/quic</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="host"><td>host</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="port"><td>port</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /network/quic" id="post-/network/quic"><h4>POST /network/quic</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="host"><td>host</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="integer" data-param="port"><td>port</td><td>integer</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2279,7 +2279,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /transform/html" id="POST-transform-html"><h4>POST /transform/html</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="html"><td>html</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="selectors"><td>selectors</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /transform/html" id="post-/transform/html"><h4>POST /transform/html</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="string" data-param="html"><td>html</td><td>string</td><td>是</td><td></td></tr><tr data-required="false" data-type="json" data-param="selectors"><td>selectors</td><td>json</td><td>否</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2291,7 +2291,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /http/serve" id="POST-http-serve"><h4>POST /http/serve</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="integer" data-param="port"><td>port</td><td>integer</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="handler"><td>handler</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
+}</script><table data-api-response=""><tr><th>状态码</th><th>说明</th><th>Schema</th></tr><tr data-schema="" data-status="200"><td>200</td><td>成功</td><td></td></tr></table><table data-api-request-body=""><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="POST /http/serve" id="post-/http/serve"><h4>POST /http/serve</h4><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr><tr data-required="true" data-type="integer" data-param="port"><td>port</td><td>integer</td><td>是</td><td></td></tr><tr data-required="true" data-type="string" data-param="handler"><td>handler</td><td>string</td><td>是</td><td></td></tr></table><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2324,7 +2324,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     "bao-stealth"
   ],
   "description": "BoringSSL-backed TLS 1.2/1.3 桥接层。替代 bao_tls (rustls)，为 bao_stealth 和 bao_runtime/node_tls 提供统一的 TLS 能力。封装 BoringSSL SSL_CTX/SSL API，支持 JA3/JA4 指纹模拟、cipher suite 配置。"
-}</script></section><section data-api="GET /perf/http-response" id="GET-perf-http-response"><h4>GET /perf/http-response</h4><script type="application/ld+json">{
+}</script></section><section data-api="GET /perf/http-response" id="get-/perf/http-response"><h4>GET /perf/http-response</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2336,7 +2336,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/cdp-handler" id="GET-perf-cdp-handler"><h4>GET /perf/cdp-handler</h4><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/cdp-handler" id="get-/perf/cdp-handler"><h4>GET /perf/cdp-handler</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2348,7 +2348,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/buffer" id="GET-perf-buffer"><h4>GET /perf/buffer</h4><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/buffer" id="get-/perf/buffer"><h4>GET /perf/buffer</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2360,7 +2360,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/cdp-dispatch" id="GET-perf-cdp-dispatch"><h4>GET /perf/cdp-dispatch</h4><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/cdp-dispatch" id="get-/perf/cdp-dispatch"><h4>GET /perf/cdp-dispatch</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2372,7 +2372,7 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
     ],
     "type": "object"
   }
-}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/code-pattern" id="GET-perf-code-pattern"><h4>GET /perf/code-pattern</h4><script type="application/ld+json">{
+}</script><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></section><section data-api="GET /perf/code-pattern" id="get-/perf/code-pattern"><h4>GET /perf/code-pattern</h4><script type="application/ld+json">{
   "@type": "ApiResponse",
   "source": "example",
   "body": {
@@ -2407,14 +2407,14 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
   "description": "BoringSSL-backed TLS 1.2/1.3 — 替代 bao_tls (rustls)，统一 TLS 栈到 BoringSSL"
 }</script></section>
 
-<section data-delivery="D4" data-artifact-type="runtime-state-diagram" data-type="document" id="artifact-runtime-state"><h3>运行时状态图</h3><div>BaoRuntime 状态机: Uninitialized → Initialized → Running → Suspended → Shutdown
+<section data-delivery="D4" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram"><h3>运行时状态图</h3><div>BaoRuntime 状态机: Uninitialized → Initialized → Running → Suspended → Shutdown
 Uninitialized: 初始状态，未调用 BaoRuntime::new()
 Initialized: BaoRuntime::new() 完成，SpiderMonkey + servo 就绪
 Running: 事件循环运行中，JS 可执行
 Suspended: 事件循环暂停（idle timeout / 显式 suspend）
 Shutdown: 资源释放，进程退出</div></section>
 
-<section data-delivery="D5" data-artifact-type="interface-protocol" data-type="document" id="artifact-interface-protocol"><h3>接口协议图</h3><div>核心接口协议:
+<section data-delivery="D5" data-artifact-type="interface-protocol" data-type="document" id="interface-protocol"><h3>接口协议图</h3><div>核心接口协议:
 1. BaoRuntime ↔ SpiderMonkey: JSContext 生命周期管理（mozjs FFI）
 2. BaoRuntime ↔ servo: ServoDelegate / WebViewDelegate 回调协议
 3. BaoRuntime ↔ CDP: WebSocket CDP 协议（cdp-protocol crate）
@@ -2422,7 +2422,7 @@ Shutdown: 资源释放，进程退出</div></section>
 5. CDP Client ↔ bao_cdp: WebSocket JSON-RPC 2.0
 6. bao_browser ↔ servo: Embedder API（libservo crate）</div></section>
 
-<section data-delivery="D6" data-artifact-type="event-message-catalog" data-type="document" id="artifact-event-catalog"><h3>事件/消息目录</h3><div>核心事件/消息:
+<section data-delivery="D6" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram"><h3>事件/消息目录</h3><div>核心事件/消息:
 1. ServoEvent::LoadComplete → 页面加载完成
 2. ServoEvent::DocumentReady → DOM 可操作
 3. CdpEvent::TargetAttached → CDP 会话绑定
@@ -2432,17 +2432,17 @@ Shutdown: 资源释放，进程退出</div></section>
 7. PagePoolEvent::PageCreated / PageClosed / PageIdle → 页面生命周期
 8. StealthEvent::ProfileApplied → 反指纹配置生效</div></section>
 
-<section data-delivery="D7" data-artifact-type="error-handling-strategy" data-type="document" id="artifact-error-strategy"><h3>错误处理策略</h3><div>错误分层策略:
+<section data-delivery="D7" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram"><h3>错误处理策略</h3><div>错误分层策略:
 1. BaoError: 顶层错误枚举，统一错误传播
 2. EngineError: SpiderMonkey 执行错误（编译/运行时/GC）
 3. BrowserError: servo 渲染错误（加载/布局/渲染）
 4. CdpError: CDP 协议错误（解析/域/命令）
 5. StealthError: 反指纹模块错误（TLS/Canvas/配置）
-错误传播: Result<T, BaoError>，底层错误通过 From/Into 自动转换
+错误传播: Result<t, BaoError="">，底层错误通过 From/Into 自动转换
 不可恢复错误: panic! 仅用于逻辑不变量违反
-日志策略: tracing crate，分级别 log（ERROR/WARN/INFO/DEBUG/TRACE）</div></section>
+日志策略: tracing crate，分级别 log（ERROR/WARN/INFO/DEBUG/TRACE）</t,></div></section>
 
-<section data-delivery="D8" data-artifact-type="external-dependency-matrix" data-type="document" id="artifact-dependency-matrix"><h3>外部依赖矩阵</h3><div>
+<section data-delivery="D8" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram"><h3>外部依赖矩阵</h3><div>
 | 依赖 | 版本 | 许可证 | 用途 | 可替代 |
 |------|------|--------|------|--------|
 | mozjs/mozjs-sys | latest | MPL-2.0 | SpiderMonkey FFI | 否 |
@@ -2456,7 +2456,248 @@ Shutdown: 资源释放，进程退出</div></section>
 | dashmap | latest | MIT/Apache-2.0 | 并发 HashMap | std HashMap+Mutex |
 </div></section>
 
-</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-SEC-001" data-test="TEST-SEC-001" id="test-sec-001"><h4>TEST-SEC-001: REQ-SEC-001 单元测试</h4><p>TODO: 为 REQ-SEC-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-002" data-test="TEST-SEC-002" id="test-sec-002"><h4>TEST-SEC-002: REQ-SEC-002 单元测试</h4><p>TODO: 为 REQ-SEC-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-003" data-test="TEST-SEC-003" id="test-sec-003"><h4>TEST-SEC-003: REQ-SEC-003 单元测试</h4><p>TODO: 为 REQ-SEC-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-001" data-test="TEST-PURE-001" id="test-pure-001"><h4>TEST-PURE-001: REQ-PURE-001 单元测试</h4><p>TODO: 为 REQ-PURE-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-002" data-test="TEST-PURE-002" id="test-pure-002"><h4>TEST-PURE-002: REQ-PURE-002 单元测试</h4><p>TODO: 为 REQ-PURE-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-003" data-test="TEST-PURE-003" id="test-pure-003"><h4>TEST-PURE-003: REQ-PURE-003 单元测试</h4><p>TODO: 为 REQ-PURE-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-004" data-test="TEST-PURE-004" id="test-pure-004"><h4>TEST-PURE-004: REQ-PURE-004 单元测试</h4><p>TODO: 为 REQ-PURE-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-005" data-test="TEST-PURE-005" id="test-pure-005"><h4>TEST-PURE-005: REQ-PURE-005 单元测试</h4><p>TODO: 为 REQ-PURE-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-006" data-test="TEST-PURE-006" id="test-pure-006"><h4>TEST-PURE-006: REQ-PURE-006 单元测试</h4><p>TODO: 为 REQ-PURE-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-007" data-test="TEST-PURE-007" id="test-pure-007"><h4>TEST-PURE-007: REQ-PURE-007 单元测试</h4><p>TODO: 为 REQ-PURE-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-008" data-test="TEST-PURE-008" id="test-pure-008"><h4>TEST-PURE-008: REQ-PURE-008 单元测试</h4><p>TODO: 为 REQ-PURE-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-009" data-test="TEST-PURE-009" id="test-pure-009"><h4>TEST-PURE-009: REQ-PURE-009 单元测试</h4><p>TODO: 为 REQ-PURE-009 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-010" data-test="TEST-PURE-010" id="test-pure-010"><h4>TEST-PURE-010: REQ-PURE-010 单元测试</h4><p>TODO: 为 REQ-PURE-010 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-001" data-test="TEST-PERF-001" id="test-perf-001"><h4>TEST-PERF-001: REQ-PERF-001 单元测试</h4><p>TODO: 为 REQ-PERF-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-002" data-test="TEST-PERF-002" id="test-perf-002"><h4>TEST-PERF-002: REQ-PERF-002 单元测试</h4><p>TODO: 为 REQ-PERF-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-003" data-test="TEST-PERF-003" id="test-perf-003"><h4>TEST-PERF-003: REQ-PERF-003 单元测试</h4><p>TODO: 为 REQ-PERF-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-004" data-test="TEST-PERF-004" id="test-perf-004"><h4>TEST-PERF-004: REQ-PERF-004 单元测试</h4><p>TODO: 为 REQ-PERF-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-005" data-test="TEST-PERF-005" id="test-perf-005"><h4>TEST-PERF-005: REQ-PERF-005 单元测试</h4><p>TODO: 为 REQ-PERF-005 编写测试用例</p></div></section>
+<section data-module-kind="subsystem" data-module="bao_cdp_client" id="bao-cdp-client"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-CDPC-001",
+  "name": "bao_cdp_client",
+  "kind": "subsystem",
+  "contains": [
+    "MOD-CDPC-002",
+    "MOD-CDPC-003",
+    "MOD-CDPC-004"
+  ],
+  "exposes": [
+    "IF-CDPC-001",
+    "IF-CDPC-002",
+    "IF-CDPC-003",
+    "IF-CDPC-004"
+  ],
+  "dependsOn": [
+    "MOD-CDP",
+    "MOD-BROWSER"
+  ],
+  "description": "Fork 自 chromiumoxide 改名重构,与 bun_event_loop/bao_cdp/servo devtools_traits 深度融合。统一用户层 API,通过 URL scheme 路由到 InMemoryTransport(memory://) 或 WebSocketTransport(ws://|http://)。"
+}</script></section><section data-module-kind="module" data-module="bao_cdp_client::transport" id="bao-cdp-client::transport"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-CDPC-002",
+  "name": "bao_cdp_client::transport",
+  "kind": "module",
+  "contains": [
+    "bao_cdp_client/src/transport/ws_transport.rs",
+    "bao_cdp_client/src/transport/in_memory_transport.rs",
+    "bao_cdp_client/src/transport/trait.rs"
+  ],
+  "exposes": [
+    "IF-CDPC-001"
+  ],
+  "dependsOn": [
+    "MOD-CDP"
+  ],
+  "description": "Transport trait 抽象 + InMemoryTransport + WebSocketTransport 双实现。InMemoryTransport 包裹 CDPRdpBridge 直接调 servo devtools_traits;WebSocketTransport 复用 bao_cdp::ws_codec + bun_uws。"
+}</script></section><section data-module-kind="module" data-module="CDPRdpBridge" id="cdprdpbridge"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-CDPC-003",
+  "name": "CDPRdpBridge",
+  "kind": "module",
+  "contains": [
+    "bao_cdp_client/src/bridge/cdp_rdp_bridge.rs",
+    "bao_cdp_client/src/bridge/command_dispatcher.rs",
+    "bao_cdp_client/src/bridge/event_translator.rs"
+  ],
+  "exposes": [
+    "IF-CDPC-002"
+  ],
+  "dependsOn": [
+    "MOD-BROWSER"
+  ],
+  "description": "CDP 命令 → servo devtools_traits RDP 协议的桥接层。完整 22 Domain 193 method 分级实现:A类机械映射(48)+B类Eval合成(52)+D类纯状态(62)+E类servo不支持返回-32601(31)。抛弃 evaluate_js 注入,直接调 servo DevtoolScriptControlMsg/InspectorActor/ConsoleActor/NetworkEventActor/BrowsingContext。"
+}</script></section><section data-module-kind="module" data-module="bao_cdp_client::api" id="bao-cdp-client::api"><script type="application/ld+json">{
+  "@type": "Module",
+  "id": "MOD-CDPC-004",
+  "name": "bao_cdp_client::api",
+  "kind": "module",
+  "contains": [
+    "bao_cdp_client/src/api/browser.rs",
+    "bao_cdp_client/src/api/page.rs",
+    "bao_cdp_client/src/api/element.rs",
+    "bao_cdp_client/src/api/frame.rs"
+  ],
+  "exposes": [
+    "IF-CDPC-003",
+    "IF-CDPC-004"
+  ],
+  "dependsOn": [
+    "MOD-CDPC-002"
+  ],
+  "description": "高层用户 API:Browser/Page/Element/Frame/BrowserContext/Cookie/Network/Dialog 等类 Playwright 接口。"
+}</script></section><section data-interface-kind="contract" data-interface="Transport" id="transport"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-CDPC-001",
+  "name": "Transport",
+  "kind": "contract",
+  "input": [
+    {
+      "name": "method",
+      "type": "string",
+      "required": true,
+      "description": "CDP method (如 Page.navigate)"
+    },
+    {
+      "name": "params",
+      "type": "json",
+      "required": true,
+      "description": "CDP params JSON"
+    },
+    {
+      "name": "session_id",
+      "type": "string",
+      "required": false,
+      "description": "target session id (flat-mode)"
+    }
+  ],
+  "output": {
+    "type": "Result<Value, TransportError>"
+  },
+  "errorTypes": [
+    "TransportError",
+    "TimeoutError",
+    "ConnectionClosed"
+  ],
+  "description": "CDP 命令传输抽象层,屏蔽 memory:// / ws:// / http:// 底层差异。"
+}</script></section><section data-interface-kind="contract" data-interface="CDPRdpBridge" id="cdprdpbridge"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-CDPC-002",
+  "name": "CDPRdpBridge",
+  "kind": "contract",
+  "input": [
+    {
+      "name": "command",
+      "type": "string",
+      "required": true,
+      "description": "CDP domain.method"
+    },
+    {
+      "name": "params",
+      "type": "json",
+      "required": true,
+      "description": "CDP params"
+    },
+    {
+      "name": "target_id",
+      "type": "string",
+      "required": true,
+      "description": "target id (PagePool usize)"
+    }
+  ],
+  "output": {
+    "type": "Result<Value, BridgeError>"
+  },
+  "errorTypes": [
+    "BridgeError",
+    "ServoUnavailable"
+  ],
+  "description": "CDP 命令 → servo devtools_traits RDP 桥接。"
+}</script></section><section data-interface-kind="component" data-interface="Browser" id="browser"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-CDPC-003",
+  "name": "Browser",
+  "kind": "component",
+  "input": [
+    {
+      "name": "url",
+      "type": "string",
+      "required": true,
+      "description": "memory:// | ws:// | http://"
+    }
+  ],
+  "output": {
+    "type": "Result<Browser, ConnectError>"
+  },
+  "errorTypes": [
+    "ConnectError",
+    "LaunchError"
+  ],
+  "description": "顶层用户 API,类 Playwright Browser。通过 URL scheme 自动路由 transport。"
+}</script></section><section data-interface-kind="contract" data-interface="Page" id="page"><script type="application/ld+json">{
+  "@type": "Interface",
+  "id": "IF-CDPC-004",
+  "name": "Page",
+  "kind": "contract",
+  "input": [
+    {
+      "name": "method",
+      "type": "string",
+      "required": true,
+      "description": "页面操作方法名"
+    },
+    {
+      "name": "params",
+      "type": "json",
+      "required": true,
+      "description": "方法参数"
+    }
+  ],
+  "output": {
+    "type": "Result<Value, PageError>"
+  },
+  "errorTypes": [
+    "NavigationError",
+    "TimeoutError",
+    "ElementNotFoundError"
+  ],
+  "description": "页面级用户 API,涵盖 A/B/D 三类共 162 method(E 类 31 在 Internal 返回 -32601)。"
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-CDP-001" id="dec-cdp-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-CDP-001",
+  "options": [
+    {
+      "name": "自定义 trait + 双 backend"
+    },
+    {
+      "name": "内化 chromiumoxide + URL scheme 路由"
+    },
+    {
+      "name": "维持 evaluate_js 桥接"
+    }
+  ],
+  "chosen": "内化 chromiumoxide + URL scheme 路由",
+  "rationale": "完整复用 chromiumoxide ~200 method 生产级 API;协议层统一为 CDP;servo 原生 RDP 桥接替代 JS 注入;同时支持 InMemoryTransport(内部 servo)和 WebSocketTransport(外部 Chrome);未来扩展性好,可深度融合 bun_event_loop/bao_cdp/servo。",
+  "dimension": "technical"
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-CDP-002" id="dec-cdp-002"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-CDP-002",
+  "options": [
+    {
+      "name": "Mutex/RwLock 共享状态"
+    },
+    {
+      "name": "crossbeam::channel 命令/响应"
+    },
+    {
+      "name": "tokio mpsc async channel"
+    }
+  ],
+  "chosen": "crossbeam::channel 命令/响应",
+  "rationale": "servo ScriptThread !Send,不可跨线程直调。crossbeam::channel 实测延迟 <1ms,匹配 bao 单线程 JS + servo ScriptThread 共享 JSContext 架构。",
+  "dimension": "technical"
+}</script></section><section data-decision-dimension="technical" data-decision="DEC-URL-001" id="dec-url-001"><script type="application/ld+json">{
+  "@type": "Decision",
+  "id": "DEC-URL-001",
+  "options": [
+    {
+      "name": "新增 Browser::connect_in_memory API"
+    },
+    {
+      "name": "URL scheme 自动路由"
+    },
+    {
+      "name": "Builder 模式配置 transport"
+    }
+  ],
+  "chosen": "URL scheme 自动路由",
+  "rationale": "保持单一 Browser::connect API,符合 Playwright/Puppeteer 用户心智模型。memory://bao 内部解析为 InMemoryTransport + servo PagePool,ws://|http:// 走 WebSocketTransport。",
+  "dimension": "technical"
+}</script></section><section data-req-category="api" data-req-domain="bao-api" data-req-status="unknown" data-req="REQ-BAO-API-001" id="req-bao-api-001"><h3>REQ-BAO-API-001 undefined</h3><p>实现统一 Browser::connect API,通过 URL scheme 路由到 InMemoryTransport 或 WebSocketTransport</p><div id="browser::connect('memory://bao')-初始化-inmemorytransport-并返回可用-browser-实例" data-criterion="Browser::connect('memory://bao') 初始化 InMemoryTransport 并返回可用 Browser 实例">Browser::connect('memory://bao') 初始化 InMemoryTransport 并返回可用 Browser 实例</div><div id="browser::connect('ws://127.0.0.1:9222')-通过-websocket-连接外部-chrome" data-criterion="Browser::connect('ws://127.0.0.1:9222') 通过 WebSocket 连接外部 Chrome">Browser::connect('ws://127.0.0.1:9222') 通过 WebSocket 连接外部 Chrome</div><div id="browser::connect('http://127.0.0.1:9222')-自动发现并连接-chrome-ws://-endpoint" data-criterion="Browser::connect('http://127.0.0.1:9222') 自动发现并连接 Chrome ws:// endpoint">Browser::connect('http://127.0.0.1:9222') 自动发现并连接 Chrome ws:// endpoint</div><div id="url-scheme-错误时返回明确错误码" data-criterion="URL scheme 错误时返回明确错误码">URL scheme 错误时返回明确错误码</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="architecture" data-req-domain="bao-api" data-req-status="unknown" data-req="REQ-BAO-API-002" id="req-bao-api-002"><h3>REQ-BAO-API-002 undefined</h3><p>Transport trait + 双实现</p><div id="transport-trait-抽象-send-command/recv-event/close-三方法" data-criterion="Transport trait 抽象 send_command/recv_event/close 三方法">Transport trait 抽象 send_command/recv_event/close 三方法</div><div id="inmemorytransport-包裹-cdprdpbridge-直调-servo" data-criterion="InMemoryTransport 包裹 CDPRdpBridge 直调 servo">InMemoryTransport 包裹 CDPRdpBridge 直调 servo</div><div id="websockettransport-复用-bao-cdp::ws-codec-+-bun-uws" data-criterion="WebSocketTransport 复用 bao_cdp::ws_codec + bun_uws">WebSocketTransport 复用 bao_cdp::ws_codec + bun_uws</div><div id="transport-错误码完整(timeouterror/connectionclosed/transporterror)" data-criterion="Transport 错误码完整(TimeoutError/ConnectionClosed/TransportError)">Transport 错误码完整(TimeoutError/ConnectionClosed/TransportError)</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="api" data-req-domain="bao-api" data-req-status="unknown" data-req="REQ-BAO-API-004" id="req-bao-api-004"><h3>REQ-BAO-API-004 undefined</h3><p>A 类机械映射 48 method 实现</p><div id="a-类机械映射-48-method-全部实现(page.navigate/reload/capturescreenshot/runtime.evaluate/dom.queryselector-等)" data-criterion="A 类机械映射 48 method 全部实现(Page.navigate/reload/captureScreenshot/Runtime.evaluate/DOM.querySelector 等)">A 类机械映射 48 method 全部实现(Page.navigate/reload/captureScreenshot/Runtime.evaluate/DOM.querySelector 等)</div><div id="1:1-参数/结果映射,无-eval-注入" data-criterion="1:1 参数/结果映射,无 Eval 注入">1:1 参数/结果映射,无 Eval 注入</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="api" data-req-domain="bao-api" data-req-status="unknown" data-req="REQ-BAO-API-005" id="req-bao-api-005"><h3>REQ-BAO-API-005 undefined</h3><p>B 类 Eval 合成 52 method 实现(IIFE 安全封装)</p><div id="b-类-eval-合成-52-method-全部实现(page.title/url/content,-el.click/type/press/hover/select-等)" data-criterion="B 类 Eval 合成 52 method 全部实现(page.title/url/content, el.click/type/press/hover/select 等)">B 类 Eval 合成 52 method 全部实现(page.title/url/content, el.click/type/press/hover/select 等)</div><div id="所有-eval-使用-iife-安全封装" data-criterion="所有 Eval 使用 IIFE 安全封装">所有 Eval 使用 IIFE 安全封装</div><div id="参数序列化使用-json.stringify-禁止字符串拼接" data-criterion="参数序列化使用 JSON.stringify 禁止字符串拼接">参数序列化使用 JSON.stringify 禁止字符串拼接</div><div id="每个-b-类-method-的-tdd-含-js-注入测试用例" data-criterion="每个 B 类 method 的 TDD 含 JS 注入测试用例">每个 B 类 method 的 TDD 含 JS 注入测试用例</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="api" data-req-domain="bao-api" data-req-status="unknown" data-req="REQ-BAO-API-006" id="req-bao-api-006"><h3>REQ-BAO-API-006 undefined</h3><p>D 类纯状态管理 62 method 实现</p><div id="d-类纯状态管理-62-method-全部实现(browser/browsercontext/page/frame/request/response/dialog-本地状态)" data-criterion="D 类纯状态管理 62 method 全部实现(browser/browserContext/page/frame/request/response/dialog 本地状态)">D 类纯状态管理 62 method 全部实现(browser/browserContext/page/frame/request/response/dialog 本地状态)</div><div id="本地状态无外部-cdp-命令往返" data-criterion="本地状态无外部 CDP 命令往返">本地状态无外部 CDP 命令往返</div><div id="eventemitter-模式实现-on/off/once/removealllisteners/listenercount" data-criterion="EventEmitter 模式实现 on/off/once/removeAllListeners/listenerCount">EventEmitter 模式实现 on/off/once/removeAllListeners/listenerCount</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="operations" data-req-domain="bao-api" data-req-status="unknown" data-req="REQ-BAO-API-007" id="req-bao-api-007"><h3>REQ-BAO-API-007 undefined</h3><p>E 类 servo 不支持 31 method 兼容处理(-32601 错误码)</p><div id="e-类-servo-不支持-31-method-在-internal-模式返回标准--32601-错误码" data-criterion="E 类 servo 不支持 31 method 在 Internal 模式返回标准 -32601 错误码">E 类 servo 不支持 31 method 在 Internal 模式返回标准 -32601 错误码</div><div id="external-模式透传给外部-chrome" data-criterion="External 模式透传给外部 Chrome">External 模式透传给外部 Chrome</div><div id="playwright-客户端能正常-fallback,不阻塞主流程" data-criterion="Playwright 客户端能正常 fallback,不阻塞主流程">Playwright 客户端能正常 fallback,不阻塞主流程</div><div id="e2e-测试:-playwright-连接-bao-完成完整导航+截图流程" data-criterion="E2E 测试: Playwright 连接 bao 完成完整导航+截图流程">E2E 测试: Playwright 连接 bao 完成完整导航+截图流程</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-req-category="deployment" data-req-domain="bao-api" data-req-status="unknown" data-req="REQ-BAO-API-008" id="req-bao-api-008"><h3>REQ-BAO-API-008 undefined</h3><p>其他 Rust 程序通过 bao = '0.1' 当库使用,完整公共 API + 文档</p><div id="bao-=-'0.1'-在-crates.io-或-git-path-可被其他-rust-程序-cargo-add" data-criterion="bao = '0.1' 在 crates.io 或 git path 可被其他 Rust 程序 cargo add">bao = '0.1' 在 crates.io 或 git path 可被其他 Rust 程序 cargo add</div><div id="公开-trait:-browser/page/element/frame/cookie/network/dialog/consolemessage" data-criterion="公开 trait: Browser/Page/Element/Frame/Cookie/Network/Dialog/ConsoleMessage">公开 trait: Browser/Page/Element/Frame/Cookie/Network/Dialog/ConsoleMessage</div><div id="公开结构:-browsercontext/httprequest/httpresponse/jshandle/elementhandle" data-criterion="公开结构: BrowserContext/HTTPRequest/HTTPResponse/JSHandle/ElementHandle">公开结构: BrowserContext/HTTPRequest/HTTPResponse/JSHandle/ElementHandle</div><div id="公开枚举:-screenshotformat/waituntilstate/devicedescriptor" data-criterion="公开枚举: ScreenshotFormat/WaitUntilState/DeviceDescriptor">公开枚举: ScreenshotFormat/WaitUntilState/DeviceDescriptor</div><div id="完整文档:-每个-method-有-doc-comment-+-示例" data-criterion="完整文档: 每个 method 有 doc comment + 示例">完整文档: 每个 method 有 doc comment + 示例</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-SEC-001" data-test="TEST-SEC-001" id="test-sec-001"><h4>TEST-SEC-001: REQ-SEC-001 单元测试</h4><p>TODO: 为 REQ-SEC-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-002" data-test="TEST-SEC-002" id="test-sec-002"><h4>TEST-SEC-002: REQ-SEC-002 单元测试</h4><p>TODO: 为 REQ-SEC-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-SEC-003" data-test="TEST-SEC-003" id="test-sec-003"><h4>TEST-SEC-003: REQ-SEC-003 单元测试</h4><p>TODO: 为 REQ-SEC-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-001" data-test="TEST-PURE-001" id="test-pure-001"><h4>TEST-PURE-001: REQ-PURE-001 单元测试</h4><p>TODO: 为 REQ-PURE-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-002" data-test="TEST-PURE-002" id="test-pure-002"><h4>TEST-PURE-002: REQ-PURE-002 单元测试</h4><p>TODO: 为 REQ-PURE-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-003" data-test="TEST-PURE-003" id="test-pure-003"><h4>TEST-PURE-003: REQ-PURE-003 单元测试</h4><p>TODO: 为 REQ-PURE-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-004" data-test="TEST-PURE-004" id="test-pure-004"><h4>TEST-PURE-004: REQ-PURE-004 单元测试</h4><p>TODO: 为 REQ-PURE-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-005" data-test="TEST-PURE-005" id="test-pure-005"><h4>TEST-PURE-005: REQ-PURE-005 单元测试</h4><p>TODO: 为 REQ-PURE-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-006" data-test="TEST-PURE-006" id="test-pure-006"><h4>TEST-PURE-006: REQ-PURE-006 单元测试</h4><p>TODO: 为 REQ-PURE-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-007" data-test="TEST-PURE-007" id="test-pure-007"><h4>TEST-PURE-007: REQ-PURE-007 单元测试</h4><p>TODO: 为 REQ-PURE-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-008" data-test="TEST-PURE-008" id="test-pure-008"><h4>TEST-PURE-008: REQ-PURE-008 单元测试</h4><p>TODO: 为 REQ-PURE-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-009" data-test="TEST-PURE-009" id="test-pure-009"><h4>TEST-PURE-009: REQ-PURE-009 单元测试</h4><p>TODO: 为 REQ-PURE-009 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PURE-010" data-test="TEST-PURE-010" id="test-pure-010"><h4>TEST-PURE-010: REQ-PURE-010 单元测试</h4><p>TODO: 为 REQ-PURE-010 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-001" data-test="TEST-PERF-001" id="test-perf-001"><h4>TEST-PERF-001: REQ-PERF-001 单元测试</h4><p>TODO: 为 REQ-PERF-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-002" data-test="TEST-PERF-002" id="test-perf-002"><h4>TEST-PERF-002: REQ-PERF-002 单元测试</h4><p>TODO: 为 REQ-PERF-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-003" data-test="TEST-PERF-003" id="test-perf-003"><h4>TEST-PERF-003: REQ-PERF-003 单元测试</h4><p>TODO: 为 REQ-PERF-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-004" data-test="TEST-PERF-004" id="test-perf-004"><h4>TEST-PERF-004: REQ-PERF-004 单元测试</h4><p>TODO: 为 REQ-PERF-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-PERF-005" data-test="TEST-PERF-005" id="test-perf-005"><h4>TEST-PERF-005: REQ-PERF-005 单元测试</h4><p>TODO: 为 REQ-PERF-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BAO-API-001" data-test="TEST-BAO-API-001" id="test-bao-api-001"><h4>TEST-BAO-API-001: REQ-BAO-API-001 单元测试</h4><p>TODO: 为 REQ-BAO-API-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BAO-API-002" data-test="TEST-BAO-API-002" id="test-bao-api-002"><h4>TEST-BAO-API-002: REQ-BAO-API-002 单元测试</h4><p>TODO: 为 REQ-BAO-API-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BAO-API-004" data-test="TEST-BAO-API-004" id="test-bao-api-004"><h4>TEST-BAO-API-004: REQ-BAO-API-004 单元测试</h4><p>TODO: 为 REQ-BAO-API-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BAO-API-005" data-test="TEST-BAO-API-005" id="test-bao-api-005"><h4>TEST-BAO-API-005: REQ-BAO-API-005 单元测试</h4><p>TODO: 为 REQ-BAO-API-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BAO-API-006" data-test="TEST-BAO-API-006" id="test-bao-api-006"><h4>TEST-BAO-API-006: REQ-BAO-API-006 单元测试</h4><p>TODO: 为 REQ-BAO-API-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BAO-API-007" data-test="TEST-BAO-API-007" id="test-bao-api-007"><h4>TEST-BAO-API-007: REQ-BAO-API-007 单元测试</h4><p>TODO: 为 REQ-BAO-API-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BAO-API-008" data-test="TEST-BAO-API-008" id="test-bao-api-008"><h4>TEST-BAO-API-008: REQ-BAO-API-008 单元测试</h4><p>TODO: 为 REQ-BAO-API-008 编写测试用例</p></div></section>
 <!-- ============================================================ -->
 <h2 data-delivery="D40">§10 架构模块</h2>
 <!-- ============================================================ -->

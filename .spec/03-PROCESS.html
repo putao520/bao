@@ -295,7 +295,7 @@ WebSocket Client (Playwright)
 <h2>§7 时序约束</h2>
 <!-- ============================================================ -->
 
-<div data-delivery="D34" data-timing-constraint="max_latency_ms" data-timing="CDPResponseTime" data-api-ref="CDP.*" data-req-ref="REQ-CDP-001" data-req-category="business" data-req-domain="CDP" data-req-status="approved" data-req="REQ-CDP-001@PROCESS" data-req-entity="CdpRouter" data-req-api="GET /json/version" data-test="TEST-CDP-001@PROCESS" id="cdpresponsetime">
+<div data-delivery="D34" data-timing-constraint="max_latency_ms" data-timing="CDPResponseTime" data-test-categories="unit" data-api-ref="CDP.*" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001@PROCESS" data-req-api="GET /json/version" data-req-entity="CdpRouter" data-req-category="business" data-req-domain="CDP" data-req-status="approved" data-req="REQ-CDP-001@PROCESS" id="cdpresponsetime">
 <h3>TMG-CDP-001: CDP 命令响应时序</h3>
 <script type="application/ld+json">{
   "@type": "ApiResponse",
@@ -340,7 +340,7 @@ WebSocket Client (Playwright)
 </script>
 <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div><p>关联测试: <span data-xref-id="TEST-CDP-001@PROCESS" data-xref-type="test"></span></p></div>
 
-<div data-timing-constraint="max_interval_ms" data-timing="EventLoopTick" data-api-ref="POST /event-loop/drain" data-req-ref="REQ-ENG-004" data-req-category="business" data-req-domain="ENG" data-req-status="approved" data-req="REQ-ENG-004@PROCESS" data-req-entity="BaoRuntime" data-req-api="POST /event-loop/drain" data-test="TEST-ENG-004@PROCESS" id="eventlooptick">
+<div data-timing-constraint="max_interval_ms" data-timing="EventLoopTick" data-test-categories="unit" data-api-ref="POST /event-loop/drain" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004@PROCESS" data-req-api="POST /event-loop/drain" data-req-entity="BaoRuntime" data-req-category="business" data-req-domain="ENG" data-req-status="approved" data-req="REQ-ENG-004@PROCESS" id="eventlooptick">
 <h3>TMG-LOOP-001: Event Loop Tick 时序</h3>
 <script type="application/ld+json">{
   "@type": "ApiResponse",
@@ -655,5 +655,5 @@ SpiderMonkey GC OOM:
   "@type": "Controlflow",
   "id": "CF-004"
 }</script></div>
-</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div id="test-cdp-001@process" data-req-ref="REQ-CDP-001@PROCESS" data-test-categories="unit" data-test="TEST-CDP-001@PROCESS"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 单元测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div id="test-eng-004@process" data-req-ref="REQ-ENG-004@PROCESS" data-test-categories="unit" data-test="TEST-ENG-004@PROCESS"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 单元测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div></section></body>
+</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001@PROCESS" data-test="TEST-CDP-001@PROCESS" id="test-cdp-001@process"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 单元测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004@PROCESS" data-test="TEST-ENG-004@PROCESS" id="test-eng-004@process"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 单元测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div></section></body>
 </html>
