@@ -1,10 +1,21 @@
 // @trace REQ-STL-006 [api:stealth behavior simulation]
 // Human-like behavior simulation: Bezier mouse paths, rhythm typing, inertia scroll.
 //
-// All randomness is seed-based (deterministic). Firefox and Chrome profiles
-// use different BehaviorConfig parameters to produce distinct behavior fingerprints.
+// Randomness model:
+//   - Mouse/typing/scroll methods: per-call RNG (deterministic per invocation).
+//   - Click methods (generate_click_sequence / generate_double_click_sequence):
+//     persistent RNG stream — the xorshift64 state is an instance field that
+//     ADVANCES across calls. This prevents the detectable pattern where every
+//     click produced an identical press duration under a fixed seed
+//     (BUG-STL-008). Fresh instances from the same seed reproduce the first
+//     click exactly (test determinism); subsequent calls on the same instance
+//     diverge (human-like variance).
+//
+// Firefox and Chrome profiles use different BehaviorConfig parameters to
+// produce distinct behavior fingerprints.
 
 use std::f64::consts::PI;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 // ---------------------------------------------------------------------------
 // Configuration — Firefox/Chrome behavior parameter differences
@@ -215,24 +226,58 @@ pub struct TypingEvent {
 
 // ---------------------------------------------------------------------------
 // BehaviorSimulator — seed-based deterministic PRNG + behavior generation
+//
+// RNG state layout (BUG-STL-008 fix):
+//   - `seed`: original user seed (immutable, exposed via `seed()`, used by
+//     mouse/typing/scroll per-call RNG and for Clone/Debug reproducibility).
+//   - `click_rng_state`: persistent xorshift64 stream for click methods.
+//     Advances across generate_click_sequence / generate_double_click_sequence
+//     calls so that consecutive clicks on the same instance no longer share
+//     identical press durations. Fresh instances from the same seed start from
+//     the same `seed` value, preserving first-call reproducibility.
+//
+// `AtomicU64` is used instead of `RefCell` so that StealthProfile (which embeds
+// a BehaviorSimulator) remains `Send + Sync`. The servo JSContext is
+// single-threaded, so there is no real contention: click methods perform a
+// single `load(Relaxed)` at entry, advance the xorshift64 state locally, and a
+// single `store(Relaxed)` before returning. This preserves the
+// `Arc<StealthProfile>` thread-sharing contract exercised by concurrency_tests.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BehaviorSimulator {
     seed: u64,
+    click_rng_state: AtomicU64,
     pub config: BehaviorConfig,
+}
+
+impl Clone for BehaviorSimulator {
+    fn clone(&self) -> Self {
+        // Clone snapshots the CURRENT click RNG state so that a cloned
+        // simulator continues the same stream (consistent divergence behavior).
+        BehaviorSimulator {
+            seed: self.seed,
+            click_rng_state: AtomicU64::new(self.click_rng_state.load(Ordering::Relaxed)),
+            config: self.config.clone(),
+        }
+    }
 }
 
 impl BehaviorSimulator {
     pub fn new(seed: u64) -> Self {
         BehaviorSimulator {
             seed,
+            click_rng_state: AtomicU64::new(seed),
             config: BehaviorConfig::firefox(),
         }
     }
 
     pub fn with_config(seed: u64, config: BehaviorConfig) -> Self {
-        BehaviorSimulator { seed, config }
+        BehaviorSimulator {
+            seed,
+            click_rng_state: AtomicU64::new(seed),
+            config,
+        }
     }
 
     pub fn seed(&self) -> u64 {
@@ -411,7 +456,12 @@ impl BehaviorSimulator {
     // -----------------------------------------------------------------------
 
     pub fn generate_click_sequence(&self, x: f64, y: f64, target_width: f64) -> Vec<ClickEvent> {
-        let mut rng = self.seed;
+        // BUG-STL-008: use the persistent click RNG stream — the state advances
+        // across calls so consecutive clicks on the same instance produce
+        // distinct press durations (human-like variance, no detectable pattern).
+        // Load once, advance locally (identical xorshift64 step as next_random),
+        // store once. Single-threaded JSContext ⇒ no real contention.
+        let mut rng = self.click_rng_state.load(Ordering::Relaxed);
         let mut events = Vec::new();
 
         // Pre-click micro-adjustment
@@ -459,18 +509,32 @@ impl BehaviorSimulator {
             delay_after_ms: click_delay,
         });
 
+        // Persist the advanced state for the next call (BUG-STL-008).
+        self.click_rng_state.store(rng, Ordering::Relaxed);
+
         let _ = target_width; // used by caller for move path generation
         events
     }
 
     pub fn generate_double_click_sequence(&self, x: f64, y: f64, target_width: f64) -> Vec<ClickEvent> {
+        // First click advances the persistent click RNG (BUG-STL-008).
         let first_click = self.generate_click_sequence(x, y, target_width);
 
-        let mut rng = self.seed.wrapping_add(0xDEADBEEF);
+        // Double-click interval continues advancing the same persistent stream
+        // so the dbl_interval and dblclick jitter also diverge across calls.
+        let mut rng = self.click_rng_state.load(Ordering::Relaxed);
         let dbl_interval = self
             .normal_random(&mut rng, self.config.click.dbl_click_interval_mean_ms, self.config.click.dbl_click_interval_stddev_ms)
             .clamp(150.0, 500.0) as u64;
 
+        // dblclick jitter draws
+        let micro_x = x + (self.next_random(&mut rng) - 0.5) * 1.0;
+        let micro_y = y + (self.next_random(&mut rng) - 0.5) * 1.0;
+
+        // Persist before delegating to the second click (which loads again).
+        self.click_rng_state.store(rng, Ordering::Relaxed);
+
+        // Second click continues advancing the persistent stream.
         let second_click = self.generate_click_sequence(x, y, target_width);
 
         let mut events = first_click;
@@ -481,8 +545,6 @@ impl BehaviorSimulator {
         events.extend(second_click);
 
         // Add dblclick event
-        let micro_x = x + (self.next_random(&mut rng) - 0.5) * 1.0;
-        let micro_y = y + (self.next_random(&mut rng) - 0.5) * 1.0;
         events.push(ClickEvent {
             event_type: ClickEventType::DoubleClick,
             x: micro_x,
@@ -848,15 +910,42 @@ mod tests {
     }
 
     #[test]
-    fn click_sequence_deterministic() {
-        let sim = BehaviorSimulator::new(42);
-        let e1 = sim.generate_click_sequence(100.0, 200.0, 20.0);
-        let e2 = sim.generate_click_sequence(100.0, 200.0, 20.0);
+    fn click_sequence_reproducible_across_instances() {
+        // BUG-STL-008: fresh instances from the same seed reproduce the first
+        // click exactly (reproducibility for tests / replay).
+        let sim1 = BehaviorSimulator::new(42);
+        let sim2 = BehaviorSimulator::new(42);
+        let e1 = sim1.generate_click_sequence(100.0, 200.0, 20.0);
+        let e2 = sim2.generate_click_sequence(100.0, 200.0, 20.0);
         assert_eq!(e1.len(), e2.len());
         for (a, b) in e1.iter().zip(e2.iter()) {
             assert_eq!(a.event_type, b.event_type);
             assert_eq!(a.delay_after_ms, b.delay_after_ms);
         }
+    }
+
+    #[test]
+    fn click_sequence_advances_rng_within_instance() {
+        // BUG-STL-008: consecutive clicks on the SAME instance must NOT produce
+        // identical press durations — the persistent click RNG stream advances
+        // each call (human-like variance, no detectable RNG-reuse pattern).
+        let sim = BehaviorSimulator::new(42);
+        let e1 = sim.generate_click_sequence(100.0, 200.0, 20.0);
+        let e2 = sim.generate_click_sequence(100.0, 200.0, 20.0);
+        assert_eq!(e1.len(), e2.len());
+        // The MouseUp press duration (delay_after_ms) must differ between the
+        // first and second click — this is the exact signal BUG-STL-008 removes.
+        let press1 = e1.iter()
+            .find(|e| e.event_type == ClickEventType::MouseUp)
+            .map(|e| e.delay_after_ms);
+        let press2 = e2.iter()
+            .find(|e| e.event_type == ClickEventType::MouseUp)
+            .map(|e| e.delay_after_ms);
+        assert!(
+            press1 != press2,
+            "press_duration must advance across calls (got {:?} == {:?}) — BUG-STL-008",
+            press1, press2
+        );
     }
 
     #[test]

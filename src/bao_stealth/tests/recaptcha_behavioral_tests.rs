@@ -177,6 +177,64 @@ fn recaptcha_click_sequence_has_multiple_timings() {
     );
 }
 
+// ---- 2.1c BUG-STL-008: same-session consecutive clicks advance the RNG stream ----
+// @trace REQ-STL-006 [req:REQ-STL-006] [level:integration]
+#[test]
+fn recaptcha_consecutive_clicks_advance_rng_state() {
+    // Arrange — reCAPTCHA fingerprints RNG-reuse: if every click on a page
+    // produced an identical press duration under a fixed seed, the constant
+    // pattern is a detectable bot signal. BUG-STL-008 fix: the click RNG is a
+    // persistent instance-level stream that advances per call, so consecutive
+    // clicks on the same simulator must produce DIFFERENT press durations.
+    let sim = BehaviorSimulator::new(42);
+
+    // Act — collect press durations (MouseUp.delay_after_ms) across N clicks.
+    let mut press_durations: Vec<u64> = Vec::new();
+    for _ in 0..10 {
+        let events = sim.generate_click_sequence(150.0, 250.0, 20.0);
+        if let Some(up) = events.iter()
+            .find(|e| e.event_type == bao_stealth::ClickEventType::MouseUp)
+        {
+            press_durations.push(up.delay_after_ms);
+        }
+    }
+
+    // Assert — durations must vary within the session (RNG advances per call).
+    assert!(
+        press_durations.len() >= 2,
+        "Need ≥2 press durations for variance check"
+    );
+    let distinct: std::collections::HashSet<u64> = press_durations.iter().copied().collect();
+    assert!(
+        distinct.len() >= 2,
+        "Consecutive clicks must produce ≥2 distinct press durations \
+         (got {} distinct: {:?}) — BUG-STL-008 RNG advancement",
+        distinct.len(),
+        press_durations
+    );
+}
+
+// ---- 2.1d BUG-STL-008: first-click reproducibility across fresh instances ----
+// @trace REQ-STL-006 [req:REQ-STL-006] [level:integration]
+#[test]
+fn recaptcha_first_click_reproducible_across_instances() {
+    // Arrange — BUG-STL-008 keeps reproducibility for tests/replay: two fresh
+    // simulators from the same seed must produce identical FIRST clicks.
+    // (Subsequent calls diverge — that's tested in 2.1c.)
+    let sim1 = BehaviorSimulator::new(123);
+    let sim2 = BehaviorSimulator::new(123);
+
+    // Act
+    let e1 = sim1.generate_click_sequence(100.0, 100.0, 20.0);
+    let e2 = sim2.generate_click_sequence(100.0, 100.0, 20.0);
+
+    // Assert — first call on each instance must match exactly.
+    assert_eq!(
+        e1, e2,
+        "Fresh instances from same seed must reproduce first click — BUG-STL-008 reproducibility"
+    );
+}
+
 // ---- 2.2 Click has pre-click micro-adjustment (Fitts' settling) ----
 // @trace REQ-STL-006 [req:REQ-STL-006] [level:integration]
 #[test]
