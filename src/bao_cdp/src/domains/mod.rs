@@ -1,283 +1,229 @@
-// @trace REQ-CDP-002 [entity:CdpCommand]
-mod page;
-mod runtime;
-mod dom;
-pub mod network;
-mod debugger;
-mod input;
-mod emulation;
-mod css;
-mod overlay;
-mod log_domain;
-pub mod fetch_domain;
-mod target;
+// @trace REQ-CDP-008 [entity:ServoTargetProvider]
+//
+// TASK-6 (DEC-CDP-001): 11 个 evaluate_js 注入式 domain handler 已废弃并删除,
+// CDP 命令分发统一由 bao_cdp_client::CDPRdpBridge 接管。本模块仅保留
+// `ServoTargetProvider`,因为它是 CdpServer 启动 Playwright 兼容服务时
+// 必需的 TargetProvider(通过 `set_target_provider` 注入),独立于 domain
+// handler 注册,且属于 CDP server 基础设施。
 
-use cdp_server::DomainRegistry;
-use crate::servo_bridge::BridgeSender;
-use crate::DomainDispatch;
+use cdp_server::TargetInfo;
 
-pub use target::ServoTargetProvider;
-pub use target::TargetHandler;
-pub use page::PageHandler;
-pub use runtime::RuntimeHandler;
-pub use dom::DomHandler;
-pub use network::NetworkHandler;
-pub use debugger::DebuggerHandler;
-pub use emulation::EmulationHandler;
-pub use input::InputHandler;
-pub use css::CssHandler;
-pub use overlay::OverlayHandler;
-pub use log_domain::LogHandler;
-pub use fetch_domain::FetchHandler;
+use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
-/// Register all CDP domain handlers into an existing DomainRegistry.
-/// Uses DomainDispatch enum for compile-time exhaustiveness — no vtable indirection.
-pub fn register_all_domains_into(bridge: BridgeSender, target_id: String, registry: &DomainRegistry<DomainDispatch>) {
-    registry.register(DomainDispatch::Page(page::PageHandler::new(bridge.clone(), target_id.clone()))).expect("register Page");
-    registry.register(DomainDispatch::Runtime(runtime::RuntimeHandler::new(bridge.clone(), target_id.clone()))).expect("register Runtime");
-    registry.register(DomainDispatch::Dom(dom::DomHandler::new(bridge.clone(), target_id.clone()))).expect("register DOM");
-    registry.register(DomainDispatch::Network(network::NetworkHandler::new(bridge.clone(), target_id.clone()))).expect("register Network");
-    registry.register(DomainDispatch::Debugger(debugger::DebuggerHandler::new(bridge.clone(), target_id.clone()))).expect("register Debugger");
-    registry.register(DomainDispatch::Input(input::InputHandler::new(bridge.clone(), target_id.clone()))).expect("register Input");
-    registry.register(DomainDispatch::Emulation(emulation::EmulationHandler::new(bridge.clone(), target_id.clone()))).expect("register Emulation");
-    registry.register(DomainDispatch::Css(css::CssHandler::new(bridge.clone(), target_id.clone()))).expect("register CSS");
-    registry.register(DomainDispatch::Overlay(overlay::OverlayHandler::new(bridge.clone(), target_id.clone()))).expect("register Overlay");
-    registry.register(DomainDispatch::Log(log_domain::LogHandler::new())).expect("register Log");
-    registry.register(DomainDispatch::Fetch(fetch_domain::FetchHandler::new(bridge, target_id.clone()))).expect("register Fetch");
+/// TargetProvider backed by servo via the bridge channel.
+///
+/// `CdpServer::set_target_provider` 调用 `list_targets/create_target/...`
+/// 时,本 provider 把它们翻译为 `BridgeCommand::ListTargets /
+/// CreateTarget / ClosePage` 等命令发给 servo 端的 BridgeReceiver。
+///
+/// @trace REQ-CDP-008 [entity:ServoTargetProvider]
+pub struct ServoTargetProvider {
+    bridge: BridgeSender,
+    target_id: String,
+    port: u16,
+    host: String,
 }
 
-/// Register all 12 CDP domain handlers (including Target) into a DomainRegistry.
-/// Uses DomainDispatch enum for compile-time exhaustiveness — no vtable indirection.
-pub fn register_all_domains_with_target(bridge: BridgeSender, target_id: String, registry: &DomainRegistry<DomainDispatch>) {
-    register_all_domains_into(bridge.clone(), target_id.clone(), registry);
-    registry.register(DomainDispatch::Target(target::TargetHandler::new(bridge, target_id))).expect("register Target");
+impl ServoTargetProvider {
+    pub fn new(bridge: BridgeSender, target_id: String, host: String, port: u16) -> Self {
+        ServoTargetProvider { bridge, target_id, host, port }
+    }
 }
 
-// @trace TEST-CDP-DOM-001 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
+impl cdp_server::TargetProvider for ServoTargetProvider {
+    fn list_targets(&self) -> Vec<TargetInfo> {
+        // ListTargets bridge command enumerates all active pages
+        if let Some(targets) = self.bridge.send(BridgeCommand::ListTargets).result.ok() {
+            if let Some(arr) = targets.as_array() {
+                return arr.iter().filter_map(|entry| {
+                    let id = entry.get("id")?.as_str()?.to_string();
+                    let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("Bao").to_string();
+                    let url = entry.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank").to_string();
+                    let ws_url = format!("ws://{}:{}/devtools/page/{}", self.host, self.port, id);
+                    Some(TargetInfo {
+                        id,
+                        target_type: "page".into(),
+                        title,
+                        url,
+                        web_socket_debugger_url: ws_url,
+                    })
+                }).collect();
+            }
+        }
+        // Fallback: return the default target
+        let title = self.bridge.send(BridgeCommand::GetTitle { target_id: self.target_id.clone() }).result
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "Bao".into());
+        let url = self.bridge.send(BridgeCommand::GetUrl { target_id: self.target_id.clone() }).result
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| "about:blank".into());
+        vec![TargetInfo {
+            id: self.target_id.clone(),
+            target_type: "page".into(),
+            title,
+            url,
+            web_socket_debugger_url: format!("ws://{}:{}/devtools/page/{}", self.host, self.port, self.target_id),
+        }]
+    }
+
+    fn create_target(&self, url: &str) -> Result<TargetInfo, String> {
+        let result = self.bridge.send(BridgeCommand::CreateTarget { url: url.to_string() }).result;
+        match result {
+            Ok(val) => {
+                let new_id = val.get("targetId")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "CreateTarget returned no targetId".to_string())?;
+                if new_id == self.target_id {
+                    return Err("CreateTarget returned existing targetId, not a new page".to_string());
+                }
+                Ok(TargetInfo {
+                    id: new_id.to_string(),
+                    target_type: "page".into(),
+                    title: String::new(),
+                    url: url.to_string(),
+                    web_socket_debugger_url: format!("ws://{}:{}/devtools/page/{}", self.host, self.port, new_id),
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn close_target(&self, target_id: &str) -> Result<(), String> {
+        self.bridge.send_fire_and_forget(BridgeCommand::ClosePage { target_id: target_id.to_string() });
+        Ok(())
+    }
+
+    fn activate_target(&self, _target_id: &str) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+// @trace TEST-CDP-008 [req:REQ-CDP-008] [level:unit]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::servo_bridge::bridge_channel;
-    use cdp_server::EventSender;
-    use serde_json::{json, Value};
+    use crate::servo_bridge::{bridge_channel, BridgeCommand, BridgeResponse};
+    use cdp_server::TargetProvider;
+    use serde_json::json;
     use std::time::Duration;
 
     const TIMEOUT: Duration = Duration::from_millis(100);
 
-    struct NoopSender;
-    impl EventSender for NoopSender {
-        fn send_event(&self, _method: &str, _params: Value) {}
+    #[test]
+    fn provider_new_constructs() {
+        let (bridge, _rx) = bridge_channel(TIMEOUT);
+        let p = ServoTargetProvider::new(bridge, "tid".into(), "127.0.0.1".into(), 9222);
+        // Constructor should not panic
+        assert_eq!(p.target_id, "tid");
+        assert_eq!(p.host, "127.0.0.1");
+        assert_eq!(p.port, 9222);
     }
 
-    // 1. register_all_domains_into registers 11 domains
     #[test]
-    fn register_all_domains_into_registers_11_domains() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_into(bridge, "test-target".into(), &registry);
-
-        let expected_domains = [
-            "Page", "Runtime", "DOM", "Network", "Debugger",
-            "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch",
-        ];
-
-        for domain in &expected_domains {
-            assert!(registry.has_domain(domain), "domain '{}' should be registered", domain);
-        }
+    fn list_targets_fallback_when_no_responder() {
+        // No responder thread → bridge returns Err → fallback to single default target
+        let (bridge, _rx) = bridge_channel(TIMEOUT);
+        let provider = ServoTargetProvider::new(bridge, "default-target".into(), "127.0.0.1".into(), 9222);
+        let targets = provider.list_targets();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].id, "default-target");
+        assert_eq!(targets[0].target_type, "page");
+        assert!(targets[0].web_socket_debugger_url.contains("/devtools/page/default-target"));
     }
 
-    // 2. all domains have correct names and respond to known commands
     #[test]
-    fn all_domains_have_correct_names_and_respond_to_known_commands() {
-        let (bridge, rx) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_into(bridge.clone(), "test-target".into(), &registry);
-
-        // Background responder for bridge commands (Debugger.enable sends BridgeCommand)
+    fn list_targets_uses_list_targets_bridge_command_when_available() {
+        let (bridge, rx) = bridge_channel(Duration::from_secs(2));
         let keeper = bridge.clone();
         std::thread::spawn(move || {
             let _keeper = keeper;
             loop {
-                let handled = rx.try_process(|_| crate::servo_bridge::BridgeResponse { result: Ok(json!({})) });
+                let handled = rx.try_process(|cmd| match cmd {
+                    BridgeCommand::ListTargets => BridgeResponse {
+                        result: Ok(json!([
+                            { "id": "p1", "title": "Page 1", "url": "https://example.com/1" },
+                            { "id": "p2", "title": "Page 2", "url": "https://example.com/2" },
+                        ])),
+                    },
+                    _ => BridgeResponse { result: Ok(json!({})) },
+                });
                 if !handled {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             }
         });
-
-        // Test non-bridge commands for each domain
-        let known_commands: &[(&str, Value)] = &[
-            ("Page.enable", json!({})),
-            ("Runtime.enable", json!({})),
-            ("DOM.enable", json!({})),
-            ("Network.enable", json!({})),
-            ("Debugger.enable", json!({})),
-            ("Input.setIgnoreInputEvents", json!({})),
-            ("Emulation.clearDeviceMetricsOverride", json!({})),
-            ("CSS.enable", json!({})),
-            ("Overlay.enable", json!({})),
-            ("Log.enable", json!({})),
-            ("Fetch.disable", json!({})),
-        ];
-
-        for (command, params) in known_commands {
-            let result = registry.dispatch_command(command, params.clone(), &NoopSender);
-            assert!(result.is_some(), "{} should return Some", command);
-            assert!(result.unwrap().is_ok(), "{} should return Ok", command);
-        }
+        let provider = ServoTargetProvider::new(bridge, "default-target".into(), "127.0.0.1".into(), 9222);
+        let targets = provider.list_targets();
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].id, "p1");
+        assert_eq!(targets[1].id, "p2");
     }
 
-    // 3. Page domain responds to non-bridge commands
     #[test]
-    fn page_domain_responds_to_non_bridge_commands() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_into(bridge, "test-target".into(), &registry);
-
-        // Page.setContent doesn't require bridge
-        let result = registry.dispatch_command("Page.setContent", json!({ "html": "<html></html>" }), &NoopSender);
-        assert!(result.is_some());
-        assert!(result.unwrap().is_ok());
-
-        // Page.getLayoutMetrics doesn't require bridge
-        let result = registry.dispatch_command("Page.getLayoutMetrics", json!({}), &NoopSender);
-        assert!(result.is_some());
-        let response = result.unwrap().unwrap();
-        assert!(response.get("contentSize").is_some());
+    fn create_target_returns_new_target_info() {
+        let (bridge, rx) = bridge_channel(Duration::from_secs(2));
+        let keeper = bridge.clone();
+        std::thread::spawn(move || {
+            let _keeper = keeper;
+            loop {
+                let handled = rx.try_process(|cmd| match cmd {
+                    BridgeCommand::CreateTarget { .. } => BridgeResponse {
+                        result: Ok(json!({ "targetId": "new-page-1" })),
+                    },
+                    _ => BridgeResponse { result: Ok(json!({})) },
+                });
+                if !handled {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        });
+        let provider = ServoTargetProvider::new(bridge, "default-target".into(), "127.0.0.1".into(), 9222);
+        let info = provider.create_target("https://example.com").unwrap();
+        assert_eq!(info.id, "new-page-1");
+        assert_eq!(info.url, "https://example.com");
     }
 
-    // 4. CSS domain returns computedStyle structure (bridge returns error, but structure present)
     #[test]
-    fn css_domain_returns_computed_style_structure() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_into(bridge, "test-target".into(), &registry);
-
-        let result = registry.dispatch_command("CSS.getComputedStyleForNode", json!({ "nodeId": 1 }), &NoopSender);
-        assert!(result.is_some());
-        let response = result.unwrap().unwrap();
-        assert!(response.get("computedStyle").is_some(), "CSS should return computedStyle field");
+    fn create_target_rejects_existing_target_id() {
+        let (bridge, rx) = bridge_channel(Duration::from_secs(2));
+        let keeper = bridge.clone();
+        let parent_target = "default-target".to_string();
+        std::thread::spawn(move || {
+            let _keeper = keeper;
+            loop {
+                let handled = rx.try_process(|cmd| match cmd {
+                    BridgeCommand::CreateTarget { .. } => BridgeResponse {
+                        // Returns the SAME target_id → must be rejected
+                        result: Ok(json!({ "targetId": "default-target" })),
+                    },
+                    _ => BridgeResponse { result: Ok(json!({})) },
+                });
+                if !handled {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        });
+        let provider = ServoTargetProvider::new(bridge, parent_target, "127.0.0.1".into(), 9222);
+        let result = provider.create_target("https://example.com");
+        assert!(result.is_err(), "should reject fallback to existing target_id");
     }
 
-    // 5. Overlay domain returns highlight result structure
     #[test]
-    fn overlay_domain_returns_highlight_structure() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_into(bridge, "test-target".into(), &registry);
-
-        let result = registry.dispatch_command("Overlay.highlightNode", json!({ "nodeId": 1 }), &NoopSender);
-        assert!(result.is_some());
-        let response = result.unwrap().unwrap();
-        assert!(response.get("highlighted").is_some(), "Overlay should return highlighted field");
+    fn close_target_sends_close_page_command() {
+        // close_target returns Ok(()) and sends ClosePage fire-and-forget
+        let (bridge, _rx) = bridge_channel(TIMEOUT);
+        let provider = ServoTargetProvider::new(bridge, "default-target".into(), "127.0.0.1".into(), 9222);
+        let result = provider.close_target("target-1");
+        assert!(result.is_ok());
     }
 
-    // 6. Log domain handles enable/disable/clear
     #[test]
-    fn log_domain_handles_enable_disable_clear() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_into(bridge, "test-target".into(), &registry);
-
-        let result = registry.dispatch_command("Log.enable", json!({}), &NoopSender);
-        assert!(result.is_some());
-        assert!(result.unwrap().is_ok());
-
-        let result = registry.dispatch_command("Log.clear", json!({}), &NoopSender);
-        assert!(result.is_some());
-        assert!(result.unwrap().is_ok());
-
-        let result = registry.dispatch_command("Log.disable", json!({}), &NoopSender);
-        assert!(result.is_some());
-        assert!(result.unwrap().is_ok());
-    }
-
-    // 7. Fetch domain handles enable with patterns
-    #[test]
-    fn fetch_domain_handles_enable_with_patterns() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_into(bridge, "test-target".into(), &registry);
-
-        let result = registry.dispatch_command(
-            "Fetch.enable",
-            json!({ "patterns": [{ "urlPattern": "*" }] }),
-            &NoopSender,
-        );
-        assert!(result.is_some());
-        let response = result.unwrap().unwrap();
-        assert_eq!(response.get("patternCount").unwrap(), 1);
-    }
-
-    // 8. Unknown command returns method not found error
-    #[test]
-    fn unknown_command_returns_method_not_found_error() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_into(bridge, "test-target".into(), &registry);
-
-        let result = registry.dispatch_command("Page.unknownMethod", json!({}), &NoopSender);
-        assert!(result.is_some());
-        let err = result.unwrap().unwrap_err();
-        assert_eq!(err.code, -32601);
-        assert!(err.message.contains("unknownMethod"));
-    }
-
-    // 9. Domain not registered returns None
-    #[test]
-    fn unregistered_domain_returns_none() {
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        // Don't register any domains
-        let result = registry.dispatch_command("Page.enable", json!({}), &NoopSender);
-        assert!(result.is_none());
-    }
-
-    // 10. All 11 domains are distinct (no duplicate registration)
-    #[test]
-    fn all_domains_are_distinct() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-
-        // First registration should succeed
-        register_all_domains_into(bridge.clone(), "test-target".into(), &registry);
-
-        // Attempting to register Page again should fail (using DomainDispatch)
-        let duplicate_result = registry.register(DomainDispatch::Page(page::PageHandler::new(bridge, "test-target".into())));
-        assert!(duplicate_result.is_err());
-        assert!(duplicate_result.unwrap_err().contains("already registered"));
-    }
-
-    // 11. register_all_domains_with_target registers 12 domains including Target
-    #[test]
-    fn register_all_domains_with_target_registers_12_domains() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_with_target(bridge, "test-target-id".into(), &registry);
-
-        let expected_domains = [
-            "Page", "Runtime", "DOM", "Network", "Debugger",
-            "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch", "Target",
-        ];
-
-        for domain in &expected_domains {
-            assert!(registry.has_domain(domain), "domain '{}' should be registered", domain);
-        }
-    }
-
-    // 12. Target domain handles getTargets via registry
-    #[test]
-    fn target_domain_handles_get_targets_via_registry() {
-        let (bridge, _receiver) = bridge_channel(TIMEOUT);
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        register_all_domains_with_target(bridge, "my-target-123".into(), &registry);
-
-        let result = registry.dispatch_command("Target.getTargets", json!({}), &NoopSender);
-        assert!(result.is_some());
-        let response = result.unwrap();
-        assert!(response.is_ok());
-        let result_val = response.unwrap();
-        let infos = result_val["targetInfos"].as_array().unwrap();
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0]["targetId"], "my-target-123");
+    fn activate_target_is_noop_ok() {
+        let (bridge, _rx) = bridge_channel(TIMEOUT);
+        let provider = ServoTargetProvider::new(bridge, "default-target".into(), "127.0.0.1".into(), 9222);
+        let result = provider.activate_target("any-target");
+        assert!(result.is_ok());
     }
 }

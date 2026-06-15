@@ -30,9 +30,9 @@ use servo::{
     Opts, Servo, ServoBuilder,
 };
 
+use bao_cdp::domains::ServoTargetProvider;
 use bao_cdp::servo_bridge::bridge_channel;
-use bao_cdp::{CdpServer, ServerConfig};
-use bao_cdp::domains::{register_all_domains_with_target, ServoTargetProvider};
+use cdp_server::{CdpServer, DomainRegistry, EmptyHandler, ServerConfig};
 
 // Force-link bao_native_stubs (dispatch no-op stubs + C library bridges).
 // Without this anchor, the linker GCs the entire bao_native_stubs compilation
@@ -185,10 +185,12 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as u64);
-            // Build DomainDispatch registry, register all CDP domain handlers,
-            // then inject into CdpServer via with_registry().
-            let registry = std::sync::Arc::new(cdp_server::DomainRegistry::<bao_cdp::DomainDispatch>::new());
-            register_all_domains_with_target(bridge_tx.clone(), target_id.clone(), &registry);
+            // TASK-6 (DEC-CDP-001): evaluate_js 注入式 domain handlers 已删除,
+            // CDP 命令分发由 bao_cdp_client::CDPRdpBridge 接管。CdpServer 此处
+            // 仅作为 Playwright 兼容的 ws 入口,TargetProvider 仍由 servo 桥接
+            // 提供。registry 用 EmptyHandler 占位 — 实际命令路由通过 servo 桥
+            // 完成,无需在此注册 domain handlers。
+            let registry = std::sync::Arc::new(DomainRegistry::<EmptyHandler>::new());
             let mut server = CdpServer::with_registry(config, registry);
             let provider = std::sync::Arc::new(
                 ServoTargetProvider::new(bridge_tx, target_id, "127.0.0.1".into(), port)

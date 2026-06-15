@@ -215,50 +215,12 @@ fn test_tls_socket_once_fires_only_once() {
     bun_runtime::shutdown_thread_sm();
 }
 
-// ─── T8: CDP enum dispatch ───────────────────────────────────────────────
-
-#[test]
-fn test_domain_dispatch_enum_registration() {
-    use bao_cdp::domains::{register_all_domains_with_target, PageHandler, RuntimeHandler};
-    use bao_cdp::servo_bridge::bridge_channel;
-    use bao_cdp::DomainDispatch;
-    use cdp_server::{DomainRegistry, EventSender};
-    use serde_json::{json, Value};
-    use std::time::Duration;
-
-    let (bridge, _rx) = bridge_channel(Duration::from_millis(100));
-    let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-    register_all_domains_with_target(bridge, "test-target".into(), &registry);
-
-    // All 12 domains should be registered
-    let expected = [
-        "Page", "Runtime", "DOM", "Network", "Debugger",
-        "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch", "Target",
-    ];
-    for domain in &expected {
-        assert!(registry.has_domain(domain), "domain {} should be registered", domain);
-    }
-
-    // Dispatch should work without vtable indirection
-    struct NoopSender;
-    impl EventSender for NoopSender {
-        fn send_event(&self, _: &str, _: Value) {}
-    }
-    let result = registry.dispatch_command("Page.enable", json!({}), &NoopSender);
-    assert!(result.is_some());
-    assert!(result.unwrap().is_ok());
-}
-
-#[test]
-fn test_domain_dispatch_no_box_dyn_in_production() {
-    // Verify that DomainRegistry<DomainDispatch> does NOT use Box<dyn>
-    // by checking that DomainDispatch implements DomainHandler directly
-    use bao_cdp::DomainDispatch;
-    use cdp_server::DomainHandler;
-    // This compile-time check ensures DomainDispatch: DomainHandler
-    fn _assert_impls<T: DomainHandler>() {}
-    _assert_impls::<DomainDispatch>();
-}
+// ─── T8: CDP enum dispatch (REMOVED in TASK-6, DEC-CDP-001) ─────────────
+//
+// The DomainDispatch enum and register_all_domains_* helpers were removed:
+// evaluate_js 注入式 domain handlers are deprecated in favor of
+// bao_cdp_client::CDPRdpBridge. CdpServer now uses EmptyHandler as a
+// placeholder registry — actual command routing happens via servo_bridge.
 
 // ─── BaoEvent parsing ────────────────────────────────────────────────────
 

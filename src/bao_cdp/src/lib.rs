@@ -1,124 +1,22 @@
-// REQ-CDP-003: CDP module public API and domain registry  @trace REQ-CDP-001 [entity:CdpRouter] [entity:CdpServer]
+// REQ-CDP-003: CDP module public API — server entry + WS / JSON-RPC codec
+// @trace REQ-CDP-001 [entity:CdpRouter] [entity:CdpServer]
 // @trace REQ-IMPL-06
+//
+// TASK-6 (DEC-CDP-001): evaluate_js 注入式 domain handler 已删除,
+// CDP 命令分发由 bao_cdp_client::CDPRdpBridge 接管。本 crate 退化为
+// 对外 CDP server 入口(Playwright 兼容)+ 基础设施(RFC 6455 codec、
+// JSON-RPC 编解码、Target 路由),被 bao_cdp_client 复用。
+
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
-// §1 DomainDispatch Enum — compile-time exhaustiveness for CDP domains
+// §1 CdpServer public re-exports (from cdp-server crate)
 // ---------------------------------------------------------------------------
 
-/// Enum dispatch for all CDP domain handlers. Provides compile-time
-/// exhaustiveness checking when adding/removing domains, and direct
-/// dispatch without vtable indirection within DomainHandler trait methods.
-pub enum DomainDispatch {
-    Page(domains::PageHandler),
-    Runtime(domains::RuntimeHandler),
-    Dom(domains::DomHandler),
-    Network(domains::NetworkHandler),
-    Debugger(domains::DebuggerHandler),
-    Input(domains::InputHandler),
-    Emulation(domains::EmulationHandler),
-    Css(domains::CssHandler),
-    Overlay(domains::OverlayHandler),
-    Log(domains::LogHandler),
-    Fetch(domains::FetchHandler),
-    Target(domains::TargetHandler),
-}
-
-impl cdp_server::DomainHandler for DomainDispatch {
-    fn domain_name(&self) -> &'static str {
-        match self {
-            Self::Page(h) => h.domain_name(),
-            Self::Runtime(h) => h.domain_name(),
-            Self::Dom(h) => h.domain_name(),
-            Self::Network(h) => h.domain_name(),
-            Self::Debugger(h) => h.domain_name(),
-            Self::Input(h) => h.domain_name(),
-            Self::Emulation(h) => h.domain_name(),
-            Self::Css(h) => h.domain_name(),
-            Self::Overlay(h) => h.domain_name(),
-            Self::Log(h) => h.domain_name(),
-            Self::Fetch(h) => h.domain_name(),
-            Self::Target(h) => h.domain_name(),
-        }
-    }
-
-    fn handle_command(
-        &self,
-        command: &str,
-        params: serde_json::Value,
-        event_sender: &dyn cdp_server::EventSender,
-    ) -> Result<serde_json::Value, cdp_server::CdpError> {
-        match self {
-            Self::Page(h) => h.handle_command(command, params, event_sender),
-            Self::Runtime(h) => h.handle_command(command, params, event_sender),
-            Self::Dom(h) => h.handle_command(command, params, event_sender),
-            Self::Network(h) => h.handle_command(command, params, event_sender),
-            Self::Debugger(h) => h.handle_command(command, params, event_sender),
-            Self::Input(h) => h.handle_command(command, params, event_sender),
-            Self::Emulation(h) => h.handle_command(command, params, event_sender),
-            Self::Css(h) => h.handle_command(command, params, event_sender),
-            Self::Overlay(h) => h.handle_command(command, params, event_sender),
-            Self::Log(h) => h.handle_command(command, params, event_sender),
-            Self::Fetch(h) => h.handle_command(command, params, event_sender),
-            Self::Target(h) => h.handle_command(command, params, event_sender),
-        }
-    }
-
-    fn on_session_created(&self, session_id: &str) {
-        match self {
-            Self::Page(h) => h.on_session_created(session_id),
-            Self::Runtime(h) => h.on_session_created(session_id),
-            Self::Dom(h) => h.on_session_created(session_id),
-            Self::Network(h) => h.on_session_created(session_id),
-            Self::Debugger(h) => h.on_session_created(session_id),
-            Self::Input(h) => h.on_session_created(session_id),
-            Self::Emulation(h) => h.on_session_created(session_id),
-            Self::Css(h) => h.on_session_created(session_id),
-            Self::Overlay(h) => h.on_session_created(session_id),
-            Self::Log(h) => h.on_session_created(session_id),
-            Self::Fetch(h) => h.on_session_created(session_id),
-            Self::Target(h) => h.on_session_created(session_id),
-        }
-    }
-
-    fn on_session_destroyed(&self, session_id: &str) {
-        match self {
-            Self::Page(h) => h.on_session_destroyed(session_id),
-            Self::Runtime(h) => h.on_session_destroyed(session_id),
-            Self::Dom(h) => h.on_session_destroyed(session_id),
-            Self::Network(h) => h.on_session_destroyed(session_id),
-            Self::Debugger(h) => h.on_session_destroyed(session_id),
-            Self::Input(h) => h.on_session_destroyed(session_id),
-            Self::Emulation(h) => h.on_session_destroyed(session_id),
-            Self::Css(h) => h.on_session_destroyed(session_id),
-            Self::Overlay(h) => h.on_session_destroyed(session_id),
-            Self::Log(h) => h.on_session_destroyed(session_id),
-            Self::Fetch(h) => h.on_session_destroyed(session_id),
-            Self::Target(h) => h.on_session_destroyed(session_id),
-        }
-    }
-}
-
-/// EventSender backed by the CDP command channel. When a domain handler
-/// calls `send_event`, the event is queued into the channel and later
-/// broadcast to all connected WebSocket sessions by the server run loop.
-pub struct SessionEventSender {
-    pub cmd_tx: Sender<CDPCommand>,
-}
-
-impl cdp_server::EventSender for SessionEventSender {
-    fn send_event(&self, method: &str, params: serde_json::Value) {
-        let ev = CDPEvent {
-            method: method.to_string(),
-            params: Some(params),
-        };
-        let _ = self.cmd_tx.send(CDPCommand::SendEvent(ev));
-    }
-}
+pub use cdp_server::{BaoEvent, ConsoleMessage};
 
 pub mod ws;
 pub mod ws_codec;
@@ -129,12 +27,15 @@ mod router;
 pub mod servo_bridge;
 pub mod domains;
 
-pub use protocol::{CDPMessage, CDPResponse, CDPError, CDPEvent};
 pub use protocol::{parse_message, handle_command, serialize_response, serialize_event};
-pub use router::{CdpRouter, CdpSession, ExternalBrowser, BackendKind};
-pub use servo_bridge::{BridgeSender, BridgeReceiver, BridgeCommand, BridgeResponse, bridge_channel};
+pub use protocol::{CDPError, CDPEvent, CDPMessage, CDPResponse};
+pub use router::{BackendKind, CdpRouter, CdpSession, ExternalBrowser};
+pub use servo_bridge::{bridge_channel, BridgeCommand, BridgeReceiver, BridgeResponse, BridgeSender};
 
-// Re-export for backend.rs
+// ---------------------------------------------------------------------------
+// §2 ReplayStream + WebSocketConnection — shared with backend.rs
+// ---------------------------------------------------------------------------
+
 pub struct ReplayStream {
     pub stream: TcpStream,
     pub replay: Cursor<Vec<u8>>,
@@ -174,8 +75,20 @@ pub struct WebSocketConnection {
     pub encoder: ws_codec::FrameEncoder,
 }
 
-// cdp-server integration — new domain-handler architecture
-pub use cdp_server::{CdpServer, ServerConfig, DomainRegistry, EventBroadcaster, BaoEvent, ConsoleMessage};
+// ---------------------------------------------------------------------------
+// §3 CDPServer — legacy synchronous CDP server entry point (Playwright compat)
+//
+// This is the original synchronous TCP server. It listens on 127.0.0.1:port,
+// serves /json/* HTTP discovery endpoints, performs the WebSocket upgrade,
+// and dispatches incoming CDP commands via `protocol::handle_command` +
+// the optional servo `BridgeSender`. Domain commands that need real servo
+// state (Page.navigate, Runtime.evaluate, DOM.getDocument, ...) are routed
+// through the bridge; everything else returns a stub response.
+//
+// Note: cdp-server crate's async `CdpServer` is the new Playwright-compatible
+// entry. Both coexist during the migration; this synchronous server remains
+// for tests / integration that don't need cdp-server's full registry.
+// ---------------------------------------------------------------------------
 
 pub struct CDPServer {
     port: u16,
@@ -184,7 +97,6 @@ pub struct CDPServer {
     cmd_tx: Sender<CDPCommand>,
     cmd_rx: Receiver<CDPCommand>,
     bridge: Option<BridgeSender>,
-    registry: Option<Arc<DomainRegistry<DomainDispatch>>>,
 }
 
 #[derive(Debug)]
@@ -198,7 +110,7 @@ pub struct CDPSession {
     target_id: String,
     pub ws: WebSocketConnection,
     bridge: Option<BridgeSender>,
-    registry: Option<Arc<DomainRegistry<DomainDispatch>>>,
+    #[allow(dead_code)]
     cmd_tx: Sender<CDPCommand>,
 }
 
@@ -212,28 +124,27 @@ impl CDPServer {
             cmd_tx,
             cmd_rx,
             bridge: None,
-            registry: None,
         }
     }
 
     pub fn with_bridge(port: u16, bridge: BridgeSender) -> Self {
         let (cmd_tx, cmd_rx) = channel();
-        let target_id = format!("{:016x}", rand_id());
-        let registry: DomainRegistry<DomainDispatch> = DomainRegistry::new();
-        domains::register_all_domains_with_target(bridge.clone(), target_id.clone(), &registry);
         CDPServer {
             port,
-            target_id,
+            target_id: format!("{:016x}", rand_id()),
             sessions: HashMap::new(),
             cmd_tx,
             cmd_rx,
             bridge: Some(bridge),
-            registry: Some(Arc::new(registry)),
         }
     }
 
-    pub fn port(&self) -> u16 { self.port }
-    pub fn target_id(&self) -> &str { &self.target_id }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+    pub fn target_id(&self) -> &str {
+        &self.target_id
+    }
 
     pub fn ws_url(&self) -> String {
         format!("ws://127.0.0.1:{}/devtools/page/{}", self.port, self.target_id)
@@ -375,22 +286,16 @@ impl CDPServer {
 
         // WebSocket upgrade — perform handshake using our codec
         if request.starts_with("GET /devtools/page/") {
-            // Set per-read timeout long enough for large payloads (1MB+) to arrive
-            // even under concurrent test load. ws::read_message treats WouldBlock
-            // as Ok(None), keeping the session alive across event-loop ticks.
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1000)));
             let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(5000)));
 
-            // Wrap stream as ReplayStream so handshake sees the already-read HTTP bytes.
             let mut replay = ReplayStream::new(stream, buf[..n].to_vec());
 
-            // Perform WebSocket handshake
             if let Err(e) = ws_handshake::server_handshake(&mut replay) {
                 log::info!("CDP WebSocket handshake failed: {:?}", e);
                 return None;
             }
 
-            // Wrap the stream in a WebSocket connection using our codec
             let ws_connection = WebSocketConnection {
                 stream: replay,
                 decoder: ws_codec::FrameDecoder::new(),
@@ -402,7 +307,6 @@ impl CDPServer {
                 target_id: self.target_id.clone(),
                 ws: ws_connection,
                 bridge: self.bridge.clone(),
-                registry: self.registry.clone(),
                 cmd_tx: self.cmd_tx.clone(),
             });
         }
@@ -432,40 +336,16 @@ impl CDPSession {
             None => return Ok(()),
         };
 
-        let response = match self.dispatch_cdp(&cdp_msg) {
-            Some(resp) => resp,
-            None => protocol::handle_command(
-                cdp_msg.clone(), &self.target_id, &cdp_msg.params, self.bridge.as_ref(),
-            ),
-        };
+        let response = protocol::handle_command(
+            cdp_msg.clone(),
+            &self.target_id,
+            &cdp_msg.params,
+            self.bridge.as_ref(),
+        );
         let response_json = protocol::serialize_response(&response);
         let _ = ws::write_message(&mut self.ws.encoder, &mut self.ws.stream, &response_json);
 
         Ok(())
-    }
-
-    /// Try dispatching via DomainRegistry. Returns Some(CDPResponse) if the domain
-    /// was found in the registry, None to fall back to old protocol routing.
-    fn dispatch_cdp(&self, cdp_msg: &CDPMessage) -> Option<CDPResponse> {
-        let registry = self.registry.as_ref()?;
-        let params = cdp_msg.params.clone().unwrap_or_default();
-        let event_sender = SessionEventSender {
-            cmd_tx: self.cmd_tx.clone(),
-        };
-        registry.dispatch_command(&cdp_msg.method, params, &event_sender).map(|result| {
-            match result {
-                Ok(value) => CDPResponse {
-                    id: cdp_msg.id,
-                    result: Some(value),
-                    error: None,
-                },
-                Err(err) => CDPResponse {
-                    id: cdp_msg.id,
-                    result: None,
-                    error: Some(CDPError { code: err.code, message: err.message }),
-                },
-            }
-        })
     }
 
     #[allow(clippy::result_unit_err)]
@@ -522,12 +402,6 @@ impl std::error::Error for CDPServerError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-
-    fn test_event_sender() -> SessionEventSender {
-        let (cmd_tx, _cmd_rx) = channel();
-        SessionEventSender { cmd_tx }
-    }
 
     #[test]
     fn cdp_server_new_creates_server() {
@@ -551,7 +425,7 @@ mod tests {
 
     #[test]
     fn cdp_server_with_bridge() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
+        let (sender, _rx) = crate::servo_bridge::bridge_channel(std::time::Duration::from_millis(100));
         let server = CDPServer::with_bridge(9333, sender);
         assert_eq!(server.port(), 9333);
     }
@@ -609,237 +483,6 @@ mod tests {
     fn cdp_server_error_is_std_error() {
         let err = CDPServerError::Bind("test".into());
         let _: &dyn std::error::Error = &err;
-    }
-
-    // --- Registry integration tests (Wave 2) ---
-
-    #[test]
-    fn cdp_server_new_has_no_registry() {
-        let server = CDPServer::new(9222);
-        assert!(server.registry.is_none());
-    }
-
-    #[test]
-    fn cdp_server_with_bridge_has_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        assert!(server.registry.is_some());
-        let registry = server.registry.as_ref().unwrap();
-        assert!(registry.has_domain("Page"));
-        assert!(registry.has_domain("Runtime"));
-        assert!(registry.has_domain("DOM"));
-        assert!(registry.has_domain("Network"));
-    }
-
-    #[test]
-    fn cdp_server_with_bridge_registry_has_all_12_domains() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-        let expected = [
-            "Page", "Runtime", "DOM", "Network", "Debugger",
-            "Input", "Emulation", "CSS", "Overlay", "Log", "Fetch", "Target",
-        ];
-        for domain in &expected {
-            assert!(registry.has_domain(domain), "domain '{}' should be registered", domain);
-        }
-    }
-
-    #[test]
-    fn cdp_server_with_bridge_target_is_in_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-        assert!(registry.has_domain("Target"), "Target should be in registry");
-    }
-
-    #[test]
-    fn dispatch_cdp_with_registry_returns_page_enable() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let cdp_msg = CDPMessage {
-            id: 1,
-            method: "Page.enable".into(),
-            params: None,
-            session_id: None,
-        };
-
-        // Simulate what dispatch_cdp does
-        let params = cdp_msg.params.clone().unwrap_or_default();
-        let result = registry.dispatch_command(&cdp_msg.method, params, &test_event_sender());
-        assert!(result.is_some());
-        let response = result.unwrap();
-        assert!(response.is_ok());
-        assert_eq!(response.unwrap(), serde_json::json!({}));
-    }
-
-    #[test]
-    fn dispatch_cdp_with_registry_returns_runtime_enable() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command("Runtime.enable", serde_json::json!({}), &test_event_sender());
-        assert!(result.is_some());
-        let response = result.unwrap();
-        assert!(response.is_ok());
-        assert_eq!(response.unwrap()["executionContextId"], 1);
-    }
-
-    #[test]
-    fn dispatch_cdp_unregistered_domain_returns_none() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        // HeapProfiler is NOT registered — should return None
-        let result = registry.dispatch_command("HeapProfiler.takeHeapSnapshot", serde_json::json!({}), &test_event_sender());
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn dispatch_cdp_unknown_method_returns_error() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command("Page.nonExistentMethod", serde_json::json!({}), &test_event_sender());
-        assert!(result.is_some());
-        let err = result.unwrap().unwrap_err();
-        assert_eq!(err.code, -32601);
-    }
-
-    #[test]
-    fn dispatch_cdp_page_get_layout_metrics_via_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command("Page.getLayoutMetrics", serde_json::json!({}), &test_event_sender());
-        assert!(result.is_some());
-        let response = result.unwrap().unwrap();
-        assert_eq!(response["contentSize"]["width"].as_f64().unwrap(), 1920.0);
-        assert_eq!(response["contentSize"]["height"].as_f64().unwrap(), 1080.0);
-    }
-
-    #[test]
-    fn dispatch_cdp_network_enable_via_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command("Network.enable", serde_json::json!({}), &test_event_sender());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().unwrap(), serde_json::json!({}));
-    }
-
-    #[test]
-    fn dispatch_cdp_css_stub_via_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command("CSS.enable", serde_json::json!({}), &test_event_sender());
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().unwrap(), serde_json::json!({}));
-    }
-
-    #[test]
-    fn dispatch_cdp_fetch_enable_via_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command(
-            "Fetch.enable",
-            serde_json::json!({"patterns": [{"urlPattern": "*"}]}),
-            &test_event_sender(),
-        );
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().unwrap()["patternCount"], 1);
-    }
-
-    #[test]
-    fn dispatch_target_get_targets_via_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command("Target.getTargets", serde_json::json!({}), &test_event_sender());
-        assert!(result.is_some());
-        let response = result.unwrap();
-        assert!(response.is_ok());
-        let result_val = response.unwrap();
-        let infos = result_val["targetInfos"].as_array().unwrap();
-        assert_eq!(infos.len(), 1);
-        assert_eq!(infos[0]["targetId"], server.target_id());
-    }
-
-    #[test]
-    fn dispatch_target_create_target_via_registry() {
-        let (sender, rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(500));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        // Spawn a thread to handle the CreateTarget bridge command
-        let responder = std::thread::spawn(move || {
-            rx.recv_and_process(Duration::from_secs(1), |cmd| {
-                match cmd {
-                    crate::servo_bridge::BridgeCommand::CreateTarget { .. } => {
-                        crate::servo_bridge::BridgeResponse {
-                            result: Ok(serde_json::json!({ "targetId": "new-target-123" })),
-                        }
-                    }
-                    _ => crate::servo_bridge::BridgeResponse {
-                        result: Ok(serde_json::json!({})),
-                    },
-                }
-            });
-        });
-
-        let result = registry.dispatch_command("Target.createTarget", serde_json::json!({ "url": "https://example.com" }), &test_event_sender());
-        assert!(result.is_some());
-        let response = result.unwrap();
-        assert!(response.is_ok());
-        let val = response.unwrap();
-        assert!(val.get("targetId").is_some());
-        responder.join().unwrap();
-    }
-
-    #[test]
-    fn dispatch_target_close_target_via_registry() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command("Target.closeTarget", serde_json::json!({ "targetId": "abc" }), &test_event_sender());
-        assert!(result.is_some());
-        let response = result.unwrap();
-        assert!(response.is_ok());
-        assert_eq!(response.unwrap()["success"], true);
-    }
-
-    #[test]
-    fn dispatch_target_unknown_returns_error() {
-        let (sender, _rx) = crate::servo_bridge::bridge_channel(Duration::from_millis(100));
-        let server = CDPServer::with_bridge(9333, sender);
-        let registry = server.registry.as_ref().unwrap();
-
-        let result = registry.dispatch_command("Target.nonExistent", serde_json::json!({}), &test_event_sender());
-        assert!(result.is_some());
-        let err = result.unwrap().unwrap_err();
-        assert_eq!(err.code, -32601);
-    }
-
-    #[test]
-    fn cdp_error_conversion_between_types() {
-        // Verify cdp_server::CdpError → protocol::CDPError conversion
-        let server_err = cdp_server::CdpError { code: -32601, message: "not found".into() };
-        let protocol_err = CDPError { code: server_err.code, message: server_err.message.clone() };
-        assert_eq!(protocol_err.code, -32601);
-        assert_eq!(protocol_err.message, "not found");
     }
 
     #[test]
