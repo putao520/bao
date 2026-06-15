@@ -59,3 +59,45 @@ bao_uloop = { path = "../bao_uloop" }
 bao_cdp = { path = "../bao_cdp" }
 cdp-server = { path = "../cdp-server" }
 tempfile = "3"
+
+# Node.js conformance suite (ported from ~/code/rust/bun/test/js/node/, MIT).
+# Lives in a subdirectory so each module is a separate test binary.
+[[test]]
+name = "buffer_conformance"
+path = "tests/node_conformance/buffer_conformance.rs"
+
+[[test]]
+name = "path_conformance"
+path = "tests/node_conformance/path_conformance.rs"
+
+[[test]]
+name = "fs_conformance"
+path = "tests/node_conformance/fs_conformance.rs"
+
+[[test]]
+name = "crypto_conformance"
+path = "tests/node_conformance/crypto_conformance.rs"
+
+[[test]]
+name = "url_conformance"
+path = "tests/node_conformance/url_conformance.rs"
+
+[[test]]
+name = "events_conformance"
+path = "tests/node_conformance/events_conformance.rs"
+
+[[test]]
+name = "assert_conformance"
+path = "tests/node_conformance/assert_conformance.rs"
+
+[[test]]
+name = "util_conformance"
+path = "tests/node_conformance/util_conformance.rs"
+
+[[test]]
+name = "stream_conformance"
+path = "tests/node_conformance/stream_conformance.rs"
+
+[[test]]
+name = "http_conformance"
+path = "tests/node_conformance/http_conformance.rs"
