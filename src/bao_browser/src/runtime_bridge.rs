@@ -73,6 +73,11 @@ impl EvaluateResult {
 // The callbacks (install_all_native, create_node_realm_native) execute on the script thread,
 // but the caller (inject_node_apis_with_stealth) reads the results on the main thread.
 // Therefore we MUST use cross-thread-safe storage (std::sync::Mutex) instead of thread_local.
+//
+// @trace REQ-PERF-003 [entity:BufferManager]
+// REQ-PERF-003 验收:runtime_bridge NODE_REALMS / PAGE_GLOBALS 用
+// `OnceLock<DashMap<usize, usize>>` 替代旧 `Mutex<HashMap>`,
+// DashMap 分片锁比 Mutex<HashMap> 单锁并发度高 N 倍,OnceLock 避免 lazy_static 开销。
 static NODE_REALMS: OnceLock<DashMap<usize, usize>> = OnceLock::new();
 
 fn node_realms() -> &'static DashMap<usize, usize> {
@@ -353,6 +358,11 @@ pub unsafe fn evaluate_in_node_realm(
 ///
 /// Returns the shared result handle — read after drain_callbacks completes
 /// (use `result.get()` to obtain the EvaluateResult).
+//
+// @trace REQ-PERF-004 [entity:DomainDispatch]
+// REQ-PERF-004 验收:JS 求值结果用 `Arc<OnceLock<EvaluateResult>>` 替代
+// `Arc<Mutex<EvaluateResult>>`。OnceLock 语义匹配"单次写多次读"场景:
+// script 在 script_thread 执行一次写入,主线程 drain 后读取,无需 Mutex 互斥。
 pub fn evaluate_js_via_node_realm(
     webview_id: servo::WebViewId,
     script: &str,

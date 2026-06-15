@@ -1,4 +1,5 @@
 // @trace REQ-ENG-007 [entity:HttpClientBridge]
+// @trace REQ-PERF-001 [entity:HttpResponse] @trace REQ-PERF-003 [entity:BufferManager]
 //! Synchronous HTTP client bridge using bun_http::AsyncHTTP::init_sync + send_sync().
 //!
 //! Provides a simple synchronous HTTP request function that can be called

@@ -1,5 +1,11 @@
 // REQ-CDP-005: CDP router with session management  @trace REQ-CDP-001 [entity:CdpRouter] @trace REQ-LIB-002
 // REQ-LIB-002: CDP dual-layer API (internal/external routing)
+//
+// @trace REQ-PERF-002 [entity:DomainHandler]
+// REQ-PERF-002 验收:servo JSContext 单线程执行模型下,所有 DomainHandler 可变状态
+// 使用 Cell/RefCell 替代 Mutex(enabled_domains / event_handlers / external / sessions
+// 全部 RefCell,跨线程场景的 Mutex 仅保留在 backend.rs ExternalBrowser.ws 和
+// router.rs:489 测试代码的 received Arc<Mutex<Option<String>>>)。
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

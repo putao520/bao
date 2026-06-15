@@ -1000,42 +1000,19 @@ fn parse_device_metrics(params: &Value) -> Result<DeviceMetrics, BridgeError> {
     })
 }
 
-/// Base64 编码(无依赖,符合 RFC 4648)。
+/// Base64 编码(RFC 4648 standard alphabet,padded)。
 ///
-/// 这里手写是因为包内 base64 crate 未引入;若未来加 bun_base64,可替换。
+/// @trace REQ-PERF-005 [pattern:bun_base64]
 ///
-/// `pub(crate)` 暴露给 `b_class_handlers` 复用,避免重复实现。
+/// 复用 `bun_base64::encode_alloc`(SIMD 加速,~4-8x 快于 scalar 手写循环),
+/// 消除 Bun 翻译残留手写 base64 反模式。
+///
+/// `pub(crate)` 暴露给 `b_class_handlers` 复用。
 pub(crate) fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
-    let mut i = 0;
-    while i + 3 <= input.len() {
-        let b0 = input[i] as u32;
-        let b1 = input[i + 1] as u32;
-        let b2 = input[i + 2] as u32;
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
-        out.push(TABLE[(n & 0x3F) as usize] as char);
-        i += 3;
-    }
-    let rem = input.len() - i;
-    if rem == 1 {
-        let n = (input[i] as u32) << 16;
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push('=');
-        out.push('=');
-    } else if rem == 2 {
-        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8);
-        out.push(TABLE[((n >> 18) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 12) & 0x3F) as usize] as char);
-        out.push(TABLE[((n >> 6) & 0x3F) as usize] as char);
-        out.push('=');
-    }
-    out
+    let bytes = bun_base64::encode_alloc(input);
+    // Base64 输出保证是 ASCII(只含 [A-Za-z0-9+/=]),from_utf8 不会失败,
+    // 但仍用安全 API;性能开销可忽略(String 直接接管 Vec buffer,零拷贝)。
+    String::from_utf8(bytes).expect("base64 output is always valid ASCII")
 }
 
 #[cfg(test)]

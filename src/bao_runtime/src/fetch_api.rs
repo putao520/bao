@@ -201,7 +201,11 @@ unsafe extern "C" fn fetch_fn(
         JS_DefineProperty(cx, obj_handle, c"headers".as_ptr(), hdrs_handle, JSPROP_ENUMERATE as u32);
     }
 
-    let c_body = ZBox::from_vec(response.body.clone().into_bytes());
+    // Body 二进制安全传递给 JS。原代码 `response.body.clone().into_bytes()` 做了
+    // 两次拷贝(String::clone + String::into_bytes);现在 body 已是 Vec<u8>,
+    // clone 后直接 move 进 ZBox(零拷贝转入 SpiderMonkey)。
+    // @trace REQ-PERF-001 [entity:HttpResponse]
+    let c_body = ZBox::from_vec(response.body.clone());
     let body_str = JS_NewStringCopyZ(cx, c_body.as_ptr());
     if !body_str.is_null() {
         let body_val = StringValue(&*body_str);
@@ -234,9 +238,17 @@ unsafe extern "C" fn fetch_fn(
     true
 }
 
+// @trace REQ-PERF-001 [entity:HttpResponse]
+/// fetch() Response 内部表示。
+///
+/// 性能优化(REQ-PERF-001):
+/// - `body: Vec<u8>`:二进制安全,消除 `String::from_utf8_lossy(&body).to_string()`
+///   的双重拷贝(原代码:`from_utf8_lossy` 可能分配 Cow::Owned,`.to_string()` 再 clone)。
+///   现在直接 `result.body.to_vec()`(Bytes 引用计数 → 唯一 Vec,必要时一次拷贝),
+///   然后 `ZBox::from_vec(response.body)` 零拷贝 move 进 SpiderMonkey。
 struct FetchResponse {
     status_code: u16,
-    body: String,
+    body: Vec<u8>,
     headers: Vec<(String, String)>,
     url: String,
     status_text: String,
@@ -283,7 +295,10 @@ fn do_fetch(url: &str, method: &str, body: Option<&str>) -> ::std::result::Resul
 
     ::std::result::Result::Ok(FetchResponse {
         status_code: result.status_code as u16,
-        body: String::from_utf8_lossy(&result.body).to_string(),
+        // Bytes → Vec:如果 Bytes 是唯一引用则零拷贝(move),否则一次拷贝。
+        // 比 `String::from_utf8_lossy(&result.body).to_string()` 少一次 clone。
+        // @trace REQ-PERF-001 [entity:HttpResponse]
+        body: result.body.to_vec(),
         headers: result.headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
         url: url.to_string(),
         status_text: result.status_text.to_string(),
@@ -765,13 +780,13 @@ mod tests {
         // Verify FetchResponse struct has expected fields
         let resp = FetchResponse {
             status_code: 200,
-            body: "ok".to_string(),
+            body: b"ok".to_vec(),
             headers: vec![],
             url: "http://example.com".to_string(),
             status_text: "OK".to_string(),
         };
         assert_eq!(resp.status_code, 200);
-        assert_eq!(resp.body, "ok");
+        assert_eq!(&resp.body[..], b"ok");
         assert_eq!(resp.url, "http://example.com");
         assert_eq!(resp.status_text, "OK");
     }
@@ -780,7 +795,7 @@ mod tests {
     fn fetch_response_headers_preserved() {
         let resp = FetchResponse {
             status_code: 404,
-            body: "not found".to_string(),
+            body: b"not found".to_vec(),
             headers: vec![("content-type".into(), "text/html".into())],
             url: "http://example.com/missing".to_string(),
             status_text: "Not Found".to_string(),
@@ -827,7 +842,7 @@ mod tests {
     fn fetch_response_multiple_headers() {
         let resp = FetchResponse {
             status_code: 200,
-            body: String::new(),
+            body: Vec::new(),
             headers: vec![
                 ("content-type".into(), "application/json".into()),
                 ("x-custom".into(), "value1".into()),
@@ -844,7 +859,7 @@ mod tests {
         for code in [200u16, 201, 301, 400, 404, 500, 503] {
             let resp = FetchResponse {
                 status_code: code,
-                body: String::new(),
+                body: Vec::new(),
                 headers: vec![],
                 url: String::new(),
                 status_text: String::new(),
@@ -857,7 +872,7 @@ mod tests {
     fn fetch_response_empty_body() {
         let resp = FetchResponse {
             status_code: 204,
-            body: String::new(),
+            body: Vec::new(),
             headers: vec![],
             url: String::new(),
             status_text: "No Content".to_string(),
@@ -921,14 +936,15 @@ mod tests {
     fn cors_bypass_fetch_response_is_transparent() {
         let resp = FetchResponse {
             status_code: 200,
-            body: "{\"data\":\"full access\"}".to_string(),
+            body: b"{\"data\":\"full access\"}".to_vec(),
             headers: vec![("content-type".into(), "application/json".into())],
             url: "https://other-domain.com/api".to_string(),
             status_text: "OK".to_string(),
         };
         assert_eq!(resp.status_code, 200, "REQ-SEC-001: cross-origin response must be 200");
+        let body_str = ::std::str::from_utf8(&resp.body).unwrap_or("");
         assert!(
-            resp.body.contains("full access"),
+            body_str.contains("full access"),
             "REQ-SEC-001: response body must be fully readable (not opaque)"
         );
         assert!(

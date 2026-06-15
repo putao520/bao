@@ -234,14 +234,19 @@ fn perform_https_request(url: &str, method: &str, headers_json: &str, body: &str
                 .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
                 .collect();
             let headers_str = headers_json_parts.join(",");
-            let response_body = String::from_utf8_lossy(&resp.body).to_string();
+            // @trace REQ-PERF-001 [entity:HttpResponse]
+            // 直接对 &[u8] 做 UTF-8 decode + JSON escape,消除 String::from_utf8_lossy()
+            // .to_string() 的中转拷贝。lossy UTF-8 decode 用 Cow,Cow::Borrowed 零拷贝,
+            // Cow::Owned 仅在非 UTF-8 时一次分配。
+            let body_lossy = String::from_utf8_lossy(&resp.body);
+            let response_body: &str = &body_lossy;
 
             format!(
                 "{{\"statusCode\":{},\"statusMessage\":\"{}\",\"httpVersion\":\"1.1\",\"headers\":{{{}}},\"body\":\"{}\"}}",
                 status_code,
                 escape_json(&resp.status_text),
                 headers_str,
-                escape_json(&response_body)
+                escape_json(response_body)
             )
         }
         Err(e) => {
