@@ -32,6 +32,7 @@
 //!
 //! @trace REQ-BAO-API-001 [level:library]
 
+pub mod api;
 pub mod bridge;
 pub mod browser;
 pub mod connection;
