@@ -1,6 +1,7 @@
-// @trace TEST-E2E-CLI [req:REQ-CLI-001,REQ-CLI-002,REQ-ENG-006] [level:e2e]
-// @trace REQ-CLI-001 [level:e2e]
-// @trace REQ-CLI-002 [level:e2e]
+// @trace TEST-E2E-CLI [req:REQ-CLI-001,REQ-CLI-002,REQ-ENG-006] [level:system]
+// @trace REQ-CLI-001 [level:system]
+// @trace REQ-CLI-002 [level:system]
+// @trace REQ-ENG-006 [level:system]
 //
 // # TASK-12 E2E — bao CLI 端到端(std::process::Command 子进程)
 //

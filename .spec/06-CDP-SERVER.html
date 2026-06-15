@@ -469,7 +469,7 @@
 <h2>§8 数据模型</h2>
 <!-- ============================================================ -->
 
-<div data-field-listener="TcpListener;required;TCP 监听器" data-field-config="ServerConfig;required;服务器配置" data-entity-model-type="relational" data-entity="CdpServer" id="cdpserver">;required;活跃 Session 映射" data-field-domain_registry="DomainRegistry;required;DomainHandler 注册表" data-field-target_provider="TargetProvider;required;Target 管理器" data-field-event_broadcaster="EventBroadcaster;required;事件广播器"&gt;
+<div data-field-config="ServerConfig;required;服务器配置" data-field-listener="TcpListener;required;TCP 监听器" data-entity-model-type="relational" data-entity="CdpServer" id="cdpserver">;required;活跃 Session 映射" data-field-domain_registry="DomainRegistry;required;DomainHandler 注册表" data-field-target_provider="TargetProvider;required;Target 管理器" data-field-event_broadcaster="EventBroadcaster;required;事件广播器"&gt;
 <h3>CdpServer 实体 — CDP 服务器实例</h3>
 <script type="application/ld+json">
 {
@@ -500,8 +500,8 @@
 <span data-xref-id="REQ-CDS-003" data-xref-type="req">REQ-CDS-003</span>, <span data-xref-id="REQ-CDS-007" data-xref-type="req">REQ-CDS-007</span></p>
 </div>
 
-<div data-field-websocket="WebSocket;required;WebSocket 连接" data-field-target_id="string;required;关联的 Target ID" data-field-session_id="string;required;会话唯一标识（16 位 hex）" data-entity-model-type="relational" data-entity="CdpSessionGeneric" id="cdpsessiongeneric">;required;已启用的 CDP domain 集合" data-field-state="enum[Created, Active, Closing, Closed];required;Session 生命周期状态" data-field-is_browser_session="boolean;required;是否为 Browser-level Session（接收所有事件）"&gt;
-<h3>CdpSession 实体 — CDP 客户端会话（通用版）</h3>
+<div data-field-session_id="string;required;会话唯一标识（16 位 hex）" data-field-target_id="string;required;关联的 Target ID" data-field-websocket="WebSocket;required;WebSocket 连接" data-entity-model-type="relational" data-entity="CdpSessionGeneric" id="cdpsessiongeneric">;required;已启用的 CDP domain 集合" data-field-state="enum[Created, Active, Closing, Closed];required;Session 生命周期状态" data-field-is_browser_session="boolean;required;是否为 Browser-level Session（接收所有事件）"&gt;
+<h3>CdpSessionGeneric CDP 客户端会话（通用版）</h3>
 <script type="application/ld+json">
 {
   "@type": "Entity",
@@ -528,10 +528,10 @@
 </table>
 
 <p data-xref-id="CdpSessionGeneric" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-003" data-xref-type="req">REQ-CDS-003</span>
-<span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span></p>
+<span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span> <a href="10-REQUIREMENTS.html#req-cdp-001" data-xref-type="req" data-xref-id="req-cdp-001">REQ-CDP-001</a></p>
 </div>
 
-<div data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL" data-field-url="string;required;页面 URL" data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型" data-field-title="string;required;页面标题" data-field-id="string;required;Target 唯一标识" data-entity-model-type="relational" data-entity="CdpTarget" id="cdptarget">
+<div data-field-id="string;required;Target 唯一标识" data-field-title="string;required;页面标题" data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型" data-field-url="string;required;页面 URL" data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL" data-entity-model-type="relational" data-entity="CdpTarget" id="cdptarget">
 <h3>CdpTarget 实体 — CDP 浏览器 Target</h3>
 <script type="application/ld+json">
 {
@@ -556,7 +556,7 @@
 <tr data-field="webSocketDebuggerUrl" data-required="true" data-type="string"><td>webSocketDebuggerUrl</td><td>string</td><td>是</td><td></td><td>WebSocket 调试 URL</td></tr>
 </table>
 
-<p data-xref-id="CdpTarget" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-002" data-xref-type="req">REQ-CDS-002</span></p>
+<p data-xref-id="CdpTarget" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-002" data-xref-type="req">REQ-CDS-002</span> <a href="10-REQUIREMENTS.html#req-cdp-001" data-xref-type="req" data-xref-id="req-cdp-001">REQ-CDP-001</a> <a href="10-REQUIREMENTS.html#req-cdp-008" data-xref-type="req" data-xref-id="req-cdp-008">REQ-CDP-008</a></p>
 </div>
 
 <div data-entity-model-type="relational" data-entity="DomainRegistry" id="domainregistry">&gt;;required;domain 名 → DomainHandler 映射" data-field-event_sender="EventSender;required;注入到所有 DomainHandler 的事件发送器"&gt;
@@ -582,7 +582,7 @@
 <span data-xref-id="REQ-CDS-006" data-xref-type="req">REQ-CDS-006</span></p>
 </div>
 
-<div data-field-session_id="string;required;Session ID" data-field-domain="string;required;订阅的 Domain 名" data-field-created_at="datetime;required;订阅创建时间（Domain.enable 调用时间）" data-entity-model-type="relational" data-entity="EventSubscription" id="eventsubscription">
+<div data-field-created_at="datetime;required;订阅创建时间（Domain.enable 调用时间）" data-field-domain="string;required;订阅的 Domain 名" data-field-session_id="string;required;Session ID" data-entity-model-type="relational" data-entity="EventSubscription" id="eventsubscription">
 <h3>EventSubscription 实体 — 事件订阅关系</h3>
 <script type="application/ld+json">
 {
@@ -603,10 +603,10 @@
 <tr data-field="created_at" data-required="true" data-type="datetime"><td>created_at</td><td>datetime</td><td>是</td><td></td><td>订阅创建时间（Domain.enable 调用时间）</td></tr>
 </table>
 
-<p data-xref-id="EventSubscription" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span></p>
+<p data-xref-id="EventSubscription" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span> <a href="10-REQUIREMENTS.html#req-cdp-001" data-xref-type="req" data-xref-id="req-cdp-001">REQ-CDP-001</a></p>
 </div>
 
-<div data-field-webkit_version="string;optional;渲染引擎版本标识" data-field-v8_version="string;optional;JS 引擎版本标识" data-field-user_agent="string;optional;用户代理字符串" data-field-protocol_version="string;required;CDP 协议版本" data-field-port="integer;required;监听端口" data-field-max_sessions="integer;required;最大并发 Session 数" data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数" data-field-host="string;required;监听地址" data-field-browser_name="string;required;浏览器名称（/json/version 返回）" data-entity-model-type="relational" data-entity="ServerConfig" id="serverconfig">
+<div data-field-browser_name="string;required;浏览器名称（/json/version 返回）" data-field-host="string;required;监听地址" data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数" data-field-max_sessions="integer;required;最大并发 Session 数" data-field-port="integer;required;监听端口" data-field-protocol_version="string;required;CDP 协议版本" data-field-user_agent="string;optional;用户代理字符串" data-field-v8_version="string;optional;JS 引擎版本标识" data-field-webkit_version="string;optional;渲染引擎版本标识" data-entity-model-type="relational" data-entity="ServerConfig" id="serverconfig">
 <h3>ServerConfig 实体 — 服务器配置</h3>
 <script type="application/ld+json">
 {

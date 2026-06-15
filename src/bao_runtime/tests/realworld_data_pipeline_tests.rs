@@ -1,4 +1,6 @@
-// @trace TEST-E2E-DATA [req:REQ-ENG-006,REQ-ENG-007]
+// @trace TEST-E2E-DATA [req:REQ-ENG-006,REQ-ENG-007] [level:system]
+// @trace REQ-ENG-006 [level:system]
+// @trace REQ-ENG-007 [level:system]
 // Real-world E2E tests: data pipeline scenarios using Bao as a library.
 // Covers: CSV->JSON, JSON aggregation, chunked Buffer streaming, data cleaning,
 // and multi-source join. Uses fs/JSON/Buffer/process APIs via install_all.

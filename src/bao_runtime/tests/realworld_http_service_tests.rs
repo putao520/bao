@@ -1,4 +1,6 @@
-// @trace TEST-E2E-HTTP [req:REQ-ENG-006,REQ-ENG-007]
+// @trace TEST-E2E-HTTP [req:REQ-ENG-006,REQ-ENG-007] [level:system]
+// @trace REQ-ENG-006 [level:system]
+// @trace REQ-ENG-007 [level:system]
 // Real-world E2E test — a library user builds a REST API backend with Bao.
 //
 // Scenario: developer writes an Express-style http.createServer handler that

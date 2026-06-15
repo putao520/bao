@@ -1,4 +1,4 @@
-// @trace TEST-E2E-ANTISCRAPE [req:REQ-STL-001,REQ-STL-002,REQ-STL-003,REQ-STL-004,REQ-STL-005,REQ-STL-006,REQ-STL-007,REQ-BRW-001,REQ-BRW-002] [level:e2e]
+// @trace TEST-E2E-ANTISCRAPE [req:REQ-STL-001,REQ-STL-002,REQ-STL-003,REQ-STL-004,REQ-STL-005,REQ-STL-006,REQ-STL-007,REQ-BRW-001,REQ-BRW-002] [level:system]
 // Real-world anti-scraping E2E: bao's built-in Servo browser vs real websites.
 //
 // Architecture:

@@ -1,7 +1,9 @@
-// @trace TEST-E2E-RENDER [req:REQ-BRW-001,REQ-BRW-002,REQ-BRW-003,REQ-LIB-001,REQ-LIB-004] [level:e2e]
-// @trace REQ-BRW-001 [entity:PageHandle] [level:e2e]
-// @trace REQ-BRW-002 [level:e2e]
-// @trace REQ-BRW-003 [level:e2e]
+// @trace TEST-E2E-RENDER [req:REQ-BRW-001,REQ-BRW-002,REQ-BRW-003,REQ-LIB-001,REQ-LIB-004] [level:system]
+// @trace REQ-BRW-001 [entity:PageHandle] [level:system]
+// @trace REQ-BRW-002 [level:system]
+// @trace REQ-BRW-003 [level:system]
+// @trace REQ-LIB-001 [level:system]
+// @trace REQ-LIB-004 [level:system]
 //
 // # TASK-12 E2E — servo 真渲染链路
 //

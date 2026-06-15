@@ -1,7 +1,7 @@
-// @trace TEST-E2E-CDP [req:REQ-CDP-001,REQ-CDP-002,REQ-CDP-003,REQ-CDP-004,REQ-CDP-005,REQ-CDP-008,REQ-BAO-API-001,REQ-BAO-API-002,REQ-BAO-API-003] [level:e2e]
-// @trace REQ-CDP-001 [level:e2e]
-// @trace REQ-BAO-API-001 [level:e2e]
-// @trace REQ-BAO-API-002 [interface:Transport] [level:e2e]
+// @trace TEST-E2E-CDP [req:REQ-CDP-001,REQ-CDP-002,REQ-CDP-003,REQ-CDP-004,REQ-CDP-005,REQ-CDP-008,REQ-BAO-API-001,REQ-BAO-API-002,REQ-BAO-API-003] [level:system]
+// @trace REQ-CDP-001 [level:system]
+// @trace REQ-BAO-API-001 [level:system]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:system]
 //
 // # TASK-12 E2E — CDP 端到端(memory://bao → CDPRdpBridge → servo backend)
 //
