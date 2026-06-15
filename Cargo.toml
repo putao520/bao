@@ -10,6 +10,7 @@ members = [
     "src/bao_bundler",
     "src/bao_bin",
     "src/bao_cdp",
+    "src/bao_cdp_client",
     "src/bao_boringssl_bridge",
     "src/bao_stealth",
     "src/bao_native_stubs",

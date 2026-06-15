@@ -490,6 +490,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao_cdp_client"
+version = "0.1.0"
+dependencies = [
+ "bao_browser",
+ "bao_cdp",
+ "bao_engine",
+ "bun_base64",
+ "bun_event_loop",
+ "bun_url",
+ "cdp-protocol",
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "bao_cli"
 version = "0.1.0"
 dependencies = [

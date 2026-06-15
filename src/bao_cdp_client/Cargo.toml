@@ -1,0 +1,31 @@
+[package]
+name = "bao_cdp_client"
+version = "0.1.0"
+rust-version = "1.85"
+authors = ["Bao Project"]
+edition = "2021"
+license = "MIT OR MPL-2.0"
+description = "CDP client for Bao browser — fork of chromiumoxide adapted for servo + in-memory transport"
+
+[dependencies]
+# Bao ecosystem dependencies (Bun 适配 Servo; 不引入 tokio)
+bao_engine = { path = "../bao_engine" }
+bao_browser = { path = "../bao_browser" }
+bao_cdp = { path = "../bao_cdp" }
+bun_base64 = { path = "../base64" }
+bun_event_loop = { path = "../event_loop" }
+bun_url = { path = "../url" }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging (Bun workspace 标准)
+log = "0.4"
+
+# CDP protocol types (chromiumoxide 上游同款)
+cdp-protocol = "0.3"
+
+[lib]
+name = "bao_cdp_client"
+path = "src/lib.rs"
