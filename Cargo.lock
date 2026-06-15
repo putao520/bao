@@ -1321,16 +1321,8 @@ dependencies = [
 name = "bun_highway"
 version = "0.0.0"
 dependencies = [
- "bitflags 2.11.1",
  "bstr",
- "cc",
- "const_format",
- "enum-map",
- "enumset",
- "libc",
- "phf 0.11.3",
- "scopeguard",
- "strum 0.26.3",
+ "memchr",
 ]
 
 [[package]]

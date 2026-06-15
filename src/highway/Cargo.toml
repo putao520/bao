@@ -9,17 +9,9 @@ path = "lib.rs"
 [lints]
 workspace = true
 
-[build-dependencies]
-cc = "1"
-
 [dependencies]
-strum.workspace = true
-phf.workspace = true
+# @trace REQ-PURE-006
+# Pure-Rust SIMD-accelerated byte search — replaces the C++ Google Highway
+# dependency. memchr ships SSE2/AVX2/NEON kernels behind a pure-Rust fallback.
+memchr.workspace = true
 bstr.workspace = true
-scopeguard.workspace = true
-const_format.workspace = true
-enum-map.workspace = true
-enumset.workspace = true
-libc.workspace = true
-bitflags.workspace = true
-
