@@ -489,6 +489,21 @@ unsafe extern "C" fn http_create_server(
     w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"close".as_ptr(), Some(server_close), 0, JSPROP_ENUMERATE as u32);
     w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"address".as_ptr(), Some(server_address), 0, JSPROP_ENUMERATE as u32);
 
+    // @trace REQ-ENG-007 [sm:HttpServer]
+    // Node.js: http.Server extends EventEmitter, so `server.on("request", fn)`
+    // and `server.emit("listening")` must work. Attach the shared EventEmitter
+    // methods from node_events directly onto each server instance. The EE
+    // state is stored in a hidden property on the server object, so this works
+    // without changing the server's prototype.
+    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"on".as_ptr(), Some(crate::node_events::ee_on), 2, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"addListener".as_ptr(), Some(crate::node_events::ee_on), 2, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"once".as_ptr(), Some(crate::node_events::ee_once), 2, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"off".as_ptr(), Some(crate::node_events::ee_off), 2, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"removeListener".as_ptr(), Some(crate::node_events::ee_off), 2, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"emit".as_ptr(), Some(crate::node_events::ee_emit), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"prependListener".as_ptr(), Some(crate::node_events::ee_prepend), 2, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, server_obj.handle(), c"removeAllListeners".as_ptr(), Some(crate::node_events::ee_remove_all), 1, JSPROP_ENUMERATE as u32);
+
     args.rval().set(ObjectValue(server_obj.get()));
     true
 }

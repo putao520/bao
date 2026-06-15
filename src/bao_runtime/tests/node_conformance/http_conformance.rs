@@ -223,8 +223,7 @@ fn test_http_conformance_methods_deviation() {
 }
 
 #[test]
-#[ignore = "bao_runtime: http.Server instances are not EventEmitters (no .on/.emit). Node.js servers extend EventEmitter. See GAP_REPORT.md"]
-fn test_http_conformance_server_not_emitter_deviation() {
+fn test_http_conformance_server_is_emitter() {
     let mut ctx = make_ctx();
     use common::eval_string;
     let r = eval_string(

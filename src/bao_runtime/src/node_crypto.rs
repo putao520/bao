@@ -358,22 +358,16 @@ unsafe extern "C" fn crypto_random_bytes(cx: *mut JSContext, argc: u32, vp: *mut
     // Use BoringSSL CSPRNG instead of rand
     bao_crypto::random::rand_bytes(&mut bytes).unwrap();
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
-    rooted!(&in(cx_ref) let arr = unsafe { w2::NewArrayObject1(cx_ref, size) });
-    if arr.get().is_null() {
+    // @trace REQ-ENG-006 [entity:Buffer]
+    // Node.js: crypto.randomBytes returns a Buffer instance, not a plain
+    // array/object. Build a real Buffer via the shared globals helper so that
+    // `Buffer.isBuffer(crypto.randomBytes(N)) === true`.
+    let buf_obj = crate::globals::create_buffer_object(cx, &bytes);
+    if buf_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-
-    for (i, &byte) in bytes.iter().enumerate() {
-        let val = mozjs::jsval::Int32Value(byte as i32);
-        rooted!(&in(cx_ref) let v = val);
-        unsafe { JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32); }
-    }
-
-    args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
+    args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
     true
 }
 

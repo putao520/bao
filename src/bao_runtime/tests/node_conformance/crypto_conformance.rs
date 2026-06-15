@@ -283,8 +283,7 @@ fn test_crypto_conformance_dh() {
 }
 
 #[test]
-#[ignore = "bao_runtime: crypto.randomBytes returns generic Uint8Array-like object, not Buffer (Node.js returns Buffer). See GAP_REPORT.md"]
-fn test_crypto_conformance_randombytes_deviation() {
+fn test_crypto_conformance_randombytes_is_buffer() {
     // Node.js: crypto.randomBytes(16) → Buffer.isBuffer === true
     // bao_runtime: returns object where Buffer.isBuffer === false
     let mut ctx = make_ctx();

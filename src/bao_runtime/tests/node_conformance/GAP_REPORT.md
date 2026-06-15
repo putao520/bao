@@ -13,17 +13,22 @@ to surface the gaps as expected failures.
 
 | Module | Implemented checks | Gap tests (`#[ignore]`) | Conformance % |
 |--------|-------------------:|------------------------:|--------------:|
-| buffer | 38 | 5 | ~88% |
+| buffer | 39 | 4 | ~91% |
 | path   | 32 | 2 | ~94% |
-| fs     | 22 | 4 | ~85% |
-| crypto | 28 | 6 | ~82% |
+| fs     | 23 | 3 | ~88% |
+| crypto | 29 | 5 | ~85% |
 | url    | 17 | 2 | ~89% |
 | events | 26 | 3 | ~90% |
 | assert | 25 | 3 | ~89% |
-| util   | 25 | 5 | ~83% |
+| util   | 26 | 4 | ~87% |
 | stream | 12 | 2 | ~86% |
-| http   | 14 | 6 | ~70% |
-| **Total** | **239** | **38** | **~86%** |
+| http   | 15 | 5 | ~75% |
+| **Total** | **244** | **33** | **~88%** |
+
+> TASK-16c closed 5 Node API deviations (BUG-ENG-001~005): http.Server
+> EventEmitter, crypto.randomBytes→Buffer, util.inspect object listing,
+> buffer.concat totalLength, fs.readFileSync→Buffer. Conformance rose from
+> ~86% to ~88% (5 gap tests converted from `#[ignore]` to passing).
 
 ---
 
@@ -36,7 +41,7 @@ to surface the gaps as expected failures.
 **Gaps (`#[ignore]`)**:
 - **`Buffer.poolSize`** — not exposed via `require('buffer')`. Node.js exposes it as a number (default 8192).
 - **`Buffer.from(str, "base64url")`** — `base64url` encoding not implemented.
-- **`Buffer.concat(list, totalLength)`** — DEVIATION: the `totalLength` argument is ignored. Node.js truncates/pads to `totalLength` bytes; bao returns the full concatenated length.
+- **`Buffer.concat(list, totalLength)`** — RESOLVED in TASK-16c (BUG-ENG-004): the `totalLength` argument is now respected; the result is truncated or zero-padded to the requested length, matching Node.js.
 - **`Buffer.prototype.includes(Buffer)` / `indexOf(Buffer)`** — DEVIATION: only string/number args work. Passing a Buffer (Node.js supports this) returns `-1`/`false`.
 - **`Buffer.byteLength(str, "hex")`** — DEVIATION: returns raw string length, not decoded byte count. Node.js decodes hex pairs.
 
@@ -53,7 +58,7 @@ to surface the gaps as expected failures.
 **Implemented (PASS)**: `writeFileSync`, `readFileSync` (with encoding), `appendFileSync`, `statSync` (size/isFile/isDirectory), `existsSync`, `mkdirSync`, `readdirSync`, `rmdirSync`, `rmSync` (recursive), `renameSync`, `copyFileSync`, `unlinkSync`, `realpathSync`, `promises.writeFile/readFile`.
 
 **Gaps (`#[ignore]`)**:
-- **`readFileSync(path)` without encoding** — DEVIATION: returns a `String` (utf8-decoded), not a `Buffer`. Node.js always returns `Buffer` when no encoding is given.
+- **`readFileSync(path)` without encoding** — RESOLVED in TASK-16c (BUG-ENG-005): without an encoding, `readFileSync` now returns a real `Buffer` (`Buffer.isBuffer(x) === true`); an encoding still decodes to a `String`, matching Node.js.
 - **`fs.createReadStream` / `ReadStream`** — not implemented. Node.js exposes a streaming read API.
 - **`fs.watch` / `fs.watchFile`** — not implemented.
 - **`fs.cp` / `cpSync`** (recursive directory copy) — not implemented.
@@ -64,7 +69,7 @@ to surface the gaps as expected failures.
 
 **Gaps (`#[ignore]`)**:
 - **`createHmac("md5", ...)`** — DEVIATION: throws "Unsupported HMAC algorithm: md5". Node.js supports HMAC-MD5.
-- **`randomBytes(N)` return type** — DEVIATION: returns a generic object (Uint8Array-like), not a `Buffer` instance. `Buffer.isBuffer(crypto.randomBytes(8)) === false`.
+- **`randomBytes(N)` return type** — RESOLVED in TASK-16c (BUG-ENG-002): `crypto.randomBytes(N)` now returns a real `Buffer` instance via `globals::create_buffer_object`, so `Buffer.isBuffer(crypto.randomBytes(N)) === true`.
 - **`createECDH(curve)`** — not implemented.
 - **`X509` / `createX509`** — not implemented.
 - **`hkdf` / `hkdfSync`** — not implemented.
@@ -101,7 +106,7 @@ to surface the gaps as expected failures.
 **Implemented (PASS)**: `isString/isNumber/isBoolean/isFunction/isObject/isArray/isNull/isUndefined/isDate/isRegExp/isError/isSymbol`, `inspect` (string/array/null/primitives), `format` (%s/%d/extra args), `promisify` (returns function), `callbackify`, `isDeepStrictEqual` (primitives only), `util.types` (isPromise/isNativeError), `deprecate/inherits/getSystemErrorName/parseArgs`.
 
 **Gaps (`#[ignore]`)**:
-- **`util.inspect(obj)`** — DEVIATION: returns `"[Object]"` for plain objects instead of the property listing (`{ a: 1 }`). Node.js walks properties.
+- **`util.inspect(obj)`** — RESOLVED in TASK-16c (BUG-ENG-003): plain objects now produce a property listing (`{ a: 1 }`) via the recursive `jsval_inspect` helper (depth-capped, handles arrays/functions/strings). `util.format` retains its bare-string display semantics.
 - **`util.promisify(fn)`** — DEVIATION: returns a `function`, not a thenable/Promise. Node.js returns a function that returns a Promise.
 - **`util.isDeepStrictEqual(objA, objB)`** — DEVIATION: only works for primitives. Objects always compare unequal. Node.js deep-compares.
 - **`util.types.isExternal` / `isKeyObject` / `isCryptoKey`** — not implemented.
@@ -121,7 +126,7 @@ to surface the gaps as expected failures.
 
 **Gaps (`#[ignore]`)**:
 - **`http.METHODS`** — DEVIATION: exposed as a comma-separated string (`"GET,POST,..."`), not an array. Node.js exposes an array.
-- **`http.Server` instances** — DEVIATION: not EventEmitters (no `.on`/`.emit`). Node.js servers extend EventEmitter for `listening`/`request`/`close` events.
+- **`http.Server` instances** — RESOLVED in TASK-16c (BUG-ENG-001): each server instance now has `on`/`addListener`/`once`/`off`/`removeListener`/`emit`/`prependListener`/`removeAllListeners` wired to the shared `node_events` EventEmitter implementation, so `server.on("request", fn)` works.
 - **`http.ClientRequest` / `IncomingMessage` / `OutgoingMessage`** — not exposed as named classes on the module.
 - **`http.Agent` / `http.globalAgent`** — not exposed.
 - **`http.maxRedirects`** — not exposed.

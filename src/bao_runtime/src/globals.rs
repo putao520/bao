@@ -907,11 +907,28 @@ unsafe fn create_buffer_from_bytes(
     args: &CallArgs,
     bytes: &[u8],
 ) -> bool {
+    let obj = create_buffer_object(cx, bytes);
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    args.rval().set(ObjectValue(obj));
+    true
+}
+
+/// Build a Buffer instance wrapping the given bytes and return the raw object
+/// pointer. The caller owns the returned reference. Returns null on OOM.
+///
+/// Shared by globals.rs Buffer methods, node_crypto.rs (randomBytes) and
+/// node_fs.rs (readFileSync without encoding) so that all paths return real
+/// Buffer instances (`Buffer.isBuffer(x) === true`).
+// @trace REQ-ENG-005 [entity:Buffer]
+#[allow(unsafe_op_in_unsafe_fn)]
+pub unsafe fn create_buffer_object(cx: *mut JSContext, bytes: &[u8]) -> *mut JSObject {
     let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let raw_obj = JS_NewPlainObject(&mut cx_ref);
     if raw_obj.is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
+        return ::std::ptr::null_mut();
     }
     rooted!(&in(cx_ref) let buf_obj = raw_obj);
     set_buffer_proto(cx, buf_obj.get());
@@ -929,8 +946,7 @@ unsafe fn create_buffer_from_bytes(
         JS_DefineElement(cx, obj_handle, i as u32, val.handle().into(), JSPROP_ENUMERATE as u32);
     }
 
-    args.rval().set(ObjectValue(buf_obj.get()));
-    true
+    buf_obj.get()
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1096,6 +1112,21 @@ unsafe extern "C" fn buffer_concat(
                             _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
                         });
                         all_bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
+                    }
+                }
+            }
+            // @trace REQ-ENG-005 [algorithm:buffer_concat]
+            // Node.js: when totalLength is provided, the result is truncated to
+            // totalLength bytes (or zero-filled if totalLength > sum). When
+            // omitted, the result length is the sum of list element lengths.
+            if argc >= 2 {
+                let tl_val = *args.get(1).ptr;
+                if tl_val.is_int32() {
+                    let total = tl_val.to_int32().max(0) as usize;
+                    if total > all_bytes.len() {
+                        all_bytes.resize(total, 0u8);
+                    } else {
+                        all_bytes.truncate(total);
                     }
                 }
             }

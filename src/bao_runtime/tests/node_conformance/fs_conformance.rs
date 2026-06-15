@@ -325,8 +325,7 @@ fn test_fs_conformance_cp_recursive() {
 }
 
 #[test]
-#[ignore = "bao_runtime: fs.readFileSync without encoding returns String, not Buffer (Node.js returns Buffer). See GAP_REPORT.md"]
-fn test_fs_conformance_readfile_returns_string_deviation() {
+fn test_fs_conformance_readfile_returns_buffer() {
     // Node.js: fs.readFileSync(path) → Buffer
     // bao_runtime: returns String (utf8-decoded)
     let mut ctx = make_ctx();

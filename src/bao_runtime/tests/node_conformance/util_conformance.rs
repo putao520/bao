@@ -219,8 +219,7 @@ fn test_util_conformance_style_text() {
 }
 
 #[test]
-#[ignore = "bao_runtime: util.inspect returns '[Object]' for plain objects instead of property listing (Node.js: '{ a: 1 }'). See GAP_REPORT.md"]
-fn test_util_conformance_inspect_object_deviation() {
+fn test_util_conformance_inspect_object_properties() {
     let mut ctx = make_ctx();
     use common::eval_string;
     let r = eval_string(

@@ -298,8 +298,7 @@ fn test_buffer_conformance_base64url() {
 }
 
 #[test]
-#[ignore = "bao_runtime: Buffer.concat ignores totalLength argument — deviation from Node.js (Node truncates to totalLength, bao ignores it). See GAP_REPORT.md"]
-fn test_buffer_conformance_concat_total_length_deviation() {
+fn test_buffer_conformance_concat_total_length() {
     // Node.js: Buffer.concat([ab, cd], 3) → length=3, "abc"
     // bao_runtime: returns length=4, "abcd" — ignores totalLength
     let mut ctx = make_ctx();

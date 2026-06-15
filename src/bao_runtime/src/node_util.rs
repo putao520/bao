@@ -463,6 +463,84 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     }
 }
 
+/// Recursively format a JSVal the way Node.js `util.inspect` would, with a
+/// depth cap to avoid infinite recursion on cyclic structures.
+///
+/// @trace REQ-ENG-004 [algorithm:util_inspect]
+unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String { unsafe {
+    if val.is_undefined() { return "undefined".to_string(); }
+    if val.is_null() { return "null".to_string(); }
+    if val.is_boolean() { return val.to_boolean().to_string(); }
+    if val.is_int32() { return val.to_int32().to_string(); }
+    if val.is_double() { return val.to_double().to_string(); }
+    if val.is_string() {
+        return format!("'{}'", crate::js_to_rust_string(cx, val));
+    }
+    if val.is_object() {
+        let obj = val.to_object();
+        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+
+        // Arrays → [ a, b, c ]
+        let mut is_arr = false;
+        let v = val;
+        let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+        IsArrayObject(cx, val_h, &mut is_arr);
+        if is_arr {
+            if depth == 0 { return "[Array]".to_string(); }
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+            let mut parts: Vec<String> = Vec::with_capacity(len);
+            for i in 0..len {
+                let mut elem = UndefinedValue();
+                JS_GetElement(cx, obj_h, i as u32, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                parts.push(jsval_inspect(cx, elem, depth - 1));
+            }
+            return format!("[ {} ]", parts.join(", "));
+        }
+
+        // Functions → [Function: name] or [Function (anonymous)]
+        if JS_ObjectIsFunction(obj) {
+            let mut name_val = UndefinedValue();
+            JS_GetProperty(cx, obj_h, c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
+            let name = if name_val.is_string() { crate::js_to_rust_string(cx, name_val) } else { String::new() };
+            if name.is_empty() { return "[Function (anonymous)]".to_string(); }
+            return format!("[Function: {}]", name);
+        }
+
+        // Plain objects → { key: value, ... }
+        if depth == 0 { return "[Object]".to_string(); }
+
+        // Enumerate own enumerable string keys via the established IdVector +
+        // GetPropertyKeys pattern used elsewhere in bao_runtime. Note: IdVector
+        // takes the raw *mut JSContext, and we fetch each value via JS_GetProperty
+        // with the C-string key (the same approach node_url.rs uses) to avoid the
+        // Handle<PropertyKey> wrapping that JS_GetPropertyById would require.
+        let mut ids = mozjs::rust::IdVector::new(cx);
+        let ok = GetPropertyKeys(cx, obj_h, JSITER_OWNONLY, ids.handle_mut());
+        let mut parts: Vec<String> = Vec::new();
+        if ok {
+            for jsid in &*ids {
+                if !jsid.is_string() { continue; }
+                let key_str_ptr = jsid.to_string();
+                if key_str_ptr.is_null() { continue; }
+                let key = jsstr_to_string(cx, NonNull::new_unchecked(key_str_ptr));
+                let c_key = ZBox::from_bytes(key.as_bytes());
+                let mut v = UndefinedValue();
+                JS_GetProperty(cx, obj_h, c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut v });
+                parts.push(format!("{}: {}", key, jsval_inspect(cx, v, depth - 1)));
+            }
+        }
+        if parts.is_empty() { return "{}".to_string(); }
+        return format!("{{ {} }}", parts.join(", "));
+    }
+    String::new()
+}}
+
+/// Format a JSVal for `util.format` / console output. Strings are emitted
+/// bare (no quotes), objects fall back to their constructor-tag. This is the
+/// `util.format("%s", val)` / `console.log` display semantics — distinct from
+/// `util.inspect`, which quotes strings and recurses into objects.
 unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {
     if val.is_undefined() { return "undefined".to_string(); }
     if val.is_null() { return "null".to_string(); }
@@ -473,24 +551,9 @@ unsafe fn jsval_to_display(cx: *mut JSContext, val: JSVal) -> String { unsafe {
         return crate::js_to_rust_string(cx, val);
     }
     if val.is_object() {
-        let obj = val.to_object();
-        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let obj_r = obj);
-
-        let mut ctor_name = UndefinedValue();
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-        JS_GetProperty(cx, obj_h, c"constructor".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctor_name });
-        if ctor_name.is_object() {
-            let ctor = ctor_name.to_object();
-            let ctor_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ctor };
-            let mut name_val = UndefinedValue();
-            JS_GetProperty(cx, ctor_h, c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
-            if name_val.is_string() {
-                let name = crate::js_to_rust_string(cx, name_val);
-                return format!("[{}]", name);
-            }
-        }
-        return "[Object]".to_string();
+        // For format display, delegate to inspect so arrays/objects render
+        // with their contents rather than the bare "[Object]" tag.
+        return jsval_inspect(cx, val, 2);
     }
     String::new()
 }}
@@ -504,7 +567,10 @@ unsafe extern "C" fn util_inspect(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return true;
     }
     let val = *args.get(0).ptr;
-    let result = jsval_to_display(cx, val);
+    // @trace REQ-ENG-004 [algorithm:util_inspect]
+    // util.inspect quotes strings and recurses into objects (Node.js default
+    // depth = 2). This is distinct from util.format display semantics.
+    let result = jsval_inspect(cx, val, 2);
     let utf16: Vec<u16> = result.encode_utf16().collect();
     let js_str = JS_NewUCStringCopyN(cx, utf16.as_ptr(), utf16.len());
     args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });

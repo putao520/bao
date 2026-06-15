@@ -258,7 +258,20 @@ unsafe fn get_encoding_opt(cx: *mut JSContext, args: &CallArgs, index: u32) -> :
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn return_string_content(cx: *mut JSContext, args: &CallArgs, data: &[u8], encoding: ::std::option::Option<&str>) -> bool {
     match encoding {
-        Some("utf-8" | "utf8" | "text") | None => {
+        // @trace REQ-ENG-005 [entity:Buffer]
+        // Node.js: readFileSync(path) with NO encoding returns a Buffer
+        // (binary-safe). Only when an encoding is supplied does it return a
+        // decoded String. Previously bao returned a utf8-lossy String for the
+        // no-encoding case, breaking Buffer.isBuffer() checks downstream.
+        None => {
+            let buf_obj = crate::globals::create_buffer_object(cx, data);
+            if buf_obj.is_null() {
+                args.rval().set(UndefinedValue());
+            } else {
+                args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+            }
+        }
+        Some("utf-8" | "utf8" | "text") => {
             let s = ::std::string::String::from_utf8_lossy(data);
             let c_str = ZBox::from_bytes(s.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());

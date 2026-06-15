@@ -5,6 +5,13 @@
 // Each `*_conformance.rs` test file pulls this in via
 //   #[path = "conformance_common.rs"] mod common;
 // so they remain independent Cargo test binaries.
+//
+// NOTE on test isolation: SpiderMonkey's JSEngine is process-global and can
+// only be initialised once per process. When two test functions in the same
+// binary run concurrently and both call `JsContext::for_test()`, the second
+// fails with "Failed to init JSEngine: AlreadyInitialized". Run these suites
+// with `--test-threads=1` (e.g. `cargo test --test buffer_conformance -- --test-threads=1`)
+// to avoid the race. This is a harness limitation, not a bug in bao_runtime.
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
