@@ -56,39 +56,45 @@ fn css_get_computed_style_for_node_missing_node_id_returns_32602() {
 // ─────────────────────────────────────────────────────────────────────────
 // CSS.getMatchedStylesForNode — CDP spec: returns {matchedCSSRules?,
 //   inlineStyle?, attributesStyle?, ...}
-// bao 实现: {matchedRules: [{rule: {selectorList, style}}], inlineStyle?, attributesStyle?}
-// 偏差:字段名 matchedRules vs CDP 的 matchedCSSRules
+// bao 实现: {matchedCSSRules: [{rule: {selectorList, style}}], inlineStyle?, attributesStyle?}
+// 字段名与 CDP 规范对齐(matchedCSSRules)。
+// https://chromedevtools.github.io/devtools-protocol/tot/CSS/#method-getMatchedStylesForNode
 // ─────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn css_get_matched_styles_for_node_returns_object() {
-    // Arrange — bao 实现返回 {matchedRules, inlineStyle?, attributesStyle?}
+    // Arrange — CDP 规范: 返回 {matchedCSSRules, inlineStyle?, attributesStyle?}
     // @trace REQ-CDP-001 [domain:CSS] [level:integration]
     let b = backend();
 
     // Act
     let result = dispatch_command(&*b, "CSS.getMatchedStylesForNode", json!({"nodeId":1}), "1").unwrap();
 
-    // Assert — bao 自定义 schema(matchedRules)
+    // Assert — CDP spec: matchedCSSRules 必须为数组
     assert!(
-        result["matchedRules"].is_array(),
-        "bao spec: matchedRules must be array"
+        result["matchedCSSRules"].is_array(),
+        "CDP spec: matchedCSSRules must be array, got: {:?}",
+        result.get("matchedCSSRules")
     );
 }
 
 #[test]
-fn css_get_matched_styles_for_node_field_name_documented_deviation() {
-    // Arrange — CDP 规范: 字段名为 matchedCSSRules(bao 用 matchedRules → 偏差)
-    // 此测试断言"当前字段名偏差",修复后会 fail → 提示更新报告
+fn css_get_matched_styles_for_node_field_name_schema_conformance() {
+    // Arrange — CDP 规范: 字段名为 matchedCSSRules(完整名)
+    // https://chromedevtools.github.io/devtools-protocol/tot/CSS/#method-getMatchedStylesForNode
     // @trace REQ-CDP-001 [domain:CSS] [level:integration]
     let b = backend();
     let result = dispatch_command(&*b, "CSS.getMatchedStylesForNode", json!({"nodeId":1}), "1").unwrap();
 
-    // Assert — 记录偏差:bao 用 matchedRules 而非 CDP 规范的 matchedCSSRules
+    // Assert — CDP spec: 必须使用完整字段名 matchedCSSRules(非缩写 matchedRules)
     assert!(
-        result.get("matchedCSSRules").is_none(),
-        "DEV-NOTE: bao uses `matchedRules` instead of CDP spec `matchedCSSRules` (naming deviation). \
-         If this fails, bao has aligned — update CONFORMANCE_REPORT."
+        result.get("matchedCSSRules").is_some(),
+        "CDP spec: field must be `matchedCSSRules` (full name), got: {:?}",
+        result.get("matchedCSSRules")
+    );
+    assert!(
+        result.get("matchedRules").is_none(),
+        "CDP spec: must NOT use abbreviated `matchedRules` field name"
     );
 }
 

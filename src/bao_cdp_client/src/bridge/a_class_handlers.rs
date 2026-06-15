@@ -714,6 +714,11 @@ fn navigation_history_to_json(h: &NavigationHistory) -> Value {
 }
 
 fn layout_metrics_to_json(m: &super::servo_backend::LayoutMetrics) -> Value {
+    // CDP spec: Page.getLayoutMetrics returns both deprecated DIP fields
+    // (layoutViewport/visualViewport/contentSize) and CSS-pixel fields
+    // (cssLayoutViewport/cssVisualViewport/cssContentSize).
+    // bao 不区分 DIP/CSS(无 device-pixel-ratio 缩放),两组字段值一致。
+    // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-getLayoutMetrics
     json!({
         "layoutViewport": {
             "pageX": 0,
@@ -731,6 +736,27 @@ fn layout_metrics_to_json(m: &super::servo_backend::LayoutMetrics) -> Value {
             "scale": 1,
         },
         "contentSize": {
+            "x": 0,
+            "y": 0,
+            "width": m.content_width,
+            "height": m.content_height,
+        },
+        "cssLayoutViewport": {
+            "pageX": 0,
+            "pageY": 0,
+            "clientWidth": m.layout_width,
+            "clientHeight": m.layout_height,
+        },
+        "cssVisualViewport": {
+            "offsetX": 0,
+            "offsetY": 0,
+            "pageX": 0,
+            "pageY": 0,
+            "clientWidth": m.layout_width,
+            "clientHeight": m.layout_height,
+            "scale": 1,
+        },
+        "cssContentSize": {
             "x": 0,
             "y": 0,
             "width": m.content_width,
@@ -812,25 +838,52 @@ fn property_descriptor_to_json(p: &PropertyDescriptor) -> Value {
 
 fn node_descriptor_to_json(n: &NodeDescriptor) -> Value {
     let children: Vec<Value> = n.children.iter().map(node_descriptor_to_json).collect();
+    // CDP spec: Node.localName 是 `BitString`(HTML 元素为小写标签名,
+    // 如 "div"/"html"/"head"; 文档/文本/注释等伪节点为空字符串)。
+    // bao 的 node_name 用大写标签名(如 "DIV")或伪节点名(如 "#document"),
+    // 伪节点(localName="")通过 "#" 前缀规则区分。
+    // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#type-Node
+    let local_name = node_name_to_local_name(&n.node_name);
     json!({
         "nodeId": n.node_id,
         "parentId": 0,
         "backendNodeId": n.backend_node_id,
         "nodeType": 1,
         "nodeName": n.node_name,
+        "localName": local_name,
         "nodeValue": n.node_value,
         "children": children,
     })
 }
 
+/// 把 Node.nodeName 转换为 CDP Node.localName。
+///
+/// - 正常元素标签名(大写,如 "DIV"/"HTML")→ 小写("div"/"html")
+/// - 伪节点(以 "#" 开头,如 "#document"/"#text"/"#comment")→ 空字符串
+/// - 空字符串 → 空字符串
+///
+/// 符合 DOM 标准:HTML 元素 localName 总是小写;伪节点无 localName。
+fn node_name_to_local_name(node_name: &str) -> String {
+    if node_name.is_empty() || node_name.starts_with('#') {
+        String::new()
+    } else {
+        node_name.to_ascii_lowercase()
+    }
+}
+
 fn box_model_to_json(m: &super::servo_backend::BoxModel) -> Value {
+    // CDP spec: DOM.getBoxModel returns {model: {content, padding, border, margin, width, height}}
+    // 字段必须包装在 `model` 对象内。
+    // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-getBoxModel
     json!({
-        "content": m.content.clone(),
-        "padding": m.padding.clone(),
-        "border": m.border.clone(),
-        "margin": m.margin.clone(),
-        "width": m.width,
-        "height": m.height,
+        "model": {
+            "content": m.content.clone(),
+            "padding": m.padding.clone(),
+            "border": m.border.clone(),
+            "margin": m.margin.clone(),
+            "width": m.width,
+            "height": m.height,
+        }
     })
 }
 
@@ -881,7 +934,12 @@ fn matched_rule_to_json(r: &super::servo_backend::MatchedRule) -> Value {
 }
 
 fn matched_styles_to_json(m: &MatchedStyles) -> Value {
-    let mut v = json!({ "matchedRules": m.matched_rules.iter().map(matched_rule_to_json).collect::<Vec<_>>() });
+    // CDP spec: CSS.getMatchedStylesForNode returns {matchedCSSRules, ...}
+    // 字段名必须为 `matchedCSSRules`(完整名,非 `matchedRules`)。
+    // https://chromedevtools.github.io/devtools-protocol/tot/CSS/#method-getMatchedStylesForNode
+    let mut v = json!({
+        "matchedCSSRules": m.matched_rules.iter().map(matched_rule_to_json).collect::<Vec<_>>()
+    });
     if let Some(s) = &m.inline_style {
         v["inlineStyle"] = css_style_to_json(s);
     }

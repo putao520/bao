@@ -54,21 +54,34 @@ fn dom_get_document_result_schema_conformance() {
 }
 
 #[test]
-fn dom_get_document_node_local_name_documented_deviation() {
-    // Arrange — CDP 规范: Node 必含 localName(可能为空字符串)
-    // bao 实现的 node_descriptor_to_json 不输出 localName → 偏差
-    // 此测试断言"当前缺 localName"这一事实,实现修复后会 fail → 提示更新报告
+fn dom_get_document_node_local_name_schema_conformance() {
+    // Arrange — CDP 规范: Node 必含 localName(字符串)
+    // - HTML 元素:小写标签名(如 "div"/"html")
+    // - 伪节点(#document/#text/#comment):空字符串
+    // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#type-Node
     // @trace REQ-CDP-001 [domain:DOM] [level:integration]
     let b = backend();
     let result = dispatch_command(&*b, "DOM.getDocument", json!({}), "1").unwrap();
     let root = &result["root"];
 
-    // Assert — 记录偏差:bao 当前不输出 localName
+    // Assert — localName 必须存在且为字符串
     assert!(
-        root.get("localName").is_none() || root["localName"].is_null(),
-        "DEV-NOTE: bao currently omits Node.localName (CDP spec deviation). \
-         If this fails, bao has added the field — update CONFORMANCE_REPORT."
+        root["localName"].is_string(),
+        "CDP spec: Node.localName must be string, got: {:?}",
+        root.get("localName")
     );
+
+    // Assert — 文档根节点(#document)的 localName 必须是空字符串
+    // (DOM 标准:Document 节点无 localName)
+    let node_name = root["nodeName"].as_str().unwrap_or("");
+    let local_name = root["localName"].as_str().unwrap_or("");
+    if node_name.starts_with('#') {
+        assert_eq!(
+            local_name, "",
+            "CDP spec: pseudo-node (#document/#text/#comment) localName must be empty, got: {}",
+            local_name
+        );
+    }
 }
 
 #[test]
@@ -194,42 +207,53 @@ fn dom_query_selector_all_missing_params_returns_32602() {
 
 // ─────────────────────────────────────────────────────────────────────────
 // DOM.getBoxModel — CDP spec: returns {model: {content, padding, border, margin, width, height}}
-// 偏差:bao 返回扁平 {content, padding, border, margin, width, height}(缺 model 包装)
+// bao 实现返回 {model: {...}} 包装结构(与 CDP 规范一致)。
 // ─────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn dom_get_box_model_returns_box_data_conformance() {
-    // Arrange — CDP 规范: 返回 BoxModel 数据(content/padding/border/margin + width + height)
-    // bao 实现直接返回扁平结构,字段名一致但缺少 model 包装
+    // Arrange — CDP 规范: BoxModel 数据在 `model` 包装层下
+    // {model: {content, padding, border, margin, width, height}}
     // @trace REQ-CDP-001 [domain:DOM] [level:integration]
     let b = backend();
 
     // Act
     let result = dispatch_command(&*b, "DOM.getBoxModel", json!({"nodeId":1}), "1").unwrap();
 
-    // Assert — 字段存在(扁平结构)
-    assert!(result["content"].is_array(), "CDP spec: content must be Quad array");
-    assert!(result["padding"].is_array(), "CDP spec: padding must be Quad array");
-    assert!(result["border"].is_array(), "CDP spec: border must be Quad array");
-    assert!(result["margin"].is_array(), "CDP spec: margin must be Quad array");
-    assert!(result["width"].is_i64() || result["width"].is_u64(), "width must be int");
-    assert!(result["height"].is_i64() || result["height"].is_u64(), "height must be int");
+    // Assert — CDP spec: 字段必须包装在 `model` 对象下
+    let model = &result["model"];
+    assert!(
+        model.is_object(),
+        "CDP spec: response must wrap fields under `model`, got: {:?}",
+        model
+    );
+    assert!(model["content"].is_array(), "CDP spec: content must be Quad array");
+    assert!(model["padding"].is_array(), "CDP spec: padding must be Quad array");
+    assert!(model["border"].is_array(), "CDP spec: border must be Quad array");
+    assert!(model["margin"].is_array(), "CDP spec: margin must be Quad array");
+    assert!(
+        model["width"].is_i64() || model["width"].is_u64(),
+        "width must be int"
+    );
+    assert!(
+        model["height"].is_i64() || model["height"].is_u64(),
+        "height must be int"
+    );
 }
 
 #[test]
-fn dom_get_box_model_model_wrapper_documented_deviation() {
-    // Arrange — CDP 规范: BoxModel 应包装在 {model: {...}} 中
-    // bao 实现直接返回扁平结构(无 model 包装)→ 偏差
-    // 此测试断言"当前缺 model 包装",修复后会 fail
+fn dom_get_box_model_model_wrapper_schema_conformance() {
+    // Arrange — CDP 规范: 顶层必须包含 `model` 键,值为 BoxModel 对象
+    // https://chromedevtools.github.io/devtools-protocol/tot/DOM/#method-getBoxModel
     // @trace REQ-CDP-001 [domain:DOM] [level:integration]
     let b = backend();
     let result = dispatch_command(&*b, "DOM.getBoxModel", json!({"nodeId":1}), "1").unwrap();
 
-    // Assert — 记录偏差:bao 当前无 model 包装
+    // Assert — 顶层 `model` 键存在且为对象
     assert!(
-        result.get("model").is_none(),
-        "DEV-NOTE: bao currently omits `model` wrapper (CDP spec deviation). \
-         If this fails, bao has added the wrapper — update CONFORMANCE_REPORT."
+        result.get("model").is_some() && result["model"].is_object(),
+        "CDP spec: top-level `model` key must be present and be object, got: {:?}",
+        result.get("model")
     );
 }
 

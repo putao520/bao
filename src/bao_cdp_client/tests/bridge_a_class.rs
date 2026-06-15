@@ -291,9 +291,9 @@ fn a_dom_get_box_model() {
     // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     // Act
     let r = run("DOM.getBoxModel", json!({"nodeId":1})).unwrap();
-    // Assert
-    assert!(r["content"].is_array());
-    assert!(r["width"].is_i64());
+    // Assert — CDP spec: 字段包装在 `model` 对象下
+    assert!(r["model"]["content"].is_array());
+    assert!(r["model"]["width"].is_i64());
 }
 
 #[test]
@@ -626,8 +626,8 @@ fn a_css_get_matched_styles_for_node() {
     // @trace REQ-BAO-API-004 [domain:CSS] [level:integration]
     // Act
     let r = run("CSS.getMatchedStylesForNode", json!({"nodeId":1})).unwrap();
-    // Assert
-    assert!(r["matchedRules"].is_array());
+    // Assert — CDP spec: 字段名为 matchedCSSRules(完整名)
+    assert!(r["matchedCSSRules"].is_array());
 }
 
 // ════════════════════════════════════════════════════════════════════

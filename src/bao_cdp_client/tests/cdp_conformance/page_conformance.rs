@@ -367,15 +367,15 @@ fn page_get_frame_tree_schema_conformance() {
 // ─────────────────────────────────────────────────────────────────────────
 // Page.getLayoutMetrics — CDP spec: returns {layoutViewport, visualViewport, contentSize,
 //   cssLayoutViewport, cssVisualViewport, cssContentSize}
-// 偏差:bao 实现只返回 deprecated 的 layoutViewport/visualViewport/contentSize,
-// 缺少 cssLayoutViewport/cssVisualViewport/cssContentSize
+// bao 实现同时返回 deprecated 的 layoutViewport/visualViewport/contentSize
+// 和 CSS 像素字段 cssLayoutViewport/cssVisualViewport/cssContentSize。
 // https://chromedevtools.github.io/devtools-protocol/tot/Page/#method-getLayoutMetrics
 // ─────────────────────────────────────────────────────────────────────────
 
 #[test]
 fn page_get_layout_metrics_deprecated_schema_conformance() {
     // Arrange — CDP 规范: deprecated 字段 layoutViewport / visualViewport / contentSize
-    // bao 实现这些字段(虽然 deprecated)
+    // bao 实现这些字段(虽然 deprecated,仍需返回以保持向后兼容)
     // @trace REQ-CDP-001 [domain:Page] [level:integration]
     let b = backend();
 
@@ -413,26 +413,43 @@ fn page_get_layout_metrics_deprecated_schema_conformance() {
 }
 
 #[test]
-fn page_get_layout_metrics_css_fields_documented_deviation() {
+fn page_get_layout_metrics_css_fields_schema_conformance() {
     // Arrange — CDP 规范: 现代浏览器返回 cssLayoutViewport / cssVisualViewport /
-    // cssContentSize(bao 未实现 → 记录为偏差)
-    //
-    // 这是 CONFORMANCE_REPORT 中 Page.getLayoutMetrics 的偏差条目:
-    // bao 缺少 CSS 像素字段(css*),只返回 deprecated 的 device-pixel 字段。
-    // 此测试不 fail,只断言"bao 当前未实现 css*"这一事实,
-    // 让 conformance 偏差在测试套件中可见(失败即代表已修复,需更新报告)。
+    // cssContentSize(CSS 像素字段)
     // @trace REQ-CDP-001 [domain:Page] [level:integration]
     let b = backend();
     let result = dispatch_command(&*b, "Page.getLayoutMetrics", json!({}), "1").unwrap();
 
-    // Assert — 记录偏差:bao 当前不返回 css* 字段
-    // 当未来实现修复后,这些断言会 fail → 提示更新 CONFORMANCE_REPORT
+    // Assert — cssLayoutViewport: 与 layoutViewport 同结构(pageX/pageY/clientWidth/clientHeight)
+    let clv = &result["cssLayoutViewport"];
     assert!(
-        result.get("cssLayoutViewport").is_none()
-            || result["cssLayoutViewport"].is_null(),
-        "DEV-NOTE: bao currently omits cssLayoutViewport (CDP spec deviation). \
-         If this fails, bao has added the field — update CONFORMANCE_REPORT."
+        clv.is_object(),
+        "CDP spec: cssLayoutViewport must be object, got: {:?}",
+        clv
     );
+    assert!(clv["pageX"].is_i64() || clv["pageX"].is_u64());
+    assert!(clv["pageY"].is_i64() || clv["pageY"].is_u64());
+    assert!(clv["clientWidth"].is_number());
+    assert!(clv["clientHeight"].is_number());
+
+    // Assert — cssVisualViewport: 与 visualViewport 同结构
+    let cvv = &result["cssVisualViewport"];
+    assert!(cvv.is_object(), "CDP spec: cssVisualViewport must be object");
+    assert!(cvv["offsetX"].is_number());
+    assert!(cvv["offsetY"].is_number());
+    assert!(cvv["pageX"].is_number());
+    assert!(cvv["pageY"].is_number());
+    assert!(cvv["clientWidth"].is_number());
+    assert!(cvv["clientHeight"].is_number());
+    assert!(cvv["scale"].is_number());
+
+    // Assert — cssContentSize: 与 contentSize 同结构(x/y/width/height)
+    let ccs = &result["cssContentSize"];
+    assert!(ccs.is_object(), "CDP spec: cssContentSize must be object");
+    assert!(ccs["x"].is_number());
+    assert!(ccs["y"].is_number());
+    assert!(ccs["width"].is_number());
+    assert!(ccs["height"].is_number());
 }
 
 // ─────────────────────────────────────────────────────────────────────────

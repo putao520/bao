@@ -54,8 +54,12 @@ use crate::transport::CdpEvent;
 
 /// servo console 日志级别 → CDP `Log.EntryLevel`。
 ///
-/// CDP 标准级别(https://chromedevtools.github.io/devtools-protocol/tot/Log/#type-EntryLevel):
-/// `verbose / info / warning / error / debug`
+/// CDP `Log.EntryLevel` 规范值集
+/// (https://chromedevtools.github.io/devtools-protocol/tot/Log/#type-EntryLevel):
+/// `verbose / info / warning / error`
+///
+/// 注意:CDP 规范 **不包含** `debug` 级别。
+/// servo 的 `console.debug` 在 CDP 中映射为 `verbose`(与 Chromium 行为一致)。
 ///
 /// servo 的 `console.log/info/warn/error/debug/trace` 通过字符串级别表示,
 /// 本枚举固化五种 + 未知默认 `info`。
@@ -88,6 +92,10 @@ impl ConsoleLevel {
 
     /// 转 CDP `Log.EntryLevel` 字符串。
     ///
+    /// CDP 规范 EntryLevel = {verbose, info, warning, error}。
+    /// `ConsoleLevel::Debug`(对应 servo `console.debug`)→ `"verbose"`
+    /// (与 Chromium 一致:console.debug 在 DevTools 显示为 verbose 级别)。
+    ///
     /// @trace REQ-BAO-API-003 [event:Console]
     pub fn to_cdp_str(self) -> &'static str {
         match self {
@@ -95,7 +103,7 @@ impl ConsoleLevel {
             ConsoleLevel::Info => "info",
             ConsoleLevel::Warning => "warning",
             ConsoleLevel::Error => "error",
-            ConsoleLevel::Debug => "debug",
+            ConsoleLevel::Debug => "verbose",
         }
     }
 }
@@ -1268,7 +1276,9 @@ mod tests {
         assert_eq!(ConsoleLevel::Info.to_cdp_str(), "info");
         assert_eq!(ConsoleLevel::Warning.to_cdp_str(), "warning");
         assert_eq!(ConsoleLevel::Error.to_cdp_str(), "error");
-        assert_eq!(ConsoleLevel::Debug.to_cdp_str(), "debug");
+        // CDP spec: EntryLevel = {verbose, info, warning, error} — no "debug".
+        // ConsoleLevel::Debug (servo console.debug) → "verbose" per Chromium.
+        assert_eq!(ConsoleLevel::Debug.to_cdp_str(), "verbose");
     }
 
     // @trace REQ-BAO-API-003 [event:Console]

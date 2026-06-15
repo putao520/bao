@@ -96,7 +96,7 @@ fn log_entry_added_source_matches_cdp_enum() {
 fn log_entry_added_level_mapping_conformance() {
     // Arrange — CDP 规范: level ∈ {verbose, info, warning, error}
     // bao ConsoleLevel: Verbose, Info, Warning, Error, Debug
-    // 注意:bao ConsoleLevel::Debug → "debug"(非 CDP 规范值)→ 在 conformance_log_level_deviation 中记录
+    // (ConsoleLevel::Debug 在 schema_conformance 测试中验证映射为 "verbose")
     // @trace REQ-CDP-001 [domain:Log] [level:integration]
     for level in [
         ConsoleLevel::Verbose,
@@ -124,10 +124,11 @@ fn log_entry_added_level_mapping_conformance() {
 }
 
 #[test]
-fn log_entry_added_debug_level_deviation_documented() {
+fn log_entry_added_debug_level_schema_conformance() {
     // Arrange — CDP 规范: EntryLevel ∈ {verbose, info, warning, error} 无 "debug"
-    // bao ConsoleLevel::Debug → to_cdp_str 返回 "debug"(非规范值)
-    // 此测试断言"当前偏差",修复后会 fail → 提示更新报告
+    // servo console.debug 在 CDP 中映射为 "verbose"(与 Chromium 一致:
+    // console.debug 在 DevTools 显示为 verbose 级别)
+    // https://chromedevtools.github.io/devtools-protocol/tot/Log/#type-EntryLevel
     // @trace REQ-CDP-001 [domain:Log] [level:integration]
     let servo_event = ServoEvent::Console {
         target_id: "1".into(),
@@ -140,12 +141,11 @@ fn log_entry_added_debug_level_deviation_documented() {
     let events = translate_event(servo_event);
     let actual = events[0].params["entry"]["level"].as_str().unwrap();
 
-    // Assert — 记录偏差:ConsoleLevel::Debug 输出 "debug" 而非 "verbose"
+    // Assert — CDP spec: ConsoleLevel::Debug 必须映射为 "verbose"(非 "debug")
     assert_eq!(
-        actual, "debug",
-        "DEV-NOTE: bao emits `debug` for ConsoleLevel::Debug (CDP spec EntryLevel doesn't \
-         include `debug`; should be `verbose`). If this fails, bao has aligned — update \
-         CONFORMANCE_REPORT."
+        actual, "verbose",
+        "CDP spec: ConsoleLevel::Debug (servo console.debug) must map to `verbose`, got: {}",
+        actual
     );
 }
 

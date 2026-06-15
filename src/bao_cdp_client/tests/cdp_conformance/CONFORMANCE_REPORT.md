@@ -13,8 +13,8 @@
 |------|-----|
 | 审计 method 总数 | 193(A 48 + B 52 + D 62 + E 31) |
 | conformance 测试数 | 129 |
-| 完全一致 method | 119 |
-| 偏差 method(已记录,可接受) | 5 |
+| 完全一致 method | 124 |
+| 偏差 method(已记录,可接受) | 0 |
 | 缺失 method(E 类,设计性排除) | 31 |
 | conformance 通过率(已实现 method) | 100% |
 
@@ -48,7 +48,7 @@
 | `Page.setContent` | `{}` | `{}` | OK |
 | `Page.close` | `{}` | `{}` | OK |
 | `Page.bringToFront` | `{}` | `{}` | OK |
-| `Page.getLayoutMetrics` | `{layoutViewport, visualViewport, contentSize, cssLayoutViewport, cssVisualViewport, cssContentSize}` | `{layoutViewport, visualViewport, contentSize}` | ⚠️ 缺 css* 字段 |
+| `Page.getLayoutMetrics` | `{layoutViewport, visualViewport, contentSize, cssLayoutViewport, cssVisualViewport, cssContentSize}` | `{layoutViewport, visualViewport, contentSize, cssLayoutViewport, cssVisualViewport, cssContentSize}` | ✅ 完全一致(css* 字段已补全) |
 | `Page.printToPDF` | `{data}` | E 类(-32601) | ❌ servo 不支持 |
 | `Page.title` (B) | Playwright 高层 API | `{result: {type, value}}` | OK(IIFE 合成) |
 | `Page.url` (B) | Playwright 高层 API | `{result: {type, value}}` | OK |
@@ -70,10 +70,10 @@
 
 | Method | CDP 官方 schema | bao 实现 | 状态 |
 |--------|----------------|---------|------|
-| `DOM.getDocument` | `{root: Node}` (Node 含 localName) | `{root: Node}` (无 localName) | ⚠️ 缺 localName |
+| `DOM.getDocument` | `{root: Node}` (Node 含 localName) | `{root: Node}` (含 localName) | ✅ 完全一致(localName 已补全) |
 | `DOM.querySelector` | `{nodeId: int}` | `{nodeId: int}` | OK |
 | `DOM.querySelectorAll` | `{nodeIds: [int]}` | `{nodeIds: [int]}` | OK |
-| `DOM.getBoxModel` | `{model: {content, padding, border, margin, width, height}}` | `{content, padding, border, margin, width, height}` (扁平) | ⚠️ 缺 model 包装 |
+| `DOM.getBoxModel` | `{model: {content, padding, border, margin, width, height}}` | `{model: {content, padding, border, margin, width, height}}` | ✅ 完全一致(model 包装已补全) |
 | `DOM.resolveNode` | `{object: RemoteObject}` | `{object: RemoteObject}` | OK |
 | `DOM.describeNode` | `{node: Node}` | `{node: Node}` | OK |
 | `DOM.setAttributeValue` | `{}` | `{}` | OK |
@@ -125,14 +125,14 @@
 | Method | CDP 官方 schema | bao 实现 | 状态 |
 |--------|----------------|---------|------|
 | `CSS.getComputedStyleForNode` | `{computedStyle: [{name, value}]}` | `{computedStyle: [{name, value}]}` | OK |
-| `CSS.getMatchedStylesForNode` | `{matchedCSSRules, inlineStyle?, attributesStyle?}` | `{matchedRules, inlineStyle?, attributesStyle?}` | ⚠️ 字段名偏差(matchedRules vs matchedCSSRules) |
+| `CSS.getMatchedStylesForNode` | `{matchedCSSRules, inlineStyle?, attributesStyle?}` | `{matchedCSSRules, inlineStyle?, attributesStyle?}` | ✅ 完全一致(字段名已对齐 matchedCSSRules) |
 
 ### Log Domain(事件)
 
 | Event | CDP 官方 schema | bao 实现 | 状态 |
 |-------|----------------|---------|------|
 | `Log.entryAdded` | `{entry: {source, level, text, url?, timestamp, ...}}` | `{entry: {source:"javascript", level, text, url, lineNumber, columnNumber, timestamp}}` | OK |
-| `Log.entryAdded.level = "debug"` | EntryLevel ∈ {verbose, info, warning, error} | `ConsoleLevel::Debug → "debug"` | ⚠️ "debug" 非 CDP 规范值 |
+| `Log.entryAdded.level = "debug"` | EntryLevel ∈ {verbose, info, warning, error} | `ConsoleLevel::Debug → "verbose"` | ✅ 完全一致(Debug 映射为 verbose) |
 
 ### Debugger Domain(9 E 类 + 1 事件)
 
@@ -169,21 +169,22 @@
 | method 格式无效(无 `.`) | `-32602` InvalidParams | `-32602` | OK |
 | Page 不存在 / servo 内部错误 | `-32000` ServerError | `-32000` | OK |
 
-## 偏差最多的 5 个 method
+## 已修复的 5 个 schema 偏差(BUG-CDP-008~012)
 
-| 排名 | Method | 偏差类型 | 严重度 |
-|------|--------|---------|--------|
-| 1 | `Page.getLayoutMetrics` | 字段缺失:cssLayoutViewport/cssVisualViewport/cssContentSize | 低(CDP deprecated 字段仍提供) |
-| 2 | `DOM.getBoxModel` | 缺 `model` 包装层(扁平结构) | 低(字段值齐全) |
-| 3 | `DOM.getDocument` (Node) | 字段缺失:localName | 中(Node schema 偏差) |
-| 4 | `CSS.getMatchedStylesForNode` | 字段名偏差:matchedRules vs matchedCSSRules | 低(命名偏差) |
-| 5 | `Log.entryAdded` (ConsoleLevel::Debug) | 值偏差:输出 "debug" 非规范值 | 低(应为 "verbose") |
+TASK-16a 对照 Chrome DevTools Protocol 官方规范修复了全部 5 个偏差,conformance 测试从
+"documented deviation"(断言偏差存在)转为正向 schema 验证(断言与 CDP 规范一致)。
 
-## 偏差处置建议
+| BUG ID | Method | 原偏差 | 修复方案 | 状态 |
+|--------|--------|--------|---------|------|
+| BUG-CDP-008 | `Page.getLayoutMetrics` | 缺 cssLayoutViewport/cssVisualViewport/cssContentSize | 补全 CSS 像素字段(值与 deprecated 字段一致,bao 无 DIP 缩放) | ✅ |
+| BUG-CDP-009 | `DOM.getBoxModel` | 缺 `model` 包装层(扁平结构) | 字段包装到 `{model: {...}}` 内 | ✅ |
+| BUG-CDP-010 | `DOM.getDocument` (Node) | 缺 localName 字段 | 新增 `node_name_to_local_name` 助手:元素标签名小写,伪节点空字符串 | ✅ |
+| BUG-CDP-011 | `CSS.getMatchedStylesForNode` | 字段名 matchedRules(应为 matchedCSSRules) | 字段名对齐为完整名 `matchedCSSRules` | ✅ |
+| BUG-CDP-012 | `Log.entryAdded` (ConsoleLevel::Debug) | 输出 "debug"(应为 "verbose") | `ConsoleLevel::Debug → "verbose"`(与 Chromium 一致) | ✅ |
 
-- **低严重度偏差**(扁平结构 / 字段名):Playwright/Puppeteer 客户端通常容忍,可后续对齐。
-- **中严重度偏差**(`Node.localName` 缺失):影响依赖该字段的 CDP 客户端,建议在
-  `node_descriptor_to_json` 中补 `localName: ""`(空字符串符合 CDP 默认值)。
+## 偏差处置说明
+
+- 全部 5 个偏差已修复,conformance 通过率 100%。
 - **E 类 ❌** 是设计性排除(servo 上游限制),非偏差。已通过 E-class 路由统一返回 `-32601`。
 
 ## @trace 矩阵
