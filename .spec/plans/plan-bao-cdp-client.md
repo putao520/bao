@@ -106,9 +106,39 @@ REQ 列表:REQ-BAO-API-001 ~ REQ-BAO-API-008
 ### TASK-10: SPEC @trace 注入 + audit 100%
 - SPEC: 全部 [验收] | 实现: ① bao_cdp_client 所有 pub method 标注 // @trace REQ-BAO-API-XXX [interface:Browser/Page/...] ② spec(action="scan", scanMode="trace_annotations") 验证 0 untraced ③ spec(action="check", auditAction="audit", auditMode="req_coverage") 验证 REQ-BAO-API-001~008 100% 覆盖 ④ spec(action="check", auditAction="audit", auditMode="maturity") ≥80 | 验收: 0 untraced + 100% REQ 覆盖 + maturity ≥80 | 依赖: TASK-9 | 状态: pending
 
+### TASK-12: 全链路 E2E(JS→SM→servo→CDP)
+- SPEC: REQ-ENG-001~007 + REQ-CLI-002 + REQ-BRW-001~003 + REQ-CDP-001~008 [验收] | 文件: tests/full_chain/ (新) | 实现: bao CLI → bao browser → servo 渲染 → CDP 控制 完整链路;JSContext 融合(JS 同时用 Node API + Web API);DOM↔Node.js 对象互操作;bao run script.ts 端到端 | 验收: 真·servo 链路非 #[ignore] 默认运行 + JSContext 单例验证 + DOM/Node 互操作 | 依赖: TASK-13,14,15 | 状态: pending
+
+### TASK-13: CDP conformance 用例(抄 Puppeteer/Playwright/官方)
+- SPEC: REQ-CDP-001~008 [验收] | 文件: src/bao_cdp_client/tests/cdp_conformance/ (新) | 实现: 从 Puppeteer/test、Playwright packages/deno-cdp、Chrome DevTools Protocol 官方 conformance 抄 CDP 用例,审计 193 method 实现正确性(返回值 schema/事件序列/错误码) | 验收: 对照 Chrome DevTools Protocol 规范 100% schema 一致 + 缺失/错误 method 清单 | 依赖: TASK-8 | 状态: pending
+
+### TASK-14: 浏览器隐藏(headless + stealth 对抗)
+- SPEC: REQ-STL-001~007 [验收] | 文件: src/bao_stealth/tests/ (扩展) | 实现: 补充真实检测服务对抗(bot.sannysoft/creepjs/pixelscan reCAPTCHA/Cloudflare 真 challenge);headless 模式隐藏(WebGL/Canvas/Navigator 在 headless 下零特征泄露) | 验收: 真实检测向量 100% 覆盖 + headless 与 headed 指纹一致 | 依赖: (无,stealth 已有 41 测试基础) | 状态: pending
+
+### TASK-15: Node 特性完整(抄 bun/test/js/node)
+- SPEC: REQ-ENG-001~007 [验收] | 文件: src/bao_runtime/tests/node_conformance/ (新) | 实现: 从 ~/code/rust/bun/test/js/node/ 移植 Node.js 兼容性测试(assert/buffer/crypto/dns/events/fs/http/path/stream/url/util),审计 bao_runtime node_* 完整性 | 验收: bun/test/js/node 主要模块覆盖率 ≥80% + 缺失 API 清单 | 依赖: (无,独立) | 状态: pending
+
 ## Bug 日志
 
-(执行中追加)
+### TASK-13 发现(CDP schema 偏差,低严重度)
+- BUG-CDP-008: Page.getLayoutMetrics 缺 cssLayoutViewport/cssVisualViewport/cssContentSize(只返回 deprecated 字段)
+- BUG-CDP-009: DOM.getBoxModel 缺 `model` 包装层(返回扁平结构)
+- BUG-CDP-010: DOM.getDocument Node 缺 `localName` 字段(Node schema 偏差)
+- BUG-CDP-011: CSS.getMatchedStylesForNode `matchedRules` vs CDP 规范 `matchedCSSRules`(命名偏差)
+- BUG-CDP-012: Log.entryAdded ConsoleLevel::Debug 输出 "debug" 非规范 "verbose"
+
+### TASK-14 发现(stealth 行为)
+- BUG-STL-008: BehaviorSimulator::generate_click_sequence 每次重置 RNG state(`let mut rng = self.seed`),同 seed 不同位置点击产生相同 press duration,跨会话 detectable signal
+
+### TASK-15 发现(Node API 偏差)
+- BUG-ENG-001: http.Server 不是 EventEmitter(无 .on/.emit),`server.on("request",...)` 不可用
+- BUG-ENG-002: crypto.randomBytes 返回普通对象非 Buffer 实例,破坏 Buffer.isBuffer()
+- BUG-ENG-003: util.inspect({a:1}) 返回 "[Object]" 而非属性列表
+- BUG-ENG-004: buffer.concat(list, totalLength) 忽略 totalLength 参数
+- BUG-ENG-005: fs.readFileSync(path) 不带编码返回 String 而非 Buffer
+
+> 全 11 BUG 已记录,CONFORMANCE/GAP_REPORT 详列。修复为后续 TASK-16 批次。
+
 
 ## REQ 台账
 
