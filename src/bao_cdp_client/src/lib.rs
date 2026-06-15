@@ -48,6 +48,11 @@ pub use bridge::{
     NavigationEntry, NavigationHistory, NodeDescriptor, PropertyDescriptor, RemoteObject,
     ResponseBody, ScreenshotFormat, ServoBackend, TargetInfo, TouchPoint,
 };
+// TASK-4: servo 7 事件 → CDP event(REQ-BAO-API-003)
+pub use bridge::{
+    from_console_message, translate as translate_servo_event, ConsoleLevel, EventSubscriber,
+    ServoEvent,
+};
 pub use connection::{Connection, ConnectionConfig, ParsedConnectUrl};
 pub use error::{CdpError, ConnectError, Result};
 pub use transport::{

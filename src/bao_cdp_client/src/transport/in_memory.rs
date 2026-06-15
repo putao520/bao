@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::bridge::event_translator::{translate, ServoEvent};
 use crate::error::{CdpError, Result};
 
 use super::r#trait::{CdpEvent, Transport};
@@ -78,14 +79,25 @@ pub trait InMemoryBridge: Send + Sync {
 /// - `Arc<dyn InMemoryBridge>`:命令派发(servo 端)
 /// - `event_rx`:事件接收 channel(InMemoryBridge 侧 push,CDP client 侧 recv)
 /// - `event_tx`:`event_rx` 的 sender 克隆,作为构造时的"事件入口"接口
+/// - `servo_event_rx`(可选):servo 7 类事件接收 channel(REQ-BAO-API-003)。
+///   通过 [`InMemoryTransport::attach_servo_event_receiver`] 接入,
+///   `recv_event` 会优先消费 servo 事件(translate 为 CDP event 后返回);
+///   无 servo 事件时 fallback 到普通 `event_rx`(供测试 mock 直接 push CDP event)。
+/// - `pending_cdp_events`:servo 事件 translate 后可能产生多个 CDP event,
+///   未返回的暂存在这里。
 ///
 /// 关闭语义:`close()` drop sender/receiver,后续命令返回 `ConnectionClosed`。
 ///
 /// @trace REQ-BAO-API-002 [interface:Transport]
+/// @trace REQ-BAO-API-003 [interface:Transport]
 pub struct InMemoryTransport {
     bridge: Arc<dyn InMemoryBridge>,
     event_tx: Sender<CdpEvent>,
     event_rx: Receiver<CdpEvent>,
+    /// servo 7 类事件接收端(可选)。注入后由 `recv_event` 优先消费。
+    servo_event_rx: Option<Receiver<ServoEvent>>,
+    /// servo 事件 translate 后未发出的 CdpEvent 暂存(一对多场景)。
+    pending_cdp_events: std::collections::VecDeque<CdpEvent>,
     closed: bool,
     command_timeout: Duration,
     event_timeout: Duration,
@@ -113,6 +125,8 @@ impl InMemoryTransport {
             bridge,
             event_tx,
             event_rx,
+            servo_event_rx: None,
+            pending_cdp_events: std::collections::VecDeque::new(),
             closed: false,
             command_timeout: Duration::from_secs(30),
             event_timeout: Duration::from_millis(100),
@@ -127,6 +141,30 @@ impl InMemoryTransport {
     /// @trace REQ-BAO-API-002 [interface:Transport]
     pub fn event_sender(&self) -> Sender<CdpEvent> {
         self.event_tx.clone()
+    }
+
+    /// 接入 servo 事件 receiver(REQ-BAO-API-003)。
+    ///
+    /// 接入后,`recv_event` 会优先消费 servo 事件并经
+    /// [`crate::bridge::event_translator::translate`] 转换为 CDP event。
+    /// 无 servo 事件时 fallback 到普通 `event_rx`(供测试直接 push CDP event)。
+    ///
+    /// 通常与 [`crate::bridge::EventSubscriber::new`] 配合使用:
+    /// ```ignore
+    /// use bao_cdp_client::bridge::EventSubscriber;
+    /// use bao_cdp_client::transport::{InMemoryTransport, InMemoryBridge};
+    /// use std::sync::Arc;
+    ///
+    /// let bridge: Arc<dyn InMemoryBridge> = /* ... */;
+    /// let mut transport = InMemoryTransport::new(bridge);
+    /// let (subscriber, rx) = EventSubscriber::new();
+    /// transport.attach_servo_event_receiver(rx);
+    /// // 把 subscriber 注册到 servo delegate...
+    /// ```
+    ///
+    /// @trace REQ-BAO-API-003 [interface:Transport]
+    pub fn attach_servo_event_receiver(&mut self, rx: Receiver<ServoEvent>) {
+        self.servo_event_rx = Some(rx);
     }
 
     /// 是否已关闭。
@@ -161,6 +199,35 @@ impl Transport for InMemoryTransport {
         if self.closed {
             return Err(CdpError::ConnectionClosed);
         }
+        // 1. 先返回 pending(translate 一对多产生的剩余事件)
+        if let Some(ev) = self.pending_cdp_events.pop_front() {
+            return Ok(Some(ev));
+        }
+        // 2. 优先消费 servo 7 类事件(REQ-BAO-API-003)
+        if let Some(servo_rx) = &self.servo_event_rx {
+            match servo_rx.recv_timeout(self.event_timeout) {
+                Ok(se) => {
+                    // translate ServoEvent → Vec<CdpEvent>
+                    let mut cdp_events = translate(se);
+                    // 第一个直接返回,剩余存 pending
+                    if let Some(first) = cdp_events.pop() {
+                        for ev in cdp_events.into_iter().rev() {
+                            self.pending_cdp_events.push_front(ev);
+                        }
+                        return Ok(Some(first));
+                    }
+                    // translate 返回空(理论上不会发生)— 递归一次
+                    return self.recv_event();
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    // servo 无事件,fallback 到普通 event_rx
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    // servo 端断开 — 不视为 transport 关闭,继续 fallback event_rx
+                }
+            }
+        }
+        // 3. 普通事件 fallback(测试 mock 直接 push CdpEvent)
         match self.event_rx.recv_timeout(self.event_timeout) {
             Ok(ev) => Ok(Some(ev)),
             Err(RecvTimeoutError::Timeout) => Ok(None),
