@@ -7,14 +7,21 @@
 // so they remain independent Cargo test binaries.
 //
 // NOTE on test isolation: SpiderMonkey's JSEngine is process-global and can
-// only be initialised once per process. When two test functions in the same
-// binary run concurrently and both call `JsContext::for_test()`, the second
-// fails with "Failed to init JSEngine: AlreadyInitialized". Run these suites
-// with `--test-threads=1` (e.g. `cargo test --test buffer_conformance -- --test-threads=1`)
-// to avoid the race. This is a harness limitation, not a bug in bao_runtime.
+// only be initialised once per process. Concurrent #[test] functions in the
+// same binary race the init; `make_ctx()` serializes via JSENGINE_INIT_LOCK so
+// the winner inits first and losers reuse the initialized engine. This removes
+// the previous requirement to run with `--test-threads=1`.
 
 use bao_engine::context::JsContext;
 use bao_engine::value::JsValue;
+use std::sync::Mutex;
+
+// Process-global lock serializing JSEngine init across concurrent #[test]
+// functions in the same binary. Without this, two tests calling make_ctx()
+// simultaneously race to init the process-global JSEngine and the loser fails
+// with "Failed to init JSEngine: AlreadyInitialized". The lock lets the winner
+// finish init first; the loser then reuses the already-initialized engine.
+static JSENGINE_INIT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Eval result as a display string. Booleans/numbers/strings get stringified;
 /// everything else returns an empty string (the caller treats empty as
@@ -29,7 +36,11 @@ pub fn eval_string(ctx: &mut JsContext, source: &str) -> String {
 }
 
 /// Build a fresh test context with bao_runtime globals installed.
+///
+/// Serializes on `JSENGINE_INIT_LOCK` so concurrent tests in the same binary
+/// do not race the process-global JSEngine init.
 pub fn make_ctx() -> JsContext {
+    let _guard = JSENGINE_INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     bun_runtime::install_exit_handler();
     bun_runtime::bun_api::init_process_start();
     let mut ctx = JsContext::for_test().expect("Failed to create JSContext");
