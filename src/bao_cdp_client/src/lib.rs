@@ -32,6 +32,7 @@
 //!
 //! @trace REQ-BAO-API-001 [level:library]
 
+pub mod bridge;
 pub mod browser;
 pub mod connection;
 pub mod error;
@@ -39,6 +40,13 @@ pub mod transport;
 
 // 顶层 re-export — 公共 API 表面(REQ-BAO-API-008 会进一步扩展)。
 pub use browser::Browser;
+pub use bridge::{
+    dispatch_command, BridgeError, BoxModel, CDPRdpBridge, CSSProperty,
+    CSSStyle, DeviceMetrics, EvaluateResult, ExceptionDetails, Frame, FrameTree, KeyEvent,
+    LayoutMetrics, MatchedRule, MatchedStyles, MockServoBackend, MouseEvent, NavigateResult,
+    NavigationEntry, NavigationHistory, NodeDescriptor, PropertyDescriptor, RemoteObject,
+    ResponseBody, ScreenshotFormat, ServoBackend, TargetInfo, TouchPoint,
+};
 pub use connection::{Connection, ConnectionConfig, ParsedConnectUrl};
 pub use error::{CdpError, ConnectError, Result};
 pub use transport::{
