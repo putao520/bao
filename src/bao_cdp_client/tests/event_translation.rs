@@ -50,7 +50,7 @@ fn assert_event<'a>(
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:Console]
+// @trace REQ-BAO-API-003 [event:Console] [level:integration]
 fn e2e_console_to_log_entry_added() {
     let ev = ServoEvent::Console {
         target_id: "TARGET-CON".into(),
@@ -72,7 +72,7 @@ fn e2e_console_to_log_entry_added() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:PageError]
+// @trace REQ-BAO-API-003 [event:PageError] [level:integration]
 fn e2e_page_error_to_runtime_exception_thrown() {
     let ev = ServoEvent::PageError {
         target_id: "TARGET-PE".into(),
@@ -94,7 +94,7 @@ fn e2e_page_error_to_runtime_exception_thrown() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:NetworkEvent]
+// @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_request_to_request_will_be_sent() {
     let mut headers = HashMap::new();
     headers.insert("X-A".into(), "1".into());
@@ -118,7 +118,7 @@ fn e2e_network_request_to_request_will_be_sent() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:NetworkEvent]
+// @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_response_to_response_received() {
     let ev = ServoEvent::NetworkResponse {
         target_id: "T-NET".into(),
@@ -137,7 +137,7 @@ fn e2e_network_response_to_response_received() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:NetworkEvent]
+// @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_loading_finish_to_loading_finished() {
     let ev = ServoEvent::NetworkLoadingFinish {
         target_id: "T-NET".into(),
@@ -151,7 +151,7 @@ fn e2e_network_loading_finish_to_loading_finished() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:NetworkEvent]
+// @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_loading_fail_to_loading_failed() {
     let ev = ServoEvent::NetworkLoadingFail {
         target_id: "T-NET".into(),
@@ -166,7 +166,7 @@ fn e2e_network_loading_fail_to_loading_failed() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:DomMutation]
+// @trace REQ-BAO-API-003 [event:DomMutation] [level:integration]
 fn e2e_dom_attribute_modified() {
     let ev = ServoEvent::DomAttributeModified {
         target_id: "T-DOM".into(),
@@ -182,7 +182,7 @@ fn e2e_dom_attribute_modified() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:DomMutation]
+// @trace REQ-BAO-API-003 [event:DomMutation] [level:integration]
 fn e2e_dom_character_data_modified() {
     let ev = ServoEvent::DomCharacterDataModified {
         target_id: "T-DOM".into(),
@@ -197,7 +197,7 @@ fn e2e_dom_character_data_modified() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:SourceInfo]
+// @trace REQ-BAO-API-003 [event:SourceInfo] [level:integration]
 fn e2e_script_parsed() {
     let ev = ServoEvent::ScriptParsed {
         target_id: "T-SRC".into(),
@@ -217,7 +217,7 @@ fn e2e_script_parsed() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:FrameInfo]
+// @trace REQ-BAO-API-003 [event:FrameInfo] [level:integration]
 fn e2e_frame_navigated() {
     let ev = ServoEvent::FrameNavigated {
         target_id: "T-FR".into(),
@@ -232,7 +232,7 @@ fn e2e_frame_navigated() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:FrameInfo]
+// @trace REQ-BAO-API-003 [event:FrameInfo] [level:integration]
 fn e2e_frame_started_loading() {
     let ev = ServoEvent::FrameStartedLoading {
         target_id: "T-FR".into(),
@@ -244,7 +244,7 @@ fn e2e_frame_started_loading() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:FrameInfo]
+// @trace REQ-BAO-API-003 [event:FrameInfo] [level:integration]
 fn e2e_frame_stopped_loading() {
     let ev = ServoEvent::FrameStoppedLoading {
         target_id: "T-FR".into(),
@@ -256,7 +256,7 @@ fn e2e_frame_stopped_loading() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:TimelineMarker]
+// @trace REQ-BAO-API-003 [event:TimelineMarker] [level:integration]
 fn e2e_timeline_marker_to_performance_metrics() {
     let ev = ServoEvent::TimelineMarker {
         target_id: "T-TL".into(),

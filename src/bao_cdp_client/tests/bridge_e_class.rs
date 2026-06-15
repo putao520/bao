@@ -32,49 +32,49 @@ fn assert_e_class(method: &str) {
 
 #[test]
 fn e_heap_profiler_enable() {
-    // @trace REQ-BAO-API-007 [domain:HeapProfiler]
+    // @trace REQ-BAO-API-007 [domain:HeapProfiler] [level:integration]
     assert_e_class("HeapProfiler.enable");
 }
 
 #[test]
 fn e_heap_profiler_take_heap_snapshot() {
-    // @trace REQ-BAO-API-007 [domain:HeapProfiler]
+    // @trace REQ-BAO-API-007 [domain:HeapProfiler] [level:integration]
     assert_e_class("HeapProfiler.takeHeapSnapshot");
 }
 
 #[test]
 fn e_heap_profiler_get_object_by_heap_object_id() {
-    // @trace REQ-BAO-API-007 [domain:HeapProfiler]
+    // @trace REQ-BAO-API-007 [domain:HeapProfiler] [level:integration]
     assert_e_class("HeapProfiler.getObjectByHeapObjectId");
 }
 
 #[test]
 fn e_heap_profiler_disable() {
-    // @trace REQ-BAO-API-007 [domain:HeapProfiler]
+    // @trace REQ-BAO-API-007 [domain:HeapProfiler] [level:integration]
     assert_e_class("HeapProfiler.disable");
 }
 
 #[test]
 fn e_heap_profiler_start_tracking() {
-    // @trace REQ-BAO-API-007 [domain:HeapProfiler]
+    // @trace REQ-BAO-API-007 [domain:HeapProfiler] [level:integration]
     assert_e_class("HeapProfiler.startTrackingHeapObjects");
 }
 
 #[test]
 fn e_heap_profiler_stop_tracking() {
-    // @trace REQ-BAO-API-007 [domain:HeapProfiler]
+    // @trace REQ-BAO-API-007 [domain:HeapProfiler] [level:integration]
     assert_e_class("HeapProfiler.stopTrackingHeapObjects");
 }
 
 #[test]
 fn e_heap_profiler_start_sampling() {
-    // @trace REQ-BAO-API-007 [domain:HeapProfiler]
+    // @trace REQ-BAO-API-007 [domain:HeapProfiler] [level:integration]
     assert_e_class("HeapProfiler.startSampling");
 }
 
 #[test]
 fn e_heap_profiler_stop_sampling() {
-    // @trace REQ-BAO-API-007 [domain:HeapProfiler]
+    // @trace REQ-BAO-API-007 [domain:HeapProfiler] [level:integration]
     assert_e_class("HeapProfiler.stopSampling");
 }
 
@@ -84,25 +84,25 @@ fn e_heap_profiler_stop_sampling() {
 
 #[test]
 fn e_profiler_enable() {
-    // @trace REQ-BAO-API-007 [domain:Profiler]
+    // @trace REQ-BAO-API-007 [domain:Profiler] [level:integration]
     assert_e_class("Profiler.enable");
 }
 
 #[test]
 fn e_profiler_disable() {
-    // @trace REQ-BAO-API-007 [domain:Profiler]
+    // @trace REQ-BAO-API-007 [domain:Profiler] [level:integration]
     assert_e_class("Profiler.disable");
 }
 
 #[test]
 fn e_profiler_start() {
-    // @trace REQ-BAO-API-007 [domain:Profiler]
+    // @trace REQ-BAO-API-007 [domain:Profiler] [level:integration]
     assert_e_class("Profiler.start");
 }
 
 #[test]
 fn e_profiler_stop() {
-    // @trace REQ-BAO-API-007 [domain:Profiler]
+    // @trace REQ-BAO-API-007 [domain:Profiler] [level:integration]
     assert_e_class("Profiler.stop");
 }
 
@@ -112,19 +112,19 @@ fn e_profiler_stop() {
 
 #[test]
 fn e_dom_storage_get_items() {
-    // @trace REQ-BAO-API-007 [domain:DOMStorage]
+    // @trace REQ-BAO-API-007 [domain:DOMStorage] [level:integration]
     assert_e_class("DOMStorage.getDOMStorageItems");
 }
 
 #[test]
 fn e_dom_storage_set_item() {
-    // @trace REQ-BAO-API-007 [domain:DOMStorage]
+    // @trace REQ-BAO-API-007 [domain:DOMStorage] [level:integration]
     assert_e_class("DOMStorage.setDOMStorageItem");
 }
 
 #[test]
 fn e_dom_storage_remove_item() {
-    // @trace REQ-BAO-API-007 [domain:DOMStorage]
+    // @trace REQ-BAO-API-007 [domain:DOMStorage] [level:integration]
     assert_e_class("DOMStorage.removeDOMStorageItem");
 }
 
@@ -134,19 +134,19 @@ fn e_dom_storage_remove_item() {
 
 #[test]
 fn e_indexed_db_request_database_names() {
-    // @trace REQ-BAO-API-007 [domain:IndexedDB]
+    // @trace REQ-BAO-API-007 [domain:IndexedDB] [level:integration]
     assert_e_class("IndexedDB.requestDatabaseNames");
 }
 
 #[test]
 fn e_indexed_db_request_database() {
-    // @trace REQ-BAO-API-007 [domain:IndexedDB]
+    // @trace REQ-BAO-API-007 [domain:IndexedDB] [level:integration]
     assert_e_class("IndexedDB.requestDatabase");
 }
 
 #[test]
 fn e_indexed_db_request_data() {
-    // @trace REQ-BAO-API-007 [domain:IndexedDB]
+    // @trace REQ-BAO-API-007 [domain:IndexedDB] [level:integration]
     assert_e_class("IndexedDB.requestData");
 }
 
@@ -156,13 +156,13 @@ fn e_indexed_db_request_data() {
 
 #[test]
 fn e_service_worker_enable() {
-    // @trace REQ-BAO-API-007 [domain:ServiceWorker]
+    // @trace REQ-BAO-API-007 [domain:ServiceWorker] [level:integration]
     assert_e_class("ServiceWorker.enable");
 }
 
 #[test]
 fn e_service_worker_unregister() {
-    // @trace REQ-BAO-API-007 [domain:ServiceWorker]
+    // @trace REQ-BAO-API-007 [domain:ServiceWorker] [level:integration]
     assert_e_class("ServiceWorker.unregister");
 }
 
@@ -172,19 +172,19 @@ fn e_service_worker_unregister() {
 
 #[test]
 fn e_tracing_start() {
-    // @trace REQ-BAO-API-007 [domain:Tracing]
+    // @trace REQ-BAO-API-007 [domain:Tracing] [level:integration]
     assert_e_class("Tracing.start");
 }
 
 #[test]
 fn e_tracing_end() {
-    // @trace REQ-BAO-API-007 [domain:Tracing]
+    // @trace REQ-BAO-API-007 [domain:Tracing] [level:integration]
     assert_e_class("Tracing.end");
 }
 
 #[test]
 fn e_tracing_get_categories() {
-    // @trace REQ-BAO-API-007 [domain:Tracing]
+    // @trace REQ-BAO-API-007 [domain:Tracing] [level:integration]
     assert_e_class("Tracing.getCategories");
 }
 
@@ -194,43 +194,43 @@ fn e_tracing_get_categories() {
 
 #[test]
 fn e_page_print_to_pdf() {
-    // @trace REQ-BAO-API-007 [domain:Page]
+    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
     assert_e_class("Page.printToPDF");
 }
 
 #[test]
 fn e_page_start_js_coverage() {
-    // @trace REQ-BAO-API-007 [domain:Page]
+    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
     assert_e_class("Page.startJSCoverage");
 }
 
 #[test]
 fn e_page_stop_js_coverage() {
-    // @trace REQ-BAO-API-007 [domain:Page]
+    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
     assert_e_class("Page.stopJSCoverage");
 }
 
 #[test]
 fn e_page_start_css_coverage() {
-    // @trace REQ-BAO-API-007 [domain:Page]
+    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
     assert_e_class("Page.startCSSCoverage");
 }
 
 #[test]
 fn e_page_stop_css_coverage() {
-    // @trace REQ-BAO-API-007 [domain:Page]
+    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
     assert_e_class("Page.stopCSSCoverage");
 }
 
 #[test]
 fn e_page_start_screencast() {
-    // @trace REQ-BAO-API-007 [domain:Page]
+    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
     assert_e_class("Page.startScreencast");
 }
 
 #[test]
 fn e_page_stop_screencast() {
-    // @trace REQ-BAO-API-007 [domain:Page]
+    // @trace REQ-BAO-API-007 [domain:Page] [level:integration]
     assert_e_class("Page.stopScreencast");
 }
 
@@ -240,55 +240,55 @@ fn e_page_stop_screencast() {
 
 #[test]
 fn e_debugger_set_breakpoint() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.setBreakpoint");
 }
 
 #[test]
 fn e_debugger_set_breakpoint_by_url() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.setBreakpointByUrl");
 }
 
 #[test]
 fn e_debugger_remove_breakpoint() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.removeBreakpoint");
 }
 
 #[test]
 fn e_debugger_pause() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.pause");
 }
 
 #[test]
 fn e_debugger_resume() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.resume");
 }
 
 #[test]
 fn e_debugger_step_over() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.stepOver");
 }
 
 #[test]
 fn e_debugger_step_into() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.stepInto");
 }
 
 #[test]
 fn e_debugger_step_out() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.stepOut");
 }
 
 #[test]
 fn e_debugger_evaluate_on_call_frame() {
-    // @trace REQ-BAO-API-007 [domain:Debugger]
+    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
     assert_e_class("Debugger.evaluateOnCallFrame");
 }
 
@@ -298,13 +298,13 @@ fn e_debugger_evaluate_on_call_frame() {
 
 #[test]
 fn e_performance_enable() {
-    // @trace REQ-BAO-API-007 [domain:Performance]
+    // @trace REQ-BAO-API-007 [domain:Performance] [level:integration]
     assert_e_class("Performance.enable");
 }
 
 #[test]
 fn e_performance_get_metrics() {
-    // @trace REQ-BAO-API-007 [domain:Performance]
+    // @trace REQ-BAO-API-007 [domain:Performance] [level:integration]
     assert_e_class("Performance.getMetrics");
 }
 

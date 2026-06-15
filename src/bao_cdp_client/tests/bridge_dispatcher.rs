@@ -14,44 +14,70 @@ fn backend() -> Arc<dyn ServoBackend> {
 
 #[test]
 fn invalid_method_no_dot_returns_invalid_method_error() {
-    // @trace REQ-BAO-API-004 [level:library]
+    // Arrange
+    // @trace REQ-BAO-API-004 [level:integration]
     let b = backend();
-    let err = dispatch_command(&*b, "noDotHere", json!({}), "1").unwrap_err();
+    let method = "noDotHere";
+
+    // Act
+    let err = dispatch_command(&*b, method, json!({}), "1").unwrap_err();
+
+    // Assert — InvalidMethod → -32602 invalid params
     assert!(matches!(err, BridgeError::InvalidMethod(_)));
-    // InvalidMethod → -32602 invalid params.
     assert_eq!(err.cdp_error_code(), -32602);
 }
 
 #[test]
 fn unknown_domain_returns_method_not_found() {
+    // Arrange
+    // @trace REQ-BAO-API-004 [level:integration]
     let b = backend();
+
+    // Act
     let err = dispatch_command(&*b, "UnknownDomain.foo", json!({}), "1").unwrap_err();
+
+    // Assert
     assert!(matches!(err, BridgeError::MethodNotFound(_)));
     assert_eq!(err.cdp_error_code(), -32601);
 }
 
 #[test]
 fn unknown_method_in_known_domain_returns_method_not_found() {
+    // Arrange
+    // @trace REQ-BAO-API-004 [level:integration]
     let b = backend();
+
+    // Act
     let err = dispatch_command(&*b, "Page.totallyBogus", json!({}), "1").unwrap_err();
+
+    // Assert
     assert!(matches!(err, BridgeError::MethodNotFound(_)));
 }
 
 #[test]
 fn unknown_method_in_runtime_returns_method_not_found() {
+    // Arrange
+    // @trace REQ-BAO-API-004 [level:integration]
     let b = backend();
+
+    // Act
     let err = dispatch_command(&*b, "Runtime.totallyBogus", json!({}), "1").unwrap_err();
+
+    // Assert
     assert!(matches!(err, BridgeError::MethodNotFound(_)));
 }
 
 #[test]
 fn b_class_routes_to_eval_synthesizer() {
+    // Arrange — TASK-3b: B 类 method 通过 IIFE Eval 合成
     // @trace REQ-BAO-API-005 [level:integration]
-    // TASK-3b: B 类 method 通过 IIFE Eval 合成,返回 evaluate echo expression。
     let b = backend();
+
+    // Act — Mock backend echo:返回 evaluate expression 字符串
     let r = dispatch_command(&*b, "Page.title", json!({}), "1").unwrap();
-    // Mock backend echo:返回 evaluate expression 字符串
     let v = r["result"]["value"].as_str().unwrap();
+
+    // Assert
     assert!(v.contains("(function(){"));
     assert!(v.contains("return document.title;"));
     assert!(v.ends_with("})()"));
@@ -59,24 +85,37 @@ fn b_class_routes_to_eval_synthesizer() {
 
 #[test]
 fn empty_method_returns_invalid_method() {
+    // Arrange
+    // @trace REQ-BAO-API-004 [level:integration]
     let b = backend();
+
+    // Act
     let err = dispatch_command(&*b, "", json!({}), "1").unwrap_err();
+
+    // Assert
     assert!(matches!(err, BridgeError::InvalidMethod(_)));
 }
 
 #[test]
-fn method_with_only_dot_returns_invalid_method() {
+fn method_with_only_dot_returns_method_not_found() {
+    // Arrange — "." splits into ("", ""), empty domain → not in A/E class
+    // @trace REQ-BAO-API-004 [level:integration]
     let b = backend();
-    // "." splits into ("", ""), which falls through to MethodNotFound
-    // (empty domain, empty command).
+
+    // Act
     let err = dispatch_command(&*b, ".", json!({}), "1").unwrap_err();
-    // Empty domain → not in A class → not in E class → MethodNotFound.
+
+    // Assert
     assert!(matches!(err, BridgeError::MethodNotFound(_)));
 }
 
 #[test]
 fn unknown_target_id_returns_page_not_found() {
+    // Arrange
+    // @trace REQ-BAO-API-004 [level:integration]
     let b = backend();
+
+    // Act
     let err = dispatch_command(
         &*b,
         "Page.navigate",
@@ -84,29 +123,40 @@ fn unknown_target_id_returns_page_not_found() {
         "999",
     )
     .unwrap_err();
+
+    // Assert
     assert!(matches!(err, BridgeError::PageNotFound(_)));
     assert_eq!(err.cdp_error_code(), -32000);
 }
 
 #[test]
 fn valid_dispatch_returns_value_not_error() {
-    // Sanity: ensure dispatch returns Ok for valid command.
+    // Arrange — Sanity: ensure dispatch returns Ok for valid command
+    // @trace REQ-BAO-API-004 [level:integration]
     let b = backend();
+
+    // Act
     let r = dispatch_command(&*b, "Page.navigate", json!({"url":"https://x"}), "1").unwrap();
+
+    // Assert
     assert!(r.is_object());
     assert!(r["frameId"].is_string());
 }
 
 #[test]
 fn default_session_used_when_session_id_is_none() {
-    // The CDPRdpBridge uses "default" when session_id is None.
-    // MockServoBackend knows about "default".
+    // Arrange — CDPRdpBridge uses "default" when session_id is None
+    // @trace REQ-BAO-API-004 [level:integration]
     use bao_cdp_client::transport::in_memory::{InMemoryBridge, InMemoryBridgeResponse};
     use bao_cdp_client::CDPRdpBridge;
     let b: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
     let bridge = CDPRdpBridge::new(b);
     let bridge_dyn: Arc<dyn InMemoryBridge> = bridge.into_in_memory_bridge();
+
+    // Act
     let r = bridge_dyn.dispatch_command("Page.navigate", json!({"url":"x"}), None);
+
+    // Assert
     match r {
         InMemoryBridgeResponse::Ok(v) => assert_eq!(v["frameId"], "FRAME_0"),
         InMemoryBridgeResponse::Err(e) => panic!("expected Ok, got Err: {e}"),
@@ -115,13 +165,18 @@ fn default_session_used_when_session_id_is_none() {
 
 #[test]
 fn cdp_error_response_payload_carries_code_and_message() {
-    // E-class error: serialized as JSON payload `{code, message}`.
+    // Arrange — E-class error serialized as JSON payload `{code, message}`
+    // @trace REQ-BAO-API-007 [level:integration]
     use bao_cdp_client::transport::in_memory::{InMemoryBridge, InMemoryBridgeResponse};
     use bao_cdp_client::CDPRdpBridge;
     let b: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
     let bridge = CDPRdpBridge::new(b);
     let bridge_dyn: Arc<dyn InMemoryBridge> = bridge.into_in_memory_bridge();
+
+    // Act
     let r = bridge_dyn.dispatch_command("HeapProfiler.takeHeapSnapshot", json!({}), Some("1"));
+
+    // Assert
     match r {
         InMemoryBridgeResponse::Err(s) => {
             let v: Value = serde_json::from_str(&s).unwrap();
@@ -134,12 +189,18 @@ fn cdp_error_response_payload_carries_code_and_message() {
 
 #[test]
 fn cdp_error_response_for_method_not_found_carries_correct_code() {
+    // Arrange
+    // @trace REQ-BAO-API-004 [level:integration]
     use bao_cdp_client::transport::in_memory::{InMemoryBridge, InMemoryBridgeResponse};
     use bao_cdp_client::CDPRdpBridge;
     let b: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
     let bridge = CDPRdpBridge::new(b);
     let bridge_dyn: Arc<dyn InMemoryBridge> = bridge.into_in_memory_bridge();
+
+    // Act
     let r = bridge_dyn.dispatch_command("Foo.bar", json!({}), Some("1"));
+
+    // Assert
     match r {
         InMemoryBridgeResponse::Err(s) => {
             let v: Value = serde_json::from_str(&s).unwrap();
@@ -152,13 +213,18 @@ fn cdp_error_response_for_method_not_found_carries_correct_code() {
 
 #[test]
 fn cdp_error_response_for_invalid_params_carries_32602() {
+    // Arrange — Missing required "url" parameter
+    // @trace REQ-BAO-API-004 [level:integration]
     use bao_cdp_client::transport::in_memory::{InMemoryBridge, InMemoryBridgeResponse};
     use bao_cdp_client::CDPRdpBridge;
     let b: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
     let bridge = CDPRdpBridge::new(b);
     let bridge_dyn: Arc<dyn InMemoryBridge> = bridge.into_in_memory_bridge();
-    // Missing required "url" parameter.
+
+    // Act
     let r = bridge_dyn.dispatch_command("Page.navigate", json!({}), Some("1"));
+
+    // Assert
     match r {
         InMemoryBridgeResponse::Err(s) => {
             let v: Value = serde_json::from_str(&s).unwrap();

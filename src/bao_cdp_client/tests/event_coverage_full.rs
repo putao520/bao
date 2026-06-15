@@ -56,7 +56,7 @@ fn build_with_events() -> (InMemoryTransport, EventSubscriber) {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-003 [event:Console]
+// @trace REQ-BAO-API-003 [event:Console] [level:integration]
 fn full_e2e_console_chain_translate_to_cdp_event() {
     let (mut transport, subscriber) = build_with_events();
 
@@ -78,7 +78,7 @@ fn full_e2e_console_chain_translate_to_cdp_event() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:PageError]
+// @trace REQ-BAO-API-003 [event:PageError] [level:integration]
 fn full_e2e_page_error_with_stack_trace() {
     let (mut transport, subscriber) = build_with_events();
 
@@ -489,7 +489,7 @@ fn full_e2e_close_blocks_recv_event() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-003 [event:Console]
+// @trace REQ-BAO-API-003 [event:Console] [level:integration]
 fn full_e2e_console_params_contain_required_fields() {
     let (mut transport, subscriber) = build_with_events();
     subscriber.on_console_message(
@@ -513,7 +513,7 @@ fn full_e2e_console_params_contain_required_fields() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:NetworkEvent]
+// @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn full_e2e_network_request_params_contain_required_fields() {
     let (mut transport, subscriber) = build_with_events();
     let mut headers = HashMap::new();
@@ -536,7 +536,7 @@ fn full_e2e_network_request_params_contain_required_fields() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:NetworkEvent]
+// @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn full_e2e_network_response_params_contain_required_fields() {
     let (mut transport, subscriber) = build_with_events();
     subscriber.on_network_response(
@@ -555,7 +555,7 @@ fn full_e2e_network_response_params_contain_required_fields() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:DomMutation]
+// @trace REQ-BAO-API-003 [event:DomMutation] [level:integration]
 fn full_e2e_dom_attribute_modified_params_correct() {
     let (mut transport, subscriber) = build_with_events();
     subscriber.on_dom_attribute_modified("T", 42, "data-id", "abc123");
@@ -569,7 +569,7 @@ fn full_e2e_dom_attribute_modified_params_correct() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:SourceInfo]
+// @trace REQ-BAO-API-003 [event:SourceInfo] [level:integration]
 fn full_e2e_script_parsed_params_correct() {
     let (mut transport, subscriber) = build_with_events();
     subscriber.on_script_parsed(

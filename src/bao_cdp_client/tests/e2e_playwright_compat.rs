@@ -242,7 +242,7 @@ fn e2e_playwright_http_discovery_404_for_unknown_path() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_playwright_browser_attach_then_flat_session() {
     // Mini WS server:接受 attach 命令,返回 sessionId
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -312,7 +312,7 @@ fn e2e_playwright_browser_attach_then_flat_session() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_playwright_flat_mode_command_with_session_id() {
     // 验证 flat mode 下,后续命令通过 sessionId 路由到 sub-target
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -368,7 +368,7 @@ fn e2e_playwright_flat_mode_command_with_session_id() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_playwright_set_auto_attach_receives_attached_events() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
@@ -465,7 +465,7 @@ fn e2e_real_playwright_browser_context_isolation() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_playwright_transport_kind_compatible() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();

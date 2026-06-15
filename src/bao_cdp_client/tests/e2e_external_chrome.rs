@@ -112,7 +112,7 @@ impl Drop for MiniCdpServer {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_ws_handshake_full_chain() {
     use bao_cdp_client::Browser;
 
@@ -133,7 +133,7 @@ fn e2e_external_ws_handshake_full_chain() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_ws_handshake_refused_returns_error() {
     use bao_cdp_client::Browser;
 
@@ -155,7 +155,7 @@ fn e2e_external_ws_handshake_refused_returns_error() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_command_round_trip_simple() {
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
@@ -188,7 +188,7 @@ fn e2e_external_command_round_trip_simple() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_command_round_trip_multiple() {
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
@@ -222,7 +222,7 @@ fn e2e_external_command_round_trip_multiple() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_command_with_session_id_passes_through() {
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
@@ -251,7 +251,7 @@ fn e2e_external_command_with_session_id_passes_through() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_event_subscription_single_push() {
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
@@ -276,7 +276,7 @@ fn e2e_external_event_subscription_single_push() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_event_subscription_with_session_id() {
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
@@ -302,7 +302,7 @@ fn e2e_external_event_subscription_with_session_id() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_event_subscription_sequence() {
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
@@ -340,7 +340,7 @@ fn e2e_external_event_subscription_sequence() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_jsonrpc_error_returned_as_protocol_error() {
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
@@ -368,7 +368,7 @@ fn e2e_external_jsonrpc_error_returned_as_protocol_error() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_command_timeout_returns_timeout_error() {
     let server = MiniCdpServer::new(|mut stream| {
         let _ = bao_cdp::ws_handshake::server_handshake(&mut stream);
@@ -386,7 +386,7 @@ fn e2e_external_command_timeout_returns_timeout_error() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_close_then_send_returns_connection_closed() {
     let server = MiniCdpServer::new(|mut stream| {
         let _ = bao_cdp::ws_handshake::server_handshake(&mut stream);

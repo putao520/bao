@@ -12,7 +12,7 @@
 //! - `wss://` / `https://` 加密 scheme 也路由到 WebSocket
 //! - 空 URL / 无 `://` 返回 `ConnectError::InvalidUrl`
 //!
-//! @trace REQ-BAO-API-001 [level:library]
+//! @trace REQ-BAO-API-001 [level:integration]
 
 use bao_cdp_client::error::ConnectError;
 use bao_cdp_client::transport::TransportKind;
@@ -22,17 +22,16 @@ use bao_cdp_client::Browser;
 
 #[test]
 fn memory_scheme_routes_to_in_memory() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let browser = Browser::connect("memory://bao").expect("memory://bao should succeed");
-    assert!(
-        browser.is_in_memory(),
-        "memory://bao must route to InMemory transport"
-    );
-    assert_eq!(
-        browser.transport_kind(),
-        TransportKind::InMemory,
-        "transport kind must be InMemory for memory://"
-    );
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "memory://bao";
+
+    // Act
+    let browser = Browser::connect(url).expect("memory://bao should succeed");
+
+    // Assert
+    assert!(browser.is_in_memory(), "memory://bao must route to InMemory transport");
+    assert_eq!(browser.transport_kind(), TransportKind::InMemory);
     assert_eq!(browser.scheme(), "memory");
     assert_eq!(browser.url(), "memory://bao");
 }
@@ -41,13 +40,15 @@ fn memory_scheme_routes_to_in_memory() {
 
 #[test]
 fn ws_scheme_routes_to_websocket() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let browser =
-        Browser::connect("ws://127.0.0.1:9222").expect("ws:// URL should parse successfully");
-    assert!(
-        browser.is_websocket(),
-        "ws:// must route to WebSocket transport"
-    );
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "ws://127.0.0.1:9222";
+
+    // Act
+    let browser = Browser::connect(url).expect("ws:// URL should parse successfully");
+
+    // Assert
+    assert!(browser.is_websocket(), "ws:// must route to WebSocket transport");
     assert!(!browser.is_in_memory());
     assert_eq!(browser.scheme(), "ws");
     assert_eq!(browser.url(), "ws://127.0.0.1:9222");
@@ -57,14 +58,16 @@ fn ws_scheme_routes_to_websocket() {
 
 #[test]
 fn http_scheme_routes_to_websocket_with_discovery() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let browser = Browser::connect("http://127.0.0.1:9222")
+    // Arrange — http:// 在 TASK-1 中合并到 WebSocket 分支(实际 discover 在 TASK-2)
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "http://127.0.0.1:9222";
+
+    // Act
+    let browser = Browser::connect(url)
         .expect("http:// URL should parse successfully (TASK-1 routing only, no network)");
-    // http:// 在 TASK-1 中合并到 WebSocket 分支(实际 discover 在 TASK-2)
-    assert!(
-        browser.is_websocket(),
-        "http:// must route to WebSocket transport (with discovery pending in TASK-2)"
-    );
+
+    // Assert
+    assert!(browser.is_websocket(), "http:// must route to WebSocket transport (with discovery pending in TASK-2)");
     assert_eq!(browser.scheme(), "http");
 }
 
@@ -72,8 +75,14 @@ fn http_scheme_routes_to_websocket_with_discovery() {
 
 #[test]
 fn invalid_scheme_returns_invalid_scheme_error() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let result = Browser::connect("ftp://example.com:21");
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "ftp://example.com:21";
+
+    // Act
+    let result = Browser::connect(url);
+
+    // Assert
     let err = result.expect_err("ftp:// should fail with InvalidScheme");
     match err {
         ConnectError::InvalidScheme(scheme) => {
@@ -87,16 +96,28 @@ fn invalid_scheme_returns_invalid_scheme_error() {
 
 #[test]
 fn wss_scheme_routes_to_websocket() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let browser = Browser::connect("wss://example.com:443/devtools/page/abc").unwrap();
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "wss://example.com:443/devtools/page/abc";
+
+    // Act
+    let browser = Browser::connect(url).unwrap();
+
+    // Assert
     assert!(browser.is_websocket());
     assert_eq!(browser.scheme(), "wss");
 }
 
 #[test]
 fn https_scheme_routes_to_websocket() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let browser = Browser::connect("https://127.0.0.1:9443").unwrap();
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "https://127.0.0.1:9443";
+
+    // Act
+    let browser = Browser::connect(url).unwrap();
+
+    // Assert
     assert!(browser.is_websocket());
     assert_eq!(browser.scheme(), "https");
 }
@@ -105,32 +126,40 @@ fn https_scheme_routes_to_websocket() {
 
 #[test]
 fn empty_url_returns_invalid_url() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let err = Browser::connect("").expect_err("empty string must fail");
-    assert!(
-        matches!(err, ConnectError::InvalidUrl),
-        "empty URL must return InvalidUrl, got {:?}",
-        err
-    );
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "";
+
+    // Act
+    let err = Browser::connect(url).expect_err("empty string must fail");
+
+    // Assert
+    assert!(matches!(err, ConnectError::InvalidUrl), "empty URL must return InvalidUrl, got {:?}", err);
 }
 
 #[test]
 fn url_without_scheme_separator_returns_invalid_url() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    // 没有 ://,bun_url 的 URL::parse 返回空 protocol → InvalidUrl
-    let err = Browser::connect("localhost:9222").expect_err("missing-scheme URL must fail");
-    assert!(
-        matches!(err, ConnectError::InvalidUrl),
-        "missing-scheme URL must return InvalidUrl, got {:?}",
-        err
-    );
+    // Arrange — 没有 ://,bun_url 的 URL::parse 返回空 protocol → InvalidUrl
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "localhost:9222";
+
+    // Act
+    let err = Browser::connect(url).expect_err("missing-scheme URL must fail");
+
+    // Assert
+    assert!(matches!(err, ConnectError::InvalidUrl), "missing-scheme URL must return InvalidUrl, got {:?}", err);
 }
 
 #[test]
 fn url_with_only_scheme_separator_returns_invalid_url() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    // "://" 前没有 scheme,protocol 空 → InvalidUrl
-    let err = Browser::connect("://no-scheme").expect_err("schemeless URL must fail");
+    // Arrange — "://" 前没有 scheme,protocol 空 → InvalidUrl
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "://no-scheme";
+
+    // Act
+    let err = Browser::connect(url).expect_err("schemeless URL must fail");
+
+    // Assert
     assert!(matches!(err, ConnectError::InvalidUrl));
 }
 
@@ -138,23 +167,40 @@ fn url_with_only_scheme_separator_returns_invalid_url() {
 
 #[test]
 fn file_scheme_rejected() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let err = Browser::connect("file:///etc/passwd").unwrap_err();
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "file:///etc/passwd";
+
+    // Act
+    let err = Browser::connect(url).unwrap_err();
+
+    // Assert
     assert!(matches!(err, ConnectError::InvalidScheme(s) if s == "file"));
 }
 
 #[test]
 fn unix_scheme_rejected() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    let err = Browser::connect("unix:///var/run/cdp.sock").unwrap_err();
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "unix:///var/run/cdp.sock";
+
+    // Act
+    let err = Browser::connect(url).unwrap_err();
+
+    // Assert
     assert!(matches!(err, ConnectError::InvalidScheme(s) if s == "unix"));
 }
 
 #[test]
 fn javascript_scheme_rejected() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    // 注意:javascript: 没有 //,bun_url 视为无 scheme — InvalidUrl
-    let err = Browser::connect("javascript:alert(1)").unwrap_err();
+    // Arrange — 注意:javascript: 没有 //,bun_url 视为无 scheme — InvalidUrl
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let url = "javascript:alert(1)";
+
+    // Act
+    let err = Browser::connect(url).unwrap_err();
+
+    // Assert
     assert!(matches!(err, ConnectError::InvalidUrl));
 }
 
@@ -162,27 +208,42 @@ fn javascript_scheme_rejected() {
 
 #[test]
 fn browser_url_and_scheme_roundtrip() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
     let url = "memory://bao";
+
+    // Act
     let browser = Browser::connect(url).unwrap();
+
+    // Assert
     assert_eq!(browser.url(), url);
     assert_eq!(browser.scheme(), "memory");
 }
 
 #[test]
 fn browser_display_includes_url() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
     let browser = Browser::connect("ws://127.0.0.1:9222").unwrap();
+
+    // Act
     let display = format!("{}", browser);
+
+    // Assert
     assert!(display.contains("ws://127.0.0.1:9222"), "display: {}", display);
     assert!(display.contains("WebSocket"), "display: {}", display);
 }
 
 #[test]
 fn browser_clone_preserves_parsed_state() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
     let b1 = Browser::connect("wss://example.com:443/devtools").unwrap();
+
+    // Act
     let b2 = b1.clone();
+
+    // Assert
     assert_eq!(b1.url(), b2.url());
     assert_eq!(b1.scheme(), b2.scheme());
     assert_eq!(b1.transport_kind(), b2.transport_kind());
@@ -190,26 +251,24 @@ fn browser_clone_preserves_parsed_state() {
 
 #[test]
 fn all_five_supported_schemes_succeed() {
-    // @trace REQ-BAO-API-001 [interface:Browser]
-    for url in [
+    // Arrange
+    // @trace REQ-BAO-API-001 [interface:Browser] [level:integration]
+    let urls = [
         "memory://bao",
         "ws://127.0.0.1:9222",
         "wss://example.com:443",
         "http://127.0.0.1:9222",
         "https://example.com:443",
-    ] {
+    ];
+
+    // Act + Assert — memory → InMemory; 其他 → WebSocket
+    for url in urls {
         let browser = Browser::connect(url).unwrap_or_else(|e| panic!("{} should succeed: {:?}", url, e));
-        // memory → InMemory; 其他 → WebSocket
         let expected = if url.starts_with("memory://") {
             TransportKind::InMemory
         } else {
             TransportKind::WebSocket
         };
-        assert_eq!(
-            browser.transport_kind(),
-            expected,
-            "wrong transport kind for {}",
-            url
-        );
+        assert_eq!(browser.transport_kind(), expected, "wrong transport kind for {}", url);
     }
 }

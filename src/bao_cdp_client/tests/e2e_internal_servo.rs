@@ -122,7 +122,7 @@ fn e2e_internal_basic_navigation_full_chain() {
 }
 
 #[test]
-// @trace REQ-BAO-API-002 [interface:Transport]
+// @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_internal_navigation_to_unknown_target_errors() {
     let (mut transport, _backend) = build_e2e_in_memory();
     // 999 不在 MockServoBackend known_targets
@@ -167,7 +167,7 @@ fn e2e_internal_close_then_send_returns_connection_closed() {
 // 走 D 类(本地状态)或 B 类(IIFE Eval 操作 document.cookie)路径。
 // 这里通过 B 类 method 验证 cookie 操作表达式被正确合成为 IIFE。
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.addScriptTag]
+// @trace REQ-BAO-API-005 [method:Page.addScriptTag] [level:integration]
 fn e2e_internal_cookie_management_via_eval_synthesis() {
     let (mut transport, _backend) = build_e2e_in_memory();
 
@@ -196,7 +196,7 @@ fn e2e_internal_cookie_management_via_eval_synthesis() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.addScriptTag]
+// @trace REQ-BAO-API-005 [method:Page.addScriptTag] [level:integration]
 fn e2e_internal_cookie_injection_vectors_neutralized() {
     let (mut transport, _backend) = build_e2e_in_memory();
 
@@ -233,7 +233,7 @@ fn e2e_internal_cookie_injection_vectors_neutralized() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-003 [event:Console]
+// @trace REQ-BAO-API-003 [event:Console] [level:integration]
 fn e2e_internal_event_listener_console_full_chain() {
     use bao_cdp_client::bridge::ConsoleLevel;
     let (mut transport, _backend, subscriber) = build_e2e_in_memory_with_events();
@@ -258,7 +258,7 @@ fn e2e_internal_event_listener_console_full_chain() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:PageError]
+// @trace REQ-BAO-API-003 [event:PageError] [level:integration]
 fn e2e_internal_event_listener_page_error_full_chain() {
     let (mut transport, _backend, subscriber) = build_e2e_in_memory_with_events();
 
@@ -279,7 +279,7 @@ fn e2e_internal_event_listener_page_error_full_chain() {
 }
 
 #[test]
-// @trace REQ-BAO-API-003 [event:NetworkEvent]
+// @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_internal_event_listener_network_events_full_chain() {
     use std::collections::HashMap;
     let (mut transport, _backend, subscriber) = build_e2e_in_memory_with_events();
@@ -319,7 +319,7 @@ fn e2e_internal_event_listener_network_events_full_chain() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-004 [domain:Target]
+// @trace REQ-BAO-API-004 [domain:Target] [level:integration]
 fn e2e_internal_multi_target_isolation() {
     let (mut transport, backend) = build_e2e_in_memory();
 
@@ -348,7 +348,7 @@ fn e2e_internal_multi_target_isolation() {
 }
 
 #[test]
-// @trace REQ-BAO-API-004 [domain:Target]
+// @trace REQ-BAO-API-004 [domain:Target] [level:integration]
 fn e2e_internal_multi_target_close_one_does_not_affect_others() {
     let (mut transport, backend) = build_e2e_in_memory();
     backend.add_target("p1");
@@ -380,7 +380,7 @@ fn e2e_internal_multi_target_close_one_does_not_affect_others() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.tap]
+// @trace REQ-BAO-API-005 [method:Page.tap] [level:integration]
 fn e2e_internal_input_tap_uses_iife_safe_selector() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
@@ -398,7 +398,7 @@ fn e2e_internal_input_tap_uses_iife_safe_selector() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.hover]
+// @trace REQ-BAO-API-005 [method:Page.hover] [level:integration]
 fn e2e_internal_input_hover_uses_iife_safe_selector() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
@@ -414,7 +414,7 @@ fn e2e_internal_input_hover_uses_iife_safe_selector() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.type]
+// @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
 fn e2e_internal_input_type_with_text_payload() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
@@ -432,7 +432,7 @@ fn e2e_internal_input_type_with_text_payload() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.fill]
+// @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
 fn e2e_internal_input_fill_with_payload() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
@@ -448,7 +448,7 @@ fn e2e_internal_input_fill_with_payload() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.press]
+// @trace REQ-BAO-API-005 [method:Page.press] [level:integration]
 fn e2e_internal_input_press_with_key_payload() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
@@ -468,7 +468,7 @@ fn e2e_internal_input_press_with_key_payload() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-004 [domain:DOM]
+// @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
 fn e2e_internal_dom_query_selector_returns_node() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
@@ -483,7 +483,7 @@ fn e2e_internal_dom_query_selector_returns_node() {
 }
 
 #[test]
-// @trace REQ-BAO-API-004 [domain:DOM]
+// @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
 fn e2e_internal_dom_get_document_returns_root() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
@@ -495,7 +495,7 @@ fn e2e_internal_dom_get_document_returns_root() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:ElementHandle.getAttribute]
+// @trace REQ-BAO-API-005 [method:ElementHandle.getAttribute] [level:integration]
 fn e2e_internal_dom_get_attribute_via_iife() {
     let (mut transport, _backend) = build_e2e_in_memory();
     // ElementHandle.getAttribute 需要 objectId(CDP-style)
@@ -511,7 +511,7 @@ fn e2e_internal_dom_get_attribute_via_iife() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:ElementHandle.textContent]
+// @trace REQ-BAO-API-005 [method:ElementHandle.textContent] [level:integration]
 fn e2e_internal_dom_text_content_via_iife() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
@@ -567,7 +567,7 @@ fn assert_iife_safe(expr: &str, payload: &str) {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.type]
+// @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
 fn e2e_internal_injection_defense_dom_xss_img_onerror() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = r#"<img src=x onerror=alert(1)>"#;
@@ -576,7 +576,7 @@ fn e2e_internal_injection_defense_dom_xss_img_onerror() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.fill]
+// @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
 fn e2e_internal_injection_defense_javascript_uri_scheme() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "javascript:alert(1)";
@@ -585,7 +585,7 @@ fn e2e_internal_injection_defense_javascript_uri_scheme() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.addScriptTag]
+// @trace REQ-BAO-API-005 [method:Page.addScriptTag] [level:integration]
 fn e2e_internal_injection_defense_script_tag_injection() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "<script>alert('XSS')</script>";
@@ -594,7 +594,7 @@ fn e2e_internal_injection_defense_script_tag_injection() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.exposeFunction]
+// @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
 fn e2e_internal_injection_defense_template_literal() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "${alert(1)}";
@@ -603,7 +603,7 @@ fn e2e_internal_injection_defense_template_literal() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.exposeFunction]
+// @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
 fn e2e_internal_injection_defense_prototype_pollution() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "__proto__";
@@ -612,7 +612,7 @@ fn e2e_internal_injection_defense_prototype_pollution() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.exposeFunction]
+// @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
 fn e2e_internal_injection_defense_constructor_pollution() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "constructor";
@@ -621,7 +621,7 @@ fn e2e_internal_injection_defense_constructor_pollution() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.exposeFunction]
+// @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
 fn e2e_internal_injection_defense_sql_style_quote() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "'; DROP TABLE users; --";
@@ -630,7 +630,7 @@ fn e2e_internal_injection_defense_sql_style_quote() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.emulateMedia]
+// @trace REQ-BAO-API-005 [method:Page.emulateMedia] [level:integration]
 fn e2e_internal_injection_defense_svg_onload() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "<svg/onload=alert(1)>";
@@ -639,7 +639,7 @@ fn e2e_internal_injection_defense_svg_onload() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.tap]
+// @trace REQ-BAO-API-005 [method:Page.tap] [level:integration]
 fn e2e_internal_injection_defense_quote_escape_attempt() {
     let (mut transport, _backend) = build_e2e_in_memory();
     // 试图用单引号逃逸
@@ -649,7 +649,7 @@ fn e2e_internal_injection_defense_quote_escape_attempt() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.fill]
+// @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
 fn e2e_internal_injection_defense_backslash_escape() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "\\';alert(1);//";
@@ -658,7 +658,7 @@ fn e2e_internal_injection_defense_backslash_escape() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.fill]
+// @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
 fn e2e_internal_injection_defense_unicode_control_chars() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "\u{0000}\u{001B}\u{2028}"; // NUL + ESC + LS
@@ -667,7 +667,7 @@ fn e2e_internal_injection_defense_unicode_control_chars() {
 }
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Page.type]
+// @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
 fn e2e_internal_injection_defense_newline_in_payload() {
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "line1\nline2\rline3";

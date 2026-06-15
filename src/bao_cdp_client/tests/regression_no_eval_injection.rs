@@ -166,7 +166,7 @@ fn regression_cdp_rdp_bridge_no_js_concat() {
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-// @trace REQ-BAO-API-005 [method:Runtime.evaluate]
+// @trace REQ-BAO-API-005 [method:Runtime.evaluate] [level:integration]
 fn regression_eval_synthesizer_uses_safe_templates() {
     // eval_synthesizer.rs 是唯一允许 format! 拼接 JS 的地方
     // 但必须使用以下安全模式:

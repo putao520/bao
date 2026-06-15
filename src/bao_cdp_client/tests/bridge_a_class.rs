@@ -26,7 +26,7 @@ fn run(method: &str, params: Value) -> Result<Value, BridgeError> {
 
 #[test]
 fn a_page_navigate() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.navigate", json!({"url":"https://example.com"})).unwrap();
     assert_eq!(r["frameId"], "FRAME_0");
     assert!(r["loaderId"].is_string());
@@ -40,14 +40,14 @@ fn a_page_navigate_missing_url_invalid_params() {
 
 #[test]
 fn a_page_reload() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.reload", json!({})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_page_capture_screenshot() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.captureScreenshot", json!({"format":"png"})).unwrap();
     assert!(r["data"].is_string());
     let b64 = r["data"].as_str().unwrap();
@@ -62,7 +62,7 @@ fn a_page_capture_screenshot_jpeg_format() {
 
 #[test]
 fn a_page_get_frame_tree() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.getFrameTree", json!({})).unwrap();
     let tree = &r["frameTree"];
     assert!(tree["frame"]["id"].is_string());
@@ -71,7 +71,7 @@ fn a_page_get_frame_tree() {
 
 #[test]
 fn a_page_get_navigation_history() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.getNavigationHistory", json!({})).unwrap();
     assert!(r["currentIndex"].is_i64());
     assert!(r["entries"].is_array());
@@ -79,7 +79,7 @@ fn a_page_get_navigation_history() {
 
 #[test]
 fn a_page_navigate_to_history_entry() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.navigateToHistoryEntry", json!({"entryId":0})).unwrap();
     assert!(r.is_object());
 }
@@ -92,28 +92,28 @@ fn a_page_navigate_to_history_entry_missing_id() {
 
 #[test]
 fn a_page_set_content() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.setContent", json!({"html":"<h1>hi</h1>"})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_page_close() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.close", json!({})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_page_bring_to_front() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.bringToFront", json!({})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_page_get_layout_metrics() {
-    // @trace REQ-BAO-API-004 [domain:Page]
+    // @trace REQ-BAO-API-004 [domain:Page] [level:integration]
     let r = run("Page.getLayoutMetrics", json!({})).unwrap();
     assert!(r["layoutViewport"].is_object());
     assert!(r["visualViewport"].is_object());
@@ -128,7 +128,7 @@ fn a_page_get_layout_metrics() {
 
 #[test]
 fn a_runtime_evaluate() {
-    // @trace REQ-BAO-API-004 [domain:Runtime]
+    // @trace REQ-BAO-API-004 [domain:Runtime] [level:integration]
     let r = run("Runtime.evaluate", json!({"expression":"1+1"})).unwrap();
     assert!(r["result"]["type"].is_string());
 }
@@ -141,7 +141,7 @@ fn a_runtime_evaluate_missing_expression() {
 
 #[test]
 fn a_runtime_call_function_on() {
-    // @trace REQ-BAO-API-004 [domain:Runtime]
+    // @trace REQ-BAO-API-004 [domain:Runtime] [level:integration]
     let r = run(
         "Runtime.callFunctionOn",
         json!({"objectId":"obj1","functionDeclaration":"() => 42","arguments":[]}),
@@ -162,28 +162,28 @@ fn a_runtime_call_function_on_missing_object_id() {
 
 #[test]
 fn a_runtime_get_properties() {
-    // @trace REQ-BAO-API-004 [domain:Runtime]
+    // @trace REQ-BAO-API-004 [domain:Runtime] [level:integration]
     let r = run("Runtime.getProperties", json!({"objectId":"obj1"})).unwrap();
     assert!(r["result"].is_array());
 }
 
 #[test]
 fn a_runtime_release_object() {
-    // @trace REQ-BAO-API-004 [domain:Runtime]
+    // @trace REQ-BAO-API-004 [domain:Runtime] [level:integration]
     let r = run("Runtime.releaseObject", json!({"objectId":"obj1"})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_runtime_enable() {
-    // @trace REQ-BAO-API-004 [domain:Runtime]
+    // @trace REQ-BAO-API-004 [domain:Runtime] [level:integration]
     let r = run("Runtime.enable", json!({})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_runtime_disable() {
-    // @trace REQ-BAO-API-004 [domain:Runtime]
+    // @trace REQ-BAO-API-004 [domain:Runtime] [level:integration]
     let r = run("Runtime.disable", json!({})).unwrap();
     assert!(r.is_object());
 }
@@ -194,28 +194,28 @@ fn a_runtime_disable() {
 
 #[test]
 fn a_dom_get_document() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.getDocument", json!({"depth":1})).unwrap();
     assert!(r["root"]["nodeId"].is_i64());
 }
 
 #[test]
 fn a_dom_query_selector() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.querySelector", json!({"nodeId":1,"selector":"div.class"})).unwrap();
     assert!(r["nodeId"].is_i64());
 }
 
 #[test]
 fn a_dom_query_selector_all() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.querySelectorAll", json!({"nodeId":1,"selector":"div"})).unwrap();
     assert!(r["nodeIds"].is_array());
 }
 
 #[test]
 fn a_dom_get_box_model() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.getBoxModel", json!({"nodeId":1})).unwrap();
     assert!(r["content"].is_array());
     assert!(r["width"].is_i64());
@@ -223,21 +223,21 @@ fn a_dom_get_box_model() {
 
 #[test]
 fn a_dom_resolve_node() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.resolveNode", json!({"backendNodeId":1})).unwrap();
     assert!(r["object"]["type"].is_string());
 }
 
 #[test]
 fn a_dom_describe_node() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.describeNode", json!({"nodeId":1,"depth":1})).unwrap();
     assert!(r["node"]["nodeId"].is_i64());
 }
 
 #[test]
 fn a_dom_set_attribute_value() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run(
         "DOM.setAttributeValue",
         json!({"nodeId":1,"name":"class","value":"active"}),
@@ -248,28 +248,28 @@ fn a_dom_set_attribute_value() {
 
 #[test]
 fn a_dom_remove_attribute() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.removeAttribute", json!({"nodeId":1,"name":"class"})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_dom_get_outer_html() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.getOuterHTML", json!({"nodeId":1})).unwrap();
     assert!(r["outerHTML"].is_string());
 }
 
 #[test]
 fn a_dom_set_outer_html() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.setOuterHTML", json!({"nodeId":1,"html":"<div/>"})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_dom_request_node() {
-    // @trace REQ-BAO-API-004 [domain:DOM]
+    // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
     let r = run("DOM.requestNode", json!({"objectId":"obj1"})).unwrap();
     assert!(r["nodeId"].is_i64());
 }
@@ -280,21 +280,21 @@ fn a_dom_request_node() {
 
 #[test]
 fn a_network_enable() {
-    // @trace REQ-BAO-API-004 [domain:Network]
+    // @trace REQ-BAO-API-004 [domain:Network] [level:integration]
     let r = run("Network.enable", json!({})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_network_disable() {
-    // @trace REQ-BAO-API-004 [domain:Network]
+    // @trace REQ-BAO-API-004 [domain:Network] [level:integration]
     let r = run("Network.disable", json!({})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_network_get_response_body() {
-    // @trace REQ-BAO-API-004 [domain:Network]
+    // @trace REQ-BAO-API-004 [domain:Network] [level:integration]
     let r = run("Network.getResponseBody", json!({"requestId":"r1"})).unwrap();
     assert!(r["body"].is_string());
     assert!(r["base64Encoded"].is_boolean());
@@ -302,7 +302,7 @@ fn a_network_get_response_body() {
 
 #[test]
 fn a_network_set_cache_disabled() {
-    // @trace REQ-BAO-API-004 [domain:Network]
+    // @trace REQ-BAO-API-004 [domain:Network] [level:integration]
     let r = run("Network.setCacheDisabled", json!({"cacheDisabled":true})).unwrap();
     assert!(r.is_object());
 }
@@ -313,7 +313,7 @@ fn a_network_set_cache_disabled() {
 
 #[test]
 fn a_input_dispatch_mouse_event() {
-    // @trace REQ-BAO-API-004 [domain:Input]
+    // @trace REQ-BAO-API-004 [domain:Input] [level:integration]
     let r = run(
         "Input.dispatchMouseEvent",
         json!({"type":"mousePressed","x":10.0,"y":20.0,"button":"left","clickCount":1}),
@@ -324,7 +324,7 @@ fn a_input_dispatch_mouse_event() {
 
 #[test]
 fn a_input_dispatch_key_event() {
-    // @trace REQ-BAO-API-004 [domain:Input]
+    // @trace REQ-BAO-API-004 [domain:Input] [level:integration]
     let r = run(
         "Input.dispatchKeyEvent",
         json!({"type":"keyDown","key":"Enter","code":"Enter"}),
@@ -335,7 +335,7 @@ fn a_input_dispatch_key_event() {
 
 #[test]
 fn a_input_dispatch_touch_event() {
-    // @trace REQ-BAO-API-004 [domain:Input]
+    // @trace REQ-BAO-API-004 [domain:Input] [level:integration]
     let r = run(
         "Input.dispatchTouchEvent",
         json!({"type":"touchStart","touchPoints":[{"state":"touchStarted","x":1.0,"y":1.0}]}),
@@ -346,7 +346,7 @@ fn a_input_dispatch_touch_event() {
 
 #[test]
 fn a_input_set_ignore_input_events() {
-    // @trace REQ-BAO-API-004 [domain:Input]
+    // @trace REQ-BAO-API-004 [domain:Input] [level:integration]
     let r = run("Input.setIgnoreInputEvents", json!({"ignore":true})).unwrap();
     assert!(r.is_object());
 }
@@ -357,7 +357,7 @@ fn a_input_set_ignore_input_events() {
 
 #[test]
 fn a_emulation_set_device_metrics_override() {
-    // @trace REQ-BAO-API-004 [domain:Emulation]
+    // @trace REQ-BAO-API-004 [domain:Emulation] [level:integration]
     let r = run(
         "Emulation.setDeviceMetricsOverride",
         json!({"width":375,"height":812,"deviceScaleFactor":3.0,"mobile":true}),
@@ -368,14 +368,14 @@ fn a_emulation_set_device_metrics_override() {
 
 #[test]
 fn a_emulation_clear_device_metrics_override() {
-    // @trace REQ-BAO-API-004 [domain:Emulation]
+    // @trace REQ-BAO-API-004 [domain:Emulation] [level:integration]
     let r = run("Emulation.clearDeviceMetricsOverride", json!({})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_emulation_set_user_agent_override() {
-    // @trace REQ-BAO-API-004 [domain:Emulation]
+    // @trace REQ-BAO-API-004 [domain:Emulation] [level:integration]
     let r = run(
         "Emulation.setUserAgentOverride",
         json!({"userAgent":"Mozilla/5.0 ..."}),
@@ -386,7 +386,7 @@ fn a_emulation_set_user_agent_override() {
 
 #[test]
 fn a_emulation_set_geolocation_override() {
-    // @trace REQ-BAO-API-004 [domain:Emulation]
+    // @trace REQ-BAO-API-004 [domain:Emulation] [level:integration]
     let r = run(
         "Emulation.setGeolocationOverride",
         json!({"latitude":37.7749,"longitude":-122.4194,"accuracy":10.0}),
@@ -401,7 +401,7 @@ fn a_emulation_set_geolocation_override() {
 
 #[test]
 fn a_target_get_targets() {
-    // @trace REQ-BAO-API-004 [domain:Target]
+    // @trace REQ-BAO-API-004 [domain:Target] [level:integration]
     let r = run("Target.getTargets", json!({})).unwrap();
     assert!(r["targetInfos"].is_array());
     assert!(!r["targetInfos"].as_array().unwrap().is_empty());
@@ -409,14 +409,14 @@ fn a_target_get_targets() {
 
 #[test]
 fn a_target_create_target() {
-    // @trace REQ-BAO-API-004 [domain:Target]
+    // @trace REQ-BAO-API-004 [domain:Target] [level:integration]
     let r = run("Target.createTarget", json!({"url":"about:blank"})).unwrap();
     assert!(r["targetId"].is_string());
 }
 
 #[test]
 fn a_target_close_target() {
-    // @trace REQ-BAO-API-004 [domain:Target]
+    // @trace REQ-BAO-API-004 [domain:Target] [level:integration]
     // First create a target, then close it.
     let b = backend();
     let create_r = dispatch_command(&*b, "Target.createTarget", json!({"url":"about:blank"}), "1").unwrap();
@@ -433,21 +433,21 @@ fn a_target_close_target() {
 
 #[test]
 fn a_target_attach_to_target() {
-    // @trace REQ-BAO-API-004 [domain:Target]
+    // @trace REQ-BAO-API-004 [domain:Target] [level:integration]
     let r = run("Target.attachToTarget", json!({"targetId":"1"})).unwrap();
     assert!(r["sessionId"].is_string());
 }
 
 #[test]
 fn a_target_detach_from_target() {
-    // @trace REQ-BAO-API-004 [domain:Target]
+    // @trace REQ-BAO-API-004 [domain:Target] [level:integration]
     let r = run("Target.detachFromTarget", json!({"sessionId":"1-session"})).unwrap();
     assert!(r.is_object());
 }
 
 #[test]
 fn a_target_set_auto_attach() {
-    // @trace REQ-BAO-API-004 [domain:Target]
+    // @trace REQ-BAO-API-004 [domain:Target] [level:integration]
     let r = run(
         "Target.setAutoAttach",
         json!({"autoAttach":true,"waitForDebuggerOnStart":false}),
@@ -462,14 +462,14 @@ fn a_target_set_auto_attach() {
 
 #[test]
 fn a_css_get_computed_style_for_node() {
-    // @trace REQ-BAO-API-004 [domain:CSS]
+    // @trace REQ-BAO-API-004 [domain:CSS] [level:integration]
     let r = run("CSS.getComputedStyleForNode", json!({"nodeId":1})).unwrap();
     assert!(r["computedStyle"].is_array());
 }
 
 #[test]
 fn a_css_get_matched_styles_for_node() {
-    // @trace REQ-BAO-API-004 [domain:CSS]
+    // @trace REQ-BAO-API-004 [domain:CSS] [level:integration]
     let r = run("CSS.getMatchedStylesForNode", json!({"nodeId":1})).unwrap();
     assert!(r["matchedRules"].is_array());
 }

@@ -100,6 +100,9 @@ REQ 列表:REQ-BAO-API-001 ~ REQ-BAO-API-008
 ### TASK-9: cargo test --workspace 连续3次通过
 - SPEC: 全部 [验收] | 实现: cargo test --workspace --exclude mozjs* --exclude bun_uws_sys,连续3次通过 | 验收: 3/3 pass | 依赖: TASK-1..TASK-8 全部 completed | 状态: pending
 
+### TASK-11: AAA 模式补全 + @trace level 标注(P-1 红线修复)
+- SPEC: 全部 [验收] | 文件: src/bao_cdp_client/tests/*.rs(16 文件, 7981 行, ~500+ 测试函数) | 实现: ① 所有 #[test] 函数补全 AAA 三段式注释(`// Arrange` / `// Act` / `// Assert`),按 P-1 红线 ② 所有 integration 测试 @trace 补 `[level:integration]` 标注(修复 test_quality audit bao-api integration 0% 假象) ③ E2E 真环境 `#[ignore]` 测试 @trace 标 `[level:system]`(测试金字塔顶层) ④ 简单 assert 辅助函数(如 assert_e_class)的调用方仍要 AAA 标注(说明 arrange/act 隐含在 helper 内) | 验收: `grep -L "// Arrange" tests/*.rs` 返回空(16/16 文件全部有 AAA) + test_quality audit bao-api integration ≥80% + 0 测试函数缺 level | 依赖: TASK-8 | 状态: pending
+
 ### TASK-10: SPEC @trace 注入 + audit 100%
 - SPEC: 全部 [验收] | 实现: ① bao_cdp_client 所有 pub method 标注 // @trace REQ-BAO-API-XXX [interface:Browser/Page/...] ② spec(action="scan", scanMode="trace_annotations") 验证 0 untraced ③ spec(action="check", auditAction="audit", auditMode="req_coverage") 验证 REQ-BAO-API-001~008 100% 覆盖 ④ spec(action="check", auditAction="audit", auditMode="maturity") ≥80 | 验收: 0 untraced + 100% REQ 覆盖 + maturity ≥80 | 依赖: TASK-9 | 状态: pending
 

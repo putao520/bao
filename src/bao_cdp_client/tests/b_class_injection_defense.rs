@@ -122,7 +122,7 @@ fn assert_payload_safe(expr: &str, payload: &str) {
 
 #[test]
 fn inj_page_title_iife_structure_intact() {
-    // @trace REQ-BAO-API-005 [method:Page.title]
+    // @trace REQ-BAO-API-005 [method:Page.title] [level:integration]
     let r = run("Page.title", json!({})).unwrap();
     let e = extract_expr(&r);
     assert!(e.starts_with("(function(){"));
@@ -136,7 +136,7 @@ fn inj_page_title_iife_structure_intact() {
 
 #[test]
 fn inj_page_url_iife_structure_intact() {
-    // @trace REQ-BAO-API-005 [method:Page.url]
+    // @trace REQ-BAO-API-005 [method:Page.url] [level:integration]
     let r = run("Page.url", json!({})).unwrap();
     let e = extract_expr(&r);
     assert!(e.contains("return location.href;"));
@@ -148,7 +148,7 @@ fn inj_page_url_iife_structure_intact() {
 
 #[test]
 fn inj_page_content_iife_structure_intact() {
-    // @trace REQ-BAO-API-005 [method:Page.content]
+    // @trace REQ-BAO-API-005 [method:Page.content] [level:integration]
     let r = run("Page.content", json!({})).unwrap();
     let e = extract_expr(&r);
     assert!(e.contains("document.documentElement.outerHTML"));
@@ -160,7 +160,7 @@ fn inj_page_content_iife_structure_intact() {
 
 #[test]
 fn inj_add_script_tag_url_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.addScriptTag]
+    // @trace REQ-BAO-API-005 [method:Page.addScriptTag] [level:integration]
     let r = run("Page.addScriptTag", json!({"url": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -195,7 +195,7 @@ fn inj_add_script_tag_content_template_literal() {
 
 #[test]
 fn inj_add_style_tag_url_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.addStyleTag]
+    // @trace REQ-BAO-API-005 [method:Page.addStyleTag] [level:integration]
     let r = run("Page.addStyleTag", json!({"url": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -218,7 +218,7 @@ fn inj_add_style_tag_content_sql() {
 
 #[test]
 fn inj_expose_function_name_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.exposeFunction]
+    // @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
     let r = run("Page.exposeFunction", json!({"name": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -241,7 +241,7 @@ fn inj_expose_function_name_sql() {
 
 #[test]
 fn inj_emulate_media_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.emulateMedia]
+    // @trace REQ-BAO-API-005 [method:Page.emulateMedia] [level:integration]
     let r = run("Page.emulateMedia", json!({"media": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -252,7 +252,7 @@ fn inj_emulate_media_single_quote_alert() {
 
 #[test]
 fn inj_tap_selector_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.tap]
+    // @trace REQ-BAO-API-005 [method:Page.tap] [level:integration]
     let r = run("Page.tap", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -275,7 +275,7 @@ fn inj_tap_selector_svg_onload() {
 
 #[test]
 fn inj_hover_selector_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.hover]
+    // @trace REQ-BAO-API-005 [method:Page.hover] [level:integration]
     let r = run("Page.hover", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -292,7 +292,7 @@ fn inj_hover_selector_template_literal() {
 
 #[test]
 fn inj_focus_selector_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.focus]
+    // @trace REQ-BAO-API-005 [method:Page.focus] [level:integration]
     let r = run("Page.focus", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -303,7 +303,7 @@ fn inj_focus_selector_single_quote_alert() {
 
 #[test]
 fn inj_type_text_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.type]
+    // @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
     let r = run("Page.type", json!({"selector":"input","text": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -326,7 +326,7 @@ fn inj_type_selector_sql() {
 
 #[test]
 fn inj_fill_value_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.fill]
+    // @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
     let r = run("Page.fill", json!({"selector":"input","value": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -349,7 +349,7 @@ fn inj_fill_value_script_close() {
 
 #[test]
 fn inj_press_key_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.press]
+    // @trace REQ-BAO-API-005 [method:Page.press] [level:integration]
     let r = run("Page.press", json!({"selector":"input","key": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -366,7 +366,7 @@ fn inj_press_key_template_literal() {
 
 #[test]
 fn inj_check_selector_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.check]
+    // @trace REQ-BAO-API-005 [method:Page.check] [level:integration]
     let r = run("Page.check", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -383,7 +383,7 @@ fn inj_check_selector_svg_onload() {
 
 #[test]
 fn inj_uncheck_selector_single_quote_alert() {
-    // @trace REQ-BAO-API-005 [method:Page.uncheck]
+    // @trace REQ-BAO-API-005 [method:Page.uncheck] [level:integration]
     let r = run("Page.uncheck", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
@@ -400,7 +400,7 @@ fn inj_uncheck_selector_sql() {
 
 #[test]
 fn inj_select_option_values_with_injection_payloads() {
-    // @trace REQ-BAO-API-005 [method:Page.selectOption]
+    // @trace REQ-BAO-API-005 [method:Page.selectOption] [level:integration]
     let r = run(
         "Page.selectOption",
         json!({
@@ -432,7 +432,7 @@ fn inj_select_option_values_with_injection_payloads() {
 
 #[test]
 fn inj_set_input_files_paths_with_injection_payloads() {
-    // @trace REQ-BAO-API-005 [method:Page.setInputFiles]
+    // @trace REQ-BAO-API-005 [method:Page.setInputFiles] [level:integration]
     let r = run(
         "Page.setInputFiles",
         json!({
@@ -454,7 +454,7 @@ fn inj_set_input_files_paths_with_injection_payloads() {
 
 #[test]
 fn inj_element_get_attribute_with_injection_name() {
-    // @trace REQ-BAO-API-005 [method:ElementHandle.getAttribute]
+    // @trace REQ-BAO-API-005 [method:ElementHandle.getAttribute] [level:integration]
     // callFunctionOn 路径:Mock 不返回 expression,但确保不 panic
     let r = run(
         "ElementHandle.getAttribute",
@@ -470,7 +470,7 @@ fn inj_element_get_attribute_with_injection_name() {
 
 #[test]
 fn inj_element_text_content_no_external_input() {
-    // @trace REQ-BAO-API-005 [method:ElementHandle.textContent]
+    // @trace REQ-BAO-API-005 [method:ElementHandle.textContent] [level:integration]
     let r = run("ElementHandle.textContent", json!({"objectId":"obj1"})).unwrap();
     assert!(r["result"].is_object());
 }
@@ -534,7 +534,7 @@ fn inj_element_is_visible_returns_object() {
 
 #[test]
 fn inj_element_content_frame_returns_object() {
-    // @trace REQ-BAO-API-005 [method:ElementHandle.contentFrame]
+    // @trace REQ-BAO-API-005 [method:ElementHandle.contentFrame] [level:integration]
     let r = run("ElementHandle.contentFrame", json!({"objectId":"obj1"})).unwrap();
     assert!(r["result"].is_object());
 }
@@ -557,7 +557,7 @@ fn inj_element_scroll_into_view_returns_object() {
 
 #[test]
 fn inj_element_wait_for_element_state_returns_empty() {
-    // @trace REQ-BAO-API-005 [method:ElementHandle.waitForElementState]
+    // @trace REQ-BAO-API-005 [method:ElementHandle.waitForElementState] [level:integration]
     let r = run(
         "ElementHandle.waitForElementState",
         json!({"state": VEC_SINGLE_QUOTE_ALERT}),
@@ -582,7 +582,7 @@ fn inj_element_wait_for_selector_returns_empty() {
 
 #[test]
 fn inj_js_handle_as_element_returns_local_state() {
-    // @trace REQ-BAO-API-005 [method:JSHandle.asElement]
+    // @trace REQ-BAO-API-005 [method:JSHandle.asElement] [level:integration]
     let r = run("JSHandle.asElement", json!({"objectId":"obj1"})).unwrap();
     assert_eq!(r["isElement"], false);
 }
@@ -643,7 +643,7 @@ fn inj_js_handle_json_value_calls_backend() {
 
 #[test]
 fn inj_page_viewport_returns_metrics() {
-    // @trace REQ-BAO-API-005 [method:Page.viewport]
+    // @trace REQ-BAO-API-005 [method:Page.viewport] [level:integration]
     let r = run("Page.viewport", json!({})).unwrap();
     assert!(r["width"].is_number());
     assert!(r["height"].is_number());
@@ -661,7 +661,7 @@ fn inj_page_set_viewport_calls_emulation_override() {
 
 #[test]
 fn inj_page_opener_iife_structure_intact() {
-    // @trace REQ-BAO-API-005 [method:Page.opener]
+    // @trace REQ-BAO-API-005 [method:Page.opener] [level:integration]
     let r = run("Page.opener", json!({})).unwrap();
     let e = extract_expr(&r);
     assert!(e.contains("window.opener"));
@@ -685,7 +685,7 @@ fn inj_page_main_frame_returns_root() {
 
 #[test]
 fn inj_page_go_back_iife_structure() {
-    // @trace REQ-BAO-API-005 [method:Page.goBack]
+    // @trace REQ-BAO-API-005 [method:Page.goBack] [level:integration]
     let r = run("Page.goBack", json!({})).unwrap();
     let e = extract_expr(&r);
     assert!(e.contains("history.back"));
@@ -711,7 +711,7 @@ fn inj_page_request_gc_iife_structure() {
 
 #[test]
 fn inj_page_screenshot_returns_data() {
-    // @trace REQ-BAO-API-005 [method:Page.screenshot]
+    // @trace REQ-BAO-API-005 [method:Page.screenshot] [level:integration]
     let r = run("Page.screenshot", json!({})).unwrap();
     assert!(r["data"].is_string());
 }
