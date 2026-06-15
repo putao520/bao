@@ -37,7 +37,10 @@ use bao_cdp_client::{
 
 #[test]
 fn top_level_browser() {
+    // Arrange
+    // Act
     let browser = Browser::connect("memory://bao").unwrap();
+    // Assert
     assert!(browser.is_in_memory());
     assert!(!browser.is_websocket());
     assert_eq!(browser.scheme(), "memory");
@@ -51,8 +54,10 @@ fn top_level_browser() {
 
 #[test]
 fn top_level_errors() {
+    // Arrange
     // ConnectError 变体
     let _: ConnectError = ConnectError::InvalidUrl;
+    // Act
     let _: ConnectError = ConnectError::InvalidScheme("ftp".to_string());
     let _: ConnectError = ConnectError::LaunchError("msg".to_string());
     let _: ConnectError = ConnectError::ConnectionFailed("refused".to_string());
@@ -74,13 +79,17 @@ fn top_level_errors() {
     fn assert_std_error<E: std::error::Error>() {}
     assert_std_error::<ConnectError>();
     assert_std_error::<CdpError>();
+    // Assert
     assert_std_error::<BridgeError>();
 }
 
 #[test]
 fn top_level_transport() {
+    // Arrange
     // CdpEvent 构造
     let evt = CdpEvent::new("Page.frameNavigated", serde_json::json!({"url": "about:blank"}));
+    // Act
+    // Assert
     assert_eq!(evt.method, "Page.frameNavigated");
     let evt_with_session = evt.with_session("TARGET-1");
     assert_eq!(evt_with_session.session_id.as_deref(), Some("TARGET-1"));
@@ -112,9 +121,12 @@ fn top_level_transport() {
 
 #[test]
 fn high_level_api_types_are_public() {
+    // Arrange
     // 编译时验证所有高层 API 类型可被外部代码引用。
     // 不实例化(构造需 transport),只验证可达。
+    // Act
     fn _assert_high_level_types(
+        // Assert
         _: HighLevelBrowser,
         _: BrowserOptions,
         _: Pid,
@@ -142,7 +154,10 @@ fn high_level_api_types_are_public() {
 
 #[test]
 fn tool_classes_are_public() {
+    // Arrange
+    // Act
     fn _assert_tool_classes(
+        // Assert
         _: Keyboard,
         _: MouseButton,
         _: Mouse,
@@ -158,17 +173,20 @@ fn tool_classes_are_public() {
 
 #[test]
 fn event_emitter_trait_usable() {
+    // Arrange
     // HandlerId / EventHandler / SubscriptionResult 类型可达
     let _: HandlerId = 0u64;
     let _handler: Option<EventHandler> = None;
 
     // SubscriptionResult 变体可达
+    // Act
     let _ = SubscriptionResult::Registered(0);
     let _ = SubscriptionResult::Removed;
     let _ = SubscriptionResult::NotFound;
 
     // EventEmitter trait 可作为 bound
     fn _accept_emitter<E: EventEmitter>() {}
+    // Assert
     _accept_emitter::<Page>();
 
     // EventEmitterInner 类型可达
@@ -177,7 +195,9 @@ fn event_emitter_trait_usable() {
 
 #[test]
 fn public_types_full_coverage() {
+    // Arrange
     // ScreenshotFormat 变体 + 转换
+    // Assert
     assert_eq!(ScreenshotFormat::Png.as_cdp_str(), "png");
     assert_eq!(ScreenshotFormat::Jpeg.as_cdp_str(), "jpeg");
     assert_eq!(ScreenshotFormat::Webp.as_cdp_str(), "webp");
@@ -198,6 +218,7 @@ fn public_types_full_coverage() {
         .with_secure(true)
         .with_http_only(true)
         .with_same_site("Lax");
+    // Act
     let json = serde_json::to_string(&c).unwrap();
     let back: Cookie = serde_json::from_str(&json).unwrap();
     assert_eq!(c, back);
@@ -224,6 +245,7 @@ fn public_types_full_coverage() {
 
 #[test]
 fn bridge_types_are_public() {
+    // Arrange
     // servo RDP 桥接层类型可达(供 advanced 用户)
     let _: Option<Box<dyn ServoBackend>> = None;
     let _: Option<Box<CDPRdpBridge>> = None;
@@ -241,7 +263,9 @@ fn bridge_types_are_public() {
     let _ = ConsoleLevel::Debug;
 
     // ServoEvent 类型可达(具体变体由内部决定)
+    // Act
     fn _accept_servo_event(_: ServoEvent) {}
+    // Assert
     let _ = _accept_servo_event;
 
     // BridgeScreenshotFormat 别名存在
@@ -250,6 +274,9 @@ fn bridge_types_are_public() {
 
 #[test]
 fn version_constants_and_fn() {
+    // Arrange
+    // Act
+    // Assert
     assert!(!VERSION.is_empty());
     assert!(VERSION.contains('.'));
     assert_eq!(bao_cdp_client::version(), VERSION);
@@ -257,8 +284,11 @@ fn version_constants_and_fn() {
 
 #[test]
 fn connection_url_parsing_works() {
+    // Arrange
     // memory:// → InMemory
     let p = ParsedConnectUrl::new("memory://bao", "memory", TransportKind::InMemory);
+    // Act
+    // Assert
     assert_eq!(p.transport_kind, TransportKind::InMemory);
 
     // ws:// → WebSocket
@@ -268,6 +298,7 @@ fn connection_url_parsing_works() {
 
 #[test]
 fn delegate_event_emitter_macro_exists() {
+    // Arrange
     // 验证 #[macro_export] 在 crate 根的 delegate_event_emitter! 可达。
     // 我们构造一个 mock 类型,实际展开宏验证可用。
     use bao_cdp_client::delegate_event_emitter;
@@ -282,6 +313,7 @@ fn delegate_event_emitter_macro_exists() {
 
     impl EventEmitter for MockEmitter {
         // 展开宏:自动生成 on/once/off/remove_all_listeners/listener_count/emit。
+        // Act
         delegate_event_emitter!(self, inner);
     }
 
@@ -291,6 +323,7 @@ fn delegate_event_emitter_macro_exists() {
     let handler: EventHandler = std::sync::Arc::new(|_args: &[serde_json::Value]| {});
     let id: HandlerId = m.on("test", handler);
     let result = m.off("test", id);
+    // Assert
     assert!(matches!(
         result,
         SubscriptionResult::Removed | SubscriptionResult::NotFound

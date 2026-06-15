@@ -114,15 +114,18 @@ impl Drop for MiniCdpServer {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_ws_handshake_full_chain() {
+    // Arrange
     use bao_cdp_client::Browser;
 
     let server = MiniCdpServer::new(|mut stream| {
+        // Act
         let _ = bao_cdp::ws_handshake::server_handshake(&mut stream);
         thread::sleep(Duration::from_millis(100));
     });
 
     // Step 1: Browser::connect 路由 ws:// → WebSocket
     let browser = Browser::connect(&server.url()).expect("route ws://");
+    // Assert
     assert!(browser.is_websocket());
     assert_eq!(browser.transport_kind(), TransportKind::WebSocket);
 
@@ -135,11 +138,14 @@ fn e2e_external_ws_handshake_full_chain() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_ws_handshake_refused_returns_error() {
+    // Arrange
     use bao_cdp_client::Browser;
 
     // 用一个几乎确定关闭的端口
     let url = "ws://127.0.0.1:1/x";
+    // Act
     let browser = Browser::connect(url).expect("route succeeds");
+    // Assert
     assert!(browser.is_websocket());
     let err = browser.build_websocket_transport().unwrap_err();
     let msg = err.to_string();
@@ -157,12 +163,14 @@ fn e2e_external_ws_handshake_refused_returns_error() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_command_round_trip_simple() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
         }
         // Read 1 frame, return JSON response echoing method
         let payload = match read_one_frame(&mut stream) {
+            // Act
             Some(p) => p,
             None => return,
         };
@@ -184,12 +192,14 @@ fn e2e_external_command_round_trip_simple() {
     let r = t
         .send_command("Page.navigate", json!({"url":"https://example.com"}), None)
         .expect("round-trip");
+    // Assert
     assert_eq!(r["echoedMethod"], "Page.navigate");
 }
 
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_command_round_trip_multiple() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
@@ -197,6 +207,7 @@ fn e2e_external_command_round_trip_multiple() {
         // 服务 5 个 frame
         for i in 0..5 {
             let payload = match read_one_frame(&mut stream) {
+                // Act
                 Some(p) => p,
                 None => return,
             };
@@ -217,6 +228,7 @@ fn e2e_external_command_round_trip_multiple() {
         let r = t
             .send_command(&format!("Page.cmd{i}"), json!({}), None)
             .unwrap_or_else(|e| panic!("cmd {i} failed: {e:?}"));
+        // Assert
         assert_eq!(r["seq"], i, "response seq must match loop index");
     }
 }
@@ -224,10 +236,12 @@ fn e2e_external_command_round_trip_multiple() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_command_with_session_id_passes_through() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
         }
+        // Act
         let payload = read_one_frame(&mut stream).expect("frame");
         let v: Value = serde_json::from_slice(&payload).unwrap();
         // Echo sessionId back
@@ -243,6 +257,7 @@ fn e2e_external_command_with_session_id_passes_through() {
     let r = t
         .send_command("Target.sendMessageToTarget", json!({"msg":"hi"}), Some("TARGET-99"))
         .unwrap();
+    // Assert
     assert_eq!(r["echoedSession"], "TARGET-99");
 }
 
@@ -253,6 +268,7 @@ fn e2e_external_command_with_session_id_passes_through() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_event_subscription_single_push() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
@@ -262,6 +278,7 @@ fn e2e_external_event_subscription_single_push() {
             "method": "Page.frameNavigated",
             "params": {"url": "https://example.com"},
         });
+        // Act
         let frame = encode_text_unmasked(&serde_json::to_string(&event).unwrap());
         let _ = stream.write_all(&frame);
         let _ = stream.flush();
@@ -271,6 +288,7 @@ fn e2e_external_event_subscription_single_push() {
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     t.set_event_timeout(Duration::from_secs(2));
     let ev = t.recv_event().unwrap().expect("expected event");
+    // Assert
     assert_eq!(ev.method, "Page.frameNavigated");
     assert_eq!(ev.params["url"], "https://example.com");
 }
@@ -278,6 +296,7 @@ fn e2e_external_event_subscription_single_push() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_event_subscription_with_session_id() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
@@ -288,6 +307,7 @@ fn e2e_external_event_subscription_with_session_id() {
             "params": {"requestId": "REQ-1"},
             "sessionId": "TARGET-SUB",
         });
+        // Act
         let frame = encode_text_unmasked(&serde_json::to_string(&event).unwrap());
         let _ = stream.write_all(&frame);
         let _ = stream.flush();
@@ -297,6 +317,7 @@ fn e2e_external_event_subscription_with_session_id() {
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     t.set_event_timeout(Duration::from_secs(2));
     let ev = t.recv_event().unwrap().expect("expected event");
+    // Assert
     assert_eq!(ev.method, "Network.requestWillBeSent");
     assert_eq!(ev.session_id.as_deref(), Some("TARGET-SUB"));
 }
@@ -304,12 +325,14 @@ fn e2e_external_event_subscription_with_session_id() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_event_subscription_sequence() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
         }
         // 连续 push 3 个事件
         let events = vec![
+            // Act
             json!({"method":"Page.frameStartedLoading","params":{"frameId":"F"}}),
             json!({"method":"Page.frameNavigated","params":{"frameId":"F","url":"https://x"}}),
             json!({"method":"Page.frameStoppedLoading","params":{"frameId":"F"}}),
@@ -329,6 +352,7 @@ fn e2e_external_event_subscription_sequence() {
     while let Ok(Some(ev)) = t.recv_event() {
         methods.push(ev.method);
     }
+    // Assert
     assert_eq!(methods.len(), 3, "expected 3 events, got {}", methods.len());
     assert_eq!(methods[0], "Page.frameStartedLoading");
     assert_eq!(methods[1], "Page.frameNavigated");
@@ -342,10 +366,12 @@ fn e2e_external_event_subscription_sequence() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_jsonrpc_error_returned_as_protocol_error() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
         }
+        // Act
         let payload = read_one_frame(&mut stream).expect("frame");
         let v: Value = serde_json::from_slice(&payload).unwrap();
         let response = json!({
@@ -361,6 +387,7 @@ fn e2e_external_jsonrpc_error_returned_as_protocol_error() {
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     let err = t.send_command("Bogus.method", json!({}), None).unwrap_err();
     let msg = err.to_string();
+    // Assert
     assert!(
         msg.contains("CDP protocol error") || msg.contains("method not found"),
         "got: {msg}"
@@ -370,7 +397,9 @@ fn e2e_external_jsonrpc_error_returned_as_protocol_error() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_command_timeout_returns_timeout_error() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
+        // Act
         let _ = bao_cdp::ws_handshake::server_handshake(&mut stream);
         // 不响应,client 必须超时
         thread::sleep(Duration::from_millis(500));
@@ -381,6 +410,7 @@ fn e2e_external_command_timeout_returns_timeout_error() {
     let err = t.send_command("X", json!({}), None).unwrap_err();
     match err {
         CdpError::Timeout(_) | CdpError::IoError(_) | CdpError::ConnectionClosed => {}
+        // Assert
         other => panic!("expected timeout/io/closed, got {:?}", other),
     }
 }
@@ -388,13 +418,16 @@ fn e2e_external_command_timeout_returns_timeout_error() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_external_close_then_send_returns_connection_closed() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
+        // Act
         let _ = bao_cdp::ws_handshake::server_handshake(&mut stream);
         thread::sleep(Duration::from_millis(100));
     });
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     t.close().unwrap();
     let err = t.send_command("X", json!({}), None).unwrap_err();
+    // Assert
     assert!(matches!(err, CdpError::ConnectionClosed));
 }
 
@@ -409,7 +442,9 @@ fn e2e_external_close_then_send_returns_connection_closed() {
 #[test]
 #[ignore = "real chrome requires BAO_TEST_CHROME_URL=ws://127.0.0.1:9222"]
 fn e2e_real_chrome_navigation_and_screenshot() {
+    // Arrange
     let url = match std::env::var("BAO_TEST_CHROME_URL") {
+        // Act
         Ok(v) => v,
         Err(_) => return,
     };
@@ -436,13 +471,16 @@ fn e2e_real_chrome_navigation_and_screenshot() {
     let r = t
         .send_command("Page.captureScreenshot", json!({"format":"png"}), Some(&session_id))
         .expect("screenshot");
+    // Assert
     assert!(r["data"].is_string(), "screenshot must return base64");
 }
 
 #[test]
 #[ignore = "real chrome requires BAO_TEST_CHROME_URL"]
 fn e2e_real_chrome_runtime_evaluate() {
+    // Arrange
     let url = match std::env::var("BAO_TEST_CHROME_URL") {
+        // Act
         Ok(v) => v,
         Err(_) => return,
     };
@@ -454,5 +492,6 @@ fn e2e_real_chrome_runtime_evaluate() {
             None,
         )
         .expect("evaluate");
+    // Assert
     assert_eq!(r["result"]["value"], 2);
 }

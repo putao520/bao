@@ -124,7 +124,9 @@ impl OneShotHttpServer {
 #[test]
 // @trace REQ-BAO-API-008 [level:integration]
 fn e2e_playwright_http_discovery_json_version() {
+    // Arrange
     let server = OneShotHttpServer::new(|_req, stream| {
+        // Act
         let body = serde_json::to_string(&json!({
             "Browser": "HeadlessChrome/120",
             "Protocol-Version": "1.3",
@@ -146,6 +148,7 @@ fn e2e_playwright_http_discovery_json_version() {
         buf.extend_from_slice(&tmp[..n]);
     }
     let body = String::from_utf8_lossy(&buf);
+    // Assert
     assert!(body.contains("webSocketDebuggerUrl"), "must contain ws url");
     assert!(body.contains("HeadlessChrome"), "must contain browser version");
     let json_start = body.find('{').unwrap();
@@ -158,7 +161,9 @@ fn e2e_playwright_http_discovery_json_version() {
 #[test]
 // @trace REQ-BAO-API-008 [level:integration]
 fn e2e_playwright_http_discovery_json_list() {
+    // Arrange
     let server = OneShotHttpServer::new(|_req, stream| {
+        // Act
         let body = serde_json::to_string(&json!([
             {
                 "id": "page-1",
@@ -186,6 +191,7 @@ fn e2e_playwright_http_discovery_json_list() {
     let json_start = body.find('[').unwrap();
     let arr: Value = serde_json::from_str(&body[json_start..]).unwrap();
     let arr = arr.as_array().unwrap();
+    // Assert
     assert!(!arr.is_empty(), "must have at least 1 page");
     assert_eq!(arr[0]["type"], "page");
     assert!(arr[0]["webSocketDebuggerUrl"].as_str().unwrap().contains("/devtools/page/"));
@@ -194,7 +200,9 @@ fn e2e_playwright_http_discovery_json_list() {
 #[test]
 // @trace REQ-BAO-API-008 [level:integration]
 fn e2e_playwright_http_discovery_json_new() {
+    // Arrange
     let server = OneShotHttpServer::new(|_req, stream| {
+        // Act
         let body = serde_json::to_string(&json!({
             "id": "page-new",
             "type": "page",
@@ -219,6 +227,7 @@ fn e2e_playwright_http_discovery_json_new() {
     let body = String::from_utf8_lossy(&buf);
     let json_start = body.find('{').unwrap();
     let obj: Value = serde_json::from_str(&body[json_start..]).unwrap();
+    // Assert
     assert_eq!(obj["type"], "page");
     assert_eq!(obj["id"], "page-new");
 }
@@ -226,14 +235,17 @@ fn e2e_playwright_http_discovery_json_new() {
 #[test]
 // @trace REQ-BAO-API-008 [level:integration]
 fn e2e_playwright_http_discovery_404_for_unknown_path() {
+    // Arrange
     let server = OneShotHttpServer::new(|_req, stream| {
         let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
     });
+    // Act
     let mut stream = TcpStream::connect(&server.addr).unwrap();
     let _ = stream.write_all(b"GET /bogus HTTP/1.1\r\nHost: localhost\r\n\r\n");
     let mut buf = [0u8; 256];
     let _ = stream.read(&mut buf);
     let resp = String::from_utf8_lossy(&buf);
+    // Assert
     assert!(resp.starts_with("HTTP/1.1 404"), "must be 404: {resp}");
 }
 
@@ -244,7 +256,9 @@ fn e2e_playwright_http_discovery_404_for_unknown_path() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_playwright_browser_attach_then_flat_session() {
+    // Arrange
     // Mini WS server:接受 attach 命令,返回 sessionId
+    // Act
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let handle = thread::spawn(move || {
@@ -261,6 +275,7 @@ fn e2e_playwright_browser_attach_then_flat_session() {
                 Ok(v) => v,
                 Err(_) => return,
             };
+            // Assert
             assert_eq!(v["method"], "Target.attachToTarget");
             assert_eq!(v["params"]["flatten"], true);
 
@@ -314,7 +329,9 @@ fn e2e_playwright_browser_attach_then_flat_session() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_playwright_flat_mode_command_with_session_id() {
+    // Arrange
     // 验证 flat mode 下,后续命令通过 sessionId 路由到 sub-target
+    // Act
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let handle = thread::spawn(move || {
@@ -350,6 +367,7 @@ fn e2e_playwright_flat_mode_command_with_session_id() {
 
     // 第一个命令无 session(browser-level)
     let r = t.send_command("Browser.getVersion", json!({}), None).unwrap();
+    // Assert
     assert_eq!(r["ok"], true);
     assert_eq!(r["echoedSession"], Value::Null);
 
@@ -370,6 +388,8 @@ fn e2e_playwright_flat_mode_command_with_session_id() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_playwright_set_auto_attach_receives_attached_events() {
+    // Arrange
+    // Act
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let handle = thread::spawn(move || {
@@ -426,6 +446,7 @@ fn e2e_playwright_set_auto_attach_receives_attached_events() {
             sessions.push(ev.params["sessionId"].to_string());
         }
     }
+    // Assert
     assert_eq!(sessions.len(), 2, "expected 2 attached events");
     let _ = handle.join();
 }
@@ -439,6 +460,8 @@ fn e2e_playwright_set_auto_attach_receives_attached_events() {
 #[test]
 #[ignore = "real playwright requires BAO_TEST_PLAYWRIGHT=1 + CDP server on 9222"]
 fn e2e_real_playwright_full_flow() {
+    // Arrange
+    // Act
     if std::env::var("BAO_TEST_PLAYWRIGHT").as_deref() != Ok("1") {
         return;
     }
@@ -454,6 +477,8 @@ fn e2e_real_playwright_full_flow() {
 #[test]
 #[ignore = "real playwright requires BAO_TEST_PLAYWRIGHT=1"]
 fn e2e_real_playwright_browser_context_isolation() {
+    // Arrange
+    // Act
     if std::env::var("BAO_TEST_PLAYWRIGHT").as_deref() != Ok("1") {
         return;
     }
@@ -467,6 +492,8 @@ fn e2e_real_playwright_browser_context_isolation() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_playwright_transport_kind_compatible() {
+    // Arrange
+    // Act
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let handle = thread::spawn(move || {
@@ -477,6 +504,7 @@ fn e2e_playwright_transport_kind_compatible() {
     });
     let url = format!("ws://{addr}/devtools/browser/x");
     let t = WebSocketTransport::connect(&url).unwrap();
+    // Assert
     assert_eq!(t.kind(), TransportKind::WebSocket);
     let _ = handle.join();
 }

@@ -58,8 +58,10 @@ fn build_with_events() -> (InMemoryTransport, EventSubscriber) {
 #[test]
 // @trace REQ-BAO-API-003 [event:Console] [level:integration]
 fn full_e2e_console_chain_translate_to_cdp_event() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
 
+    // Act
     subscriber.on_console_message(
         "TARGET-X",
         ConsoleLevel::Warning,
@@ -71,6 +73,7 @@ fn full_e2e_console_chain_translate_to_cdp_event() {
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("expected event");
+    // Assert
     assert_eq!(ev.method, "Log.entryAdded");
     assert_eq!(ev.session_id.as_deref(), Some("TARGET-X"));
     assert_eq!(ev.params["entry"]["level"], "warning");
@@ -80,8 +83,10 @@ fn full_e2e_console_chain_translate_to_cdp_event() {
 #[test]
 // @trace REQ-BAO-API-003 [event:PageError] [level:integration]
 fn full_e2e_page_error_with_stack_trace() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
 
+    // Act
     subscriber.on_page_error(
         "T1",
         "TypeError: x is undefined",
@@ -93,6 +98,7 @@ fn full_e2e_page_error_with_stack_trace() {
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("expected event");
+    // Assert
     assert_eq!(ev.method, "Runtime.exceptionThrown");
     assert_eq!(ev.params["exceptionDetails"]["text"], "TypeError: x is undefined");
     // stackTrace 直接是数组(CDP-style)— 1 个 callFrame
@@ -107,10 +113,12 @@ fn full_e2e_page_error_with_stack_trace() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_event_order_preserved_within_target() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
 
     // 5 个 frame 事件按顺序 push
     for i in 0..5 {
+        // Act
         subscriber.on_frame_started_loading("T", &format!("FRAME-{i}"));
     }
 
@@ -121,6 +129,7 @@ fn full_e2e_event_order_preserved_within_target() {
             frames.push(ev.params["frameId"].as_str().unwrap().to_string());
         }
     }
+    // Assert
     assert_eq!(frames.len(), 5);
     // 必须严格 FIFO
     for (i, f) in frames.iter().enumerate() {
@@ -131,9 +140,11 @@ fn full_e2e_event_order_preserved_within_target() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_event_mixed_classes_order_preserved() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
 
     // 混合 4 类事件按顺序 push
+    // Act
     subscriber.on_console_message("T", ConsoleLevel::Info, "first", None, None, None);
     subscriber.on_page_error("T", "second", None, None, None, None);
     subscriber.on_frame_started_loading("T", "F1");
@@ -144,6 +155,7 @@ fn full_e2e_event_mixed_classes_order_preserved() {
     while let Ok(Some(ev)) = transport.recv_event() {
         methods.push(ev.method);
     }
+    // Assert
     assert_eq!(methods.len(), 4);
     assert_eq!(methods[0], "Log.entryAdded");
     assert_eq!(methods[1], "Runtime.exceptionThrown");
@@ -158,10 +170,12 @@ fn full_e2e_event_mixed_classes_order_preserved() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_multi_target_session_id_isolation() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
 
     // 3 个不同 target 的 console 事件交替 push
     for target in &["A", "B", "A", "C", "B"] {
+        // Act
         subscriber.on_console_message(
             &format!("TARGET-{target}"),
             ConsoleLevel::Info,
@@ -180,6 +194,7 @@ fn full_e2e_multi_target_session_id_isolation() {
             ev.params["entry"]["text"].as_str().unwrap_or("").to_string(),
         ));
     }
+    // Assert
     assert_eq!(events.len(), 5);
     // 验证 session_id 与 text 严格对应
     for (sid, text) in &events {
@@ -195,9 +210,11 @@ fn full_e2e_multi_target_session_id_isolation() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_single_servo_event_can_map_to_multiple_cdp_events() {
+    // Arrange
     // 直接调用 translate,验证某些事件类型产生多个 CdpEvent
     // ScriptParsed 在 standard translate 下产生 1 个,但 NetworkRequest 可能产生多个
     let ev = ServoEvent::NetworkRequest {
+        // Act
         target_id: "T".into(),
         request_id: "R1".into(),
         url: "https://example.com/api".into(),
@@ -209,6 +226,7 @@ fn full_e2e_single_servo_event_can_map_to_multiple_cdp_events() {
     };
     let cdp_events = translate(ev);
     // 至少 1 个 CdpEvent
+    // Assert
     assert!(!cdp_events.is_empty());
     // 全部 method 应该是 Network.* 系列
     for e in &cdp_events {
@@ -223,8 +241,10 @@ fn full_e2e_single_servo_event_can_map_to_multiple_cdp_events() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_one_to_many_events_delivered_in_sequence() {
+    // Arrange
     // 模拟一对多事件,验证 transport 内部 pending 队列正确处理
     let ev = ServoEvent::PageError {
+        // Act
         target_id: "T".into(),
         text: "test".into(),
         url: None,
@@ -234,6 +254,7 @@ fn full_e2e_one_to_many_events_delivered_in_sequence() {
     };
     let cdp_events = translate(ev);
     // PageError 通常 1 个事件,但验证机制
+    // Assert
     assert_eq!(cdp_events.len(), 1);
 }
 
@@ -244,13 +265,16 @@ fn full_e2e_one_to_many_events_delivered_in_sequence() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_recv_returns_none_on_timeout_when_no_events() {
+    // Arrange
     let (mut transport, _subscriber) = build_with_events();
+    // Act
     transport.set_event_timeout(Duration::from_millis(50));
 
     let start = std::time::Instant::now();
     let ev = transport.recv_event().unwrap();
     let elapsed = start.elapsed();
 
+    // Assert
     assert!(ev.is_none(), "expected None on timeout");
     assert!(elapsed.as_millis() < 500, "elapsed: {elapsed:?}");
 }
@@ -258,8 +282,10 @@ fn full_e2e_recv_returns_none_on_timeout_when_no_events() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_recv_immediately_returns_available_event() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
     // push 事件
+    // Act
     subscriber.on_console_message("T", ConsoleLevel::Info, "x", None, None, None);
 
     transport.set_event_timeout(Duration::from_secs(5));
@@ -267,6 +293,7 @@ fn full_e2e_recv_immediately_returns_available_event() {
     let ev = transport.recv_event().unwrap().expect("expected event");
     let elapsed = start.elapsed();
 
+    // Assert
     assert_eq!(ev.method, "Log.entryAdded");
     // 应该几乎立即返回(<= 100ms)
     assert!(elapsed.as_millis() < 100, "elapsed: {elapsed:?}");
@@ -275,9 +302,11 @@ fn full_e2e_recv_immediately_returns_available_event() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_recv_drains_events_then_returns_none() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
     // push 3 个事件
     for i in 0..3 {
+        // Act
         subscriber.on_console_message(
             "T",
             ConsoleLevel::Info,
@@ -293,6 +322,7 @@ fn full_e2e_recv_drains_events_then_returns_none() {
     while let Ok(Some(_)) = transport.recv_event() {
         count += 1;
     }
+    // Assert
     assert_eq!(count, 3, "expected to drain all 3 events");
 }
 
@@ -303,6 +333,7 @@ fn full_e2e_recv_drains_events_then_returns_none() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_fallback_to_direct_cdp_event_push() {
+    // Arrange
     // 即使没有 servo 事件,event_rx 直接 push 的 CdpEvent 也能收到
     let bridge: Arc<dyn InMemoryBridge> = Arc::new(NullBridge);
     let mut transport = InMemoryTransport::new(bridge);
@@ -312,12 +343,14 @@ fn full_e2e_fallback_to_direct_cdp_event_push() {
     sender
         .send(CdpEvent::new(
             "Custom.event",
+            // Act
             serde_json::json!({"k": "v"}),
         ))
         .unwrap();
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("expected direct CdpEvent");
+    // Assert
     assert_eq!(ev.method, "Custom.event");
     assert_eq!(ev.params["k"], "v");
 }
@@ -325,6 +358,7 @@ fn full_e2e_fallback_to_direct_cdp_event_push() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_servo_events_take_precedence_over_direct_push() {
+    // Arrange
     // 同时 push servo 事件 + 直接 CdpEvent,servo 应优先
     let (mut transport, subscriber) = build_with_events();
 
@@ -334,11 +368,13 @@ fn full_e2e_servo_events_take_precedence_over_direct_push() {
         .send(CdpEvent::new("Direct.event", serde_json::json!({})))
         .unwrap();
     // 再 push servo 事件
+    // Act
     subscriber.on_console_message("T", ConsoleLevel::Info, "from servo", None, None, None);
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("expected event");
     // servo 事件应该优先被消费
+    // Assert
     assert_eq!(ev.method, "Log.entryAdded");
 
     // 然后才是直接 CdpEvent
@@ -353,10 +389,12 @@ fn full_e2e_servo_events_take_precedence_over_direct_push() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_high_volume_events_100_count() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
 
     // push 100 个事件
     for i in 0..100 {
+        // Act
         subscriber.on_console_message(
             "T",
             ConsoleLevel::Info,
@@ -376,6 +414,7 @@ fn full_e2e_high_volume_events_100_count() {
         }
         count += 1;
     }
+    // Assert
     assert_eq!(count, 100, "expected 100 events, got {count}");
     assert!(all_methods_log, "all events must be Log.entryAdded");
 }
@@ -383,10 +422,12 @@ fn full_e2e_high_volume_events_100_count() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_high_volume_events_preserve_order() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
 
     // push 50 个 console,每个 text 包含序号
     for i in 0..50 {
+        // Act
         subscriber.on_console_message(
             "T",
             ConsoleLevel::Info,
@@ -403,6 +444,7 @@ fn full_e2e_high_volume_events_preserve_order() {
         let text = ev.params["entry"]["text"].as_str().unwrap().to_string();
         texts.push(text);
     }
+    // Assert
     assert_eq!(texts.len(), 50);
     // 验证顺序
     for (i, t) in texts.iter().enumerate() {
@@ -417,10 +459,12 @@ fn full_e2e_high_volume_events_preserve_order() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_all_seven_classes_through_transport_chain() {
+    // Arrange
     use std::collections::HashSet;
     let (mut transport, subscriber) = build_with_events();
 
     // 7 类事件全部 push(13 events)
+    // Act
     subscriber.on_console_message("T", ConsoleLevel::Debug, "c", None, None, None);
     subscriber.on_page_error("T", "p", None, None, None, None);
     subscriber.on_network_request(
@@ -462,6 +506,7 @@ fn full_e2e_all_seven_classes_through_transport_chain() {
         "Performance.metrics",
     ];
     for m in expected {
+        // Assert
         assert!(
             methods.contains(*m),
             "FAIL: missing CDP event {m} in transport recv (got {:?})",
@@ -477,10 +522,13 @@ fn full_e2e_all_seven_classes_through_transport_chain() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn full_e2e_close_blocks_recv_event() {
+    // Arrange
     let (mut transport, _subscriber) = build_with_events();
+    // Act
     transport.close().unwrap();
     let err = transport.recv_event().unwrap_err();
     use bao_cdp_client::CdpError;
+    // Assert
     assert!(matches!(err, CdpError::ConnectionClosed));
 }
 
@@ -491,7 +539,9 @@ fn full_e2e_close_blocks_recv_event() {
 #[test]
 // @trace REQ-BAO-API-003 [event:Console] [level:integration]
 fn full_e2e_console_params_contain_required_fields() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
+    // Act
     subscriber.on_console_message(
         "T", ConsoleLevel::Error, "msg",
         Some("file.js".into()), Some(10), Some(5),
@@ -501,6 +551,7 @@ fn full_e2e_console_params_contain_required_fields() {
     let ev = transport.recv_event().unwrap().expect("event");
     let entry = &ev.params["entry"];
     // 必须字段
+    // Assert
     assert!(entry["source"].is_string(), "source");
     assert!(entry["level"].is_string(), "level");
     assert!(entry["text"].is_string(), "text");
@@ -515,8 +566,10 @@ fn full_e2e_console_params_contain_required_fields() {
 #[test]
 // @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn full_e2e_network_request_params_contain_required_fields() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
     let mut headers = HashMap::new();
+    // Act
     headers.insert("X-Custom".into(), "value".into());
 
     subscriber.on_network_request(
@@ -526,6 +579,7 @@ fn full_e2e_network_request_params_contain_required_fields() {
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("event");
+    // Assert
     assert_eq!(ev.method, "Network.requestWillBeSent");
     assert_eq!(ev.params["requestId"], "REQ-1");
     assert_eq!(ev.params["request"]["url"], "https://example.com");
@@ -538,7 +592,9 @@ fn full_e2e_network_request_params_contain_required_fields() {
 #[test]
 // @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn full_e2e_network_response_params_contain_required_fields() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
+    // Act
     subscriber.on_network_response(
         "T", "R1", "https://x", 404,
         "Not Found", HashMap::new(), "application/json",
@@ -547,6 +603,7 @@ fn full_e2e_network_response_params_contain_required_fields() {
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("event");
+    // Assert
     assert_eq!(ev.method, "Network.responseReceived");
     assert_eq!(ev.params["response"]["status"], 404);
     assert_eq!(ev.params["response"]["statusText"], "Not Found");
@@ -557,11 +614,14 @@ fn full_e2e_network_response_params_contain_required_fields() {
 #[test]
 // @trace REQ-BAO-API-003 [event:DomMutation] [level:integration]
 fn full_e2e_dom_attribute_modified_params_correct() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
+    // Act
     subscriber.on_dom_attribute_modified("T", 42, "data-id", "abc123");
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("event");
+    // Assert
     assert_eq!(ev.method, "DOM.attributeModified");
     assert_eq!(ev.params["nodeId"], 42);
     assert_eq!(ev.params["name"], "data-id");
@@ -571,7 +631,9 @@ fn full_e2e_dom_attribute_modified_params_correct() {
 #[test]
 // @trace REQ-BAO-API-003 [event:SourceInfo] [level:integration]
 fn full_e2e_script_parsed_params_correct() {
+    // Arrange
     let (mut transport, subscriber) = build_with_events();
+    // Act
     subscriber.on_script_parsed(
         "T", "SCRIPT-1", "https://example.com/a.js",
         0, 0, 100, 200, Some("https://example.com/a.js.map".into()),
@@ -579,6 +641,7 @@ fn full_e2e_script_parsed_params_correct() {
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("event");
+    // Assert
     assert_eq!(ev.method, "Debugger.scriptParsed");
     assert_eq!(ev.params["scriptId"], "SCRIPT-1");
     assert_eq!(ev.params["url"], "https://example.com/a.js");

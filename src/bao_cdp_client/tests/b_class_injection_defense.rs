@@ -122,9 +122,12 @@ fn assert_payload_safe(expr: &str, payload: &str) {
 
 #[test]
 fn inj_page_title_iife_structure_intact() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.title] [level:integration]
+    // Act
     let r = run("Page.title", json!({})).unwrap();
     let e = extract_expr(&r);
+    // Assert
     assert!(e.starts_with("(function(){"));
     assert!(e.ends_with("})()"));
     assert!(e.contains("return document.title;"));
@@ -136,9 +139,12 @@ fn inj_page_title_iife_structure_intact() {
 
 #[test]
 fn inj_page_url_iife_structure_intact() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.url] [level:integration]
+    // Act
     let r = run("Page.url", json!({})).unwrap();
     let e = extract_expr(&r);
+    // Assert
     assert!(e.contains("return location.href;"));
 }
 
@@ -148,9 +154,12 @@ fn inj_page_url_iife_structure_intact() {
 
 #[test]
 fn inj_page_content_iife_structure_intact() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.content] [level:integration]
+    // Act
     let r = run("Page.content", json!({})).unwrap();
     let e = extract_expr(&r);
+    // Assert
     assert!(e.contains("document.documentElement.outerHTML"));
 }
 
@@ -160,32 +169,47 @@ fn inj_page_content_iife_structure_intact() {
 
 #[test]
 fn inj_add_script_tag_url_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.addScriptTag] [level:integration]
+    // Act
     let r = run("Page.addScriptTag", json!({"url": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_add_script_tag_url_double_quote_alert() {
+    // Arrange
+    // Act
     let r = run("Page.addScriptTag", json!({"url": VEC_DOUBLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_DOUBLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_add_script_tag_url_backslash() {
+    // Arrange
+    // Act
     let r = run("Page.addScriptTag", json!({"url": VEC_BACKSLASH})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_BACKSLASH);
 }
 
 #[test]
 fn inj_add_script_tag_content_script_close() {
+    // Arrange
+    // Act
     let r = run("Page.addScriptTag", json!({"content": VEC_SCRIPT_CLOSE})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SCRIPT_CLOSE);
 }
 
 #[test]
 fn inj_add_script_tag_content_template_literal() {
+    // Arrange
+    // Act
     let r = run("Page.addScriptTag", json!({"content": VEC_TEMPLATE_LITERAL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_TEMPLATE_LITERAL);
 }
 
@@ -195,20 +219,29 @@ fn inj_add_script_tag_content_template_literal() {
 
 #[test]
 fn inj_add_style_tag_url_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.addStyleTag] [level:integration]
+    // Act
     let r = run("Page.addStyleTag", json!({"url": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_add_style_tag_content_script_close() {
+    // Arrange
+    // Act
     let r = run("Page.addStyleTag", json!({"content": VEC_SCRIPT_CLOSE})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SCRIPT_CLOSE);
 }
 
 #[test]
 fn inj_add_style_tag_content_sql() {
+    // Arrange
+    // Act
     let r = run("Page.addStyleTag", json!({"content": VEC_SQL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SQL);
 }
 
@@ -218,20 +251,29 @@ fn inj_add_style_tag_content_sql() {
 
 #[test]
 fn inj_expose_function_name_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
+    // Act
     let r = run("Page.exposeFunction", json!({"name": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_expose_function_name_template_literal() {
+    // Arrange
+    // Act
     let r = run("Page.exposeFunction", json!({"name": VEC_TEMPLATE_LITERAL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_TEMPLATE_LITERAL);
 }
 
 #[test]
 fn inj_expose_function_name_sql() {
+    // Arrange
+    // Act
     let r = run("Page.exposeFunction", json!({"name": VEC_SQL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SQL);
 }
 
@@ -241,8 +283,11 @@ fn inj_expose_function_name_sql() {
 
 #[test]
 fn inj_emulate_media_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.emulateMedia] [level:integration]
+    // Act
     let r = run("Page.emulateMedia", json!({"media": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
@@ -252,20 +297,29 @@ fn inj_emulate_media_single_quote_alert() {
 
 #[test]
 fn inj_tap_selector_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.tap] [level:integration]
+    // Act
     let r = run("Page.tap", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_tap_selector_sql() {
+    // Arrange
+    // Act
     let r = run("Page.tap", json!({"selector": VEC_SQL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SQL);
 }
 
 #[test]
 fn inj_tap_selector_svg_onload() {
+    // Arrange
+    // Act
     let r = run("Page.tap", json!({"selector": VEC_SVG_ONLOAD})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SVG_ONLOAD);
 }
 
@@ -275,14 +329,20 @@ fn inj_tap_selector_svg_onload() {
 
 #[test]
 fn inj_hover_selector_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.hover] [level:integration]
+    // Act
     let r = run("Page.hover", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_hover_selector_template_literal() {
+    // Arrange
+    // Act
     let r = run("Page.hover", json!({"selector": VEC_TEMPLATE_LITERAL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_TEMPLATE_LITERAL);
 }
 
@@ -292,8 +352,11 @@ fn inj_hover_selector_template_literal() {
 
 #[test]
 fn inj_focus_selector_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.focus] [level:integration]
+    // Act
     let r = run("Page.focus", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
@@ -303,20 +366,29 @@ fn inj_focus_selector_single_quote_alert() {
 
 #[test]
 fn inj_type_text_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
+    // Act
     let r = run("Page.type", json!({"selector":"input","text": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_type_text_template_literal() {
+    // Arrange
+    // Act
     let r = run("Page.type", json!({"selector":"input","text": VEC_TEMPLATE_LITERAL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_TEMPLATE_LITERAL);
 }
 
 #[test]
 fn inj_type_selector_sql() {
+    // Arrange
+    // Act
     let r = run("Page.type", json!({"selector": VEC_SQL, "text":"ok"})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SQL);
 }
 
@@ -326,20 +398,29 @@ fn inj_type_selector_sql() {
 
 #[test]
 fn inj_fill_value_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
+    // Act
     let r = run("Page.fill", json!({"selector":"input","value": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_fill_value_backslash() {
+    // Arrange
+    // Act
     let r = run("Page.fill", json!({"selector":"input","value": VEC_BACKSLASH})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_BACKSLASH);
 }
 
 #[test]
 fn inj_fill_value_script_close() {
+    // Arrange
+    // Act
     let r = run("Page.fill", json!({"selector":"input","value": VEC_SCRIPT_CLOSE})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SCRIPT_CLOSE);
 }
 
@@ -349,14 +430,20 @@ fn inj_fill_value_script_close() {
 
 #[test]
 fn inj_press_key_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.press] [level:integration]
+    // Act
     let r = run("Page.press", json!({"selector":"input","key": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_press_key_template_literal() {
+    // Arrange
+    // Act
     let r = run("Page.press", json!({"selector":"input","key": VEC_TEMPLATE_LITERAL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_TEMPLATE_LITERAL);
 }
 
@@ -366,14 +453,20 @@ fn inj_press_key_template_literal() {
 
 #[test]
 fn inj_check_selector_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.check] [level:integration]
+    // Act
     let r = run("Page.check", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_check_selector_svg_onload() {
+    // Arrange
+    // Act
     let r = run("Page.check", json!({"selector": VEC_SVG_ONLOAD})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SVG_ONLOAD);
 }
 
@@ -383,14 +476,20 @@ fn inj_check_selector_svg_onload() {
 
 #[test]
 fn inj_uncheck_selector_single_quote_alert() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.uncheck] [level:integration]
+    // Act
     let r = run("Page.uncheck", json!({"selector": VEC_SINGLE_QUOTE_ALERT})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SINGLE_QUOTE_ALERT);
 }
 
 #[test]
 fn inj_uncheck_selector_sql() {
+    // Arrange
+    // Act
     let r = run("Page.uncheck", json!({"selector": VEC_SQL})).unwrap();
+    // Assert
     assert_payload_safe(&extract_expr(&r), VEC_SQL);
 }
 
@@ -400,7 +499,9 @@ fn inj_uncheck_selector_sql() {
 
 #[test]
 fn inj_select_option_values_with_injection_payloads() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.selectOption] [level:integration]
+    // Act
     let r = run(
         "Page.selectOption",
         json!({
@@ -422,6 +523,7 @@ fn inj_select_option_values_with_injection_payloads() {
         VEC_BACKSLASH,
     ] {
         let json_p = serde_json::to_string(p).unwrap();
+        // Assert
         assert!(args_literal(&e).contains(&json_p), "missing payload {p} in args");
     }
 }
@@ -432,7 +534,9 @@ fn inj_select_option_values_with_injection_payloads() {
 
 #[test]
 fn inj_set_input_files_paths_with_injection_payloads() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.setInputFiles] [level:integration]
+    // Act
     let r = run(
         "Page.setInputFiles",
         json!({
@@ -444,6 +548,7 @@ fn inj_set_input_files_paths_with_injection_payloads() {
     let e = extract_expr(&r);
     for p in &[VEC_SINGLE_QUOTE_ALERT, VEC_SCRIPT_CLOSE] {
         let json_p = serde_json::to_string(p).unwrap();
+        // Assert
         assert!(args_literal(&e).contains(&json_p), "missing payload {p} in args");
     }
 }
@@ -454,13 +559,16 @@ fn inj_set_input_files_paths_with_injection_payloads() {
 
 #[test]
 fn inj_element_get_attribute_with_injection_name() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:ElementHandle.getAttribute] [level:integration]
     // callFunctionOn 路径:Mock 不返回 expression,但确保不 panic
+    // Act
     let r = run(
         "ElementHandle.getAttribute",
         json!({"objectId":"obj1","name": VEC_SINGLE_QUOTE_ALERT}),
     )
     .unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
@@ -470,20 +578,29 @@ fn inj_element_get_attribute_with_injection_name() {
 
 #[test]
 fn inj_element_text_content_no_external_input() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:ElementHandle.textContent] [level:integration]
+    // Act
     let r = run("ElementHandle.textContent", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_inner_html_no_external_input() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.innerHTML", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_inner_text_no_external_input() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.innerText", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
@@ -494,37 +611,55 @@ fn inj_element_inner_text_no_external_input() {
 
 #[test]
 fn inj_element_is_checked_returns_object() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.isChecked", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_is_disabled_returns_object() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.isDisabled", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_is_editable_returns_object() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.isEditable", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_is_enabled_returns_object() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.isEnabled", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_is_hidden_returns_object() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.isHidden", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_is_visible_returns_object() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.isVisible", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
@@ -534,20 +669,29 @@ fn inj_element_is_visible_returns_object() {
 
 #[test]
 fn inj_element_content_frame_returns_object() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:ElementHandle.contentFrame] [level:integration]
+    // Act
     let r = run("ElementHandle.contentFrame", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_owner_frame_returns_object() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.ownerFrame", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_element_scroll_into_view_returns_object() {
+    // Arrange
+    // Act
     let r = run("ElementHandle.scrollIntoViewIfNeeded", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
@@ -557,22 +701,28 @@ fn inj_element_scroll_into_view_returns_object() {
 
 #[test]
 fn inj_element_wait_for_element_state_returns_empty() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:ElementHandle.waitForElementState] [level:integration]
+    // Act
     let r = run(
         "ElementHandle.waitForElementState",
         json!({"state": VEC_SINGLE_QUOTE_ALERT}),
     )
     .unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
 #[test]
 fn inj_element_wait_for_selector_returns_empty() {
+    // Arrange
+    // Act
     let r = run(
         "ElementHandle.waitForSelector",
         json!({"selector": VEC_SINGLE_QUOTE_ALERT}),
     )
     .unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
@@ -582,58 +732,79 @@ fn inj_element_wait_for_selector_returns_empty() {
 
 #[test]
 fn inj_js_handle_as_element_returns_local_state() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:JSHandle.asElement] [level:integration]
+    // Act
     let r = run("JSHandle.asElement", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert_eq!(r["isElement"], false);
 }
 
 #[test]
 fn inj_js_handle_dispose_calls_release() {
+    // Arrange
+    // Act
     let r = run("JSHandle.dispose", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
 #[test]
 fn inj_js_handle_evaluate_with_injection_func() {
+    // Arrange
     // callFunctionOn functionDeclaration 是用户提供的 JS — 这不是注入,
     // 是允许的(Playwright API:page.evaluate(fn))。但 backend 必须正确路由。
+    // Act
     let r = run(
         "JSHandle.evaluate",
         json!({"objectId":"obj1","func":"return 1+1;"}),
     )
     .unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_js_handle_evaluate_handle_with_injection_func() {
+    // Arrange
+    // Act
     let r = run(
         "JSHandle.evaluateHandle",
         json!({"objectId":"obj1","func":"return this;"}),
     )
     .unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_js_handle_get_properties_calls_backend() {
+    // Arrange
+    // Act
     let r = run("JSHandle.getProperties", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_array());
 }
 
 #[test]
 fn inj_js_handle_get_property_with_injection_name() {
+    // Arrange
+    // Act
     let r = run(
         "JSHandle.getProperty",
         json!({"objectId":"obj1","name": VEC_SINGLE_QUOTE_ALERT}),
     )
     .unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
 #[test]
 fn inj_js_handle_json_value_calls_backend() {
+    // Arrange
+    // Act
     let r = run("JSHandle.jsonValue", json!({"objectId":"obj1"})).unwrap();
+    // Assert
     assert!(r["result"].is_object());
 }
 
@@ -643,15 +814,21 @@ fn inj_js_handle_json_value_calls_backend() {
 
 #[test]
 fn inj_page_viewport_returns_metrics() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.viewport] [level:integration]
+    // Act
     let r = run("Page.viewport", json!({})).unwrap();
+    // Assert
     assert!(r["width"].is_number());
     assert!(r["height"].is_number());
 }
 
 #[test]
 fn inj_page_set_viewport_calls_emulation_override() {
+    // Arrange
+    // Act
     let r = run("Page.setViewport", json!({"width":1024,"height":768})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
@@ -661,21 +838,30 @@ fn inj_page_set_viewport_calls_emulation_override() {
 
 #[test]
 fn inj_page_opener_iife_structure_intact() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.opener] [level:integration]
+    // Act
     let r = run("Page.opener", json!({})).unwrap();
     let e = extract_expr(&r);
+    // Assert
     assert!(e.contains("window.opener"));
 }
 
 #[test]
 fn inj_page_frames_returns_array() {
+    // Arrange
+    // Act
     let r = run("Page.frames", json!({})).unwrap();
+    // Assert
     assert!(r["frames"].is_array());
 }
 
 #[test]
 fn inj_page_main_frame_returns_root() {
+    // Arrange
+    // Act
     let r = run("Page.mainFrame", json!({})).unwrap();
+    // Assert
     assert!(r["id"].is_string() || r["id"].is_number());
 }
 
@@ -685,23 +871,32 @@ fn inj_page_main_frame_returns_root() {
 
 #[test]
 fn inj_page_go_back_iife_structure() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.goBack] [level:integration]
+    // Act
     let r = run("Page.goBack", json!({})).unwrap();
     let e = extract_expr(&r);
+    // Assert
     assert!(e.contains("history.back"));
 }
 
 #[test]
 fn inj_page_go_forward_iife_structure() {
+    // Arrange
+    // Act
     let r = run("Page.goForward", json!({})).unwrap();
     let e = extract_expr(&r);
+    // Assert
     assert!(e.contains("history.forward"));
 }
 
 #[test]
 fn inj_page_request_gc_iife_structure() {
+    // Arrange
+    // Act
     let r = run("Page.requestGC", json!({})).unwrap();
     let e = extract_expr(&r);
+    // Assert
     assert!(e.contains("window.gc"));
 }
 
@@ -711,14 +906,20 @@ fn inj_page_request_gc_iife_structure() {
 
 #[test]
 fn inj_page_screenshot_returns_data() {
+    // Arrange
     // @trace REQ-BAO-API-005 [method:Page.screenshot] [level:integration]
+    // Act
     let r = run("Page.screenshot", json!({})).unwrap();
+    // Assert
     assert!(r["data"].is_string());
 }
 
 #[test]
 fn inj_page_pdf_returns_data() {
+    // Arrange
+    // Act
     let r = run("Page.pdf", json!({})).unwrap();
+    // Assert
     assert!(r["data"].is_string());
 }
 
@@ -728,43 +929,64 @@ fn inj_page_pdf_returns_data() {
 
 #[test]
 fn inj_page_set_default_navigation_timeout_returns_empty() {
+    // Arrange
+    // Act
     let r = run("Page.setDefaultNavigationTimeout", json!({"timeout":5000})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
 #[test]
 fn inj_page_set_default_timeout_returns_empty() {
+    // Arrange
+    // Act
     let r = run("Page.setDefaultTimeout", json!({"timeout":5000})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
 #[test]
 fn inj_page_wait_for_load_state_returns_empty() {
+    // Arrange
+    // Act
     let r = run("Page.waitForLoadState", json!({"state":"load"})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
 #[test]
 fn inj_page_wait_for_url_returns_empty() {
+    // Arrange
+    // Act
     let r = run("Page.waitForURL", json!({"url":"**/api/*"})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
 #[test]
 fn inj_page_wait_for_request_returns_empty() {
+    // Arrange
+    // Act
     let r = run("Page.waitForRequest", json!({"url":"**/api/*"})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
 #[test]
 fn inj_page_wait_for_response_returns_empty() {
+    // Arrange
+    // Act
     let r = run("Page.waitForResponse", json!({"url":"**/api/*"})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
 #[test]
 fn inj_page_wait_for_event_returns_empty() {
+    // Arrange
+    // Act
     let r = run("Page.waitForEvent", json!({"event":"response"})).unwrap();
+    // Assert
     assert_eq!(r.as_object().unwrap().len(), 0);
 }
 
@@ -774,37 +996,55 @@ fn inj_page_wait_for_event_returns_empty() {
 
 #[test]
 fn inj_add_script_tag_missing_url_and_content() {
+    // Arrange
+    // Act
     let err = run("Page.addScriptTag", json!({})).unwrap_err();
+    // Assert
     assert!(matches!(err, BridgeError::InvalidParams(_)));
 }
 
 #[test]
 fn inj_add_style_tag_missing_url_and_content() {
+    // Arrange
+    // Act
     let err = run("Page.addStyleTag", json!({})).unwrap_err();
+    // Assert
     assert!(matches!(err, BridgeError::InvalidParams(_)));
 }
 
 #[test]
 fn inj_expose_function_missing_name() {
+    // Arrange
+    // Act
     let err = run("Page.exposeFunction", json!({})).unwrap_err();
+    // Assert
     assert!(matches!(err, BridgeError::InvalidParams(_)));
 }
 
 #[test]
 fn inj_tap_missing_selector() {
+    // Arrange
+    // Act
     let err = run("Page.tap", json!({})).unwrap_err();
+    // Assert
     assert!(matches!(err, BridgeError::InvalidParams(_)));
 }
 
 #[test]
 fn inj_type_missing_text() {
+    // Arrange
+    // Act
     let err = run("Page.type", json!({"selector":"input"})).unwrap_err();
+    // Assert
     assert!(matches!(err, BridgeError::InvalidParams(_)));
 }
 
 #[test]
 fn inj_page_set_viewport_missing_dimensions() {
+    // Arrange
+    // Act
     let err = run("Page.setViewport", json!({})).unwrap_err();
+    // Assert
     assert!(matches!(err, BridgeError::InvalidParams(_)));
 }
 
@@ -814,6 +1054,7 @@ fn inj_page_set_viewport_missing_dimensions() {
 
 #[test]
 fn inj_all_b_class_evals_start_with_iife_open() {
+    // Arrange
     // @trace REQ-BAO-API-005 [level:integration]
     // 所有走 eval_iife 路径的 B 类 method 必须返回 IIFE 包装
     let methods = [
@@ -827,8 +1068,10 @@ fn inj_all_b_class_evals_start_with_iife_open() {
         "Page.emulateMedia",
     ];
     for m in methods {
+        // Act
         let r = run(m, json!({})).unwrap();
         let e = extract_expr(&r);
+        // Assert
         assert!(
             e.starts_with("(function(){"),
             "{m} must wrap in IIFE; got: {e}"
@@ -842,8 +1085,10 @@ fn inj_all_b_class_evals_start_with_iife_open() {
 
 #[test]
 fn inj_all_b_class_evals_with_args_use_apply_pattern() {
+    // Arrange
     // 走 build_iife_with_args 的 method,IIFE 必须用 .apply(null, __args) 绑定参数
     let cases = [
+        // Act
         ("Page.addScriptTag", json!({"url":"https://x"})),
         ("Page.addStyleTag", json!({"url":"https://x"})),
         ("Page.exposeFunction", json!({"name":"fn"})),
@@ -859,6 +1104,7 @@ fn inj_all_b_class_evals_with_args_use_apply_pattern() {
     for (m, p) in cases {
         let r = run(m, p).unwrap();
         let e = extract_expr(&r);
+        // Assert
         assert!(
             e.contains("var __args="),
             "{m} must declare __args; got: {e}"
@@ -876,8 +1122,10 @@ fn inj_all_b_class_evals_with_args_use_apply_pattern() {
 
 #[test]
 fn inj_payload_always_appears_as_json_string_in_args() {
+    // Arrange
     // 综合:对每个走 args 的 method 注入 SQL,验证 payload 在 args 中作为 JSON 字符串字面量
     let cases = [
+        // Act
         ("Page.addScriptTag", "url"),
         ("Page.addStyleTag", "content"),
         ("Page.exposeFunction", "name"),
@@ -915,6 +1163,7 @@ fn inj_payload_always_appears_as_json_string_in_args() {
         let e = extract_expr(&r);
         let args = args_literal(&e);
         let json_sql = serde_json::to_string(VEC_SQL).unwrap();
+        // Assert
         assert!(
             args.contains(&json_sql),
             "{m}: SQL payload must appear as JSON string in __args; got args: {args}"

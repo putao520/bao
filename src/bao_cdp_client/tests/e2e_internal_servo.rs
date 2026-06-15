@@ -74,8 +74,11 @@ fn build_e2e_in_memory_with_events() -> (
 #[test]
 // @trace REQ-BAO-API-001 [level:integration]
 fn e2e_internal_basic_navigation_full_chain() {
+    // Arrange
     // Step 1: URL scheme 路由
+    // Act
     let browser = Browser::connect("memory://bao").expect("route memory://");
+    // Assert
     assert!(browser.is_in_memory());
     assert_eq!(browser.transport_kind(), TransportKind::InMemory);
 
@@ -124,6 +127,8 @@ fn e2e_internal_basic_navigation_full_chain() {
 #[test]
 // @trace REQ-BAO-API-002 [interface:Transport] [level:integration]
 fn e2e_internal_navigation_to_unknown_target_errors() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     // 999 不在 MockServoBackend known_targets
     let err = transport
@@ -133,6 +138,7 @@ fn e2e_internal_navigation_to_unknown_target_errors() {
             Some("999"),
         )
         .unwrap_err();
+    // Assert
     assert!(matches!(err, CdpError::ProtocolError(_)));
     assert!(err.to_string().contains("999") || err.to_string().to_lowercase().contains("not found"));
 }
@@ -140,22 +146,28 @@ fn e2e_internal_navigation_to_unknown_target_errors() {
 #[test]
 // @trace REQ-BAO-API-004 [level:integration]
 fn e2e_internal_default_target_works_without_session_id() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     // default target 内部使用(无 session_id)
     let r = transport
         .send_command("Page.navigate", json!({"url":"https://y"}), None)
         .expect("default target");
+    // Assert
     assert_eq!(r["frameId"], "FRAME_0");
 }
 
 #[test]
 // @trace REQ-BAO-API-004 [level:integration]
 fn e2e_internal_close_then_send_returns_connection_closed() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     transport.close().unwrap();
     let err = transport
         .send_command("Page.navigate", json!({"url":"x"}), Some("1"))
         .unwrap_err();
+    // Assert
     assert!(matches!(err, CdpError::ConnectionClosed));
 }
 
@@ -169,6 +181,8 @@ fn e2e_internal_close_then_send_returns_connection_closed() {
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.addScriptTag] [level:integration]
 fn e2e_internal_cookie_management_via_eval_synthesis() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
 
     // 设置 cookie(通过 evaluate 调用 document.cookie)— 验证 IIFE 结构
@@ -181,6 +195,7 @@ fn e2e_internal_cookie_management_via_eval_synthesis() {
         )
         .expect("evaluate set-cookie");
     // MockServoBackend echo 返回原表达式
+    // Assert
     assert_eq!(r["result"]["value"], set_cookie_expr);
 
     // 读取 cookie — 同样通过 evaluate
@@ -198,6 +213,8 @@ fn e2e_internal_cookie_management_via_eval_synthesis() {
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.addScriptTag] [level:integration]
 fn e2e_internal_cookie_injection_vectors_neutralized() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
 
     // 攻击向量:cookie value 含 ; 试图分隔 cookie
@@ -218,6 +235,7 @@ fn e2e_internal_cookie_injection_vectors_neutralized() {
             .expect("addScriptTag");
         let expr = r["result"]["value"].as_str().expect("eval expression");
         // IIFE 必须包含 __args 声明
+        // Assert
         assert!(expr.contains("var __args="), "must use IIFE args pattern: {expr}");
         // body 不能直接出现 payload 拼接
         let body_start = expr.find("return (function(){").unwrap();
@@ -235,7 +253,9 @@ fn e2e_internal_cookie_injection_vectors_neutralized() {
 #[test]
 // @trace REQ-BAO-API-003 [event:Console] [level:integration]
 fn e2e_internal_event_listener_console_full_chain() {
+    // Arrange
     use bao_cdp_client::bridge::ConsoleLevel;
+    // Act
     let (mut transport, _backend, subscriber) = build_e2e_in_memory_with_events();
 
     // 模拟 servo 触发 console.log → 通过 EventSubscriber push
@@ -250,6 +270,7 @@ fn e2e_internal_event_listener_console_full_chain() {
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("expected console event");
+    // Assert
     assert_eq!(ev.method, "Log.entryAdded");
     assert_eq!(ev.session_id.as_deref(), Some("TARGET-CON"));
     assert_eq!(ev.params["entry"]["text"], "hello from page");
@@ -260,6 +281,8 @@ fn e2e_internal_event_listener_console_full_chain() {
 #[test]
 // @trace REQ-BAO-API-003 [event:PageError] [level:integration]
 fn e2e_internal_event_listener_page_error_full_chain() {
+    // Arrange
+    // Act
     let (mut transport, _backend, subscriber) = build_e2e_in_memory_with_events();
 
     subscriber.on_page_error(
@@ -273,6 +296,7 @@ fn e2e_internal_event_listener_page_error_full_chain() {
 
     transport.set_event_timeout(Duration::from_secs(2));
     let ev = transport.recv_event().unwrap().expect("expected exception event");
+    // Assert
     assert_eq!(ev.method, "Runtime.exceptionThrown");
     assert_eq!(ev.session_id.as_deref(), Some("TARGET-PE"));
     assert_eq!(ev.params["exceptionDetails"]["text"], "Uncaught Error: boom");
@@ -281,7 +305,9 @@ fn e2e_internal_event_listener_page_error_full_chain() {
 #[test]
 // @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_internal_event_listener_network_events_full_chain() {
+    // Arrange
     use std::collections::HashMap;
+    // Act
     let (mut transport, _backend, subscriber) = build_e2e_in_memory_with_events();
 
     let mut headers = HashMap::new();
@@ -306,6 +332,7 @@ fn e2e_internal_event_listener_network_events_full_chain() {
     }
 
     // 4 个事件全部到达
+    // Assert
     assert_eq!(methods.len(), 4);
     assert_eq!(methods[0].0, "Network.requestWillBeSent");
     assert_eq!(methods[0].1.as_deref(), Some("TARGET-NET"));
@@ -321,6 +348,8 @@ fn e2e_internal_event_listener_network_events_full_chain() {
 #[test]
 // @trace REQ-BAO-API-004 [domain:Target] [level:integration]
 fn e2e_internal_multi_target_isolation() {
+    // Arrange
+    // Act
     let (mut transport, backend) = build_e2e_in_memory();
 
     // 添加 2 个 target
@@ -331,6 +360,7 @@ fn e2e_internal_multi_target_isolation() {
     let nav_a = transport
         .send_command("Page.navigate", json!({"url":"https://a.example"}), Some("page-A"))
         .expect("navigate page-A");
+    // Assert
     assert_eq!(nav_a["frameId"], "FRAME_0");
 
     // 在 page-B navigate 不同 URL
@@ -350,6 +380,8 @@ fn e2e_internal_multi_target_isolation() {
 #[test]
 // @trace REQ-BAO-API-004 [domain:Target] [level:integration]
 fn e2e_internal_multi_target_close_one_does_not_affect_others() {
+    // Arrange
+    // Act
     let (mut transport, backend) = build_e2e_in_memory();
     backend.add_target("p1");
     backend.add_target("p2");
@@ -372,6 +404,7 @@ fn e2e_internal_multi_target_close_one_does_not_affect_others() {
     let err = transport
         .send_command("Page.navigate", json!({"url":"https://x"}), Some("p2"))
         .unwrap_err();
+    // Assert
     assert!(matches!(err, CdpError::ProtocolError(_)));
 }
 
@@ -382,6 +415,8 @@ fn e2e_internal_multi_target_close_one_does_not_affect_others() {
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.tap] [level:integration]
 fn e2e_internal_input_tap_uses_iife_safe_selector() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
         .send_command(
@@ -392,6 +427,7 @@ fn e2e_internal_input_tap_uses_iife_safe_selector() {
         .expect("tap");
     let expr = r["result"]["value"].as_str().expect("eval expression");
     // B 类必须走 IIFE 路径
+    // Assert
     assert!(expr.contains("var __args="));
     assert!(expr.contains("\"#submit-btn\""));
     assert!(expr.contains("}).apply(null, __args);"));
@@ -400,6 +436,8 @@ fn e2e_internal_input_tap_uses_iife_safe_selector() {
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.hover] [level:integration]
 fn e2e_internal_input_hover_uses_iife_safe_selector() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
         .send_command(
@@ -409,6 +447,7 @@ fn e2e_internal_input_hover_uses_iife_safe_selector() {
         )
         .expect("hover");
     let expr = r["result"]["value"].as_str().expect("eval expression");
+    // Assert
     assert!(expr.contains("var __args="));
     assert!(expr.contains("\".menu-item\""));
 }
@@ -416,6 +455,8 @@ fn e2e_internal_input_hover_uses_iife_safe_selector() {
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
 fn e2e_internal_input_type_with_text_payload() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
         .send_command(
@@ -426,6 +467,7 @@ fn e2e_internal_input_type_with_text_payload() {
         .expect("type");
     let expr = r["result"]["value"].as_str().expect("eval expression");
     // selector + text 都在 __args 中(JSON encoded)
+    // Assert
     assert!(expr.contains("\"input[name=q]\""));
     assert!(expr.contains("\"hello world\""));
     assert!(expr.contains("var __args="));
@@ -434,6 +476,8 @@ fn e2e_internal_input_type_with_text_payload() {
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
 fn e2e_internal_input_fill_with_payload() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
         .send_command(
@@ -443,6 +487,7 @@ fn e2e_internal_input_fill_with_payload() {
         )
         .expect("fill");
     let expr = r["result"]["value"].as_str().expect("eval expression");
+    // Assert
     assert!(expr.contains("\"#username\""));
     assert!(expr.contains("\"user@example.com\""));
 }
@@ -450,6 +495,8 @@ fn e2e_internal_input_fill_with_payload() {
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.press] [level:integration]
 fn e2e_internal_input_press_with_key_payload() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
         .send_command(
@@ -459,6 +506,7 @@ fn e2e_internal_input_press_with_key_payload() {
         )
         .expect("press");
     let expr = r["result"]["value"].as_str().expect("eval expression");
+    // Assert
     assert!(expr.contains("\"Enter\""));
     assert!(expr.contains("var __args="));
 }
@@ -470,6 +518,8 @@ fn e2e_internal_input_press_with_key_payload() {
 #[test]
 // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
 fn e2e_internal_dom_query_selector_returns_node() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
         .send_command(
@@ -479,17 +529,21 @@ fn e2e_internal_dom_query_selector_returns_node() {
         )
         .expect("querySelector");
     // Mock 返回 NodeDescriptor
+    // Assert
     assert!(r["nodeId"].is_i64() || r["nodeId"].is_string());
 }
 
 #[test]
 // @trace REQ-BAO-API-004 [domain:DOM] [level:integration]
 fn e2e_internal_dom_get_document_returns_root() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
         .send_command("DOM.getDocument", json!({}), Some("1"))
         .expect("getDocument");
     // 返回 root 节点
+    // Assert
     assert!(r["root"].is_object());
     assert_eq!(r["root"]["nodeName"], "#document");
 }
@@ -497,6 +551,8 @@ fn e2e_internal_dom_get_document_returns_root() {
 #[test]
 // @trace REQ-BAO-API-005 [method:ElementHandle.getAttribute] [level:integration]
 fn e2e_internal_dom_get_attribute_via_iife() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     // ElementHandle.getAttribute 需要 objectId(CDP-style)
     let r = transport
@@ -507,12 +563,15 @@ fn e2e_internal_dom_get_attribute_via_iife() {
         )
         .expect("getAttribute");
     // MockServoBackend runtime_call_function_on echo 回函数声明摘要
+    // Assert
     assert!(r["result"].is_object() || r["result"]["value"].is_string());
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:ElementHandle.textContent] [level:integration]
 fn e2e_internal_dom_text_content_via_iife() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let r = transport
         .send_command(
@@ -521,6 +580,7 @@ fn e2e_internal_dom_text_content_via_iife() {
             Some("1"),
         )
         .expect("textContent");
+    // Assert
     assert!(r["result"].is_object() || r["result"]["value"].is_string());
 }
 
@@ -569,109 +629,145 @@ fn assert_iife_safe(expr: &str, payload: &str) {
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
 fn e2e_internal_injection_defense_dom_xss_img_onerror() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = r#"<img src=x onerror=alert(1)>"#;
     let expr = b_class_eval(&mut transport, "Page.type", json!({"selector":"#x","text":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
 fn e2e_internal_injection_defense_javascript_uri_scheme() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "javascript:alert(1)";
     let expr = b_class_eval(&mut transport, "Page.fill", json!({"selector":"#x","value":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.addScriptTag] [level:integration]
 fn e2e_internal_injection_defense_script_tag_injection() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "<script>alert('XSS')</script>";
     let expr = b_class_eval(&mut transport, "Page.addScriptTag", json!({"content":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
 fn e2e_internal_injection_defense_template_literal() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "${alert(1)}";
     let expr = b_class_eval(&mut transport, "Page.exposeFunction", json!({"name":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
 fn e2e_internal_injection_defense_prototype_pollution() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "__proto__";
     let expr = b_class_eval(&mut transport, "Page.exposeFunction", json!({"name":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
 fn e2e_internal_injection_defense_constructor_pollution() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "constructor";
     let expr = b_class_eval(&mut transport, "Page.exposeFunction", json!({"name":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.exposeFunction] [level:integration]
 fn e2e_internal_injection_defense_sql_style_quote() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "'; DROP TABLE users; --";
     let expr = b_class_eval(&mut transport, "Page.exposeFunction", json!({"name":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.emulateMedia] [level:integration]
 fn e2e_internal_injection_defense_svg_onload() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "<svg/onload=alert(1)>";
     let expr = b_class_eval(&mut transport, "Page.emulateMedia", json!({"media":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.tap] [level:integration]
 fn e2e_internal_injection_defense_quote_escape_attempt() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     // 试图用单引号逃逸
     let payload = "'); alert(1); //";
     let expr = b_class_eval(&mut transport, "Page.tap", json!({"selector":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
 fn e2e_internal_injection_defense_backslash_escape() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "\\';alert(1);//";
     let expr = b_class_eval(&mut transport, "Page.fill", json!({"selector":"#x","value":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.fill] [level:integration]
 fn e2e_internal_injection_defense_unicode_control_chars() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "\u{0000}\u{001B}\u{2028}"; // NUL + ESC + LS
     let expr = b_class_eval(&mut transport, "Page.fill", json!({"selector":"#x","value":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
 #[test]
 // @trace REQ-BAO-API-005 [method:Page.type] [level:integration]
 fn e2e_internal_injection_defense_newline_in_payload() {
+    // Arrange
+    // Act
     let (mut transport, _backend) = build_e2e_in_memory();
     let payload = "line1\nline2\rline3";
     let expr = b_class_eval(&mut transport, "Page.type", json!({"selector":"#x","text":payload}));
+    // Assert
     assert_iife_safe(&expr, payload);
 }
 
@@ -685,10 +781,12 @@ fn e2e_internal_injection_defense_newline_in_payload() {
 #[test]
 #[ignore = "real servo requires BAO_TEST_REAL_SERVO=1 + PagePool backend"]
 fn e2e_real_servo_full_navigation() {
+    // Arrange — @trace REQ-BAO-API-001 [level:system] 占位测试
+    // Act
     if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
         return;
     }
-    // 占位:真 servo 集成需 bao_browser::PagePoolBackend。
+    // Assert — 占位:真 servo 集成需 bao_browser::PagePoolBackend。
     // 接入后将执行 Page.navigate + captureScreenshot + 校验 PNG 头。
     // 当前 Mock 路径已在 e2e_internal_basic_navigation_full_chain 完整覆盖。
 }
@@ -696,8 +794,10 @@ fn e2e_real_servo_full_navigation() {
 #[test]
 #[ignore = "real servo requires BAO_TEST_REAL_SERVO=1"]
 fn e2e_real_servo_dom_queryselector() {
+    // Arrange — @trace REQ-BAO-API-001 [level:system] 占位测试
+    // Act
     if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
         return;
     }
-    // 占位:真 servo 上 querySelector DOM 操作
+    // Assert — 占位:真 servo 上 querySelector DOM 操作
 }

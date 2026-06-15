@@ -124,21 +124,28 @@ fn echo_handler(mut stream: TcpStream) {
 
 #[test]
 fn ws_transport_kind() {
+    // Arrange
     let server = MiniCdpServer::new(echo_handler);
+    // Act
     let t = WebSocketTransport::connect(&server.url()).unwrap();
+    // Assert
     assert_eq!(t.kind(), TransportKind::WebSocket);
 }
 
 #[test]
 fn ws_transport_connect_handshake_succeeds() {
+    // Arrange
     let server = MiniCdpServer::new(echo_handler);
+    // Act
     let mut t = WebSocketTransport::connect(&server.url()).expect("handshake");
     let result = t.send_command("Page.navigate", json!({}), None).expect("send");
+    // Assert
     assert_eq!(result["echoedMethod"], "Page.navigate");
 }
 
 #[test]
 fn ws_transport_send_command_increments_id() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         // Server responds to each frame; we serve 3 frames.
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
@@ -147,6 +154,7 @@ fn ws_transport_send_command_increments_id() {
         let mut decoder = bao_cdp::ws_codec::FrameDecoder::new();
         for _ in 0..3 {
             let header = match decoder.decode_frame(&mut stream) {
+                // Act
                 Ok(Some(h)) => h,
                 _ => return,
             };
@@ -171,6 +179,7 @@ fn ws_transport_send_command_increments_id() {
         thread::sleep(Duration::from_millis(50));
     });
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
+    // Assert
     assert_eq!(t.current_id(), 1);
     t.send_command("A", json!({}), None).unwrap();
     assert_eq!(t.current_id(), 2);
@@ -182,12 +191,14 @@ fn ws_transport_send_command_increments_id() {
 
 #[test]
 fn ws_transport_send_command_with_session_id() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
         }
         let mut decoder = bao_cdp::ws_codec::FrameDecoder::new();
         let header = match decoder.decode_frame(&mut stream) {
+            // Act
             Ok(Some(h)) => h,
             _ => return,
         };
@@ -211,11 +222,13 @@ fn ws_transport_send_command_with_session_id() {
     });
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     let r = t.send_command("X.y", json!({}), Some("TARGET-42")).unwrap();
+    // Assert
     assert_eq!(r["echoedSession"], "TARGET-42");
 }
 
 #[test]
 fn ws_transport_recv_event_gets_pushed() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
@@ -225,6 +238,7 @@ fn ws_transport_recv_event_gets_pushed() {
             "method": "Page.frameNavigated",
             "params": {"url": "https://example.com"},
         });
+        // Act
         let frame = encode_text_unmasked(&serde_json::to_string(&event).unwrap());
         let _ = stream.write_all(&frame);
         let _ = stream.flush();
@@ -233,12 +247,14 @@ fn ws_transport_recv_event_gets_pushed() {
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     t.set_event_timeout(Duration::from_secs(2));
     let ev = t.recv_event().unwrap().expect("expected event");
+    // Assert
     assert_eq!(ev.method, "Page.frameNavigated");
     assert_eq!(ev.params["url"], "https://example.com");
 }
 
 #[test]
 fn ws_transport_recv_event_with_session_id() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
@@ -248,6 +264,7 @@ fn ws_transport_recv_event_with_session_id() {
             "params": {},
             "sessionId": "TARGET-7",
         });
+        // Act
         let frame = encode_text_unmasked(&serde_json::to_string(&event).unwrap());
         let _ = stream.write_all(&frame);
         let _ = stream.flush();
@@ -256,13 +273,16 @@ fn ws_transport_recv_event_with_session_id() {
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     t.set_event_timeout(Duration::from_secs(2));
     let ev = t.recv_event().unwrap().expect("expected event");
+    // Assert
     assert_eq!(ev.method, "Network.requestWillBeSent");
     assert_eq!(ev.session_id.as_deref(), Some("TARGET-7"));
 }
 
 #[test]
 fn ws_transport_recv_event_returns_none_on_timeout() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
+        // Act
         let _ = bao_cdp::ws_handshake::server_handshake(&mut stream);
         thread::sleep(Duration::from_millis(500));
     });
@@ -271,63 +291,81 @@ fn ws_transport_recv_event_returns_none_on_timeout() {
     let start = std::time::Instant::now();
     let ev = t.recv_event().unwrap();
     let elapsed = start.elapsed();
+    // Assert
     assert!(ev.is_none());
     assert!(elapsed.as_millis() < 200, "elapsed: {:?}", elapsed);
 }
 
 #[test]
 fn ws_transport_close_returns_connection_closed_after() {
+    // Arrange
     let server = MiniCdpServer::new(echo_handler);
+    // Act
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     t.close().unwrap();
     let err = t.send_command("X", json!({}), None).unwrap_err();
+    // Assert
     assert!(matches!(err, CdpError::ConnectionClosed));
 }
 
 #[test]
 fn ws_transport_close_idempotent() {
+    // Arrange
     let server = MiniCdpServer::new(echo_handler);
+    // Act
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     t.close().unwrap();
     t.close().unwrap();
+    // Assert
     t.close().unwrap();
 }
 
 #[test]
 fn ws_transport_connect_invalid_url_returns_handshake_error() {
+    // Arrange
+    // Act
     let err = WebSocketTransport::connect("not a url").unwrap_err();
+    // Assert
     assert!(matches!(err, CdpError::HandshakeError(_)));
 }
 
 #[test]
 fn ws_transport_connect_refused_returns_error() {
+    // Arrange
     // Use a port that's almost certainly closed.
+    // Act
     let err = WebSocketTransport::connect("ws://127.0.0.1:1/x").unwrap_err();
     // Could be IoError (refused) or HandshakeError — both acceptable.
     match err {
         CdpError::IoError(_) | CdpError::HandshakeError(_) => {}
+        // Assert
         other => panic!("expected io/handshake err, got {:?}", other),
     }
 }
 
 #[test]
 fn ws_transport_recv_event_after_close_returns_connection_closed() {
+    // Arrange
     let server = MiniCdpServer::new(echo_handler);
+    // Act
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     t.close().unwrap();
     let err = t.recv_event().unwrap_err();
+    // Assert
     assert!(matches!(err, CdpError::ConnectionClosed));
 }
 
 /// Round-trip test: send command, server pushes event, then second command.
 #[test]
 fn ws_transport_interleaved_command_and_event() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
         }
         // Push one unsolicited event first.
         let event = json!({"method": "Log.entryAdded", "params": {"text": "hi"}});
+        // Act
         let frame = encode_text_unmasked(&serde_json::to_string(&event).unwrap());
         let _ = stream.write_all(&frame);
         let _ = stream.flush();
@@ -356,6 +394,7 @@ fn ws_transport_interleaved_command_and_event() {
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     // send_command should succeed — but it should also queue the unsolicited event.
     let r = t.send_command("X", json!({}), None).unwrap();
+    // Assert
     assert_eq!(r["ok"], true);
     // The event pushed before our command should be queued for recv_event.
     let ev = t.recv_event().unwrap().expect("expected queued event");
@@ -365,12 +404,14 @@ fn ws_transport_interleaved_command_and_event() {
 
 #[test]
 fn ws_transport_json_rpc_error_response() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
         if bao_cdp::ws_handshake::server_handshake(&mut stream).is_err() {
             return;
         }
         let mut decoder = bao_cdp::ws_codec::FrameDecoder::new();
         let header = match decoder.decode_frame(&mut stream) {
+            // Act
             Ok(Some(h)) => h,
             _ => return,
         };
@@ -396,12 +437,15 @@ fn ws_transport_json_rpc_error_response() {
     let mut t = WebSocketTransport::connect(&server.url()).unwrap();
     let err = t.send_command("Unknown", json!({}), None).unwrap_err();
     let s = err.to_string();
+    // Assert
     assert!(s.contains("CDP protocol error"), "got: {}", s);
 }
 
 #[test]
 fn ws_transport_set_command_timeout_zero_means_immediate() {
+    // Arrange
     let server = MiniCdpServer::new(|mut stream| {
+        // Act
         let _ = bao_cdp::ws_handshake::server_handshake(&mut stream);
         // Don't respond — client should timeout.
         thread::sleep(Duration::from_millis(500));
@@ -412,6 +456,7 @@ fn ws_transport_set_command_timeout_zero_means_immediate() {
     // Either Timeout or IoError (reset) acceptable.
     match err {
         CdpError::Timeout(_) | CdpError::IoError(_) | CdpError::ConnectionClosed => {}
+        // Assert
         other => panic!("expected timeout/io/closed, got: {:?}", other),
     }
 }

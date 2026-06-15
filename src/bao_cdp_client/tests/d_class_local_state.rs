@@ -61,9 +61,12 @@ fn counter_handler() -> (EventHandler, Arc<AtomicU32>) {
 
 #[test]
 fn event_emitter_inner_on_invokes() {
+    // Arrange
     let inner = EventEmitterInner::new();
+    // Act
     let (h, counter) = counter_handler();
     let id = inner.on("test", h);
+    // Assert
     assert!(id > 0);
     inner.emit("test", &[]);
     assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -74,9 +77,12 @@ fn event_emitter_inner_on_invokes() {
 
 #[test]
 fn event_emitter_inner_once_invokes_once() {
+    // Arrange
     let inner = EventEmitterInner::new();
+    // Act
     let (h, counter) = counter_handler();
     inner.once("boom", h);
+    // Assert
     assert_eq!(inner.listener_count("boom"), 1);
     inner.emit("boom", &[]);
     assert_eq!(counter.load(Ordering::SeqCst), 1);
@@ -87,9 +93,12 @@ fn event_emitter_inner_once_invokes_once() {
 
 #[test]
 fn event_emitter_inner_off_removes() {
+    // Arrange
     let inner = EventEmitterInner::new();
+    // Act
     let (h, _c) = counter_handler();
     let id = inner.on("e", h);
+    // Assert
     assert_eq!(inner.listener_count("e"), 1);
     let res = inner.off("e", id);
     assert_eq!(res, SubscriptionResult::Removed);
@@ -98,36 +107,48 @@ fn event_emitter_inner_off_removes() {
 
 #[test]
 fn event_emitter_inner_off_unknown_id_not_found() {
+    // Arrange
     let inner = EventEmitterInner::new();
     let res = inner.off("e", 999);
+    // Act
+    // Assert
     assert_eq!(res, SubscriptionResult::NotFound);
 }
 
 #[test]
 fn event_emitter_inner_remove_all_specific() {
+    // Arrange
     let inner = EventEmitterInner::new();
+    // Act
     let (h, _) = counter_handler();
     inner.on("a", h.clone());
     inner.on("b", h);
     inner.remove_all_listeners(Some("a"));
+    // Assert
     assert_eq!(inner.listener_count("a"), 0);
     assert_eq!(inner.listener_count("b"), 1);
 }
 
 #[test]
 fn event_emitter_inner_remove_all_global() {
+    // Arrange
     let inner = EventEmitterInner::new();
+    // Act
     let (h, _) = counter_handler();
     inner.on("a", h.clone());
     inner.on("b", h);
     inner.remove_all_listeners(None);
+    // Assert
     assert_eq!(inner.listener_count("a"), 0);
     assert_eq!(inner.listener_count("b"), 0);
 }
 
 #[test]
 fn event_emitter_inner_listener_count_unknown() {
+    // Arrange
     let inner = EventEmitterInner::new();
+    // Act
+    // Assert
     assert_eq!(inner.listener_count("nope"), 0);
 }
 
@@ -137,45 +158,66 @@ fn event_emitter_inner_listener_count_unknown() {
 
 #[test]
 fn browser_is_connected_initial_true() {
+    // Arrange
+    // Act
     let b = make_browser();
+    // Assert
     assert!(b.is_connected());
 }
 
 #[test]
 fn browser_process_pid_local() {
+    // Arrange
+    // Act
     let b = make_browser();
+    // Assert
     assert_eq!(b.process(), Some(12345));
 }
 
 #[test]
 fn browser_ws_endpoint() {
+    // Arrange
+    // Act
     let b = make_browser();
+    // Assert
     assert_eq!(b.ws_endpoint(), "ws://127.0.0.1:9222");
 }
 
 #[test]
 fn browser_version_cached() {
+    // Arrange
+    // Act
     let b = make_browser();
+    // Assert
     assert_eq!(b.version(), Some("HeadlessChrome/120".into()));
 }
 
 #[test]
 fn browser_user_agent_cached() {
+    // Arrange
+    // Act
     let b = make_browser();
+    // Assert
     assert_eq!(b.user_agent(), Some("Test/1.0".into()));
 }
 
 #[test]
 fn browser_disconnect_marks_local() {
+    // Arrange
+    // Act
     let b = make_browser();
     b.disconnect();
+    // Assert
     assert!(!b.is_connected());
 }
 
 #[test]
 fn browser_close_clears_contexts_local() {
+    // Arrange
+    // Act
     let b = make_browser();
     let _ctx = new_context_on_rc(&b, ContextOptions::default());
+    // Assert
     assert_eq!(b.context_count(), 1);
     b.close();
     assert!(!b.is_connected());
@@ -188,16 +230,22 @@ fn browser_close_clears_contexts_local() {
 
 #[test]
 fn browser_context_browser_link() {
+    // Arrange
+    // Act
     let b = make_browser();
     let ctx = new_context_on_rc(&b, ContextOptions::default());
     let got = ctx.browser();
+    // Assert
     assert!(Rc::ptr_eq(&got, &b));
 }
 
 #[test]
 fn browser_context_pages_local() {
+    // Arrange
+    // Act
     let b = make_browser();
     let ctx = new_context_on_rc(&b, ContextOptions::default());
+    // Assert
     assert!(ctx.pages().is_empty());
     let _p = BrowserContext::new_page_for_test(&ctx);
     assert_eq!(ctx.pages().len(), 1);
@@ -205,34 +253,46 @@ fn browser_context_pages_local() {
 
 #[test]
 fn browser_context_is_incognito_local() {
+    // Arrange
+    // Act
     let b = make_browser();
     let ctx = new_context_on_rc(&b, ContextOptions { incognito: true, ..Default::default() });
+    // Assert
     assert!(ctx.is_incognito());
 }
 
 #[test]
 fn browser_context_override_permissions_local() {
+    // Arrange
+    // Act
     let b = make_browser();
     let ctx = new_context_on_rc(&b, ContextOptions::default());
     ctx.override_permissions("https://example.com", vec![PermissionOverride::Geolocation]);
+    // Assert
     assert_eq!(ctx.permission_overrides().len(), 1);
 }
 
 #[test]
 fn browser_context_clear_permission_overrides_local() {
+    // Arrange
+    // Act
     let b = make_browser();
     let ctx = new_context_on_rc(&b, ContextOptions::default());
     ctx.override_permissions("https://a", vec![PermissionOverride::Camera]);
     ctx.clear_permission_overrides();
+    // Assert
     assert!(ctx.permission_overrides().is_empty());
 }
 
 #[test]
 fn browser_context_close_local() {
+    // Arrange
+    // Act
     let b = make_browser();
     let ctx = new_context_on_rc(&b, ContextOptions::default());
     let _p = BrowserContext::new_page_for_test(&ctx);
     ctx.close();
+    // Assert
     assert!(ctx.is_closed());
     assert_eq!(ctx.pages().len(), 0);
 }
@@ -250,108 +310,149 @@ fn make_page() -> (Rc<Browser>, Rc<BrowserContext>, Rc<Page>) {
 
 #[test]
 fn page_browser_link() {
+    // Arrange
     let (b, _ctx, p) = make_page();
+    // Act
     let got = p.browser().unwrap();
+    // Assert
     assert!(Rc::ptr_eq(&got, &b));
 }
 
 #[test]
 fn page_browser_context_link() {
+    // Arrange
     let (_b, ctx, p) = make_page();
+    // Act
     let got = p.browser_context().unwrap();
+    // Assert
     assert!(Rc::ptr_eq(&got, &ctx));
 }
 
 #[test]
 fn page_is_closed_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Assert
     assert!(!p.is_closed());
+    // Act
     p.set_closed(true);
     assert!(p.is_closed());
 }
 
 #[test]
 fn page_main_frame_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
     let mf = p.main_frame();
+    // Act
+    // Assert
     assert!(mf.is_main_frame());
 }
 
 #[test]
 fn page_frames_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Assert
     assert_eq!(p.frames().len(), 1);
     let f2 = Rc::new(Frame::new("F2", false, Rc::downgrade(&p)));
+    // Act
     p.add_frame("F2", f2);
     assert_eq!(p.frames().len(), 2);
 }
 
 #[test]
 fn page_workers_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Assert
     assert!(p.workers().is_empty());
+    // Act
     p.add_worker(Worker::new("W1", "https://example.com/w.js", "worker"));
     assert_eq!(p.workers().len(), 1);
 }
 
 #[test]
 fn page_viewport_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Assert
     assert!(p.viewport().is_none());
+    // Act
     p.set_viewport(Viewport { width: 1920, height: 1080, ..Default::default() });
     assert_eq!(p.viewport().unwrap().width, 1920);
 }
 
 #[test]
 fn page_mouse_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.mouse().set_position(10.0, 20.0);
+    // Assert
     assert_eq!(p.mouse().current_x(), 10.0);
     assert_eq!(p.mouse().current_y(), 20.0);
 }
 
 #[test]
 fn page_keyboard_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.keyboard().set_modifier(1, true);
+    // Assert
     assert!(p.keyboard().is_shift_pressed());
 }
 
 #[test]
 fn page_touchscreen_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.touchscreen().add_touch(TouchPoint { x: 1.0, y: 2.0, ..Default::default() });
+    // Assert
     assert_eq!(p.touchscreen().touch_count(), 1);
 }
 
 #[test]
 fn page_coverage_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.coverage().set_js_started(true);
+    // Assert
     assert!(p.coverage().is_started());
 }
 
 #[test]
 fn page_tracing_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.tracing().set_started(true);
+    // Assert
     assert!(p.tracing().is_started());
 }
 
 #[test]
 fn page_accessibility_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.accessibility().add_node(AXNode {
         node_id: "1".into(),
         role: "button".into(),
         ..Default::default()
     });
+    // Assert
     assert_eq!(p.accessibility().node_count(), 1);
 }
 
 #[test]
 fn page_target_info_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.set_target_info(TargetInfo {
         target_id: "TARGET-1".into(),
         type_str: "page".into(),
@@ -362,60 +463,79 @@ fn page_target_info_local() {
         browser_context_id: None,
     });
     let info = p.target_info();
+    // Assert
     assert_eq!(info.title, "Test");
 }
 
 #[test]
 fn page_set_default_timeout_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.set_default_timeout(5000);
+    // Assert
     assert_eq!(p.default_timeout(), Some(Duration::from_millis(5000)));
 }
 
 #[test]
 fn page_set_default_navigation_timeout_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     p.set_default_navigation_timeout(30000);
+    // Assert
     assert_eq!(p.default_navigation_timeout(), Some(Duration::from_millis(30000)));
 }
 
 #[test]
 fn page_event_emitter_on_emit() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     let (h, counter) = counter_handler();
     p.on("load", h);
     p.emit("load", &[]);
+    // Assert
     assert_eq!(counter.load(Ordering::SeqCst), 1);
     assert_eq!(p.listener_count("load"), 1);
 }
 
 #[test]
 fn page_event_emitter_off() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     let (h, _) = counter_handler();
     let id = p.on("x", h);
     p.off("x", id);
+    // Assert
     assert_eq!(p.listener_count("x"), 0);
 }
 
 #[test]
 fn page_event_emitter_once() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     let (h, counter) = counter_handler();
     p.once("once_evt", h);
     p.emit("once_evt", &[]);
     p.emit("once_evt", &[]);
+    // Assert
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
 #[test]
 fn page_event_emitter_remove_all_listeners() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     let (h1, _) = counter_handler();
     let (h2, _) = counter_handler();
     p.on("a", h1);
     p.on("b", h2);
     p.remove_all_listeners(Some("a"));
+    // Assert
     assert_eq!(p.listener_count("a"), 0);
     assert_eq!(p.listener_count("b"), 1);
     p.remove_all_listeners(None);
@@ -428,55 +548,73 @@ fn page_event_emitter_remove_all_listeners() {
 
 #[test]
 fn frame_execution_context_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
     let mf = p.main_frame();
     let ctx = Rc::new(ExecutionContext::with_name_origin("CTX-1".into(), "main", "https://x"));
+    // Act
     mf.set_execution_context(ctx.clone());
+    // Assert
     assert_eq!(mf.execution_context().unwrap().id(), "CTX-1");
 }
 
 #[test]
 fn frame_is_detached_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
     let mf = p.main_frame();
+    // Assert
     assert!(!mf.is_detached());
+    // Act
     mf.set_detached(true);
     assert!(mf.is_detached());
 }
 
 #[test]
 fn frame_child_frames_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
     let parent = Rc::new(Frame::new("P", true, Rc::downgrade(&p)));
     let child = Rc::new(Frame::new("C", false, Rc::downgrade(&p)));
+    // Act
     parent.add_child(child.clone(), Rc::downgrade(&parent));
+    // Assert
     assert_eq!(parent.child_frames().len(), 1);
 }
 
 #[test]
 fn frame_parent_frame_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
     let parent = Rc::new(Frame::new("P", true, Rc::downgrade(&p)));
     let child = Rc::new(Frame::new("C", false, Rc::downgrade(&p)));
+    // Act
     parent.add_child(child, Rc::downgrade(&parent));
     let got = parent.child_frames()[0].parent_frame().unwrap();
+    // Assert
     assert_eq!(got.id(), "P");
 }
 
 #[test]
 fn frame_name_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
     let f = Rc::new(Frame::new("F", false, Rc::downgrade(&p)));
+    // Assert
     assert_eq!(f.name(), "");
+    // Act
     f.set_name("myFrame");
     assert_eq!(f.name(), "myFrame");
 }
 
 #[test]
 fn frame_url_local() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
     let f = Rc::new(Frame::new("F", false, Rc::downgrade(&p)));
+    // Assert
     assert_eq!(f.url(), "");
+    // Act
     f.set_url("https://example.com");
     assert_eq!(f.url(), "https://example.com");
 }
@@ -487,62 +625,83 @@ fn frame_url_local() {
 
 #[test]
 fn js_handle_as_element_returns_none() {
+    // Arrange
     let ctx = Rc::new(ExecutionContext::new("CTX-1".into()));
     let h = JSHandle::new(ctx, "OBJ-1");
+    // Act
+    // Assert
     assert!(h.as_element().is_none());
 }
 
 #[test]
 fn js_handle_json_value_cached() {
+    // Arrange
     let ctx = Rc::new(ExecutionContext::new("CTX-1".into()));
     let h = JSHandle::new(ctx, "OBJ-1");
+    // Assert
     assert!(h.json_value().is_none());
+    // Act
     h.set_json_value(serde_json::json!({"k": "v"}));
     assert_eq!(h.json_value().unwrap()["k"], "v");
 }
 
 #[test]
 fn js_handle_dispose_local() {
+    // Arrange
     let ctx = Rc::new(ExecutionContext::new("CTX-1".into()));
     let h = JSHandle::new(ctx, "OBJ-1");
+    // Assert
     assert!(!h.is_disposed());
+    // Act
     h.dispose();
     assert!(h.is_disposed());
 }
 
 #[test]
 fn js_handle_execution_context_local() {
+    // Arrange
     let ctx = Rc::new(ExecutionContext::new("CTX-1".into()));
     let h = JSHandle::new(ctx.clone(), "OBJ-1");
+    // Act
+    // Assert
     assert_eq!(h.execution_context().id(), "CTX-1");
 }
 
 #[test]
 fn element_handle_as_element_some() {
+    // Arrange
     let ctx = Rc::new(ExecutionContext::new("CTX-1".into()));
     let js = Rc::new(JSHandle::new(ctx, "OBJ-1"));
     let owner = Rc::new(Frame::new("F", true, Weak::new()));
     let eh = ElementHandle::new(js, owner);
+    // Act
+    // Assert
     assert!(eh.as_element().is_some());
 }
 
 #[test]
 fn element_handle_visibility_cached() {
+    // Arrange
     let ctx = Rc::new(ExecutionContext::new("CTX-1".into()));
     let js = Rc::new(JSHandle::new(ctx, "OBJ-1"));
     let owner = Rc::new(Frame::new("F", true, Weak::new()));
     let eh = ElementHandle::new(js, owner);
+    // Assert
     assert!(eh.is_visible().is_none());
+    // Act
     eh.set_visible(true);
     assert_eq!(eh.is_visible(), Some(true));
 }
 
 #[test]
 fn element_handle_owner_frame_local() {
+    // Arrange
     let ctx = Rc::new(ExecutionContext::new("CTX-1".into()));
     let js = Rc::new(JSHandle::new(ctx, "OBJ-1"));
     let owner = Rc::new(Frame::new("F", true, Weak::new()));
     let eh = ElementHandle::new(js, owner.clone());
+    // Act
+    // Assert
     assert_eq!(eh.owner_frame().id(), "F");
 }
 
@@ -552,50 +711,71 @@ fn element_handle_owner_frame_local() {
 
 #[test]
 fn request_url_local() {
+    // Arrange
     let r = Request::new("REQ-1");
+    // Act
     r.set_url("https://example.com");
+    // Assert
     assert_eq!(r.url(), "https://example.com");
 }
 
 #[test]
 fn request_method_local() {
+    // Arrange
     let r = Request::new("REQ-1");
+    // Act
     r.set_method("POST");
+    // Assert
     assert_eq!(r.method(), "POST");
 }
 
 #[test]
 fn request_headers_local() {
+    // Arrange
     let r = Request::new("REQ-1");
+    // Act
     r.add_header("content-type", "application/json");
+    // Assert
     assert_eq!(r.headers().len(), 1);
 }
 
 #[test]
 fn request_post_data_local() {
+    // Arrange
     let r = Request::new("REQ-1");
+    // Act
     r.set_post_data("hello");
+    // Assert
     assert_eq!(r.post_data(), Some("hello".into()));
 }
 
 #[test]
 fn request_resource_type_local() {
+    // Arrange
     let r = Request::new("REQ-1");
+    // Act
     r.set_resource_type("XHR");
+    // Assert
     assert_eq!(r.resource_type(), "XHR");
 }
 
 #[test]
 fn request_is_navigation_local() {
+    // Arrange
     let r = Request::new("REQ-1");
+    // Act
     r.set_navigation(true);
+    // Assert
     assert!(r.is_navigation_request());
 }
 
 #[test]
 fn request_failure_local() {
+    // Arrange
     let r = Request::new("REQ-1");
+    // Act
     r.set_failure("net::ERR_FAILED");
+    // Assert
     assert_eq!(r.failure(), Some("net::ERR_FAILED".into()));
 }
 
@@ -605,15 +785,21 @@ fn request_failure_local() {
 
 #[test]
 fn response_url_local() {
+    // Arrange
     let r = Response::new();
+    // Act
     r.set_url("https://example.com/api");
+    // Assert
     assert_eq!(r.url(), "https://example.com/api");
 }
 
 #[test]
 fn response_status_and_ok_local() {
+    // Arrange
     let r = Response::new();
+    // Act
     r.set_status(200);
+    // Assert
     assert_eq!(r.status(), Some(200));
     assert!(r.ok());
     r.set_status(500);
@@ -622,35 +808,49 @@ fn response_status_and_ok_local() {
 
 #[test]
 fn response_status_text_local() {
+    // Arrange
     let r = Response::new();
+    // Act
     r.set_status_text("Server Error");
+    // Assert
     assert_eq!(r.status_text(), "Server Error");
 }
 
 #[test]
 fn response_headers_local() {
+    // Arrange
     let r = Response::new();
+    // Act
     r.add_header("content-type", "text/html");
+    // Assert
     assert_eq!(r.headers().len(), 1);
 }
 
 #[test]
 fn response_from_cache_local() {
+    // Arrange
     let r = Response::new();
+    // Act
     r.set_from_cache(true);
+    // Assert
     assert!(r.from_cache());
 }
 
 #[test]
 fn response_from_service_worker_local() {
+    // Arrange
     let r = Response::new();
+    // Act
     r.set_from_service_worker(true);
+    // Assert
     assert!(r.from_service_worker());
 }
 
 #[test]
 fn response_security_details_local() {
+    // Arrange
     let r = Response::new();
+    // Act
     r.set_security_details(SecurityDetails {
         protocol: "TLS 1.3".into(),
         subject_name: "example.com".into(),
@@ -658,13 +858,17 @@ fn response_security_details_local() {
         valid_from: 0.0,
         valid_to: 0.0,
     });
+    // Assert
     assert_eq!(r.security_details().unwrap().protocol, "TLS 1.3");
 }
 
 #[test]
 fn response_remote_address_local() {
+    // Arrange
     let r = Response::new();
+    // Act
     r.set_remote_address(RemoteAddress { ip: "127.0.0.1".into(), port: 8080 });
+    // Assert
     assert_eq!(r.remote_address().unwrap().port, 8080);
 }
 
@@ -674,26 +878,38 @@ fn response_remote_address_local() {
 
 #[test]
 fn dialog_type_local() {
+    // Arrange
     let d = Dialog::new(DialogType::Alert, "Hi", None);
+    // Act
+    // Assert
     assert_eq!(d.dialog_type(), DialogType::Alert);
 }
 
 #[test]
 fn dialog_message_local() {
+    // Arrange
     let d = Dialog::new(DialogType::Alert, "Hello", None);
+    // Act
+    // Assert
     assert_eq!(d.message(), "Hello");
 }
 
 #[test]
 fn dialog_default_value_local() {
+    // Arrange
     let d = Dialog::new(DialogType::Prompt, "?", Some("default".into()));
+    // Act
+    // Assert
     assert_eq!(d.default_value(), Some("default".into()));
 }
 
 #[test]
 fn dialog_is_closed_local() {
+    // Arrange
     let d = Dialog::new(DialogType::Alert, "Hi", None);
+    // Assert
     assert!(!d.is_closed());
+    // Act
     d.set_closed();
     assert!(d.is_closed());
 }
@@ -704,19 +920,28 @@ fn dialog_is_closed_local() {
 
 #[test]
 fn console_message_type_local() {
+    // Arrange
     let m = bao_cdp_client::api::console_message::ConsoleMessage::new("log", "hello");
+    // Act
+    // Assert
     assert_eq!(m.console_type(), "log");
 }
 
 #[test]
 fn console_message_text_local() {
+    // Arrange
     let m = bao_cdp_client::api::console_message::ConsoleMessage::new("log", "hello");
+    // Act
+    // Assert
     assert_eq!(m.text(), "hello");
 }
 
 #[test]
 fn console_message_args_local() {
+    // Arrange
     let m = bao_cdp_client::api::console_message::ConsoleMessage::new("log", "hello");
+    // Act
+    // Assert
     assert_eq!(m.arg_count(), 0);
 }
 
@@ -726,29 +951,41 @@ fn console_message_args_local() {
 
 #[test]
 fn keyboard_is_shift_pressed_local() {
+    // Arrange
     let k = Keyboard::new();
+    // Act
     k.set_modifier(1, true); // MOD_SHIFT
+    // Assert
     assert!(k.is_shift_pressed());
 }
 
 #[test]
 fn keyboard_is_control_pressed_local() {
+    // Arrange
     let k = Keyboard::new();
+    // Act
     k.set_modifier(2, true); // MOD_CONTROL
+    // Assert
     assert!(k.is_control_pressed());
 }
 
 #[test]
 fn keyboard_is_alt_pressed_local() {
+    // Arrange
     let k = Keyboard::new();
+    // Act
     k.set_modifier(4, true); // MOD_ALT
+    // Assert
     assert!(k.is_alt_pressed());
 }
 
 #[test]
 fn keyboard_is_meta_pressed_local() {
+    // Arrange
     let k = Keyboard::new();
+    // Act
     k.set_modifier(8, true); // MOD_META
+    // Assert
     assert!(k.is_meta_pressed());
 }
 
@@ -758,16 +995,22 @@ fn keyboard_is_meta_pressed_local() {
 
 #[test]
 fn mouse_position_local() {
+    // Arrange
     let m = Mouse::new();
+    // Act
     m.set_position(10.0, 20.0);
+    // Assert
     assert_eq!(m.current_x(), 10.0);
     assert_eq!(m.current_y(), 20.0);
 }
 
 #[test]
 fn mouse_button_pressed_local() {
+    // Arrange
     let m = Mouse::new();
+    // Act
     m.press_button(MouseButton::Left);
+    // Assert
     assert!(m.is_button_pressed(MouseButton::Left));
 }
 
@@ -777,8 +1020,11 @@ fn mouse_button_pressed_local() {
 
 #[test]
 fn touchscreen_touch_count_local() {
+    // Arrange
     let ts = Touchscreen::new();
+    // Act
     ts.add_touch(TouchPoint::default());
+    // Assert
     assert_eq!(ts.touch_count(), 1);
 }
 
@@ -788,24 +1034,33 @@ fn touchscreen_touch_count_local() {
 
 #[test]
 fn coverage_is_started_local() {
+    // Arrange
     let c = Coverage::new();
+    // Assert
     assert!(!c.is_started());
+    // Act
     c.set_js_started(true);
     assert!(c.is_started());
 }
 
 #[test]
 fn tracing_is_started_local() {
+    // Arrange
     let t = Tracing::new();
+    // Assert
     assert!(!t.is_started());
+    // Act
     t.set_started(true);
     assert!(t.is_started());
 }
 
 #[test]
 fn accessibility_has_snapshot_local() {
+    // Arrange
     let a = bao_cdp_client::api::accessibility::Accessibility::new();
+    // Assert
     assert!(!a.has_snapshot());
+    // Act
     a.set_snapshot(AXNode {
         node_id: "root".into(),
         role: "rootWebArea".into(),
@@ -820,29 +1075,38 @@ fn accessibility_has_snapshot_local() {
 
 #[test]
 fn browser_event_emitter_trait_works() {
+    // Arrange
+    // Act
     let b = make_browser();
     let (h, counter) = counter_handler();
     b.on("disconnected", h);
     b.emit("disconnected", &[]);
+    // Assert
     assert_eq!(counter.load(Ordering::SeqCst), 1);
     assert_eq!(b.listener_count("disconnected"), 1);
 }
 
 #[test]
 fn browser_context_event_emitter_trait_works() {
+    // Arrange
+    // Act
     let b = make_browser();
     let ctx = new_context_on_rc(&b, ContextOptions::default());
     let (h, counter) = counter_handler();
     ctx.on("page", h);
     ctx.emit("page", &[]);
+    // Assert
     assert_eq!(counter.load(Ordering::SeqCst), 1);
 }
 
 #[test]
 fn page_event_emitter_listener_count_via_trait() {
+    // Arrange
     let (_b, _ctx, p) = make_page();
+    // Act
     let (h, _) = counter_handler();
     let id = p.on("load", h);
+    // Assert
     assert_eq!(p.listener_count("load"), 1);
     p.off("load", id);
     assert_eq!(p.listener_count("load"), 0);
@@ -899,8 +1163,10 @@ mod mock_transport_zero_call {
 
     #[test]
     fn d_class_methods_make_zero_transport_calls() {
+        // Arrange
         // 准备:Browser / BrowserContext / Page 链。
         // 调用所有 D 类 method,断言 transport 调用计数为 0。
+        // Act
         let b = make_browser();
         let ctx = new_context_on_rc(&b, ContextOptions::default());
         let page = BrowserContext::new_page_for_test(&ctx);
@@ -954,6 +1220,7 @@ mod mock_transport_zero_call {
         // 计数器仍为 0(因为我们没把这些对象绑定到 transport)。
         let (transport, counter) = CountingTransport::new();
         let _ = transport; // 仅占位
+        // Assert
         assert_eq!(counter.load(Ordering::SeqCst), 0);
     }
 
@@ -985,6 +1252,7 @@ mod mock_transport_zero_call {
 
 #[test]
 fn d_class_method_inventory_62() {
+    // Arrange
     // 此 test 是声明性的 — 列出 D 类 62 method 通过类型与 method 调用确认。
     // 若任一 method 缺失,编译期就会失败。
 
@@ -995,6 +1263,7 @@ fn d_class_method_inventory_62() {
     let _: &str = b.ws_endpoint();
     let _: Option<String> = b.version();
     let _: Option<String> = b.user_agent();
+    // Act
     b.disconnect();
     b.close();
 
@@ -1027,6 +1296,7 @@ fn d_class_method_inventory_62() {
     p.set_default_timeout(1000);
 
     // Frame (6)
+    // Assert
     let weak: std::rc::Weak<Page> = Rc::downgrade(&p);
     let f = Frame::new("F", false, weak);
     let _: &str = f.id();

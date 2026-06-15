@@ -52,7 +52,9 @@ fn assert_event<'a>(
 #[test]
 // @trace REQ-BAO-API-003 [event:Console] [level:integration]
 fn e2e_console_to_log_entry_added() {
+    // Arrange
     let ev = ServoEvent::Console {
+        // Act
         target_id: "TARGET-CON".into(),
         level: ConsoleLevel::Error,
         text: "boom".into(),
@@ -61,6 +63,7 @@ fn e2e_console_to_log_entry_added() {
         column: Some(5),
     };
     let out = translate(ev);
+    // Assert
     assert_eq!(out.len(), 1);
     let params = assert_event(&out[0], "Log.entryAdded", "TARGET-CON");
     let entry = &params["entry"];
@@ -74,7 +77,9 @@ fn e2e_console_to_log_entry_added() {
 #[test]
 // @trace REQ-BAO-API-003 [event:PageError] [level:integration]
 fn e2e_page_error_to_runtime_exception_thrown() {
+    // Arrange
     let ev = ServoEvent::PageError {
+        // Act
         target_id: "TARGET-PE".into(),
         text: "Uncaught TypeError".into(),
         url: Some("a.js".into()),
@@ -83,6 +88,7 @@ fn e2e_page_error_to_runtime_exception_thrown() {
         stack: Some("at f (a.js:20:3)".into()),
     };
     let out = translate(ev);
+    // Assert
     assert_eq!(out.len(), 1);
     let params = assert_event(&out[0], "Runtime.exceptionThrown", "TARGET-PE");
     assert!(params["timestamp"].is_number());
@@ -96,7 +102,9 @@ fn e2e_page_error_to_runtime_exception_thrown() {
 #[test]
 // @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_request_to_request_will_be_sent() {
+    // Arrange
     let mut headers = HashMap::new();
+    // Act
     headers.insert("X-A".into(), "1".into());
     let ev = ServoEvent::NetworkRequest {
         target_id: "T-NET".into(),
@@ -110,6 +118,7 @@ fn e2e_network_request_to_request_will_be_sent() {
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Network.requestWillBeSent", "T-NET");
+    // Assert
     assert_eq!(params["requestId"], "R1");
     assert_eq!(params["frameId"], "F1");
     assert_eq!(params["request"]["url"], "http://x");
@@ -120,7 +129,9 @@ fn e2e_network_request_to_request_will_be_sent() {
 #[test]
 // @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_response_to_response_received() {
+    // Arrange
     let ev = ServoEvent::NetworkResponse {
+        // Act
         target_id: "T-NET".into(),
         request_id: "R2".into(),
         url: "http://x".into(),
@@ -132,6 +143,7 @@ fn e2e_network_response_to_response_received() {
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Network.responseReceived", "T-NET");
+    // Assert
     assert_eq!(params["response"]["status"], 404);
     assert_eq!(params["response"]["statusText"], "Not Found");
 }
@@ -139,13 +151,16 @@ fn e2e_network_response_to_response_received() {
 #[test]
 // @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_loading_finish_to_loading_finished() {
+    // Arrange
     let ev = ServoEvent::NetworkLoadingFinish {
+        // Act
         target_id: "T-NET".into(),
         request_id: "R3".into(),
         encoded_data_length: 999,
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Network.loadingFinished", "T-NET");
+    // Assert
     assert_eq!(params["requestId"], "R3");
     assert_eq!(params["encodedDataLength"], 999);
 }
@@ -153,7 +168,9 @@ fn e2e_network_loading_finish_to_loading_finished() {
 #[test]
 // @trace REQ-BAO-API-003 [event:NetworkEvent] [level:integration]
 fn e2e_network_loading_fail_to_loading_failed() {
+    // Arrange
     let ev = ServoEvent::NetworkLoadingFail {
+        // Act
         target_id: "T-NET".into(),
         request_id: "R4".into(),
         error_text: "fail".into(),
@@ -161,6 +178,7 @@ fn e2e_network_loading_fail_to_loading_failed() {
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Network.loadingFailed", "T-NET");
+    // Assert
     assert_eq!(params["errorText"], "fail");
     assert_eq!(params["canceled"], true);
 }
@@ -168,7 +186,9 @@ fn e2e_network_loading_fail_to_loading_failed() {
 #[test]
 // @trace REQ-BAO-API-003 [event:DomMutation] [level:integration]
 fn e2e_dom_attribute_modified() {
+    // Arrange
     let ev = ServoEvent::DomAttributeModified {
+        // Act
         target_id: "T-DOM".into(),
         node_id: 1,
         name: "id".into(),
@@ -176,6 +196,7 @@ fn e2e_dom_attribute_modified() {
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "DOM.attributeModified", "T-DOM");
+    // Assert
     assert_eq!(params["nodeId"], 1);
     assert_eq!(params["name"], "id");
     assert_eq!(params["value"], "foo");
@@ -184,7 +205,9 @@ fn e2e_dom_attribute_modified() {
 #[test]
 // @trace REQ-BAO-API-003 [event:DomMutation] [level:integration]
 fn e2e_dom_character_data_modified() {
+    // Arrange
     let ev = ServoEvent::DomCharacterDataModified {
+        // Act
         target_id: "T-DOM".into(),
         node_id: 2,
         old_value: "old".into(),
@@ -192,6 +215,7 @@ fn e2e_dom_character_data_modified() {
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "DOM.characterDataModified", "T-DOM");
+    // Assert
     assert_eq!(params["nodeId"], 2);
     assert_eq!(params["characterData"], "new");
 }
@@ -199,7 +223,9 @@ fn e2e_dom_character_data_modified() {
 #[test]
 // @trace REQ-BAO-API-003 [event:SourceInfo] [level:integration]
 fn e2e_script_parsed() {
+    // Arrange
     let ev = ServoEvent::ScriptParsed {
+        // Act
         target_id: "T-SRC".into(),
         script_id: "S1".into(),
         url: "x.js".into(),
@@ -211,6 +237,7 @@ fn e2e_script_parsed() {
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Debugger.scriptParsed", "T-SRC");
+    // Assert
     assert_eq!(params["scriptId"], "S1");
     assert_eq!(params["url"], "x.js");
     assert_eq!(params["endLine"], 10);
@@ -219,7 +246,9 @@ fn e2e_script_parsed() {
 #[test]
 // @trace REQ-BAO-API-003 [event:FrameInfo] [level:integration]
 fn e2e_frame_navigated() {
+    // Arrange
     let ev = ServoEvent::FrameNavigated {
+        // Act
         target_id: "T-FR".into(),
         frame_id: "F1".into(),
         url: "http://x".into(),
@@ -227,6 +256,7 @@ fn e2e_frame_navigated() {
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Page.frameNavigated", "T-FR");
+    // Assert
     assert_eq!(params["frame"]["id"], "F1");
     assert_eq!(params["frame"]["url"], "http://x");
 }
@@ -234,31 +264,39 @@ fn e2e_frame_navigated() {
 #[test]
 // @trace REQ-BAO-API-003 [event:FrameInfo] [level:integration]
 fn e2e_frame_started_loading() {
+    // Arrange
     let ev = ServoEvent::FrameStartedLoading {
+        // Act
         target_id: "T-FR".into(),
         frame_id: "F2".into(),
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Page.frameStartedLoading", "T-FR");
+    // Assert
     assert_eq!(params["frameId"], "F2");
 }
 
 #[test]
 // @trace REQ-BAO-API-003 [event:FrameInfo] [level:integration]
 fn e2e_frame_stopped_loading() {
+    // Arrange
     let ev = ServoEvent::FrameStoppedLoading {
+        // Act
         target_id: "T-FR".into(),
         frame_id: "F3".into(),
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Page.frameStoppedLoading", "T-FR");
+    // Assert
     assert_eq!(params["frameId"], "F3");
 }
 
 #[test]
 // @trace REQ-BAO-API-003 [event:TimelineMarker] [level:integration]
 fn e2e_timeline_marker_to_performance_metrics() {
+    // Arrange
     let ev = ServoEvent::TimelineMarker {
+        // Act
         target_id: "T-TL".into(),
         name: "render".into(),
         start_time: 0.0,
@@ -266,6 +304,7 @@ fn e2e_timeline_marker_to_performance_metrics() {
     };
     let out = translate(ev);
     let params = assert_event(&out[0], "Performance.metrics", "T-TL");
+    // Assert
     assert!(params["metrics"].is_array());
     assert_eq!(params["title"], "servo-timeline-render");
 }
@@ -290,9 +329,11 @@ impl InMemoryBridge for NullBridge {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn e2e_full_chain_console_event_through_transport() {
+    // Arrange
     let bridge: Arc<dyn InMemoryBridge> = Arc::new(NullBridge);
     let mut transport = InMemoryTransport::new(bridge);
     let (subscriber, rx) = EventSubscriber::new();
+    // Act
     transport.attach_servo_event_receiver(rx);
 
     // 模拟 servo 端 push 一个 console 事件
@@ -310,6 +351,7 @@ fn e2e_full_chain_console_event_through_transport() {
         .recv_event()
         .expect("recv_event ok")
         .expect("got event");
+    // Assert
     assert_eq!(ev.method, "Log.entryAdded");
     assert_eq!(ev.session_id.as_deref(), Some("TARGET-X"));
     assert_eq!(ev.params["entry"]["text"], "hello");
@@ -318,9 +360,11 @@ fn e2e_full_chain_console_event_through_transport() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn e2e_full_chain_multiple_events_in_order() {
+    // Arrange
     let bridge: Arc<dyn InMemoryBridge> = Arc::new(NullBridge);
     let mut transport = InMemoryTransport::new(bridge);
     let (subscriber, rx) = EventSubscriber::new();
+    // Act
     transport.attach_servo_event_receiver(rx);
 
     // 依次 push 3 个不同类型的事件
@@ -331,6 +375,7 @@ fn e2e_full_chain_multiple_events_in_order() {
     let ev1 = transport.recv_event().unwrap().unwrap();
     let ev2 = transport.recv_event().unwrap().unwrap();
     let ev3 = transport.recv_event().unwrap().unwrap();
+    // Assert
     assert_eq!(ev1.method, "Log.entryAdded");
     assert_eq!(ev2.method, "Runtime.exceptionThrown");
     assert_eq!(ev3.method, "Page.frameStartedLoading");
@@ -339,9 +384,11 @@ fn e2e_full_chain_multiple_events_in_order() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn e2e_fallback_to_direct_cdp_event_channel_when_no_servo_events() {
+    // Arrange
     let bridge: Arc<dyn InMemoryBridge> = Arc::new(NullBridge);
     let mut transport = InMemoryTransport::new(bridge);
     let (_subscriber, rx) = EventSubscriber::new();
+    // Act
     transport.attach_servo_event_receiver(rx);
 
     // 直接通过 event_sender push 一个 CdpEvent(测试 mock 模式)
@@ -352,28 +399,34 @@ fn e2e_fallback_to_direct_cdp_event_channel_when_no_servo_events() {
 
     let ev = transport.recv_event().unwrap().unwrap();
     // servo channel 空,fallback 到 event_rx
+    // Assert
     assert_eq!(ev.method, "Custom.event");
 }
 
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn e2e_no_event_returns_none_on_timeout() {
+    // Arrange
     let bridge: Arc<dyn InMemoryBridge> = Arc::new(NullBridge);
     let mut transport = InMemoryTransport::new(bridge);
     let (_subscriber, rx) = EventSubscriber::new();
+    // Act
     transport.attach_servo_event_receiver(rx);
     transport.set_event_timeout(std::time::Duration::from_millis(50));
 
     let ev = transport.recv_event().unwrap();
+    // Assert
     assert!(ev.is_none(), "expected None on timeout");
 }
 
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn e2e_seven_classes_each_route_to_correct_method() {
+    // Arrange
     let bridge: Arc<dyn InMemoryBridge> = Arc::new(NullBridge);
     let mut transport = InMemoryTransport::new(bridge);
     let (subscriber, rx) = EventSubscriber::new();
+    // Act
     transport.attach_servo_event_receiver(rx);
 
     // 7 类事件全部 push
@@ -418,6 +471,7 @@ fn e2e_seven_classes_each_route_to_correct_method() {
         "Page.frameStoppedLoading",
         "Performance.metrics",
     ];
+    // Assert
     assert_eq!(methods.len(), expected.len(), "expected {} events", expected.len());
     for (i, exp) in expected.iter().enumerate() {
         assert_eq!(&methods[i].as_str(), exp, "event {} method mismatch", i);
@@ -431,11 +485,13 @@ fn e2e_seven_classes_each_route_to_correct_method() {
 #[test]
 // @trace REQ-BAO-API-003 [level:integration]
 fn all_seven_classes_zero_omission() {
+    // Arrange
     use std::collections::HashSet;
 
     // 列举 7 类的样本,translate 后收集所有 CDP method
     let samples: Vec<ServoEvent> = vec![
         ServoEvent::Console {
+            // Act
             target_id: "T".into(),
             level: ConsoleLevel::Info,
             text: String::new(),
@@ -544,6 +600,7 @@ fn all_seven_classes_zero_omission() {
         "Performance.metrics", // TimelineMarker
     ];
     for m in expected {
+        // Assert
         assert!(
             all_methods.contains(*m),
             "FAIL: 7 类事件零遗漏 — 缺少 CDP method {}",
