@@ -29,6 +29,8 @@ bun_collections = { path = "../collections" }
 bao_native_stubs = { path = "../bao_native_stubs" }
 # bao_runtime provides __bun_run_file_poll (extern "Rust") referenced by bun_io::FilePoll::on_update.
 bun_runtime.workspace = true
+# TASK-12 E2E fusion tests parse a typeof-snapshot via JSON.
+serde_json = "1"
 
 [features]
 live_uws_loop = []

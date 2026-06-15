@@ -545,6 +545,7 @@ dependencies = [
  "log",
  "mozjs",
  "mozjs_sys",
+ "serde_json",
 ]
 
 [[package]]
