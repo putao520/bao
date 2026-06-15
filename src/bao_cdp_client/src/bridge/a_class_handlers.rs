@@ -945,7 +945,9 @@ fn parse_device_metrics(params: &Value) -> Result<DeviceMetrics, BridgeError> {
 /// Base64 编码(无依赖,符合 RFC 4648)。
 ///
 /// 这里手写是因为包内 base64 crate 未引入;若未来加 bun_base64,可替换。
-fn base64_encode(input: &[u8]) -> String {
+///
+/// `pub(crate)` 暴露给 `b_class_handlers` 复用,避免重复实现。
+pub(crate) fn base64_encode(input: &[u8]) -> String {
     const TABLE: &[u8; 64] =
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((input.len() + 2) / 3 * 4);

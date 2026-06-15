@@ -4,6 +4,8 @@
 //! - [`cdp_rdp_bridge`]:CDPRdpBridge 结构 + InMemoryBridge 实现
 //! - [`command_dispatcher`]:match (domain, method) 分发框架
 //! - [`a_class_handlers`]:A 类 48 method handler
+//! - [`b_class_handlers`]:B 类 52 method handler(IIFE Eval 合成 + 多步合成)
+//! - [`eval_synthesizer`]:IIFE 安全封装 + JSON.stringify 参数化
 //! - [`e_class`]:E 类 31+ method servo 不支持标记
 //! - [`servo_backend`]:ServoBackend trait + MockServoBackend + 数据结构
 //! - [`error`]:BridgeError + CDP error code 映射
@@ -20,22 +22,25 @@
 //!   CDPRdpBridge::dispatch_command
 //!       ↓
 //!   command_dispatcher::dispatch_command (match domain.method)
-//!       ↓                                ↓
-//!   A 类 48 handler               E 类 31+ → NotSupported -32601
-//!       ↓
-//!   ServoBackend::page_navigate / runtime_evaluate / ...
-//!       ↓
-//!   MockServoBackend (test) | PagePoolBackend (TASK-3b+)
+//!       ↓                  ↓                ↓
+//!   A 类 48 handler  B 类 52 handler  E 类 31+ → NotSupported -32601
+//!       ↓                  ↓
+//!   ServoBackend    eval_synthesizer
+//!       ↓                  ↓
+//!   MockServoBackend / PagePoolBackend
 //! ```
 //!
 //! @trace REQ-BAO-API-004 [level:library]
+//! @trace REQ-BAO-API-005 [level:library]
 //! @trace REQ-BAO-API-007 [level:library]
 
 pub mod a_class_handlers;
+pub mod b_class_handlers;
 pub mod cdp_rdp_bridge;
 pub mod command_dispatcher;
 pub mod e_class;
 pub mod error;
+pub mod eval_synthesizer;
 pub mod servo_backend;
 
 pub use cdp_rdp_bridge::CDPRdpBridge;

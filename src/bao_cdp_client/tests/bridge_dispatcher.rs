@@ -45,13 +45,16 @@ fn unknown_method_in_runtime_returns_method_not_found() {
 }
 
 #[test]
-fn b_class_placeholder_returns_not_implemented_yet() {
-    // B-class methods return NotImplementedYet — TASK-3b will fill in.
+fn b_class_routes_to_eval_synthesizer() {
+    // @trace REQ-BAO-API-005 [level:integration]
+    // TASK-3b: B 类 method 通过 IIFE Eval 合成,返回 evaluate echo expression。
     let b = backend();
-    let err = dispatch_command(&*b, "Page.title", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotImplementedYet(_)));
-    // Server error code (-32000).
-    assert_eq!(err.cdp_error_code(), -32000);
+    let r = dispatch_command(&*b, "Page.title", json!({}), "1").unwrap();
+    // Mock backend echo:返回 evaluate expression 字符串
+    let v = r["result"]["value"].as_str().unwrap();
+    assert!(v.contains("(function(){"));
+    assert!(v.contains("return document.title;"));
+    assert!(v.ends_with("})()"));
 }
 
 #[test]

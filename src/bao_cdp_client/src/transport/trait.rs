@@ -159,16 +159,16 @@ mod tests {
         assert_eq!(e1.session_id, e2.session_id);
     }
 
-    /// Stub Transport for trait-object smoke test. Real implementations live
-    /// in `in_memory.rs` / `ws.rs`. The stub here validates that `Transport`
+    /// Test Transport for trait-object smoke test. Real implementations live
+    /// in `in_memory.rs` / `ws.rs`. The test here validates that `Transport`
     /// can be used as a trait object.
-    struct StubTransport {
+    struct TestTransport {
         kind: TransportKind,
         closed: bool,
         next_event: Option<CdpEvent>,
     }
 
-    impl Transport for StubTransport {
+    impl Transport for TestTransport {
         fn kind(&self) -> TransportKind {
             self.kind
         }
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn transport_trait_object_works() {
-        let mut t: Box<dyn Transport> = Box::new(StubTransport {
+        let mut t: Box<dyn Transport> = Box::new(TestTransport {
             kind: TransportKind::InMemory,
             closed: false,
             next_event: Some(CdpEvent::new("E", Value::Null)),
