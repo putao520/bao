@@ -56,7 +56,16 @@ impl From<std::io::Error> for ConnectError {
 
 /// 通信阶段错误(`Transport` 使用,具体实现在 TASK-2)。
 ///
-/// @trace REQ-BAO-API-001 [level:library]
+/// 变体覆盖 Plan MD 与 REQ-BAO-API-002 要求的完整错误码集合:
+/// - [`CdpError::ProtocolError`]: 协议层(JSON-RPC error / -32601 / 解析失败)
+/// - [`CdpError::JsonError`]: 序列化/反序列化失败
+/// - [`CdpError::IoError`]: 底层 I/O 错误
+/// - [`CdpError::ConnectionClosed`]: Transport 已关闭或对端断开
+/// - [`CdpError::Timeout`]: 命令调用或 recv_event 超时(TimeoutError)
+/// - [`CdpError::TransportError`]: Transport 实现内部错误(TransportError)
+/// - [`CdpError::HandshakeError`]: WebSocket 握手失败
+///
+/// @trace REQ-BAO-API-002 [interface:Transport]
 #[derive(Debug)]
 pub enum CdpError {
     /// 协议层错误(JSON-RPC error object / unknown method 等)。
@@ -67,8 +76,12 @@ pub enum CdpError {
     IoError(std::io::Error),
     /// 连接已关闭。
     ConnectionClosed,
-    /// 调用超时。
+    /// 调用超时(TimeoutError)。
     Timeout(String),
+    /// Transport 实现内部错误(TransportError)。携带上下文用于诊断。
+    TransportError(String),
+    /// WebSocket 握手失败。
+    HandshakeError(String),
 }
 
 impl fmt::Display for CdpError {
@@ -79,6 +92,8 @@ impl fmt::Display for CdpError {
             CdpError::IoError(err) => write!(f, "I/O error: {}", err),
             CdpError::ConnectionClosed => write!(f, "connection closed"),
             CdpError::Timeout(msg) => write!(f, "timeout: {}", msg),
+            CdpError::TransportError(msg) => write!(f, "transport error: {}", msg),
+            CdpError::HandshakeError(msg) => write!(f, "WebSocket handshake error: {}", msg),
         }
     }
 }
@@ -178,5 +193,21 @@ mod tests {
     fn cdp_error_connection_closed() {
         let err = CdpError::ConnectionClosed;
         assert_eq!(err.to_string(), "connection closed");
+    }
+
+    #[test]
+    fn cdp_error_transport_error_message() {
+        let err = CdpError::TransportError("channel closed".into());
+        let s = err.to_string();
+        assert!(s.contains("transport error"), "got: {}", s);
+        assert!(s.contains("channel closed"), "got: {}", s);
+    }
+
+    #[test]
+    fn cdp_error_handshake_error_message() {
+        let err = CdpError::HandshakeError("missing key".into());
+        let s = err.to_string();
+        assert!(s.contains("WebSocket handshake error"), "got: {}", s);
+        assert!(s.contains("missing key"), "got: {}", s);
     }
 }

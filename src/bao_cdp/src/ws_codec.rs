@@ -62,7 +62,12 @@ impl FrameDecoder {
 
     fn read_bytes<R: Read>(&mut self, reader: &mut R, n: usize) -> std::io::Result<()> {
         // Read in chunks (up to 8KB at a time) to avoid 1M syscalls for 1MB payloads.
-        let needed = n + self.pos;
+        // `needed` is the total buffer length required after this call.
+        // Use `self.buffer.len()` (not `self.pos`) — when called multiple times
+        // in sequence (e.g. read mask bytes THEN read payload bytes), the
+        // buffer has grown beyond pos and the next read must account for the
+        // already-buffered bytes.
+        let needed = n + self.buffer.len();
         while self.buffer.len() < needed {
             let mut chunk = [0u8; 8192];
             let to_read = std::cmp::min(chunk.len(), needed - self.buffer.len());

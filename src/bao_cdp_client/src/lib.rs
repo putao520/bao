@@ -9,7 +9,7 @@
 //!
 //! # 模块组织
 //! - [`browser`]: `Browser::connect(url)` 入口,URL scheme 路由
-//! - [`transport`]: Transport trait 占位(TASK-2 实现具体 InMemory/WebSocket)
+//! - [`transport`]: Transport trait 抽象 + InMemoryTransport / WebSocketTransport 双实现
 //! - [`connection`]: Connection 配置与 URL 解析结果
 //! - [`error`]: `ConnectError` + `CdpError` 错误类型
 //!
@@ -41,7 +41,10 @@ pub mod transport;
 pub use browser::Browser;
 pub use connection::{Connection, ConnectionConfig, ParsedConnectUrl};
 pub use error::{CdpError, ConnectError, Result};
-pub use transport::{Transport, TransportKind};
+pub use transport::{
+    CdpEvent, InMemoryBridge, InMemoryBridgeResponse, InMemoryTransport, Transport, TransportKind,
+    WebSocketTransport,
+};
 
 /// bao_cdp_client 当前版本(来自 Cargo.toml)。
 ///

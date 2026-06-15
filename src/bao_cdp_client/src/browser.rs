@@ -8,14 +8,21 @@
 //! 其他 scheme 一律返回 [`ConnectError::InvalidScheme`]。空串或无 `://` 返回
 //! [`ConnectError::InvalidUrl`]。
 //!
-//! TASK-1 只验证 URL scheme 路由(返回 Browser 占位实例 + 解析结果)。Transport
-//! 的实际构造与 CDP 握手在 TASK-2 完成。
+//! TASK-2 在 TASK-1 的基础上引入 [`build_transport`] / [`build_in_memory_transport`]
+//! / [`build_websocket_transport`] 三个构造方法,把已解析的 URL 实例化为真实 Transport。
+//! `connect()` 本身保持轻量(只解析 URL),实际握手由 `build_*` 触发 — 这与
+//! chromiumoxide 的 lazy connect 模式一致,且便于在 `connect("ws://127.0.0.1:9222")`
+//! 等不保证后端在线的测试场景下做路由验证。
 //!
 //! @trace REQ-BAO-API-001 [level:library]
+//! @trace REQ-BAO-API-002 [interface:Transport]
 
 use crate::connection::{ParsedConnectUrl};
 use crate::error::ConnectError;
-use crate::transport::TransportKind;
+use crate::transport::{
+    InMemoryBridge, InMemoryTransport, Transport, TransportKind, WebSocketTransport,
+};
+use std::sync::Arc;
 
 /// CDP Browser 实例。
 ///
@@ -118,27 +125,20 @@ impl Browser {
         }
     }
 
-    /// InMemory transport 路由。TASK-1 返回 Browser 占位;TASK-2 实际构造 InMemoryTransport。
+    /// InMemory transport 路由。Browser::connect 仅解析 URL,实际 Transport
+    /// 由 [`build_in_memory_transport`] 构造(传入 servo bridge 实现)。
     ///
     /// @trace REQ-BAO-API-001 [level:library]
     fn connect_in_memory(url: &str, parsed: ParsedConnectUrl) -> Result<Browser, ConnectError> {
-        // TASK-1 占位:仅持有 parsed,无副作用。TASK-2 会:
-        //   1. 通过 bao_browser::PagePool 获取/创建 servo page
-        //   2. 通过 bao_cdp_client::transport::InMemoryTransport 包裹 CDPRdpBridge
-        //   3. Browser 内持有 Arc<dyn Transport>
         let _ = url;
         Ok(Browser { parsed })
     }
 
-    /// WebSocket transport 路由(`ws://` / `wss://` 直连)。
-    /// TASK-1 返回 Browser 占位;TASK-2 实际构造 WebSocketTransport。
+    /// WebSocket transport 路由(`ws://` / `wss://` 直连)。Browser::connect 仅解析 URL,
+    /// 实际 Transport 由 [`build_websocket_transport`] 构造(触发 TCP + WebSocket 握手)。
     ///
     /// @trace REQ-BAO-API-001 [level:library]
     fn connect_ws(url: &str, parsed: ParsedConnectUrl) -> Result<Browser, ConnectError> {
-        // TASK-1 占位:不做实际 TCP/WebSocket 握手。
-        // TASK-2 会:
-        //   1. 复用 bao_cdp::ws_codec + ws_handshake 完成 RFC 6455 握手
-        //   2. 通过 bun_event_loop 调度收发
         let _ = url;
         Ok(Browser { parsed })
     }
@@ -191,6 +191,77 @@ impl Browser {
     /// @trace REQ-BAO-API-001 [level:library]
     pub fn is_websocket(&self) -> bool {
         self.parsed.transport_kind == TransportKind::WebSocket
+    }
+
+    /// 根据 URL scheme 构造对应 Transport。
+    ///
+    /// - InMemory URL(`memory://`)需要调用方传入 servo bridge → 调 [`build_in_memory_transport`]
+    /// - WebSocket URL(`ws://`)→ 调 [`build_websocket_transport`] 触发 TCP + WebSocket 握手
+    ///
+    /// 返回 `Box<dyn Transport>` 便于上层 Connection 持有 trait 对象。
+    ///
+    /// # 错误
+    /// - [`ConnectError::ConnectionFailed`]: TCP/WebSocket 握手失败
+    /// - [`ConnectError::InvalidScheme`]: URL scheme 与构造方式不匹配
+    ///
+    /// @trace REQ-BAO-API-002 [interface:Transport]
+    pub fn build_transport(&self) -> Result<Box<dyn Transport>, ConnectError> {
+        match self.parsed.transport_kind {
+            TransportKind::InMemory => Err(ConnectError::ConnectionFailed(
+                "InMemory transport requires explicit InMemoryBridge; use build_in_memory_transport()"
+                    .into(),
+            )),
+            TransportKind::WebSocket => {
+                let ws = WebSocketTransport::connect(&self.parsed.raw).map_err(|e| {
+                    ConnectError::ConnectionFailed(format!("ws connect: {}", e))
+                })?;
+                Ok(Box::new(ws))
+            }
+        }
+    }
+
+    /// 构造 InMemory transport(同进程 servo)。
+    ///
+    /// 调用方传入 `InMemoryBridge` 实现 — TASK-3 提供 `CDPRdpBridge` 实现,
+    /// TASK-2 单测用 mock bridge。
+    ///
+    /// # 错误
+    /// - [`ConnectError::InvalidScheme`]: 当前 URL 不是 `memory://`
+    ///
+    /// @trace REQ-BAO-API-002 [interface:Transport]
+    pub fn build_in_memory_transport(
+        &self,
+        bridge: Arc<dyn InMemoryBridge>,
+    ) -> Result<InMemoryTransport, ConnectError> {
+        if self.parsed.transport_kind != TransportKind::InMemory {
+            return Err(ConnectError::InvalidScheme(format!(
+                "expected memory://, got {:?}",
+                self.parsed.scheme
+            )));
+        }
+        Ok(InMemoryTransport::new(bridge))
+    }
+
+    /// 构造 WebSocket transport(外部 Chrome)。
+    ///
+    /// 触发 TCP 连接 + RFC 6455 WebSocket 握手(通过 `bao_cdp::ws_handshake::client_handshake`)。
+    /// 成功后返回包装好的 `WebSocketTransport`。
+    ///
+    /// # 错误
+    /// - [`ConnectError::InvalidScheme`]: 当前 URL 不是 `ws://`
+    /// - [`ConnectError::ConnectionFailed`]: TCP/WebSocket 握手失败
+    ///
+    /// @trace REQ-BAO-API-002 [interface:Transport]
+    pub fn build_websocket_transport(&self) -> Result<WebSocketTransport, ConnectError> {
+        if self.parsed.transport_kind != TransportKind::WebSocket {
+            return Err(ConnectError::InvalidScheme(format!(
+                "expected ws:// / http://, got {:?}",
+                self.parsed.scheme
+            )));
+        }
+        WebSocketTransport::connect(&self.parsed.raw).map_err(|e| {
+            ConnectError::ConnectionFailed(format!("ws connect: {}", e))
+        })
     }
 
     /// 内部构造(测试用)。
