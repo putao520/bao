@@ -166,6 +166,9 @@ unsafe fn populate_bun_object(
 
     // Bun.hash
     JS_DefineFunction(cx, bun_obj, c"hash".as_ptr(), Some(bun_hash), 2, JSPROP_ENUMERATE as u32);
+
+    // Bao.browser 全局对象(连接 CDP client — REQ-BAO-API-008)
+    crate::bao_browser_global::install_bao_browser_on_bun(cx, bun_obj);
 }
 
 pub fn install_bun_global(

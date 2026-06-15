@@ -12,6 +12,7 @@ pub mod bun_builtins;
 pub mod bun_sqlite;
 pub mod bun_ffi;
 pub mod bun_test;
+pub mod bao_browser_global;
 pub mod dispatch;
 pub mod fetch_api;
 pub mod gc_store;

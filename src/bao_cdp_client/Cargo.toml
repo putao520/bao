@@ -5,12 +5,21 @@ rust-version = "1.85"
 authors = ["Bao Project"]
 edition = "2021"
 license = "MIT OR MPL-2.0"
-description = "CDP client for Bao browser — fork of chromiumoxide adapted for servo + in-memory transport"
+description = "Unified browser control client over CDP — integrates servo (in-memory) and external Chrome (WebSocket), Playwright-style high-level API."
+repository = "https://github.com/putao520/bao"
+documentation = "https://docs.rs/bao_cdp_client"
+readme = false
+keywords = ["cdp", "chrome-devtools", "servo", "browser-automation", "playwright"]
+categories = ["api-bindings", "asynchronous", "development-tools::testing", "web-programming"]
+
+# docs.rs 配置:启用全部 feature 生成文档
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 # Bao ecosystem dependencies (Bun 适配 Servo; 不引入 tokio)
 bao_engine = { path = "../bao_engine" }
-bao_browser = { path = "../bao_browser" }
 bao_cdp = { path = "../bao_cdp" }
 bun_base64 = { path = "../base64" }
 bun_event_loop = { path = "../event_loop" }
@@ -29,3 +38,31 @@ cdp-protocol = "0.3"
 [lib]
 name = "bao_cdp_client"
 path = "src/lib.rs"
+
+# 示例代码 — 演示 bao_cdp_client 公共 API 的使用模式。
+#
+# 每个示例对应一种典型场景:
+# - basic_usage:        最小化连接 + 截图(memory:// servo)
+# - external_chrome:    连接外部 Chrome / Chromium(ws://)
+# - multi_page:         多 tab 管理(Page pool)
+# - event_listener:     监听 console / network 事件
+# - cookies:            Cookie 添加 / 查询 / 删除
+[[example]]
+name = "basic_usage"
+path = "examples/basic_usage.rs"
+
+[[example]]
+name = "external_chrome"
+path = "examples/external_chrome.rs"
+
+[[example]]
+name = "multi_page"
+path = "examples/multi_page.rs"
+
+[[example]]
+name = "event_listener"
+path = "examples/event_listener.rs"
+
+[[example]]
+name = "cookies"
+path = "examples/cookies.rs"

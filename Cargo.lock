@@ -493,7 +493,6 @@ dependencies = [
 name = "bao_cdp_client"
 version = "0.1.0"
 dependencies = [
- "bao_browser",
  "bao_cdp",
  "bao_engine",
  "bun_base64",
@@ -1912,6 +1911,7 @@ version = "0.1.0"
 dependencies = [
  "bao_boringssl_bridge",
  "bao_cdp",
+ "bao_cdp_client",
  "bao_crypto",
  "bao_engine",
  "bao_native_stubs",
