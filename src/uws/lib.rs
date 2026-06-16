@@ -1361,4 +1361,30 @@ pub use bun_uws_sys::AnyResponse;
 
 pub use bun_uws_sys::response::WriteResult;
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RFC 6455 codec / handshake / synchronous client & server (REQ-CDP-UWS-001)
+// ═══════════════════════════════════════════════════════════════════════════
+// uWS C++ upstream ships an unfinished ClientApp.h (empty `connect` body), so a
+// uWS-C++-backed WS client does not exist. To honor "all WS surface area lives
+// in bun_uws" (bao_cdp / bao_cdp_client depend on bun_uws only — no tungstenite),
+// we host the RFC 6455 codec + handshake + a synchronous client/server here.
+// The uWS C++ async `App::ws()` path stays available via the FFI types for
+// HTTP-server callers that own an event loop.
+
+pub mod ws_codec;
+pub mod ws_handshake;
+pub mod ws_client;
+pub mod ws_server;
+
+pub use ws_client::{parse_ws_url, ws_connect, RecvOutcome, WebSocketClient, WsClientError};
+pub use ws_codec::{
+    apply_mask, gen_mask_key, FrameDecoder, FrameEncoder, FrameHeader, Message,
+};
+pub use ws_handshake::{
+    client_handshake, compute_accept, generate_sec_websocket_key, server_handshake, HandshakeError,
+};
+pub use ws_server::{
+    bind_nonblocking, read_message, ReadOutcome, ReplayStream, WsServerConnection,
+};
+
 // ported from: src/uws/uws.zig

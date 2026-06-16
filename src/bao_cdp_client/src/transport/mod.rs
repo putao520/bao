@@ -5,8 +5,10 @@
 //! - [`in_memory::InMemoryTransport`]:通过 `InMemoryBridge` trait 抽象与 servo
 //!   ScriptThread 通信(servo WebView `!Send`,不可跨线程直调,DEC-CDP-002)。
 //!   TASK-3 替换为真实的 `CDPRdpBridge`(桥接 servo devtools_traits RDP)。
-//! - [`ws::WebSocketTransport`]:复用 `bao_cdp::ws_codec` + `bao_cdp::ws_handshake`
-//!   完成 RFC 6455 握手与帧编解码,通过 `std::net::TcpStream` 与外部 Chrome 通信。
+//! - [`ws::WebSocketTransport`]:通过 `bun_uws::ws_client::WebSocketClient`
+//!   完成 RFC 6455 握手与帧编解码(client-side masking),通过
+//!   `std::net::TcpStream` 与外部 Chrome 通信。
+//!   (REQ-CDP-UWS-001: bao_cdp::{ws_codec,ws_handshake} 已迁移至 bun_uws。)
 //!
 //! # 设计要点
 //!

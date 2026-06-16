@@ -24,6 +24,9 @@ bao_cdp = { path = "../bao_cdp" }
 bun_base64 = { path = "../base64" }
 bun_event_loop = { path = "../event_loop" }
 bun_url = { path = "../url" }
+# REQ-CDP-UWS-001: WebSocket transport now uses bun_uws::ws_client (RFC 6455
+# codec + masking + handshake), removing the hand-written mask/encode layer.
+bun_uws = { path = "../uws" }
 
 # Serialization
 serde = { version = "1", features = ["derive"] }

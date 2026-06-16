@@ -6,9 +6,15 @@
 // CDP 命令分发由 bao_cdp_client::CDPRdpBridge 接管。本 crate 退化为
 // 对外 CDP server 入口(Playwright 兼容)+ 基础设施(RFC 6455 codec、
 // JSON-RPC 编解码、Target 路由),被 bao_cdp_client 复用。
+//
+// TASK-18 (REQ-CDP-UWS-001): RFC 6455 codec / handshake / masking 已迁移
+// 至 `bun_uws`(ws_codec / ws_handshake / ws_client / ws_server)。本 crate
+// 通过 `pub use bun_uws::*` 重导出,删除自写 ws_codec/ws_handshake/ws。
+// 所有 WebSocket 表面入口统一在 `bun_uws`(bao_cdp / bao_cdp_client 仅依赖
+// bun_uws,无 tungstenite)。
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
@@ -18,9 +24,18 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 
 pub use cdp_server::{BaoEvent, ConsoleMessage};
 
-pub mod ws;
-pub mod ws_codec;
-pub mod ws_handshake;
+// WebSocket surface — re-exported from `bun_uws` (REQ-CDP-UWS-001).
+// Removed: bao_cdp::{ws, ws_codec, ws_handshake} self-written modules.
+pub use bun_uws::ws_codec::{self, FrameDecoder, FrameEncoder, FrameHeader, Message, Opcode};
+pub use bun_uws::ws_handshake::{
+    self, client_handshake, compute_accept, generate_sec_websocket_key, server_handshake,
+    HandshakeError,
+};
+pub use bun_uws::ws_server::{self, ReplayStream as UwsReplayStream, WsServerConnection};
+// `ws::read_message` / `ws::write_message` legacy helpers — replaced by
+// `WsServerConnection::{read, write_text}` from bun_uws. Kept API-compatible
+// via the new `ws` shim module below.
+
 mod protocol;
 mod backend;
 mod router;
@@ -34,45 +49,19 @@ pub use servo_bridge::{bridge_channel, BridgeCommand, BridgeReceiver, BridgeResp
 
 // ---------------------------------------------------------------------------
 // §2 ReplayStream + WebSocketConnection — shared with backend.rs
+//
+// REQ-CDP-UWS-001: `ReplayStream` is re-exported from `bun_uws::ws_server`
+// (same drain-peeked-buffer-then-stream semantics). The local alias keeps
+// the legacy `bao_cdp::ReplayStream` path working for backend.rs and tests.
 // ---------------------------------------------------------------------------
 
-pub struct ReplayStream {
-    pub stream: TcpStream,
-    pub replay: Cursor<Vec<u8>>,
-}
+pub use bun_uws::ws_server::ReplayStream;
 
-impl ReplayStream {
-    pub fn new(stream: TcpStream, peeked: Vec<u8>) -> Self {
-        ReplayStream {
-            stream,
-            replay: Cursor::new(peeked),
-        }
-    }
-}
-
-impl Read for ReplayStream {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        if self.replay.position() < self.replay.get_ref().len() as u64 {
-            return self.replay.read(buf);
-        }
-        self.stream.read(buf)
-    }
-}
-
-impl Write for ReplayStream {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.stream.write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.stream.flush()
-    }
-}
-
-/// WebSocket connection using our frame codec.
+/// WebSocket connection using the `bun_uws` frame codec.
 pub struct WebSocketConnection {
-    pub stream: ReplayStream,
-    pub decoder: ws_codec::FrameDecoder,
-    pub encoder: ws_codec::FrameEncoder,
+    pub stream: UwsReplayStream,
+    pub decoder: FrameDecoder,
+    pub encoder: FrameEncoder,
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +97,7 @@ pub enum CDPCommand {
 pub struct CDPSession {
     id: String,
     target_id: String,
-    pub ws: WebSocketConnection,
+    pub ws: WsServerConnection,
     bridge: Option<BridgeSender>,
     #[allow(dead_code)]
     cmd_tx: Sender<CDPCommand>,
@@ -284,31 +273,27 @@ impl CDPServer {
             return None;
         }
 
-        // WebSocket upgrade — perform handshake using our codec
+        // WebSocket upgrade — perform handshake using bun_uws codec
         if request.starts_with("GET /devtools/page/") {
             let _ = stream.set_read_timeout(Some(std::time::Duration::from_millis(1000)));
             let _ = stream.set_write_timeout(Some(std::time::Duration::from_millis(5000)));
 
-            let mut replay = ReplayStream::new(stream, buf[..n].to_vec());
-
-            if let Err(e) = ws_handshake::server_handshake(&mut replay) {
-                log::info!("CDP WebSocket handshake failed: {:?}", e);
-                return None;
+            let peeked = buf[..n].to_vec();
+            match WsServerConnection::accept(stream, peeked) {
+                Ok(ws_connection) => {
+                    return Some(CDPSession {
+                        id: format!("{:016x}", rand_id()),
+                        target_id: self.target_id.clone(),
+                        ws: ws_connection,
+                        bridge: self.bridge.clone(),
+                        cmd_tx: self.cmd_tx.clone(),
+                    });
+                }
+                Err(e) => {
+                    log::info!("CDP WebSocket handshake failed: {:?}", e);
+                    return None;
+                }
             }
-
-            let ws_connection = WebSocketConnection {
-                stream: replay,
-                decoder: ws_codec::FrameDecoder::new(),
-                encoder: ws_codec::FrameEncoder::new(),
-            };
-
-            return Some(CDPSession {
-                id: format!("{:016x}", rand_id()),
-                target_id: self.target_id.clone(),
-                ws: ws_connection,
-                bridge: self.bridge.clone(),
-                cmd_tx: self.cmd_tx.clone(),
-            });
         }
 
         respond_raw(&mut stream, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
@@ -325,10 +310,15 @@ impl CDPServer {
 impl CDPSession {
     #[allow(clippy::result_unit_err)]
     pub fn process(&mut self) -> Result<(), ()> {
-        let msg = match ws::read_message(&mut self.ws.decoder, &mut self.ws.stream) {
-            Ok(Some(msg)) => msg,
-            Ok(None) => return Ok(()),
-            Err(_) => return Err(()),
+        // bun_uws::WsServerConnection::read returns ReadOutcome, which already
+        // skips Ping/Pong control frames internally (replaces the old
+        // `ws::read_message` retry loop).
+        let outcome = self.ws.read();
+        let msg = match outcome {
+            ws_server::ReadOutcome::Text(t) => t,
+            ws_server::ReadOutcome::Binary(d) => String::from_utf8_lossy(&d).into_owned(),
+            ws_server::ReadOutcome::Control | ws_server::ReadOutcome::Pending => return Ok(()),
+            ws_server::ReadOutcome::Closed => return Err(()),
         };
 
         let cdp_msg: CDPMessage = match protocol::parse_message(&msg) {
@@ -343,7 +333,7 @@ impl CDPSession {
             self.bridge.as_ref(),
         );
         let response_json = protocol::serialize_response(&response);
-        let _ = ws::write_message(&mut self.ws.encoder, &mut self.ws.stream, &response_json);
+        let _ = self.ws.write_text(&response_json);
 
         Ok(())
     }
@@ -351,7 +341,7 @@ impl CDPSession {
     #[allow(clippy::result_unit_err)]
     pub fn send_event(&mut self, ev: &CDPEvent) -> Result<(), ()> {
         let json = protocol::serialize_event(ev);
-        ws::write_message(&mut self.ws.encoder, &mut self.ws.stream, &json)
+        self.ws.write_text(&json)
     }
 }
 

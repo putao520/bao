@@ -1,7 +1,12 @@
 // REQ-CDP-004: CDP backend abstraction (internal/external)  @trace REQ-CDP-001
 // @trace REQ-LIB-003
-use std::io::{Read, Write};
-use std::net::TcpStream;
+//
+// REQ-CDP-UWS-001: ExternalBackend now uses `bun_uws::ws_client::WebSocketClient`
+// (full RFC 6455 client handshake + masking) instead of the previous
+// `crate::WebSocketConnection` + hand-rolled inline handshake.
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use bun_uws::ws_client::{RecvOutcome, WebSocketClient, WsClientError};
 
 use crate::protocol::CDPError;
 
@@ -44,9 +49,21 @@ impl CdpBackend for InternalBackend {
     }
 }
 
+/// Map a [`WsClientError`] to the CDP error code set.
+fn ws_err_to_cdp(e: WsClientError) -> CDPError {
+    let (code, message) = match e {
+        WsClientError::InvalidUrl => (-32602, "invalid ws URL".to_string()),
+        WsClientError::Connect(io) => (-32603, format!("connect failed: {io}")),
+        WsClientError::Handshake(h) => (-32603, format!("handshake failed: {h:?}")),
+        WsClientError::Io(io) => (-32603, format!("io: {io}")),
+        WsClientError::Closed => (-32603, "connection closed".to_string()),
+    };
+    CDPError { code, message }
+}
+
 pub struct ExternalBackend {
     endpoint: String,
-    ws: std::sync::Mutex<Option<crate::WebSocketConnection>>,
+    ws: std::sync::Mutex<Option<WebSocketClient>>,
 }
 
 impl ExternalBackend {
@@ -64,64 +81,11 @@ impl ExternalBackend {
         })?;
 
         if guard.is_none() {
-            let tcp_url = self.endpoint.trim_start_matches("ws://");
-            let stream = TcpStream::connect(tcp_url).map_err(|e| CDPError {
-                code: -32603,
-                message: format!("connect failed: {e}"),
-            })?;
-            stream.set_nonblocking(false).map_err(|e| CDPError {
-                code: -32603,
-                message: format!("nonblocking failed: {e}"),
-            })?;
-
-            // Perform WebSocket client handshake
-            // For now, we'll use a simple synchronous implementation
-            // In production, this should use the full ws_handshake with client mode
-            let mut replay = crate::ReplayStream::new(stream, Vec::new());
-
-            // Send client handshake
-            let handshake = format!(
-                "GET / HTTP/1.1\r\n\
-                 Host: {}\r\n\
-                 Upgrade: websocket\r\n\
-                 Connection: Upgrade\r\n\
-                 Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\
-                 Sec-WebSocket-Version: 13\r\n\
-                 \r\n",
-                self.endpoint
-            );
-            replay
-                .write_all(handshake.as_bytes())
-                .map_err(|_| CDPError {
-                    code: -32603,
-                    message: "handshake write failed".into(),
-                })?;
-            replay.flush().map_err(|_| CDPError {
-                code: -32603,
-                message: "handshake flush failed".into(),
-            })?;
-
-            // Read server response (101 Switching Protocols)
-            let mut response = [0u8; 4096];
-            let n = replay.read(&mut response).map_err(|e| CDPError {
-                code: -32603,
-                message: format!("handshake read failed: {e}"),
-            })?;
-
-            let response_str = std::str::from_utf8(&response[..n]).unwrap_or("");
-            if !response_str.contains("101") && !response_str.contains("Sec-WebSocket-Accept") {
-                return Err(CDPError {
-                    code: -32603,
-                    message: "handshake failed: invalid response".into(),
-                });
-            }
-
-            let ws_connection = crate::WebSocketConnection {
-                stream: replay,
-                decoder: crate::ws_codec::FrameDecoder::new(),
-                encoder: crate::ws_codec::FrameEncoder::new(),
-            };
-            *guard = Some(ws_connection);
+            // bun_uws::ws_client::WebSocketClient performs the full RFC 6455
+            // client handshake (Sec-WebSocket-Key + SHA1 GUID verification) and
+            // wires up masking on every outbound frame.
+            let client = WebSocketClient::connect(&self.endpoint).map_err(ws_err_to_cdp)?;
+            *guard = Some(client);
         }
         Ok(())
     }
@@ -146,13 +110,10 @@ impl CdpBackend for ExternalBackend {
             message: "not connected".into(),
         })?;
 
-        let id = {
-            use std::time::{SystemTime, UNIX_EPOCH};
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as i64
-        };
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
 
         let mut msg_obj = serde_json::json!({
             "id": id,
@@ -166,16 +127,15 @@ impl CdpBackend for ExternalBackend {
             message: format!("serialize error: {e}"),
         })?;
 
-        crate::ws::write_message(&mut ws.encoder, &mut ws.stream, &msg_str).map_err(|_| CDPError {
-            code: -32603,
-            message: "websocket write failed".into(),
-        })?;
+        ws.send_text(&msg_str).map_err(ws_err_to_cdp)?;
 
-        for _ in 0..100 {
-            match crate::ws::read_message(&mut ws.decoder, &mut ws.stream) {
-                Ok(Some(response_str)) => {
+        // Poll for the matching response id (up to ~1s at 10ms cadence).
+        let deadline = SystemTime::now() + Duration::from_secs(1);
+        while SystemTime::now() < deadline {
+            match ws.recv().map_err(ws_err_to_cdp)? {
+                RecvOutcome::Message(_op, payload) => {
                     let resp: serde_json::Value =
-                        serde_json::from_str(&response_str).map_err(|e| CDPError {
+                        serde_json::from_slice(&payload).map_err(|e| CDPError {
                             code: -32700,
                             message: format!("parse error: {e}"),
                         })?;
@@ -191,10 +151,16 @@ impl CdpBackend for ExternalBackend {
                         }
                         return Ok(resp.get("result").cloned().unwrap_or(serde_json::json!({})));
                     }
+                    // Different id or an event — keep polling.
                 }
-                Ok(None) => {}
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                RecvOutcome::Timeout => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                RecvOutcome::Closed => {
+                    return Err(CDPError {
+                        code: -32603,
+                        message: "connection closed".into(),
+                    });
                 }
             }
         }

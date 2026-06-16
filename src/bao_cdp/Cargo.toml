@@ -5,15 +5,15 @@ edition = "2021"
 
 [dependencies]
 bao_engine = { path = "../bao_engine" }
-bao_boringssl_bridge = { path = "../bao_boringssl_bridge" }
-bun_boringssl_sys = { path = "../boringssl_sys" }
-bun_base64 = { path = "../base64" }
-bun_sha_hmac = { path = "../sha_hmac" }
+# REQ-CDP-UWS-001: RFC 6455 codec/handshake/client/server now owned by bun_uws.
+# Removed: bao_cdp::{ws, ws_codec, ws_handshake} self-written modules (-930 LOC).
+# Removed deps: bun_base64 / bun_sha_hmac / bao_boringssl_bridge / bun_boringssl_sys
+#              (only the deleted ws_handshake.rs needed them — SHA1+base64 now
+#               live in bun_uws::ws_handshake against BoringSSL directly).
+bun_uws = { path = "../uws" }
 compact_str.workspace = true
 cdp-server = { path = "../../src/cdp-server" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# BUG-CDP-007a resolved: base64/sha1 unused deps removed (no source-level usage).
-# BUG-CDP-007b resolved: tungstenite → ws_codec (RFC 6455 frame codec) + bun_sha_hmac/bun_base64
 cdp-protocol = "0.3"
 log = "0.4"

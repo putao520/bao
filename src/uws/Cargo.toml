@@ -21,7 +21,14 @@ enumset.workspace = true
 libc.workspace = true
 bitflags.workspace = true
 bun_boringssl.workspace = true
+bun_boringssl_sys.workspace = true
 bun_core.workspace = true
 bun_uws_sys.workspace = true
 bun_ptr.workspace = true
 bun_jsc_macros.workspace = true
+# REQ-CDP-UWS-001: bun_uws now owns the RFC 6455 codec + handshake + masking
+# (server-side via TcpListener-backed `ws_server`, client-side via `ws_client`).
+# uWS C++ upstream ships an incomplete ClientApp.h; we host the codec here so
+# all WS surface area lives in `bun_uws` (bao_cdp / bao_cdp_client depend on
+# bun_uws only — no tungstenite).
+bun_base64.workspace = true

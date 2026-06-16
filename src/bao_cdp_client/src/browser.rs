@@ -244,7 +244,7 @@ impl Browser {
 
     /// 构造 WebSocket transport(外部 Chrome)。
     ///
-    /// 触发 TCP 连接 + RFC 6455 WebSocket 握手(通过 `bao_cdp::ws_handshake::client_handshake`)。
+    /// 触发 TCP 连接 + RFC 6455 WebSocket 握手(通过 `bun_uws::ws_client::WebSocketClient`)。
     /// 成功后返回包装好的 `WebSocketTransport`。
     ///
     /// # 错误

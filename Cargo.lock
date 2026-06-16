@@ -476,11 +476,8 @@ dependencies = [
 name = "bao_cdp"
 version = "0.1.0"
 dependencies = [
- "bao_boringssl_bridge",
  "bao_engine",
- "bun_base64",
- "bun_boringssl_sys",
- "bun_sha_hmac",
+ "bun_uws",
  "cdp-protocol",
  "cdp-server",
  "compact_str",
@@ -498,6 +495,7 @@ dependencies = [
  "bun_base64",
  "bun_event_loop",
  "bun_url",
+ "bun_uws",
  "cdp-protocol",
  "log",
  "serde",
@@ -2294,7 +2292,9 @@ version = "0.0.0"
 dependencies = [
  "bitflags 2.11.1",
  "bstr",
+ "bun_base64",
  "bun_boringssl",
+ "bun_boringssl_sys",
  "bun_core",
  "bun_jsc_macros",
  "bun_opaque",
