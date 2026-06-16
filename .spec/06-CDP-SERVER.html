@@ -528,7 +528,7 @@
 </table>
 
 <p data-xref-id="CdpSessionGeneric" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-003" data-xref-type="req">REQ-CDS-003</span>
-<span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span> <a href="10-REQUIREMENTS.html#req-cdp-001" data-xref-type="req" data-xref-id="req-cdp-001">REQ-CDP-001</a></p>
+<span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span> <a href="./10-REQUIREMENTS#REQ-CDP-001" data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</a></p>
 </div>
 
 <div data-field-id="string;required;Target 唯一标识" data-field-title="string;required;页面标题" data-field-type="enum[page, iframe, worker, service_worker, browser];required;Target 类型" data-field-url="string;required;页面 URL" data-field-webSocketDebuggerUrl="string;required;WebSocket 调试 URL" data-entity-model-type="relational" data-entity="CdpTarget" id="cdptarget">
@@ -556,7 +556,7 @@
 <tr data-field="webSocketDebuggerUrl" data-required="true" data-type="string"><td>webSocketDebuggerUrl</td><td>string</td><td>是</td><td></td><td>WebSocket 调试 URL</td></tr>
 </table>
 
-<p data-xref-id="CdpTarget" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-002" data-xref-type="req">REQ-CDS-002</span> <a href="10-REQUIREMENTS.html#req-cdp-001" data-xref-type="req" data-xref-id="req-cdp-001">REQ-CDP-001</a> <a href="10-REQUIREMENTS.html#req-cdp-008" data-xref-type="req" data-xref-id="req-cdp-008">REQ-CDP-008</a></p>
+<p data-xref-id="CdpTarget" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-002" data-xref-type="req">REQ-CDS-002</span> <a href="./10-REQUIREMENTS#REQ-CDP-001" data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</a> <a href="./10-REQUIREMENTS#REQ-CDP-008" data-xref-type="req" data-xref-id="REQ-CDP-008">REQ-CDP-008</a></p>
 </div>
 
 <div data-entity-model-type="relational" data-entity="DomainRegistry" id="domainregistry">&gt;;required;domain 名 → DomainHandler 映射" data-field-event_sender="EventSender;required;注入到所有 DomainHandler 的事件发送器"&gt;
@@ -603,7 +603,7 @@
 <tr data-field="created_at" data-required="true" data-type="datetime"><td>created_at</td><td>datetime</td><td>是</td><td></td><td>订阅创建时间（Domain.enable 调用时间）</td></tr>
 </table>
 
-<p data-xref-id="EventSubscription" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span> <a href="10-REQUIREMENTS.html#req-cdp-001" data-xref-type="req" data-xref-id="req-cdp-001">REQ-CDP-001</a></p>
+<p data-xref-id="EventSubscription" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDS-005" data-xref-type="req">REQ-CDS-005</span> <a href="./10-REQUIREMENTS#REQ-CDP-001" data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</a></p>
 </div>
 
 <div data-field-browser_name="string;required;浏览器名称（/json/version 返回）" data-field-host="string;required;监听地址" data-field-http_timeout_seconds="integer;required;HTTP 请求超时秒数" data-field-max_sessions="integer;required;最大并发 Session 数" data-field-port="integer;required;监听端口" data-field-protocol_version="string;required;CDP 协议版本" data-field-user_agent="string;optional;用户代理字符串" data-field-v8_version="string;optional;JS 引擎版本标识" data-field-webkit_version="string;optional;渲染引擎版本标识" data-entity-model-type="relational" data-entity="ServerConfig" id="serverconfig">
