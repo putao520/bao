@@ -15,6 +15,7 @@ pub mod bun_test;
 pub mod bao_browser_global;
 pub mod dispatch;
 pub mod fetch_api;
+pub mod h3_fetch;
 pub mod gc_store;
 pub mod globals;
 pub mod web_api;

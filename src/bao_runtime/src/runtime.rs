@@ -19,6 +19,10 @@ pub struct BaoRuntime {
 impl BaoRuntime {
     pub fn new() -> ::std::result::Result<Self, JsError> {
         Self::init_env_aliases();
+        // @trace REQ-H3-001: 默认启用 h3/HTTP3 fetch 能力（BAO 是正常 BUN）。
+        // 在 HTTP 线程启动前设置，确保 bun_http::h3_alt_svc_enabled() 返回 true，
+        // fetch() 默认支持 Alt-Svc 协商 + force_http3 显式协议选项。
+        crate::h3_fetch::enable_h3_by_default();
         // Initialize bun_core output subsystem before any background thread
         // (e.g. fetch() worker) calls configure_thread() and hits the
         // STDOUT_STREAM_SET debug_assert.
