@@ -463,7 +463,14 @@ pub fn install_buffer_global(
                 Some(buffer_equals), 1, JSPROP_ENUMERATE as u32);
             JS_DefineFunction(cx, buf_proto.handle(), c"indexOf".as_ptr(),
                 Some(buffer_index_of), 1, JSPROP_ENUMERATE as u32);
-        }    }
+        }
+
+        // Wire Buffer.prototype.__proto__ = Uint8Array.prototype so every
+        // Buffer instance (already a real Uint8Array via create_buffer_object)
+        // passes `instanceof Uint8Array` and inherits length/indexed
+        // access/subarray/set directly from the SM typed-array implementation.
+        wire_buffer_proto_to_uint8array(cx.raw_cx());
+    }
 
     // Inject Buffer prototype methods via JS eval
     let proto_src = r#"
@@ -708,6 +715,18 @@ pub fn install_buffer_global(
 }
 
 /// Set Buffer.prototype as the prototype of a newly created buffer object.
+///
+/// The bao Buffer instance is now a real SM `Uint8Array` (typed array backed
+/// by an inline ArrayBuffer). Its prototype chain is:
+///
+/// ```text
+/// instance -> Buffer.prototype -> Uint8Array.prototype -> TypedArray.prototype -> ...
+/// ```
+///
+/// `set_buffer_proto` only rebinds the immediate prototype of the instance to
+/// `Buffer.prototype`; `Buffer.prototype.__proto__` is wired to
+/// `Uint8Array.prototype` once in `install_buffer_global` (see
+/// `wire_buffer_proto_to_uint8array`).
 unsafe fn set_buffer_proto(cx: *mut JSContext, obj: *mut JSObject) {
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() {
@@ -735,6 +754,97 @@ unsafe fn set_buffer_proto(cx: *mut JSContext, obj: *mut JSObject) {
     let _ = JS_SetPrototype(cx, obj_h, proto_root.handle().into());
 }
 
+/// Wire `Buffer.prototype.__proto__` to `Uint8Array.prototype`.
+///
+/// Makes every Buffer instance — already a real `Uint8Array` after
+/// `create_buffer_object` — pass `instanceof Uint8Array`, and inherit
+/// `length`/indexed access/`subarray`/`slice`/`set`/typed element reads
+/// directly from the SM typed-array implementation.
+// @trace REQ-ENG-005 [entity:Buffer]
+unsafe fn wire_buffer_proto_to_uint8array(cx: *mut JSContext) {
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return;
+    }
+    let cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let global_root = global);
+
+    // Buffer.prototype
+    let mut buffer_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"Buffer".as_ptr(),
+        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_val },
+    );
+    if !buffer_val.is_object() {
+        return;
+    }
+    rooted!(&in(cx_ref) let buffer_root = buffer_val.to_object());
+    let mut proto_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        buffer_root.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val },
+    );
+    if !proto_val.is_object() {
+        return;
+    }
+    rooted!(&in(cx_ref) let buf_proto = proto_val.to_object());
+
+    // Uint8Array.prototype
+    let mut u8_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        global_root.handle().into(),
+        c"Uint8Array".as_ptr(),
+        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut u8_val },
+    );
+    if !u8_val.is_object() {
+        return;
+    }
+    rooted!(&in(cx_ref) let u8_ctor = u8_val.to_object());
+    let mut u8_proto_val = UndefinedValue();
+    JS_GetProperty(
+        cx,
+        u8_ctor.handle().into(),
+        c"prototype".as_ptr(),
+        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut u8_proto_val },
+    );
+    if !u8_proto_val.is_object() {
+        return;
+    }
+    rooted!(&in(cx_ref) let u8_proto = u8_proto_val.to_object());
+
+    let _ = JS_SetPrototype(cx, buf_proto.handle().into(), u8_proto.handle().into());
+}
+
+/// Read the raw byte slice of a Buffer-like object via the SM typed-array API.
+///
+/// Accepts any ArrayBufferView (Buffer, Uint8Array, DataView, ...) and returns
+/// a `(length, data_ptr)` pair, or `(0, null)` if `obj` isn't a typed array.
+/// The returned pointer is only valid until the next GC, so callers must copy
+/// the bytes out before any allocation.
+// @trace REQ-ENG-005 [entity:Buffer]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn buffer_view_bytes(obj: *mut JSObject) -> (usize, *mut u8) {
+    let mut length: usize = 0;
+    let mut is_shared = false;
+    let mut data: *mut u8 = ::std::ptr::null_mut();
+    let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+        obj,
+        &mut length,
+        &mut is_shared,
+        &mut data,
+    );
+    if unwrapped.is_null() || data.is_null() {
+        (0, ::std::ptr::null_mut())
+    } else {
+        (length, data)
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_constructor(
     cx: *mut JSContext,
@@ -743,8 +853,12 @@ unsafe extern "C" fn buffer_constructor(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-        if !obj.is_null() { set_buffer_proto(cx, obj); args.rval().set(mozjs::jsval::ObjectValue(obj)); }
+        let obj = create_buffer_object(cx, &[]);
+        if !obj.is_null() {
+            args.rval().set(mozjs::jsval::ObjectValue(obj));
+        } else {
+            args.rval().set(UndefinedValue());
+        }
         return true;
     }
     let first = *args.get(0).ptr;
@@ -753,55 +867,34 @@ unsafe extern "C" fn buffer_constructor(
         if !s.is_null() {
             let rust_str = crate::jsstr_to_rust_string(cx, s);
             let bytes = rust_str.as_bytes();
-            let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-            if obj.is_null() { args.rval().set(UndefinedValue()); return true; }
-            set_buffer_proto(cx, obj);
-            for (i, &byte) in bytes.iter().enumerate() {
-                let val = mozjs::jsval::Int32Value(byte as i32);
-                rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let v = val);
-                JS_DefineElement(cx,
-                    Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
-                    i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+            let obj = create_buffer_object(cx, bytes);
+            if obj.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
             }
-            rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let len = mozjs::jsval::Int32Value(bytes.len() as i32));
-            JS_DefineProperty(cx,
-                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
-                c"length".as_ptr() as *const ::std::os::raw::c_char,
-                len.handle().into(), JSPROP_ENUMERATE as u32);
-            let buf_val = mozjs::jsval::BooleanValue(true);
-            rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let bv = buf_val);
-            JS_DefineProperty(cx,
-                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
-                c"_isBuffer".as_ptr() as *const ::std::os::raw::c_char,
-                bv.handle().into(), 0u32);
             args.rval().set(mozjs::jsval::ObjectValue(obj));
             return true;
         }
     }
     if first.is_int32() {
         let size = first.to_int32().max(0) as usize;
-        let obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-        if obj.is_null() { args.rval().set(UndefinedValue()); return true; }
-        set_buffer_proto(cx, obj);
-        for i in 0..size {
-            rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let v = mozjs::jsval::Int32Value(0));
-            JS_DefineElement(cx,
-                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
-                i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+        // `new Buffer(size)` allocates an UNINITIALISED buffer (Node.js
+        // semantics, deprecated but supported). SM's JS_NewUint8Array zeroes
+        // the backing store, which is stricter than Node.js but never leaks
+        // heap data — and it's the same behaviour Buffer.alloc(size) gives.
+        // We do not zero-fill a second time; the bytes are already 0.
+        let bytes = vec![0u8; size];
+        let obj = create_buffer_object(cx, &bytes);
+        if obj.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
         }
-        rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let len = mozjs::jsval::Int32Value(size as i32));
-        JS_DefineProperty(cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
-            c"length".as_ptr() as *const ::std::os::raw::c_char,
-            len.handle().into(), JSPROP_ENUMERATE as u32);
-        let buf_val = mozjs::jsval::BooleanValue(true);
-        rooted!(&in(mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx))) let bv = buf_val);
-        JS_DefineProperty(cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
-            c"_isBuffer".as_ptr() as *const ::std::os::raw::c_char,
-            bv.handle().into(), 0u32);
         args.rval().set(mozjs::jsval::ObjectValue(obj));
         return true;
+    }
+    // Buffer.from-style object/array argument — defer to buffer_from.
+    if first.is_object() {
+        return buffer_from(cx, argc, vp);
     }
     args.rval().set(UndefinedValue());
     true
@@ -929,32 +1022,62 @@ unsafe fn create_buffer_from_bytes(
 /// Build a Buffer instance wrapping the given bytes and return the raw object
 /// pointer. The caller owns the returned reference. Returns null on OOM.
 ///
+/// The instance is a real SM `Uint8Array` (typed array backed by an inline
+/// ArrayBuffer). This makes `instanceof Uint8Array` true, gives native
+/// `length`/indexed element access/`subarray`/`slice`/`set`, and crucially
+/// makes `Buffer.allocUnsafe(64 MiB)` an O(1) allocation instead of a
+/// per-byte `JS_DefineElement` storm that would take minutes.
+///
 /// Shared by globals.rs Buffer methods, node_crypto.rs (randomBytes) and
 /// node_fs.rs (readFileSync without encoding) so that all paths return real
 /// Buffer instances (`Buffer.isBuffer(x) === true`).
 // @trace REQ-ENG-005 [entity:Buffer]
 #[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn create_buffer_object(cx: *mut JSContext, bytes: &[u8]) -> *mut JSObject {
-    let mut cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let raw_obj = JS_NewPlainObject(&mut cx_ref);
-    if raw_obj.is_null() {
+    let cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    // Allocate a real Uint8Array. SM initialises the underlying ArrayBuffer to
+    // zero, so an empty `bytes` slice yields a clean zero-length typed array.
+    let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len());
+    if u8_obj.is_null() {
         return ::std::ptr::null_mut();
     }
-    rooted!(&in(cx_ref) let buf_obj = raw_obj);
+
+    // Copy caller-supplied bytes into the typed array's inline buffer. We must
+    // root the typed array while we touch its data pointer so a GC cannot move
+    // it out from under us. The data pointer is obtained via the SM accessor
+    // which requires an `AutoRequireNoGC` guard — we pass a null guard which
+    // is the documented fast-path: the caller is responsible for not running
+    // JS/GC between `JS_GetUint8ArrayData` and the last use of the pointer,
+    // which we honour by writing all bytes before returning.
+    rooted!(&in(cx_ref) let buf_obj = u8_obj);
+
+    if !bytes.is_empty() {
+        let mut is_shared = false;
+        let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+            buf_obj.get(),
+            &mut is_shared,
+            ::std::ptr::null(),
+        );
+        if !data_ptr.is_null() {
+            ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+        }
+    }
+
+    // Rebind the prototype to Buffer.prototype so Buffer-specific methods
+    // (toString/slice/equals/copy/indexOf + the JS-injected helpers like
+    // write/fill/readUInt8/etc.) take precedence, while Uint8Array.prototype
+    // provides length/indexed access/subarray/etc. transparently.
     set_buffer_proto(cx, buf_obj.get());
 
-    let obj_handle = buf_obj.handle().into();
-
-    rooted!(&in(cx_ref) let length_val = Int32Value(bytes.len() as i32));
-    JS_DefineProperty(cx, obj_handle, c"length".as_ptr(), length_val.handle().into(), JSPROP_ENUMERATE as u32);
-
+    // Internal marker used by Buffer.isBuffer (Node.js-compatible detection).
     rooted!(&in(cx_ref) let is_buf = BooleanValue(true));
-    JS_DefineProperty(cx, obj_handle, c"_isBuffer".as_ptr(), is_buf.handle().into(), 0u32);
-
-    for (i, &byte) in bytes.iter().enumerate() {
-        rooted!(&in(cx_ref) let val = Int32Value(byte as i32));
-        JS_DefineElement(cx, obj_handle, i as u32, val.handle().into(), JSPROP_ENUMERATE as u32);
-    }
+    JS_DefineProperty(
+        cx,
+        buf_obj.handle().into(),
+        c"_isBuffer".as_ptr(),
+        is_buf.handle().into(),
+        0u32,
+    );
 
     buf_obj.get()
 }
@@ -973,27 +1096,40 @@ unsafe extern "C" fn buffer_to_string(
     }
 
     let obj = this.to_object();
-    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
 
-    let mut length_val = UndefinedValue();
-    let length_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut length_val };
-    JS_GetProperty(cx, obj_handle, c"length".as_ptr(), length_handle);
-
-    let len = if length_val.is_int32() { length_val.to_int32() as usize } else { 0 };
-    let mut bytes = Vec::with_capacity(len);
-    for i in 0..len {
-        let mut elem = UndefinedValue();
-        let elem_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem };
-        JS_GetElement(cx, obj_handle, i as u32, elem_handle);
-        bytes.push(if elem.is_int32() { elem.to_int32() as u8 } else { 0 });
-    }
-
+    // Decode the encoding argument before reading the typed-array data, so the
+    // JS_GetProperty / JS_NewStringCopyZ allocations do not race with the raw
+    // data pointer returned by the SM accessor.
     let encoding = if argc > 0 && (*args.get(0).ptr).is_string() {
         jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(0).ptr).to_string()))
     } else {
         String::new()
     };
     let enc_lower = encoding.to_lowercase();
+
+    // Honour start/end arguments (Node: toString(enc, start, end)). Default
+    // to the full buffer.
+    let (len, data_ptr) = buffer_view_bytes(obj);
+
+    let start = if argc > 1 && (*args.get(1).ptr).is_int32() {
+        (*args.get(1).ptr).to_int32().max(0) as usize
+    } else { 0 };
+    let end = if argc > 2 && (*args.get(2).ptr).is_int32() {
+        let e = (*args.get(2).ptr).to_int32();
+        if e < 0 { 0 } else { e as usize }.min(len)
+    } else { len };
+    let (start, end) = if start > end { (end, end) } else { (start, end) };
+
+    // Slice the bytes into an owned Vec so the encoding path is free to
+    // allocate strings / call into bun_base64 without worrying about the GC
+    // moving the typed-array backing store.
+    let bytes: Vec<u8> = if data_ptr.is_null() || start >= end {
+        Vec::new()
+    } else {
+        let slice = ::std::slice::from_raw_parts(data_ptr.add(start), end - start);
+        slice.to_vec()
+    };
 
     let output = match enc_lower.as_str() {
         "hex" => bun_core::fmt::bytes_to_hex_lower_string(&bytes),
@@ -1067,6 +1203,33 @@ unsafe extern "C" fn buffer_alloc(
         else { 0 }
     } else { 0 };
 
+    // SM's JS_NewUint8Array zeroes the backing store, so for `fill_byte == 0`
+    // (the default Node alloc) we can short-circuit and never materialise a
+    // `Vec<u8>` of `size` bytes just to throw it away. This is the path that
+    // `Buffer.alloc(64 MiB)` / `Buffer.allocUnsafe(64 MiB)` hit, and skipping
+    // the extra allocation is what makes the bun/test/js/node/buffer-concat
+    // test (#1 allocates one 64 MiB buffer in <1 ms instead of timing out).
+    if fill_byte == 0 {
+        let sized = mozjs_sys::jsapi::JS_NewUint8Array(cx, size);
+        if sized.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        set_buffer_proto(cx, sized);
+        let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let sized_root = sized);
+        rooted!(&in(cx_ref) let is_buf = BooleanValue(true));
+        JS_DefineProperty(
+            cx,
+            sized_root.handle().into(),
+            c"_isBuffer".as_ptr(),
+            is_buf.handle().into(),
+            0u32,
+        );
+        args.rval().set(mozjs::jsval::ObjectValue(sized));
+        return true;
+    }
+
     create_buffer_from_bytes(cx, &args, &vec![fill_byte; size])
 }
 
@@ -1103,85 +1266,155 @@ unsafe extern "C" fn buffer_concat(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        create_buffer_from_bytes(cx, &args, &[])
-    } else {
-        let list_val = *args.get(0).ptr;
-        if !list_val.is_object() {
-            create_buffer_from_bytes(cx, &args, &[])
-        } else {
-            let list_obj = list_val.to_object();
-            let list_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &list_obj };
-            let mut len_val = UndefinedValue();
-            JS_GetProperty(cx, list_h, c"length".as_ptr(), MutableHandle::<Value> {
-                _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
-            });
-            let list_len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+        return create_buffer_from_bytes(cx, &args, &[]);
+    }
+    let list_val = *args.get(0).ptr;
+    if !list_val.is_object() {
+        return create_buffer_from_bytes(cx, &args, &[]);
+    }
 
-            let mut all_bytes = Vec::new();
-            for i in 0..list_len {
-                let mut elem = UndefinedValue();
-                JS_GetElement(cx, list_h, i as u32, MutableHandle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
-                });
-                if elem.is_object() {
-                    let buf_obj = elem.to_object();
-                    let buf_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &buf_obj };
-                    let mut blen = UndefinedValue();
-                    JS_GetProperty(cx, buf_h, c"length".as_ptr(), MutableHandle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData, ptr: &mut blen,
-                    });
-                    // Length can exceed int32 (>2 GiB); accept double as well so
-                    // the ceiling check below fires for absurdly large buffers
-                    // instead of silently truncating b_len to 0.
-                    let b_len: usize = if blen.is_int32() {
-                        blen.to_int32().max(0) as usize
-                    } else if blen.is_double() {
-                        let d = blen.to_double();
-                        if d.is_finite() && d > 0.0 { d as usize } else { 0 }
-                    } else {
-                        0
-                    };
-                    // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
-                    // overflow MAX_BUFFER_SIZE. `Buffer.concat([huge, huge, ...])` is
-                    // the common abuse vector (bun/test/js/node/buffer-concat.test.ts
-                    // allocates 1024 × 64 MiB), so we bail out as soon as the running
-                    // total crosses the ceiling rather than waiting for OOM.
-                    if b_len > MAX_BUFFER_SIZE || all_bytes.len().saturating_add(b_len) > MAX_BUFFER_SIZE {
-                        let msg = format!(
-                            "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
-                            MAX_BUFFER_SIZE
-                        );
-                        let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap());
-                        mozjs::error::throw_range_error(cx, c_msg.as_ref());
-                        return false;
-                    }
-                    for j in 0..b_len {
-                        let mut byte_val = UndefinedValue();
-                        JS_GetElement(cx, buf_h, j as u32, MutableHandle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
-                        });
-                        all_bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
-                    }
-                }
+    let list_obj = list_val.to_object();
+    let list_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &list_obj };
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(cx, list_h, c"length".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
+    });
+    let list_len: usize = if len_val.is_int32() {
+        len_val.to_int32().max(0) as usize
+    } else if len_val.is_double() {
+        let d = len_val.to_double();
+        if d.is_finite() && d > 0.0 { d as usize } else { 0 }
+    } else {
+        0
+    };
+
+    // Two-pass concat:
+    //   1) Walk the list once, resolving each element's length via the SM
+    //      typed-array byte-length accessor (O(1)). Abort the whole call with
+    //      RangeError if the running total would exceed MAX_BUFFER_SIZE.
+    //   2) Allocate the output once and `memcpy` each element's bytes into it
+    //      via the raw typed-array data pointer.
+    //
+    // The previous per-element `JS_GetElement` loop was the root cause of the
+    // `Buffer.allocUnsafe(64 MiB)` hang: even a single such buffer cost 64 M
+    // API round-trips, and `Buffer.concat([huge, huge, ...])` was effectively
+    // a denial-of-service on the JS engine. The two-pass + memcpy version is
+    // O(sum of bytes) regardless of how many elements there are.
+    let mut element_lengths: Vec<usize> = Vec::with_capacity(list_len);
+    let mut total: usize = 0;
+    for i in 0..list_len {
+        let mut elem = UndefinedValue();
+        JS_GetElement(cx, list_h, i as u32, MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
+        });
+        if !elem.is_object() {
+            element_lengths.push(0);
+            continue;
+        }
+        let elem_obj = elem.to_object();
+        let elem_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &elem_obj };
+        // Prefer the typed-array length; fall back to the JS `length`
+        // property for non-typed-array inputs (legacy callers, Array, etc.).
+        let (ta_len, _) = buffer_view_bytes(elem_obj);
+        let b_len = if ta_len > 0 {
+            ta_len
+        } else {
+            let mut blen = UndefinedValue();
+            JS_GetProperty(cx, elem_h, c"length".as_ptr(), MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut blen,
+            });
+            if blen.is_int32() {
+                blen.to_int32().max(0) as usize
+            } else if blen.is_double() {
+                let d = blen.to_double();
+                if d.is_finite() && d > 0.0 { d as usize } else { 0 }
+            } else {
+                0
             }
-            // @trace REQ-ENG-005 [algorithm:buffer_concat]
-            // Node.js: when totalLength is provided, the result is truncated to
-            // totalLength bytes (or zero-filled if totalLength > sum). When
-            // omitted, the result length is the sum of list element lengths.
-            if argc >= 2 {
-                let tl_val = *args.get(1).ptr;
-                if tl_val.is_int32() {
-                    let total = tl_val.to_int32().max(0) as usize;
-                    if total > all_bytes.len() {
-                        all_bytes.resize(total, 0u8);
-                    } else {
-                        all_bytes.truncate(total);
-                    }
-                }
-            }
-            create_buffer_from_bytes(cx, &args, &all_bytes)
+        };
+        // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
+        // overflow MAX_BUFFER_SIZE. `Buffer.concat([huge, huge, ...])` is
+        // the common abuse vector (bun/test/js/node/buffer-concat.test.ts
+        // allocates 1024 × 64 MiB), so we bail out as soon as the running
+        // total crosses the ceiling rather than waiting for OOM.
+        if b_len > MAX_BUFFER_SIZE || total.saturating_add(b_len) > MAX_BUFFER_SIZE {
+            let msg = format!(
+                "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+                MAX_BUFFER_SIZE
+            );
+            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap());
+            mozjs::error::throw_range_error(cx, c_msg.as_ref());
+            return false;
+        }
+        element_lengths.push(b_len);
+        total = total.saturating_add(b_len);
+    }
+
+    // @trace REQ-ENG-005 [algorithm:buffer_concat]
+    // Node.js: when totalLength is provided, the result is truncated to
+    // totalLength bytes (or zero-filled if totalLength > sum). When
+    // omitted, the result length is the sum of list element lengths.
+    let mut target_total = total;
+    if argc >= 2 {
+        let tl_val = *args.get(1).ptr;
+        if tl_val.is_int32() {
+            target_total = tl_val.to_int32().max(0) as usize;
+        } else if tl_val.is_double() {
+            let d = tl_val.to_double();
+            if d.is_finite() && d >= 0.0 { target_total = d as usize; }
+        }
+        if target_total > MAX_BUFFER_SIZE {
+            let msg = format!(
+                "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+                MAX_BUFFER_SIZE
+            );
+            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("Buffer.concat totalLength out of range").unwrap());
+            mozjs::error::throw_range_error(cx, c_msg.as_ref());
+            return false;
         }
     }
+
+    let mut all_bytes = vec![0u8; target_total];
+    let mut cursor: usize = 0;
+    for i in 0..list_len {
+        if cursor >= target_total {
+            break;
+        }
+        let mut elem = UndefinedValue();
+        JS_GetElement(cx, list_h, i as u32, MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
+        });
+        if !elem.is_object() {
+            continue;
+        }
+        let elem_obj = elem.to_object();
+        let b_len = *element_lengths.get(i).unwrap_or(&0);
+        if b_len == 0 {
+            continue;
+        }
+        let copy_len = b_len.min(target_total.saturating_sub(cursor));
+        if copy_len == 0 {
+            cursor = cursor.saturating_add(b_len);
+            continue;
+        }
+        // Prefer the raw typed-array pointer for an O(copy_len) memcpy;
+        // fall back to the JS element-by-element path for legacy inputs.
+        let (_, ta_data) = buffer_view_bytes(elem_obj);
+        if !ta_data.is_null() {
+            ::std::ptr::copy_nonoverlapping(ta_data, all_bytes.as_mut_ptr().add(cursor), copy_len);
+        } else {
+            let elem_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &elem_obj };
+            for j in 0..copy_len {
+                let mut byte_val = UndefinedValue();
+                JS_GetElement(cx, elem_h, j as u32, MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
+                });
+                all_bytes[cursor + j] = if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 };
+            }
+        }
+        cursor = cursor.saturating_add(b_len);
+    }
+    create_buffer_from_bytes(cx, &args, &all_bytes)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1200,11 +1433,18 @@ unsafe extern "C" fn buffer_slice(
     let obj = this.to_object();
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
 
-    let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
-    });
-    let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+    // Resolve length defensively: prefer the typed-array byte length (O(1)),
+    // fall back to the JS `length` property for legacy callers.
+    let (ta_len, ta_data) = buffer_view_bytes(obj);
+    let len = if ta_len > 0 {
+        ta_len
+    } else {
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
+        });
+        if len_val.is_int32() { len_val.to_int32() as usize } else { 0 }
+    };
 
     let start = if argc > 0 && (*args.get(0).ptr).is_int32() {
         let s = (*args.get(0).ptr).to_int32();
@@ -1216,14 +1456,24 @@ unsafe extern "C" fn buffer_slice(
         if e < 0 { (len as i32 + e).max(0) as usize } else { e.min(len as i32) as usize }
     } else { len };
 
-    let mut bytes = Vec::new();
-    for i in start..end.min(len) {
-        let mut byte_val = UndefinedValue();
-        JS_GetElement(cx, obj_h, i as u32, MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
-        });
-        bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
-    }
+    let slice_end = end.min(len);
+    let bytes: Vec<u8> = if !ta_data.is_null() && start < slice_end {
+        ::std::slice::from_raw_parts(ta_data.add(start), slice_end - start).to_vec()
+    } else if !ta_data.is_null() {
+        Vec::new()
+    } else {
+        // Legacy property-storage path (kept for non-typed-array Buffer-likes
+        // handed in by callers that predate the typed-array refactor).
+        let mut v = Vec::new();
+        for i in start..slice_end {
+            let mut byte_val = UndefinedValue();
+            JS_GetElement(cx, obj_h, i as u32, MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
+            });
+            v.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
+        }
+        v
+    };
     create_buffer_from_bytes(cx, &args, &bytes)
 }
 
@@ -1242,12 +1492,8 @@ unsafe extern "C" fn buffer_copy(
 
     let src_obj = this.to_object();
     let src_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &src_obj };
-    let mut src_len_val = UndefinedValue();
-    JS_GetProperty(cx, src_h, c"length".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut src_len_val,
-    });
-    let src_len = if src_len_val.is_int32() { src_len_val.to_int32() as usize } else { 0 };
 
+    // Node.js Buffer#copy(target, targetStart, sourceStart, sourceEnd)
     let target_val = *args.get(0).ptr;
     if !target_val.is_object() {
         args.rval().set(Int32Value(0));
@@ -1259,20 +1505,56 @@ unsafe extern "C" fn buffer_copy(
     let tgt_start = if argc > 1 && (*args.get(1).ptr).is_int32() {
         (*args.get(1).ptr).to_int32().max(0) as usize
     } else { 0 };
+    let src_start = if argc > 2 && (*args.get(2).ptr).is_int32() {
+        (*args.get(2).ptr).to_int32().max(0) as usize
+    } else { 0 };
 
-    let mut copied = 0usize;
-    for i in tgt_start..src_len {
-        let mut byte_val = UndefinedValue();
-        JS_GetElement(cx, src_h, i as u32, MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
-        });
-        let b = if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 };
-        let b_val = Int32Value(b as i32);
-        let b_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &b_val };
-        JS_SetElement(cx, tgt_h, i as u32, b_handle);
-        copied += 1;
+    let (src_len, src_data) = buffer_view_bytes(src_obj);
+    let (tgt_len, tgt_data) = buffer_view_bytes(tgt_obj);
+
+    let src_end = if argc > 3 && (*args.get(3).ptr).is_int32() {
+        (*args.get(3).ptr).to_int32().max(0).min(src_len as i32) as usize
+    } else { src_len };
+
+    if src_start >= src_end {
+        // Nothing to copy.
+        args.rval().set(Int32Value(tgt_start as i32));
+        return true;
     }
-    args.rval().set(Int32Value(copied as i32));
+
+    let copy_len_src = src_end - src_start;
+    let copy_len_tgt = tgt_len.saturating_sub(tgt_start);
+    let copy_len = copy_len_src.min(copy_len_tgt);
+
+    if copy_len == 0 {
+        args.rval().set(Int32Value(tgt_start as i32));
+        return true;
+    }
+
+    if !src_data.is_null() && !tgt_data.is_null() {
+        // Fast path: both sides are typed arrays → memcpy.
+        ::std::ptr::copy_nonoverlapping(
+            src_data.add(src_start),
+            tgt_data.add(tgt_start),
+            copy_len,
+        );
+    } else {
+        // Legacy per-element copy. Note that Node writes from source to
+        // target at targetStart + i, NOT at i — the previous implementation
+        // indexed the target by `i` which silently truncated any copy with
+        // a non-zero targetStart. This is the canonical Node semantics.
+        for i in 0..copy_len {
+            let mut byte_val = UndefinedValue();
+            JS_GetElement(cx, src_h, (src_start + i) as u32, MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
+            });
+            let b = if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 };
+            let b_val = Int32Value(b as i32);
+            let b_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &b_val };
+            JS_SetElement(cx, tgt_h, (tgt_start + i) as u32, b_handle);
+        }
+    }
+    args.rval().set(Int32Value((tgt_start + copy_len) as i32));
     true
 }
 
@@ -1291,11 +1573,7 @@ unsafe extern "C" fn buffer_equals(
 
     let src_obj = this.to_object();
     let src_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &src_obj };
-    let mut src_len_val = UndefinedValue();
-    JS_GetProperty(cx, src_h, c"length".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut src_len_val,
-    });
-    let src_len = if src_len_val.is_int32() { src_len_val.to_int32() as usize } else { 0 };
+    let (src_len, src_data) = buffer_view_bytes(src_obj);
 
     let other_val = *args.get(0).ptr;
     if !other_val.is_object() {
@@ -1304,17 +1582,22 @@ unsafe extern "C" fn buffer_equals(
     }
     let tgt_obj = other_val.to_object();
     let tgt_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &tgt_obj };
-    let mut tgt_len_val = UndefinedValue();
-    JS_GetProperty(cx, tgt_h, c"length".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut tgt_len_val,
-    });
-    let tgt_len = if tgt_len_val.is_int32() { tgt_len_val.to_int32() as usize } else { 0 };
+    let (tgt_len, tgt_data) = buffer_view_bytes(tgt_obj);
 
     if src_len != tgt_len {
         args.rval().set(mozjs::jsval::BooleanValue(false));
         return true;
     }
 
+    if !src_data.is_null() && !tgt_data.is_null() {
+        // memcmp fast path for two typed-array backed buffers.
+        let equal = ::std::slice::from_raw_parts(src_data, src_len)
+            == ::std::slice::from_raw_parts(tgt_data, tgt_len);
+        args.rval().set(mozjs::jsval::BooleanValue(equal));
+        return true;
+    }
+
+    // Legacy per-element fallback.
     for i in 0..src_len {
         let mut a_val = UndefinedValue();
         JS_GetElement(cx, src_h, i as u32, MutableHandle::<Value> {
@@ -1350,11 +1633,18 @@ unsafe extern "C" fn buffer_index_of(
 
     let obj = this.to_object();
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-    let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
-        _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
-    });
-    let buf_len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+
+    let (buf_len, data_ptr) = buffer_view_bytes(obj);
+    if data_ptr.is_null() {
+        // Fallback to JS-level access for non-typed-array Buffer-likes.
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
+        });
+        // Reuse the legacy implementation on this slow path.
+        let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+        return buffer_index_of_legacy(cx, &args, argc, obj_h, len);
+    }
 
     let byte_offset = if argc >= 2 {
         let off_val = *args.get(1).ptr;
@@ -1362,6 +1652,83 @@ unsafe extern "C" fn buffer_index_of(
     } else {
         0
     };
+
+    let bytes = ::std::slice::from_raw_parts(data_ptr, buf_len);
+    let search_val = *args.get(0).ptr;
+
+    if search_val.is_int32() {
+        let needle = search_val.to_int32() as u8;
+        if byte_offset > buf_len {
+            args.rval().set(Int32Value(-1));
+            return true;
+        }
+        for (idx, &b) in bytes[byte_offset..].iter().enumerate() {
+            if b == needle {
+                args.rval().set(Int32Value((byte_offset + idx) as i32));
+                return true;
+            }
+        }
+    } else if search_val.is_string() {
+        let js_str = search_val.to_string();
+        let needle_str = jsstr_to_string(cx, NonNull::new_unchecked(js_str));
+        let needle: Vec<u8> = needle_str.bytes().collect();
+        if needle.is_empty() {
+            // Node: empty needle matches at byte_offset.
+            args.rval().set(Int32Value(byte_offset as i32));
+            return true;
+        }
+        if needle.len() > buf_len || byte_offset > buf_len - needle.len() {
+            args.rval().set(Int32Value(-1));
+            return true;
+        }
+        // memchr-like scan: O(N*M) worst case but with a tight inner loop.
+        'outer: for i in byte_offset..=(buf_len - needle.len()) {
+            for (j, &nbyte) in needle.iter().enumerate() {
+                if bytes[i + j] != nbyte { continue 'outer; }
+            }
+            args.rval().set(Int32Value(i as i32));
+            return true;
+        }
+    } else if search_val.is_object() {
+        // Buffer/Uint8Array needle — use the typed-array view bytes directly.
+        let needle_obj = search_val.to_object();
+        let (n_len, n_data) = buffer_view_bytes(needle_obj);
+        if n_data.is_null() || n_len == 0 {
+            args.rval().set(Int32Value(byte_offset as i32));
+            return true;
+        }
+        if n_len > buf_len || byte_offset > buf_len - n_len {
+            args.rval().set(Int32Value(-1));
+            return true;
+        }
+        let needle = ::std::slice::from_raw_parts(n_data, n_len);
+        'outer2: for i in byte_offset..=(buf_len - n_len) {
+            for (j, &nbyte) in needle.iter().enumerate() {
+                if bytes[i + j] != nbyte { continue 'outer2; }
+            }
+            args.rval().set(Int32Value(i as i32));
+            return true;
+        }
+    }
+    args.rval().set(Int32Value(-1));
+    true
+}
+
+/// Legacy per-element indexOf, used only when `this` is not a typed array
+/// (kept for any non-Buffer array-like callers that predate the typed-array
+/// refactor). Mirrors the previous implementation verbatim.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn buffer_index_of_legacy(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    argc: u32,
+    obj_h: Handle<*mut JSObject>,
+    buf_len: usize,
+) -> bool {
+    let byte_offset = if argc >= 2 {
+        let off_val = *args.get(1).ptr;
+        if off_val.is_int32() { off_val.to_int32().max(0) as usize } else { 0 }
+    } else { 0 };
 
     let search_val = *args.get(0).ptr;
     if search_val.is_int32() {
@@ -1381,7 +1748,7 @@ unsafe extern "C" fn buffer_index_of(
         let needle_str = jsstr_to_string(cx, NonNull::new_unchecked(js_str));
         let needle: Vec<u8> = needle_str.bytes().collect();
         if needle.is_empty() || needle.len() > buf_len {
-            args.rval().set(Int32Value(-1));
+            args.rval().set(Int32Value(byte_offset as i32));
             return true;
         }
         'outer: for i in byte_offset..=(buf_len - needle.len()) {
@@ -1458,6 +1825,13 @@ unsafe extern "C" fn buffer_compare(
     }
 
     let read_bytes = |obj: *mut JSObject| -> (::std::vec::Vec<u8>, usize) {
+        // Fast path: typed-array backed → memcpy.
+        let (n, ptr) = buffer_view_bytes(obj);
+        if !ptr.is_null() {
+            let slice = ::std::slice::from_raw_parts(ptr, n);
+            return (slice.to_vec(), n);
+        }
+        // Slow fallback: legacy per-element read.
         let h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
         let mut len_val = UndefinedValue();
         JS_GetProperty(cx, h, c"length".as_ptr(), MutableHandle::<Value> {
