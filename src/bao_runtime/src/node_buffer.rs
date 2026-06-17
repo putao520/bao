@@ -307,20 +307,47 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // @trace REQ-ENG-005 [api:buffer.transcode] — Bun.transcode is a
         // masqueradesAsUndefined function: `typeof BufferModule.transcode`
         // returns "undefined" but invoking it throws "Not implemented".
-        // SM has no equivalent of JSC's masqueradesAsUndefined flag — every
-        // native callable reports "function" under typeof — so the first
-        // assertion in buffer.test.js "transcode" is a known SM limitation.
-        // We still register the function so the call path at least produces
-        // the expected "Not implemented" error rather than the misleading
-        // "not a function".
-        w2::JS_DefineFunction(
-            cx,
-            mod_obj.handle(),
-            c"transcode".as_ptr(),
-            Some(buffer_transcode),
-            0,
-            JSPROP_ENUMERATE as u32,
-        );
+        //
+        // SpiderMonkey has no JSFunction-level flag for this, but its
+        // |TypeOfObject| checks |JSCLASS_EMULATES_UNDEFINED| before
+        // |isCallable()|, so a callable NativeObject whose JSClass carries
+        // that flag satisfies both assertions:
+        //   * typeof → "undefined"   (EmulatesUndefined short-circuits)
+        //   * callable              (callHook() != nullptr ⇒ isCallable())
+        //
+        // We expose this via the mozjs fork's `JS_NewEmulatesUndefinedFunction`
+        // (js/src/jsapi.cpp), then install it as the `transcode` property so
+        // buffer.test.js's two assertions both pass.
+        rooted!(&in(cx) let transcode_obj = unsafe {
+            w2::JS_NewEmulatesUndefinedFunction(
+                cx,
+                Some(buffer_transcode),
+                0,
+                c"transcode".as_ptr(),
+            )
+        });
+        if !transcode_obj.is_null() {
+            let mod_ptr = mod_obj.get();
+            let mod_h = Handle::<*mut JSObject> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mod_ptr,
+            };
+            // JS_DefineProperty's (Handle<Value>) overload is the only one the
+            // mozjs_sys bindings expose, so wrap the callable object in a Value.
+            let tc_ptr = transcode_obj.get();
+            let tc_val = mozjs::jsval::ObjectValue(tc_ptr);
+            let tc_h = Handle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &tc_val,
+            };
+            JS_DefineProperty(
+                cx_raw,
+                mod_h,
+                c"transcode".as_ptr(),
+                tc_h,
+                JSPROP_ENUMERATE as u32,
+            );
+        }
 
         cache_builtin(cx, "buffer", mod_obj.get());
     }
@@ -328,12 +355,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
 // @trace REQ-ENG-005 [api:buffer.transcode] — Bun's transcode is a
 // masqueradesAsUndefined native: present on the buffer module but reports
-// `typeof === "undefined"` while still being callable. SM has no flag to
-// reproduce the typeof masquerade, so we register a plain native that throws
-// "Not implemented" on every call (the surface Bun documents for this stub
-// when iconv support is absent). buffer.test.js's second assertion
-// (`() => BufferModule.transcode()` throws "Not implemented") passes; the
-// first (`typeof === "undefined"`) is a documented SM limitation.
+// `typeof === "undefined"` while still being callable. We install it via the
+// mozjs fork's `JS_NewEmulatesUndefinedFunction` (which creates a callable
+// NativeObject carrying JSCLASS_EMULATES_UNDEFINED), so typeof yields
+// "undefined" and invoking the property still dispatches here. Each call
+// throws "Not implemented" (the surface Bun documents for this stub when
+// iconv support is absent).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_transcode(
     cx: *mut JSContext,
