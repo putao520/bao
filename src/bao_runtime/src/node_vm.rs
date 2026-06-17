@@ -154,6 +154,32 @@ fn eval_code(cx: *mut JSContext, code: &str, filename: &str) -> Option<*mut JSOb
     }
 }
 
+// @trace REQ-ENG-005 [api:vm.runInNewContext] — Returns the raw JSVal from
+// evaluating `code` so the caller can return primitives (numbers, strings,
+// undefined) AND objects to JS. eval_code above wraps non-object results in
+// the global object, which loses the actual last-expression value (it
+// returns `global` for `5` or `undefined`). vm.runInNewContext needs the
+// pristine value — buffer.test.js "Buffer.byteLength()" drives
+//   vm.runInNewContext("new ArrayBuffer()") → returns the new ArrayBuffer.
+fn eval_code_value(cx: *mut JSContext, code: &str, filename: &str) -> Option<JSVal> {
+    unsafe {
+        let c_filename = ZBox::from_bytes(filename.as_bytes());
+        let opts = mozjs::glue::NewCompileOptions(cx, c_filename.as_ptr() as *const _, 1);
+        if opts.is_null() {
+            return None;
+        }
+        let mut src = mozjs::rust::transform_str_to_source_text(code);
+        let mut rval = UndefinedValue();
+        let rval_h = MutableHandle::<JSVal> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        let ok = mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h);
+        libc::free(opts as *mut _);
+        if ok { Some(rval) } else { None }
+    }
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn vm_run_in_this_context(
     cx: *mut JSContext,
@@ -209,12 +235,17 @@ unsafe extern "C" fn vm_run_in_new_context(
     let code = crate::js_to_rust_string(cx, *args.get(0).ptr);
     let filename = "vm.js".to_string();
 
-    // Wrap in IIFE to isolate scope — variables defined inside won't leak to outer scope
-    let sandbox_code = format!("(function() {{ {} }})()", code);
+    // @trace REQ-ENG-005 [api:vm.runInNewContext] — Node.js returns the last
+    // expression value of the script. SM's JS::Evaluate2 returns the value
+    // of the last evaluated statement, so for "new ArrayBuffer()" we get the
+    // actual ArrayBuffer back. Callers like
+    //   Buffer.byteLength(vm.runInNewContext("new ArrayBuffer()"))
+    // then observe the ArrayBuffer (buffer.test.js "Buffer.byteLength()").
+    let _ = filename;
 
-    match eval_code(cx, &sandbox_code, &filename) {
-        Some(_) => {
-            args.rval().set(UndefinedValue());
+    match eval_code_value(cx, &code, "vm.js") {
+        Some(val) => {
+            args.rval().set(val);
             true
         }
         None => false,

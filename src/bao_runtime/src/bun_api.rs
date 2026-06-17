@@ -143,6 +143,14 @@ unsafe fn populate_bun_object(
     JS_DefineFunction(cx, bun_obj, c"exit".as_ptr(), Some(bun_exit), 1, JSPROP_ENUMERATE as u32);
     JS_DefineFunction(cx, bun_obj, c"sleepSync".as_ptr(), Some(bun_sleep_sync), 1, JSPROP_ENUMERATE as u32);
 
+    // @trace REQ-ENG-006 [api:Bun.nanoseconds] — Returns the number of
+    // nanoseconds since the process was started, as a JS number (per Bun
+    // docs: https://bun.com/reference/bun/nanoseconds). Used by upstream
+    // tests (buffer.test.js "toString('hex') large-buffer throughput")
+    // for high-resolution timing; the monotonic Instant is captured at
+    // module init via OnceLock and differenced here.
+    JS_DefineFunction(cx, bun_obj, c"nanoseconds".as_ptr(), Some(bun_nanoseconds), 0, JSPROP_ENUMERATE as u32);
+
     // Bun.revision
     {
         let rev_str = JS_NewStringCopyZ(cx.raw_cx(), c"0.1.0".as_ptr());
@@ -2941,6 +2949,24 @@ unsafe extern "C" fn bun_sleep_sync(_cx: *mut JSContext, argc: u32, vp: *mut JSV
         ::std::thread::sleep(::std::time::Duration::from_millis(ms));
     }
     args.rval().set(UndefinedValue());
+    true
+}
+
+// @trace REQ-ENG-006 [api:Bun.nanoseconds] — process-start Instant captured
+// once via OnceLock. Subsequent calls diff against this baseline and return
+// the elapsed nanoseconds as a JS number. The Instant is monotonic so
+// repeated calls always yield non-decreasing values; precision is platform-
+// dependent but matches Bun's surface (high-resolution monotonic timer).
+static BAO_PROCESS_START: ::std::sync::OnceLock<::std::time::Instant> = ::std::sync::OnceLock::new();
+unsafe extern "C" fn bun_nanoseconds(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let start = BAO_PROCESS_START.get_or_init(::std::time::Instant::now);
+    let elapsed_ns = start.elapsed().as_nanos();
+    // f64 carries the value; Number precision is sufficient for ~104 days of
+    // uptime at nanosecond scale (Number.MAX_SAFE_INTEGER ≈ 9e15 ns ≈ 104d).
+    let v = mozjs::jsval::DoubleValue(elapsed_ns as f64);
+    args.rval().set(v);
+    let _ = cx;
     true
 }
 

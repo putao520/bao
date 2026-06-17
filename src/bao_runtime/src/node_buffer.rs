@@ -1,7 +1,7 @@
 // @trace REQ-ENG-007
 use bun_core::ZBox;
 use mozjs::jsapi::*;
-use mozjs::jsval::{UndefinedValue, Int32Value, ObjectValue};
+use mozjs::jsval::{UndefinedValue, Int32Value, ObjectValue, JSVal};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -171,7 +171,18 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let extras_src = r#"(function() {
             var isAscii = function(buf) {
               if (buf == null) return false;
-              var arr = (buf instanceof Uint8Array) ? buf : new Uint8Array(buf.buffer || buf, buf.byteOffset || 0, buf.byteLength || 0);
+              var arr;
+              if (buf instanceof Uint8Array) {
+                arr = buf;
+              } else if (buf instanceof ArrayBuffer) {
+                arr = new Uint8Array(buf);
+              } else if (buf && typeof buf === 'object' && buf.buffer instanceof ArrayBuffer) {
+                arr = new Uint8Array(buf.buffer, buf.byteOffset || 0, buf.byteLength || 0);
+              } else if (buf && typeof buf === 'object' && typeof buf.length === 'number') {
+                arr = buf;
+              } else {
+                return false;
+              }
               for (var i = 0; i < arr.length; i++) {
                 if (arr[i] > 127) return false;
               }
@@ -179,7 +190,18 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             };
             var isUtf8 = function(buf) {
               if (buf == null) return false;
-              var arr = (buf instanceof Uint8Array) ? buf : new Uint8Array(buf.buffer || buf, buf.byteOffset || 0, buf.byteLength || 0);
+              var arr;
+              if (buf instanceof Uint8Array) {
+                arr = buf;
+              } else if (buf instanceof ArrayBuffer) {
+                arr = new Uint8Array(buf);
+              } else if (buf && typeof buf === 'object' && buf.buffer instanceof ArrayBuffer) {
+                arr = new Uint8Array(buf.buffer, buf.byteOffset || 0, buf.byteLength || 0);
+              } else if (buf && typeof buf === 'object' && typeof buf.length === 'number') {
+                arr = buf;
+              } else {
+                return false;
+              }
               var i = 0;
               while (i < arr.length) {
                 var b = arr[i];
@@ -247,6 +269,191 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
+        // @trace REQ-ENG-005 [api:buffer.isAscii/isUtf8] — Native SM functions
+        // so `new isAscii(...)` returns the primitive boolean (SM honours
+        // primitive return values from C++ natives invoked as constructors;
+        // JS functions discard them). buffer.test.js "isAscii" drives
+        //   new isAscii(new Buffer("...")) → toBeFalse
+        // which only works when isAscii is a native callable. We replace the
+        // JS-side installer's binding with a native SMFunction. The native
+        // accepts a Buffer/Uint8Array/TypedArray/DataView/ArrayBuffer, reads
+        // its byte view, and scans for ASCII (>127) or UTF-8 validity.
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"isAscii".as_ptr(),
+            Some(buffer_is_ascii),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"isUtf8".as_ptr(),
+            Some(buffer_is_utf8),
+            1,
+            JSPROP_ENUMERATE as u32,
+        );
+
         cache_builtin(cx, "buffer", mod_obj.get());
     }
+}
+
+// @trace REQ-ENG-005 [api:buffer.isAscii] — Native SMFunction returning a
+// boolean primitive. Accepts Buffer/Uint8Array/TypedArray/DataView/
+// ArrayBuffer. Returns true iff every byte is <= 127. Used both as a function
+// AND as a constructor (new isAscii(buf)) — SM preserves primitive returns
+// from C++ natives invoked as constructors, matching Bun's behaviour.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_is_ascii(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let input = *args.get(0).ptr;
+    let bytes = match collect_byte_view(cx, input) {
+        Some(b) => b,
+        None => {
+            args.rval().set(mozjs::jsval::BooleanValue(false));
+            return true;
+        }
+    };
+    let is_ascii = bytes.iter().all(|&b| b <= 127);
+    args.rval().set(mozjs::jsval::BooleanValue(is_ascii));
+    true
+}
+
+// @trace REQ-ENG-005 [api:buffer.isUtf8] — Native SMFunction returning a
+// boolean primitive. Validates UTF-8 byte sequences per RFC 3629 with strict
+// checks (no overlong encodings, no surrogates, proper continuation bytes).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_is_utf8(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let input = *args.get(0).ptr;
+    let bytes = match collect_byte_view(cx, input) {
+        Some(b) => b,
+        None => {
+            args.rval().set(mozjs::jsval::BooleanValue(false));
+            return true;
+        }
+    };
+    let mut i = 0;
+    let len = bytes.len();
+    let mut ok = true;
+    while i < len {
+        let b = bytes[i];
+        if b < 0x80 {
+            i += 1;
+            continue;
+        }
+        let (need, min) = if (b & 0xE0) == 0xC0 {
+            (1, 0x80u32)
+        } else if (b & 0xF0) == 0xE0 {
+            (2, 0x800u32)
+        } else if (b & 0xF8) == 0xF0 {
+            (3, 0x10000u32)
+        } else {
+            ok = false;
+            break;
+        };
+        if i + need >= len {
+            ok = false;
+            break;
+        }
+        let mut shift = (need + 1) * 5 - (need + 1); // initial mask shift
+        // Initial mask: keep low (7 - need) bits → (1 << (7-need)) - 1
+        let mut cp = (b as u32) & ((1u32 << (7 - need)) - 1);
+        let _ = shift;
+        let mut contig = true;
+        for j in 0..need {
+            let c = bytes[i + 1 + j];
+            if (c & 0xC0) != 0x80 {
+                contig = false;
+                break;
+            }
+            cp = (cp << 6) | (c as u32 & 0x3F);
+        }
+        if !contig {
+            ok = false;
+            break;
+        }
+        if cp < min {
+            ok = false;
+            break;
+        }
+        if cp >= 0xD800 && cp <= 0xDFFF {
+            ok = false;
+            break;
+        }
+        i += 1 + need;
+    }
+    args.rval().set(mozjs::jsval::BooleanValue(ok));
+    true
+}
+
+// @trace REQ-ENG-005 — Extracts a byte slice from a Buffer/Uint8Array/
+// TypedArray/DataView/ArrayBuffer input. Returns None on null/undefined or
+// unrecognized input. The returned Vec is a copy that survives GC.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn collect_byte_view(_cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
+    use ::std::ptr;
+    if v.is_null_or_undefined() {
+        return None;
+    }
+    if !v.is_object() {
+        return None;
+    }
+    let obj = v.to_object();
+    // Try TypedArray / DataView / Buffer (JS_GetObjectAsUint8Array handles
+    // all TypedArray kinds; Buffer is a Uint8Array subclass).
+    let mut length: usize = 0;
+    let mut is_shared = false;
+    let mut data_ptr: *mut u8 = ptr::null_mut();
+    let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+        obj,
+        &mut length,
+        &mut is_shared,
+        &mut data_ptr,
+    );
+    if !unwrapped.is_null() && !data_ptr.is_null() {
+        let slice = ::std::slice::from_raw_parts(data_ptr, length);
+        return Some(slice.to_vec());
+    }
+    if !unwrapped.is_null() {
+        return Some(Vec::new());
+    }
+    // Try ArrayBufferView (DataView, etc.): returns the underlying array.
+    let mut view_length: usize = 0;
+    let mut view_shared = false;
+    let mut view_data: *mut u8 = ptr::null_mut();
+    let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+        obj,
+        &mut view_length,
+        &mut view_shared,
+        &mut view_data,
+    );
+    if !view_unwrapped.is_null() && !view_data.is_null() {
+        let slice = ::std::slice::from_raw_parts(view_data, view_length);
+        return Some(slice.to_vec());
+    }
+    if !view_unwrapped.is_null() {
+        return Some(Vec::new());
+    }
+    // Try plain ArrayBuffer via JS::GetObjectAsArrayBuffer.
+    let mut ab_length: usize = 0;
+    let mut ab_data: *mut u8 = ptr::null_mut();
+    let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj, &mut ab_length, &mut ab_data);
+    if !ab_unwrapped.is_null() && !ab_data.is_null() {
+        let slice = ::std::slice::from_raw_parts(ab_data, ab_length);
+        return Some(slice.to_vec());
+    }
+    if !ab_unwrapped.is_null() {
+        return Some(Vec::new());
+    }
+    None
 }

@@ -144,10 +144,62 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     let this = args.thisv();
     let input = *args.get(0).ptr;
+    // @trace REQ-ENG-007 [api:crypto.hash.update] — Node.js accepts string,
+    // Buffer/Uint8Array/TypedArray, DataView, and ArrayBuffer. Strings are
+    // taken as-is (raw bytes); typed arrays are read by their byte view.
+    // buffer.test.js "truncation after decode" drives update(Buffer.from(...)).
     let data = if input.is_string() {
         crate::js_to_rust_string(cx, input).into_bytes()
+    } else if input.is_object() {
+        let obj = input.to_object();
+        // Try as Uint8Array / Buffer / TypedArray view.
+        let mut length: usize = 0;
+        let mut is_shared = false;
+        let mut data_ptr: *mut u8 = ptr::null_mut();
+        let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+            obj,
+            &mut length,
+            &mut is_shared,
+            &mut data_ptr,
+        );
+        if !unwrapped.is_null() && !data_ptr.is_null() && length > 0 {
+            let slice = ::std::slice::from_raw_parts(data_ptr, length);
+            slice.to_vec()
+        } else if length == 0 && !unwrapped.is_null() {
+            Vec::new()
+        } else {
+            // Try ArrayBufferView (DataView, Int32Array, etc.).
+            let mut view_length: usize = 0;
+            let mut view_shared = false;
+            let mut view_data: *mut u8 = ptr::null_mut();
+            let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+                obj,
+                &mut view_length,
+                &mut view_shared,
+                &mut view_data,
+            );
+            if !view_unwrapped.is_null() && !view_data.is_null() && view_length > 0 {
+                let slice = ::std::slice::from_raw_parts(view_data, view_length);
+                slice.to_vec()
+            } else if !view_unwrapped.is_null() {
+                Vec::new()
+            } else {
+                // Try plain ArrayBuffer via JS::GetObjectAsArrayBuffer.
+                let mut ab_length: usize = 0;
+                let mut ab_data: *mut u8 = ptr::null_mut();
+                let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj, &mut ab_length, &mut ab_data);
+                if !ab_unwrapped.is_null() && !ab_data.is_null() && ab_length > 0 {
+                    let slice = ::std::slice::from_raw_parts(ab_data, ab_length);
+                    slice.to_vec()
+                } else if !ab_unwrapped.is_null() {
+                    Vec::new()
+                } else {
+                    return throw_type_error(cx, "hash.update() data must be a string, Buffer, TypedArray, or DataView");
+                }
+            }
+        }
     } else {
-        return throw_type_error(cx, "hash.update() data must be a string");
+        return throw_type_error(cx, "hash.update() data must be a string, Buffer, TypedArray, or DataView");
     };
 
     HASH_DATA.with(|d| d.borrow_mut().extend_from_slice(&data));
