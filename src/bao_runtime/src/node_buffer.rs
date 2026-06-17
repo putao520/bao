@@ -109,6 +109,61 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // return true if the input is a pure ASCII / valid UTF-8 byte sequence.
         // `resolveObjectURL(url)` reverses `URL.createObjectURL(blob)` —
         // returns the Blob referenced by the blob: URL.
+        // Re-run the Blob-URL static installer now that node_url::install has
+        // registered the URL constructor (web_api_constructors runs earlier).
+        let lazy_src = "if (typeof globalThis._bao_run_blob_url_statics === 'function') globalThis._bao_run_blob_url_statics();";
+        let lazy_filename = ZBox::from_bytes("node:buffer-blob-url-lazy".as_bytes());
+        let lazy_opts = mozjs::glue::NewCompileOptions(cx_raw, lazy_filename.as_ptr(), 1);
+        if !lazy_opts.is_null() {
+            let mut lazy_src_text = mozjs::rust::transform_str_to_source_text(lazy_src);
+            let mut lazy_rval = UndefinedValue();
+            let lazy_rval_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut lazy_rval,
+            };
+            mozjs_sys::jsapi::JS::Evaluate2(cx_raw, lazy_opts, &mut lazy_src_text, lazy_rval_h);
+            libc::free(lazy_opts as *mut _);
+        }
+
+        // @trace REQ-ENG-005 [api:buffer] — re-export Blob/File on the
+        // `buffer` module object so `import { Blob } from "buffer"` resolves
+        // (Node.js 19+ surface, mirror of node-fallbacks/buffer.js). Blob
+        // itself is installed by install_web_api_constructors on globalThis.
+        let blob_src = r#"(function() {
+            var out = {};
+            if (typeof globalThis.Blob === 'function') out.Blob = globalThis.Blob;
+            if (typeof globalThis.File === 'function') out.File = globalThis.File;
+            return out;
+        })()"#;
+        let blob_filename = ZBox::from_bytes("node:buffer-blob".as_bytes());
+        let blob_opts = mozjs::glue::NewCompileOptions(cx_raw, blob_filename.as_ptr(), 1);
+        if !blob_opts.is_null() {
+            let mut blob_src_text = mozjs::rust::transform_str_to_source_text(blob_src);
+            let mut blob_rval = UndefinedValue();
+            let blob_rval_h = MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut blob_rval,
+            };
+            mozjs_sys::jsapi::JS::Evaluate2(cx_raw, blob_opts, &mut blob_src_text, blob_rval_h);
+            libc::free(blob_opts as *mut _);
+            if blob_rval.is_object() {
+                let blob_obj = blob_rval.to_object();
+                for prop in &["Blob", "File"] {
+                    let cprop = ::std::ffi::CString::new(*prop).unwrap();
+                    let mut val = UndefinedValue();
+                    let blob_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &blob_obj };
+                    JS_GetProperty(cx_raw, blob_h, cprop.as_ptr(), MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut val,
+                    });
+                    if !val.is_undefined() {
+                        let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+                        JS_DefineProperty(cx_raw, mod_h, cprop.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+                    }
+                }
+            }
+        }
+
         let extras_src = r#"(function() {
             var isAscii = function(buf) {
               if (buf == null) return false;
@@ -144,11 +199,19 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
               }
               return true;
             };
-            // resolveObjectURL: Node.js's Blob URL store. Bao does not yet
-            // maintain a blob: registry; mirror Bun's stub and return undefined
-            // rather than throwing so structural probes (buffer-resolveObjectURL)
-            // can verify the export exists.
-            var resolveObjectURL = function(_url) { return undefined; };
+            // resolveObjectURL: Node.js's Blob URL store.
+            // @trace REQ-ENG-005 [api:buffer.resolveObjectURL]
+            // Backed by the global _bao_blob_registry maintained alongside
+            // URL.createObjectURL/revokeObjectURL (see web_api_constructors
+            // in globals.rs). Returns undefined for non-strings, missing, or
+            // already-revoked URLs — matches Node.js's surface.
+            var resolveObjectURL = function(url) {
+              if (typeof url !== 'string' || url == null) return undefined;
+              var reg = globalThis._bao_blob_registry;
+              if (!reg || typeof reg.get !== 'function') return undefined;
+              if (!reg.has(url)) return undefined;
+              return reg.get(url);
+            };
             return { isAscii: isAscii, isUtf8: isUtf8, resolveObjectURL: resolveObjectURL };
         })()"#;
         let extras_filename = ZBox::from_bytes("node:buffer-extras".as_bytes());

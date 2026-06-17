@@ -585,50 +585,59 @@ unsafe extern "C" fn url_to_string(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 }
 
 pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*mut JSObject>) {
-    unsafe {
+    // @trace REQ-ENG-007 [entity:URL] — create the URL constructor once and
+    // share it between `globalThis.URL` and the `url` module's `URL` export.
+    // Sharing the same function object matters because URL.createObjectURL /
+    // URL.revokeObjectURL are static methods defined later (web_api_constructors
+    // → _bao_install_blob_url_statics → node_buffer lazy binding). Both
+    // `globalThis.URL` and `import { URL } from "url"` must observe them.
+    rooted!(&in(cx) let url_ctor_obj = unsafe {
         let url_fun = JS_NewFunction(cx.raw_cx(), Some(url_constructor), 2, JSFUN_CONSTRUCTOR, c"URL".as_ptr());
-        if !url_fun.is_null() {
+        if url_fun.is_null() {
+            ::std::ptr::null_mut()
+        } else {
             let url_obj = JS_GetFunctionObject(url_fun);
             if !url_obj.is_null() {
                 let url_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &url_obj };
                 JS_DefineFunction(cx.raw_cx(), url_obj_h, c"canParse".as_ptr(), Some(url_can_parse), 1, JSPROP_ENUMERATE as u32);
-                let val = ObjectValue(url_obj);
-                rooted!(&in(cx) let v = val);
-                JS_DefineProperty(cx.raw_cx(), global.into(), c"URL".as_ptr(), v.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
             }
+            url_obj
         }
-
+    });
+    rooted!(&in(cx) let sp_ctor_obj = unsafe {
         let sp_fun = JS_NewFunction(cx.raw_cx(), Some(url_search_params_constructor), 1, JSFUN_CONSTRUCTOR, c"URLSearchParams".as_ptr());
-        if !sp_fun.is_null() {
-            let sp_obj = JS_GetFunctionObject(sp_fun);
-            if !sp_obj.is_null() {
-                let val = ObjectValue(sp_obj);
-                rooted!(&in(cx) let v = val);
-                JS_DefineProperty(cx.raw_cx(), global.into(), c"URLSearchParams".as_ptr(), v.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
-            }
+        if sp_fun.is_null() {
+            ::std::ptr::null_mut()
+        } else {
+            JS_GetFunctionObject(sp_fun)
+        }
+    });
+
+    unsafe {
+        if !url_ctor_obj.get().is_null() {
+            let val = ObjectValue(url_ctor_obj.get());
+            rooted!(&in(cx) let v = val);
+            JS_DefineProperty(cx.raw_cx(), global.into(), c"URL".as_ptr(), v.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+        }
+        if !sp_ctor_obj.get().is_null() {
+            let val = ObjectValue(sp_ctor_obj.get());
+            rooted!(&in(cx) let v = val);
+            JS_DefineProperty(cx.raw_cx(), global.into(), c"URLSearchParams".as_ptr(), v.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
         }
     }
 
     rooted!(&in(cx) let url_mod = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(cx.raw_cx()) });
     if !url_mod.get().is_null() {
         let mod_h = url_mod.handle().into();
-        let url_ctor = unsafe { JS_NewFunction(cx.raw_cx(), Some(url_constructor), 2, JSFUN_CONSTRUCTOR, c"URL".as_ptr()) };
-        if !url_ctor.is_null() {
-            let ctor_obj = unsafe { JS_GetFunctionObject(url_ctor) };
-            if !ctor_obj.is_null() {
-                let val = ObjectValue(ctor_obj);
-                let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-                unsafe { JS_DefineProperty(cx.raw_cx(), mod_h, c"URL".as_ptr(), val_h, JSPROP_ENUMERATE as u32); }
-            }
+        if !url_ctor_obj.get().is_null() {
+            let val = ObjectValue(url_ctor_obj.get());
+            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+            unsafe { JS_DefineProperty(cx.raw_cx(), mod_h, c"URL".as_ptr(), val_h, JSPROP_ENUMERATE as u32); }
         }
-        let sp_ctor = unsafe { JS_NewFunction(cx.raw_cx(), Some(url_search_params_constructor), 1, JSFUN_CONSTRUCTOR, c"URLSearchParams".as_ptr()) };
-        if !sp_ctor.is_null() {
-            let ctor_obj = unsafe { JS_GetFunctionObject(sp_ctor) };
-            if !ctor_obj.is_null() {
-                let val = ObjectValue(ctor_obj);
-                let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-                unsafe { JS_DefineProperty(cx.raw_cx(), mod_h, c"URLSearchParams".as_ptr(), val_h, JSPROP_ENUMERATE as u32); }
-            }
+        if !sp_ctor_obj.get().is_null() {
+            let val = ObjectValue(sp_ctor_obj.get());
+            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+            unsafe { JS_DefineProperty(cx.raw_cx(), mod_h, c"URLSearchParams".as_ptr(), val_h, JSPROP_ENUMERATE as u32); }
         }
         unsafe {
             JS_DefineFunction(cx.raw_cx(), mod_h, c"parse".as_ptr(), Some(url_parse_fn), 2, JSPROP_ENUMERATE as u32);

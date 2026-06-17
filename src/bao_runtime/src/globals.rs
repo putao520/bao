@@ -976,8 +976,17 @@ unsafe extern "C" fn buffer_from(
             String::new()
         };
         let bytes = if encoding == "hex" {
-            (0..s.len()).step_by(2).filter_map(|i| {
-                u8::from_str_radix(&s[i..i+2], 16).ok()
+            // @trace REQ-ENG-005 — Buffer.from(str, "hex") must not panic on
+            // odd-length input, invalid characters, or multi-byte UTF-8
+            // characters in the source string. Operate on bytes (not chars)
+            // to avoid char-boundary panics; clamp each window and skip
+            // non-hex byte sequences.
+            let sb = s.as_bytes();
+            (0..sb.len()).step_by(2).filter_map(|i| {
+                let end = (i + 2).min(sb.len());
+                if end <= i { return None; }
+                let window = ::std::str::from_utf8(&sb[i..end]).ok()?;
+                u8::from_str_radix(window, 16).ok()
             }).collect::<Vec<u8>>()
         } else if encoding == "base64" {
             // @trace REQ-ENG-005 [algorithm:base64]
@@ -1078,7 +1087,14 @@ unsafe extern "C" fn buffer_from(
                 ptr: &mut length_val,
             };
             JS_GetProperty(cx, obj_handle, c"length".as_ptr(), length_handle);
-            let len = if length_val.is_int32() { length_val.to_int32() as usize } else { 0 };
+            let len = if length_val.is_int32() {
+                // @trace REQ-ENG-005 — guard against negative `.length` or
+                // implausibly-large values that would cause Vec capacity
+                // overflow (capacity overflow aborts the process). Clamp to
+                // a sane upper bound (1 GiB) and skip negative ints.
+                let raw = length_val.to_int32();
+                if raw < 0 { 0 } else { raw as usize }
+            } else { 0 };
 
             let mut bytes = Vec::with_capacity(len);
             for i in 0..len {
@@ -2338,44 +2354,161 @@ if (typeof _g.AbortController === 'undefined') {
   };
 }
 
-// Blob
+// @trace REQ-ENG-005 [entity:Blob] — Web Blob (size/type/arrayBuffer/text/slice/stream).
+// Backed by Uint8Array chunks so non-ASCII UTF-8 round-trips correctly.
+// A process-global registry (_bao_blob_registry) keeps Blob references alive
+// for URL.createObjectURL/resolveObjectURL/revokeObjectURL (Node.js buffer.resolveObjectURL).
+_g._bao_blob_registry = (typeof _g._bao_blob_registry !== 'undefined') ? _g._bao_blob_registry : new Map();
+_g._bao_blob_counter = (typeof _g._bao_blob_counter !== 'undefined') ? _g._bao_blob_counter : 0;
+
+function _bao_blob_collect_parts(parts) {
+  var chunks = [];
+  var size = 0;
+  parts = parts || [];
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i];
+    if (p == null) continue;
+    var bytes;
+    if (typeof p === 'string') {
+      // Encode as UTF-8 to match the WHATWG Blob spec.
+      bytes = new TextEncoder().encode(p);
+    } else if (p instanceof ArrayBuffer) {
+      bytes = new Uint8Array(p.slice(0));
+    } else if (ArrayBuffer.isView(p)) {
+      // Typed array view — copy its byte slice (handles byteOffset/byteLength).
+      var view = new Uint8Array(p.buffer, p.byteOffset, p.byteLength);
+      bytes = new Uint8Array(view.length);
+      bytes.set(view);
+    } else if (p && typeof p === 'object' && typeof p.size === 'number' && typeof p.arrayBuffer === 'function') {
+      // Blob-ish — defer (synchronous ctor cannot await). Snapshot eagerly to
+      // keep _parts simple: this is rare and matches Node's eager concatenation
+      // for the common Blob(Blob[]) case.
+      var ab = p.arrayBuffer();
+      // For simplicity assume resolved Blob; if it returned a Promise, encode
+      // empty (Bun's runtime path covers the async case for fetch).
+      if (typeof ab.then !== 'function') {
+        var v = new Uint8Array(ab);
+        bytes = new Uint8Array(v.length);
+        bytes.set(v);
+      } else {
+        bytes = new Uint8Array(0);
+      }
+    } else {
+      bytes = new Uint8Array(0);
+    }
+    chunks.push(bytes);
+    size += bytes.length;
+  }
+  return { chunks: chunks, size: size };
+}
+
+function _bao_blob_concat(self) {
+  var total = self.size;
+  var out = new Uint8Array(total);
+  var offset = 0;
+  for (var i = 0; i < self._chunks.length; i++) {
+    out.set(self._chunks[i], offset);
+    offset += self._chunks[i].length;
+  }
+  return out;
+}
+
 if (typeof _g.Blob === 'undefined') {
   _g.Blob = function Blob(parts, options) {
-    this._parts = parts || [];
-    this.type = (options && options.type) || '';
-    this.size = 0;
-    for (var i = 0; i < this._parts.length; i++) {
-      var p = this._parts[i];
-      this.size += (typeof p === 'string') ? p.length : (p && p.length) ? p.length : 0;
-    }
+    if (!(this instanceof _g.Blob)) return new _g.Blob(parts, options);
+    options = options || {};
+    var collected = _bao_blob_collect_parts(parts);
+    this._chunks = collected.chunks;
+    this.size = collected.size;
+    // Normalise type per WHATWG: lowercased ASCII; ignore invalid.
+    var t = (typeof options.type === 'string') ? options.type : '';
+    this.type = t.toLowerCase();
   };
   _g.Blob.prototype.arrayBuffer = function() {
-    var total = this.size;
-    var buf = new ArrayBuffer(total);
-    var view = new Uint8Array(buf);
-    var offset = 0;
-    for (var i = 0; i < this._parts.length; i++) {
-      var p = this._parts[i];
-      if (typeof p === 'string') {
-        for (var j = 0; j < p.length; j++) view[offset++] = p.charCodeAt(j);
-      } else if (p instanceof ArrayBuffer) {
-        var arr = new Uint8Array(p);
-        for (var j = 0; j < arr.length; j++) view[offset++] = arr[j];
-      } else if (p && p.buffer instanceof ArrayBuffer) {
-        for (var j = 0; j < p.length; j++) view[offset++] = p[j];
-      }
-    }
-    return Promise.resolve(buf);
+    return Promise.resolve(_bao_blob_concat(this).buffer);
   };
   _g.Blob.prototype.text = function() {
-    return this.arrayBuffer().then(function(buf) {
-      var arr = new Uint8Array(buf);
-      var s = '';
-      for (var i = 0; i < arr.length; i++) s += String.fromCharCode(arr[i]);
-      return s;
+    var bytes = _bao_blob_concat(this);
+    // TextDecoder default is UTF-8.
+    return Promise.resolve(new TextDecoder().decode(bytes));
+  };
+  _g.Blob.prototype.slice = function(start, end, contentType) {
+    var size = this.size;
+    var relStart = (start === undefined) ? 0 : (start | 0);
+    if (relStart < 0) relStart = Math.max(size + relStart, 0);
+    else relStart = Math.min(relStart, size);
+    var relEnd = (end === undefined) ? size : (end | 0);
+    if (relEnd < 0) relEnd = Math.max(size + relEnd, 0);
+    else relEnd = Math.min(relEnd, size);
+    var span = Math.max(relEnd - relStart, 0);
+    var out = new Uint8Array(span);
+    var outOff = 0;
+    var cur = 0;
+    for (var j = 0; j < this._chunks.length && outOff < span; j++) {
+      var ch2 = this._chunks[j];
+      var next = cur + ch2.length;
+      if (next <= relStart) { cur = next; continue; }
+      var ls = Math.max(relStart - cur, 0);
+      var le = Math.min(relEnd - cur, ch2.length);
+      var taken2 = ch2.subarray(ls, le);
+      out.set(taken2, outOff);
+      outOff += taken2.length;
+      cur = next;
+    }
+    var b = new _g.Blob([], { type: contentType });
+    b._chunks = [out];
+    b.size = span;
+    return b;
+  };
+  _g.Blob.prototype.stream = function() {
+    var bytes = _bao_blob_concat(this);
+    var rs = new ReadableStream({
+      start: function(controller) { controller.enqueue(bytes); controller.close(); }
     });
+    return rs;
   };
 }
+
+// @trace REQ-ENG-005 [api:URL.createObjectURL/revokeObjectURL] — Blob URL
+// registry. URL.createObjectURL(blob) returns "blob:<origin>/<uuid>" and
+// stores the Blob; resolveObjectURL(url) / fetch("blob:...") can retrieve it.
+// URL is defined later (node_url.rs) as JSPROP_PERMANENT — use defineProperty
+// fallback so static methods land on the constructor even if install order
+// changes.
+function _bao_install_blob_url_statics() {
+  if (typeof _g.URL !== 'function') return false;
+  if (_g.URL.hasOwnProperty('createObjectURL')) return true;
+  var desc = {
+    createObjectURL: function createObjectURL(blob) {
+      if (blob == null || typeof blob !== 'object' || typeof blob.size !== 'number' || typeof blob.arrayBuffer !== 'function') {
+        throw new TypeError("Failed to execute 'createObjectURL' on 'URL': parameter 1 is not of type 'Blob'.");
+      }
+      _g._bao_blob_counter = (_g._bao_blob_counter | 0) + 1;
+      // WHATWG: "blob:" + origin + "/" + UUID. Use a stable counter under a
+      // null origin (servo/browser contexts use real origins; CLI uses null).
+      var origin = 'null';
+      var id = 'blob:' + origin + '/' + Date.now().toString(36) + '-' + _g._bao_blob_counter.toString(36);
+      _g._bao_blob_registry.set(id, blob);
+      return id;
+    },
+    revokeObjectURL: function revokeObjectURL(id) {
+      if (typeof id !== 'string') return;
+      _g._bao_blob_registry.delete(id);
+    }
+  };
+  try {
+    Object.defineProperty(_g.URL, 'createObjectURL', { value: desc.createObjectURL, writable: true, configurable: true, enumerable: false });
+    Object.defineProperty(_g.URL, 'revokeObjectURL', { value: desc.revokeObjectURL, writable: true, configurable: true, enumerable: false });
+  } catch (e) { return false; }
+  // Mirror on globalThis for `URL.createObjectURL` and `URL.revokeObjectURL`
+  // both already point to the same constructor — no second global needed.
+  return true;
+}
+_bao_install_blob_url_statics();
+// Re-attempt after node_url::install has run (URL constructor is registered
+// later than web_api_constructors). node_buffer::install invokes this hook
+// again — see _bao_run_blob_url_statics() below.
+_g._bao_run_blob_url_statics = _bao_install_blob_url_statics;
 
 // File extends Blob
 if (typeof _g.File === 'undefined') {

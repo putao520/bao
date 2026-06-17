@@ -569,7 +569,7 @@ unsafe extern "C" fn host_resolve_imported_module(
         "fs", "path", "crypto", "os", "url", "events", "net", "http", "https",
         "child_process", "util", "assert", "stream", "zlib", "dns", "querystring",
         "buffer", "string_decoder", "timers", "readline", "perf_hooks",
-        "tls", "bun:test", "harness",
+        "tls", "bun:test", "harness", "test",
         // Stubbed builtins (registered by bao_runtime::node_stubs).
         "async_hooks", "cluster", "console", "constants", "dgram",
         "diagnostics_channel", "domain", "http2", "inspector", "punycode",
@@ -586,6 +586,23 @@ unsafe extern "C" fn host_resolve_imported_module(
 
     // Synthetic ESM modules with explicit named exports for known builtins
     let synthetic_esm = match stripped {
+        // @trace REQ-ENG-005 [module:node:test] — node:test runner shim.
+        // Forwards describe/test/it/before*/after* hooks to the bun:test
+        // collector so a file can use `import { describe, test } from "node:test"`
+        // and still be picked up by `bao test`. Node's surface is broader
+        // (run(), test.run(), MockTracker) but the upstream tests in this repo
+        // only use describe/test/it + before/after hooks.
+        "test" => Some(r#"var _m = require("bun:test");
+export var describe = _m.describe;
+export var test = _m.test;
+export var it = _m.it;
+export var before = _m.beforeAll;
+export var after = _m.afterAll;
+export var beforeEach = _m.beforeEach;
+export var afterEach = _m.afterEach;
+export var mock = _m.jest;
+export default _m;
+"#),
         "bun:test" => Some(r#"var _m = require("bun:test");
 export var describe = _m.describe;
 export var test = _m.test;
@@ -1200,7 +1217,7 @@ unsafe extern "C" fn host_dynamic_import(
         "fs", "path", "crypto", "os", "url", "events", "net", "http", "https",
         "child_process", "util", "assert", "stream", "zlib", "dns", "querystring",
         "buffer", "string_decoder", "timers", "readline", "perf_hooks",
-        "tls", "bun:test", "harness",
+        "tls", "bun:test", "harness", "test",
         // Stubbed builtins (registered by bao_runtime::node_stubs).
         "async_hooks", "cluster", "console", "constants", "dgram",
         "diagnostics_channel", "domain", "http2", "inspector", "punycode",
