@@ -437,6 +437,12 @@ unsafe extern "C" fn console_log(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         if i > 0 { print!(" "); }
         print_value(cx, *val);
     }
+    // Node.js / Bun: console.log terminates the line with a newline. Use
+    // `println!` so the line buffer is flushed even when stdout is a pipe —
+    // Rust's `print!` is block-buffered on non-TTYs, which would silently
+    // drop output captured via `Bun.spawn({stdout: "pipe"})` when the child
+    // exits without an explicit flush.
+    println!();
     info!("console.log");
     args.rval().set(UndefinedValue());
     true

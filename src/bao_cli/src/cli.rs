@@ -12,8 +12,14 @@ use bao_stealth::StealthProfile;
 #[derive(Parser)]
 #[command(name = "bao", about = "Bao Runtime — SpiderMonkey + Servo")]
 struct Cli {
+    /// Evaluate the given code string (Bun-style top-level `-e`/`--eval`).
+    /// When present, Bao runs the code and exits — no subcommand needed.
+    /// Equivalent to `bao run --eval <code>`.
+    #[arg(short, long)]
+    eval: Option<String>,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(clap::Subcommand)]
@@ -67,8 +73,14 @@ enum Commands {
 /// Returns `Err(exit_code)` on failure; callers should `std::process::exit(code)`.
 pub fn run() -> ::std::result::Result<(), i32> {
     let cli = Cli::parse();
+    // Top-level `-e` / `--eval` (Bun-compatible): runs the code as a script.
+    // This is the form used by upstream test harnesses that spawn
+    // `bunExe() -e script` to exercise TOCTOU PoCs in a fresh subprocess.
+    if let Some(code) = cli.eval {
+        return run_eval(&code);
+    }
     match cli.command {
-        Commands::Run { eval, r#module, file } => {
+        Some(Commands::Run { eval, r#module, file }) => {
             if let Some(code) = eval {
                 if r#module {
                     run_module_eval(&code)
@@ -82,20 +94,24 @@ pub fn run() -> ::std::result::Result<(), i32> {
                 Err(1)
             }
         }
-        Commands::Build { outdir, target, format, minify, sourcemap, entrypoint } => {
+        Some(Commands::Build { outdir, target, format, minify, sourcemap, entrypoint }) => {
             run_build(&entrypoint, outdir.as_deref(), &target, &format, minify, sourcemap)
         }
-        Commands::Test { eval, files } => {
+        Some(Commands::Test { eval, files }) => {
             run_test(eval.as_deref(), &files)
         }
-        Commands::Install { .. } => {
+        Some(Commands::Install { .. }) => {
             crate::install::run_install()
         }
-        Commands::Browser { url, cdp_port, headless, stealth } => {
+        Some(Commands::Browser { url, cdp_port, headless, stealth }) => {
             run_browser(url, cdp_port, headless, stealth)
         }
-        Commands::External(args) => {
+        Some(Commands::External(args)) => {
             eprintln!("bao: unknown command '{}'", args[0]);
+            Err(1)
+        }
+        None => {
+            eprintln!("bao: no command given. Try `bao --help`.");
             Err(1)
         }
     }

@@ -1137,7 +1137,15 @@ const HARNESS_SHIM: &str = r#"
   }
   _g.__harness_module = {
     gc: function() {},
-    bunExe: function() { return "bao"; },
+    bunExe: function() {
+      // Match upstream harness.ts: return process.execPath so spawned
+      // subprocesses use the same Bao binary that's currently running.
+      // The previous hardcoded "bao" relied on `bao` being on $PATH; the
+      // canonical upstream contract is the absolute path of the running
+      // executable. Critical for `Bun.spawn({cmd: [bunExe(), "-e", ...]})`
+      // patterns used by buffer-copy-fill-detach and similar TOCTOU tests.
+      return (_g.process && _g.process.execPath) || "bao";
+    },
     bunEnv: function() { return _g.process ? Object.assign({}, _g.process.env) : {}; },
     bunRun: function(path, opts) {
       // Run a script as a child bao process and return { stdout, stderr, exitCode }.

@@ -1031,19 +1031,50 @@ pub fn install_buffer_global(
     return this;
   };
 
+  // @trace REQ-ENG-005 [api:Buffer.includes detach semantics] — Node.js:
+  // includes(val, byteOffset) coerces byteOffset via ToInteger (invoking any
+  // valueOf). If the valueOf detaches the buffer, the haystack is treated as
+  // length 0 → includes returns false. Delegate to indexOf (already detached-
+  // aware) and compare against -1.
   _bp.includes = function(val, byteOffset) {
+    // Force ToInteger coercion of byteOffset so valueOf side effects run,
+    // mirroring indexOf's behavior even when the result is ignored.
+    if (arguments.length >= 2) { var _ = (byteOffset | 0); }
     return this.indexOf(val, byteOffset) !== -1;
   };
 
+  // @trace REQ-ENG-005 [api:Buffer.lastIndexOf detach semantics] — Node.js:
+  // lastIndexOf coerces byteOffset via ToInteger (invoking valueOf). If
+  // valueOf detaches the buffer, treat as length 0 → lastIndexOf returns -1.
+  // For an empty/detached needle, lastIndexOf returns byteOffset.
   _bp.lastIndexOf = function(val, byteOffset) {
-    byteOffset = byteOffset !== undefined ? byteOffset : this.length - 1;
+    // Force ToInteger coercion so valueOf runs (may detach).
+    var forcedOffset = (arguments.length >= 2) ? (byteOffset | 0) : (this.length - 1);
+    if (forcedOffset < 0) forcedOffset = 0;
+    // Check for detachment of haystack after valueOf ran.
+    var detached = (this.buffer && this.buffer.byteLength === 0);
     if (typeof val === 'number') {
-      for (var i = byteOffset; i >= 0; i--) { if (this[i] === val) return i; }
+      if (detached) return -1;
+      var n = val & 0xFF;
+      for (var i = forcedOffset; i >= 0; i--) { if (this[i] === n) return i; }
     } else if (typeof val === 'string') {
-      for (var i = byteOffset; i >= 0; i--) {
+      if (detached) return -1;
+      for (var i = forcedOffset; i >= 0; i--) {
         var match = true;
         for (var j = 0; j < val.length && (i + j) < this.length; j++) {
           if (this[i + j] !== val.charCodeAt(j)) { match = false; break; }
+        }
+        if (match) return i;
+      }
+    } else if (val && typeof val === 'object') {
+      // Buffer/Uint8Array needle.
+      var needleLen = (val.buffer && val.buffer.byteLength === 0) ? 0 : val.length;
+      if (needleLen === 0) return forcedOffset; // detached/empty needle → offset
+      if (detached) return -1;
+      for (var i = forcedOffset; i >= 0; i--) {
+        var match = true;
+        for (var j = 0; j < needleLen && (i + j) < this.length; j++) {
+          if (this[i + j] !== val[j]) { match = false; break; }
         }
         if (match) return i;
       }
@@ -2619,15 +2650,62 @@ unsafe extern "C" fn buffer_index_of(
         return buffer_index_of_legacy(cx, &args, argc, obj_h, len);
     }
 
-    let byte_offset = if argc >= 2 {
+    // @trace REQ-ENG-005 [api:Buffer.indexOf detach semantics] — Node.js:
+    // byteOffset is coerced via ToInteger which invokes valueOf callbacks.
+    // The user's valueOf may detach the backing ArrayBuffer (ArrayBuffer.transfer),
+    // in which case the haystack must be treated as length 0 → indexOf returns -1.
+    // We coerce BEFORE reading bytes so the detach is observable, then re-read
+    // the view to detect it.
+    let byte_offset: i64 = if argc >= 2 {
         let off_val = *args.get(1).ptr;
-        if off_val.is_int32() { off_val.to_int32().max(0) as usize } else { 0 }
+        let off_h = mozjs::rust::Handle::<Value>::from_marked_location(&off_val as *const Value);
+        match mozjs::rust::ToInt32(cx, off_h) {
+            Ok(v) => v as i64,
+            Err(_) => {
+                // Coercion threw — propagate.
+                return false;
+            }
+        }
     } else {
         0
     };
+    let byte_offset = if byte_offset < 0 { 0 } else { byte_offset as usize };
 
-    let bytes = ::std::slice::from_raw_parts(data_ptr, buf_len);
+    // Re-read the buffer view AFTER coercion — if valueOf detached the
+    // backing store, data_ptr is now null and length is 0.
+    let (buf_len_post, data_ptr_post) = buffer_view_bytes(obj);
+    let detached = data_ptr_post.is_null() || buf_len_post == 0;
+
+    // String encoding argument coercion (ToString invokes toString callbacks
+    // which may also detach the buffer).
+    let encoding: ::std::string::String = if argc >= 3 {
+        let enc_val = *args.get(2).ptr;
+        let enc_h = mozjs::rust::Handle::<Value>::from_marked_location(&enc_val as *const Value);
+        let enc_str_ptr = mozjs::rust::ToString(cx, enc_h);
+        if !enc_str_ptr.is_null() {
+            jsstr_to_string(cx, NonNull::new_unchecked(enc_str_ptr)).to_lowercase()
+        } else {
+            // ToString threw.
+            return false;
+        }
+    } else {
+        "utf8".to_string()
+    };
+
+    // Re-read again after encoding toString coercion.
+    let (buf_len_final, data_ptr_final) = buffer_view_bytes(obj);
+    let detached_final = data_ptr_final.is_null() || buf_len_final == 0;
+
+    if detached || detached_final {
+        // Haystack detached → treat as length 0 → indexOf returns -1.
+        args.rval().set(Int32Value(-1));
+        return true;
+    }
+
+    let buf_len = buf_len_final;
+    let bytes = ::std::slice::from_raw_parts(data_ptr_final, buf_len);
     let search_val = *args.get(0).ptr;
+    let _ = buf_len; // silence unused warning if buffer was re-read above
 
     if search_val.is_int32() {
         let needle = search_val.to_int32() as u8;
@@ -2644,15 +2722,7 @@ unsafe extern "C" fn buffer_index_of(
     } else if search_val.is_string() {
         let js_str = search_val.to_string();
         let needle_str = jsstr_to_string(cx, NonNull::new_unchecked(js_str));
-        // @trace REQ-ENG-005 [api:Buffer.indexOf/lastIndexOf] — Node.js
-        // honours the optional encoding argument (positional idx 2 for
-        // indexOf, idx 2 for lastIndexOf): encode the needle string under
-        // that encoding before scanning. Default is utf8.
-        let encoding = if argc >= 3 && (*args.get(2).ptr).is_string() {
-            jsstr_to_string(cx, NonNull::new_unchecked((*args.get(2).ptr).to_string())).to_lowercase()
-        } else {
-            "utf8".to_string()
-        };
+        // encoding was coerced above via ToString (which may detach).
         let needle: Vec<u8> = match encoding.as_str() {
             "utf8" | "utf-8" | "" => needle_str.bytes().collect(),
             "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => {
@@ -2705,6 +2775,9 @@ unsafe extern "C" fn buffer_index_of(
         }
     } else if search_val.is_object() {
         // Buffer/Uint8Array needle — use the typed-array view bytes directly.
+        // @trace REQ-ENG-005 [api:Buffer.indexOf detach needle] — Node.js:
+        // if the needle was detached via the byteOffset/encoding callbacks,
+        // treat it as length 0 → matches at byte_offset (empty needle).
         let needle_obj = search_val.to_object();
         let (n_len, n_data) = buffer_view_bytes(needle_obj);
         if n_data.is_null() || n_len == 0 {
