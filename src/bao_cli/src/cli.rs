@@ -3,6 +3,7 @@
 // @trace REQ-IMPL-03: Phase 3 CDP Server implementation (completed)
 // @trace REQ-IMPL-04: Phase 4 Stealth anti-fingerprinting (completed)
 // @trace REQ-IMPL-05: Phase 5 Integration testing and release (completed)
+// @trace REQ-ENG-006: Bun API adaptation — bao test runner execution/report/exit-code (run_test_file)
 
 use clap::Parser;
 use bao_browser::BrowserConfig;
@@ -253,6 +254,8 @@ fn run_test(
     } else if files.is_empty() {
         let test_patterns = ["test", "tests", "__tests__"];
         let mut found = false;
+        let mut total_passed: u32 = 0;
+        let mut total_failed: u32 = 0;
         for dir in &test_patterns {
             if ::std::path::Path::new(dir).is_dir() {
                 found = true;
@@ -260,11 +263,18 @@ fn run_test(
                     for entry in entries.flatten() {
                         let path = entry.path();
                         if path.extension().map(|e| e == "js" || e == "ts").unwrap_or(false) {
-                            let path_str = path.to_string_lossy();
+                            let path_str = path.to_string_lossy().into_owned();
                             eprintln!("\n# {}", path_str);
-                            match rt.run_file(&path_str) {
-                                Ok(_) => {}
-                                Err(e) => eprintln!("FAIL [{}]: {}", path_str, e),
+                            match rt.run_test_file(&path_str) {
+                                Ok(report) => {
+                                    render_report(&report);
+                                    total_passed += report.passed;
+                                    total_failed += report.failed;
+                                }
+                                Err(e) => {
+                                    eprintln!("FAIL [{}]: {}", path_str, e);
+                                    total_failed += 1;
+                                }
                             }
                             bun_runtime::clear_exit();
                         }
@@ -276,20 +286,51 @@ fn run_test(
             eprintln!("bao test: no test files found (looked in test/, tests/, __tests__/)");
             return Err(1);
         }
-        Ok(())
+        eprintln!("\n# Summary: {} passed, {} failed", total_passed, total_failed);
+        if total_failed > 0 { Err(1) } else { Ok(()) }
     } else {
-        let mut any_fail = false;
+        let mut total_passed: u32 = 0;
+        let mut total_failed: u32 = 0;
         for file in files {
             eprintln!("\n# {}", file);
-            match rt.run_file(file) {
-                Ok(_) => {}
-                Err(e) => { eprintln!("FAIL [{}]: {}", file, e); any_fail = true; }
+            match rt.run_test_file(file) {
+                Ok(report) => {
+                    render_report(&report);
+                    total_passed += report.passed;
+                    total_failed += report.failed;
+                }
+                Err(e) => {
+                    eprintln!("FAIL [{}]: {}", file, e);
+                    total_failed += 1;
+                }
             }
             bun_runtime::clear_exit();
         }
-        if any_fail { Err(1) } else { Ok(()) }
+        eprintln!("\n# Summary: {} passed, {} failed", total_passed, total_failed);
+        if total_failed > 0 { Err(1) } else { Ok(()) }
     };
     test_result
+}
+
+/// Render a single file's test report: ✓ for passes, ✗ + message + first
+/// stack line for failures, then a per-file counters line.
+fn render_report(report: &bun_runtime::bun_test::TestReport) {
+    for name in &report.passes {
+        eprintln!("✓ {}", name);
+    }
+    for f in &report.failures {
+        eprintln!("✗ {}", f.name);
+        if !f.message.is_empty() {
+            eprintln!("  {}", f.message);
+        }
+        if !f.stack.is_empty() {
+            let first_line = f.stack.lines().next().unwrap_or("");
+            if !first_line.is_empty() {
+                eprintln!("  at: {}", first_line);
+            }
+        }
+    }
+    eprintln!("  -> {} passed, {} failed", report.passed, report.failed);
 }
 
 fn run_browser(

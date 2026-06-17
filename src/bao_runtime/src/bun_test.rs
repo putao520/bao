@@ -21,6 +21,9 @@ const BUN_TEST_SHIM: &str = r#"
   var _beforeAllFns = [];
   var _afterAllFns = [];
 
+  var _passNames = [];
+  var _failEntries = [];
+
   function _runTest(name, fn) {
     try {
       for (var i = 0; i < _beforeEachFns.length; i++) {
@@ -35,12 +38,18 @@ const BUN_TEST_SHIM: &str = r#"
         _afterEachFns[j]();
       }
       _passed++;
+      _passNames.push(name);
     } catch (e) {
       for (var k = 0; k < _afterEachFns.length; k++) {
         try { _afterEachFns[k](); } catch (_) {}
       }
       _failed++;
       _errors.push({ name: name, error: e });
+      _failEntries.push({
+        name: name,
+        message: (e && (e.message || e.toString())) || String(e),
+        stack: (e && e.stack) || ""
+      });
     }
   }
 
@@ -315,12 +324,19 @@ const BUN_TEST_SHIM: &str = r#"
   itFn.only = function(name, fn) { itFn(name, fn); };
   itFn.failing = function(name, fn) {
     // In failing mode, we expect the test to throw
+    var fullName = _currentDescribe ? (_currentDescribe + " > " + name) : name;
     try {
       fn();
       _failed++;
-      _errors.push({ name: name, error: new Error("Expected test to fail but it passed") });
+      _errors.push({ name: fullName, error: new Error("Expected test to fail but it passed") });
+      _failEntries.push({
+        name: fullName,
+        message: "Expected test to fail but it passed",
+        stack: ""
+      });
     } catch (e) {
       _passed++; // Expected to fail, so it's a pass
+      _passNames.push(fullName);
     }
   };
 
@@ -362,20 +378,41 @@ const BUN_TEST_SHIM: &str = r#"
   // Test runner — called after all suites registered
   _g.__run_bun_tests = function() {
     for (var i = 0; i < _beforeAllFns.length; i++) {
-      try { _beforeAllFns[i](); } catch (e) { _errors.push({ name: "beforeAll", error: e }); }
+      try { _beforeAllFns[i](); } catch (e) {
+        _errors.push({ name: "beforeAll", error: e });
+        _failed++;
+        _failEntries.push({
+          name: "beforeAll",
+          message: (e && (e.message || e.toString())) || String(e),
+          stack: (e && e.stack) || ""
+        });
+      }
     }
     for (var s = 0; s < _suites.length; s++) {
       _currentDescribe = _suites[s].name;
       try { _suites[s].fn(); } catch (e) {
         _failed++;
         _errors.push({ name: _suites[s].name, error: e });
+        _failEntries.push({
+          name: _suites[s].name,
+          message: (e && (e.message || e.toString())) || String(e),
+          stack: (e && e.stack) || ""
+        });
       }
       _currentDescribe = null;
     }
     for (var j = 0; j < _afterAllFns.length; j++) {
-      try { _afterAllFns[j](); } catch (e) { _errors.push({ name: "afterAll", error: e }); }
+      try { _afterAllFns[j](); } catch (e) {
+        _errors.push({ name: "afterAll", error: e });
+        _failed++;
+        _failEntries.push({
+          name: "afterAll",
+          message: (e && (e.message || e.toString())) || String(e),
+          stack: (e && e.stack) || ""
+        });
+      }
     }
-    return { passed: _passed, failed: _failed, errors: _errors };
+    return { passed: _passed, failed: _failed, errors: _errors, passes: _passNames, failures: _failEntries };
   };
 })();
 "#;
@@ -468,10 +505,37 @@ unsafe fn eval_shim_get_obj(raw: *mut JSContext, expr: &str) -> *mut JSObject {
 /// # Safety
 /// Caller must ensure `raw` is a valid JSContext pointer with an active request.
 pub unsafe fn run_bun_tests(raw: *mut JSContext) -> (u32, u32) {
+    let r = run_bun_tests_report(raw);
+    (r.passed, r.failed)
+}
+
+/// A single failing test entry extracted from the JS shim.
+#[derive(Debug, Clone, Default)]
+pub struct TestFailure {
+    pub name: String,
+    pub message: String,
+    pub stack: String,
+}
+
+/// Full report of a test run: counters plus the per-test names/failures.
+#[derive(Debug, Clone, Default)]
+pub struct TestReport {
+    pub passed: u32,
+    pub failed: u32,
+    pub passes: Vec<String>,
+    pub failures: Vec<TestFailure>,
+}
+
+/// Run registered bun:test suites and extract a full report (counters + named
+/// passes/failures). The CLI layer renders the ✓/✗ output.
+///
+/// # Safety
+/// Caller must ensure `raw` is a valid JSContext pointer with an active request.
+pub unsafe fn run_bun_tests_report(raw: *mut JSContext) -> TestReport {
     let result = eval_shim_get_obj(raw, "globalThis.__run_bun_tests()");
     if result.is_null() {
         log::warn!("__run_bun_tests() returned null");
-        return (0, 0);
+        return TestReport::default();
     }
 
     let obj_h = Handle::<*mut JSObject> {
@@ -510,5 +574,132 @@ pub unsafe fn run_bun_tests(raw: *mut JSContext) -> (u32, u32) {
         failed = f_val.to_int32() as u32;
     }
 
-    (passed, failed)
+    let passes = read_string_array(raw, obj_h, c"passes".as_ptr());
+    let failures = read_failure_array(raw, obj_h, c"failures".as_ptr());
+
+    TestReport { passed, failed, passes, failures }
+}
+
+unsafe fn read_string_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, key: *const i8) -> Vec<String> {
+    let mut arr_val = UndefinedValue();
+    JS_GetProperty(
+        raw,
+        obj_h,
+        key,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut arr_val,
+        },
+    );
+    if !arr_val.is_object() {
+        return Vec::new();
+    }
+    let arr_obj = arr_val.to_object();
+    let arr_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &arr_obj,
+    };
+
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(
+        raw,
+        arr_h,
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len_val,
+        },
+    );
+    let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let mut elem = UndefinedValue();
+        JS_GetElement(
+            raw,
+            arr_h,
+            i as u32,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
+        out.push(crate::js_to_rust_string(raw, elem));
+    }
+    out
+}
+
+unsafe fn read_failure_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, key: *const i8) -> Vec<TestFailure> {
+    let mut arr_val = UndefinedValue();
+    JS_GetProperty(
+        raw,
+        obj_h,
+        key,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut arr_val,
+        },
+    );
+    if !arr_val.is_object() {
+        return Vec::new();
+    }
+    let arr_obj = arr_val.to_object();
+    let arr_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &arr_obj,
+    };
+
+    let mut len_val = UndefinedValue();
+    JS_GetProperty(
+        raw,
+        arr_h,
+        c"length".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut len_val,
+        },
+    );
+    let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
+
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        let mut elem = UndefinedValue();
+        JS_GetElement(
+            raw,
+            arr_h,
+            i as u32,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut elem,
+            },
+        );
+        if !elem.is_object() {
+            continue;
+        }
+        let elem_obj = elem.to_object();
+        let elem_h = Handle::<*mut JSObject> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &elem_obj,
+        };
+        out.push(TestFailure {
+            name: read_obj_string(raw, elem_h, c"name".as_ptr()),
+            message: read_obj_string(raw, elem_h, c"message".as_ptr()),
+            stack: read_obj_string(raw, elem_h, c"stack".as_ptr()),
+        });
+    }
+    out
+}
+
+unsafe fn read_obj_string(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, key: *const i8) -> String {
+    let mut v = UndefinedValue();
+    JS_GetProperty(
+        raw,
+        obj_h,
+        key,
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut v,
+        },
+    );
+    crate::js_to_rust_string(raw, v)
 }

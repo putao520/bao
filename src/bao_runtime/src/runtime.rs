@@ -99,4 +99,60 @@ impl BaoRuntime {
             self.eval(&source, path)
         }
     }
+
+    /// Load and execute a test file, then run the registered `bun:test`
+    /// suites while the realm that registered them is still alive. Returns
+    /// a full report (counters + named passes/failures).
+    ///
+    /// Files that don't look like modules fall back to plain `eval`, but in
+    /// that case `bun:test` registration happens in a different realm and the
+    /// report will be empty — test files should use ESM/TS syntax.
+    //
+    // @trace REQ-ENG-006 [entity:BaoRuntime] — bao test runner execution
+    pub fn run_test_file(&mut self, path: &str) -> ::std::result::Result<crate::bun_test::TestReport, JsError> {
+        let source = bun_sys::fs::read_to_string(path).map_err(|e| JsError {
+            message: format!("Error reading {}: {}", path, e),
+            filename: path.into(),
+            line: 0,
+            column: 0,
+            stack: None,
+        })?;
+
+        let abs_path = if ::std::path::Path::new(path).is_absolute() {
+            ::std::path::PathBuf::from(path)
+        } else {
+            ::std::env::current_dir().unwrap_or_default().join(path)
+        };
+        if let Some(dir) = abs_path.parent() {
+            require::set_require_dir(dir.to_path_buf());
+        }
+
+        let filename_str = abs_path.to_string_lossy().into_owned();
+        let dirname_str = abs_path.parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        globals::install_file_globals(&mut self.ctx, &filename_str, &dirname_str);
+
+        let is_module = path.ends_with(".mjs")
+            || path.ends_with(".mts")
+            || path.ends_with(".ts")
+            || path.ends_with(".tsx")
+            || path.ends_with(".jsx")
+            || (source.contains("import ") && (source.contains(" from ") || source.contains(" from\"") || source.contains("from '")) && !source.contains("require("))
+            || source.trim_start().starts_with("import ");
+
+        if is_module {
+            let setup = self.ctx.global_setup();
+            let hook = self.ctx.post_eval_hook();
+            let mut cx = self.ctx.cx();
+            ModuleLoader::eval_module_then(&mut cx, &source, path, setup, hook, |realm_cx| {
+                unsafe { crate::bun_test::run_bun_tests_report(realm_cx.raw_cx()) }
+            })
+        } else {
+            // Non-module file: bun:test registration won't survive eval's separate realm.
+            // Run as plain script and produce an empty report (no bun:test suites collected).
+            self.eval(&source, path)?;
+            ::std::result::Result::Ok(crate::bun_test::TestReport::default())
+        }
+    }
 }

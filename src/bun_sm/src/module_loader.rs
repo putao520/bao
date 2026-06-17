@@ -431,6 +431,106 @@ impl ModuleLoader {
             jsval_to_jsvalue(realm_cx.raw_cx_no_gc(), rval.get())
         })
     }
+
+    /// Evaluate `source` as an ES module under a fresh realm, then invoke
+    /// `after_eval` while that realm is still alive. Used by `bao test` so the
+    /// test runner (`globalThis.__run_bun_tests()`) executes against the same
+    /// global object that registered the suites.
+    ///
+    /// `after_eval` receives the live `JSContext` (still inside `AutoRealm`),
+    /// so it can read state installed by the module.
+    pub fn eval_module_then<R>(
+        cx: &mut mozjs::context::JSContext,
+        source: &str,
+        filename: &str,
+        global_setup: Option<GlobalSetupFn>,
+        post_eval_hook: Option<PostEvalHook>,
+        after_eval: impl FnOnce(&mut mozjs::context::JSContext) -> R,
+    ) -> ::std::result::Result<R, JsError> {
+        let abs_filename = if Path::new(filename).is_absolute() {
+            PathBuf::from(filename)
+        } else {
+            ::std::env::current_dir().unwrap_or_default().join(filename)
+        };
+        let base_dir = abs_filename.parent().map(|p| p.to_path_buf())
+            .or_else(|| ::std::env::current_dir().ok());
+
+        CURRENT_DIR.with(|d| *d.borrow_mut() = base_dir.clone());
+
+        let options = RealmOptions::default();
+
+        rooted!(&in(cx) let global = unsafe {
+            mozjs::rust::wrappers2::JS_NewGlobalObject(
+                cx,
+                &SIMPLE_GLOBAL_CLASS,
+                ::std::ptr::null_mut(),
+                OnNewGlobalHookOption::FireOnNewGlobalHook,
+                &*options,
+            )
+        });
+
+        let mut realm = AutoRealm::new_from_handle(cx, global.handle());
+        let realm_cx: &mut mozjs::context::JSContext = &mut realm;
+
+        install_console(realm_cx, global.handle());
+        if let Some(setup) = global_setup {
+            unsafe { setup(realm_cx, global.handle()) };
+        }
+
+        let c_filename = CString::new(filename)
+            .unwrap_or_else(|_| CString::new("<module>").unwrap());
+        let compile_opts = CompileOptionsWrapper::new(realm_cx, c_filename, 1);
+
+        let transpiled = if needs_transpile(&abs_filename) {
+            strip_typescript(source, &abs_filename)
+        } else {
+            source.to_string()
+        };
+
+        let mut src = transform_str_to_source_text(&transpiled);
+
+        rooted!(&in(realm_cx) let mut module_obj = unsafe {
+            CompileModule1(realm_cx, compile_opts.ptr, &mut src)
+        });
+
+        if module_obj.get().is_null() {
+            return ::std::result::Result::Err(JsError {
+                message: "Failed to compile module".into(),
+                filename: filename.into(),
+                line: 0,
+                column: 0,
+                stack: None,
+            });
+        }
+
+        let entry_url = path_to_file_url(&abs_filename);
+        unsafe { set_module_private(realm_cx.raw_cx_no_gc(), module_obj.handle().get(), &entry_url) };
+
+        rooted!(&in(realm_cx) let mut rval = UndefinedValue());
+
+        if !unsafe { ModuleLink(realm_cx, module_obj.handle()) } {
+            return ::std::result::Result::Err(extract_module_error(realm_cx));
+        }
+
+        if !unsafe { ModuleEvaluate(realm_cx, module_obj.handle(), rval.handle_mut()) } {
+            return ::std::result::Result::Err(extract_module_error(realm_cx));
+        }
+
+        drain_job_queue(realm_cx);
+
+        if let Some(hook) = post_eval_hook {
+            for _ in 0..1000 {
+                if !hook(realm_cx) {
+                    break;
+                }
+                ::std::thread::sleep(::std::time::Duration::from_millis(1));
+                hook(realm_cx);
+                drain_job_queue(realm_cx);
+            }
+        }
+
+        ::std::result::Result::Ok(after_eval(realm_cx))
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
