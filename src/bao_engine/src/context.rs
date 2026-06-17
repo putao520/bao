@@ -22,7 +22,7 @@
 use std::cell::RefCell;
 use std::mem::ManuallyDrop;
 use std::ptr::{self, NonNull};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use mozjs::jsapi::{JSContext as RawJSContext, JS_ShutDown, OnNewGlobalHookOption};
 use mozjs::jsval::UndefinedValue;
@@ -115,6 +115,13 @@ static ENGINE_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 // `Arc<Mutex<JSEngineHandle>>`,消除每次访问的 lock/unlock 开销。OnceLock 内部用
 // AtomicU8 状态机,首次 init 后所有 get() 是无锁 atomic load。
 static ENGINE_HANDLE: OnceLock<mozjs::rust::JSEngineHandle> = OnceLock::new();
+
+/// Process-global lock serializing JSEngine/Runtime creation in `for_test()`.
+/// SpiderMonkey's Runtime is process-global; concurrent `for_test()` calls
+/// race the init and the loser fails. The lock lets the first caller init;
+/// subsequent callers reuse the alive Runtime (checked via `Runtime::get()`).
+/// This removes the need for per-test-crate Mutex workarounds.
+static FOR_TEST_INIT_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     /// Per-thread JSEngine (only the initializing thread stores it here).
@@ -259,6 +266,10 @@ impl JsContext {
     /// SIGSEGV in mozjs's C++ TLS teardown (`mozilla::detail::MutexImpl`).
     #[doc(hidden)]
     pub fn for_test() -> Result<Self, JsError> {
+        // Serialize JSEngine/Runtime init across concurrent test threads.
+        // The guard is held for the whole call so the Runtime::get() reuse check
+        // sees the first caller's finished init before any other caller proceeds.
+        let _init_guard = FOR_TEST_INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Refuse to create a new Runtime after the engine has been shut down.
         // JS_ShutDown is irreversible — calling Runtime::new after it will crash.
         if ENGINE_SHUTDOWN.load(Ordering::SeqCst) {
