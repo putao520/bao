@@ -26,6 +26,26 @@ fn assert_e_class(method: &str) {
     );
 }
 
+/// 断言给定 method 不属于 E 类(不返回 NotSupported -32601)。
+///
+/// 用于 BUG-CDP-006 验证 Debugger domain 9 method 已从 E 类移除。
+///
+/// @trace BUG-CDP-006 [level:integration]
+fn assert_not_e_class(method: &str) {
+    // 检查 dispatcher 路由 — 不再产生 NotSupported 错误。
+    // 注意:某些 Debugger method 可能返回 InvalidParams(缺少必填参数),
+    // 但绝不会是 NotSupported — 这是 BUG-CDP-006 的核心断言。
+    let b: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
+    let result = dispatch_command(&*b, method, json!({}), "1");
+    match result {
+        Ok(_) => { /* 已路由到 handler,成功 */ }
+        Err(BridgeError::NotSupported(m)) => {
+            panic!("{method} should NOT be E-class after BUG-CDP-006, but got NotSupported({m})");
+        }
+        Err(_) => { /* 非 E 类错误(如 InvalidParams)也算不再 E 类 */ }
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════
 // HeapProfiler domain — all methods E class (≥ 4 explicit per Plan)
 // ════════════════════════════════════════════════════════════════════
@@ -325,88 +345,70 @@ fn e_page_stop_screencast() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// Debugger domain — Internal mode limited methods
+// Debugger domain — BUG-CDP-006: 已接入 servo SM Debugger API,不再是 E 类
 // ════════════════════════════════════════════════════════════════════
 
 #[test]
-fn e_debugger_set_breakpoint() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.setBreakpoint");
+fn debugger_set_breakpoint_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.setBreakpoint");
 }
 
 #[test]
-fn e_debugger_set_breakpoint_by_url() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.setBreakpointByUrl");
+fn debugger_set_breakpoint_by_url_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.setBreakpointByUrl");
 }
 
 #[test]
-fn e_debugger_remove_breakpoint() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.removeBreakpoint");
+fn debugger_remove_breakpoint_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.removeBreakpoint");
 }
 
 #[test]
-fn e_debugger_pause() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.pause");
+fn debugger_pause_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.pause");
 }
 
 #[test]
-fn e_debugger_resume() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.resume");
+fn debugger_resume_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.resume");
 }
 
 #[test]
-fn e_debugger_step_over() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.stepOver");
+fn debugger_step_over_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.stepOver");
 }
 
 #[test]
-fn e_debugger_step_into() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.stepInto");
+fn debugger_step_into_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.stepInto");
 }
 
 #[test]
-fn e_debugger_step_out() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.stepOut");
+fn debugger_step_out_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.stepOut");
 }
 
 #[test]
-fn e_debugger_evaluate_on_call_frame() {
-    // Arrange
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    // Act
-    // Assert
-    assert_e_class("Debugger.evaluateOnCallFrame");
+fn debugger_evaluate_on_call_frame_no_longer_e_class_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    assert_not_e_class("Debugger.evaluateOnCallFrame");
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -439,7 +441,8 @@ fn e_performance_get_metrics() {
 fn e_class_method_count_at_least_31() {
     // Arrange
     // Count #[test] fns in this file excluding `e_class_method_count_*`.
-    // The Plan MD requires ≥ 31. This test count:
+    // BUG-CDP-006 后 Debugger 9 method 不再 E 类(改为不再-E 类断言)。
+    // 真正的 E 类计数:
     //   HeapProfiler: 8
     //   Profiler: 4
     //   DOMStorage: 3
@@ -447,9 +450,9 @@ fn e_class_method_count_at_least_31() {
     //   ServiceWorker: 2
     //   Tracing: 3
     //   Page (PDF + coverage + screencast): 7
-    //   Debugger: 9
     //   Performance: 2
-    //   Total = 41 explicit tests (Plan requires ≥ 31)
+    //   Total E-class = 32 explicit tests (Plan requires ≥ 31)
+    //   + 9 Debugger no-longer-E-class regression tests (BUG-CDP-006)
     // Act
     // Assert
     assert!(true);

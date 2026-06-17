@@ -451,6 +451,98 @@ pub trait ServoBackend: Send + Sync {
         target_id: &str,
         node_id: i64,
     ) -> Result<MatchedStyles, BridgeError>;
+
+    // ──────────────────────────────────────────────────────────────
+    // Debugger domain — 9 method (BUG-CDP-006 接入 servo SM Debugger API)
+    // ──────────────────────────────────────────────────────────────
+
+    /// Debugger.enable — 启用 Debugger 域(servo `WantsLiveNotifications(true)`)。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_enable(&self, target_id: &str) -> Result<(), BridgeError>;
+
+    /// Debugger.disable — 禁用 Debugger 域。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_disable(&self, target_id: &str) -> Result<(), BridgeError>;
+
+    /// Debugger.setBreakpointByUrl / setBreakpoint — 设置断点。
+    ///
+    /// servo 内部统一走 `SetBreakpoint(actor_id, script_id, offset)`。
+    /// 实现需把 (url, line, column) 解析为 (script_id, offset)。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_set_breakpoint_by_url(
+        &self,
+        target_id: &str,
+        url: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<BreakpointResult, BridgeError>;
+
+    /// Debugger.removeBreakpoint — 清除断点(servo `ClearBreakpoint`)。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_remove_breakpoint(
+        &self,
+        target_id: &str,
+        script_id: u32,
+        line: u32,
+        column: u32,
+    ) -> Result<(), BridgeError>;
+
+    /// Debugger.pause — 请求 SM 暂停(servo `Interrupt`)。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_pause(&self, target_id: &str) -> Result<(), BridgeError>;
+
+    /// Debugger.resume / stepOver / stepInto / stepOut — 恢复执行(可选单步)。
+    ///
+    /// `step_action` = None 时为普通 resume;Some(Next/Into/Out) 对应单步。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_resume(
+        &self,
+        target_id: &str,
+        step_action: Option<DebugStepAction>,
+    ) -> Result<(), BridgeError>;
+
+    /// Debugger.evaluateOnCallFrame — 在调用栈帧求值表达式。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_evaluate_on_call_frame(
+        &self,
+        target_id: &str,
+        call_frame_id: &str,
+        expression: &str,
+    ) -> Result<DebuggerEvalResult, BridgeError>;
+
+    /// Debugger.getPossibleBreakpoints — 列出可设置断点的位置。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_get_possible_breakpoints(
+        &self,
+        target_id: &str,
+        script_id: u32,
+    ) -> Result<Vec<PossibleBreakpoint>, BridgeError>;
+
+    /// Debugger.getScriptSource — 返回 script 源码。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_get_script_source(
+        &self,
+        target_id: &str,
+        script_id: u32,
+    ) -> Result<String, BridgeError>;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -701,6 +793,121 @@ pub struct CSSProperty {
 pub struct MatchedRule {
     pub selector: String,
     pub style: CSSStyle,
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Debugger domain 数据结构(BUG-CDP-006)
+// ────────────────────────────────────────────────────────────────────
+
+/// 单步动作(servo `Resume(limit, frame_id)` 的 limit 参数)。
+///
+/// 映射到 servo `DevtoolScriptControlMsg::Resume(Some(limit), _)`:
+/// - `Next`   → `"next"`   (stepOver,SM 在下一语句边界暂停)
+/// - `Into`   → `"step"`   (stepInto,进入函数调用)
+/// - `Out`    → `"finish"` (stepOut,执行完当前函数)
+///
+/// 普通 resume(无单步)对应 `Resume(None, _)`。
+///
+/// @trace REQ-CDP-003 [domain:Debugger]
+/// @trace BUG-CDP-006 [domain:Debugger]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugStepAction {
+    /// stepOver — 跳过函数调用整体。
+    Next,
+    /// stepInto — 进入函数调用。
+    Into,
+    /// stepOut — 执行完当前函数。
+    Out,
+}
+
+impl DebugStepAction {
+    /// 从 CDP 客户端 step 描述字符串解析。
+    ///
+    /// CDP 协议本身用独立 method(stepOver/stepInto/stepOut)而非字符串参数,
+    /// 但某些适配层(Puppeteer 步进 API)会传 "over"/"into"/"out" 字符串。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    pub fn from_cdp(s: &str) -> Option<Self> {
+        match s {
+            "over" | "next" => Some(Self::Next),
+            "into" | "step" => Some(Self::Into),
+            "out" | "finish" => Some(Self::Out),
+            _ => None,
+        }
+    }
+
+    /// 返回 servo `Resume(limit, _)` 的 limit 字符串。
+    ///
+    /// @trace REQ-CDP-003 [domain:Debugger]
+    /// @trace BUG-CDP-006 [domain:Debugger]
+    pub fn servo_resume_limit(self) -> &'static str {
+        match self {
+            Self::Next => "next",
+            Self::Into => "step",
+            Self::Out => "finish",
+        }
+    }
+}
+
+/// 设置断点的响应(Debugger.setBreakpoint / setBreakpointByUrl)。
+///
+/// @trace REQ-CDP-003 [domain:Debugger]
+/// @trace BUG-CDP-006 [domain:Debugger]
+#[derive(Debug, Clone, Default)]
+pub struct BreakpointResult {
+    /// CDP breakpointId(形如 `{url}:{line}:{column}` 或 `bp:{script_id}:{line}:{column}`)。
+    pub breakpoint_id: String,
+    /// servo script_id(内部 u32)。
+    pub script_id: u32,
+    /// 实际命中行(CDP 1-based;SM 可能调整到最近的可中断点)。
+    pub actual_line: u32,
+    /// 实际命中列。
+    pub actual_column: u32,
+}
+
+/// Debugger.getPossibleBreakpoints 单项。
+///
+/// @trace REQ-CDP-003 [domain:Debugger]
+/// @trace BUG-CDP-006 [domain:Debugger]
+#[derive(Debug, Clone, Default)]
+pub struct PossibleBreakpoint {
+    pub script_id: u32,
+    pub line_number: u32,
+    pub column_number: u32,
+}
+
+/// Debugger.evaluateOnCallFrame 的求值结果(对应 servo `EvaluateJSReply`)。
+///
+/// 字段命名与 `debugger_handlers` 解构一致:`result.result.{type_,object_id,...}` +
+/// `result.has_exception`。
+///
+/// @trace REQ-CDP-003 [domain:Debugger]
+/// @trace BUG-CDP-006 [domain:Debugger]
+#[derive(Debug, Clone, Default)]
+pub struct DebuggerEvalResult {
+    /// RemoteObject 等价(简化:复用 Runtime 远程对象字段)。
+    pub result: DebuggerRemoteObject,
+    /// 求值是否抛出异常。
+    pub has_exception: bool,
+}
+
+/// Debugger 域 RemoteObject 精简结构(对应 servo `EvaluateJSReply` 的成功分支)。
+///
+/// @trace REQ-CDP-003 [domain:Debugger]
+/// @trace BUG-CDP-006 [domain:Debugger]
+#[derive(Debug, Clone, Default)]
+pub struct DebuggerRemoteObject {
+    /// JS 类型("string"/"number"/"object"/"function"/"undefined"/...)。
+    pub type_: String,
+    /// 远程对象 id(对象/函数类型时存在)。
+    pub object_id: Option<String>,
+    /// 构造函数名(对象/函数类型时存在)。
+    pub class_name: Option<String>,
+    /// 显示描述(对象/函数类型时存在)。
+    pub description: Option<String>,
+    /// 原始值(基本类型时存在;returnByValue 时强制内联)。
+    pub value: Option<Value>,
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1294,6 +1501,159 @@ impl ServoBackend for MockServoBackend {
             matched_rules: vec![],
         })
     }
+
+    // ──────────────────────────────────────────────────────────────
+    // Debugger domain — 9 method (BUG-CDP-006)
+    // ──────────────────────────────────────────────────────────────
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_enable(&self, target_id: &str) -> Result<(), BridgeError> {
+        self.ensure_target(target_id)?;
+        self.log(target_id, "debugger_enable", "");
+        Ok(())
+    }
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_disable(&self, target_id: &str) -> Result<(), BridgeError> {
+        self.ensure_target(target_id)?;
+        self.log(target_id, "debugger_disable", "");
+        Ok(())
+    }
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_set_breakpoint_by_url(
+        &self,
+        target_id: &str,
+        url: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<BreakpointResult, BridgeError> {
+        self.ensure_target(target_id)?;
+        self.log(
+            target_id,
+            "debugger_set_breakpoint_by_url",
+            &format!("{url}|{line}|{column}"),
+        );
+        Ok(BreakpointResult {
+            breakpoint_id: format!("bp:1:{line}:{column}"),
+            script_id: 1,
+            actual_line: line,
+            actual_column: column,
+        })
+    }
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_remove_breakpoint(
+        &self,
+        target_id: &str,
+        script_id: u32,
+        line: u32,
+        column: u32,
+    ) -> Result<(), BridgeError> {
+        self.ensure_target(target_id)?;
+        self.log(
+            target_id,
+            "debugger_remove_breakpoint",
+            &format!("{script_id}:{line}:{column}"),
+        );
+        Ok(())
+    }
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_pause(&self, target_id: &str) -> Result<(), BridgeError> {
+        self.ensure_target(target_id)?;
+        self.log(target_id, "debugger_pause", "Interrupt");
+        Ok(())
+    }
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_resume(
+        &self,
+        target_id: &str,
+        step_action: Option<DebugStepAction>,
+    ) -> Result<(), BridgeError> {
+        self.ensure_target(target_id)?;
+        let payload = match step_action {
+            None => "Resume()".to_string(),
+            Some(a) => format!("Resume({})", a.servo_resume_limit()),
+        };
+        self.log(target_id, "debugger_resume", &payload);
+        Ok(())
+    }
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_evaluate_on_call_frame(
+        &self,
+        target_id: &str,
+        call_frame_id: &str,
+        expression: &str,
+    ) -> Result<DebuggerEvalResult, BridgeError> {
+        self.ensure_target(target_id)?;
+        self.log(
+            target_id,
+            "debugger_evaluate_on_call_frame",
+            &format!("{call_frame_id}|{expression}"),
+        );
+        // Mock 语义:echo expression 为 string 类型(便于上层断言)。
+        Ok(DebuggerEvalResult {
+            result: DebuggerRemoteObject {
+                type_: "string".to_string(),
+                value: Some(Value::String(expression.to_string())),
+                ..Default::default()
+            },
+            has_exception: false,
+        })
+    }
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_get_possible_breakpoints(
+        &self,
+        target_id: &str,
+        script_id: u32,
+    ) -> Result<Vec<PossibleBreakpoint>, BridgeError> {
+        self.ensure_target(target_id)?;
+        self.log(
+            target_id,
+            "debugger_get_possible_breakpoints",
+            &script_id.to_string(),
+        );
+        Ok(vec![
+            PossibleBreakpoint {
+                script_id,
+                line_number: 0,
+                column_number: 0,
+            },
+            PossibleBreakpoint {
+                script_id,
+                line_number: 1,
+                column_number: 0,
+            },
+        ])
+    }
+
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_get_script_source(
+        &self,
+        target_id: &str,
+        script_id: u32,
+    ) -> Result<String, BridgeError> {
+        self.ensure_target(target_id)?;
+        self.log(
+            target_id,
+            "debugger_get_script_source",
+            &script_id.to_string(),
+        );
+        Ok(format!("// mock source for script {script_id}\n"))
+    }
 }
 
 #[cfg(test)]
@@ -1645,5 +2005,63 @@ impl ServoBackend for Arc<dyn ServoBackend> {
         node_id: i64,
     ) -> Result<MatchedStyles, BridgeError> {
         (**self).css_get_matched_styles_for_node(target_id, node_id)
+    }
+    // @trace REQ-CDP-003 [domain:Debugger]
+    // @trace BUG-CDP-006 [domain:Debugger]
+    fn debugger_enable(&self, target_id: &str) -> Result<(), BridgeError> {
+        (**self).debugger_enable(target_id)
+    }
+    fn debugger_disable(&self, target_id: &str) -> Result<(), BridgeError> {
+        (**self).debugger_disable(target_id)
+    }
+    fn debugger_set_breakpoint_by_url(
+        &self,
+        target_id: &str,
+        url: &str,
+        line: u32,
+        column: u32,
+    ) -> Result<BreakpointResult, BridgeError> {
+        (**self).debugger_set_breakpoint_by_url(target_id, url, line, column)
+    }
+    fn debugger_remove_breakpoint(
+        &self,
+        target_id: &str,
+        script_id: u32,
+        line: u32,
+        column: u32,
+    ) -> Result<(), BridgeError> {
+        (**self).debugger_remove_breakpoint(target_id, script_id, line, column)
+    }
+    fn debugger_pause(&self, target_id: &str) -> Result<(), BridgeError> {
+        (**self).debugger_pause(target_id)
+    }
+    fn debugger_resume(
+        &self,
+        target_id: &str,
+        step_action: Option<DebugStepAction>,
+    ) -> Result<(), BridgeError> {
+        (**self).debugger_resume(target_id, step_action)
+    }
+    fn debugger_evaluate_on_call_frame(
+        &self,
+        target_id: &str,
+        call_frame_id: &str,
+        expression: &str,
+    ) -> Result<DebuggerEvalResult, BridgeError> {
+        (**self).debugger_evaluate_on_call_frame(target_id, call_frame_id, expression)
+    }
+    fn debugger_get_possible_breakpoints(
+        &self,
+        target_id: &str,
+        script_id: u32,
+    ) -> Result<Vec<PossibleBreakpoint>, BridgeError> {
+        (**self).debugger_get_possible_breakpoints(target_id, script_id)
+    }
+    fn debugger_get_script_source(
+        &self,
+        target_id: &str,
+        script_id: u32,
+    ) -> Result<String, BridgeError> {
+        (**self).debugger_get_script_source(target_id, script_id)
     }
 }

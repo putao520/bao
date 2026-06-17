@@ -1,16 +1,19 @@
-//! Debugger domain conformance 审计 — E 类(servo Internal 模式不支持)+ Debugger.scriptParsed 事件。
+//! Debugger domain conformance 审计 — BUG-CDP-006 接入 servo SM Debugger API + scriptParsed 事件。
 //!
 //! 对照 CDP 官方规范(Debugger domain):
 //! https://chromedevtools.github.io/devtools-protocol/tot/Debugger/
 //!
 //! # 覆盖
 //!
-//! - E 类 method(全部 -32601):setBreakpoint, setBreakpointByUrl, removeBreakpoint,
-//!   pause, resume, stepOver, stepInto, stepOut, evaluateOnCallFrame
+//! BUG-CDP-006: Debugger 9 method 已接入 servo SM Debugger API,不再返回 -32601。
+//! 本文件验证:
+//! - 9 method 全部成功路由(不再 NotSupported)
+//! - 返回 CDP-compliant JSON 响应结构(breakpointId / locations / RemoteObject)
 //! - Debugger.scriptParsed 事件(servo SourceInfo 翻译)
 //!
 //! @trace REQ-CDP-001 [domain:Debugger] [level:integration]
-//! @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
+//! @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+//! @trace BUG-CDP-006 [domain:Debugger] [level:integration]
 
 use bao_cdp_client::{dispatch_command, translate_event, BridgeError, MockServoBackend, ServoBackend, ServoEvent};
 use serde_json::json;
@@ -21,97 +24,189 @@ fn backend() -> Arc<dyn ServoBackend> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Debugger E 类 method — servo Internal 模式不支持,全部返回 -32601
+// Debugger 9 method — BUG-CDP-006 已接入 servo SM Debugger API
 // ─────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn debugger_set_breakpoint_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
+fn debugger_set_breakpoint_routes_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
     let b = backend();
-    let err =
-        dispatch_command(&*b, "Debugger.setBreakpoint", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
-}
-
-#[test]
-fn debugger_set_breakpoint_by_url_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    let b = backend();
-    let err =
-        dispatch_command(&*b, "Debugger.setBreakpointByUrl", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
-}
-
-#[test]
-fn debugger_remove_breakpoint_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    let b = backend();
-    let err =
-        dispatch_command(&*b, "Debugger.removeBreakpoint", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
-}
-
-#[test]
-fn debugger_pause_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    let b = backend();
-    let err = dispatch_command(&*b, "Debugger.pause", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
-}
-
-#[test]
-fn debugger_resume_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    let b = backend();
-    let err = dispatch_command(&*b, "Debugger.resume", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
-}
-
-#[test]
-fn debugger_step_over_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    let b = backend();
-    let err = dispatch_command(&*b, "Debugger.stepOver", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
-}
-
-#[test]
-fn debugger_step_into_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    let b = backend();
-    let err = dispatch_command(&*b, "Debugger.stepInto", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
-}
-
-#[test]
-fn debugger_step_out_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    let b = backend();
-    let err = dispatch_command(&*b, "Debugger.stepOut", json!({}), "1").unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
-}
-
-#[test]
-fn debugger_evaluate_on_call_frame_e_class_returns_32601() {
-    // @trace REQ-BAO-API-007 [domain:Debugger] [level:integration]
-    let b = backend();
-    let err = dispatch_command(
+    let result = dispatch_command(
         &*b,
-        "Debugger.evaluateOnCallFrame",
-        json!({}),
+        "Debugger.setBreakpoint",
+        json!({"location":{"scriptId":"1","lineNumber":0}}),
+        "1",
+    );
+    assert!(
+        !matches!(result, Err(BridgeError::NotSupported(_))),
+        "setBreakpoint 不应再返回 NotSupported (BUG-CDP-006)"
+    );
+}
+
+#[test]
+fn debugger_set_breakpoint_by_url_returns_breakpoint_id() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(
+        &*b,
+        "Debugger.setBreakpointByUrl",
+        json!({"url":"x.js","lineNumber":5,"columnNumber":0}),
         "1",
     )
-    .unwrap_err();
-    assert!(matches!(err, BridgeError::NotSupported(_)));
-    assert_eq!(err.cdp_error_code(), -32601);
+    .unwrap();
+    // CDP spec: { breakpointId, locations: [{scriptId, lineNumber, columnNumber}] }
+    assert!(r["breakpointId"].is_string(), "breakpointId must be string");
+    assert!(r["breakpointId"]
+        .as_str()
+        .unwrap()
+        .contains('5'), "breakpointId should encode line");
+    let locs = r["locations"].as_array().expect("locations must be array");
+    assert_eq!(locs.len(), 1);
+    assert!(locs[0]["scriptId"].is_string());
+}
+
+#[test]
+fn debugger_remove_breakpoint_routes_after_bug_cdp_006() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(
+        &*b,
+        "Debugger.removeBreakpoint",
+        json!({"breakpointId":"bp:1:10:5"}),
+        "1",
+    )
+    .unwrap();
+    assert!(r.as_object().unwrap().is_empty());
+}
+
+#[test]
+fn debugger_pause_returns_empty_object() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(&*b, "Debugger.pause", json!({}), "1").unwrap();
+    // CDP spec: Debugger.pause 响应为空对象,异步事件 Debugger.paused 携带 callFrames
+    assert!(r.as_object().unwrap().is_empty());
+}
+
+#[test]
+fn debugger_resume_returns_empty_object() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(&*b, "Debugger.resume", json!({}), "1").unwrap();
+    assert!(r.as_object().unwrap().is_empty());
+}
+
+#[test]
+fn debugger_step_over_routes_to_resume_next() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = MockServoBackend::new();
+    dispatch_command(&b, "Debugger.stepOver", json!({}), "1").unwrap();
+    let log = b.call_log.lock().unwrap();
+    assert!(log
+        .iter()
+        .any(|(_, m, p)| m == "debugger_resume" && p == "Resume(next)"));
+}
+
+#[test]
+fn debugger_step_into_routes_to_resume_step() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = MockServoBackend::new();
+    dispatch_command(&b, "Debugger.stepInto", json!({}), "1").unwrap();
+    let log = b.call_log.lock().unwrap();
+    assert!(log
+        .iter()
+        .any(|(_, m, p)| m == "debugger_resume" && p == "Resume(step)"));
+}
+
+#[test]
+fn debugger_step_out_routes_to_resume_finish() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = MockServoBackend::new();
+    dispatch_command(&b, "Debugger.stepOut", json!({}), "1").unwrap();
+    let log = b.call_log.lock().unwrap();
+    assert!(log
+        .iter()
+        .any(|(_, m, p)| m == "debugger_resume" && p == "Resume(finish)"));
+}
+
+#[test]
+fn debugger_evaluate_on_call_frame_returns_remote_object() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(
+        &*b,
+        "Debugger.evaluateOnCallFrame",
+        json!({"callFrameId":"frame-0","expression":"1+1"}),
+        "1",
+    )
+    .unwrap();
+    // CDP spec: { result: RemoteObject, exceptionDetails?: ExceptionDetails }
+    assert!(r["result"]["type"].is_string(), "result.type must be string");
+}
+
+#[test]
+fn debugger_enable_returns_debugger_id() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(&*b, "Debugger.enable", json!({}), "1").unwrap();
+    assert!(r["debuggerId"].is_number());
+}
+
+#[test]
+fn debugger_get_possible_breakpoints_returns_locations() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(
+        &*b,
+        "Debugger.getPossibleBreakpoints",
+        json!({"start":{"scriptId":"1","lineNumber":0}}),
+        "1",
+    )
+    .unwrap();
+    let arr = r["locations"].as_array().expect("locations must be array");
+    assert!(!arr.is_empty());
+    assert!(arr[0]["scriptId"].is_string());
+}
+
+#[test]
+fn debugger_get_script_source_returns_string() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(
+        &*b,
+        "Debugger.getScriptSource",
+        json!({"scriptId":"1"}),
+        "1",
+    )
+    .unwrap();
+    assert!(r["scriptSource"].is_string());
+}
+
+#[test]
+fn debugger_set_breakpoints_active_validates_bool() {
+    // @trace REQ-CDP-003 [domain:Debugger] [level:integration]
+    // @trace BUG-CDP-006 [domain:Debugger] [level:integration]
+    let b = backend();
+    let r = dispatch_command(
+        &*b,
+        "Debugger.setBreakpointsActive",
+        json!({"active":false}),
+        "1",
+    )
+    .unwrap();
+    assert!(r.as_object().unwrap().is_empty());
 }
 
 // ─────────────────────────────────────────────────────────────────────────

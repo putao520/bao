@@ -5,6 +5,7 @@
 //! - [`command_dispatcher`]:match (domain, method) 分发框架
 //! - [`a_class_handlers`]:A 类 48 method handler
 //! - [`b_class_handlers`]:B 类 52 method handler(IIFE Eval 合成 + 多步合成)
+//! - [`debugger_handlers`]:Debugger domain 14 method handler(BUG-CDP-006 接入 servo SM Debugger API)
 //! - [`eval_synthesizer`]:IIFE 安全封装 + JSON.stringify 参数化
 //! - [`e_class`]:E 类 31+ method servo 不支持标记
 //! - [`servo_backend`]:ServoBackend trait + MockServoBackend + 数据结构
@@ -25,20 +26,23 @@
 //!   command_dispatcher::dispatch_command (match domain.method)
 //!       ↓                  ↓                ↓
 //!   A 类 48 handler  B 类 52 handler  E 类 31+ → NotSupported -32601
-//!       ↓                  ↓
-//!   ServoBackend    eval_synthesizer
-//!       ↓                  ↓
-//!   MockServoBackend / PagePoolBackend
+//!       ↓                  ↓                ↓
+//!   ServoBackend    eval_synthesizer   debugger_handlers (BUG-CDP-006)
+//!       ↓                  ↓                ↓
+//!   MockServoBackend / PagePoolBackend → servo SM Debugger API
 //! ```
 //!
 //! @trace REQ-BAO-API-004 [level:library]
 //! @trace REQ-BAO-API-005 [level:library]
 //! @trace REQ-BAO-API-007 [level:library]
+//! @trace REQ-CDP-003 [level:library]
+//! @trace BUG-CDP-006 [level:library]
 
 pub mod a_class_handlers;
 pub mod b_class_handlers;
 pub mod cdp_rdp_bridge;
 pub mod command_dispatcher;
+pub mod debugger_handlers;
 pub mod e_class;
 pub mod error;
 pub mod eval_synthesizer;
@@ -56,6 +60,7 @@ pub use servo_backend::{
     MouseEvent, NavigateResult, NavigationEntry, NavigationHistory, NodeDescriptor,
     PropertyDescriptor, RemoteObject, ResponseBody, ServoBackend, TargetInfo, TouchPoint,
     BridgeScreenshotFormat as ScreenshotFormat, MockServoBackend,
+    BreakpointResult, DebuggerEvalResult, DebuggerRemoteObject, DebugStepAction, PossibleBreakpoint,
 };
 pub use event_translator::{
     from_console_message, translate, ConsoleLevel, EventSubscriber, ServoEvent,

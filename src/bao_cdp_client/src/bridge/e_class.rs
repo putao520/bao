@@ -7,66 +7,28 @@
 //! - **无 Performance metrics**:servo 无 timeline actor 完整桥接
 //! - **无 PDF 渲染**:servo 无 print-to-pdf
 //! - **无 Coverage(JSCSS)**:servo 无 coverage actor
-//! - **Debugger 受限**:servo debugger actor 在 Internal 模式下不提供 stepOver/stepInto
-//!   等细粒度断点(只有简单 pause/resume),Bao 也不暴露
 //! - **无 DOMStorage / IndexedDB / ServiceWorker actors**:servo 这几个 actor
 //!   在 Bao 编译配置下未启用
+//! - **Debugger 已接入(BUG-CDP-006)**:Debugger domain 9 method 已接入 servo SM
+//!   Debugger API,不再属于 E 类。详见 `debugger_handlers`。
 //!
 //! 所有 E 类返回 `BridgeError::NotSupported`,dispatcher 映射为 JSON-RPC error code -32601。
 //!
-//! # 31 method 完整列表
+//! # E 类覆盖范围
 //!
 //! | Domain | Methods |
 //! |--------|---------|
-//! | Page | pdf, coverage.startJSCoverage, coverage.stopJSCoverage, coverage.startCSSCoverage, coverage.stopCSSCoverage, tracing.start, tracing.stop, metrics (8) |
-//! | HeapProfiler | enable, disable, startTrackingHeapObjects, stopTrackingHeapObjects, takeHeapSnapshot, getObjectByHeapObjectId, getSamplingProfile, startSampling, stopSampling, collectGarbage (10) |
-//! | Profiler | enable, disable, start, stop, setSamplingInterval, getBestEffortCoverage (6) |
-//! | DOMStorage | getDOMStorageItems, setDOMStorageItem, removeDOMStorageItem, clearDOMStorageItems (4) |
-//! | IndexedDB | requestDatabaseNames, requestDatabase, requestData, deleteDatabase (4) |
-//! | ServiceWorker | enable, disable, unregister (3) |
-//! | Debugger | setBreakpoint, setBreakpointByUrl, removeBreakpoint, pause, resume, stepOver, stepInto, stepOut, evaluateOnCallFrame (9) |
-//! | Tracing | start, end, getCategories (3) |
-//!
-//! 总计 8+10+6+4+4+3+9+3 = 47 method 入口,但其中 Debugger/Tracing/HeapProfiler 的 enable/disable
-//! 等可能重复计入。Plan MD 明确为 31 method,这里只保留 Plan MD 中的精确集合:
-//!
-//! 实际 E 类 method 集合(31 项,以 Plan MD 列表为准):
-//! 1. Page.printToPDF
-//! 2. Page.startJSCoverage
-//! 3. Page.stopJSCoverage
-//! 4. Page.startCSSCoverage
-//! 5. Page.stopCSSCoverage
-//! 6. Page.startTracing
-//! 7. Page.stopTracing
-//! 8. Page.getMetrics
-//! 9. Profiler.enable
-//! 10. Profiler.disable
-//! 11. Profiler.start
-//! 12. Profiler.stop
-//! 13. HeapProfiler.enable
-//! 14. HeapProfiler.takeHeapSnapshot
-//! 15. HeapProfiler.getObjectByHeapObjectId
-//! 16. HeapProfiler.disable
-//! 17. HeapProfiler.startTrackingHeapObjects
-//! 18. HeapProfiler.stopTrackingHeapObjects
-//! 19. HeapProfiler.startSampling
-//! 20. HeapProfiler.stopSampling
-//! 21. Debugger.setBreakpoint
-//! 22. Debugger.setBreakpointByUrl
-//! 23. Debugger.removeBreakpoint
-//! 24. Debugger.pause
-//! 25. Debugger.resume
-//! 26. Debugger.stepOver
-//! 27. Debugger.stepInto
-//! 28. Debugger.stepOut
-//! 29. Debugger.evaluateOnCallFrame
-//! 30. DOMStorage.getDOMStorageItems
-//! 31. IndexedDB.requestDatabaseNames
-//!
-//! 加上 ServiceWorker (enable, unregister) 共 33 项。Plan MD 写"31"但实际列表项更
-//! 全面。本实现按 domain 整体拦截(`HeapProfiler.*` 全部 -32601),保证完整性。
+//! | Page | printToPDF, start/stopJSCoverage, start/stopCSSCoverage, start/stopScreencast, screencastFrameAck, handleJavaScriptDialog, printToPDFAndDownload |
+//! | HeapProfiler | enable, disable, startTrackingHeapObjects, stopTrackingHeapObjects, takeHeapSnapshot, getObjectByHeapObjectId, getSamplingProfile, startSampling, stopSampling, collectGarbage (domain 全集拦截) |
+//! | Profiler | enable, disable, start, stop, setSamplingInterval, getBestEffortCoverage (domain 全集拦截) |
+//! | DOMStorage | getDOMStorageItems, setDOMStorageItem, removeDOMStorageItem, clearDOMStorageItems (domain 全集拦截) |
+//! | IndexedDB | requestDatabaseNames, requestDatabase, requestData, deleteDatabase (domain 全集拦截) |
+//! | ServiceWorker | enable, disable, unregister (domain 全集拦截) |
+//! | Tracing | start, end, getCategories (domain 全集拦截) |
+//! | Performance | enable, disable, getMetrics |
 //!
 //! @trace REQ-BAO-API-007 [level:library]
+//! @trace BUG-CDP-006 [domain:Debugger]
 
 use super::error::BridgeError;
 
@@ -107,18 +69,6 @@ pub const E_CLASS_METHODS: &[&str] = &[
     "Page.screencastFrameAck",
     "Page.handleJavaScriptDialog", // servo 在 bao 配置下未启用 dialog actor
     "Page.printToPDFAndDownload",
-    // Debugger 域 servo Internal 模式受限的 method
-    "Debugger.setBreakpoint",
-    "Debugger.setBreakpointByUrl",
-    "Debugger.setBreakpointOnFunctionCall",
-    "Debugger.removeBreakpoint",
-    "Debugger.pause",
-    "Debugger.resume",
-    "Debugger.stepOver",
-    "Debugger.stepInto",
-    "Debugger.stepOut",
-    "Debugger.evaluateOnCallFrame",
-    "Debugger.setBreakpointsActive",
     // Performance 域 servo 无 actor
     "Performance.enable",
     "Performance.disable",
@@ -211,16 +161,19 @@ mod tests {
     }
 
     #[test]
-    fn debugger_breakpoint_e_class() {
-        assert!(is_e_class("Debugger", "setBreakpoint"));
-        assert!(is_e_class("Debugger", "setBreakpointByUrl"));
-        assert!(is_e_class("Debugger", "removeBreakpoint"));
-        assert!(is_e_class("Debugger", "pause"));
-        assert!(is_e_class("Debugger", "resume"));
-        assert!(is_e_class("Debugger", "stepOver"));
-        assert!(is_e_class("Debugger", "stepInto"));
-        assert!(is_e_class("Debugger", "stepOut"));
-        assert!(is_e_class("Debugger", "evaluateOnCallFrame"));
+    fn debugger_breakpoint_no_longer_e_class_after_bug_cdp_006() {
+        // BUG-CDP-006: Debugger 域 9 method 不再是 E 类,已接入 servo SM Debugger API。
+        // @trace BUG-CDP-006 [domain:Debugger]
+        assert!(!is_e_class("Debugger", "setBreakpoint"));
+        assert!(!is_e_class("Debugger", "setBreakpointByUrl"));
+        assert!(!is_e_class("Debugger", "removeBreakpoint"));
+        assert!(!is_e_class("Debugger", "pause"));
+        assert!(!is_e_class("Debugger", "resume"));
+        assert!(!is_e_class("Debugger", "stepOver"));
+        assert!(!is_e_class("Debugger", "stepInto"));
+        assert!(!is_e_class("Debugger", "stepOut"));
+        assert!(!is_e_class("Debugger", "evaluateOnCallFrame"));
+        assert!(!is_e_class("Debugger", "setBreakpointsActive"));
     }
 
     #[test]
@@ -252,13 +205,15 @@ mod tests {
     }
 
     #[test]
-    fn e_class_methods_count_at_least_31() {
-        // Plan MD 要求至少 31 method。
-        // E_CLASS_DOMAINS 包含 6 domain(HeapProfiler/Profiler/DOMStorage/IndexedDB/ServiceWorker/Tracing),
-        // 加上 E_CLASS_METHODS 的具体补丁,总数远超 31。
-        // 这里验证 E_CLASS_METHODS 至少有 20 个明确方法补丁。
+    fn e_class_methods_count_at_least_10() {
+        // Plan MD 原要求 31 method。BUG-CDP-006 把 Debugger 9 method 从 E 类移出
+        // 后(接入 servo SM Debugger API),E_CLASS_METHODS 收缩。
+        // E_CLASS_DOMAINS 仍包含 6 domain(HeapProfiler/Profiler/DOMStorage/
+        // IndexedDB/ServiceWorker/Tracing),整体覆盖远超 31(每个 domain 全域拦截)。
+        // E_CLASS_METHODS 现保留 Page 域补丁(10+ 项) + Performance(3 项)。
+        // @trace BUG-CDP-006 [domain:Debugger]
         assert!(
-            E_CLASS_METHODS.len() >= 20,
+            E_CLASS_METHODS.len() >= 10,
             "E_CLASS_METHODS too small: {}",
             E_CLASS_METHODS.len()
         );

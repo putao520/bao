@@ -23,6 +23,7 @@ use serde_json::Value;
 
 use super::a_class_handlers;
 use super::b_class_handlers;
+use super::debugger_handlers;
 use super::e_class;
 use super::error::BridgeError;
 use super::servo_backend::ServoBackend;
@@ -195,6 +196,53 @@ pub fn dispatch_command(
         }
         ("CSS", "getMatchedStylesForNode") => {
             a_class_handlers::css_get_matched_styles_for_node(backend, target_id, &params)
+        }
+
+        // ============ Debugger domain (14 method, BUG-CDP-006) ============
+        // 接入 servo SM Debugger API(DevtoolScriptControlMsg)。
+        // @trace REQ-CDP-003 [domain:Debugger]
+        // @trace BUG-CDP-006 [domain:Debugger]
+        ("Debugger", "enable") => {
+            debugger_handlers::debugger_enable(backend, target_id, &params)
+        }
+        ("Debugger", "disable") => {
+            debugger_handlers::debugger_disable(backend, target_id, &params)
+        }
+        ("Debugger", "setBreakpoint") => {
+            debugger_handlers::debugger_set_breakpoint(backend, target_id, &params)
+        }
+        ("Debugger", "setBreakpointByUrl") => {
+            debugger_handlers::debugger_set_breakpoint_by_url(backend, target_id, &params)
+        }
+        ("Debugger", "removeBreakpoint") => {
+            debugger_handlers::debugger_remove_breakpoint(backend, target_id, &params)
+        }
+        ("Debugger", "pause") => {
+            debugger_handlers::debugger_pause(backend, target_id, &params)
+        }
+        ("Debugger", "resume") => {
+            debugger_handlers::debugger_resume(backend, target_id, &params)
+        }
+        ("Debugger", "stepOver") => {
+            debugger_handlers::debugger_step_over(backend, target_id, &params)
+        }
+        ("Debugger", "stepInto") => {
+            debugger_handlers::debugger_step_into(backend, target_id, &params)
+        }
+        ("Debugger", "stepOut") => {
+            debugger_handlers::debugger_step_out(backend, target_id, &params)
+        }
+        ("Debugger", "evaluateOnCallFrame") => {
+            debugger_handlers::debugger_evaluate_on_call_frame(backend, target_id, &params)
+        }
+        ("Debugger", "getPossibleBreakpoints") => {
+            debugger_handlers::debugger_get_possible_breakpoints(backend, target_id, &params)
+        }
+        ("Debugger", "getScriptSource") => {
+            debugger_handlers::debugger_get_script_source(backend, target_id, &params)
+        }
+        ("Debugger", "setBreakpointsActive") => {
+            debugger_handlers::debugger_set_breakpoints_active(backend, target_id, &params)
         }
 
         // ──────────────────────────────────────────────────────────
@@ -440,10 +488,50 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_debugger_pause_e_class() {
+    fn dispatch_debugger_pause_routes_to_backend() {
+        // BUG-CDP-006: Debugger.pause 不再是 E 类,接入 servo SM Debugger API。
+        // @trace REQ-CDP-003 [domain:Debugger]
+        // @trace BUG-CDP-006 [domain:Debugger]
         let b = MockServoBackend::new();
-        let err = dispatch_command(&b, "Debugger.pause", empty_params(), "1").unwrap_err();
-        assert!(matches!(err, BridgeError::NotSupported(_)));
+        let r = dispatch_command(&b, "Debugger.pause", empty_params(), "1").unwrap();
+        assert!(r.as_object().unwrap().is_empty());
+        let log = b.call_log.lock().unwrap();
+        assert!(log
+            .iter()
+            .any(|(_, m, p)| m == "debugger_pause" && p == "Interrupt"));
+    }
+
+    #[test]
+    fn dispatch_debugger_enable_returns_debugger_id() {
+        // @trace BUG-CDP-006 [domain:Debugger]
+        let b = MockServoBackend::new();
+        let r = dispatch_command(&b, "Debugger.enable", empty_params(), "1").unwrap();
+        assert_eq!(r["debuggerId"], 1);
+    }
+
+    #[test]
+    fn dispatch_debugger_set_breakpoint_by_url_routes() {
+        // @trace BUG-CDP-006 [domain:Debugger]
+        let b = MockServoBackend::new();
+        let r = dispatch_command(
+            &b,
+            "Debugger.setBreakpointByUrl",
+            json!({"url":"x.js","lineNumber":5,"columnNumber":0}),
+            "1",
+        )
+        .unwrap();
+        assert!(r["breakpointId"].is_string());
+    }
+
+    #[test]
+    fn dispatch_debugger_step_over_routes_to_resume_next() {
+        // @trace BUG-CDP-006 [domain:Debugger]
+        let b = MockServoBackend::new();
+        dispatch_command(&b, "Debugger.stepOver", empty_params(), "1").unwrap();
+        let log = b.call_log.lock().unwrap();
+        assert!(log
+            .iter()
+            .any(|(_, m, p)| m == "debugger_resume" && p == "Resume(next)"));
     }
 
     #[test]
