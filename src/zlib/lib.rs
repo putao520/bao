@@ -1,3 +1,4 @@
+// @trace REQ-PURE-004 [level:library] [entity:ZlibEngine,ZlibCompressConfig]
 // Pure Rust zlib — thin compatibility layer over flate2 + crc32fast.
 // No C dependency. All compression/decompression delegates to flate2 (miniz_oxide backend).
 

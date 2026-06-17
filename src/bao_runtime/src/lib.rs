@@ -1,6 +1,7 @@
-// @trace REQ-ENG-001 [entity:BaoRuntime] REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05
+// @trace REQ-ENG-001 [entity:BaoRuntime] REQ-ENG-006 REQ-IMPL-01 REQ-IMPL-02 REQ-IMPL-03 REQ-IMPL-04 REQ-IMPL-05 REQ-PURE-010 [level:library] [entity:BaoRuntime]
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(unused_imports)]
+// @trace REQ-PURE-010: bao_runtime (Rust) replaces deleted bun_runtime (Zig) — zero Zig deps, zero JSC refs
 // @trace REQ-IMPL-01: Phase 1 SpiderMonkey engine replacement (completed)
 // @trace REQ-IMPL-02: Phase 2 servo engine integration + rendering (completed)
 // @trace REQ-IMPL-03: Phase 3 CDP Server implementation (completed)

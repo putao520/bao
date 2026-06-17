@@ -1,3 +1,6 @@
+// @trace REQ-PURE-003 [level:library] [entity:ZstdEngine,ZstdCompressConfig]
+//! bun_zstd - pure Rust zstd via zstd_pure_rs (replaces vendor/zstd C library).
+//! All compress/decompress delegates to zstd_pure_rs::prelude.
 #![warn(unused_must_use)]
 #![allow(non_upper_case_globals)]
 

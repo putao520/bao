@@ -682,5 +682,27 @@ CDP Debugger 域核心功能完全不可用。Puppeteer/Playwright 的 step/brea
 - [ ] lib.rs 中添加编译时断言或文档注释，明确 force_isolate_event_loops 必须为 true
 - [ ] servo::set_canvas_noise_seed 改为 per-WebView 设置或 JS 层 Canvas hook
 - [ ] engine_props 改为 per-Compartment 映射（HashMap&lt;*mut JSObject, ProfileValues&gt;）
-- [ ] remove_node_realm 中添加 sentinel 值防止悬挂指针</p></section></main></body>
+- [ ] remove_node_realm 中添加 sentinel 值防止悬挂指针</p></section>
+
+<!-- ============================================================ -->
+<!-- @PROCESS Timing Tests — TMG-CDP-001 / TMG-LOOP-001 -->
+<!-- 关联 SPEC 03-PROCESS.html 中 REQ-CDP-001@PROCESS / REQ-ENG-004@PROCESS 时序子 REQ -->
+<!-- 源码: src/bao_cdp_client/tests/cdp_timing_tests.rs (8 tests) + src/bao_runtime/tests/event_loop_timing_tests.rs (8 tests) -->
+<!-- ============================================================ -->
+
+<div data-test-level="unit" data-test-env="local" data-test-categories="unit,performance,acceptance" data-req-ref="REQ-CDP-001@PROCESS" data-test="TEST-CDP-TIMING-001" id="test-cdp-timing-001">
+<h3>TEST-CDP-TIMING-001: CDP 命令响应时序测试 (TMG-CDP-001)</h3>
+<p><strong>关联需求</strong>: REQ-CDP-001@PROCESS <span data-xref-id="REQ-CDP-001@PROCESS" data-xref-type="req"></span> | <strong>时序约束</strong>: TMG-CDP-001 (max_latency_ms)</p>
+<p><strong>测试类型</strong>: 性能/时序测试</p>
+<p>验证 CDP 命令响应延迟符合 TMG-CDP-001 max_latency_ms 约束。覆盖于 src/bao_cdp_client/tests/cdp_timing_tests.rs (8 个 #[test])。</p>
+</div>
+
+<div data-test-level="unit" data-test-env="local" data-test-categories="unit,performance,acceptance" data-req-ref="REQ-ENG-004@PROCESS" data-test="TEST-ENG-LOOP-TIMING-001" id="test-eng-loop-timing-001">
+<h3>TEST-ENG-LOOP-TIMING-001: Event Loop Tick 时序测试 (TMG-LOOP-001)</h3>
+<p><strong>关联需求</strong>: REQ-ENG-004@PROCESS <span data-xref-id="REQ-ENG-004@PROCESS" data-xref-type="req"></span> | <strong>时序约束</strong>: TMG-LOOP-001 (max_interval_ms)</p>
+<p><strong>测试类型</strong>: 性能/时序测试</p>
+<p>验证 Event Loop Tick 间隔符合 TMG-LOOP-001 max_interval_ms=20ms 约束。覆盖于 src/bao_runtime/tests/event_loop_timing_tests.rs (8 个 #[test]: 空 tick 基线 / 多次 tick 稳定性 / 单 task dispatch / timer 唤醒 / microtask drain 等)。</p>
+</div>
+
+</main></body>
 </html>

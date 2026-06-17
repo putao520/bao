@@ -1,4 +1,4 @@
-// @trace REQ-ENG-007 [entity:TlsProfile]
+// @trace REQ-ENG-007 [entity:TlsProfile] REQ-PURE-001 [level:library] [entity:TlsProfile,TlsConnection]
 //! BoringSSL-backed TLS 1.2/1.3 for Bao runtime.
 //!
 //! Replaces bao_tls (rustls) with BoringSSL C++ library, unifying the TLS
