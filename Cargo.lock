@@ -579,6 +579,7 @@ dependencies = [
  "bun_core",
  "bun_runtime",
  "bun_sha_hmac",
+ "dashmap",
  "mozjs",
  "mozjs_sys",
  "serde",

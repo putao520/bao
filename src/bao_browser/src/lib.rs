@@ -51,6 +51,18 @@ impl BaoRuntime {
     pub fn new(config: BaoConfig) -> Result<Self, BrowserError> {
         config.validate().map_err(BrowserError::Init)?;
 
+        // BUG-ENG-366: `force_isolate_event_loops` only governs servo's event-loop
+        // multiplexing (per-pipeline ScriptThread vs shared). It does NOT control
+        // SpiderMonkey Compartment isolation — every page always gets its own
+        // Window global in a distinct Compartment (servo DOM invariant), and the
+        // Node Realm is created via NewCompartmentAndZone unconditionally
+        // (runtime_bridge::create_node_realm_native). Stealth noise is keyed
+        // per-Realm via bao_stealth::engine_props::set_profile_for_global, so
+        // even with `force_isolate_event_loops: false` each page's Canvas /
+        // Navigator / WebGL / Audio fingerprints remain isolated. The flag is
+        // kept `true` here purely to bound servo's resource use (one ScriptThread
+        // per page) — disabling it does not regress isolation.
+        // @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
         let servo: Rc<Servo> = Rc::new(
             ServoBuilder::default()
                 .opts(Opts {

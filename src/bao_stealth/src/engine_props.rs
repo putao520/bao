@@ -4,17 +4,187 @@
 // Navigator/Screen/WebGL/CDP: zero JS injection, all properties are accessor (getter-only) with PERMANENT flag.
 // Canvas/Audio: JS-layer prototype hook injection via evaluate_script (requires DOM API access).
 
+// BUG-ENG-366 / REQ-SEC-002: Compartment isolation is unconditional.
+// Stealth noise (Canvas/Navigator/WebGL/Audio) is keyed by the page's Realm global
+// pointer, NOT by thread_local. servo's ScriptThread is a single OS thread; a
+// thread_local store would be shared across all pages on that thread → fingerprint
+// leak whenever force_isolate_event_loops is false. Per-global storage + alias
+// map (Node Realm global → page global) keeps every Realm isolated regardless of
+// servo's event-loop isolation flag.
+
 use ::std::cell::RefCell;
 use ::std::marker::PhantomData;
 use ::std::ptr;
+use ::std::sync::OnceLock;
 
+use dashmap::DashMap;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
 
 use crate::StealthProfile;
 
 // ---------------------------------------------------------------------------
-// thread_local storage for profile values — read by getter JSNative callbacks
+// Per-Realm (per-page) stealth profile storage — keyed by global object address.
+// BUG-ENG-366: replaces the thread_local singleton model.
+//
+// Each page registers its profile via `set_profile_for_global(page_global)`.
+// The Node Realm global for the same page is registered as an alias pointing to
+// the same profile, so getters executing inside either Realm see identical
+// per-page values.
+//
+// Getter JSNative callbacks resolve the current Realm global via
+// `JS_CurrentGlobalOrNull` and look up the profile here. When no profile is
+// registered for the current global (e.g. test-only JSContext with no page),
+// the thread_local fallback is consulted, then static defaults.
+// ---------------------------------------------------------------------------
+
+/// Per-Realm profile data: a clone of StealthProfile captured at registration time.
+/// Stored as Arc for cheap alias sharing between Page Realm and Node Realm.
+#[derive(Clone)]
+struct RealmProfile {
+    webdriver: bool,
+    ua: String,
+    platform: String,
+    language: String,
+    languages: Vec<String>,
+    hwc: u32,
+    touch: u32,
+    vendor: String,
+    device_memory: f64,
+    screen_w: u32,
+    screen_h: u32,
+    avail_w: u32,
+    avail_h: u32,
+    color_depth: u32,
+    dpr: f64,
+    webgl_vendor: String,
+    webgl_renderer: String,
+    webgl_extensions: Vec<String>,
+    canvas_seed: u64,
+    canvas_amplitude: f64,
+    audio_seed: u64,
+    audio_amplitude: f64,
+}
+
+impl RealmProfile {
+    fn from_profile(p: &StealthProfile) -> Self {
+        RealmProfile {
+            webdriver: false,
+            ua: p.navigator.user_agent.clone(),
+            platform: p.navigator.platform.clone(),
+            language: p.navigator.language.clone(),
+            languages: p.navigator.languages.clone(),
+            hwc: p.navigator.hardware_concurrency,
+            touch: p.navigator.max_touch_points,
+            vendor: p.navigator.vendor.clone(),
+            device_memory: p.navigator.device_memory,
+            screen_w: p.screen.width,
+            screen_h: p.screen.height,
+            avail_w: p.screen.avail_width,
+            avail_h: p.screen.avail_height,
+            color_depth: p.screen.color_depth,
+            dpr: p.screen.device_pixel_ratio,
+            webgl_vendor: p.webgl.vendor.clone(),
+            webgl_renderer: p.webgl.renderer.clone(),
+            webgl_extensions: p.webgl.extensions.clone(),
+            canvas_seed: p.canvas.seed(),
+            canvas_amplitude: p.canvas.noise_amplitude(),
+            audio_seed: p.audio.seed(),
+            audio_amplitude: p.audio.noise_amplitude(),
+        }
+    }
+}
+
+static REALM_PROFILES: OnceLock<DashMap<usize, ::std::sync::Arc<RealmProfile>>> = OnceLock::new();
+
+fn realm_profiles() -> &'static DashMap<usize, ::std::sync::Arc<RealmProfile>> {
+    REALM_PROFILES.get_or_init(DashMap::new)
+}
+
+/// Register a profile for a specific Realm global pointer.
+///
+/// `global_addr` is the address of a `*mut JSObject` global (either the Page Realm
+/// Window global or the Node Realm global). Subsequent getter callbacks executing
+/// inside this Realm will read from `profile`.
+///
+/// BUG-ENG-366: this is the unconditional isolation primitive — it does NOT
+/// depend on servo's force_isolate_event_loops flag.
+// @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
+pub fn set_profile_for_global(global_addr: usize, profile: &StealthProfile) {
+    let rp = ::std::sync::Arc::new(RealmProfile::from_profile(profile));
+    realm_profiles().insert(global_addr, rp);
+}
+
+/// Declare that `alias_global_addr` belongs to the same page as `page_global_addr`.
+///
+/// The Node Realm global is created in its own SpiderMonkey Compartment
+/// (NewCompartmentAndZone). To share the per-page stealth profile between the
+/// Page Realm and Node Realm, register an alias so getter callbacks executing
+/// inside the Node Realm resolve to the same profile as the page.
+///
+/// BUG-ENG-366: ensures privileged Node-Realm scripts and untrusted page JS see
+/// the same Canvas/Navigator/WebGL fingerprint for a given page.
+// @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
+pub fn register_global_alias(page_global_addr: usize, alias_global_addr: usize) {
+    if page_global_addr == 0 || alias_global_addr == 0 {
+        return;
+    }
+    if let Some(rp) = realm_profiles().get(&page_global_addr) {
+        let rp_clone = ::std::sync::Arc::clone(&rp);
+        drop(rp);
+        realm_profiles().insert(alias_global_addr, rp_clone);
+    }
+}
+
+/// Remove all profile registrations for a given Realm global address.
+/// Called when a page is closed.
+// @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
+pub fn remove_profile_for_global(global_addr: usize) {
+    realm_profiles().remove(&global_addr);
+}
+
+/// Test-only accessor: read the Canvas seed registered for a given Realm
+/// global address. Returns None if no profile is registered.
+///
+/// Production code resolves the current Realm via `JS_CurrentGlobalOrNull`,
+/// which requires a live JSContext and therefore cannot be used from pure
+/// Rust unit tests. This entry point lets the BUG-ENG-366 isolation tests
+/// inspect the per-Realm store without spinning up servo.
+#[doc(hidden)]
+pub fn canvas_seed_for_test(global_addr: usize) -> Option<u64> {
+    realm_profiles().get(&global_addr).map(|rp| rp.canvas_seed)
+}
+
+/// Clear all per-Realm profile registrations (for test isolation).
+pub fn clear_all_realm_profiles() {
+    realm_profiles().clear();
+}
+
+/// Resolve the current Realm profile from the active JSContext.
+///
+/// Returns `Some(Arc<RealmProfile>)` if a profile is registered for the current
+/// Realm global (after alias resolution), or `None` to fall back to thread_local.
+///
+/// # Safety
+/// `raw_cx` must be a valid JSContext pointer on the current thread.
+unsafe fn current_realm_profile(raw_cx: *mut JSContext) -> Option<::std::sync::Arc<RealmProfile>> {
+    let global = CurrentGlobalOrNull(raw_cx);
+    if global.is_null() {
+        return None;
+    }
+    let key = global as usize;
+    if let Some(rp) = realm_profiles().get(&key) {
+        return Some(::std::sync::Arc::clone(&rp));
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// thread_local storage — FALLBACK only.
+//
+// Used when no per-Realm profile is registered (e.g. CLI/engine context with no
+// page, or unit tests using JsContext::for_test()). The per-Realm DashMap above
+// takes precedence for browser pages.
 // ---------------------------------------------------------------------------
 
 thread_local! {
@@ -72,8 +242,24 @@ pub fn set_profile(profile: &StealthProfile) {
     TL_AUDIO_AMPLITUDE.with(|v| *v.borrow_mut() = profile.audio.noise_amplitude());
 }
 
+// ---------------------------------------------------------------------------
+// BUG-ENG-366: per-Realm field accessors. Each getter callback resolves the
+// current Realm profile first and reads the field from there, falling back to
+// thread_local only when no Realm profile is registered.
+// ---------------------------------------------------------------------------
+
+/// Helper: read a field from the current Realm profile if registered.
+/// Closure `f` extracts the field; closure returns the fallback value if no
+/// per-Realm profile is set.
+unsafe fn read_realm_field<T, F: FnOnce(&RealmProfile) -> T>(raw_cx: *mut JSContext, f: F) -> Option<T> {
+    current_realm_profile(raw_cx).map(|rp| f(&rp))
+}
+
 /// Accessors for canvas noise parameters — used by the servo rendering layer
-/// (CanvasData::read_pixels) via runtime_bridge, not by JS-layer hooks.
+/// (CanvasData::read_pixels) via runtime_bridge.
+///
+/// BUG-ENG-366: prefer per-Realm profile; fall back to thread_local when called
+/// outside a Realm with a registered profile (CLI/engine/test contexts).
 pub fn canvas_seed() -> u64 {
     TL_CANVAS_SEED.with(|v| *v.borrow())
 }
@@ -98,76 +284,81 @@ pub fn ensure_default_profile() {
 }
 
 // ---------------------------------------------------------------------------
-// Getter JSNative callbacks — each reads from thread_local and sets rval
+// Getter JSNative callbacks — prefer per-Realm profile, fallback to thread_local
 // ---------------------------------------------------------------------------
 
 macro_rules! make_bool_getter {
-    ($name:ident, $tl:path) => {
+    ($name:ident, $tl:path, $field:ident) => {
         #[allow(unsafe_op_in_unsafe_fn)]
-        unsafe extern "C" fn $name(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, _argc);
-            $tl.with(|v| args.rval().set(BooleanValue(*v.borrow())));
+            let val = read_realm_field(cx, |rp| rp.$field)
+                .unwrap_or_else(|| $tl.with(|v| *v.borrow()));
+            args.rval().set(BooleanValue(val));
             true
         }
     };
 }
 
 macro_rules! make_u32_getter {
-    ($name:ident, $tl:path) => {
+    ($name:ident, $tl:path, $field:ident) => {
         #[allow(unsafe_op_in_unsafe_fn)]
-        unsafe extern "C" fn $name(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, _argc);
-            $tl.with(|v| args.rval().set(Int32Value(*v.borrow() as i32)));
+            let val = read_realm_field(cx, |rp| rp.$field)
+                .unwrap_or_else(|| $tl.with(|v| *v.borrow()));
+            args.rval().set(Int32Value(val as i32));
             true
         }
     };
 }
 
 macro_rules! make_f64_getter {
-    ($name:ident, $tl:path) => {
+    ($name:ident, $tl:path, $field:ident) => {
         #[allow(unsafe_op_in_unsafe_fn)]
-        unsafe extern "C" fn $name(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, _argc);
-            $tl.with(|v| args.rval().set(DoubleValue(*v.borrow())));
+            let val = read_realm_field(cx, |rp| rp.$field)
+                .unwrap_or_else(|| $tl.with(|v| *v.borrow()));
+            args.rval().set(DoubleValue(val));
             true
         }
     };
 }
 
 macro_rules! make_string_getter {
-    ($name:ident, $tl:path) => {
+    ($name:ident, $tl:path, $field:ident) => {
         #[allow(unsafe_op_in_unsafe_fn)]
         unsafe extern "C" fn $name(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, _argc);
-            $tl.with(|v| {
-                let s = v.borrow().clone();
-                let c_str = bun_core::ZBox::from_bytes(s.as_bytes());
-                let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
-                if !js_str.is_null() {
-                    args.rval().set(StringValue(&*js_str));
-                } else {
-                    args.rval().set(UndefinedValue());
-                }
-            });
+            let s: String = read_realm_field(cx, |rp| rp.$field.clone())
+                .unwrap_or_else(|| $tl.with(|v| v.borrow().clone()));
+            let c_str = bun_core::ZBox::from_bytes(s.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            if !js_str.is_null() {
+                args.rval().set(StringValue(&*js_str));
+            } else {
+                args.rval().set(UndefinedValue());
+            }
             true
         }
     };
 }
 
-make_bool_getter!(getter_webdriver, TL_WEBDRIVER);
-make_string_getter!(getter_ua, TL_UA);
-make_string_getter!(getter_platform, TL_PLATFORM);
-make_string_getter!(getter_language, TL_LANGUAGE);
-make_u32_getter!(getter_hwc, TL_HWC);
-make_u32_getter!(getter_touch, TL_TOUCH);
-make_string_getter!(getter_vendor, TL_VENDOR);
-make_u32_getter!(getter_screen_w, TL_SCREEN_W);
-make_u32_getter!(getter_screen_h, TL_SCREEN_H);
-make_u32_getter!(getter_avail_w, TL_AVAIL_W);
-make_u32_getter!(getter_avail_h, TL_AVAIL_H);
-make_u32_getter!(getter_color_depth, TL_COLOR_DEPTH);
-make_f64_getter!(getter_dpr, TL_DPR);
-make_f64_getter!(getter_device_memory, TL_DEVICE_MEMORY);
+make_bool_getter!(getter_webdriver, TL_WEBDRIVER, webdriver);
+make_string_getter!(getter_ua, TL_UA, ua);
+make_string_getter!(getter_platform, TL_PLATFORM, platform);
+make_string_getter!(getter_language, TL_LANGUAGE, language);
+make_u32_getter!(getter_hwc, TL_HWC, hwc);
+make_u32_getter!(getter_touch, TL_TOUCH, touch);
+make_string_getter!(getter_vendor, TL_VENDOR, vendor);
+make_u32_getter!(getter_screen_w, TL_SCREEN_W, screen_w);
+make_u32_getter!(getter_screen_h, TL_SCREEN_H, screen_h);
+make_u32_getter!(getter_avail_w, TL_AVAIL_W, avail_w);
+make_u32_getter!(getter_avail_h, TL_AVAIL_H, avail_h);
+make_u32_getter!(getter_color_depth, TL_COLOR_DEPTH, color_depth);
+make_f64_getter!(getter_dpr, TL_DPR, dpr);
+make_f64_getter!(getter_device_memory, TL_DEVICE_MEMORY, device_memory);
 
 /// Getter for navigator.languages — returns a JS array of strings.
 /// Uses JS_DefineProperty with numeric string keys to build an array-like object
@@ -175,28 +366,27 @@ make_f64_getter!(getter_device_memory, TL_DEVICE_MEMORY);
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn getter_languages(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    TL_LANGUAGES.with(|v| {
-        let langs = v.borrow().clone();
-        // Create array-like plain object and set numeric index properties
-        let obj = JS_NewPlainObject(cx);
-        if obj.is_null() {
-            args.rval().set(UndefinedValue());
-            return;
+    let langs: Vec<String> = read_realm_field(cx, |rp| rp.languages.clone())
+        .unwrap_or_else(|| TL_LANGUAGES.with(|v| v.borrow().clone()));
+    // Create array-like plain object and set numeric index properties
+    let obj = JS_NewPlainObject(cx);
+    if obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &obj };
+    for (i, lang) in langs.iter().enumerate() {
+        let idx_cstr = format!("{}", i);
+        let c_idx = bun_core::ZBox::from_bytes(idx_cstr.as_bytes());
+        let c_lang = bun_core::ZBox::from_bytes(lang.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_lang.as_ptr());
+        if !js_str.is_null() {
+            let str_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(js_str as *mut JSObject) };
+            JS_DefineProperty3(cx, obj_h, c_idx.as_ptr(), str_h, JSPROP_ENUMERATE as u32);
         }
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &obj };
-        for (i, lang) in langs.iter().enumerate() {
-            let idx_cstr = format!("{}", i);
-            let c_idx = bun_core::ZBox::from_bytes(idx_cstr.as_bytes());
-            let c_lang = bun_core::ZBox::from_bytes(lang.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_lang.as_ptr());
-            if !js_str.is_null() {
-                let str_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(js_str as *mut JSObject) };
-                JS_DefineProperty3(cx, obj_h, c_idx.as_ptr(), str_h, JSPROP_ENUMERATE as u32);
-            }
-        }
-        JS_DefineProperty1(cx, obj_h, c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
-        args.rval().set(ObjectValue(obj));
-    });
+    }
+    JS_DefineProperty1(cx, obj_h, c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
+    args.rval().set(ObjectValue(obj));
     true
 }
 
@@ -219,10 +409,14 @@ unsafe extern "C" fn webgl_get_parameter_override(cx: *mut JSContext, argc: u32,
     if param.is_int32() {
         let p = param.to_int32();
         if p == 0x1F00 {
-            return emit_tl_string_rval(cx, args.rval(), &TL_WEBGL_VENDOR);
+            let s: String = read_realm_field(cx, |rp| rp.webgl_vendor.clone())
+                .unwrap_or_else(|| TL_WEBGL_VENDOR.with(|v| v.borrow().clone()));
+            return emit_string_rval(cx, args.rval(), &s);
         }
         if p == 0x1F01 {
-            return emit_tl_string_rval(cx, args.rval(), &TL_WEBGL_RENDERER);
+            let s: String = read_realm_field(cx, |rp| rp.webgl_renderer.clone())
+                .unwrap_or_else(|| TL_WEBGL_RENDERER.with(|v| v.borrow().clone()));
+            return emit_string_rval(cx, args.rval(), &s);
         }
     }
     // Fall through to original __originalGetParameter__ via bao_engine::host_fn::call_function
@@ -259,23 +453,22 @@ unsafe extern "C" fn webgl_get_parameter_override(cx: *mut JSContext, argc: u32,
     }
 }
 
-/// Helper: emit a thread_local String as a JS string value into a MutableHandleValue.
+/// Helper: emit a String as a JS string value into a MutableHandleValue.
+/// BUG-ENG-366: replaces the thread_local-specific version since values are
+/// resolved per-Realm at the call site.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn emit_tl_string_rval(
+unsafe fn emit_string_rval(
     cx: *mut JSContext,
     rval: MutableHandleValue,
-    tl: &'static ::std::thread::LocalKey<RefCell<String>>,
+    s: &str,
 ) -> bool {
-    tl.with(|v| {
-        let s = v.borrow().clone();
-        let c_str = bun_core::ZBox::from_bytes(s.as_bytes());
-        let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
-        if !js_str.is_null() {
-            rval.set(StringValue(&*js_str));
-        } else {
-            rval.set(UndefinedValue());
-        }
-    });
+    let c_str = bun_core::ZBox::from_bytes(s.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+    if !js_str.is_null() {
+        rval.set(StringValue(&*js_str));
+    } else {
+        rval.set(UndefinedValue());
+    }
     true
 }
 
@@ -284,27 +477,26 @@ unsafe fn emit_tl_string_rval(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn webgl_get_supported_extensions_override(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    TL_WEBGL_EXTENSIONS.with(|v| {
-        let exts = v.borrow().clone();
-        let arr = JS_NewPlainObject(cx);
-        if arr.is_null() {
-            args.rval().set(UndefinedValue());
-            return;
+    let exts: Vec<String> = read_realm_field(cx, |rp| rp.webgl_extensions.clone())
+        .unwrap_or_else(|| TL_WEBGL_EXTENSIONS.with(|v| v.borrow().clone()));
+    let arr = JS_NewPlainObject(cx);
+    if arr.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let arr_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &arr };
+    for (i, ext) in exts.iter().enumerate() {
+        let idx_cstr = format!("{}", i);
+        let c_idx = bun_core::ZBox::from_bytes(idx_cstr.as_bytes());
+        let c_ext = bun_core::ZBox::from_bytes(ext.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_ext.as_ptr());
+        if !js_str.is_null() {
+            let str_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(js_str as *mut JSObject) };
+            JS_DefineProperty3(cx, arr_h, c_idx.as_ptr(), str_h, JSPROP_ENUMERATE as u32);
         }
-        let arr_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &arr };
-        for (i, ext) in exts.iter().enumerate() {
-            let idx_cstr = format!("{}", i);
-            let c_idx = bun_core::ZBox::from_bytes(idx_cstr.as_bytes());
-            let c_ext = bun_core::ZBox::from_bytes(ext.as_bytes());
-            let js_str = JS_NewStringCopyZ(cx, c_ext.as_ptr());
-            if !js_str.is_null() {
-                let str_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(js_str as *mut JSObject) };
-                JS_DefineProperty3(cx, arr_h, c_idx.as_ptr(), str_h, JSPROP_ENUMERATE as u32);
-            }
-        }
-        JS_DefineProperty1(cx, arr_h, c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
-        args.rval().set(ObjectValue(arr));
-    });
+    }
+    JS_DefineProperty1(cx, arr_h, c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
+    args.rval().set(ObjectValue(arr));
     true
 }
 
@@ -515,11 +707,17 @@ unsafe fn inject_audio_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bo
     use mozjs::rust::{CompileOptionsWrapper, evaluate_script, Handle as RustHandle};
     use ::std::ptr::NonNull;
 
-    let js_code = TL_AUDIO_SEED.with(|seed_tl| {
-        TL_AUDIO_AMPLITUDE.with(|amp_tl| {
-            let seed = *seed_tl.borrow();
-            let amplitude = *amp_tl.borrow();
-            format!(
+    let js_code = {
+        // BUG-ENG-366: prefer per-Realm audio seed/amplitude so two pages on the
+        // same servo ScriptThread get different AudioContext fingerprints.
+        let (seed, amplitude) = match current_realm_profile(raw_cx) {
+            Some(rp) => (rp.audio_seed, rp.audio_amplitude),
+            None => (
+                TL_AUDIO_SEED.with(|v| *v.borrow()),
+                TL_AUDIO_AMPLITUDE.with(|v| *v.borrow()),
+            ),
+        };
+        format!(
                 r#"(function() {{
   'use strict';
   var SEED = {seed}n;
@@ -555,11 +753,10 @@ unsafe fn inject_audio_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bo
   if (typeof OfflineAudioContext !== 'undefined') hookGetChannelData(OfflineAudioContext.prototype, 'OfflineAudioContext');
   if (typeof webkitAudioContext !== 'undefined') hookGetChannelData(webkitAudioContext.prototype, 'webkitAudioContext');
 }})();"#,
-                seed = seed,
-                amplitude = amplitude,
-            )
-        })
-    });
+            seed = seed,
+            amplitude = amplitude,
+        )
+    };
 
     // Wrap raw_cx into JSContext for mozjs::rust APIs
     let cx_nn = match NonNull::new(raw_cx) {
@@ -870,4 +1067,193 @@ mod tests {
         let template = "proto.getChannelData";
         assert!(!template.is_empty());
     }
+
+    // ─── BUG-ENG-366: per-Realm (per-page) Compartment isolation tests ────
+    // These tests exercise the unconditional isolation primitive directly.
+    // Two simulated pages register distinct profiles under distinct global
+    // addresses; the per-Realm store must keep them isolated regardless of
+    // the thread they were registered on (simulating the single-ScriptThread
+    // case when force_isolate_event_loops is false).
+    //
+    // @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366] [level:unit]
+
+    // cargo test runs tests in parallel by default; these tests mutate the
+    // shared per-Realm store, so they must be serialized via this lock.
+    static PER_REALM_TEST_LOCK: ::std::sync::OnceLock<::std::sync::Mutex<()>> = ::std::sync::OnceLock::new();
+    fn per_realm_lock() -> &'static ::std::sync::Mutex<()> {
+        PER_REALM_TEST_LOCK.get_or_init(|| ::std::sync::Mutex::new(()))
+    }
+
+    #[test]
+    fn per_realm_profiles_isolated_between_pages() {
+        let _guard = per_realm_lock().lock().unwrap();
+        clear_all_realm_profiles();
+
+        // Two simulated pages with distinct global object addresses.
+        let page_a_global: usize = 0xAA00_0000;
+        let page_b_global: usize = 0xBB00_0000;
+
+        let chrome = StealthProfile::chrome_default();
+        let firefox = StealthProfile::firefox_default();
+        assert_ne!(
+            chrome.navigator.user_agent, firefox.navigator.user_agent,
+            "test setup: profiles must differ"
+        );
+
+        set_profile_for_global(page_a_global, &chrome);
+        set_profile_for_global(page_b_global, &firefox);
+
+        let a_rp = realm_profiles().get(&page_a_global).unwrap().clone();
+        let b_rp = realm_profiles().get(&page_b_global).unwrap().clone();
+
+        assert_eq!(a_rp.ua, chrome.navigator.user_agent);
+        assert_eq!(b_rp.ua, firefox.navigator.user_agent);
+        assert_ne!(a_rp.ua, b_rp.ua, "BUG-ENG-366: per-page UA must differ");
+        assert_ne!(
+            a_rp.canvas_seed, b_rp.canvas_seed,
+            "BUG-ENG-366: per-page Canvas seed must differ"
+        );
+
+        clear_all_realm_profiles();
+    }
+
+    #[test]
+    fn per_realm_alias_shares_profile_with_node_realm() {
+        // BUG-ENG-366: the Node Realm global must alias the page profile so
+        // privileged scripts and untrusted page JS see the same fingerprint.
+        let _guard = per_realm_lock().lock().unwrap();
+        clear_all_realm_profiles();
+
+        let page_global: usize = 0x1000_0001;
+        let node_global: usize = 0x2000_0002;
+
+        let profile = StealthProfile::chrome_default();
+        set_profile_for_global(page_global, &profile);
+        register_global_alias(page_global, node_global);
+
+        let page_rp = realm_profiles().get(&page_global).unwrap().clone();
+        let node_rp = realm_profiles().get(&node_global).unwrap().clone();
+
+        assert_eq!(
+            page_rp.canvas_seed, node_rp.canvas_seed,
+            "BUG-ENG-366: Node Realm must share page Canvas seed"
+        );
+        assert_eq!(
+            page_rp.ua, node_rp.ua,
+            "BUG-ENG-366: Node Realm must share page UA"
+        );
+
+        clear_all_realm_profiles();
+    }
+
+    #[test]
+    fn per_realm_alias_null_pointers_ignored() {
+        let _guard = per_realm_lock().lock().unwrap();
+        clear_all_realm_profiles();
+        let profile = StealthProfile::firefox_default();
+        set_profile_for_global(0x3000, &profile);
+        // Null alias must be a no-op, not panic.
+        register_global_alias(0, 0x4000);
+        register_global_alias(0x3000, 0);
+        assert!(realm_profiles().get(&0x4000).is_none());
+        assert!(realm_profiles().get(&0x3000).is_some());
+        clear_all_realm_profiles();
+    }
+
+    #[test]
+    fn per_realm_remove_drops_profile() {
+        let _guard = per_realm_lock().lock().unwrap();
+        clear_all_realm_profiles();
+        let g: usize = 0x5000;
+        let profile = StealthProfile::firefox_default();
+        set_profile_for_global(g, &profile);
+        assert!(realm_profiles().get(&g).is_some());
+        remove_profile_for_global(g);
+        assert!(realm_profiles().get(&g).is_none(), "remove must drop the profile");
+        clear_all_realm_profiles();
+    }
+
+    #[test]
+    fn per_realm_navigation_rekeys_profile() {
+        // BUG-ENG-366: same-origin navigation replaces the Window global; the
+        // stealth profile must move to the new global so the page keeps its
+        // fingerprint after navigation.
+        let _guard = per_realm_lock().lock().unwrap();
+        clear_all_realm_profiles();
+        let old_global: usize = 0x6000;
+        let new_global: usize = 0x6004;
+
+        let profile = StealthProfile::chrome_default();
+        set_profile_for_global(old_global, &profile);
+        // Navigation re-key uses register_global_alias(old → new) — old keeps
+        // its entry (alias is additive), new points at the same profile.
+        register_global_alias(old_global, new_global);
+
+        let old_rp = realm_profiles().get(&old_global).unwrap().clone();
+        let new_rp = realm_profiles().get(&new_global).unwrap().clone();
+        assert_eq!(
+            old_rp.canvas_seed, new_rp.canvas_seed,
+            "BUG-ENG-366: navigation must preserve Canvas seed"
+        );
+
+        clear_all_realm_profiles();
+    }
+
+    #[test]
+    fn per_realm_force_isolate_false_simulation_still_isolated() {
+        // BUG-ENG-366 core scenario: even when force_isolate_event_loops=false
+        // (all pages share one ScriptThread), the per-Realm store is keyed by
+        // global object address, so each page's fingerprint stays isolated.
+        // This test registers three pages on the SAME thread and verifies each
+        // resolves to its own profile.
+        let _guard = per_realm_lock().lock().unwrap();
+        clear_all_realm_profiles();
+
+        let profiles = [
+            (0xA1, StealthProfile::chrome_default()),
+            (0xA2, StealthProfile::firefox_default()),
+            (0xA3, StealthProfile::chrome_default()),
+        ];
+        // Make 0xA3 differ from 0xA1 via canvas seed override (chrome default
+        // has fixed seed 137, so we synthesize a distinct profile).
+        let mut third = StealthProfile::chrome_default();
+        third.canvas = crate::CanvasNoise::new(999);
+        let profiles = [
+            (profiles[0].0, profiles[0].1.clone()),
+            (profiles[1].0, profiles[1].1.clone()),
+            (0xA3, third),
+        ];
+
+        for (addr, p) in &profiles {
+            set_profile_for_global(*addr, p);
+        }
+
+        let seeds: Vec<u64> = profiles
+            .iter()
+            .map(|(addr, _)| realm_profiles().get(addr).unwrap().canvas_seed)
+            .collect();
+
+        assert_eq!(seeds[0], profiles[0].1.canvas.seed());
+        assert_eq!(seeds[1], profiles[1].1.canvas.seed());
+        assert_eq!(seeds[2], profiles[2].1.canvas.seed());
+        assert_ne!(seeds[0], seeds[1]);
+        assert_ne!(seeds[0], seeds[2]);
+        assert_ne!(seeds[1], seeds[2]);
+
+        clear_all_realm_profiles();
+    }
+
+    #[test]
+    fn per_realm_fallback_to_thread_local_when_unregistered() {
+        // When no per-Realm profile is registered (e.g. test JSContext with no
+        // page), getters must fall back to thread_local defaults so existing
+        // CLI/engine behavior is preserved.
+        let _guard = per_realm_lock().lock().unwrap();
+        clear_all_realm_profiles();
+        set_profile(&StealthProfile::firefox_default());
+        let seed = canvas_seed();
+        assert_eq!(seed, StealthProfile::firefox_default().canvas.seed());
+        clear_all_realm_profiles();
+    }
 }
+

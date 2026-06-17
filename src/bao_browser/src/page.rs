@@ -423,8 +423,16 @@ impl PageHandle {
         let mut borrow = self.inner.borrow_mut();
         if let Some(inner) = borrow.take() {
             let pg = *inner.page_global.borrow();
+            let ng = *inner.node_realm_global.borrow();
             if !pg.is_null() {
                 crate::runtime_bridge::remove_node_realm(pg);
+                // BUG-ENG-366: drop the per-Realm stealth profiles so the next
+                // page reusing the same global address does not inherit a stale
+                // fingerprint. @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
+                bao_stealth::engine_props::remove_profile_for_global(pg as usize);
+            }
+            if !ng.is_null() {
+                bao_stealth::engine_props::remove_profile_for_global(ng as usize);
             }
             *inner.state.borrow_mut() = PageState::Closed;
             drop(inner);

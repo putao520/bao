@@ -189,6 +189,16 @@ unsafe fn refresh_dom_proxies_native(
     // Lazy getters will automatically fetch from the new Page Realm
     rekey_node_realm(old_page_global, new_page_global);
 
+    // BUG-ENG-366: re-key the per-Realm stealth profile so the new Page Realm
+    // global inherits the page's stealth profile (Canvas/Navigator/WebGL/Audio
+    // seeds stay stable across same-origin navigation). The Node Realm global
+    // keeps its own alias entry which still points at the same profile Arc.
+    // @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
+    bao_stealth::engine_props::register_global_alias(
+        old_page_global as usize,
+        new_page_global as usize,
+    );
+
     // Update LAST_PAGE_GLOBAL so caller can retrieve the new page_global
     set_last_page_global(new_page_global);
 }
@@ -445,6 +455,20 @@ unsafe fn create_node_realm_native(cx_ptr: *mut std::ffi::c_void, page_global_pt
 
     // Store per-page: page_global → node_realm_global
     store_node_realm(page_global, global.get());
+
+    // BUG-ENG-366: alias the Node Realm global to the same per-page stealth
+    // profile. Stealth getters executing inside the Node Realm (REQ-SEC-002
+    // privileged scripts reading navigator/WebGL) resolve to the page's profile,
+    // identical to what untrusted page JS sees — no fingerprint divergence
+    // between Realms of the same page.
+    //
+    // @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
+    if !page_global.is_null() {
+        bao_stealth::engine_props::register_global_alias(
+            page_global as usize,
+            global.get() as usize,
+        );
+    }
 }
 
 /// Wrap a DOM property from the Page Realm and install it on the Node Realm global.
@@ -703,6 +727,15 @@ fn register_native_host_functions(webview_id: servo::WebViewId, stealth_profile:
 ///
 /// If `stealth_profile` is `Some`, installs stealth properties as PERMANENT engine-layer
 /// getters (JSPROP_PERMANENT ≡ configurable:false) after the Node.js host functions.
+///
+/// BUG-ENG-366 / REQ-SEC-002: the stealth profile is registered PER-REALM keyed
+/// by this page's Window global pointer via `set_profile_for_global`. This makes
+/// Compartment isolation unconditional — no dependency on servo's
+/// `force_isolate_event_loops` flag. When multiple pages share a single servo
+/// ScriptThread (force_isolate=false), each page's Window global is still
+/// distinct, so each page's stealth getters resolve to its own profile. The
+/// Node Realm global for this page is aliased to the same profile in
+/// `create_node_realm_native`. @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
 unsafe fn install_all_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std::ffi::c_void, stealth_profile: &Option<bao_stealth::StealthProfile>) {
     use mozjs::context::JSContext;
     use mozjs::jsapi::{JSContext as RawJSContext, JSObject};
@@ -718,12 +751,12 @@ unsafe fn install_all_native(cx_ptr: *mut std::ffi::c_void, global_ptr: *mut std
     // Store page global for caller to retrieve after drain (cross-thread via AtomicUsize)
     set_last_page_global(raw_global);
 
-    // Set stealth profile before installing (install_stealth_props reads from thread-local)
+    // BUG-ENG-366: register per-Realm profile (unconditional Compartment isolation).
     if let Some(profile) = stealth_profile {
+        bao_stealth::engine_props::set_profile_for_global(raw_global as usize, profile);
         bao_stealth::engine_props::set_profile(profile);
         bun_runtime::fetch_api::set_fetch_stealth_profile(Some(profile.clone()));
-        // Set canvas noise at servo rendering layer (REQ-STL-003)
-        // This is undetectable from JS since noise is applied in CanvasData::read_pixels
+        // Set canvas noise at servo rendering layer (REQ-STL-003).
         servo::set_canvas_noise_seed(
             bao_stealth::engine_props::canvas_seed(),
             bao_stealth::engine_props::canvas_amplitude(),
