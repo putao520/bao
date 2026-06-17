@@ -175,6 +175,63 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     bao_has_pending_timers() || has_http
 }
 
+/// Drive a single "wait for promise / timer" iteration in test-runner mode.
+///
+/// Fires all due `setTimeout`/`setInterval` callbacks, then drains SM's
+/// job queue (microtasks + queued promise jobs). Unlike `drain_and_check`,
+/// this entry point takes a raw `JSContext*` — it's used by the bun:test
+/// runner's async-await support, where the JSContext is held as a raw
+/// pointer (see `bun_test::drain_until_done`).
+///
+/// Test-runner semantics:
+///   - When there are active HTTP servers / I/O, `tick_once` is invoked so
+///     uSockets-driven I/O (fetch, http.createServer) makes progress.
+///   - When only timers are pending (typical setTimeout/async test), we
+///     sleep for a short slice instead. bao's `setTimeout` registers in
+///     `BAO_REGISTRY` (not in uSockets' timer heap), so an empty
+///     `tick_once` would block forever on `epoll_wait` with nothing to wake
+///     it. `drain_bao_timers` uses wall-clock deadlines, so a small sleep
+///     advances them deterministically.
+///
+/// Returns true if any timer fired this pass.
+///
+/// # Safety
+/// - `raw_cx` must be a live `JSContext*` on the current thread with an
+///   active request.
+/// - Caller must hold a root on the global object (standard globals are
+///   rooted by the runtime).
+pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
+    if crate::should_exit() {
+        return false;
+    }
+    // SAFETY: caller guarantees raw_cx is live and on this thread.
+    unsafe { register_current_cx(raw_cx); }
+    let _cx_guard = CxGuard::new();
+
+    let has_http = crate::node_http::has_active_servers();
+    if has_http {
+        // I/O is active — let uSockets drive it.
+        with_event_loop(|loop_| {
+            loop_.tick_once(core::ptr::null_mut());
+        });
+    } else if bao_has_pending_timers() {
+        // Timer-only case: advance wall-clock so `drain_bao_timers` can pop
+        // expired entries. Short sleep keeps test throughput reasonable while
+        // avoiding the epoll_wait-forever trap.
+        ::std::thread::sleep(::std::time::Duration::from_millis(1));
+    }
+    let fired = drain_bao_timers(raw_cx);
+    // Drain microtasks + queued promise jobs.
+    mozjs_sys::jsapi::js::RunJobs(raw_cx);
+    fired
+}
+
+/// Check if there are any pending timers or HTTP servers. Used by the test
+/// runner to know whether the loop should keep spinning.
+pub fn has_pending_work() -> bool {
+    bao_has_pending_timers() || crate::node_http::has_active_servers()
+}
+
 /// Fire a JS callback via `JS_CallFunctionValue`, swallowing any pending
 /// exception. Used by `drain_bao_timers` and `BaoTimeoutObject::fire_js`
 /// for JS callback dispatch.

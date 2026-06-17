@@ -4,7 +4,7 @@ use bun_core::ZBox;
 use ::std::ptr;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{UndefinedValue, Int32Value};
+use mozjs::jsval::{UndefinedValue, Int32Value, BooleanValue};
 
 use crate::gc_store;
 
@@ -23,34 +23,77 @@ const BUN_TEST_SHIM: &str = r#"
 
   var _passNames = [];
   var _failEntries = [];
+  // @trace REQ-ENG-005 — collected test cases awaiting async run.
+  // it()/test() register a deferred entry; the runner iterates these and
+  // awaits any Promise returned by the callback. This unlocks async tests
+  // (await fetch / await setTimeout / async matchers) without rewriting the
+  // collection shape of describe/it.
+  var _pendingTests = [];
 
-  function _runTest(name, fn) {
-    try {
+  function _registerTest(name, fn) {
+    _pendingTests.push({ name: name, fn: fn });
+  }
+
+  // Run a single test (sync or async) — always returns a Promise<void>.
+  // beforeEach / test body / afterEach may all be async.
+  // expectFail inverts the pass/fail semantics (for it.failing): a thrown or
+  // rejected error counts as a pass; a clean run counts as a fail.
+  function _runOneTest(name, fn, expectFail) {
+    return new Promise(function(resolve) {
+      // before each hook
+      var chain = Promise.resolve();
       for (var i = 0; i < _beforeEachFns.length; i++) {
-        _beforeEachFns[i]();
+        (function(hook) {
+          chain = chain.then(function() {
+            var r = hook();
+            return (r && typeof r.then === 'function') ? r : undefined;
+          });
+        })(_beforeEachFns[i]);
       }
-      var result = fn();
-      if (result && typeof result.then === 'function') {
-        // Sync test runner — async tests not supported in shim mode
-        throw new Error("bun:test shim does not support async tests");
-      }
-      for (var j = 0; j < _afterEachFns.length; j++) {
-        _afterEachFns[j]();
-      }
-      _passed++;
-      _passNames.push(name);
-    } catch (e) {
-      for (var k = 0; k < _afterEachFns.length; k++) {
-        try { _afterEachFns[k](); } catch (_) {}
-      }
-      _failed++;
-      _errors.push({ name: name, error: e });
-      _failEntries.push({
-        name: name,
-        message: (e && (e.message || e.toString())) || String(e),
-        stack: (e && e.stack) || ""
+      // test body
+      chain = chain.then(function() {
+        var r = fn();
+        return (r && typeof r.then === 'function') ? r : undefined;
       });
-    }
+      // afterEach (always runs, even on failure)
+      chain = chain.then(function() {
+        var achain = Promise.resolve();
+        for (var j = 0; j < _afterEachFns.length; j++) {
+          (function(hook) {
+            achain = achain.then(function() {
+              var r = hook();
+              return (r && typeof r.then === 'function') ? r : undefined;
+            }).catch(function() { /* swallow hook errors */ });
+          })(_afterEachFns[j]);
+        }
+        return achain;
+      });
+      // success path
+      chain.then(function() {
+        if (expectFail) {
+          _emitError(name, new Error("Expected test to fail but it passed"));
+        } else {
+          _passed++;
+          _passNames.push(name);
+        }
+        resolve();
+      }, function(e) {
+        if (expectFail) {
+          _passed++;
+          _passNames.push(name);
+        } else {
+          _emitError(name, e);
+        }
+        resolve();
+      });
+    });
+  }
+
+  // Back-compat: some external callers expect _runTest to run synchronously.
+  // Keep it for legacy paths but route through the deferred collection when
+  // the test was registered via it()/test().
+  function _runTest(name, fn) {
+    _registerTest(name, fn);
   }
 
   function _makeExpect(actual) {
@@ -580,21 +623,10 @@ const BUN_TEST_SHIM: &str = r#"
   itFn.each = function() { return function(name, fn) { itFn(name, fn); }; };
   itFn.only = function(name, fn) { itFn(name, fn); };
   itFn.failing = function(name, fn) {
-    // In failing mode, we expect the test to throw
+    // In failing mode, we expect the test to throw (sync) or reject (async).
+    // Defer to the runner so async failing tests work too.
     var fullName = _currentDescribe ? (_currentDescribe + " > " + name) : name;
-    try {
-      fn();
-      _failed++;
-      _errors.push({ name: fullName, error: new Error("Expected test to fail but it passed") });
-      _failEntries.push({
-        name: fullName,
-        message: "Expected test to fail but it passed",
-        stack: ""
-      });
-    } catch (e) {
-      _passed++; // Expected to fail, so it's a pass
-      _passNames.push(fullName);
-    }
+    _pendingTests.push({ name: fullName, fn: fn, expectFail: true });
   };
 
   function testFn(name, fn) {
@@ -645,44 +677,128 @@ const BUN_TEST_SHIM: &str = r#"
 
   _g.__bun_test_module = bunTestModule;
 
-  // Test runner — called after all suites registered
+  // Helper: invoke a hook fn (beforeAll/afterAll/beforeEach/afterEach) that
+  // may return a Promise. Returns a Promise that resolves with either
+  // { ok: true } or { ok: false, error: e }.
+  function _runHook(fn) {
+    return new Promise(function(resolve) {
+      var r;
+      try { r = fn(); } catch (e) { return resolve({ ok: false, error: e }); }
+      if (r && typeof r.then === 'function') {
+        r.then(function() { resolve({ ok: true }); },
+               function(e) { resolve({ ok: false, error: e }); });
+      } else {
+        resolve({ ok: true });
+      }
+    });
+  }
+
+  function _emitError(name, e) {
+    _failed++;
+    _errors.push({ name: name, error: e });
+    _failEntries.push({
+      name: name,
+      message: (e && (e.message || e.toString())) || String(e),
+      stack: (e && e.stack) || ""
+    });
+  }
+
+  // @trace REQ-ENG-005 — async-aware test runner.
+  //
+  // Execution order mirrors Bun's bun:test semantics:
+  //   beforeAll*  → for each describe (in registration order):
+  //                   run describe body (registers it() entries)
+  //                   sequentially await each pending test in this suite
+  //                 → afterAll*
+  //
+  // `it()` defers execution by pushing to `_pendingTests`; the runner pops
+  // them so beforeEach/test/afterEach all participate in the async chain.
+  // This works whether the test callback is sync, returns undefined, or
+  // returns a Promise (await fetch, await setTimeout, async matchers...).
+  //
+  // Always returns a Promise<Report> — the Rust side drains SM's job queue
+  // until it settles, so the sync caller API stays unchanged.
   _g.__run_bun_tests = function() {
+    function _buildReport() {
+      return { passed: _passed, failed: _failed, errors: _errors,
+               passes: _passNames, failures: _failEntries };
+    }
+
+    // Chain everything as Promise steps; SM resolves microtasks as the
+    // Rust loop calls RunJobs().
+    var chain = Promise.resolve();
+
+    // beforeAll hooks (in registration order).
     for (var i = 0; i < _beforeAllFns.length; i++) {
-      try { _beforeAllFns[i](); } catch (e) {
-        _errors.push({ name: "beforeAll", error: e });
-        _failed++;
-        _failEntries.push({
-          name: "beforeAll",
-          message: (e && (e.message || e.toString())) || String(e),
-          stack: (e && e.stack) || ""
+      (function(hook) {
+        chain = chain.then(function() {
+          return _runHook(hook).then(function(res) {
+            if (!res.ok) { _emitError("beforeAll", res.error); }
+          });
         });
-      }
+      })(_beforeAllFns[i]);
     }
+
+    // Walk each describe suite: run its body (registers it() entries into
+    // _pendingTests) then await the collected tests sequentially.
     for (var s = 0; s < _suites.length; s++) {
-      _currentDescribe = _suites[s].name;
-      try { _suites[s].fn(); } catch (e) {
-        _failed++;
-        _errors.push({ name: _suites[s].name, error: e });
-        _failEntries.push({
-          name: _suites[s].name,
-          message: (e && (e.message || e.toString())) || String(e),
-          stack: (e && e.stack) || ""
+      (function(suite) {
+        chain = chain.then(function() {
+          _currentDescribe = suite.name;
+          try {
+            var r = suite.fn();
+            if (r && typeof r.then === 'function') {
+              return r.then(function() { _currentDescribe = null; },
+                            function(e) { _emitError(suite.name, e); _currentDescribe = null; });
+            }
+          } catch (e) {
+            _emitError(suite.name, e);
+          }
+          _currentDescribe = null;
+          return undefined;
+        }).then(function() {
+          // Drain tests registered during this suite's describe body.
+          var inner = Promise.resolve();
+          function _drainNext() {
+            if (_pendingTests.length === 0) { return inner; }
+            var t = _pendingTests.shift();
+            inner = inner.then(function() {
+              return _runOneTest(t.name, t.fn, t.expectFail);
+            });
+            return _drainNext();
+          }
+          return _drainNext();
         });
-      }
-      _currentDescribe = null;
+      })(_suites[s]);
     }
+
+    // If there were top-level it() calls (no enclosing describe), drain them
+    // here as well — they sit in _pendingTests after the suite loop.
+    chain = chain.then(function() {
+      var inner = Promise.resolve();
+      function _drainTopLevel() {
+        if (_pendingTests.length === 0) { return inner; }
+        var t = _pendingTests.shift();
+        inner = inner.then(function() { return _runOneTest(t.name, t.fn, t.expectFail); });
+        return _drainTopLevel();
+      }
+      return _drainTopLevel();
+    });
+
+    // afterAll hooks (in registration order).
     for (var j = 0; j < _afterAllFns.length; j++) {
-      try { _afterAllFns[j](); } catch (e) {
-        _errors.push({ name: "afterAll", error: e });
-        _failed++;
-        _failEntries.push({
-          name: "afterAll",
-          message: (e && (e.message || e.toString())) || String(e),
-          stack: (e && e.stack) || ""
+      (function(hook) {
+        chain = chain.then(function() {
+          return _runHook(hook).then(function(res) {
+            if (!res.ok) { _emitError("afterAll", res.error); }
+          });
         });
-      }
+      })(_afterAllFns[j]);
     }
-    return { passed: _passed, failed: _failed, errors: _errors, passes: _passNames, failures: _failEntries };
+
+    // Resolve the final report. The Rust side detects this Promise and
+    // spins RunJobs until state != Pending.
+    return chain.then(_buildReport, _buildReport);
   };
 })();
 "#;
@@ -799,18 +915,106 @@ pub struct TestReport {
 /// Run registered bun:test suites and extract a full report (counters + named
 /// passes/failures). The CLI layer renders the ✓/✗ output.
 ///
+/// `__run_bun_tests()` returns a Promise<Report> (async runner — see
+/// REQ-ENG-005). This function kicks off the runner, attaches a then-callback
+/// that stores the resolved Report on `globalThis.__bunTestReport`, then
+/// drives SM's job queue (`RunJobs`) until the report appears.
+///
 /// # Safety
 /// Caller must ensure `raw` is a valid JSContext pointer with an active request.
 pub unsafe fn run_bun_tests_report(raw: *mut JSContext) -> TestReport {
-    let result = eval_shim_get_obj(raw, "globalThis.__run_bun_tests()");
-    if result.is_null() {
-        log::warn!("__run_bun_tests() returned null");
+    // Kick off the runner and attach a reaction that drops the resolved Report
+    // onto globalThis.__bunTestReport. Both fulfilled and rejected paths set
+    // the marker so the loop always terminates.
+    let setup = "(function() {
+  globalThis.__bunTestReport = null;
+  globalThis.__bunTestDone = false;
+  var p = globalThis.__run_bun_tests();
+  if (p && typeof p.then === 'function') {
+    p.then(function(report) {
+      globalThis.__bunTestReport = report;
+      globalThis.__bunTestDone = true;
+    }, function(err) {
+      var rep = globalThis.__bunTestReport || { passed: 0, failed: 0, errors: [], passes: [], failures: [] };
+      if (err) {
+        rep.failed = (rep.failed || 0) + 1;
+        rep.errors.push({ name: 'run_bun_tests', error: err });
+        rep.failures.push({ name: 'run_bun_tests', message: (err && (err.message || err.toString())) || String(err), stack: (err && err.stack) || '' });
+      }
+      globalThis.__bunTestReport = rep;
+      globalThis.__bunTestDone = true;
+    });
+  } else {
+    globalThis.__bunTestReport = p;
+    globalThis.__bunTestDone = true;
+  }
+  return globalThis;
+})();";
+
+    if eval_shim_get_obj(raw, setup).is_null() {
+        log::warn!("run_bun_tests: failed to start runner");
         return TestReport::default();
     }
 
+    // If the runner produced a synchronous report (no async tests) we already
+    // have it. Otherwise drive SM's job queue until the reaction fires.
+    if !is_done(raw) {
+        drain_until_done(raw);
+    }
+
+    let report = read_global_object(raw, "globalThis.__bunTestReport");
+    match report {
+        Some(obj) => read_report_from_obj(raw, obj),
+        None => TestReport::default(),
+    }
+}
+
+unsafe fn is_done(raw: *mut JSContext) -> bool {
+    let mut done = BooleanValue(false);
+    let global = CurrentGlobalOrNull(raw);
+    if global.is_null() {
+        return false;
+    }
+    let global_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &global,
+    };
+    JS_GetProperty(
+        raw,
+        global_h,
+        c"__bunTestDone".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut done,
+        },
+    );
+    done.to_boolean()
+}
+
+unsafe fn drain_until_done(raw: *mut JSContext) {
+    // Safety cap: 10_000 passes comfortably covers microtasks + setTimeout
+    // callbacks + HTTP I/O ticks. Hung tests would otherwise spin forever.
+    for _ in 0..10_000 {
+        if is_done(raw) {
+            return;
+        }
+        // Drive one full pass: tick the MiniEventLoop (I/O + timers),
+        // fire any due timer callbacks, then drain SM's job queue
+        // (microtasks + queued promise jobs).
+        let _fired = crate::timers::drain_one_pass(raw);
+    }
+    log::warn!("run_bun_tests: report did not arrive within iteration cap");
+}
+
+unsafe fn read_global_object(raw: *mut JSContext, expr: &str) -> Option<*mut JSObject> {
+    let obj = eval_shim_get_obj(raw, expr);
+    if obj.is_null() { None } else { Some(obj) }
+}
+
+unsafe fn read_report_from_obj(raw: *mut JSContext, report_obj: *mut JSObject) -> TestReport {
     let obj_h = Handle::<*mut JSObject> {
         _phantom_0: ::std::marker::PhantomData,
-        ptr: &result,
+        ptr: &report_obj,
     };
 
     let mut passed: u32 = 0;
