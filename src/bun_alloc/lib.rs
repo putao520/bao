@@ -1,4 +1,5 @@
 //! Port of `src/bun_alloc/bun_alloc.zig`.
+// @trace REQ-PURE-005 [level:library] [entity:AllocatorConfig,AllocatorProfile]
 // bun_alloc is the T0 foundation crate that bun_threading and bun_collections
 // depend on; importing either to satisfy the disallowed-types lint would create
 // a dependency cycle.
