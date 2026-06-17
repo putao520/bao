@@ -158,15 +158,40 @@ const BUN_TEST_SHIM: &str = r#"
         }
         return e;
       },
-      toThrow: function() {
+      toThrow: function(expected) {
         var threw = false;
+        var thrownError = null;
         try {
           actual();
         } catch (err) {
           threw = true;
+          thrownError = err;
         }
         if (!threw) {
           throw new Error("Expected function to throw");
+        }
+        // Optional matcher: string (substring), RegExp (test), or Error class.
+        // Matches Jest's toThrow semantics. e.g. toThrow(/out of range/i)
+        // or toThrow("RangeError") or toThrow(RangeError).
+        if (expected !== undefined && thrownError !== null) {
+          var msg = (thrownError && (thrownError.message || thrownError.toString())) || String(thrownError);
+          if (typeof expected === 'string') {
+            if (msg.indexOf(expected) === -1 && thrownError.name !== expected) {
+              throw new Error("Expected thrown error to contain \"" + expected + "\" but got \"" + msg + "\"");
+            }
+          } else if (expected instanceof RegExp) {
+            if (!expected.test(msg)) {
+              throw new Error("Expected thrown error \"" + msg + "\" to match " + expected);
+            }
+          } else if (typeof expected === 'function') {
+            if (!(thrownError instanceof expected)) {
+              throw new Error("Expected thrown error to be instance of " + (expected.name || 'function'));
+            }
+          } else if (expected && typeof expected === 'object' && expected.message !== undefined) {
+            if (msg.indexOf(expected.message) === -1) {
+              throw new Error("Expected thrown error to contain \"" + expected.message + "\" but got \"" + msg + "\"");
+            }
+          }
         }
         return e;
       },
@@ -232,6 +257,75 @@ const BUN_TEST_SHIM: &str = r#"
         }
         return e;
       },
+      // @trace REQ-ENG-006 — jest.fn() mock call assertions.
+      // Jest/bun mock matchers: toHaveBeenCalled / toHaveBeenCalledTimes(n) /
+      // toHaveBeenCalledWith(...args) / toHaveBeenLastCalledWith(...args) /
+      // toHaveBeenNthCalledWith(n, ...args).
+      // `actual` is the mock returned by jest.fn(). Its `.mock.calls` array
+      // holds one entry per invocation; each entry is the call's arguments.
+      toHaveBeenCalled: function() {
+        var calls = _mockCalls(actual);
+        if (calls === null) {
+          throw new Error("toHaveBeenCalled requires a jest.fn() mock");
+        }
+        if (calls.length === 0) {
+          throw new Error("Expected mock to have been called, but it was called 0 times");
+        }
+        return e;
+      },
+      toHaveBeenCalledTimes: function(n) {
+        var calls = _mockCalls(actual);
+        if (calls === null) {
+          throw new Error("toHaveBeenCalledTimes requires a jest.fn() mock");
+        }
+        if (calls.length !== n) {
+          throw new Error("Expected mock to have been called " + n + " times, but it was called " + calls.length + " times");
+        }
+        return e;
+      },
+      toHaveBeenCalledWith: function() {
+        var calls = _mockCalls(actual);
+        if (calls === null) {
+          throw new Error("toHaveBeenCalledWith requires a jest.fn() mock");
+        }
+        var expectedArgs = Array.prototype.slice.call(arguments);
+        var found = false;
+        for (var i = 0; i < calls.length; i++) {
+          if (_argsEqual(calls[i], expectedArgs)) { found = true; break; }
+        }
+        if (!found) {
+          throw new Error("Expected mock to have been called with " + JSON.stringify(expectedArgs) + ", but actual calls were " + JSON.stringify(calls));
+        }
+        return e;
+      },
+      toHaveBeenLastCalledWith: function() {
+        var calls = _mockCalls(actual);
+        if (calls === null) {
+          throw new Error("toHaveBeenLastCalledWith requires a jest.fn() mock");
+        }
+        if (calls.length === 0) {
+          throw new Error("Expected mock to have been called, but it was called 0 times");
+        }
+        var expectedArgs = Array.prototype.slice.call(arguments);
+        if (!_argsEqual(calls[calls.length - 1], expectedArgs)) {
+          throw new Error("Expected last call to be " + JSON.stringify(expectedArgs) + ", but was " + JSON.stringify(calls[calls.length - 1]));
+        }
+        return e;
+      },
+      toHaveBeenNthCalledWith: function(nth) {
+        var calls = _mockCalls(actual);
+        if (calls === null) {
+          throw new Error("toHaveBeenNthCalledWith requires a jest.fn() mock");
+        }
+        var expectedArgs = Array.prototype.slice.call(arguments, 1);
+        if (nth < 1 || nth > calls.length) {
+          throw new Error("Expected call #" + nth + " but mock was only called " + calls.length + " times");
+        }
+        if (!_argsEqual(calls[nth - 1], expectedArgs)) {
+          throw new Error("Expected call #" + nth + " to be " + JSON.stringify(expectedArgs) + ", but was " + JSON.stringify(calls[nth - 1]));
+        }
+        return e;
+      },
       resolves: {},
       rejects: {},
       not: {
@@ -267,11 +361,30 @@ const BUN_TEST_SHIM: &str = r#"
           }
           return e.not;
         },
-        toThrow: function() {
+        toThrow: function(expected) {
           var threw = false;
-          try { actual(); } catch (_) { threw = true; }
+          var thrownError = null;
+          try { actual(); } catch (err) { threw = true; thrownError = err; }
           if (threw) {
-            throw new Error("Expected function not to throw");
+            // If a matcher is provided, only fail when the matcher matches.
+            if (expected !== undefined) {
+              var msg = (thrownError && (thrownError.message || thrownError.toString())) || String(thrownError);
+              var matches = false;
+              if (typeof expected === 'string') {
+                matches = (msg.indexOf(expected) !== -1 || thrownError.name === expected);
+              } else if (expected instanceof RegExp) {
+                matches = expected.test(msg);
+              } else if (typeof expected === 'function') {
+                matches = (thrownError instanceof expected);
+              } else if (expected && typeof expected === 'object' && expected.message !== undefined) {
+                matches = (msg.indexOf(expected.message) !== -1);
+              }
+              if (matches) {
+                throw new Error("Expected function not to throw matching error, but threw: " + msg);
+              }
+            } else {
+              throw new Error("Expected function not to throw");
+            }
           }
           return e.not;
         },
@@ -293,6 +406,32 @@ const BUN_TEST_SHIM: &str = r#"
             throw new Error("Expected " + JSON.stringify(actual) + " not to match " + regex);
           }
           return e.not;
+        },
+        // @trace REQ-ENG-006 — negated jest.fn() mock assertions.
+        toHaveBeenCalled: function() {
+          var calls = _mockCalls(actual);
+          if (calls !== null && calls.length > 0) {
+            throw new Error("Expected mock not to have been called, but it was called " + calls.length + " times");
+          }
+          return e.not;
+        },
+        toHaveBeenCalledTimes: function(n) {
+          var calls = _mockCalls(actual);
+          if (calls !== null && calls.length === n) {
+            throw new Error("Expected mock not to have been called exactly " + n + " times");
+          }
+          return e.not;
+        },
+        toHaveBeenCalledWith: function() {
+          var calls = _mockCalls(actual);
+          if (calls === null) { return e.not; }
+          var expectedArgs = Array.prototype.slice.call(arguments);
+          for (var i = 0; i < calls.length; i++) {
+            if (_argsEqual(calls[i], expectedArgs)) {
+              throw new Error("Expected mock not to have been called with " + JSON.stringify(expectedArgs));
+            }
+          }
+          return e.not;
         }
       }
     };
@@ -301,6 +440,124 @@ const BUN_TEST_SHIM: &str = r#"
 
   var expectFn = function(actual) { return _makeExpect(actual); };
   expectFn.extend = function(actual) { return _makeExpect(actual); };
+
+  // @trace REQ-ENG-006 — jest.fn() mock infrastructure.
+  //
+  // A mock is a callable function that records every invocation on a hidden
+  // `_mockState` property. The state holds `calls` (one array of args per
+  // invocation), `results` (return value or thrown error per invocation),
+  // and `instances` (`this` per invocation). The mock also exposes `.mock`
+  // (jest's public surface: `mock.calls`, `mock.results`, `mock.instances`)
+  // and chainable `.mockImplementation` / `.mockReturnValue` /
+  // `.mockReturnValueOnce` / `.mockResolvedValue` builders.
+  function _argsEqual(a, b) {
+    if (a === b) { return true; }
+    if (a == null || b == null) { return false; }
+    if (a.length !== b.length) { return false; }
+    for (var i = 0; i < a.length; i++) {
+      var av = a[i], bv = b[i];
+      if (av === bv) { continue; }
+      if (av == null || bv == null) { return false; }
+      if (typeof av !== typeof bv) { return false; }
+      if (av instanceof RegExp && bv instanceof RegExp) {
+        if (av.source !== bv.source) { return false; }
+        continue;
+      }
+      if (Array.isArray(av) && Array.isArray(bv)) {
+        if (!_argsEqual(av, bv)) { return false; }
+        continue;
+      }
+      if (typeof av === 'object' && typeof bv === 'object') {
+        // Shallow structural compare for plain arg objects.
+        var akeys = Object.keys(av), bkeys = Object.keys(bv);
+        if (akeys.length !== bkeys.length) { return false; }
+        for (var k = 0; k < akeys.length; k++) {
+          if (av[akeys[k]] !== bv[akeys[k]]) { return false; }
+        }
+        continue;
+      }
+      // NaN-aware numeric compare.
+      if (typeof av === 'number' && typeof bv === 'number' && isNaN(av) && isNaN(bv)) { continue; }
+      return false;
+    }
+    return true;
+  }
+
+  // Returns the mock's call list, or null if `value` is not a tracked mock.
+  function _mockCalls(value) {
+    if (typeof value !== 'function') { return null; }
+    var st = value._mockState;
+    if (!st) { return null; }
+    return st.calls;
+  }
+
+  function _makeMock(impl) {
+    impl = (typeof impl === 'function') ? impl : function() {};
+    var state = { calls: [], results: [], instances: [] };
+    var returnQueue = [];
+    var returnValue;
+    var hasReturnValue = false;
+    var currentImpl = impl;
+
+    var fn = function() {
+      var args = Array.prototype.slice.call(arguments);
+      state.calls.push(args);
+      state.instances.push(this);
+      try {
+        var result;
+        if (returnQueue.length > 0) {
+          result = returnQueue.shift();
+        } else if (hasReturnValue) {
+          result = returnValue;
+        } else {
+          result = currentImpl.apply(this, args);
+        }
+        state.results.push({ type: 'return', value: result });
+        return result;
+      } catch (err) {
+        state.results.push({ type: 'throw', value: err });
+        throw err;
+      }
+    };
+
+    // Public mock surface (jest-compatible).
+    fn.mock = state;
+    fn._mockState = state;
+
+    fn.mockImplementation = function(newImpl) {
+      if (typeof newImpl === 'function') { currentImpl = newImpl; }
+      return fn;
+    };
+    fn.mockReturnValue = function(val) { returnValue = val; hasReturnValue = true; return fn; };
+    fn.mockReturnValueOnce = function(val) { returnQueue.push(val); return fn; };
+    fn.mockResolvedValue = function(val) {
+      returnValue = Promise.resolve(val);
+      hasReturnValue = true;
+      return fn;
+    };
+    fn.mockResolvedValueOnce = function(val) {
+      returnQueue.push(Promise.resolve(val));
+      return fn;
+    };
+    fn.mockRejectedValue = function(err) {
+      returnValue = Promise.reject(err);
+      hasReturnValue = true;
+      return fn;
+    };
+    fn.mockReset = function() {
+      state.calls = []; state.results = []; state.instances = [];
+      returnQueue = []; hasReturnValue = false; returnValue = undefined;
+      return fn;
+    };
+    fn.mockClear = function() {
+      state.calls = []; state.results = []; state.instances = [];
+      return fn;
+    };
+    fn.getMockName = function() { return 'jest.fn()'; };
+    fn.mockName = function() { return fn; };
+
+    return fn;
+  }
 
   function describeFn(name, fn) {
     _suites.push({ name: name, fn: fn });
@@ -364,7 +621,20 @@ const BUN_TEST_SHIM: &str = r#"
     afterEach: afterEachFn,
     beforeAll: beforeAllFn,
     afterAll: afterAllFn,
-    jest: { fn: function(impl) { return impl || function(){}; }, spyOn: function() { return { mockImplementation: function(){} }; } },
+    // @trace REQ-ENG-006 — jest.fn() returns a call-tracking mock (see _makeMock).
+    jest: {
+      fn: function(impl) { return _makeMock(impl); },
+      spyOn: function(obj, methodName) {
+        if (!obj || typeof obj[methodName] !== 'function') {
+          throw new Error('jest.spyOn requires an object with a function property');
+        }
+        var original = obj[methodName];
+        var mock = _makeMock(original);
+        obj[methodName] = mock;
+        mock.mockRestore = function() { obj[methodName] = original; };
+        return mock;
+      }
+    },
     setDefaultTimeout: function() {},
     skip: function() {},
     todo: function() {},

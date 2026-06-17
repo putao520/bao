@@ -11,6 +11,16 @@ use mozjs::rust::wrappers2::{
 };
 use mozjs::conversions::jsstr_to_string;
 
+/// Maximum byte length of a Buffer.
+///
+/// Matches JSC/V8 typed-array ceiling: SM typed arrays are indexed by uint32,
+/// capping any single buffer at 4 GiB - 1. The current bao Buffer stores each
+/// byte as an own property (`JS_DefineElement`), so anything above a few MiB
+/// would already be pathologically slow — we use the typed-array ceiling as
+/// the hard limit so callers get a clean `RangeError` instead of an OOM/abort
+/// when they pass absurd sizes.
+// @trace REQ-ENG-005 [entity:Buffer]
+pub const MAX_BUFFER_SIZE: usize = (1usize << 32) - 1;
 
 thread_local! {
     static FILE_GLOBALS: RefCell<(Option<String>, Option<String>)> = const { RefCell::new((None, None)) };
@@ -1032,8 +1042,23 @@ unsafe extern "C" fn buffer_alloc(
     let args = CallArgs::from_vp(vp, argc);
     let size = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() { v.to_int32().max(0) as usize } else { 0 }
+        if v.is_int32() { v.to_int32().max(0) as usize } else if v.is_double() { v.to_double().max(0.0) as usize } else { 0 }
     } else { 0 };
+
+    // @trace REQ-ENG-005 [entity:Buffer] — RangeError guard for huge allocations.
+    // Mirrors JSC's MAX_ARRAY_BUFFER_SIZE check: callers that ask for more than
+    // the typed-array ceiling get a synchronous RangeError instead of an OOM
+    // abort or multi-minute hang while we attempt to materialise 64 GiB of
+    // per-byte JS properties.
+    if size > MAX_BUFFER_SIZE {
+        let msg = format!(
+            "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+            MAX_BUFFER_SIZE
+        );
+        let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("Buffer size out of range").unwrap());
+        mozjs::error::throw_range_error(cx, c_msg.as_ref());
+        return false;
+    }
 
     let fill_byte = if argc >= 2 {
         let fill_val = *args.get(1).ptr;
@@ -1105,7 +1130,31 @@ unsafe extern "C" fn buffer_concat(
                     JS_GetProperty(cx, buf_h, c"length".as_ptr(), MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData, ptr: &mut blen,
                     });
-                    let b_len = if blen.is_int32() { blen.to_int32() as usize } else { 0 };
+                    // Length can exceed int32 (>2 GiB); accept double as well so
+                    // the ceiling check below fires for absurdly large buffers
+                    // instead of silently truncating b_len to 0.
+                    let b_len: usize = if blen.is_int32() {
+                        blen.to_int32().max(0) as usize
+                    } else if blen.is_double() {
+                        let d = blen.to_double();
+                        if d.is_finite() && d > 0.0 { d as usize } else { 0 }
+                    } else {
+                        0
+                    };
+                    // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
+                    // overflow MAX_BUFFER_SIZE. `Buffer.concat([huge, huge, ...])` is
+                    // the common abuse vector (bun/test/js/node/buffer-concat.test.ts
+                    // allocates 1024 × 64 MiB), so we bail out as soon as the running
+                    // total crosses the ceiling rather than waiting for OOM.
+                    if b_len > MAX_BUFFER_SIZE || all_bytes.len().saturating_add(b_len) > MAX_BUFFER_SIZE {
+                        let msg = format!(
+                            "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+                            MAX_BUFFER_SIZE
+                        );
+                        let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap());
+                        mozjs::error::throw_range_error(cx, c_msg.as_ref());
+                        return false;
+                    }
                     for j in 0..b_len {
                         let mut byte_val = UndefinedValue();
                         JS_GetElement(cx, buf_h, j as u32, MutableHandle::<Value> {
@@ -2181,5 +2230,20 @@ mod tests {
                 installer
             );
         }
+    }
+
+    /// MAX_BUFFER_SIZE matches the typed-array ceiling (4 GiB - 1). Above this
+    /// Buffer.allocUnsafe / Buffer.concat must throw RangeError rather than
+    /// attempting to allocate (which would OOM or hang on the per-byte property
+    /// storage used by the bao Buffer implementation).
+    // @trace REQ-ENG-005 [entity:Buffer]
+    #[test]
+    fn max_buffer_size_matches_typed_array_ceiling() {
+        assert_eq!(MAX_BUFFER_SIZE, (1usize << 32) - 1);
+        // Sanity: 64 MiB fits (the bun buffer-concat test allocates one).
+        assert!(1024 * 1024 * 64 < MAX_BUFFER_SIZE);
+        // 64 GiB exceeds the ceiling (the bun buffer-concat test does this via
+        // concat-with-1024-elements).
+        assert!((1024usize * 1024 * 1024 * 64) > MAX_BUFFER_SIZE);
     }
 }

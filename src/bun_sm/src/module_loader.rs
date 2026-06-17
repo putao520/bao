@@ -52,6 +52,11 @@ thread_local! {
     /// Property name format: `__gc_mod_{cache_key}`.
     static MODULE_CACHE: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
     static CURRENT_DIR: RefCell<::std::option::Option<::std::path::PathBuf>> = const { RefCell::new(None) };
+    /// Absolute filesystem path of the entry module (the file passed to
+    /// `bao test path` / `bao run path`). Used by host_populate_import_meta
+    /// to set `import.meta.main = true` on the entry module.
+    /// @trace REQ-ENG-006 [entity:JSContext]
+    static ENTRY_MODULE: RefCell<::std::option::Option<::std::path::PathBuf>> = const { RefCell::new(None) };
     static EXTERNAL_RESOLVER: RefCell<Option<ResolverFn>> = const { RefCell::new(None) };
     static JOB_QUEUE_DRAIN: RefCell<Option<JobQueueDrainFn>> = const { RefCell::new(None) };
 }
@@ -349,6 +354,9 @@ impl ModuleLoader {
             .or_else(|| ::std::env::current_dir().ok());
 
         CURRENT_DIR.with(|d| *d.borrow_mut() = base_dir.clone());
+        // @trace REQ-ENG-006 [entity:JSContext] — entry module path is used to
+        // set import.meta.main = true on this module (Bun semantics).
+        ENTRY_MODULE.with(|e| *e.borrow_mut() = Some(abs_filename.clone()));
 
         let options = RealmOptions::default();
 
@@ -456,6 +464,9 @@ impl ModuleLoader {
             .or_else(|| ::std::env::current_dir().ok());
 
         CURRENT_DIR.with(|d| *d.borrow_mut() = base_dir.clone());
+        // @trace REQ-ENG-006 [entity:JSContext] — entry module path is used to
+        // set import.meta.main = true on this module (Bun semantics).
+        ENTRY_MODULE.with(|e| *e.borrow_mut() = Some(abs_filename.clone()));
 
         let options = RealmOptions::default();
 
@@ -800,34 +811,93 @@ unsafe extern "C" fn host_populate_import_meta(
     meta_object: Handle<*mut JSObject>,
 ) -> bool {
     unsafe {
-        let url_str = if private_value.is_string() {
-            let specifier = mozjs::conversions::jsstr_to_string(
+        // @trace REQ-ENG-006 [entity:JSContext] — Bun's import.meta extensions.
+        // Bun exposes dir/path/file/main on import.meta (in addition to url).
+        // - url:   file:// URL of this module (always present)
+        // - path:  absolute filesystem path (__filename equivalent)
+        // - dir:   parent directory of path (__dirname equivalent)
+        // - file:  just the file name component of path
+        // - main:  true if this module is the entry point
+        let specifier = if private_value.is_string() {
+            mozjs::conversions::jsstr_to_string(
                 raw_cx,
                 NonNull::new(private_value.to_string()).expect("valid private value"),
-            );
-            let resolved = if specifier.starts_with("file://") {
-                specifier
-            } else {
-                let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
-                let path = resolve_specifier(&specifier, base_dir.as_deref());
-                match path {
-                    Some(p) => format!("file://{}", p.to_string_lossy()),
-                    None => format!("file://{}", specifier),
-                }
-            };
-            let Ok(c_url) = CString::new(resolved.as_str()) else {
-                return false;
-            };
-            JS_NewStringCopyZ(raw_cx, c_url.as_ptr())
+            )
         } else {
-            JS_NewStringCopyZ(raw_cx, c"file://".as_ptr())
+            String::new()
         };
-        if url_str.is_null() {
+        let (resolved_url, fs_path): (String, Option<PathBuf>) = if specifier.starts_with("file://") {
+            // Already a file URL — derive fs path by stripping the scheme.
+            let stripped = specifier.strip_prefix("file://").unwrap_or(&specifier).to_string();
+            let p = PathBuf::from(&stripped);
+            (specifier.clone(), Some(p))
+        } else if !specifier.is_empty() {
+            let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
+            match resolve_specifier(&specifier, base_dir.as_deref()) {
+                Some(p) => {
+                    let url = format!("file://{}", p.to_string_lossy());
+                    (url, Some(p))
+                }
+                None => (format!("file://{}", specifier), None),
+            }
+        } else {
+            ("file://".to_string(), None)
+        };
+
+        // url — always defined.
+        let Ok(c_url) = CString::new(resolved_url.as_str()) else { return false; };
+        let url_js = JS_NewStringCopyZ(raw_cx, c_url.as_ptr());
+        if url_js.is_null() {
             return false;
         }
-        let val = mozjs::jsval::StringValue(&*url_str);
-        let handle_val = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-        JS_DefineProperty(raw_cx, meta_object, c"url".as_ptr(), handle_val, JSPROP_ENUMERATE as u32)
+        let url_val = mozjs::jsval::StringValue(&*url_js);
+        let url_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &url_val };
+        if !JS_DefineProperty(raw_cx, meta_object, c"url".as_ptr(), url_h, JSPROP_ENUMERATE as u32) {
+            return false;
+        }
+
+        // Derive Bun-style path/dir/file from the filesystem path. If we could
+        // not resolve a real path (synthetic/builtin module), leave them as
+        // empty strings — Bun does the same for non-file modules.
+        let (path_str, dir_str, file_str) = match &fs_path {
+            Some(p) => {
+                let path_s = p.to_string_lossy().into_owned();
+                let dir_s = p.parent()
+                    .map(|d| d.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let file_s = p.file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                (path_s, dir_s, file_s)
+            }
+            None => (String::new(), String::new(), String::new()),
+        };
+
+        let define_str_prop = |name: &::std::ffi::CStr, value: &str| -> bool {
+            let cstr = ::std::ffi::CString::new(value).unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
+            let js = JS_NewStringCopyZ(raw_cx, cstr.as_ptr());
+            if js.is_null() {
+                return false;
+            }
+            let v = mozjs::jsval::StringValue(&*js);
+            let h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
+            JS_DefineProperty(raw_cx, meta_object, name.as_ptr(), h, JSPROP_ENUMERATE as u32)
+        };
+
+        if !define_str_prop(c"path".as_ref(), &path_str) { return false; }
+        if !define_str_prop(c"dir".as_ref(), &dir_str) { return false; }
+        if !define_str_prop(c"file".as_ref(), &file_str) { return false; }
+
+        // main — true if this module's absolute path matches the entry path.
+        // The entry is tracked in CURRENT_DIR-adjacent ENTRY_MODULE thread-local.
+        let is_main = ENTRY_MODULE.with(|e| {
+            e.borrow().as_ref()
+                .and_then(|entry| fs_path.as_ref().map(|p| fs::canonicalize(p).ok() == fs::canonicalize(entry).ok()))
+                .unwrap_or(false)
+        });
+        let main_val = mozjs::jsval::BooleanValue(is_main);
+        let main_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &main_val };
+        JS_DefineProperty(raw_cx, meta_object, c"main".as_ptr(), main_h, JSPROP_ENUMERATE as u32)
     }
 }
 
@@ -1297,6 +1367,13 @@ fn strip_inline_types(line: &str) -> String {
     // Remove generic type parameters: `<T>`, `<T extends U>`, etc.
     result = strip_generics(&result);
 
+    // Remove call-site generic type arguments: `id<number>(...)`,
+    // `obj.method<T>(...)`, `Map<string, number>(...)`. Must run AFTER
+    // strip_generics so function/class declarations are already stripped —
+    // otherwise the definition's `<T>` would also match here.
+    // @trace REQ-ENG-006 — TS generic call-site support.
+    result = strip_call_site_generics(&result);
+
     // Remove `implements Type` from class declarations
     result = strip_implements(&result);
 
@@ -1304,6 +1381,140 @@ fn strip_inline_types(line: &str) -> String {
     result = strip_non_null_assertion(&result);
 
     result
+}
+
+/// Strip call-site generic type arguments like `id<number>(args)`.
+///
+/// Scans for the pattern `<TypeList>(` where `<` is immediately preceded by
+/// a JS identifier character (so we skip relational `<` like `a < b`) and
+/// `>` is immediately followed by `(`. This avoids stripping comparison
+/// operators (`a < b`, `if (x < 2)`) and JSX-like tags.
+///
+/// `<TypeList>` may contain nested `<>`, `,`, identifiers, `extends`, `=`,
+/// string literals, and `?`/`&`/`|` (constraint & union syntax). We track
+/// string state and bracket depth so those don't confuse the matcher.
+fn strip_call_site_generics(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let len = chars.len();
+    let mut result = String::with_capacity(s.len());
+    let mut i = 0;
+
+    while i < len {
+        let c = chars[i];
+
+        // Skip string literals (don't match inside them).
+        if c == '\'' || c == '"' || c == '`' {
+            let delim = c;
+            result.push(c);
+            i += 1;
+            while i < len {
+                let cc = chars[i];
+                result.push(cc);
+                i += 1;
+                if cc == '\\' && i < len {
+                    // Escape — copy next char verbatim.
+                    result.push(chars[i]);
+                    i += 1;
+                    continue;
+                }
+                if cc == delim {
+                    break;
+                }
+            }
+            continue;
+        }
+
+        // Skip line comments (// ...).
+        if c == '/' && i + 1 < len && chars[i + 1] == '/' {
+            while i < len && chars[i] != '\n' {
+                result.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+        // Skip block comments (/* ... */).
+        if c == '/' && i + 1 < len && chars[i + 1] == '*' {
+            result.push(chars[i]); result.push(chars[i + 1]);
+            i += 2;
+            while i + 1 < len && !(chars[i] == '*' && chars[i + 1] == '/') {
+                result.push(chars[i]);
+                i += 1;
+            }
+            if i + 1 < len {
+                result.push(chars[i]); result.push(chars[i + 1]);
+                i += 2;
+            }
+            continue;
+        }
+
+        // Candidate generic arg list: identifier-char before `<`, balanced
+        // `<>`, and `(` immediately after closing `>`.
+        if c == '<' && !result.is_empty() {
+            let last = result.chars().last().unwrap();
+            if last.is_ascii_alphanumeric() || last == '_' || last == '.' || last == ')' || last == ']' {
+                // Try to match a balanced <...> followed by `(`.
+                if let Some(close_rel) = find_matching_gt(&chars, i) {
+                    let after_close = close_rel + 1;
+                    // Skip whitespace between `>` and `(`.
+                    let mut j = after_close;
+                    while j < len && (chars[j] == ' ' || chars[j] == '\t') { j += 1; }
+                    if j < len && chars[j] == '(' {
+                        // Confirmed call-site generic. Drop the `<...>` segment
+                        // (don't push it), advance past `>`.
+                        i = after_close;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        result.push(c);
+        i += 1;
+    }
+
+    result
+}
+
+/// Given chars[start] == '<', return the relative index of the matching '>'
+/// that closes the generic arg list, or None if unbalanced / contains a
+/// character that proves this isn't a generic list (newline-terminated, etc.).
+fn find_matching_gt(chars: &[char], start: usize) -> Option<usize> {
+    let len = chars.len();
+    let mut depth: i32 = 0;
+    let mut i = start;
+    let mut in_str: Option<char> = None;
+    while i < len {
+        let c = chars[i];
+        if let Some(delim) = in_str {
+            if c == '\\' {
+                i += 2;
+                continue;
+            }
+            if c == delim {
+                in_str = None;
+            }
+            i += 1;
+            continue;
+        }
+        match c {
+            '\'' | '"' | '`' => { in_str = Some(c); }
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            // Newlines inside `<...>` almost never appear in call-site
+            // generics (and never in single-line strip context). Bail out to
+            // avoid eating multi-line comparisons.
+            '\n' if depth > 0 => return None,
+            '{' | ';' => return None,
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Strip `as Type` assertions from a string.
@@ -1360,7 +1571,11 @@ fn strip_return_types(s: &str) -> String {
                 let type_str = &result[after_paren..end];
                 let trimmed_type = type_str.trim();
                 if !trimmed_type.is_empty() && !trimmed_type.starts_with("//") && !trimmed_type.starts_with("/*") {
-                    result = format!("{}{}", &result[..pos + 2], &result[end..]);
+                    // Keep everything up to and including `)` (pos+1), drop the
+                    // `: ReturnType` segment, resume at `end` (`{`/`;`/`=>`).
+                    // Previously this used `pos+2` which leaked a stray `:`
+                    // and produced `):{` instead of `){`.
+                    result = format!("{}{}", &result[..pos + 1], &result[end..]);
                     continue;
                 }
             }
@@ -2005,6 +2220,56 @@ mod tests {
         let input = "function identity<T>(arg: T): T { return arg; }";
         let output = strip_ts_impl(input);
         assert!(output.contains("function identity"), "output was: {}", output);
+        assert!(!output.contains("<T>"), "generic decl not stripped, output was: {}", output);
+    }
+
+    #[test]
+    fn strip_generic_call_site() {
+        // id<number>(42) — call-site type argument must be removed so SM does
+        // not parse `<number>` as a JSX/cast.
+        let input = "function id<T>(x: T): T { return x; }\nconst result = id<number>(42);";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("id<number>"), "call-site generic not stripped, output was: {}", output);
+        assert!(output.contains("id(42)"), "call site mangled, output was: {}", output);
+    }
+
+    #[test]
+    fn strip_generic_call_site_multi() {
+        let input = "const m = map<string, number>(arr);";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("<string, number>"), "multi-arg generic not stripped, output was: {}", output);
+    }
+
+    #[test]
+    fn strip_generic_call_site_preserves_comparison() {
+        // `a < b` must NOT be stripped even though it matches `<...>` shape-ish.
+        let input = "const ok = a < b && b > c;";
+        let output = strip_ts_impl(input);
+        assert!(output.contains("a < b"), "comparison stripped, output was: {}", output);
+        assert!(output.contains("b > c"), "comparison stripped, output was: {}", output);
+    }
+
+    #[test]
+    fn strip_generic_call_site_preserves_if_less_than() {
+        let input = "if (x < 10) { return; }";
+        let output = strip_ts_impl(input);
+        assert!(output.contains("x < 10"), "if comparison stripped, output was: {}", output);
+    }
+
+    #[test]
+    fn strip_generic_call_site_chained() {
+        let input = "const r = obj.method<number>(42);";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("<number>"), "method generic not stripped, output was: {}", output);
+        assert!(output.contains("obj.method(42)"), "output was: {}", output);
+    }
+
+    #[test]
+    fn strip_generic_call_site_nested() {
+        let input = "const r = foo<Array<number>>(x);";
+        let output = strip_ts_impl(input);
+        assert!(!output.contains("<Array<number>>"), "nested generic not stripped, output was: {}", output);
+        assert!(output.contains("foo(x)"), "output was: {}", output);
     }
 
     #[test]
