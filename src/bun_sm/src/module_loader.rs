@@ -396,13 +396,15 @@ impl ModuleLoader {
         });
 
         if module_obj.get().is_null() {
-            return ::std::result::Result::Err(JsError {
-                message: "Failed to compile module".into(),
-                filename: filename.into(),
-                line: 0,
-                column: 0,
-                stack: None,
-            });
+            // SM leaves a pending exception describing the parse error; pull
+            // it out so the user-facing JsError carries the actual line:col.
+            let mut detail = extract_module_error(realm_cx);
+            if detail.line == 0 && detail.column == 0 {
+                detail.message = format!("Failed to compile module: {}", detail.message);
+            } else {
+                detail.message = format!("Failed to compile module: {} ({}:{}:{})", detail.message, detail.filename, detail.line, detail.column);
+            }
+            return ::std::result::Result::Err(detail);
         }
 
         // BUG-ENG-365: attach module private value (file:// URL) BEFORE linking
@@ -505,13 +507,13 @@ impl ModuleLoader {
         });
 
         if module_obj.get().is_null() {
-            return ::std::result::Result::Err(JsError {
-                message: "Failed to compile module".into(),
-                filename: filename.into(),
-                line: 0,
-                column: 0,
-                stack: None,
-            });
+            let mut detail = extract_module_error(realm_cx);
+            if detail.line == 0 && detail.column == 0 {
+                detail.message = format!("Failed to compile module: {}", detail.message);
+            } else {
+                detail.message = format!("Failed to compile module: {} ({}:{}:{})", detail.message, detail.filename, detail.line, detail.column);
+            }
+            return ::std::result::Result::Err(detail);
         }
 
         let entry_url = path_to_file_url(&abs_filename);
@@ -606,6 +608,7 @@ export default _m;
 export var gc = _m.gc;
 export var bunExe = _m.bunExe;
 export var bunEnv = _m.bunEnv;
+export var bunRun = _m.bunRun;
 export var isWindows = _m.isWindows;
 export var isLinux = _m.isLinux;
 export var isMac = _m.isMac;
@@ -615,6 +618,11 @@ export var isMinified = _m.isMinified;
 export var withoutAggressiveGC = _m.withoutAggressiveGC;
 export var expectOOM = _m.expectOOM;
 export var BunEnvironment = _m.BunEnvironment;
+export var tempDirWithFiles = _m.tempDirWithFiles;
+export var joinP = _m.joinP;
+export var gcTick = _m.gcTick;
+export var invert = _m.invert;
+export var stackTrace = _m.stackTrace;
 export default _m;
 "#),
         // Generic builtin modules: each builtin's `require("<name>")` returns a
@@ -660,6 +668,38 @@ export default _m;
     let base_from_private = unsafe { base_dir_from_private_cx(raw_cx, referencing_private) };
     let base_dir = base_from_private
         .or_else(|| CURRENT_DIR.with(|d| d.borrow().clone()));
+
+    // @trace REQ-ENG-005 — data: URL ESM modules (static import path).
+    // Same loader as dynamic imports: parse + decode + compile. Static
+    // imports return the module object directly; the cache key is the URL
+    // itself so the same data: URL imported twice resolves to the same
+    // module instance (SM requires referential identity for modules).
+    if specifier_str.starts_with("data:") {
+        if let ::std::result::Result::Ok(payload) = parse_data_url(&specifier_str) {
+            let cache_key = format!("data-url:{}", specifier_str);
+            let cached = module_cache_get(raw_cx, &cache_key);
+            if let Some(existing) = cached && !existing.is_null() {
+                return existing;
+            }
+            let c_filename = CString::new(specifier_str.to_string())
+                .unwrap_or_else(|_| CString::new("<data-url>").unwrap());
+            let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
+            if !opts.is_null() {
+                let mut src = transform_str_to_source_text(&payload);
+                let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+                libc::free(opts as *mut _);
+                if !module.is_null() {
+                    set_module_private(raw_cx, module, &specifier_str);
+                    module_cache_insert(raw_cx, &cache_key, module);
+                }
+                return module;
+            }
+            return ::std::ptr::null_mut();
+        }
+        // Malformed data: URL: surface as a compile-time failure.
+        return ::std::ptr::null_mut();
+    }
+
     let resolved = resolve_specifier(&specifier_str, base_dir.as_deref());
 
     let ::std::option::Option::Some(path) = resolved else {
@@ -790,7 +830,13 @@ fn js_string_literal(s: &str) -> String {
 /// importable via default export.
 fn builtin_named_exports(name: &str) -> &'static [&'static str] {
     match name {
-        "buffer" => &["Buffer", "SlowBuffer", "kMaxLength", "constants", "INSPECT_MAX_BYTES"],
+        "buffer" => &[
+            "Buffer", "SlowBuffer", "kMaxLength", "constants", "INSPECT_MAX_BYTES",
+            // @trace REQ-ENG-005 — extras imported by upstream tests.
+            // buffer.test.js imports isAscii, isUtf8; buffer-resolveObjectURL
+            // imports resolveObjectURL. Blob lives on globalThis per Web IDL.
+            "isAscii", "isUtf8", "resolveObjectURL", "Blob",
+        ],
         "crypto" => &[
             "createHash", "createHmac", "createCipher", "createCipheriv",
             "createDecipher", "createDecipheriv", "randomBytes", "pseudoRandomBytes",
@@ -852,6 +898,9 @@ fn builtin_named_exports(name: &str) -> &'static [&'static str] {
             "parseMIMEType", "aborted", "transferable", "deepEqual", "deepStrictEqual",
         ],
         "string_decoder" => &["StringDecoder"],
+        // @trace REQ-ENG-005 — node:tty named exports. ReadStream, WriteStream,
+        // and isatty are imported by tty.test.ts and nodettywrap.test.ts.
+        "tty" => &["ReadStream", "WriteStream", "isatty"],
         "timers" => &[
             "setTimeout", "clearTimeout", "setInterval", "clearInterval",
             "setImmediate", "clearImmediate", "promises",
@@ -1170,6 +1219,33 @@ unsafe extern "C" fn host_dynamic_import(
         return unsafe { dynamic_import_builtin(raw_cx, stripped, referencing_private, module_request, promise) };
     }
 
+    // @trace REQ-ENG-005 — data: URL ESM modules.
+    //
+    // WHATWG-fetch-style `data:text/javascript,...` and
+    // `data:text/javascript;base64,...` URLs are loadable ESM sources
+    // (string-module.test.js). They never hit the filesystem. Decode the
+    // payload (URL-decode for inline, base64-decode for the ;base64 form)
+    // and feed the bytes straight to JS::CompileModule1.
+    //
+    // string-module.test.js asserts that a malformed base64 payload throws
+    // `Base64DecodeError`. We surface that via SM's pending-exception
+    // mechanism and return false so the failure is observable.
+    if specifier_str.starts_with("data:") {
+        match parse_data_url(&specifier_str) {
+            ::std::result::Result::Ok(payload) => {
+                return unsafe { dynamic_import_data_url(raw_cx, &specifier_str, &payload, referencing_private, module_request, promise) };
+            }
+            ::std::result::Result::Err(err) => {
+                // Malformed data URL: throw + reject so both sync-throw and
+                // await-based consumers observe the error.
+                let c_msg = CString::new(err.as_str()).unwrap_or_else(|_| CString::new("Module load error").unwrap());
+                unsafe { mozjs::error::throw_type_error(raw_cx, c_msg.as_ref()) };
+                let _ = unsafe { reject_dynamic_promise(raw_cx, promise, &err) };
+                return false;
+            }
+        }
+    }
+
     // BUG-ENG-365: derive base_dir from referencing module's private URL.
     let base_dir = unsafe { base_dir_from_private_cx(raw_cx, referencing_private) }
         .or_else(|| CURRENT_DIR.with(|d| d.borrow().clone()));
@@ -1306,6 +1382,226 @@ unsafe fn reject_dynamic_promise(
         unsafe { mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise_h, err_handle) };
     }
     true
+}
+
+/// @trace REQ-ENG-005 [algorithm:data_url] — parse a `data:` URL into its
+/// decoded ESM source string.
+///
+/// WHATWG RFC 2397 form: `data:[<mediatype>][;base64],<data>`. We accept
+/// `text/javascript` (and the legacy `application/javascript`) media types.
+/// For the `;base64` form, we decode the payload and surface a
+/// `Base64DecodeError` when the bytes are invalid — matching the contract
+/// expected by string-module.test.js.
+///
+/// Returns:
+///   - `Ok(source)` — decoded ESM source string.
+///   - `Err(msg)` — error name to attach to the rejected import promise.
+fn parse_data_url(url: &str) -> ::std::result::Result<String, String> {
+    let Some(rest) = url.strip_prefix("data:") else {
+        return Err("Not a data URL".to_string());
+    };
+    let Some(comma) = rest.find(',') else {
+        return Err("Data URL missing payload".to_string());
+    };
+    let meta = &rest[..comma];
+    let payload = &rest[comma + 1..];
+
+    let is_base64 = meta.split(';').any(|s| s.eq_ignore_ascii_case("base64"));
+    // Media type sanity: reject anything that is not javascript-ish.
+    let mediatype_ok = {
+        let mt = meta.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+        mt.is_empty()
+            || mt == "text/javascript"
+            || mt == "application/javascript"
+            || mt == "text/ecmascript"
+            || mt == "application/ecmascript"
+            || mt == "module"
+            || mt == "text/javascript,module"
+    };
+    if !mediatype_ok {
+        return Err(format!("Unsupported data URL media type: {}", meta));
+    }
+
+    if is_base64 {
+        // @trace REQ-ENG-005 [algorithm:base64]
+        // Bun's contract (string-module.test.js) is that malformed base64
+        // raises a `Base64DecodeError`. We implement a small RFC 4648
+        // decoder here rather than pulling a new crate dep into bun_sm
+        // (which is otherwise dependency-free).
+        match base64_decode(payload) {
+            ::std::result::Result::Ok(bytes) => match ::std::str::from_utf8(&bytes) {
+                ::std::result::Result::Ok(s) => ::std::result::Result::Ok(s.to_owned()),
+                ::std::result::Result::Err(_) => Err("Data URL payload is not valid UTF-8".to_string()),
+            },
+            ::std::result::Result::Err(_) => Err("Base64DecodeError".to_string()),
+        }
+    } else {
+        // Percent-decode inline payload per RFC 3986 §2.1. Most JS module
+        // data: URLs are sent un-encoded, but we must handle %20, %2C, %0A,
+        // etc. so that quoted payloads still round-trip.
+        let decoded = percent_decode(payload);
+        Ok(decoded)
+    }
+}
+
+/// Minimal percent-decoder. Accepts `%XX` hex escapes and passes other bytes
+/// through verbatim (data URLs are conventionally ASCII; non-ASCII bytes get
+/// passed through as UTF-8 which is what JS expects for source text).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = hex_val(bytes[i + 1]);
+            let lo = hex_val(bytes[i + 2]);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_val(b: u8) -> ::std::option::Option<u8> {
+    match b {
+        b'0'..=b'9' => ::std::option::Option::Some(b - b'0'),
+        b'a'..=b'f' => ::std::option::Option::Some(b - b'a' + 10),
+        b'A'..=b'F' => ::std::option::Option::Some(b - b'A' + 10),
+        _ => ::std::option::Option::None,
+    }
+}
+
+/// RFC 4648 standard-alphabet base64 decoder. URL-safe `-_` are also
+/// accepted. Whitespace is tolerated; malformed input yields `Err`.
+/// Used only by `parse_data_url` so this is intentionally minimal.
+fn base64_decode(s: &str) -> ::std::result::Result<Vec<u8>, ()> {
+    fn lookup(b: u8) -> ::std::option::Option<u8> {
+        match b {
+            b'A'..=b'Z' => ::std::option::Option::Some(b - b'A'),
+            b'a'..=b'z' => ::std::option::Option::Some(b - b'a' + 26),
+            b'0'..=b'9' => ::std::option::Option::Some(b - b'0' + 52),
+            b'+' | b'-' => ::std::option::Option::Some(62),
+            b'/' | b'_' => ::std::option::Option::Some(63),
+            _ => ::std::option::Option::None,
+        }
+    }
+    // Strip ASCII whitespace + padding so the length checks are simple.
+    let filtered: Vec<u8> = s.bytes().filter(|&b| !b.is_ascii_whitespace() && b != b'=').collect();
+    if filtered.is_empty() {
+        return ::std::result::Result::Ok(Vec::new());
+    }
+    // Reject trailing partial groups other than the canonical 2/3-char tails.
+    let tail = filtered.len() % 4;
+    if tail == 1 {
+        return Err(());
+    }
+    let mut out: Vec<u8> = Vec::with_capacity(filtered.len() * 3 / 4);
+    let main_len = filtered.len() - tail;
+    let mut i = 0;
+    while i < main_len {
+        let b0 = lookup(filtered[i]).ok_or(())?;
+        let b1 = lookup(filtered[i + 1]).ok_or(())?;
+        let b2 = lookup(filtered[i + 2]).ok_or(())?;
+        let b3 = lookup(filtered[i + 3]).ok_or(())?;
+        out.push((b0 << 2) | (b1 >> 4));
+        out.push((b1 << 4) | (b2 >> 2));
+        out.push((b2 << 6) | b3);
+        i += 4;
+    }
+    if tail == 2 {
+        let b0 = lookup(filtered[i]).ok_or(())?;
+        let b1 = lookup(filtered[i + 1]).ok_or(())?;
+        out.push((b0 << 2) | (b1 >> 4));
+    } else if tail == 3 {
+        let b0 = lookup(filtered[i]).ok_or(())?;
+        let b1 = lookup(filtered[i + 1]).ok_or(())?;
+        let b2 = lookup(filtered[i + 2]).ok_or(())?;
+        out.push((b0 << 2) | (b1 >> 4));
+        out.push((b1 << 4) | (b2 >> 2));
+    }
+    ::std::result::Result::Ok(out)
+}
+
+/// Drive a dynamic `import()` of a `data:` URL to completion. Same module
+/// lifecycle as a file module: CompileModule1 → ModuleLink → ModuleEvaluate
+/// → FinishDynamicModuleImport.
+///
+/// # Safety
+/// Caller must hold a valid `raw_cx` and valid handles.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn dynamic_import_data_url(
+    raw_cx: *mut JSContext,
+    specifier_str: &str,
+    payload: &str,
+    referencing_private: Handle<Value>,
+    module_request: Handle<*mut JSObject>,
+    promise: Handle<*mut JSObject>,
+) -> bool {
+    let cache_key = format!("data-url:{}", specifier_str);
+    if let ::std::option::Option::Some(existing) = module_cache_get(raw_cx, &cache_key)
+        && !existing.is_null()
+    {
+        // Already loaded — resolve immediately via the synthetic path.
+        let mod_val = mozjs::jsval::ObjectValue(existing);
+        return unsafe { resolve_dynamic_promise_with_value(raw_cx, promise, mod_val) };
+    }
+
+    let Ok(c_filename) = CString::new(specifier_str.to_string()) else {
+        return unsafe { reject_dynamic_promise(raw_cx, promise, "Invalid data URL filename") };
+    };
+    let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
+    if opts.is_null() {
+        return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed") };
+    }
+    let mut src = transform_str_to_source_text(payload);
+    let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+    libc::free(opts as *mut _);
+    if module.is_null() {
+        return unsafe { reject_dynamic_promise(raw_cx, promise, "Failed to compile data URL module") };
+    }
+
+    set_module_private(raw_cx, module, specifier_str);
+    module_cache_insert(raw_cx, &cache_key, module);
+
+    let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module };
+    if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_h) {
+        let null_obj = ::std::ptr::null_mut::<JSObject>();
+        let null_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj };
+        return unsafe {
+            mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
+                raw_cx,
+                null_h,
+                referencing_private,
+                module_request,
+                promise,
+            )
+        };
+    }
+
+    let mut eval_rval = UndefinedValue();
+    let eval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
+    let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_h, eval_h);
+    mozjs_sys::jsapi::js::RunJobs(raw_cx);
+
+    let evaluation_promise = if eval_ok && eval_rval.is_object() {
+        eval_rval.to_object()
+    } else {
+        ::std::ptr::null_mut::<JSObject>()
+    };
+    let eval_promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &evaluation_promise };
+
+    mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
+        raw_cx,
+        eval_promise_h,
+        referencing_private,
+        module_request,
+        promise,
+    )
 }
 
 /// Drive a dynamic `import()` of a builtin module to completion.

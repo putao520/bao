@@ -987,7 +987,51 @@ unsafe extern "C" fn buffer_from(
             // bun_base64 doesn't expose url-safe-decode directly in the public API;
             // strip padding and fall back to lenient decoding via the standard decoder.
             bun_base64::decode_alloc(s.as_bytes()).unwrap_or_default()
+        } else if encoding == "utf-16le" || encoding == "ucs2" || encoding == "ucs-2" || encoding == "utf16le" {
+            // @trace REQ-ENG-005 [algorithm:utf-16le]
+            // Node.js semantics: encode each UTF-16 code unit as little-endian
+            // 2 bytes. Rust strings are UTF-8, so expand BMP chars to 2 bytes
+            // (code units) and surrogate pairs (U+10000+) to 4 bytes.
+            let mut out: Vec<u8> = Vec::with_capacity(s.len() * 2);
+            for c in s.chars() {
+                let code = c as u32;
+                if code <= 0xFFFF {
+                    out.extend_from_slice(&(code as u16).to_le_bytes());
+                } else {
+                    // Surrogate pair
+                    let v = code - 0x10000;
+                    let hi = 0xD800 + (v >> 10) as u16;
+                    let lo = 0xDC00 + (v & 0x3FF) as u16;
+                    out.extend_from_slice(&hi.to_le_bytes());
+                    out.extend_from_slice(&lo.to_le_bytes());
+                }
+            }
+            out
+        } else if encoding == "utf-16be" || encoding == "utf16be" || encoding == "ucs2be" || encoding == "ucs-2be" {
+            let mut out: Vec<u8> = Vec::with_capacity(s.len() * 2);
+            for c in s.chars() {
+                let code = c as u32;
+                if code <= 0xFFFF {
+                    out.extend_from_slice(&(code as u16).to_be_bytes());
+                } else {
+                    let v = code - 0x10000;
+                    let hi = 0xD800 + (v >> 10) as u16;
+                    let lo = 0xDC00 + (v & 0x3FF) as u16;
+                    out.extend_from_slice(&hi.to_be_bytes());
+                    out.extend_from_slice(&lo.to_be_bytes());
+                }
+            }
+            out
+        } else if encoding == "latin1" || encoding == "binary" {
+            // Latin1: each char clamped to 0-255 (one byte).
+            s.chars().map(|c| (c as u32 & 0xFF) as u8).collect::<Vec<u8>>()
+        } else if encoding == "ascii" {
+            // ASCII: 7-bit, masked.
+            s.chars().map(|c| (c as u32 & 0x7F) as u8).collect::<Vec<u8>>()
         } else {
+            // Default: UTF-8 (Node.js semantics for the unspecified / "utf8"
+            // / "utf-8" / "" cases). `s.as_bytes()` *is* UTF-8 because Rust
+            // strings are UTF-8 — no extra work needed.
             s.as_bytes().to_vec()
         };
         create_buffer_from_bytes(cx, &args, &bytes)
@@ -1338,66 +1382,118 @@ unsafe extern "C" fn buffer_concat(
         0
     };
 
-    // Two-pass concat:
-    //   1) Walk the list once, resolving each element's length via the SM
-    //      typed-array byte-length accessor (O(1)). Abort the whole call with
-    //      RangeError if the running total would exceed MAX_BUFFER_SIZE.
-    //   2) Allocate the output once and `memcpy` each element's bytes into it
-    //      via the raw typed-array data pointer.
+    // @trace REQ-ENG-005 [algorithm:buffer_concat] — TOCTOU-safe concat.
     //
-    // The previous per-element `JS_GetElement` loop was the root cause of the
-    // `Buffer.allocUnsafe(64 MiB)` hang: even a single such buffer cost 64 M
-    // API round-trips, and `Buffer.concat([huge, huge, ...])` was effectively
-    // a denial-of-service on the JS engine. The two-pass + memcpy version is
-    // O(sum of bytes) regardless of how many elements there are.
-    let mut element_lengths: Vec<usize> = Vec::with_capacity(list_len);
-    let mut total: usize = 0;
+    // bun/test/js/node/buffer-concat.test.ts exercises a class of bugs where
+    // a user-defined getter on the input array detaches or resizes a
+    // previously-read buffer via ArrayBuffer.prototype.transfer() /
+    // .resize(). Bun's contract is:
+    //   - If a buffer's backing store is detached by a later getter,
+    //     Buffer.concat throws TypeError (it must not memcpy from a freed
+    //     pointer, nor expose uninitialized heap).
+    //   - If a resizable buffer shrinks during iteration, the output uses
+    //     the *final* (post-getter) length, never the pre-getter length.
+    //
+    // To meet both requirements we run *all* getters in a first sweep
+    // (just reading each element via JS_GetElement — this is what triggers
+    // any user-defined getter), then re-read every element's *current*
+    // length/data in a second sweep. The post-getter state is what we use
+    // for sizing and copying; a typed-array view whose data pointer went
+    // null between sweeps was detached, and we throw TypeError.
+    #[derive(Clone, Copy)]
+    struct ConcatEntry {
+        obj: *mut JSObject,
+        is_view: bool,
+    }
+    let mut entries: Vec<ConcatEntry> = Vec::with_capacity(list_len);
     for i in 0..list_len {
         let mut elem = UndefinedValue();
         JS_GetElement(cx, list_h, i as u32, MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
         });
         if !elem.is_object() {
-            element_lengths.push(0);
+            entries.push(ConcatEntry { obj: ::std::ptr::null_mut(), is_view: false });
             continue;
         }
         let elem_obj = elem.to_object();
-        let elem_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &elem_obj };
-        // Prefer the typed-array length; fall back to the JS `length`
-        // property for non-typed-array inputs (legacy callers, Array, etc.).
-        let (ta_len, _) = buffer_view_bytes(elem_obj);
-        let b_len = if ta_len > 0 {
-            ta_len
+        // Use a typed-array probe to mark this element. We do not yet read
+        // the final length — getters that fire on later indices may still
+        // mutate this element's backing store. The probe is only used to
+        // distinguish typed-array views (subject to detach/resize
+        // semantics) from legacy array inputs.
+        let (probe_len, probe_data) = buffer_view_bytes(elem_obj);
+        let is_view = probe_len > 0 || !probe_data.is_null();
+        entries.push(ConcatEntry { obj: elem_obj, is_view });
+    }
+
+    // Second sweep: read each element's final length & data. Now every
+    // getter has run, so this is the truth we copy from.
+    let mut element_lengths: Vec<usize> = Vec::with_capacity(list_len);
+    let mut element_data: Vec<*mut u8> = Vec::with_capacity(list_len);
+    let mut total: usize = 0;
+    for entry in entries.iter() {
+        if entry.obj.is_null() {
+            element_lengths.push(0);
+            element_data.push(::std::ptr::null_mut());
+            continue;
+        }
+        if entry.is_view {
+            let (cur_len, cur_data) = buffer_view_bytes(entry.obj);
+            // Detach detection: a typed-array view whose backing store has
+            // been detached reports length 0 and a null data pointer. Bun
+            // throws TypeError — without this guard we'd skip the element
+            // and potentially expose uninitialized heap in the output.
+            if cur_data.is_null() {
+                let c_msg = c"Cannot perform Buffer.concat on a detached ArrayBuffer";
+                mozjs::error::throw_type_error(cx, c_msg.as_ref());
+                return false;
+            }
+            // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
+            // overflow MAX_BUFFER_SIZE. `Buffer.concat([huge, huge, ...])` is
+            // the common abuse vector (bun/test/js/node/buffer-concat.test.ts
+            // allocates 1024 × 64 MiB), so we bail out as soon as the running
+            // total crosses the ceiling rather than waiting for OOM.
+            if cur_len > MAX_BUFFER_SIZE || total.saturating_add(cur_len) > MAX_BUFFER_SIZE {
+                let msg = format!(
+                    "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+                    MAX_BUFFER_SIZE
+                );
+                let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap());
+                mozjs::error::throw_range_error(cx, c_msg.as_ref());
+                return false;
+            }
+            element_lengths.push(cur_len);
+            element_data.push(cur_data);
+            total = total.saturating_add(cur_len);
         } else {
+            // Legacy non-typed-array input: read the JS `length` property
+            // and copy element-by-element. No detach semantics apply.
+            let elem_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &entry.obj };
             let mut blen = UndefinedValue();
             JS_GetProperty(cx, elem_h, c"length".as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut blen,
             });
-            if blen.is_int32() {
+            let b_len = if blen.is_int32() {
                 blen.to_int32().max(0) as usize
             } else if blen.is_double() {
                 let d = blen.to_double();
                 if d.is_finite() && d > 0.0 { d as usize } else { 0 }
             } else {
                 0
+            };
+            if b_len > MAX_BUFFER_SIZE || total.saturating_add(b_len) > MAX_BUFFER_SIZE {
+                let msg = format!(
+                    "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
+                    MAX_BUFFER_SIZE
+                );
+                let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap());
+                mozjs::error::throw_range_error(cx, c_msg.as_ref());
+                return false;
             }
-        };
-        // @trace REQ-ENG-005 [entity:Buffer] — refuse concat that would
-        // overflow MAX_BUFFER_SIZE. `Buffer.concat([huge, huge, ...])` is
-        // the common abuse vector (bun/test/js/node/buffer-concat.test.ts
-        // allocates 1024 × 64 MiB), so we bail out as soon as the running
-        // total crosses the ceiling rather than waiting for OOM.
-        if b_len > MAX_BUFFER_SIZE || total.saturating_add(b_len) > MAX_BUFFER_SIZE {
-            let msg = format!(
-                "JavaScriptCore typed arrays are currently limited to {} bytes. To use an array this large, use an ArrayBuffer instead. If this is causing issues for you, please file an issue in Bun's GitHub repository.",
-                MAX_BUFFER_SIZE
-            );
-            let c_msg = ::std::ffi::CString::new(msg).unwrap_or_else(|_| ::std::ffi::CString::new("Buffer.concat total length out of range").unwrap());
-            mozjs::error::throw_range_error(cx, c_msg.as_ref());
-            return false;
+            element_lengths.push(b_len);
+            element_data.push(::std::ptr::null_mut());
+            total = total.saturating_add(b_len);
         }
-        element_lengths.push(b_len);
-        total = total.saturating_add(b_len);
     }
 
     // @trace REQ-ENG-005 [algorithm:buffer_concat]
@@ -1426,18 +1522,13 @@ unsafe extern "C" fn buffer_concat(
 
     let mut all_bytes = vec![0u8; target_total];
     let mut cursor: usize = 0;
-    for i in 0..list_len {
+    for (i, entry) in entries.iter().enumerate() {
         if cursor >= target_total {
             break;
         }
-        let mut elem = UndefinedValue();
-        JS_GetElement(cx, list_h, i as u32, MutableHandle::<Value> {
-            _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
-        });
-        if !elem.is_object() {
+        if entry.obj.is_null() {
             continue;
         }
-        let elem_obj = elem.to_object();
         let b_len = *element_lengths.get(i).unwrap_or(&0);
         if b_len == 0 {
             continue;
@@ -1447,13 +1538,11 @@ unsafe extern "C" fn buffer_concat(
             cursor = cursor.saturating_add(b_len);
             continue;
         }
-        // Prefer the raw typed-array pointer for an O(copy_len) memcpy;
-        // fall back to the JS element-by-element path for legacy inputs.
-        let (_, ta_data) = buffer_view_bytes(elem_obj);
-        if !ta_data.is_null() {
-            ::std::ptr::copy_nonoverlapping(ta_data, all_bytes.as_mut_ptr().add(cursor), copy_len);
+        let data = *element_data.get(i).unwrap_or(&::std::ptr::null_mut());
+        if !data.is_null() {
+            ::std::ptr::copy_nonoverlapping(data, all_bytes.as_mut_ptr().add(cursor), copy_len);
         } else {
-            let elem_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &elem_obj };
+            let elem_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &entry.obj };
             for j in 0..copy_len {
                 let mut byte_val = UndefinedValue();
                 JS_GetElement(cx, elem_h, j as u32, MutableHandle::<Value> {
@@ -2357,9 +2446,27 @@ if (typeof _g.DOMException === 'undefined') {
     DataCloneError: 25,
   };
   function DOMException(message, options) {
-    var inst = Error.call(this, message);
-    if (inst === undefined) inst = this;
-    inst.message = (message === undefined) ? '' : String(message);
+    // @trace REQ-ENG-006 — DOMException constructor.
+    //
+    // Spec: returns an instance whose [[Prototype]] is DOMException.prototype
+    // (so `new DOMException(...) instanceof DOMException` is true). The
+    // previous implementation discarded `this` when `Error.call(this)`
+    // happened to return a fresh Error object, leaving the result with
+    // Error.prototype as its [[Prototype]] instead of DOMException.prototype.
+    //
+    // Fix: install Error's own .stack/.message on `this` (which carries the
+    // correct prototype chain), but never reassign `this` to the Error
+    // object returned by Error.call.
+    if (!(this instanceof DOMException)) {
+      // Allow DOMException() without `new` to behave like `new DOMException()`.
+      var obj = Object.create(DOMException.prototype);
+      return DOMException.apply(obj, arguments);
+    }
+    // Use Error's machinery for the .stack backtrace, but keep `this`.
+    try {
+      Error.call(this, message);
+    } catch (_e) { /* Error.call may throw on some subclasses; ignore */ }
+    this.message = (message === undefined) ? '' : String(message);
     var name = 'Error';
     var cause;
     if (typeof options === 'string') {
@@ -2368,10 +2475,10 @@ if (typeof _g.DOMException === 'undefined') {
       if (options.name !== undefined) name = String(options.name);
       if ('cause' in options) cause = options.cause;
     }
-    inst.name = name;
-    inst.code = _domCodeMap[name] || 0;
-    if (cause !== undefined) inst.cause = cause;
-    return inst;
+    this.name = name;
+    this.code = _domCodeMap[name] || 0;
+    if (cause !== undefined) this.cause = cause;
+    return this;
   }
   DOMException.prototype = Object.create(Error.prototype);
   DOMException.prototype.constructor = DOMException;

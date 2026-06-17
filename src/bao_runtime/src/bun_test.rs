@@ -142,6 +142,104 @@ const BUN_TEST_SHIM: &str = r#"
         }
         return e;
       },
+      // @trace REQ-ENG-005 — bun:test / jest matcher parity. Add the
+      // commonly used type/collection/value matchers that upstream tests
+      // rely on (buffer-inspectmaxbytes, domexception, etc.).
+      toBeNumber: function() {
+        if (typeof actual !== 'number' || Number.isNaN(actual)) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be a number");
+        }
+        return e;
+      },
+      toBeInteger: function() {
+        if (!Number.isInteger(actual)) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be an integer");
+        }
+        return e;
+      },
+      toBeFinite: function() {
+        if (typeof actual !== 'number' || !Number.isFinite(actual)) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be finite");
+        }
+        return e;
+      },
+      toBePositive: function() {
+        if (typeof actual !== 'number' || !Number.isFinite(actual) || actual <= 0) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be positive");
+        }
+        return e;
+      },
+      toBeNegative: function() {
+        if (typeof actual !== 'number' || !Number.isFinite(actual) || actual >= 0) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be negative");
+        }
+        return e;
+      },
+      toBeInstanceOf: function(klass) {
+        if (typeof klass !== 'function') {
+          throw new Error("toBeInstanceOf expects a constructor function");
+        }
+        if (!(actual instanceof klass)) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be instance of " + (klass.name || 'class'));
+        }
+        return e;
+      },
+      toBeTypeOf: function(typeStr) {
+        if (typeof actual !== typeStr) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be type \"" + typeStr + "\" but got \"" + typeof actual + "\"");
+        }
+        return e;
+      },
+      toBeTrue: function() {
+        if (actual !== true) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be true");
+        }
+        return e;
+      },
+      toBeFalse: function() {
+        if (actual !== false) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be false");
+        }
+        return e;
+      },
+      toBeSymbol: function() {
+        if (typeof actual !== 'symbol') {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be a symbol");
+        }
+        return e;
+      },
+      toBeOneOf: function(arr) {
+        var found = false;
+        if (Array.isArray(arr)) {
+          for (var i = 0; i < arr.length; i++) {
+            if (actual === arr[i]) { found = true; break; }
+            // NaN === NaN is false, handle explicitly
+            if (Number.isNaN(actual) && Number.isNaN(arr[i])) { found = true; break; }
+          }
+        }
+        if (!found) {
+          throw new Error("Expected " + JSON.stringify(actual) + " to be one of " + JSON.stringify(arr));
+        }
+        return e;
+      },
+      toContainEqual: function(expected) {
+        if (typeof actual === 'string') {
+          if (actual.indexOf(expected) === -1) {
+            throw new Error("Expected \"" + actual + "\" to contain \"" + expected + "\"");
+          }
+        } else if (Array.isArray(actual)) {
+          var found = false;
+          for (var i = 0; i < actual.length; i++) {
+            if (JSON.stringify(actual[i]) === JSON.stringify(expected)) { found = true; break; }
+          }
+          if (!found) {
+            throw new Error("Expected array to contain " + JSON.stringify(expected));
+          }
+        } else {
+          throw new Error("toContainEqual requires string or array");
+        }
+        return e;
+      },
       toBeNaN: function() {
         if (!Number.isNaN(actual)) {
           throw new Error("Expected " + JSON.stringify(actual) + " to be NaN");
@@ -806,19 +904,99 @@ const BUN_TEST_SHIM: &str = r#"
 const HARNESS_SHIM: &str = r#"
 (function() {
   var _g = globalThis;
+  // @trace REQ-ENG-005 [module:harness] — bun:test harness helper surface.
+  // Exposes the same set of helpers Bun ships in `test/js/harness.ts`:
+  // bunExe/bunEnv/bunRun for spawning child bao processes, gc for forcing
+  // collection, platform predicates, tempDirWithFiles for filesystem
+  // fixtures, and joinP for joining multiple subprocess pipes.
+  function _pathJoin() {
+    var parts = [];
+    for (var i = 0; i < arguments.length; i++) {
+      var a = arguments[i];
+      if (a == null) continue;
+      parts.push(String(a));
+    }
+    return parts.join('/').replace(/\/+/g, '/');
+  }
+  function _tempDir(prefix) {
+    var fs = _g.require ? _g.require('fs') : null;
+    var os = _g.require ? _g.require('os') : null;
+    if (!fs || !os) return '/tmp/' + (prefix || 'bao') + '-' + Date.now();
+    var base = os.tmpdir ? os.tmpdir() : '/tmp';
+    var dir = _pathJoin(base, prefix || 'bao', String(Date.now()) + String(Math.floor(Math.random() * 100000)));
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (e) {}
+    return dir;
+  }
   _g.__harness_module = {
     gc: function() {},
     bunExe: function() { return "bao"; },
-    bunEnv: function() { return _g.process ? _g.process.env : {}; },
-    isWindows: function() { return _g.process && _g.process.platform === "win32"; },
-    isLinux: function() { return _g.process && _g.process.platform === "linux"; },
-    isMac: function() { return _g.process && _g.process.platform === "darwin"; },
-    isASAN: function() { return false; },
-    isDebug: function() { return false; },
-    isMinified: function() { return false; },
+    bunEnv: function() { return _g.process ? Object.assign({}, _g.process.env) : {}; },
+    bunRun: function(path, opts) {
+      // Run a script as a child bao process and return { stdout, stderr, exitCode }.
+      var cp = _g.require ? _g.require('child_process') : null;
+      if (!cp) return { stdout: '', stderr: 'no child_process', exitCode: -1 };
+      var args = [path];
+      if (opts && Array.isArray(opts.args)) args = args.concat(opts.args);
+      try {
+        var r = cp.spawnSync('bao', args, { env: opts && opts.env, encoding: 'utf8' });
+        return { stdout: r.stdout || '', stderr: r.stderr || '', exitCode: r.status == null ? -1 : r.status };
+      } catch (e) {
+        return { stdout: '', stderr: String(e), exitCode: -1 };
+      }
+    },
+    // @trace REQ-ENG-005 — platform predicates exposed as boolean values.
+    // Upstream `test/js/harness.ts` exports them as plain `boolean`s, not
+    // functions; tests use them with `test.if(isWindows)` (which evaluates
+    // truthiness, not callability). Mirror the canonical shape so the
+    // Windows-only path stays skipped on Linux/macOS.
+    isWindows: _g.process && _g.process.platform === "win32",
+    isLinux: _g.process && _g.process.platform === "linux",
+    isMac: _g.process && _g.process.platform === "darwin",
+    isPosix: _g.process && (_g.process.platform === "linux" || _g.process.platform === "darwin"),
+    isASAN: false,
+    isDebug: false,
+    isMinified: false,
     withoutAggressiveGC: function(fn) { return fn(); },
     expectOOM: function() { return false; },
-    BunEnvironment: { browser: false, test: true }
+    BunEnvironment: { browser: false, test: true },
+    // @trace REQ-ENG-005 — bun:test harness extras used by upstream tests.
+    tempDirWithFiles: function(prefix, files) {
+      var dir = _tempDir(prefix);
+      var fs = _g.require ? _g.require('fs') : null;
+      if (fs && files) {
+        Object.keys(files).forEach(function(name) {
+          var p = _pathJoin(dir, name);
+          try { fs.mkdirSync(_pathJoin(dir, name, '..'), { recursive: true }); } catch (e) {}
+          try { fs.writeFileSync(p, files[name]); } catch (e) {}
+        });
+      }
+      return dir;
+    },
+    // joinP: spawn a child bao process and return a Promise of its output.
+    // Mirrors Bun's harness helper used by cluster / multi-process tests.
+    joinP: function(cmd, opts) {
+      return new Promise(function(resolve, reject) {
+        var cp = _g.require ? _g.require('child_process') : null;
+        if (!cp) { reject(new Error('no child_process')); return; }
+        var args = Array.isArray(cmd) ? cmd.slice(1) : [];
+        var exe = Array.isArray(cmd) ? cmd[0] : cmd;
+        try {
+          var child = cp.spawn(exe, args, Object.assign({ env: _g.process && _g.process.env }, opts || {}));
+          var stdout = '';
+          var stderr = '';
+          child.stdout && child.stdout.on && child.stdout.on('data', function(d) { stdout += d.toString(); });
+          child.stderr && child.stderr.on && child.stderr.on('data', function(d) { stderr += d.toString(); });
+          child.on && child.on('close', function(code) {
+            resolve({ stdout: stdout, stderr: stderr, exitCode: code });
+          });
+          child.on && child.on('error', function(e) { reject(e); });
+        } catch (e) { reject(e); }
+      });
+    },
+    gcTick: function() {},
+    invert: function(promise) { return promise.then(function(v) { throw v; }, function(e) { return e; }); },
+    withoutAggressiveGC: function(fn) { return fn(); },
+    stackTrace: new Error().stack
   };
 })();
 "#;
