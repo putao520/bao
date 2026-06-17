@@ -167,6 +167,22 @@ unsafe fn populate_bun_object(
     // Bun.hash
     JS_DefineFunction(cx, bun_obj, c"hash".as_ptr(), Some(bun_hash), 2, JSPROP_ENUMERATE as u32);
 
+    // @trace REQ-ENG-006 [api:Bun.concatArrayBuffers] — merge an iterable of
+    // ArrayBuffer/TypedArray into a single ArrayBuffer (or Uint8Array when
+    // `asUint8Array=true`). Matches Bun's signature:
+    //   Bun.concatArrayBuffers(buffers, totalLength?, asUint8Array?)
+    // - `buffers`: Array (or iterable) of ArrayBuffer / TypedArray / DataView
+    // - `totalLength`: optional cap on output length (extra bytes zero-filled)
+    // - `asUint8Array`: when true, return Uint8Array; default ArrayBuffer
+    JS_DefineFunction(
+        cx,
+        bun_obj,
+        c"concatArrayBuffers".as_ptr(),
+        Some(bun_concat_array_buffers),
+        3,
+        JSPROP_ENUMERATE as u32,
+    );
+
     // Bao.browser 全局对象(连接 CDP client — REQ-BAO-API-008)
     crate::bao_browser_global::install_bao_browser_on_bun(cx, bun_obj);
 }
@@ -2548,7 +2564,164 @@ unsafe extern "C" fn bun_hash(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     true
 }
 
-// ── Unit tests for pure Rust data structures and logic ──────────────────
+/// `Bun.concatArrayBuffers(buffers, totalLength?, asUint8Array?)` — merge an
+/// iterable of ArrayBuffer / TypedArray / DataView into a single buffer.
+///
+/// Matches Bun's signature and semantics:
+///   - `buffers`: Array or iterable of buffer-like objects. Each element's
+///     `byteLength` and `byteOffset` are honoured so views over larger
+///     backing buffers transfer only their visible slice.
+///   - `totalLength`: optional cap. If omitted, sum of all `byteLength`s. If
+///     provided and larger than the sum, the tail is zero-filled. If smaller,
+///     the concatenation is truncated.
+///   - `asUint8Array`: when truthy, return a Uint8Array; otherwise an
+///     ArrayBuffer (default).
+///
+/// Implementation drives the JS-level protocol via `JS::Evaluate` for clarity
+/// and correctness (ArrayBuffer.prototype.slice / TypedArray view semantics
+/// come for free). The Rust side just marshals args and reads the result.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_concat_array_buffers(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 || !(*args.get(0).ptr).is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // Stash the args on the global so the eval'd helper can pick them up by
+    // reference. Use unique property names to avoid collisions.
+    let global = unsafe { CurrentGlobalOrNull(cx) };
+    if global.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let global_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &global,
+    };
+    let buffers_val = *args.get(0).ptr;
+    let buffers_h = Handle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &buffers_val,
+    };
+    unsafe {
+        let _ = mozjs_sys::jsapi::JS_DefineProperty(
+            cx,
+            global_h,
+            c"__concatAB_buffers".as_ptr(),
+            buffers_h,
+            0,
+        );
+    }
+    let total_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let total_h = Handle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &total_val,
+    };
+    unsafe {
+        let _ = mozjs_sys::jsapi::JS_DefineProperty(
+            cx,
+            global_h,
+            c"__concatAB_total".as_ptr(),
+            total_h,
+            0,
+        );
+    }
+    let as_uint8 = argc > 2 && (*args.get(2).ptr).to_boolean();
+    let as_uint8_val = mozjs::jsval::BooleanValue(as_uint8);
+    let as_uint8_h = Handle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &as_uint8_val,
+    };
+    unsafe {
+        let _ = mozjs_sys::jsapi::JS_DefineProperty(
+            cx,
+            global_h,
+            c"__concatAB_asUint8".as_ptr(),
+            as_uint8_h,
+            0,
+        );
+    }
+
+    // The helper drives iteration, length resolution, and view creation
+    // entirely in JS. Returns either an ArrayBuffer or a Uint8Array.
+    let helper = r#"
+        (function() {
+            var buffers = __concatAB_buffers;
+            var totalLength = __concatAB_total;
+            var asUint8 = __concatAB_asUint8;
+            var chunks = [];
+            var sum = 0;
+            // Honour both Array and iterable inputs.
+            var iter = (typeof Symbol !== 'undefined' && Symbol.iterator) ? buffers[Symbol.iterator] : null;
+            if (typeof iter === 'function') {
+                var it = iter.call(buffers);
+                while (true) {
+                    var next = it.next();
+                    if (next.done) break;
+                    var chunk = next.value;
+                    if (chunk == null) continue;
+                    var view = (chunk instanceof ArrayBuffer)
+                        ? new Uint8Array(chunk)
+                        : new Uint8Array(chunk.buffer || chunk, chunk.byteOffset || 0, chunk.byteLength || 0);
+                    chunks.push(view);
+                    sum += view.length;
+                }
+            } else if (typeof buffers.length === 'number') {
+                for (var i = 0; i < buffers.length; i++) {
+                    var chunk2 = buffers[i];
+                    if (chunk2 == null) continue;
+                    var view2 = (chunk2 instanceof ArrayBuffer)
+                        ? new Uint8Array(chunk2)
+                        : new Uint8Array(chunk2.buffer || chunk2, chunk2.byteOffset || 0, chunk2.byteLength || 0);
+                    chunks.push(view2);
+                    sum += view2.length;
+                }
+            }
+            var outLen = (typeof totalLength === 'number' && totalLength >= 0 && isFinite(totalLength))
+                ? Math.floor(totalLength)
+                : sum;
+            if (outLen < 0) outLen = 0;
+            var out = new Uint8Array(outLen);
+            var off = 0;
+            for (var i = 0; i < chunks.length && off < outLen; i++) {
+                var take = Math.min(chunks[i].length, outLen - off);
+                if (take > 0) {
+                    out.set(chunks[i].subarray(0, take), off);
+                    off += take;
+                }
+            }
+            return asUint8 ? out : out.buffer.slice(0, outLen);
+        })()
+    "#;
+    let opts = mozjs::glue::NewCompileOptions(cx, c"<concat-ab>".as_ptr(), 1);
+    if opts.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut src = mozjs::rust::transform_str_to_source_text(helper);
+    let mut rval = UndefinedValue();
+    let rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let ok = unsafe { mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h) };
+    libc::free(opts as *mut _);
+
+    // Cleanup temp globals.
+    unsafe {
+        let _ = mozjs_sys::jsapi::JS_DeleteProperty1(cx, global_h, c"__concatAB_buffers".as_ptr());
+        let _ = mozjs_sys::jsapi::JS_DeleteProperty1(cx, global_h, c"__concatAB_total".as_ptr());
+        let _ = mozjs_sys::jsapi::JS_DeleteProperty1(cx, global_h, c"__concatAB_asUint8".as_ptr());
+    }
+
+    args.rval().set(if ok { rval } else { UndefinedValue() });
+    true
+}
 // @trace REQ-ENG-006 [req:REQ-ENG-006] [level:unit]
 
 #[cfg(test)]

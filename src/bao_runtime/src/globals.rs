@@ -127,6 +127,11 @@ pub unsafe fn install_node_apis(
     crate::bun_test::install_bun_test(cx);
     crate::bun_builtins::install(cx);
     crate::s3_api::install(cx);
+    // @trace REQ-ENG-006: stub registrations for unimplemented Node.js builtins
+    // (async_hooks, cluster, console, dgram, domain, http2, inspector, etc.).
+    // Required so `require("X")` / `import "X"` succeed instead of throwing
+    // `Cannot find module 'X'`.
+    crate::node_stubs::install(cx);
 }
 
 /// Install all APIs (Web + Node) — only for CLI/engine context.
@@ -613,14 +618,59 @@ pub fn install_buffer_global(
     return this;
   };
 
-  _bp.compare = function(other) {
-    var len = Math.min(this.length, other.length);
-    for (var i = 0; i < len; i++) {
-      if (this[i] < other[i]) return -1;
-      if (this[i] > other[i]) return 1;
+  // @trace REQ-ENG-006 [api:Buffer.prototype.compare]
+  // Node.js Buffer.prototype.compare(target[, targetStart[, targetEnd[,
+  // sourceStart[, sourceEnd]]]]) — returns -1/0/1 ordering and performs
+  // out-of-range validation on `targetEnd` and `sourceEnd` BEFORE applying
+  // the `start >= end` early-return. This ordering matters: per Node.js
+  // semantics, an inverted range with end > buffer.length still throws
+  // ERR_OUT_OF_RANGE, while start >= end with both in range returns early.
+  _bp.compare = function(other, targetStart, targetEnd, sourceStart, sourceEnd) {
+    var thisLen = this.length;
+    var otherLen = other.length;
+    // Defaults per Node.js: targetStart=0, targetEnd=otherLen, sourceStart=0,
+    // sourceEnd=thisLen.
+    var tStart = (targetStart === undefined) ? 0 : (targetStart | 0);
+    var tEnd = (targetEnd === undefined) ? otherLen : (targetEnd | 0);
+    var sStart = (sourceStart === undefined) ? 0 : (sourceStart | 0);
+    var sEnd = (sourceEnd === undefined) ? thisLen : (sourceEnd | 0);
+
+    // Node.js validates `end` against the respective buffer length BEFORE
+    // the start >= end early-return. So an inverted range whose end exceeds
+    // buffer length still throws.
+    if (tEnd > otherLen) {
+      var e1 = new RangeError('\"targetEnd\" is outside of buffer bounds');
+      throw e1;
     }
-    if (this.length < other.length) return -1;
-    if (this.length > other.length) return 1;
+    if (sEnd > thisLen) {
+      var e2 = new RangeError('\"sourceEnd\" is outside of buffer bounds');
+      throw e2;
+    }
+
+    // Now apply the start >= end early-return. Zero-length comparison
+    // ordering: equal → 0; target empty / source non-empty → 1 (source is
+    // longer than the empty target → source "wins"); source empty / target
+    // non-empty → -1.
+    if (tStart >= tEnd && sStart >= sEnd) return 0;
+    if (tStart >= tEnd) {
+      // target side is zero-length: source is longer → 1.
+      return sStart < sEnd ? 1 : 0;
+    }
+    if (sStart >= sEnd) {
+      return tStart < tEnd ? -1 : 0;
+    }
+
+    // Compare the bounded sub-ranges byte-by-byte.
+    var cmpLen = Math.min(tEnd - tStart, sEnd - sStart);
+    for (var i = 0; i < cmpLen; i++) {
+      var a = this[sStart + i];
+      var b = other[tStart + i];
+      if (a < b) return -1;
+      if (a > b) return 1;
+    }
+    // Equal prefix: longer range wins.
+    if ((tEnd - tStart) < (sEnd - sStart)) return -1;
+    if ((tEnd - tStart) > (sEnd - sStart)) return 1;
     return 0;
   };
 
@@ -1851,9 +1901,13 @@ unsafe extern "C" fn buffer_compare(
 
     let a_val = *args.get(0).ptr;
     let b_val = *args.get(1).ptr;
+    // @trace REQ-ENG-006 [api:Buffer.compare] — Node.js throws ERR_INVALID_ARG_TYPE
+    // ("The \"buf1\", \"buf2\" arguments must be of type Uint8Array") when either
+    // argument is not a Buffer/Uint8Array. Mirror that here so the static
+    // `Buffer.compare(x, nonBuffer)` path matches prototype semantics.
     if !a_val.is_object() || !b_val.is_object() {
-        args.rval().set(Int32Value(0));
-        return true;
+        JS_ReportErrorUTF8(cx, c"The \"buf1\", \"buf2\" arguments must be of type Uint8Array or Buffer".as_ptr());
+        return false;
     }
     let (a_bytes, _) = read_bytes(a_val.to_object());
     let (b_bytes, _) = read_bytes(b_val.to_object());
@@ -2285,6 +2339,70 @@ if (typeof _g.FormData === 'undefined') {
     }
     if (!found) this._data.push({ name: name, value: value, filename: filename });
   };
+}
+
+// @trace REQ-ENG-006 [api:DOMException] — Web/Node.js global DOMException.
+// Constructor: new DOMException(message?, nameOrOptions?) — name defaults
+// to "Error", code defaults to 0 (or the matching numeric constant for a
+// known name). Inherits from Error so `instanceof Error` is true.
+if (typeof _g.DOMException === 'undefined') {
+  var _domCodeMap = {
+    IndexSizeError: 1, HierarchyRequestError: 3, WrongDocumentError: 4,
+    InvalidCharacterError: 5, NoModificationAllowedError: 7, NotFoundError: 8,
+    NotSupportedError: 9, InUseAttributeError: 10, InvalidStateError: 11,
+    SyntaxError: 12, InvalidModificationError: 13, NamespaceError: 14,
+    InvalidAccessError: 15, ValidationError: 16, TypeMismatchError: 17,
+    SecurityError: 18, NetworkError: 19, AbortError: 20, URLMismatchError: 21,
+    QuotaExceededError: 22, TimeoutError: 23, InvalidNodeTypeError: 24,
+    DataCloneError: 25,
+  };
+  function DOMException(message, options) {
+    var inst = Error.call(this, message);
+    if (inst === undefined) inst = this;
+    inst.message = (message === undefined) ? '' : String(message);
+    var name = 'Error';
+    var cause;
+    if (typeof options === 'string') {
+      name = options;
+    } else if (options && typeof options === 'object') {
+      if (options.name !== undefined) name = String(options.name);
+      if ('cause' in options) cause = options.cause;
+    }
+    inst.name = name;
+    inst.code = _domCodeMap[name] || 0;
+    if (cause !== undefined) inst.cause = cause;
+    return inst;
+  }
+  DOMException.prototype = Object.create(Error.prototype);
+  DOMException.prototype.constructor = DOMException;
+  DOMException.prototype.name = 'Error';
+  // Standard error-code constants (static properties).
+  DOMException.INDEX_SIZE_ERR = 1;
+  DOMException.DOMSTRING_SIZE_ERR = 2;
+  DOMException.HIERARCHY_REQUEST_ERR = 3;
+  DOMException.WRONG_DOCUMENT_ERR = 4;
+  DOMException.INVALID_CHARACTER_ERR = 5;
+  DOMException.NO_DATA_ALLOWED_ERR = 6;
+  DOMException.NO_MODIFICATION_ALLOWED_ERR = 7;
+  DOMException.NOT_FOUND_ERR = 8;
+  DOMException.NOT_SUPPORTED_ERR = 9;
+  DOMException.INUSE_ATTRIBUTE_ERR = 10;
+  DOMException.INVALID_STATE_ERR = 11;
+  DOMException.SYNTAX_ERR = 12;
+  DOMException.INVALID_MODIFICATION_ERR = 13;
+  DOMException.NAMESPACE_ERR = 14;
+  DOMException.INVALID_ACCESS_ERR = 15;
+  DOMException.VALIDATION_ERR = 16;
+  DOMException.TYPE_MISMATCH_ERR = 17;
+  DOMException.SECURITY_ERR = 18;
+  DOMException.NETWORK_ERR = 19;
+  DOMException.ABORT_ERR = 20;
+  DOMException.URL_MISMATCH_ERR = 21;
+  DOMException.QUOTA_EXCEEDED_ERR = 22;
+  DOMException.TIMEOUT_ERR = 23;
+  DOMException.INVALID_NODE_TYPE_ERR = 24;
+  DOMException.DATA_CLONE_ERR = 25;
+  _g.DOMException = DOMException;
 }
 "#;
     unsafe {

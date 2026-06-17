@@ -38,6 +38,7 @@ pub mod node_readline;
 pub mod permission_bridge;
 pub mod node_stream;
 pub mod node_string_decoder;
+pub mod node_stubs;
 pub mod node_timers_module;
 pub mod node_tls;
 pub mod node_tty;

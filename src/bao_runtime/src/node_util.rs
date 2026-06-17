@@ -304,8 +304,75 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     }
   }
 
-  function rejects() {
-    throw _err("assert.rejects() requires async runtime support", undefined, undefined, "rejects");
+  // @trace REQ-ENG-006 [api:assert.rejects] — async-aware rejection assertion.
+  // Returns a Promise that resolves when asyncFn rejects with a matching
+  // error, or rejects with AssertionError if asyncFn resolves / rejects with
+  // the wrong error.
+  function rejects(asyncFn, error) {
+    var fn = asyncFn;
+    var spec = error;
+    return Promise.resolve().then(function() {
+      var ret = (typeof fn === 'function') ? fn() : fn;
+      if (!ret || typeof ret.then !== 'function') ret = Promise.resolve(ret);
+      return ret.then(
+        function() {
+          var err = new Error('Missing expected rejection to assert.rejects');
+          err.name = 'AssertionError'; throw err;
+        },
+        function(rejection) {
+          if (spec === undefined || spec === null) return;
+          if (typeof spec === 'function') {
+            try {
+              if (spec.prototype !== undefined) {
+                if (!(rejection instanceof spec)) {
+                  var e1 = new Error('Missing expected rejection (' + (spec && spec.name) + ') to assert.rejects');
+                  e1.name = 'AssertionError'; throw e1;
+                }
+                return;
+              }
+              var ok = spec(rejection);
+              if (!ok) {
+                var e2 = new Error('Invalid rejection value to assert.rejects'); e2.name = 'AssertionError'; throw e2;
+              }
+              return;
+            } catch (ve) {
+              if (ve && ve.name === 'AssertionError') throw ve;
+              var e3 = new Error('Invalid rejection value to assert.rejects'); e3.name = 'AssertionError'; throw e3;
+            }
+          }
+          if (spec instanceof RegExp) {
+            var msg = (rejection && rejection.message) ? String(rejection.message) : String(rejection);
+            if (!spec.test(msg)) {
+              var e4 = new Error('Missing expected rejection message to assert.rejects'); e4.name = 'AssertionError'; throw e4;
+            }
+            return;
+          }
+          if (typeof spec === 'string') {
+            var msg2 = (rejection && rejection.message) ? String(rejection.message) : String(rejection);
+            if (msg2.indexOf(spec) === -1) {
+              var e5 = new Error('Missing expected rejection message to assert.rejects'); e5.name = 'AssertionError'; throw e5;
+            }
+            return;
+          }
+          if (typeof spec === 'object') {
+            for (var k in spec) {
+              if (k === 'message' && spec[k] instanceof RegExp) {
+                var m = (rejection && rejection.message) ? String(rejection.message) : '';
+                if (!spec[k].test(m)) {
+                  var e6 = new Error('Missing expected rejection message to assert.rejects'); e6.name = 'AssertionError'; throw e6;
+                }
+              } else {
+                var actual = rejection ? rejection[k] : undefined;
+                if (actual !== spec[k]) {
+                  var e7 = new Error('Mismatched rejection property "' + k + '" to assert.rejects'); e7.name = 'AssertionError'; throw e7;
+                }
+              }
+            }
+            return;
+          }
+        }
+      );
+    });
   }
 
   function match(value, regex, message) {
@@ -943,9 +1010,159 @@ unsafe extern "C" fn assert_throws(_cx: *mut JSContext, _argc: u32, vp: *mut JSV
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn assert_rejects(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn assert_rejects(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    // @trace REQ-ENG-006 [api:assert.rejects] — async-aware rejection
+    // assertion. `assert.rejects(asyncFn, error?)` returns a Promise that
+    // resolves when asyncFn rejects with a matching error (or rejects with
+    // AssertionError if it resolves / rejects with the wrong error).
+    //
+    // Signature variants (Node.js assert doc):
+    //   - assert.rejects(fn)                          → rejects anything
+    //   - assert.rejects(fn, errorClass)              → reject must be instanceof
+    //   - assert.rejects(fn, /regexp/)                → reject.message must match
+    //   - assert.rejects(fn, function(err){...})      → custom validator
+    //   - assert.rejects(fn, { message: /re/, code }) → property match
+    //   - assert.rejects(fn, "string")                → reject.message includes
     let args = CallArgs::from_vp(vp, _argc);
-    args.rval().set(UndefinedValue());
+    if _argc == 0 {
+        JS_ReportErrorUTF8(cx, c"assert.rejects() requires an async function or Promise".as_ptr());
+        return false;
+    }
+
+    // Build the validation + control flow entirely in JS. Returning a Promise
+    // keeps the test runner's `await` chain intact.
+    let helper = r#"
+        (function() {
+            var fn = __assertRejects_fn;
+            var spec = __assertRejects_spec;
+            delete globalThis.__assertRejects_fn;
+            delete globalThis.__assertRejects_spec;
+            return Promise.resolve()
+                .then(function() {
+                    var ret = (typeof fn === 'function') ? fn() : fn;
+                    if (!ret || typeof ret.then !== 'function') {
+                        ret = Promise.resolve(ret);
+                    }
+                    return ret.then(
+                        function() {
+                            var err = new Error('Missing expected rejection to assert.rejects');
+                            err.name = 'AssertionError';
+                            throw err;
+                        },
+                        function(rejection) {
+                            // Validate the rejection against spec.
+                            if (spec === undefined || spec === null) return;
+                            if (typeof spec === 'function') {
+                                // Class constructor or validator function.
+                                try {
+                                    if (spec.prototype !== undefined) {
+                                        if (!(rejection instanceof spec)) {
+                                            var e1 = new Error('Missing expected rejection (' + (spec && spec.name) + ') to assert.rejects');
+                                            e1.name = 'AssertionError'; throw e1;
+                                        }
+                                        return;
+                                    }
+                                    var ok = spec(rejection);
+                                    if (ok && typeof ok.then === 'function') {
+                                        // Async validator — rare, fall through.
+                                        return ok.then(function(v) { if (!v) { var e = new Error('Invalid rejection value to assert.rejects'); e.name = 'AssertionError'; throw e; } });
+                                    }
+                                    if (!ok) {
+                                        var e2 = new Error('Invalid rejection value to assert.rejects'); e2.name = 'AssertionError'; throw e2;
+                                    }
+                                    return;
+                                } catch (ve) {
+                                    if (ve && ve.name === 'AssertionError') throw ve;
+                                    var e3 = new Error('Invalid rejection value to assert.rejects'); e3.name = 'AssertionError'; throw e3;
+                                }
+                            }
+                            if (spec instanceof RegExp) {
+                                var msg = (rejection && rejection.message) ? String(rejection.message) : String(rejection);
+                                if (!spec.test(msg)) {
+                                    var e4 = new Error('Missing expected rejection message to assert.rejects'); e4.name = 'AssertionError'; throw e4;
+                                }
+                                return;
+                            }
+                            if (typeof spec === 'string') {
+                                var msg2 = (rejection && rejection.message) ? String(rejection.message) : String(rejection);
+                                if (msg2.indexOf(spec) === -1) {
+                                    var e5 = new Error('Missing expected rejection message to assert.rejects'); e5.name = 'AssertionError'; throw e5;
+                                }
+                                return;
+                            }
+                            if (typeof spec === 'object') {
+                                for (var k in spec) {
+                                    if (k === 'message' && spec[k] instanceof RegExp) {
+                                        var m = (rejection && rejection.message) ? String(rejection.message) : '';
+                                        if (!spec[k].test(m)) {
+                                            var e6 = new Error('Missing expected rejection message to assert.rejects'); e6.name = 'AssertionError'; throw e6;
+                                        }
+                                    } else {
+                                        var actual = rejection ? rejection[k] : undefined;
+                                        if (actual !== spec[k]) {
+                                            var e7 = new Error('Mismatched rejection property "' + k + '" to assert.rejects'); e7.name = 'AssertionError'; throw e7;
+                                        }
+                                    }
+                                }
+                                return;
+                            }
+                        }
+                    );
+                });
+        })()
+    "#;
+
+    // Stash the args on the global, then evaluate.
+    let global = unsafe { CurrentGlobalOrNull(cx) };
+    if global.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let global_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &global,
+    };
+    let fn_val = *args.get(0).ptr;
+    let fn_h = Handle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &fn_val,
+    };
+    let spec_val = if _argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let spec_h = Handle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &spec_val,
+    };
+    unsafe {
+        let _ = mozjs_sys::jsapi::JS_DefineProperty(
+            cx,
+            global_h,
+            c"__assertRejects_fn".as_ptr(),
+            fn_h,
+            0,
+        );
+        let _ = mozjs_sys::jsapi::JS_DefineProperty(
+            cx,
+            global_h,
+            c"__assertRejects_spec".as_ptr(),
+            spec_h,
+            0,
+        );
+    }
+
+    let opts = mozjs::glue::NewCompileOptions(cx, c"<assert-rejects>".as_ptr(), 1);
+    if opts.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut src = mozjs::rust::transform_str_to_source_text(helper);
+    let mut rval = UndefinedValue();
+    let rval_h = MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &mut rval,
+    };
+    let ok = unsafe { mozjs_sys::jsapi::JS::Evaluate2(cx, opts, &mut src, rval_h) };
+    libc::free(opts as *mut _);
+    args.rval().set(if ok { rval } else { UndefinedValue() });
     true
 }
 

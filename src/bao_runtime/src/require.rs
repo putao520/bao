@@ -185,6 +185,18 @@ unsafe extern "C" fn require_resolve_fn(
         "buffer", "string_decoder", "timers", "readline", "perf_hooks",
         "tls", "process", "vm", "tty", "worker_threads", "module",
         "bun:test", "bun:sqlite", "bun:ffi", "bun:wrap", "harness",
+        // Stubbed builtins (registered by node_stubs::install).
+        "async_hooks", "cluster", "console", "constants", "dgram",
+        "diagnostics_channel", "domain", "http2", "inspector", "punycode",
+        "repl", "trace_events", "v8", "sys",
+        "_http_agent", "_http_client", "_http_common", "_http_incoming",
+        "_http_outgoing", "_http_server", "_stream_duplex", "_stream_passthrough",
+        "_stream_readable", "_stream_transform", "_stream_wrap", "_stream_writable",
+        "_tls_common", "_tls_wrap",
+        // Sub-path modules
+        "assert/strict", "dns/promises", "fs/promises", "path/posix", "path/win32",
+        "readline/promises", "stream/consumers", "stream/promises", "stream/web",
+        "util/types", "inspector/promises", "timers/promises",
     ];
     if known_builtins.contains(&builtin_key) {
         let c_path = ZBox::from_bytes(builtin_key.as_bytes());
