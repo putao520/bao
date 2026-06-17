@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn test_fs_read_very_long_path() {
         cleanup();
-        let long_path = "/tmp/".to_string() + &"a".repeat(1000);
+        let long_path = format!("/tmp/{}", "a".repeat(1000));
         set_permission(Some(PermissionCheck {
             read_paths: Some(vec!["/tmp".into()]),
             write_paths: None,

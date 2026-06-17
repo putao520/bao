@@ -1245,7 +1245,17 @@ fn needs_transpile(path: &Path) -> bool {
 fn strip_typescript(source: &str, path: &Path) -> String {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
-        "ts" | "tsx" => strip_ts_impl(source),
+        // @trace REQ-ENG-005 — prefer SWC's official TS→JS strip (full grammar
+        // coverage: generics, type annotations, unions, interfaces, type
+        // aliases, `import type`, `declare`, enums). Fall back to the legacy
+        // hand-written stripper on SWC failure (defensive, never hard-fails).
+        "ts" | "tsx" => {
+            let fname = path.to_str().unwrap_or("");
+            match bun_transpiler::transpile_ts(source, fname) {
+                Ok(out) => out,
+                Err(_) => strip_ts_impl(source),
+            }
+        }
         "jsx" => strip_jsx_types(source),
         _ => source.to_string(),
     }

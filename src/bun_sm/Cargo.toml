@@ -17,6 +17,7 @@ bun_io = { path = "../io" }
 bun_collections = { path = "../collections" }
 bun_threading = { path = "../threading" }
 bun_sys = { path = "../sys" }
+bun_transpiler = { path = "../transpiler" }
 libc = "0.2"
 log = "0.4"
 
