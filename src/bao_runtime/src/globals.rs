@@ -401,7 +401,10 @@ pub fn install_buffer_global(
     global: mozjs::rust::Handle<*mut JSObject>,
 ) {
     unsafe {
-        let buf_fn = JS_NewFunction(cx.raw_cx(), Some(buffer_constructor), 1, 0, c"Buffer".as_ptr());
+        // @trace REQ-ENG-005 [entity:Buffer] — JSFUN_CONSTRUCTOR (0x400) so
+        // `new Buffer(...)` works (legacy Node.js constructor). Without it SM
+        // raises "X is not a constructor" on `new`.
+        let buf_fn = JS_NewFunction(cx.raw_cx(), Some(buffer_constructor), 1, 0x400, c"Buffer".as_ptr());
         if buf_fn.is_null() {
             return;
         }
@@ -491,21 +494,540 @@ pub fn install_buffer_global(
   var _bp = Buffer.prototype;
   if (!_bp) return;
 
-  _bp.write = function(str, offset, encoding) {
-    offset = offset || 0;
-    var bytes = (encoding === 'hex') ? str.match(/.{2}/g).map(function(h) { return parseInt(h, 16); }) : [];
-    if (encoding !== 'hex') { for (var i = 0; i < str.length && (offset + i) < this.length; i++) { this[offset + i] = str.charCodeAt(i); } }
-    else { for (var i = 0; i < bytes.length && (offset + i) < this.length; i++) { this[offset + i] = bytes[i]; } }
-    return encoding === 'hex' ? bytes.length : Math.min(str.length, this.length - offset);
+  // @trace REQ-ENG-005 [api:Buffer.write] — Node.js Buffer#write with full
+  // encoding support, ERR_BUFFER_OUT_OF_BOUNDS bounds checking, and the
+  // Node.js argument-coercion matrix:
+  //   write(string)                          → utf8, offset=0, len=this.length
+  //   write(string, encoding)                → offset=0, len=this.length
+  //   write(string, offset)                  → utf8, len=remaining
+  //   write(string, offset, encoding)        → len=remaining
+  //   write(string, offset, length)          → utf8
+  //   write(string, offset, length, encoding)
+  // offset/length are ToInt32'd; non-finite (NaN/Infinity) length collapses
+  // to the remaining space (Node.js/V8 behaviour: IntegerValue(NaN)===0).
+  function _ERR_BUFFER_OUT_OF_BOUNDS(name) {
+    var msg = name ? (name + ' is outside of buffer bounds') : 'Attempt to access memory outside buffer bounds';
+    var err = new RangeError(msg);
+    err.code = 'ERR_BUFFER_OUT_OF_BOUNDS';
+    return err;
+  }
+  function _checkOffset(offset, byteLength, bufLen, name) {
+    name = name || 'offset';
+    if (offset > bufLen - byteLength) {
+      if (byteLength === 0 && offset === bufLen) return offset; // empty write at end ok
+      throw _ERR_BUFFER_OUT_OF_BOUNDS(name);
+    }
+    return offset;
+  }
+
+  // UTF-8 encoder/decoder using SM's TextEncoder/TextDecoder globals.
+  function _utf8Bytes(str) {
+    if (globalThis.TextEncoder) {
+      var enc = new globalThis.TextEncoder();
+      return Array.prototype.slice.call(enc.encode(str));
+    }
+    // Fallback: manual UTF-8 encode.
+    var out = [];
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      if (c < 0x80) { out.push(c); }
+      else if (c < 0x800) { out.push(0xC0 | (c >> 6), 0x80 | (c & 0x3F)); }
+      else { out.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 0x3F), 0x80 | (c & 0x3F)); }
+    }
+    return out;
+  }
+  function _utf16leBytes(str) {
+    var out = [];
+    for (var i = 0; i < str.length; i++) {
+      var c = str.charCodeAt(i);
+      out.push(c & 0xFF, (c >> 8) & 0xFF);
+    }
+    return out;
+  }
+  function _hexBytes(str) {
+    // @trace REQ-ENG-005 [algorithm:hex] — Node.js rejects non-hex chars
+    // (outside [0-9a-fA-F]). buffer.test.js drives fill(...,"hex") and
+    // Buffer.from(...,"hex") with invalid input expecting a throw.
+    var out = [];
+    var s = str.length % 2 === 0 ? str : ('0' + str);
+    for (var i = 0; i + 1 < s.length; i += 2) {
+      var hi = s.charCodeAt(i);
+      var lo = s.charCodeAt(i + 1);
+      var hv = (hi >= 48 && hi <= 57) ? hi - 48
+             : (hi >= 97 && hi <= 102) ? hi - 87
+             : (hi >= 65 && hi <= 70) ? hi - 55
+             : -1;
+      var lv = (lo >= 48 && lo <= 57) ? lo - 48
+             : (lo >= 97 && lo <= 102) ? lo - 87
+             : (lo >= 65 && lo <= 70) ? lo - 55
+             : -1;
+      if (hv < 0 || lv < 0) {
+        var err = new TypeError('The value of "value" is out of range. It must be a hex-encoded string. Received ' + JSON.stringify(str));
+        throw err;
+      }
+      out.push((hv << 4) | lv);
+    }
+    return out;
+  }
+  function _base64Bytes(str) {
+    // Node.js: base64/base64url decode using atob (handles both, with
+    // url-safe substitution for base64url).
+    if (typeof globalThis.atob !== 'function') {
+      // Manual decode fallback.
+      var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      str = str.replace(/[^A-Za-z0-9+/=]/g, '');
+      var out = [];
+      for (var i = 0; i < str.length; i += 4) {
+        var n = (chars.indexOf(str[i]) << 18) | (chars.indexOf(str[i+1]) << 12) | ((chars.indexOf(str[i+2]) & 0x3F) << 6) | (chars.indexOf(str[i+3]) & 0x3F);
+        out.push((n >> 16) & 0xFF);
+        if (str[i+2] !== '=') out.push((n >> 8) & 0xFF);
+        if (str[i+3] !== '=') out.push(n & 0xFF);
+      }
+      return out;
+    }
+    var decoded = globalThis.atob(str);
+    var out = new Array(decoded.length);
+    for (var i = 0; i < decoded.length; i++) out[i] = decoded.charCodeAt(i);
+    return out;
+  }
+  function _base64urlBytes(str) {
+    // base64url → base64 then decode. Pad to multiple of 4.
+    var s = str.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4 !== 0) s += '=';
+    return _base64Bytes(s);
+  }
+
+  // Shared *Write body: writes `bytes` into this buffer at `offset`, clamped
+  // to `length` (remaining buffer space). Returns the number of bytes
+  // actually written. Performs ERR_BUFFER_OUT_OF_BOUNDS bounds check per
+  // Node.js (offset/length that exceed buf.length throw).
+  function _doWrite(buf, bytes, offset, length) {
+    // @trace REQ-ENG-005 [api:Buffer.*Write] — Node.js semantics:
+    //   • offset beyond buf.length → ERR_BUFFER_OUT_OF_BOUNDS
+    //   • explicit length that exceeds (buf.length - offset) →
+    //     ERR_BUFFER_OUT_OF_BOUNDS (NOT a silent clamp). buffer.test.js
+    //     "*Write methods … length larger than available buffer space"
+    //     drives this for utf8Write/utf16leWrite/latin1Write/asciiWrite/
+    //     base64Write/base64urlWrite/hexWrite.
+    //   • length undefined → clamp to remaining buffer space (silent).
+    //   • NaN/Infinity offset coerces to 0 (V8 IntegerValue).
+    var bufLen = buf.length;
+    if (offset === undefined || typeof offset !== 'number' || !isFinite(offset)) offset = 0;
+    offset = offset >>> 0;
+    if (offset > bufLen) {
+      throw _ERR_BUFFER_OUT_OF_BOUNDS();
+    }
+    if (length === undefined) {
+      length = bufLen - offset;
+    } else {
+      if (typeof length !== 'number' || !isFinite(length)) {
+        length = bufLen - offset;
+      } else {
+        length = length >>> 0;
+        if (length > bufLen - offset) {
+          throw _ERR_BUFFER_OUT_OF_BOUNDS();
+        }
+      }
+    }
+    var n = Math.min(bytes.length, length);
+    for (var i = 0; i < n; i++) buf[offset + i] = bytes[i] & 0xFF;
+    return n;
+  }
+
+  _bp.utf8Write = function(string, offset, length) {
+    // @trace REQ-ENG-005 [api:Buffer.utf8Write] — Node.js truncates at the
+    // character boundary: a multi-byte UTF-8 sequence that does not fully
+    // fit in the remaining buffer space is dropped entirely (it is NOT
+    // split mid-codepoint). buffer.test.js "UTF-8 write() & slice()" and
+    // "truncate write() at character boundary" drive this. We compute the
+    // full UTF-8 byte sequence, then walk the original string's codepoints
+    // to find the largest prefix whose encoded length fits `length`.
+    var s = String(string);
+    var allBytes = _utf8Bytes(s);
+    var bufLen = this.length;
+    var off = offset === undefined ? 0 : +offset;
+    off = off >>> 0;
+    // @trace REQ-ENG-005 — explicit length > remaining throws
+    // ERR_BUFFER_OUT_OF_BOUNDS; undefined length clamps silently.
+    var len;
+    if (length === undefined) {
+      len = bufLen - off;
+    } else if (typeof length !== 'number' || !isFinite(length)) {
+      len = bufLen - off;
+    } else {
+      len = length >>> 0;
+      if (off > bufLen || len > bufLen - off) {
+        throw _ERR_BUFFER_OUT_OF_BOUNDS();
+      }
+    }
+    if (off > bufLen) {
+      throw _ERR_BUFFER_OUT_OF_BOUNDS();
+    }
+    // Walk codepoints; for each, compute its UTF-8 byte length, and stop
+    // when adding it would exceed `len` (character-boundary truncation).
+    var written = 0;
+    var idx = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      var encLen;
+      if (c < 0x80) encLen = 1;
+      else if (c < 0x800) encLen = 2;
+      else {
+        // Surrogate pair handling: a high surrogate followed by a low
+        // surrogate encodes to a 4-byte UTF-8 sequence (one codepoint).
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
+          var lo = s.charCodeAt(i + 1);
+          if (lo >= 0xDC00 && lo <= 0xDFFF) { encLen = 4; i++; }
+          else { encLen = 3; }
+        } else { encLen = 3; }
+      }
+      if (written + encLen > len) break;
+      written += encLen;
+    }
+    // Copy `written` bytes from allBytes into this buffer.
+    for (var j = 0; j < written; j++) this[off + j] = allBytes[j] & 0xFF;
+    return written;
   };
+  _bp.asciiWrite = function(string, offset, length) {
+    // Node.js parity: 'ascii' on encode == 'latin1' (verbatim byte copy,
+    // not 7-bit masking). See bun/test #31083.
+    var s = String(string);
+    var bytes = new Array(s.length);
+    for (var i = 0; i < s.length; i++) bytes[i] = s.charCodeAt(i) & 0xFF;
+    return _doWrite(this, bytes, offset === undefined ? 0 : +offset, length === undefined ? undefined : +length);
+  };
+  _bp.latin1Write = _bp.asciiWrite;
+  _bp.hexWrite = function(string, offset, length) {
+    var bytes = _hexBytes(String(string));
+    return _doWrite(this, bytes, offset === undefined ? 0 : +offset, length === undefined ? undefined : +length);
+  };
+  _bp.base64Write = function(string, offset, length) {
+    var bytes = _base64Bytes(String(string));
+    return _doWrite(this, bytes, offset === undefined ? 0 : +offset, length === undefined ? undefined : +length);
+  };
+  _bp.base64urlWrite = function(string, offset, length) {
+    var bytes = _base64urlBytes(String(string));
+    return _doWrite(this, bytes, offset === undefined ? 0 : +offset, length === undefined ? undefined : +length);
+  };
+  _bp.ucs2Write = function(string, offset, length) {
+    // @trace REQ-ENG-005 [api:Buffer.ucs2Write] — Node.js truncates at the
+    // code-unit boundary: a 2-byte UCS-2 unit that does not fully fit in
+    // the remaining buffer space is dropped entirely. buffer.test.js
+    // "write" drives x.write("ыыыыыы", 3, "ucs2") on a 4-byte buffer to
+    // assert 0 bytes are written (only 1 byte available at offset 3).
+    var s = String(string);
+    var bytes = _utf16leBytes(s);
+    var bufLen = this.length;
+    var off = offset === undefined ? 0 : +offset;
+    off = off >>> 0;
+    var len;
+    if (length === undefined) {
+      len = bufLen - off;
+    } else if (typeof length !== 'number' || !isFinite(length)) {
+      len = bufLen - off;
+    } else {
+      len = length >>> 0;
+      if (off > bufLen || len > bufLen - off) {
+        throw _ERR_BUFFER_OUT_OF_BOUNDS();
+      }
+    }
+    if (off > bufLen) {
+      throw _ERR_BUFFER_OUT_OF_BOUNDS();
+    }
+    // Truncate to even byte count (full UCS-2 units only).
+    var n = Math.min(bytes.length, len);
+    if (n % 2 !== 0) n -= 1;
+    for (var i = 0; i < n; i++) this[off + i] = bytes[i] & 0xFF;
+    return n;
+  };
+  _bp.utf16leWrite = _bp.ucs2Write;
+  _bp.utf16beWrite = function(string, offset, length) {
+    var s = String(string);
+    var bytes = new Array(s.length * 2);
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      bytes[i*2] = (c >> 8) & 0xFF;
+      bytes[i*2+1] = c & 0xFF;
+    }
+    return _doWrite(this, bytes, offset === undefined ? 0 : +offset, length === undefined ? undefined : +length);
+  };
+
+  _bp.write = function write(string, offset, length, encoding) {
+    // Mirror Node.js's argument-overload matrix exactly.
+    if (typeof string !== 'string') string = String(string);
+    if (offset === undefined) {
+      encoding = 'utf8';
+      length = this.length;
+      offset = 0;
+    } else if (length === undefined && typeof offset === 'string') {
+      encoding = offset;
+      length = this.length;
+      offset = 0;
+    } else {
+      // offset must be a number. Non-number offset (e.g. write("s","utf8",0))
+      // throws ERR_INVALID_ARG_TYPE per Node.js.
+      if (typeof offset !== 'number') {
+        var inspected = (typeof offset === 'string') ? ("'" + offset + "'") : String(offset);
+        throw new TypeError('The "offset" argument must be of type number. Received type ' + typeof offset + ' (' + inspected + ')');
+      }
+      if (!isFinite(offset)) {
+        throw new TypeError('The "offset" argument must be of type number. Received type ' + typeof offset);
+      }
+      offset = offset >>> 0;
+      if (typeof length === 'string') {
+        encoding = length;
+        length = undefined;
+      } else if (length !== undefined && isFinite(length)) {
+        length = length >>> 0;
+        if (encoding === undefined) encoding = 'utf8';
+      } else if (length !== undefined) {
+        encoding = length;
+        length = undefined;
+      } else {
+        if (encoding === undefined) encoding = 'utf8';
+      }
+    }
+
+    var remaining = this.length - offset;
+    if (length === undefined || length > remaining) length = remaining;
+    length = length >>> 0;
+
+    // Bounds: empty string at end-of-buffer is OK; everything past it throws.
+    if ((string.length > 0 && (length < 0 || offset < 0)) || offset > this.length) {
+      throw new RangeError('Attempt to write outside buffer bounds');
+    }
+
+    if (!encoding) encoding = 'utf8';
+    encoding = ('' + encoding).toLowerCase();
+
+    switch (encoding) {
+      case 'hex': return _bp.hexWrite.call(this, string, offset, length);
+      case 'utf8': case 'utf-8': return _bp.utf8Write.call(this, string, offset, length);
+      case 'ascii': case 'binary': case 'latin1': return _bp.asciiWrite.call(this, string, offset, length);
+      case 'base64': return _bp.base64Write.call(this, string, offset, length);
+      case 'base64url': return _bp.base64urlWrite.call(this, string, offset, length);
+      case 'ucs2': case 'ucs-2': case 'utf16le': case 'utf-16le': return _bp.utf16leWrite.call(this, string, offset, length);
+      case 'utf16be': case 'utf-16be': return _bp.utf16beWrite.call(this, string, offset, length);
+      default: throw new TypeError('Unknown encoding: ' + encoding);
+    }
+  };
+
+  // @trace REQ-ENG-005 [api:Buffer.prototype.*Slice] — slice helpers that
+  // Node.js exposes on the prototype (hexSlice/utf8Slice/asciiSlice/
+  // latin1Slice/base64Slice/base64urlSlice/ucs2Slice/utf16leSlice). These
+  // produce the string form of [start,end) under the given encoding, sharing
+  // the same encoder used by toString, but apply strict range validation:
+  // out-of-range start/end throws RangeError (NOT a silent clamp), and
+  // non-ArrayBufferView receivers throw TypeError. buffer.test.js drives
+  // latin1Slice/hexSlice/ucs2Slice explicitly.
+  function _checkSliceReceiver() {
+    if (this === null || this === undefined || typeof this !== 'object') {
+      throw new TypeError('The "this" value must be of type object. Received type ' + (this === null ? 'null' : typeof this));
+    }
+    if (!(this.buffer instanceof ArrayBuffer) && !(this instanceof Uint8Array)) {
+      throw new TypeError('The "this" value must be an instance of ArrayBufferView.');
+    }
+  }
+  function _sliceBounds(len, start, end) {
+    if (start === undefined) start = 0;
+    if (end === undefined) end = len;
+    start = start | 0;
+    end = end | 0;
+    if (start < 0 || end < 0 || start > len || end > len) {
+      throw new RangeError('Index out of range');
+    }
+    if (start > end) {
+      throw new RangeError('Index out of range');
+    }
+    return [start, end];
+  }
+  _bp.hexSlice = function(start, end) {
+    _checkSliceReceiver.call(this);
+    var b = _sliceBounds(this.length, start, end);
+    var hexLen = (b[1] - b[0]) * 2;
+    // @trace REQ-ENG-005 — Node.js caps the output string at
+    // constants.MAX_STRING_LENGTH (2147483647) chars. Hex doubles the
+    // input length, so a buffer > MAX/2 throws RangeError. Test
+    // "Buffer.hexSlice() throws for large buffers" drives this.
+    var MAX_STR = 2147483647;
+    if (hexLen > MAX_STR) {
+      throw new RangeError('Cannot create a string longer than ' + MAX_STR + ' characters');
+    }
+    return this.toString('hex', b[0], b[1]);
+  };
+  _bp.utf8Slice = function(start, end) {
+    _checkSliceReceiver.call(this);
+    var b = _sliceBounds(this.length, start, end);
+    return this.toString('utf8', b[0], b[1]);
+  };
+  _bp.asciiSlice = function(start, end) {
+    _checkSliceReceiver.call(this);
+    var b = _sliceBounds(this.length, start, end);
+    return this.toString('ascii', b[0], b[1]);
+  };
+  _bp.latin1Slice = function(start, end) {
+    _checkSliceReceiver.call(this);
+    var b = _sliceBounds(this.length, start, end);
+    return this.toString('latin1', b[0], b[1]);
+  };
+  _bp.base64Slice = function(start, end) {
+    _checkSliceReceiver.call(this);
+    var b = _sliceBounds(this.length, start, end);
+    return this.toString('base64', b[0], b[1]);
+  };
+  _bp.base64urlSlice = function(start, end) {
+    _checkSliceReceiver.call(this);
+    var b = _sliceBounds(this.length, start, end);
+    return this.toString('base64url', b[0], b[1]);
+  };
+  _bp.ucs2Slice = function(start, end) {
+    _checkSliceReceiver.call(this);
+    var b = _sliceBounds(this.length, start, end);
+    return this.toString('ucs2', b[0], b[1]);
+  };
+  _bp.utf16leSlice = _bp.ucs2Slice;
+
+  // @trace REQ-ENG-005 [api:Buffer.prototype.toLocaleString] — Node.js
+  // alias of toString (Buffer.prototype.toLocaleString === toString).
+  // Without overriding, the inherited TypedArray.toLocaleString returns a
+  // comma-joined list of bytes (e.g. "116,101,115,116").
+  _bp.toLocaleString = _bp.toString;
+
+  // @trace REQ-ENG-005 [api:Buffer.prototype.inspect] — legacy Node.js
+  // inspect method. Upstream tests assert it exists and matches
+  // Bun.inspect output. We delegate to Bun.inspect when present, else
+  // build a "<Buffer hex...>" string ourselves.
+  _bp.inspect = function(depth, options) {
+    if (typeof globalThis.Bun === 'object' && globalThis.Bun && typeof globalThis.Bun.inspect === 'function') {
+      return globalThis.Bun.inspect(this);
+    }
+    var bytes = [];
+    for (var i = 0; i < this.length; i++) bytes.push(this[i]);
+    return '<Buffer ' + bytes.map(function(b) { return (b < 16 ? '0' : '') + b.toString(16); }).join(' ') + '>';
+  };
+
+  // @trace REQ-ENG-005 [api:Buffer.copyBytesFrom] — static constructor
+  // method. Copies the bytes referenced by a TypedArray view into a fresh
+  // Buffer. Honours the view's byteOffset/byteLength so a sub-view of an
+  // ArrayBuffer copies only the referenced bytes (Node.js parity). The
+  // optional sourceStart/sourceEnd clamp the source range.
+  if (!Buffer.copyBytesFrom) {
+    Buffer.copyBytesFrom = function(source, sourceStart, sourceEnd) {
+      var view;
+      if (source instanceof Uint8Array) {
+        view = source;
+      } else if (source && typeof source === 'object' && source.buffer instanceof ArrayBuffer) {
+        // TypedArray of any element kind — project to bytes.
+        view = new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+      } else {
+        throw new TypeError('The "source" argument must be an instance of TypedArray.');
+      }
+      var byteLen = view.byteLength;
+      var start = sourceStart === undefined ? 0 : (sourceStart >>> 0);
+      var end = sourceEnd === undefined ? byteLen : (sourceEnd >>> 0);
+      if (start < 0) start = 0;
+      if (end > byteLen) end = byteLen;
+      if (end < start) end = start;
+      var n = end - start;
+      var buf = Buffer.allocUnsafe(n);
+      for (var i = 0; i < n; i++) buf[i] = view[start + i];
+      return buf;
+    };
+  }
 
   _bp.readUInt8 = function(offset) { return this[offset || 0]; };
   _bp.writeUInt8 = function(val, offset) { this[offset || 0] = val & 0xFF; return offset || 0; };
 
-  _bp.fill = function(val, start, end) {
-    start = start || 0; end = end || this.length;
-    var b = (typeof val === 'number') ? val & 0xFF : (typeof val === 'string') ? val.charCodeAt(0) : 0;
-    for (var i = start; i < end; i++) { this[i] = b; }
+  // @trace REQ-ENG-005 [api:Buffer.prototype.fill] — Node.js fill(value[,
+  // start[, end]][, encoding]). The encoding argument is positional: when
+  // `value` is a string, the last argument (if it's a string) is the
+  // encoding. We resolve which positional arg is start/end/encoding by
+  // walking the argument shape, mirroring Node's coercions. Supports number,
+  // string (with encoding), Buffer, and Uint8Array fill values. For a Buffer
+  // fill value, the source bytes are tiled across [start,end) (Node parity:
+  // buf.fill(otherBuf) repeats the other buffer's contents).
+  _bp.fill = function fill(val, start, end, encoding) {
+    var len = this.length;
+    // Resolve positional args. encoding only applies when val is a string.
+    if (typeof val === 'string') {
+      // Signature: fill(string[, start[, end]][, encoding])
+      if (typeof start === 'string') { encoding = start; start = 0; end = len; }
+      else if (typeof end === 'string') { encoding = end; end = len; }
+    }
+    // @trace REQ-ENG-005 [api:Buffer.fill] — Node.js validates start/end
+    // and the encoding argument explicitly. Negative or out-of-range
+    // start/end throws RangeError; unknown encoding throws TypeError.
+    // buffer.test.js "fill() should throw on invalid arguments" and
+    // "fill() should properly check start & end" drive this.
+    if (typeof encoding !== 'undefined' && typeof encoding !== 'string') {
+      throw new TypeError('The "encoding" argument must be of type string.');
+    }
+    var VALID_ENCODINGS = {
+      utf8:1, 'utf-8':1, utf16le:1, 'utf-16le':1, utf16be:1, 'utf-16be':1,
+      latin1:1, binary:1, ascii:1, base64:1, base64url:1, hex:1, ucs2:1, 'ucs-2':1
+    };
+    if (typeof encoding === 'string' && !VALID_ENCODINGS[encoding.toLowerCase()]) {
+      throw new TypeError('Unknown encoding: ' + encoding);
+    }
+    var sRaw = start, eRaw = end;
+    if (sRaw === undefined || sRaw === null) sRaw = 0;
+    if (eRaw === undefined || eRaw === null) eRaw = len;
+    // @trace REQ-ENG-005 — Non-number/non-string start/end (e.g. a plain
+    // object with Symbol.toPrimitive) must throw TypeError per Node.js
+    // (buffer.test.js "fill() should properly check start & end").
+    if (typeof sRaw !== 'number' && typeof sRaw !== 'string') {
+      throw new TypeError('The value of "start" is out of range. It must be an integer. Received an instance of Object');
+    }
+    if (typeof eRaw !== 'number' && typeof eRaw !== 'string') {
+      throw new TypeError('The value of "end" is out of range. It must be an integer. Received an instance of Object');
+    }
+    if (typeof sRaw === 'number' && sRaw < 0) throw new RangeError('Index out of range');
+    if (typeof eRaw === 'number' && eRaw < 0) throw new RangeError('Index out of range');
+    start = sRaw >>> 0; end = eRaw >>> 0;
+    if (start > len) throw new RangeError('Index out of range');
+    if (end > len) throw new RangeError('Index out of range');
+    if (end < start) end = start;
+
+    if (typeof val === 'number') {
+      var b = val & 0xFF;
+      for (var i = start; i < end; i++) this[i] = b;
+    } else if (typeof val === 'string') {
+      var enc = (encoding || 'utf8').toLowerCase();
+      var bytes;
+      if (enc === 'hex') {
+        bytes = _hexBytes(val);
+      } else if (enc === 'base64') {
+        bytes = _base64Bytes(val);
+      } else if (enc === 'base64url') {
+        bytes = _base64urlBytes(val);
+      } else if (enc === 'ucs2' || enc === 'ucs-2' || enc === 'utf16le' || enc === 'utf-16le') {
+        bytes = _utf16leBytes(val);
+      } else if (enc === 'utf16be' || enc === 'utf-16be') {
+        var s = val; bytes = new Array(s.length * 2);
+        for (var k = 0; k < s.length; k++) { var c = s.charCodeAt(k); bytes[k*2] = (c>>8)&0xFF; bytes[k*2+1] = c&0xFF; }
+      } else if (enc === 'ascii' || enc === 'latin1' || enc === 'binary') {
+        // Node parity: ascii/latin1 on encode = verbatim low byte per char.
+        bytes = new Array(val.length);
+        for (var k = 0; k < val.length; k++) bytes[k] = val.charCodeAt(k) & 0xFF;
+      } else {
+        bytes = _utf8Bytes(val);
+      }
+      if (bytes.length === 0) bytes = [0];
+      // Tile the encoded bytes across [start,end).
+      for (var i = start; i < end; i++) {
+        this[i] = bytes[(i - start) % bytes.length] & 0xFF;
+      }
+    } else if (val && typeof val === 'object' && typeof val.length === 'number') {
+      // Buffer or Uint8Array fill: tile the source bytes.
+      var src = val;
+      if (src.length === 0) { return this; }
+      for (var i = start; i < end; i++) {
+        this[i] = src[(i - start) % src.length] & 0xFF;
+      }
+    } else {
+      // Fallback: fill with 0.
+      for (var i = start; i < end; i++) this[i] = 0;
+    }
     return this;
   };
 
@@ -563,10 +1085,10 @@ pub fn install_buffer_global(
   };
 
   _bp.readInt8 = function(offset) { var v = this[offset || 0]; return v > 127 ? v - 256 : v; };
-  _bp.readUInt16LE = function(offset) { offset = offset || 0; return this[offset] | (this[offset + 1] << 8); };
-  _bp.writeUInt16LE = function(val, offset) { offset = offset || 0; this[offset] = val & 0xFF; this[offset + 1] = (val >> 8) & 0xFF; return offset; };
-  _bp.readUInt32LE = function(offset) { offset = offset || 0; return ((this[offset]) | (this[offset+1] << 8) | (this[offset+2] << 16) | (this[offset+3] << 24)) >>> 0; };
-  _bp.writeUInt32LE = function(val, offset) { offset = offset || 0; this[offset] = val & 0xFF; this[offset+1] = (val >> 8) & 0xFF; this[offset+2] = (val >> 16) & 0xFF; this[offset+3] = (val >> 24) & 0xFF; return offset; };
+  _bp.readUInt16LE = function(offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, offset, 2); return this[offset] | (this[offset + 1] << 8); };
+  _bp.writeUInt16LE = function(val, offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkWriteBounds(this.length, offset, 2); this[offset] = val & 0xFF; this[offset + 1] = (val >> 8) & 0xFF; return offset + 2; };
+  _bp.readUInt32LE = function(offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, offset, 4); return ((this[offset]) | (this[offset+1] << 8) | (this[offset+2] << 16) | (this[offset+3] << 24)) >>> 0; };
+  _bp.writeUInt32LE = function(val, offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkWriteBounds(this.length, offset, 4); this[offset] = val & 0xFF; this[offset+1] = (val >> 8) & 0xFF; this[offset+2] = (val >> 16) & 0xFF; this[offset+3] = (val >> 24) & 0xFF; return offset + 4; };
   _bp.readInt16LE = function(offset) { var v = _bp.readUInt16LE.call(this, offset); return v > 32767 ? v - 65536 : v; };
   _bp.writeInt16LE = function(val, offset) { return _bp.writeUInt16LE.call(this, val & 0xFFFF, offset); };
   _bp.readInt32LE = function(offset) { return this[offset || 0] | (this[(offset||0)+1] << 8) | (this[(offset||0)+2] << 16) | (this[(offset||0)+3] << 24); };
@@ -577,30 +1099,57 @@ pub fn install_buffer_global(
     u8[0]=this[offset]; u8[1]=this[offset+1]; u8[2]=this[offset+2]; u8[3]=this[offset+3];
     return f32[0];
   };
+  // @trace REQ-ENG-005 [api:Buffer bounds] — write/read helpers that throw
+  // RangeError (ERR_BUFFER_OUT_OF_BOUNDS) when [offset, offset+byteLength)
+  // exceeds the buffer length. Used by writeFloat/Double{LE,BE},
+  // writeUInt16/32{LE,BE}, and read counterparts. buffer.test.js
+  // "buffer overflow" / "ERR_BUFFER_OUT_OF_BOUNDS" drive this.
+  function _checkWriteBounds(bufLen, offset, byteLength) {
+    if (offset > bufLen - byteLength) {
+      throw _ERR_BUFFER_OUT_OF_BOUNDS();
+    }
+  }
+  function _checkReadBounds(bufLen, offset, byteLength) {
+    if (offset > bufLen - byteLength) {
+      throw _ERR_BUFFER_OUT_OF_BOUNDS();
+    }
+  }
+
   _bp.writeFloatLE = function(val, offset) {
-    offset = offset || 0;
+    offset = offset === undefined ? 0 : (offset >>> 0);
+    _checkWriteBounds(this.length, offset, 4);
     var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
     f32[0] = val; this[offset]=u8[0]; this[offset+1]=u8[1]; this[offset+2]=u8[2]; this[offset+3]=u8[3];
-    return offset;
+    return offset + 4;
   };
   _bp.readDoubleLE = function(offset) {
-    offset = offset || 0;
+    offset = offset === undefined ? 0 : (offset >>> 0);
+    _checkReadBounds(this.length, offset, 8);
     var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
     for (var i = 0; i < 8; i++) u8[i] = this[offset + i];
     return f64[0];
   };
   _bp.writeDoubleLE = function(val, offset) {
-    offset = offset || 0;
+    offset = offset === undefined ? 0 : (offset >>> 0);
+    _checkWriteBounds(this.length, offset, 8);
     var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
     f64[0] = val; for (var i = 0; i < 8; i++) this[offset + i] = u8[i];
-    return offset;
+    return offset + 8;
   };
 
   _bp.swap16 = function() {
+    // @trace REQ-ENG-005 [api:Buffer.swap16] — Node.js throws RangeError
+    // "Buffer size must be a multiple of 16-bits" when length is odd.
+    if (this.length & 1) {
+      throw new RangeError('Buffer size must be a multiple of 16-bits');
+    }
     for (var i = 0; i < this.length - 1; i += 2) { var t = this[i]; this[i] = this[i+1]; this[i+1] = t; }
     return this;
   };
   _bp.swap32 = function() {
+    if (this.length & 3) {
+      throw new RangeError('Buffer size must be a multiple of 32-bits');
+    }
     for (var i = 0; i < this.length - 3; i += 4) {
       var a=this[i], b=this[i+1], c=this[i+2], d=this[i+3];
       this[i]=d; this[i+1]=c; this[i+2]=b; this[i+3]=a;
@@ -608,6 +1157,9 @@ pub fn install_buffer_global(
     return this;
   };
   _bp.swap64 = function() {
+    if (this.length & 7) {
+      throw new RangeError('Buffer size must be a multiple of 64-bits');
+    }
     for (var i = 0; i < this.length - 7; i += 8) {
       var t;
       t=this[i]; this[i]=this[i+7]; this[i+7]=t;
@@ -674,12 +1226,12 @@ pub fn install_buffer_global(
     return 0;
   };
 
-  _bp.readUInt16BE = function(offset) { offset = offset || 0; return (this[offset] << 8) | this[offset + 1]; };
-  _bp.writeUInt16BE = function(val, offset) { offset = offset || 0; this[offset] = (val >> 8) & 0xFF; this[offset + 1] = val & 0xFF; return offset; };
-  _bp.readUInt32BE = function(offset) { offset = offset || 0; return ((this[offset] << 24) | (this[offset+1] << 16) | (this[offset+2] << 8) | this[offset+3]) >>> 0; };
-  _bp.writeUInt32BE = function(val, offset) { offset = offset || 0; this[offset] = (val >> 24) & 0xFF; this[offset+1] = (val >> 16) & 0xFF; this[offset+2] = (val >> 8) & 0xFF; this[offset+3] = val & 0xFF; return offset; };
+  _bp.readUInt16BE = function(offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, offset, 2); return (this[offset] << 8) | this[offset + 1]; };
+  _bp.writeUInt16BE = function(val, offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkWriteBounds(this.length, offset, 2); this[offset] = (val >> 8) & 0xFF; this[offset + 1] = val & 0xFF; return offset + 2; };
+  _bp.readUInt32BE = function(offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, offset, 4); return ((this[offset] << 24) | (this[offset+1] << 16) | (this[offset+2] << 8) | this[offset+3]) >>> 0; };
+  _bp.writeUInt32BE = function(val, offset) { offset = offset === undefined ? 0 : (offset >>> 0); _checkWriteBounds(this.length, offset, 4); this[offset] = (val >> 24) & 0xFF; this[offset+1] = (val >> 16) & 0xFF; this[offset+2] = (val >> 8) & 0xFF; this[offset+3] = val & 0xFF; return offset + 4; };
   _bp.readInt16BE = function(offset) { var v = _bp.readUInt16BE.call(this, offset); return v > 32767 ? v - 65536 : v; };
-  _bp.readInt32BE = function(offset) { return (this[offset||0] << 24) | (this[(offset||0)+1] << 16) | (this[(offset||0)+2] << 8) | this[(offset||0)+3]; };
+  _bp.readInt32BE = function(offset) { var o = offset === undefined ? 0 : (offset >>> 0); _checkReadBounds(this.length, o, 4); return (this[o] << 24) | (this[o+1] << 16) | (this[o+2] << 8) | this[o+3]; };
   _bp.readFloatBE = function(offset) {
     offset = offset || 0;
     var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
@@ -695,59 +1247,154 @@ pub fn install_buffer_global(
   };
   _bp.writeInt32BE = function(val, offset) { return _bp.writeUInt32BE.call(this, val >>> 0, offset); };
   _bp.writeFloatBE = function(val, offset) {
-    offset = offset || 0;
+    offset = offset === undefined ? 0 : (offset >>> 0);
+    _checkWriteBounds(this.length, offset, 4);
     var buf = new ArrayBuffer(4); var u8 = new Uint8Array(buf); var f32 = new Float32Array(buf);
     f32[0] = val; this[offset+3]=u8[0]; this[offset+2]=u8[1]; this[offset+1]=u8[2]; this[offset]=u8[3];
-    return offset;
+    return offset + 4;
   };
   _bp.writeDoubleBE = function(val, offset) {
-    offset = offset || 0;
+    offset = offset === undefined ? 0 : (offset >>> 0);
+    _checkWriteBounds(this.length, offset, 8);
     var buf = new ArrayBuffer(8); var u8 = new Uint8Array(buf); var f64 = new Float64Array(buf);
     f64[0] = val; for (var i = 0; i < 8; i++) this[offset + 7 - i] = u8[i];
-    return offset;
+    return offset + 8;
   };
+  // @trace REQ-ENG-005 [api:Buffer.prototype.read/writeBigInt*] — Node.js
+  // BigInt read/write. Throws ERR_BUFFER_OUT_OF_BOUNDS (RangeError with
+  // .code) when offset is out of bounds, and returns offset+8 (bytes written)
+  // on success. Tests buffer.test.js:ERR_BUFFER_OUT_OF_BOUNDS drive this path
+  // for bufferLength 0..6 with both (val) and (val, 0) call shapes.
+  function _checkBigIntBounds(buf, offset) {
+    offset = offset >>> 0;
+    if (buf.length < 8 || offset > buf.length - 8) {
+      throw _ERR_BUFFER_OUT_OF_BOUNDS();
+    }
+    return offset;
+  }
   _bp.readBigInt64LE = function(offset) {
-    offset = offset || 0;
+    offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     var lo = _bp.readUInt32LE.call(this, offset);
     var hi = _bp.readInt32LE.call(this, offset + 4);
     return BigInt(hi) << 32n | BigInt(lo >>> 0);
   };
   _bp.readBigUInt64LE = function(offset) {
-    offset = offset || 0;
+    offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     var lo = _bp.readUInt32LE.call(this, offset);
     var hi = _bp.readUInt32LE.call(this, offset + 4);
     return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
   };
   _bp.readBigInt64BE = function(offset) {
-    offset = offset || 0;
+    offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     var hi = _bp.readInt32BE.call(this, offset);
     var lo = _bp.readUInt32BE.call(this, offset + 4);
     return BigInt(hi) << 32n | BigInt(lo >>> 0);
   };
   _bp.readBigUInt64BE = function(offset) {
-    offset = offset || 0;
+    offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     var hi = _bp.readUInt32BE.call(this, offset);
     var lo = _bp.readUInt32BE.call(this, offset + 4);
     return (BigInt(hi >>> 0) << 32n) | BigInt(lo >>> 0);
   };
   _bp.writeBigInt64LE = function(val, offset) {
-    offset = offset || 0;
+    offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     val = BigInt(val);
+    // @trace REQ-ENG-005 — range check for signed 64-bit. Node throws
+    // RangeError ERR_OUT_OF_RANGE when val is outside [-2^63, 2^63).
+    if (val < -0x8000000000000000n || val > 0x7fffffffffffffffn) {
+      var e = new RangeError('The value of "value" is out of range. >= -(2n ** 63n) and < 2 ** 63n');
+      e.code = 'ERR_OUT_OF_RANGE';
+      throw e;
+    }
     _bp.writeUInt32LE.call(this, Number(val & 0xFFFFFFFFn), offset);
     _bp.writeInt32LE.call(this, Number(val >> 32n), offset + 4);
-    return offset;
+    return offset + 8;
   };
-  _bp.writeBigUInt64LE = function(val, offset) { return _bp.writeBigInt64LE.call(this, val, offset); };
-  _bp.writeBigInt64BE = function(val, offset) {
-    offset = offset || 0;
+  _bp.writeBigUInt64LE = function(val, offset) {
+    offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
     val = BigInt(val);
+    if (val < 0n || val > 0xffffffffffffffffn) {
+      var e = new RangeError('The value of "value" is out of range. >= 0n and < 2n ** 64n');
+      e.code = 'ERR_OUT_OF_RANGE';
+      throw e;
+    }
+    return _bp.writeBigInt64LE.call(this, val, offset);
+  };
+  _bp.writeBigInt64BE = function(val, offset) {
+    offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
+    val = BigInt(val);
+    if (val < -0x8000000000000000n || val > 0x7fffffffffffffffn) {
+      var e = new RangeError('The value of "value" is out of range. >= -(2n ** 63n) and < 2 ** 63n');
+      e.code = 'ERR_OUT_OF_RANGE';
+      throw e;
+    }
     _bp.writeInt32BE.call(this, Number(val >> 32n), offset);
     _bp.writeUInt32BE.call(this, Number(val & 0xFFFFFFFFn), offset + 4);
-    return offset;
+    return offset + 8;
   };
-  _bp.writeBigUInt64BE = function(val, offset) { return _bp.writeBigInt64BE.call(this, val, offset); };
+  _bp.writeBigUInt64BE = function(val, offset) {
+    offset = _checkBigIntBounds(this, offset === undefined ? 0 : offset);
+    val = BigInt(val);
+    if (val < 0n || val > 0xffffffffffffffffn) {
+      var e = new RangeError('The value of "value" is out of range. >= 0n and < 2n ** 64n');
+      e.code = 'ERR_OUT_OF_RANGE';
+      throw e;
+    }
+    return _bp.writeBigInt64BE.call(this, val, offset);
+  };
+
+  // @trace REQ-ENG-005 [api:Buffer.prototype.offset/parent] — Node.js
+  // legacy aliases. `offset` mirrors `byteOffset` (deprecated in Node but
+  // still read by upstream tests). `parent` is the owning ArrayBufferView's
+  // buffer (Buffer.parent === Buffer.buffer for pooled buffers; we expose
+  // the underlying ArrayBuffer for parity).
+  if (!Object.prototype.hasOwnProperty.call(_bp, 'offset')) {
+    Object.defineProperty(_bp, 'offset', {
+      configurable: true, enumerable: false, get: function() { return this.byteOffset || 0; }
+    });
+  }
+  if (!Object.prototype.hasOwnProperty.call(_bp, 'parent')) {
+    Object.defineProperty(_bp, 'parent', {
+      configurable: true, enumerable: false, get: function() { return this.buffer; }
+    });
+  }
   _bp.readUInt8 = function(offset) { return this[offset || 0]; };
   _bp.writeUInt8 = function(val, offset) { this[offset || 0] = val & 0xFF; return offset || 0; };
+
+  // @trace REQ-ENG-005 [api:Buffer.alloc] — wrap the native alloc to support
+  // multi-byte string fill + encoding and Buffer-fill (tiled). The native
+  // alloc handles integer fills and single-char strings directly; for
+  // anything richer we delegate to Buffer.prototype.fill after allocating a
+  // zeroed buffer. Node parity: Buffer.alloc(2, "ab") == <Buffer 61 62>,
+  // Buffer.alloc(4, "\x80", "ascii") == <Buffer 80 80 80 80>,
+  // Buffer.alloc(1, otherBuf) tiles otherBuf's bytes.
+  if (!Buffer.__bao_alloc_wrapped) {
+    var _nativeAlloc = Buffer.alloc;
+    Buffer.alloc = function alloc(size, fill, encoding) {
+      if (fill === undefined) return _nativeAlloc.call(this, size);
+      if (typeof fill === 'number') return _nativeAlloc.call(this, size, fill);
+      if (typeof fill === 'string') {
+        if (fill.length <= 1 && encoding === undefined) {
+          return _nativeAlloc.call(this, size, fill);
+        }
+        // Multi-char string or explicit encoding: allocate zeroed then fill.
+        var buf = _nativeAlloc.call(this, size, 0);
+        if (buf && buf.fill) buf.fill(fill, 0, buf.length, encoding);
+        return buf;
+      }
+      if (fill && typeof fill === 'object') {
+        // Buffer or Uint8Array fill: tile the source bytes.
+        var buf = _nativeAlloc.call(this, size, 0);
+        if (buf && buf.fill) buf.fill(fill, 0, buf.length);
+        return buf;
+      }
+      return _nativeAlloc.call(this, size, fill);
+    };
+    // Carry over static surface so Buffer.alloc.X still works (skip/only/if).
+    Buffer.alloc.skip = _nativeAlloc.skip;
+    Buffer.alloc.only = _nativeAlloc.only;
+    Buffer.__bao_alloc_wrapped = true;
+  }
 })();
 "#;
     unsafe {
@@ -958,11 +1605,25 @@ unsafe extern "C" fn buffer_from(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        args.rval().set(UndefinedValue());
-        return true;
+        // @trace REQ-ENG-005 — Buffer.from() (no args) throws
+        // ERR_INVALID_ARG_TYPE per Node.js (test "Buffer,poolSize").
+        mozjs::error::throw_type_error(
+            cx,
+            c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received undefined".as_ref(),
+        );
+        return false;
     }
 
     let input = *args.get(0).ptr;
+    // @trace REQ-ENG-005 — Buffer.from(null/undefined/boolean/number) throws
+    // ERR_INVALID_ARG_TYPE (test "Buffer,poolSize" drives Buffer.from(null)).
+    if input.is_null() || input.is_undefined() || input.is_boolean() || input.is_number() {
+        mozjs::error::throw_type_error(
+            cx,
+            c"The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received null".as_ref(),
+        );
+        return false;
+    }
     if input.is_string() {
         let s = crate::js_to_rust_string(cx, input);
         let encoding = if argc >= 2 {
@@ -976,18 +1637,28 @@ unsafe extern "C" fn buffer_from(
             String::new()
         };
         let bytes = if encoding == "hex" {
-            // @trace REQ-ENG-005 — Buffer.from(str, "hex") must not panic on
-            // odd-length input, invalid characters, or multi-byte UTF-8
-            // characters in the source string. Operate on bytes (not chars)
-            // to avoid char-boundary panics; clamp each window and skip
-            // non-hex byte sequences.
+            // @trace REQ-ENG-005 — Buffer.from(str, "hex") decodes pairs of
+            // hex digits and STOPS at the first non-hex character (Node.js
+            // behaviour). buffer.test.js "hex input containing byte 0xFF"
+            // drives "ab\xff\xffcd" → [0xab] (the \xff stops decoding).
             let sb = s.as_bytes();
-            (0..sb.len()).step_by(2).filter_map(|i| {
-                let end = (i + 2).min(sb.len());
-                if end <= i { return None; }
-                let window = ::std::str::from_utf8(&sb[i..end]).ok()?;
-                u8::from_str_radix(window, 16).ok()
-            }).collect::<Vec<u8>>()
+            let mut out: Vec<u8> = Vec::with_capacity(sb.len() / 2);
+            let mut i = 0;
+            while i + 1 < sb.len() {
+                let hi = sb[i];
+                let lo = sb[i + 1];
+                let hv = (hi as char).to_digit(16);
+                let lv = (lo as char).to_digit(16);
+                match (hv, lv) {
+                    (Some(h), Some(l)) => { out.push(((h << 4) | l) as u8); i += 2; }
+                    _ => break,
+                }
+            }
+            // @trace REQ-ENG-005 — Node.js discards a single trailing hex
+            // digit (odd-length input); it does NOT pad. buffer.test.js
+            // "single hex character is discarded" drives Buffer.from("A","hex")
+            // to length 0.
+            out
         } else if encoding == "base64" {
             // @trace REQ-ENG-005 [algorithm:base64]
             bun_base64::decode_alloc(s.as_bytes()).unwrap_or_default()
@@ -1031,12 +1702,13 @@ unsafe extern "C" fn buffer_from(
                 }
             }
             out
-        } else if encoding == "latin1" || encoding == "binary" {
-            // Latin1: each char clamped to 0-255 (one byte).
+        } else if encoding == "latin1" || encoding == "binary" || encoding == "ascii" {
+            // @trace REQ-ENG-005 [api:Buffer.from] — Latin1/binary/ascii encode
+            // each char to a single byte clamped to 0-255. Node.js 'ascii'
+            // historically preserves the high bit on encode (latin1 semantics)
+            // so that buf.write("\xa4","ascii") round-trips through
+            // toString("latin1"). See buffer.test.js "Buffer.from latin1 vs ascii".
             s.chars().map(|c| (c as u32 & 0xFF) as u8).collect::<Vec<u8>>()
-        } else if encoding == "ascii" {
-            // ASCII: 7-bit, masked.
-            s.chars().map(|c| (c as u32 & 0x7F) as u8).collect::<Vec<u8>>()
         } else {
             // Default: UTF-8 (Node.js semantics for the unspecified / "utf8"
             // / "utf-8" / "" cases). `s.as_bytes()` *is* UTF-8 because Rust
@@ -1055,7 +1727,10 @@ unsafe extern "C" fn buffer_from(
         let is_ab = unsafe { mozjs_sys::jsapi::JS::IsArrayBufferObject(obj) };
 
         if is_ab {
-            // Buffer.from(arrayBuffer, byteOffset?, length?)
+            // @trace REQ-ENG-005 [api:Buffer.from(arrayBuffer)] — Node parity:
+            // the returned Buffer SHARES the source ArrayBuffer (no copy), so
+            // `buf.buffer === ab` and `buf.byteOffset` reflects the view. We
+            // build the typed-array view directly off the source ArrayBuffer.
             let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
             let mut data_len: usize = 0;
             let mut is_shared = false;
@@ -1065,20 +1740,60 @@ unsafe extern "C" fn buffer_from(
                 );
             }
 
-            let offset = if argc > 1 && (*args.get(1).ptr).is_int32() {
-                (*args.get(1).ptr).to_int32().max(0) as usize
+            // Coerce offset/length from JS values (Node accepts non-int32 too).
+            let offset = if argc > 1 {
+                let v = *args.get(1).ptr;
+                if v.is_int32() { (v.to_int32() as isize).max(0) as usize }
+                else if v.is_double() { (v.to_double().max(0.0) as isize).max(0) as usize }
+                else { 0 }
             } else { 0 };
 
-            let len = if argc > 2 && (*args.get(2).ptr).is_int32() {
-                (*args.get(2).ptr).to_int32().max(0) as usize
+            // @trace REQ-ENG-005 — Node.js validates byteOffset against the
+            // ArrayBuffer length and throws RangeError on overflow
+            // (buffer.test.js "ParseArrayIndex() should handle full uint32").
+            if offset > data_len {
+                mozjs::error::throw_range_error(cx, c"Offset is outside the bounds of the DataView".as_ref());
+                return false;
+            }
+
+            let len = if argc > 2 {
+                let v = *args.get(2).ptr;
+                if v.is_int32() { (v.to_int32() as isize).max(0) as usize }
+                else if v.is_double() { (v.to_double().max(0.0) as isize).max(0) as usize }
+                else { data_len.saturating_sub(offset) }
             } else { data_len.saturating_sub(offset) };
 
-            if !data_ptr.is_null() && offset < data_len {
-                let end = (offset + len).min(data_len);
-                let slice = unsafe { ::std::slice::from_raw_parts(data_ptr.add(offset), end - offset) };
-                return create_buffer_from_bytes(cx, &args, slice);
+            let end = (offset + len).min(data_len);
+            let view_len = end.saturating_sub(offset);
+
+            // Build a Uint8Array view sharing the source ArrayBuffer.
+            let view = unsafe {
+                let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+                mozjs_sys::jsapi::JS_NewUint8ArrayWithBuffer(
+                    cx,
+                    obj_h,
+                    offset,
+                    view_len as i64,
+                )
+            };
+            if view.is_null() {
+                return create_buffer_from_bytes(cx, &args, &[]);
             }
-            create_buffer_from_bytes(cx, &args, &[])
+            // Rebind the view's prototype to Buffer.prototype so it presents
+            // as a Buffer (instanceof checks, _isBuffer, fill/write/etc.).
+            set_buffer_proto(cx, view);
+            let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            rooted!(&in(cx_ref) let view_root = view);
+            rooted!(&in(cx_ref) let is_buf = BooleanValue(true));
+            JS_DefineProperty(
+                cx,
+                view_root.handle().into(),
+                c"_isBuffer".as_ptr(),
+                is_buf.handle().into(),
+                0u32,
+            );
+            args.rval().set(ObjectValue(view));
+            true
         } else {
             // Array-like or Buffer object
             let mut length_val = UndefinedValue();
@@ -1242,6 +1957,7 @@ unsafe extern "C" fn buffer_to_string(
     };
 
     let output = match enc_lower.as_str() {
+        "" | "utf8" | "utf-8" => String::from_utf8_lossy(&bytes).into_owned(),
         "hex" => bun_core::fmt::bytes_to_hex_lower_string(&bytes),
         "base64" => {
             // @trace REQ-ENG-005 [algorithm:base64]
@@ -1266,11 +1982,40 @@ unsafe extern "C" fn buffer_to_string(
             }
             s
         }
-        _ => String::from_utf8_lossy(&bytes).into_owned(),
+        // @trace REQ-ENG-005 [api:Buffer.toString] — Node.js throws
+        // ERR_UNKNOWN_ENCODING for unrecognised encodings (buffer.test.js
+        // "invalid encoding"). Only the empty-encoding default falls back
+        // to utf8; explicit unknown strings throw.
+        other => {
+            // Empty / "utf8" / "utf-8" already matched above. Anything else
+            // (e.g. "invalid") must throw.
+            if other.is_empty() {
+                String::from_utf8_lossy(&bytes).into_owned()
+            } else {
+                let msg = format!("Unknown encoding: {}", other);
+                let c_msg = ::std::ffi::CString::new(msg)
+                    .unwrap_or_else(|_| ::std::ffi::CString::new("Unknown encoding").unwrap());
+                mozjs::error::throw_type_error(cx, c_msg.as_ref());
+                return false;
+            }
+        }
     };
 
-    let c_s = ZBox::from_bytes(output.as_bytes());
-    let js_str = JS_NewStringCopyZ(cx, c_s.as_ptr());
+    // @trace REQ-ENG-005 — use JS_NewStringCopyUTF8N so multi-byte UTF-8
+    // output (ucs2/utf16le/utf8 decoding produces あ-style chars) becomes a
+    // proper SM two-byte JSString. JS_NewStringCopyZ treats the buffer as a
+    // NUL-terminated C string and re-encodes latin1 chars verbatim, which
+    // mangles non-ASCII output (e.g. toString("ucs2") returned mojibake).
+    let utf8_bytes = output.as_bytes();
+    let js_str = if utf8_bytes.iter().any(|&b| b >= 0x80) {
+        let chars = mozjs::conversions::Utf8Chars::from(output.as_str());
+        // mozjs_sys expects *mut RawJSContext; our `cx` is *mut JSContext
+        // (alias for *mut RawJSContext under mozjs_sys).
+        mozjs_sys::jsapi::JS_NewStringCopyUTF8N(cx, &*chars as *const _ as *const mozjs_sys::jsapi::JS::UTF8Chars)
+    } else {
+        let c_s = ZBox::from_bytes(utf8_bytes);
+        JS_NewStringCopyZ(cx, c_s.as_ptr())
+    };
     if !js_str.is_null() {
         args.rval().set(StringValue(&*js_str));
     } else {
@@ -1286,9 +2031,28 @@ unsafe extern "C" fn buffer_alloc(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+    // @trace REQ-ENG-005 [api:Buffer.alloc] — Node.js requires the `size`
+    // argument to be a number (after ToNumber coercion). Objects with
+    // valueOf that return a number still pass, but plain objects (no
+    // valueOf) and other non-numeric types throw ERR_INVALID_ARG_TYPE.
+    // buffer.test.js "alloc() should throw on non-numeric size" drives this.
     let size = if argc > 0 {
         let v = *args.get(0).ptr;
-        if v.is_int32() { v.to_int32().max(0) as usize } else if v.is_double() { v.to_double().max(0.0) as usize } else { 0 }
+        if v.is_int32() {
+            v.to_int32().max(0) as usize
+        } else if v.is_double() {
+            v.to_double().max(0.0) as usize
+        } else if v.is_boolean() {
+            (v.to_boolean() as i32) as usize
+        } else if v.is_undefined() || v.is_null() {
+            0
+        } else {
+            // @trace REQ-ENG-005 — Node.js rejects object/string/symbol size
+            // (including objects with valueOf) with ERR_INVALID_ARG_TYPE.
+            // buffer.test.js "alloc() should throw on non-numeric size".
+            mozjs::error::throw_type_error(cx, c"The \"size\" argument must be of type number.".as_ref());
+            return false;
+        }
     } else { 0 };
 
     // @trace REQ-ENG-005 [entity:Buffer] — RangeError guard for huge allocations.
@@ -1516,14 +2280,31 @@ unsafe extern "C" fn buffer_concat(
     // Node.js: when totalLength is provided, the result is truncated to
     // totalLength bytes (or zero-filled if totalLength > sum). When
     // omitted, the result length is the sum of list element lengths.
+    // Validation per Node.js: negative total → RangeError; non-numeric
+    // total → TypeError (buffer.test.js "Buffer.concat" drives both).
     let mut target_total = total;
     if argc >= 2 {
         let tl_val = *args.get(1).ptr;
         if tl_val.is_int32() {
-            target_total = tl_val.to_int32().max(0) as usize;
+            let n = tl_val.to_int32();
+            if n < 0 {
+                mozjs::error::throw_range_error(cx, c"\"totalLength\" must be a non-negative integer".as_ref());
+                return false;
+            }
+            target_total = n as usize;
         } else if tl_val.is_double() {
             let d = tl_val.to_double();
-            if d.is_finite() && d >= 0.0 { target_total = d as usize; }
+            if !d.is_finite() || d < 0.0 {
+                mozjs::error::throw_range_error(cx, c"\"totalLength\" must be a non-negative integer".as_ref());
+                return false;
+            }
+            target_total = d as usize;
+        } else if tl_val.is_undefined() || tl_val.is_null() {
+            // undefined/null → use sum of lengths (Node treats as omitted).
+        } else {
+            // Strings, booleans, objects → ERR_INVALID_ARG_TYPE (TypeError).
+            mozjs::error::throw_type_error(cx, c"\"totalLength\" must be a non-negative integer".as_ref());
+            return false;
         }
         if target_total > MAX_BUFFER_SIZE {
             let msg = format!(
@@ -1601,17 +2382,51 @@ unsafe extern "C" fn buffer_slice(
         if len_val.is_int32() { len_val.to_int32() as usize } else { 0 }
     };
 
-    let start = if argc > 0 && (*args.get(0).ptr).is_int32() {
-        let s = (*args.get(0).ptr).to_int32();
-        if s < 0 { (len as i32 + s).max(0) as usize } else { s.min(len as i32) as usize }
-    } else { 0 };
-
-    let end = if argc > 1 && (*args.get(1).ptr).is_int32() {
-        let e = (*args.get(1).ptr).to_int32();
-        if e < 0 { (len as i32 + e).max(0) as usize } else { e.min(len as i32) as usize }
-    } else { len };
-
-    let slice_end = end.min(len);
+    // @trace REQ-ENG-005 [api:Buffer.slice] — Node.js coerces start/end via
+    // ToInteger (handles strings like "0"/"-5", -0 → 0, NaN → 0, Infinity →
+    // len). Negative offsets count from the end. buffer.test.js "Buffer.compare"
+    // exercises buf.slice("0","1"), buf.slice("-5","10"), buf.slice("-10","-0"),
+    // buf.slice("111") (→ empty), buf.slice(0,-0) (→ empty since -0 coerces
+    // to +0 and end<start clamps).
+    let to_int_offset = |idx: u32| -> i64 {
+        if argc <= idx {
+            // Missing argument: start defaults to 0, end defaults to +∞ → len.
+            return if idx == 0 { 0 } else { i64::MAX };
+        }
+        let v = *args.get(idx).ptr;
+        if v.is_int32() { return v.to_int32() as i64; }
+        if v.is_double() {
+            let d = v.to_double();
+            if d.is_nan() { return 0; }
+            if d.is_infinite() { return if d > 0.0 { i64::MAX } else { i64::MIN }; }
+            return d.trunc() as i64;
+        }
+        if v.is_string() {
+            let s = jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked(v.to_string()));
+            // Node.js uses ToInteger(string) — empty / non-numeric → 0,
+            // "-5" → -5, "111" → 111, "-0" → 0 (but distinguishes -0 in
+            // sign? JS Number("-0") is -0; trunc() yields 0).
+            let s = s.trim();
+            if s.is_empty() { return 0; }
+            match s.parse::<f64>() { Ok(d) => {
+                if d.is_nan() { return 0; }
+                return d.trunc() as i64;
+            }, Err(_) => return 0 }
+        }
+        if v.is_undefined() || v.is_null() { return if idx == 1 { i64::MAX } else { 0 }; }
+        0
+    };
+    let s_raw = to_int_offset(0);
+    let e_raw = to_int_offset(1);
+    // -0 detection: JS Number("-0") is negative zero; treat as 0 here but
+    // downstream we still want end<start clamping to apply when both are 0.
+    // Negative offsets count from end.
+    let start_i = if s_raw < 0 { (len as i64 + s_raw).max(0) } else { s_raw.min(len as i64) };
+    let end_i = if e_raw < 0 { (len as i64 + e_raw).max(0) } else { e_raw.min(len as i64) };
+    let start = start_i.max(0) as usize;
+    let slice_end = (end_i.max(0) as usize).min(len);
+    // If end < start, clamp to empty slice (Node semantics: empty).
+    let slice_end = slice_end.max(start);
     let bytes: Vec<u8> = if !ta_data.is_null() && start < slice_end {
         ::std::slice::from_raw_parts(ta_data.add(start), slice_end - start).to_vec()
     } else if !ta_data.is_null() {
@@ -1640,9 +2455,12 @@ unsafe extern "C" fn buffer_copy(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
-    if !this.is_object() || argc == 0 {
-        args.rval().set(Int32Value(0));
-        return true;
+    // @trace REQ-ENG-005 [api:Buffer.copy] — Node.js throws ERR_INVALID_ARG_TYPE
+    // (TypeError) when `target` is missing or not a Buffer/Uint8Array. Test
+    // "Buffer,poolSize" drives Buffer.allocUnsafe(10).copy().
+    if !this.is_object() || argc == 0 || !(*args.get(0).ptr).is_object() {
+        mozjs::error::throw_type_error(cx, c"The \"target\" argument must be an instance of ArrayBufferView. Received type undefined".as_ref());
+        return false;
     }
 
     let src_obj = this.to_object();
@@ -1826,7 +2644,48 @@ unsafe extern "C" fn buffer_index_of(
     } else if search_val.is_string() {
         let js_str = search_val.to_string();
         let needle_str = jsstr_to_string(cx, NonNull::new_unchecked(js_str));
-        let needle: Vec<u8> = needle_str.bytes().collect();
+        // @trace REQ-ENG-005 [api:Buffer.indexOf/lastIndexOf] — Node.js
+        // honours the optional encoding argument (positional idx 2 for
+        // indexOf, idx 2 for lastIndexOf): encode the needle string under
+        // that encoding before scanning. Default is utf8.
+        let encoding = if argc >= 3 && (*args.get(2).ptr).is_string() {
+            jsstr_to_string(cx, NonNull::new_unchecked((*args.get(2).ptr).to_string())).to_lowercase()
+        } else {
+            "utf8".to_string()
+        };
+        let needle: Vec<u8> = match encoding.as_str() {
+            "utf8" | "utf-8" | "" => needle_str.bytes().collect(),
+            "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => {
+                let mut out = Vec::with_capacity(needle_str.len() * 2);
+                for c in needle_str.chars() {
+                    let code = c as u32;
+                    if code <= 0xFFFF {
+                        out.extend_from_slice(&(code as u16).to_le_bytes());
+                    } else {
+                        let v = code - 0x10000;
+                        out.extend_from_slice(&(0xD800 + (v >> 10) as u16).to_le_bytes());
+                        out.extend_from_slice(&(0xDC00 + (v & 0x3FF) as u16).to_le_bytes());
+                    }
+                }
+                out
+            }
+            "latin1" | "binary" | "ascii" => {
+                needle_str.chars().map(|c| (c as u32 & 0xFF) as u8).collect()
+            }
+            "hex" => {
+                let mut out = Vec::new();
+                let chars: Vec<char> = needle_str.chars().collect();
+                let mut i = 0;
+                while i + 1 < chars.len() {
+                    let hi = chars[i].to_digit(16).unwrap_or(0);
+                    let lo = chars[i+1].to_digit(16).unwrap_or(0);
+                    out.push(((hi << 4) | lo) as u8);
+                    i += 2;
+                }
+                out
+            }
+            _ => needle_str.bytes().collect(),
+        };
         if needle.is_empty() {
             // Node: empty needle matches at byte_offset.
             args.rval().set(Int32Value(byte_offset as i32));
@@ -1901,7 +2760,48 @@ unsafe fn buffer_index_of_legacy(
     } else if search_val.is_string() {
         let js_str = search_val.to_string();
         let needle_str = jsstr_to_string(cx, NonNull::new_unchecked(js_str));
-        let needle: Vec<u8> = needle_str.bytes().collect();
+        // @trace REQ-ENG-005 [api:Buffer.indexOf/lastIndexOf] — Node.js
+        // honours the optional encoding argument (positional idx 2 for
+        // indexOf, idx 2 for lastIndexOf): encode the needle string under
+        // that encoding before scanning. Default is utf8.
+        let encoding = if argc >= 3 && (*args.get(2).ptr).is_string() {
+            jsstr_to_string(cx, NonNull::new_unchecked((*args.get(2).ptr).to_string())).to_lowercase()
+        } else {
+            "utf8".to_string()
+        };
+        let needle: Vec<u8> = match encoding.as_str() {
+            "utf8" | "utf-8" | "" => needle_str.bytes().collect(),
+            "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => {
+                let mut out = Vec::with_capacity(needle_str.len() * 2);
+                for c in needle_str.chars() {
+                    let code = c as u32;
+                    if code <= 0xFFFF {
+                        out.extend_from_slice(&(code as u16).to_le_bytes());
+                    } else {
+                        let v = code - 0x10000;
+                        out.extend_from_slice(&(0xD800 + (v >> 10) as u16).to_le_bytes());
+                        out.extend_from_slice(&(0xDC00 + (v & 0x3FF) as u16).to_le_bytes());
+                    }
+                }
+                out
+            }
+            "latin1" | "binary" | "ascii" => {
+                needle_str.chars().map(|c| (c as u32 & 0xFF) as u8).collect()
+            }
+            "hex" => {
+                let mut out = Vec::new();
+                let chars: Vec<char> = needle_str.chars().collect();
+                let mut i = 0;
+                while i + 1 < chars.len() {
+                    let hi = chars[i].to_digit(16).unwrap_or(0);
+                    let lo = chars[i+1].to_digit(16).unwrap_or(0);
+                    out.push(((hi << 4) | lo) as u8);
+                    i += 2;
+                }
+                out
+            }
+            _ => needle_str.bytes().collect(),
+        };
         if needle.is_empty() || needle.len() > buf_len {
             args.rval().set(Int32Value(byte_offset as i32));
             return true;
@@ -1954,15 +2854,95 @@ unsafe extern "C" fn buffer_byte_length(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {
-        args.rval().set(Int32Value(0));
-        return true;
+        // @trace REQ-ENG-005 — Buffer.byteLength() (no args) throws
+        // ERR_INVALID_ARG_TYPE (a TypeError) per Node.js.
+        mozjs::error::throw_type_error(
+            cx,
+            c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received undefined".as_ref(),
+        );
+        return false;
     }
     let input = *args.get(0).ptr;
+    // @trace REQ-ENG-005 [api:Buffer.byteLength] — Node.js honours the
+    // optional encoding argument: utf8/ascii/latin1/hex count via the
+    // encoded byte length, ucs2/utf16le is 2 bytes per code unit (4 per
+    // surrogate pair), base64/base64url is the decoded length. Default
+    // encoding is utf8.
+    let encoding = if argc >= 2 && (*args.get(1).ptr).is_string() {
+        jsstr_to_string(cx, ::std::ptr::NonNull::new_unchecked((*args.get(1).ptr).to_string())).to_lowercase()
+    } else {
+        "utf8".to_string()
+    };
     if input.is_string() {
         let s = crate::js_to_rust_string(cx, input);
-        args.rval().set(Int32Value(s.len() as i32));
+        let n: i32 = match encoding.as_str() {
+            "hex" => {
+                // Each pair of hex digits = 1 byte; odd-length rounds up by
+                // one (Node.js pads a leading 0). Non-hex chars contribute 0.
+                let mut bytes = 0usize;
+                let mut pair = false;
+                for c in s.chars() {
+                    if c.is_ascii_hexdigit() {
+                        if pair { bytes += 1; pair = false; } else { pair = true; }
+                    }
+                }
+                (if pair { bytes + 1 } else { bytes }) as i32
+            }
+            "ucs2" | "ucs-2" | "utf16le" | "utf-16le" | "utf16be" | "utf-16be" => {
+                let mut n = 0usize;
+                for c in s.chars() {
+                    let code = c as u32;
+                    if code <= 0xFFFF { n += 2; } else { n += 4; }
+                }
+                n as i32
+            }
+            "base64" | "base64url" => {
+                // Strip whitespace + (for url) map chars, then count decoded
+                // length per RFC 4648 (4 chars → 3 bytes, with padding).
+                let stripped: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+                let canonical: String = if encoding == "base64url" {
+                    let mut t: String = stripped.chars().map(|c| match c {
+                        '-' => '+', '_' => '/', _ => c,
+                    }).collect();
+                    while t.len() % 4 != 0 { t.push('='); }
+                    t
+                } else { stripped };
+                if canonical.is_empty() {
+                    0
+                } else {
+                    let padding = canonical.chars().filter(|&c| c == '=').count();
+                    ((canonical.len() * 3) as i32 - padding as i32 * 2) / 4
+                }
+            }
+            // utf8 / utf-8 / ascii / latin1 / binary / "" → UTF-8 byte length.
+            _ => s.len() as i32,
+        };
+        args.rval().set(Int32Value(n));
+    } else if input.is_object() {
+        // @trace REQ-ENG-005 — ArrayBuffer / TypedArray / Buffer / DataView
+        // → byte length. Non-view plain objects (e.g. {}) must still throw
+        // ERR_INVALID_ARG_TYPE (test "Buffer.byteLength()").
+        let obj = input.to_object();
+        let is_ab = mozjs_sys::jsapi::JS::IsArrayBufferObject(obj);
+        let is_view = unsafe { mozjs_sys::jsapi::JS_IsArrayBufferViewObject(obj) };
+        if !is_ab && !is_view {
+            mozjs::error::throw_type_error(
+                cx,
+                c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received [object Object]".as_ref(),
+            );
+            return false;
+        }
+        let (n, _) = buffer_view_bytes(obj);
+        args.rval().set(Int32Value(n as i32));
     } else {
-        args.rval().set(Int32Value(0));
+        // @trace REQ-ENG-005 — Node.js throws ERR_INVALID_ARG_TYPE (a
+        // TypeError) for non-string/non-ArrayBufferView/non-ArrayBuffer
+        // input. Test "Buffer.byteLength()" drives 32/NaN/{}/().
+        mozjs::error::throw_type_error(
+            cx,
+            c"The \"string\", \"Buffer\", or \"TypedArray\" argument must be of type string or an instance of Buffer, TypedArray, or DataView. Received ".as_ref(),
+        );
+        return false;
     }
     true
 }

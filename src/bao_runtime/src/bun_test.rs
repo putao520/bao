@@ -13,13 +13,25 @@ const BUN_TEST_SHIM: &str = r#"
   var _g = globalThis;
   var _suites = [];
   var _currentDescribe = null;
+  // @trace REQ-ENG-006 [api:bun:test] — beforeEach/afterEach/beforeAll/
+  // afterAll are lexically scoped to their enclosing describe block. We
+  // model this with a per-suite hook set: when describe(fn) runs, it pushes
+  // a fresh suite onto _suiteStack and beforeEach/afterEach called inside fn
+  // attach to that suite. The test runner collects hooks by walking the
+  // suite's ancestor chain, so a nested beforeEach applies to its own tests
+  // only. This is the Jest/bun semantics — without it, every beforeEach
+  // leaks across the whole file (e.g. buffer.test.js's
+  // `Buffer.prototype.write = nodeJSBufferWriteFn` in the `withOverriddenBufferWrite`
+  // branch was polluting the `native` branch and vice versa).
+  var _suiteStack = [];
+  // Top-level hooks (used when it() is called outside any describe).
+  var _topLevelBeforeEach = [];
+  var _topLevelAfterEach = [];
+  var _topLevelBeforeAll = [];
+  var _topLevelAfterAll = [];
   var _passed = 0;
   var _failed = 0;
   var _errors = [];
-  var _beforeEachFns = [];
-  var _afterEachFns = [];
-  var _beforeAllFns = [];
-  var _afterAllFns = [];
 
   var _passNames = [];
   var _failEntries = [];
@@ -30,25 +42,51 @@ const BUN_TEST_SHIM: &str = r#"
   // collection shape of describe/it.
   var _pendingTests = [];
 
+  // The currently-active hook target: either a suite on _suiteStack or the
+  // top-level arrays. beforeEach/afterEach append here.
+  function _hookTarget() {
+    return _suiteStack.length > 0 ? _suiteStack[_suiteStack.length - 1] : null;
+  }
+
   function _registerTest(name, fn) {
-    _pendingTests.push({ name: name, fn: fn });
+    // Snapshot the ancestor chain at registration time so hooks defined in
+    // ancestor describes run in registration order (outer → inner).
+    var hookChain = [];
+    for (var i = 0; i < _suiteStack.length; i++) hookChain.push(_suiteStack[i]);
+    _pendingTests.push({ name: name, fn: fn, suiteChain: hookChain });
   }
 
   // Run a single test (sync or async) — always returns a Promise<void>.
   // beforeEach / test body / afterEach may all be async.
   // expectFail inverts the pass/fail semantics (for it.failing): a thrown or
   // rejected error counts as a pass; a clean run counts as a fail.
-  function _runOneTest(name, fn, expectFail) {
+  // hookChain: the suite ancestor chain snapshot at registration time. Hooks
+  // run outer→inner for beforeEach, inner→outer for afterEach.
+  function _runOneTest(name, fn, expectFail, hookChain) {
+    hookChain = hookChain || [];
+    // Collect beforeEach hooks: top-level first, then each suite in the chain.
+    var beforeHooks = _topLevelBeforeEach.slice();
+    for (var i = 0; i < hookChain.length; i++) {
+      var sh = hookChain[i].beforeEach || [];
+      for (var j = 0; j < sh.length; j++) beforeHooks.push(sh[j]);
+    }
+    // afterEach: reverse order (inner→outer), then top-level last.
+    var afterHooks = [];
+    for (var i = hookChain.length - 1; i >= 0; i--) {
+      var sh = hookChain[i].afterEach || [];
+      for (var j = 0; j < sh.length; j++) afterHooks.push(sh[j]);
+    }
+    for (var j = 0; j < _topLevelAfterEach.length; j++) afterHooks.push(_topLevelAfterEach[j]);
     return new Promise(function(resolve) {
       // before each hook
       var chain = Promise.resolve();
-      for (var i = 0; i < _beforeEachFns.length; i++) {
+      for (var i = 0; i < beforeHooks.length; i++) {
         (function(hook) {
           chain = chain.then(function() {
             var r = hook();
             return (r && typeof r.then === 'function') ? r : undefined;
           });
-        })(_beforeEachFns[i]);
+        })(beforeHooks[i]);
       }
       // test body
       chain = chain.then(function() {
@@ -58,13 +96,13 @@ const BUN_TEST_SHIM: &str = r#"
       // afterEach (always runs, even on failure)
       chain = chain.then(function() {
         var achain = Promise.resolve();
-        for (var j = 0; j < _afterEachFns.length; j++) {
+        for (var j = 0; j < afterHooks.length; j++) {
           (function(hook) {
             achain = achain.then(function() {
               var r = hook();
               return (r && typeof r.then === 'function') ? r : undefined;
             }).catch(function() { /* swallow hook errors */ });
-          })(_afterEachFns[j]);
+          })(afterHooks[j]);
         }
         return achain;
       });
@@ -106,15 +144,33 @@ const BUN_TEST_SHIM: &str = r#"
   }
 
   function _makeExpect(actual) {
+    // @trace REQ-ENG-006 — defensively snapshot the actual value. Bao's
+    // SM-backed typed-array element reads can be invalidated by GC if the
+    // owning buffer is collected between expect() capture and the matcher
+    // call (observed for `[buf[0], buf[1], ...]` literals whose backing
+    // Uint8Array is unreachable after the literal evaluates). toEqual/
+    // toStrictEqual compare against `_snap` (a deep clone via JSON round-trip)
+    // so the comparison value is frozen against that race. toBe keeps using
+    // the live `actual` because `===` semantics require the original
+    // reference for primitives. Only Array/plain-object values are snapshotted;
+    // primitives, null, undefined, and class instances pass through unchanged.
+    var _snap;
+    try {
+      if (actual !== null && actual !== undefined && (Array.isArray(actual) || (typeof actual === 'object' && Object.prototype.toString.call(actual) === '[object Object]'))) {
+        _snap = JSON.parse(JSON.stringify(actual));
+      } else {
+        _snap = actual;
+      }
+    } catch (_e) { _snap = actual; }
     var e = {
       toBe: function(expected) {
         if (actual !== expected) {
-          throw new Error("Expected " + JSON.stringify(actual) + " to be " + JSON.stringify(expected));
+          throw new Error("Expected " + JSON.stringify(_snap) + " to be " + JSON.stringify(expected));
         }
         return e;
       },
       toEqual: function(expected) {
-        var a = JSON.stringify(actual);
+        var a = JSON.stringify(_snap);
         var b = JSON.stringify(expected);
         if (a !== b) {
           throw new Error("Expected " + a + " to equal " + b);
@@ -144,8 +200,8 @@ const BUN_TEST_SHIM: &str = r#"
           }
           return true;
         }
-        if (!_strict(actual, expected)) {
-          throw new Error("Expected " + JSON.stringify(actual) + " to strictly equal " + JSON.stringify(expected));
+        if (!_strict(_snap, expected)) {
+          throw new Error("Expected " + JSON.stringify(_snap) + " to strictly equal " + JSON.stringify(expected));
         }
         return e;
       },
@@ -374,6 +430,18 @@ const BUN_TEST_SHIM: &str = r#"
           } else if (expected && typeof expected === 'object' && expected.message !== undefined) {
             if (msg.indexOf(expected.message) === -1) {
               throw new Error("Expected thrown error to contain \"" + expected.message + "\" but got \"" + msg + "\"");
+            }
+          } else if (expected && expected.___bao_asymmetric___ === 'objectContaining') {
+            // expect.objectContaining({code: 'ERR_BUFFER_OUT_OF_BOUNDS'}) —
+            // every property of the spec must match (===) on the thrown error.
+            var spec = expected.expected || {};
+            for (var k in spec) {
+              if (!Object.prototype.hasOwnProperty.call(spec, k)) continue;
+              var want = spec[k];
+              var got = thrownError == null ? undefined : thrownError[k];
+              if (want !== undefined && got !== want) {
+                throw new Error("Expected thrown error to have " + k + "=" + JSON.stringify(want) + " but got " + JSON.stringify(got) + " (msg: \"" + msg + "\")");
+              }
             }
           }
         }
@@ -624,6 +692,38 @@ const BUN_TEST_SHIM: &str = r#"
 
   var expectFn = function(actual) { return _makeExpect(actual); };
   expectFn.extend = function(actual) { return _makeExpect(actual); };
+  // @trace REQ-ENG-006 [api:bun:test] — expect.objectContaining / arrayContaining.
+  // Jest/Bun asymmetric matchers: produce a tagged object that toEqual/
+  // toStrictEqual/toThrow recognise. toThrow matches when every property of
+  // the spec is equal on the thrown error (e.g. {code:'ERR_BUFFER_OUT_OF_BOUNDS'}).
+  expectFn.objectContaining = function(spec) {
+    return { ___bao_asymmetric___: 'objectContaining', expected: spec };
+  };
+  expectFn.arrayContaining = function(spec) {
+    return { ___bao_asymmetric___: 'arrayContaining', expected: spec };
+  };
+  expectFn.stringContaining = function(spec) {
+    return { ___bao_asymmetric___: 'stringContaining', expected: spec };
+  };
+  expectFn.stringMatching = function(spec) {
+    return { ___bao_asymmetric___: 'stringMatching', expected: spec };
+  };
+  expectFn.anything = function() {
+    return { ___bao_asymmetric___: 'anything' };
+  };
+  expectFn.any = function(ctor) {
+    return { ___bao_asymmetric___: 'any', expected: ctor };
+  };
+  // @trace REQ-ENG-006 [api:bun:test] — expect.unreachable(): Jest/bun
+  // assertion that ALWAYS throws if reached. Used inside try/catch blocks
+  // to assert a code path is never executed (e.g. swap16 throws before
+  // expect.unreachable runs). Without this, swap16/32/64 tests fail
+  // because the call evaluates to undefined and is then thrown by the
+  // try-block instead of the expected RangeError.
+  expectFn.unreachable = function(message) {
+    var msg = message ? ('expect.unreachable(): ' + message) : 'expect.unreachable() was called';
+    throw new Error(msg);
+  };
 
   // @trace REQ-ENG-006 — jest.fn() mock infrastructure.
   //
@@ -743,14 +843,20 @@ const BUN_TEST_SHIM: &str = r#"
     return fn;
   }
 
+  // @trace REQ-ENG-006 [api:bun:test] — describe queues a suite whose body
+  // the runner executes later. Hooks (beforeEach/afterEach/beforeAll/afterAll)
+  // called inside the body attach to this suite. The runner manages the
+  // _suiteStack so hooks resolve to their lexically enclosing describe.
   function describeFn(name, fn) {
-    _suites.push({ name: name, fn: fn });
+    _suites.push({ name: name, fn: fn, beforeEach: [], afterEach: [], beforeAll: [], afterAll: [] });
   }
   describeFn.skip = function(name, fn) { /* no-op */ };
   describeFn.todo = function(name, fn) { /* no-op */ };
   describeFn.each = function() { return function(name, fn) { describeFn(name, fn); }; };
   describeFn.only = function(name, fn) { describeFn(name, fn); };
   describeFn.if = function(cond) { return cond ? describeFn : { skip: function(){} }; };
+  // @trace REQ-ENG-006 [api:bun:test] — skipIf(cond): run when cond is falsy.
+  describeFn.skipIf = function(cond) { return cond ? { skip: function(){}, only: function(){}, if: function(){ return { skip: function(){} }; } } : describeFn; };
 
   function itFn(name, fn) {
     if (_currentDescribe) {
@@ -763,11 +869,21 @@ const BUN_TEST_SHIM: &str = r#"
   itFn.todo = function(name, fn) { /* no-op */ };
   itFn.each = function() { return function(name, fn) { itFn(name, fn); }; };
   itFn.only = function(name, fn) { itFn(name, fn); };
+  // @trace REQ-ENG-006 [api:bun:test] — it.skipIf(cond) runs the test only
+  // when cond is falsy. it.onlyIf(cond) is the inverse. bun:test exposes both.
+  itFn.skipIf = function(cond) {
+    return cond ? { skip: function(){}, only: function(){} } : itFn;
+  };
+  itFn.onlyIf = function(cond) {
+    return cond ? itFn : { skip: function(){}, only: function(){} };
+  };
   itFn.failing = function(name, fn) {
     // In failing mode, we expect the test to throw (sync) or reject (async).
     // Defer to the runner so async failing tests work too.
     var fullName = _currentDescribe ? (_currentDescribe + " > " + name) : name;
-    _pendingTests.push({ name: fullName, fn: fn, expectFail: true });
+    var hookChain = [];
+    for (var i = 0; i < _suiteStack.length; i++) hookChain.push(_suiteStack[i]);
+    _pendingTests.push({ name: fullName, fn: fn, expectFail: true, suiteChain: hookChain });
   };
 
   function testFn(name, fn) {
@@ -779,11 +895,28 @@ const BUN_TEST_SHIM: &str = r#"
   testFn.only = itFn.only;
   testFn.failing = itFn.failing;
   testFn.if = function(cond) { return cond ? testFn : { skip: function(){} }; };
+  testFn.skipIf = itFn.skipIf;
+  testFn.onlyIf = itFn.onlyIf;
 
-  function beforeEachFn(fn) { _beforeEachFns.push(fn); }
-  function afterEachFn(fn) { _afterEachFns.push(fn); }
-  function beforeAllFn(fn) { _beforeAllFns.push(fn); }
-  function afterAllFn(fn) { _afterAllFns.push(fn); }
+  // @trace REQ-ENG-006 — hooks attach to the lexically enclosing suite (the
+  // top of _suiteStack) or, when called at the top level, to the top-level
+  // arrays. The runner pushes/pops _suiteStack as it walks each describe.
+  function beforeEachFn(fn) {
+    var target = _hookTarget();
+    if (target) { target.beforeEach.push(fn); } else { _topLevelBeforeEach.push(fn); }
+  }
+  function afterEachFn(fn) {
+    var target = _hookTarget();
+    if (target) { target.afterEach.push(fn); } else { _topLevelAfterEach.push(fn); }
+  }
+  function beforeAllFn(fn) {
+    var target = _hookTarget();
+    if (target) { target.beforeAll.push(fn); } else { _topLevelBeforeAll.push(fn); }
+  }
+  function afterAllFn(fn) {
+    var target = _hookTarget();
+    if (target) { target.afterAll.push(fn); } else { _topLevelAfterAll.push(fn); }
+  }
 
   var bunTestModule = {
     describe: describeFn,
@@ -869,46 +1002,78 @@ const BUN_TEST_SHIM: &str = r#"
     // Rust loop calls RunJobs().
     var chain = Promise.resolve();
 
-    // beforeAll hooks (in registration order).
-    for (var i = 0; i < _beforeAllFns.length; i++) {
+    // beforeAll hooks (top-level, in registration order). Suite-scoped
+    // beforeAll run when that suite's body executes (see below).
+    for (var i = 0; i < _topLevelBeforeAll.length; i++) {
       (function(hook) {
         chain = chain.then(function() {
           return _runHook(hook).then(function(res) {
             if (!res.ok) { _emitError("beforeAll", res.error); }
           });
         });
-      })(_beforeAllFns[i]);
+      })(_topLevelBeforeAll[i]);
     }
 
-    // Walk each describe suite: run its body (registers it() entries into
-    // _pendingTests) then await the collected tests sequentially.
+    // Walk each describe suite: push it onto _suiteStack, run its body
+    // (which runs suite-scoped beforeAll + registers it() entries into
+    // _pendingTests), then await the collected tests sequentially.
     for (var s = 0; s < _suites.length; s++) {
       (function(suite) {
+        // Phase 1: push suite, run beforeAll hooks, run suite body.
         chain = chain.then(function() {
           _currentDescribe = suite.name;
+          _suiteStack.push(suite);
+          var bchain = Promise.resolve();
+          for (var b = 0; b < suite.beforeAll.length; b++) {
+            (function(hook) {
+              bchain = bchain.then(function() {
+                return _runHook(hook).then(function(res) {
+                  if (!res.ok) { _emitError(suite.name + " beforeAll", res.error); }
+                });
+              });
+            })(suite.beforeAll[b]);
+          }
+          return bchain;
+        }).then(function() {
+          // Run the suite body synchronously (it() calls register into
+          // _pendingTests). If the body returns a Promise, await it.
           try {
             var r = suite.fn();
             if (r && typeof r.then === 'function') {
-              return r.then(function() { _currentDescribe = null; },
-                            function(e) { _emitError(suite.name, e); _currentDescribe = null; });
+              return r.then(function() {}, function(e) { _emitError(suite.name, e); });
             }
           } catch (e) {
             _emitError(suite.name, e);
           }
-          _currentDescribe = null;
           return undefined;
         }).then(function() {
-          // Drain tests registered during this suite's describe body.
+          // Phase 2: drain tests registered during this suite's describe body.
           var inner = Promise.resolve();
           function _drainNext() {
             if (_pendingTests.length === 0) { return inner; }
             var t = _pendingTests.shift();
             inner = inner.then(function() {
-              return _runOneTest(t.name, t.fn, t.expectFail);
+              return _runOneTest(t.name, t.fn, t.expectFail, t.suiteChain);
             });
             return _drainNext();
           }
           return _drainNext();
+        }).then(function() {
+          // Phase 3: afterAll hooks, then pop the suite.
+          var achain = Promise.resolve();
+          for (var a = 0; a < suite.afterAll.length; a++) {
+            (function(hook) {
+              achain = achain.then(function() {
+                return _runHook(hook).then(function(res) {
+                  if (!res.ok) { _emitError(suite.name + " afterAll", res.error); }
+                });
+              });
+            })(suite.afterAll[a]);
+          }
+          return achain;
+        }).then(function() {
+          _suiteStack.pop();
+          _currentDescribe = null;
         });
       })(_suites[s]);
     }
@@ -920,21 +1085,21 @@ const BUN_TEST_SHIM: &str = r#"
       function _drainTopLevel() {
         if (_pendingTests.length === 0) { return inner; }
         var t = _pendingTests.shift();
-        inner = inner.then(function() { return _runOneTest(t.name, t.fn, t.expectFail); });
+        inner = inner.then(function() { return _runOneTest(t.name, t.fn, t.expectFail, t.suiteChain); });
         return _drainTopLevel();
       }
       return _drainTopLevel();
     });
 
-    // afterAll hooks (in registration order).
-    for (var j = 0; j < _afterAllFns.length; j++) {
+    // afterAll hooks (top-level, in registration order).
+    for (var j = 0; j < _topLevelAfterAll.length; j++) {
       (function(hook) {
         chain = chain.then(function() {
           return _runHook(hook).then(function(res) {
             if (!res.ok) { _emitError("afterAll", res.error); }
           });
         });
-      })(_afterAllFns[j]);
+      })(_topLevelAfterAll[j]);
     }
 
     // Resolve the final report. The Rust side detects this Promise and

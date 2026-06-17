@@ -31,7 +31,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
-        let kmax = Int32Value(2147483647);
+        let kmax = mozjs::jsval::DoubleValue(4294967296.0_f64);
         let mod_ptr = mod_obj.get();
         let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr };
         let kmax_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &kmax };
@@ -74,10 +74,14 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         rooted!(&in(cx) let constants_obj = w2::JS_NewPlainObject(cx));
         if !constants_obj.get().is_null() {
-            let cmax = Int32Value(2147483647);
+            // @trace REQ-ENG-005 [entity:Buffer.constants] — Node.js surface:
+            // constants.MAX_LENGTH = 2^32 (4294967296) on 64-bit platforms.
+            // Exceeds i32 range, so emit as a JS double. buffer.test.js
+            // "constants" asserts the exact value.
+            let cmax = mozjs::jsval::DoubleValue(4294967296.0_f64);
             let cmax_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cmax };
             JS_DefineProperty(cx_raw, constants_obj.handle().into(), c"MAX_LENGTH".as_ptr(), cmax_h, JSPROP_ENUMERATE as u32);
-            let smax = Int32Value(536870888);
+            let smax = Int32Value(2147483647);
             let smax_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &smax };
             JS_DefineProperty(cx_raw, constants_obj.handle().into(), c"MAX_STRING_LENGTH".as_ptr(), smax_h, JSPROP_ENUMERATE as u32);
             let constants_val = ObjectValue(constants_obj.get());

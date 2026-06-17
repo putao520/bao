@@ -596,34 +596,31 @@ unsafe extern "C" fn text_encoder_encode(cx: *mut JSContext, argc: u32, vp: *mut
 
     let bytes = input.as_bytes();
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let arr = NewArrayObject1(&mut wrapped_cx, bytes.len()));
 
-    for (i, &byte) in bytes.iter().enumerate() {
-        let val = Int32Value(byte as i32);
-        rooted!(&in(wrapped_cx) let v = val);
-        JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+    // @trace REQ-ENG-005 [api:TextEncoder.encode] — Return a real SM
+    // Uint8Array (not a plain Array) so callers see .byteLength/.buffer and
+    // pass `instanceof Uint8Array`. Buffer.test.js drives this via
+    // `new TextEncoder().encode(str).byteLength`.
+    let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len());
+    if u8_obj.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
     }
-
-    let global = CurrentGlobalOrNull(cx);
-    if !global.is_null() {
-        let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-        let mut buf_ctor = UndefinedValue();
-        JS_GetProperty(cx, global_h, c"Uint8Array".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_ctor });
-        if buf_ctor.is_object() {
-            let arr_val = ObjectValue(arr.get());
-            rooted!(&in(wrapped_cx) let av = arr_val);
-            let call_args = HandleValueArray { length_: 1, elements_: &av.get() };
-            let ctor_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &buf_ctor };
-            let mut rval = UndefinedValue();
-            JS_CallFunctionValue(cx, global_h, ctor_h, &call_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
-            if rval.is_object() {
-                args.rval().set(rval);
-                return true;
-            }
+    if !bytes.is_empty() {
+        rooted!(&in(wrapped_cx) let arr = u8_obj);
+        let mut is_shared = false;
+        let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+            arr.get(),
+            &mut is_shared,
+            ::std::ptr::null(),
+        );
+        if !data_ptr.is_null() {
+            ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
         }
+        args.rval().set(ObjectValue(arr.get()));
+    } else {
+        args.rval().set(ObjectValue(u8_obj));
     }
-
-    args.rval().set(ObjectValue(arr.get()));
     true
 }
 
