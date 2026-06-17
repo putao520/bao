@@ -605,10 +605,15 @@ export var expectOOM = _m.expectOOM;
 export var BunEnvironment = _m.BunEnvironment;
 export default _m;
 "#),
-        // Generic builtin modules: export default + re-export all keys as named exports
-        _ if builtin_modules.contains(&stripped) => {
-            Some(format!("var _m = require('{}');\nexport default _m;\n", stripped).leak() as &str)
-        }
+        // Generic builtin modules: each builtin's `require("<name>")` returns a
+        // cached module object exposing named properties (Buffer, createHash,
+        // readFile, EventEmitter, ...). We emit explicit static `export var`
+        // declarations per known builtin so SM's ESM linker can resolve
+        // `import { Buffer } from "buffer"` / `import { createHash } from
+        // "crypto"` / `import { readFile } from "fs"` at link time. Each export
+        // binds lazily to the underlying property so it stays in sync with the
+        // builtin module object after initialisation.
+        _ if builtin_modules.contains(&stripped) => Some(builtin_esm_source(stripped)),
         _ => None,
     };
 
@@ -761,6 +766,181 @@ fn js_string_literal(s: &str) -> String {
     }
     out.push('"');
     out
+}
+
+/// Named ESM exports to surface for each Node-compatible builtin module.
+///
+/// The list mirrors the surface installed by `bao_runtime` (see
+/// `node_buffer.rs`, `node_crypto.rs`, `node_fs.rs`, `node_events.rs`, ...).
+/// Each name becomes a static `export var` declaration so SM's ESM linker can
+/// resolve `import { Buffer } from "buffer"` at link time. Unknown names fall
+/// back to a `default`-only module; builtins without an entry here are still
+/// importable via default export.
+fn builtin_named_exports(name: &str) -> &'static [&'static str] {
+    match name {
+        "buffer" => &["Buffer", "SlowBuffer", "kMaxLength", "constants", "INSPECT_MAX_BYTES"],
+        "crypto" => &[
+            "createHash", "createHmac", "createCipher", "createCipheriv",
+            "createDecipher", "createDecipheriv", "randomBytes", "pseudoRandomBytes",
+            "randomInt", "randomUUID", "pbkdf2", "pbkdf2Sync", "scrypt", "scryptSync",
+            "hkdf", "hkdfSync", "digest", "hash", "createSign", "createVerify",
+            "getHashes", "getCiphers", "timingSafeEqual", "timingSafeCompare",
+            "DiffieHellmanGroup", "createDiffieHellman", "DiffieHellman",
+            "createECDH", "generateKeyPair", "generateKeyPairSync",
+            "createSecretKey", "createPublicKey", "createPrivateKey", "KeyObject",
+            "webcrypto", "constants", "randomFill", "randomFillSync",
+        ],
+        "fs" => &[
+            "readFile", "readFileSync", "writeFile", "writeFileSync",
+            "appendFile", "appendFileSync", "readdir", "readdirSync",
+            "stat", "statSync", "lstat", "lstatSync",
+            "fstat", "fstatSync", "exists", "existsSync", "mkdir", "mkdirSync",
+            "rmdir", "rmdirSync", "rm", "rmSync", "unlink", "unlinkSync",
+            "rename", "renameSync", "copyFile", "copyFileSync", "open", "openSync",
+            "close", "closeSync", "read", "readSync", "write", "writeSync",
+            "realpath", "realpathSync", "createReadStream", "createWriteStream",
+            "watch", "watchFile", "unwatchFile", "access", "accessSync",
+            "chmod", "chmodSync", "chown", "chownSync", "utimes", "utimesSync",
+            "lutimes", "lutimesSync", "link", "linkSync", "symlink", "symlinkSync",
+            "readlink", "readlinkSync", "truncate", "truncateSync", "ftruncate",
+            "ftruncateSync", "fchmod", "fchmodSync", "fchown", "fchownSync",
+            "mkdirp", "mkdirpSync", "cp", "cpSync", "opendir", "opendirSync",
+            "Dir", "promises", "constants", "F_OK", "R_OK", "W_OK", "X_OK",
+            "Stats", "ReadStream", "WriteStream", "Dirent",
+        ],
+        "events" => &[
+            "EventEmitter", "once", "on", "getEventListeners", "setMaxListeners",
+            "getMaxListeners", "EventEmitterAsyncResource", "captureRejections",
+            "captureRejectionSymbol", "defaultMaxListeners", "errorMonitor",
+            "listenerCount",
+        ],
+        "os" => &[
+            "platform", "arch", "type", "release", "hostname", "cpus", "totalmem",
+            "freemem", "uptime", "loadavg", "networkInterfaces", "userInfo",
+            "homedir", "tmpdir", "endianness", "EOL", "constants", "availableParallelism",
+            "getPriority", "setPriority", "machine", "version", "devDir",
+        ],
+        "path" => &[
+            "resolve", "normalize", "isAbsolute", "join", "relative", "dirname",
+            "basename", "extname", "parse", "format", "sep", "delimiter",
+            "win32", "posix", "toNamespacedPath", "matchesGlob",
+        ],
+        "url" => &[
+            "parse", "resolve", "resolveObject", "format", "Url", "URL",
+            "URLSearchParams", "domainToASCII", "domainToUnicode", "fileURLToPath",
+            "pathToFileURL", "urlToHttpOptions",
+        ],
+        "util" => &[
+            "format", "debug", "log", "inspect", "isArray", "isBoolean", "isNull",
+            "isNullOrUndefined", "isNumber", "isString", "isSymbol", "isUndefined",
+            "isRegExp", "isObject", "isDate", "isError", "isFunction", "isPrimitive",
+            "isBuffer", "promisify", "callbackify", "inherits", "types", "TextEncoder",
+            "TextDecoder", "_extend", "deprecate", "formatWithOptions",
+            "styleText", "stripVTControlCharacters", "parseArgs", "MIMEType",
+            "parseMIMEType", "aborted", "transferable", "deepEqual", "deepStrictEqual",
+        ],
+        "string_decoder" => &["StringDecoder"],
+        "timers" => &[
+            "setTimeout", "clearTimeout", "setInterval", "clearInterval",
+            "setImmediate", "clearImmediate", "promises",
+        ],
+        "stream" => &[
+            "Stream", "Readable", "Writable", "Duplex", "Transform", "PassThrough",
+            "pipeline", "finished", "addAbortSignal", "promises", "ReadableStream",
+            "WritableStream", "TransformStream", "getDefaultHighWaterMark",
+            "setDefaultHighWaterMark", "isDisturbed",
+        ],
+        "assert" => &[
+            "ok", "equal", "notEqual", "deepEqual", "notDeepEqual", "deepStrictEqual",
+            "notDeepStrictEqual", "strict", "fail", "throws", "doesNotThrow", "ifError",
+            "rejects", "doesNotReject", "match", "doesNotMatch", "CallTracker",
+            "partialDeepStrictEqual",
+        ],
+        "querystring" => &[
+            "escape", "unescape", "encode", "decode", "stringify", "parse",
+        ],
+        "net" => &[
+            "createServer", "createConnection", "connect", "Server", "Socket",
+            "isIP", "isIPv4", "isIPv6", "BlockList", "SocketAddress",
+        ],
+        "tls" => &[
+            "createServer", "createSecureContext", "createSecureServer", "connect",
+            "TLSSocket", "Server", "SecureContext", "checkServerIdentity", "getCiphers",
+            "rootCertificates", "DEFAULT_ECDH_CURVE", "DEFAULT_MIN_VERSION",
+            "DEFAULT_MAX_VERSION",
+        ],
+        "dns" => &[
+            "lookup", "resolve", "resolve4", "resolve6", "resolveAny", "reverse",
+            "Resolver", "getServers", "setServers", "lookupService", "promises",
+            "defaultResolver", "setDefaultResultOrder", "getDefaultResultOrder",
+            "lookupSync",
+        ],
+        "zlib" => &[
+            "deflate", "deflateSync", "inflate", "inflateSync", "gzip", "gzipSync",
+            "gunzip", "gunzipSync", "deflateRaw", "deflateRawSync", "inflateRaw",
+            "inflateRawSync", "brotliCompress", "brotliCompressSync", "brotliDecompress",
+            "brotliDecompressSync", "createDeflate", "createInflate", "createGzip",
+            "createGunzip", "createDeflateRaw", "createInflateRaw", "createBrotliCompress",
+            "createBrotliDecompress", "Deflate", "Inflate", "Gzip", "Gunzip",
+            "DeflateRaw", "InflateRaw", "BrotliCompress", "BrotliDecompress",
+            "constants", "crc32", "crc32Sync",
+        ],
+        "child_process" => &[
+            "spawn", "exec", "execFile", "execFileSync", "spawnSync", "execSync",
+            "fork", "ChildProcess",
+        ],
+        "readline" => &[
+            "createInterface", "clearLine", "clearScreenDown", "cursorTo", "emitKeypressEvents",
+            "moveCursor", "promises", "Interface", "question",
+        ],
+        "perf_hooks" => &[
+            "PerformanceObserver", "PerformanceEntry", "PerformanceObserverEntryList",
+            "Performance", "monitorEventLoopDelay", "constants",
+        ],
+        "http" => &[
+            "request", "get", "ClientRequest", "IncomingMessage", "Server", "ServerResponse",
+            "METHODS", "STATUS_CODES", "globalAgent", "Agent", "MaxRequestsPerServer",
+            "createServer", "validateHeaderName", "validateHeaderValue",
+            "setGlobalDispatcher", "getGlobalDispatcher",
+        ],
+        "https" => &[
+            "request", "get", "Server", "Agent", "globalAgent",
+        ],
+        _ => &[],
+    }
+}
+
+/// Build the ESM source for a builtin module. Emits `export var` declarations
+/// for each named export (so SM's linker can resolve them statically) plus a
+/// `default` export pointing at the full builtin module object. Unknown names
+/// fall back to `default`-only (still `import X from "<builtin>"`-able).
+fn builtin_esm_source(name: &str) -> &'static str {
+    // Static module source is required because SM's ESM linker reads exports
+    // at compile time. We render this once per builtin and leak it so the
+    // returned `&'static str` matches the other match arms.
+    let spec = js_string_literal(name);
+    let named = builtin_named_exports(name);
+    let mut src = String::with_capacity(64 + named.len() * 32);
+    src.push_str("var _m = require(");
+    src.push_str(&spec);
+    src.push_str(");\n");
+    // Deduplicate: SM rejects duplicate export names at compile time. Iterate
+    // and skip any name we've already emitted.
+    let mut seen: ::std::collections::HashSet<&str> = ::std::collections::HashSet::new();
+    for &exp in named {
+        if !seen.insert(exp) {
+            continue;
+        }
+        // `export var <name> = _m.<name>;` — bind the export to the property
+        // value at module evaluation time. Re-binds on each evaluation.
+        src.push_str("export var ");
+        src.push_str(exp);
+        src.push_str(" = _m.");
+        src.push_str(exp);
+        src.push_str(";\n");
+    }
+    src.push_str("export default _m;\n");
+    Box::leak(src.into_boxed_str())
 }
 
 /// Generate the CJS-compat ESM wrapper source that wraps a CJS module.exports
@@ -2320,5 +2500,44 @@ mod tests {
         assert!(output.contains("const x"), "output was: {}", output);
         assert!(output.contains("42"), "output was: {}", output);
         assert!(output.contains("export default x"), "output was: {}", output);
+    }
+
+    // @trace REQ-ENG-005 — ESM builtin named exports.
+    // GAP-2: `import { Buffer } from "buffer"` must work. The builtin ESM
+    // source is generated with static `export var` declarations so SM's
+    // linker can resolve named imports at link time.
+    #[test]
+    fn builtin_esm_source_emits_named_exports_for_buffer() {
+        let src = builtin_esm_source("buffer");
+        assert!(src.contains("require(\"buffer\")"), "must require builtin: {}", src);
+        assert!(src.contains("export var Buffer = _m.Buffer;"), "must export Buffer: {}", src);
+        assert!(src.contains("export default _m;"), "must have default export: {}", src);
+    }
+
+    #[test]
+    fn builtin_esm_source_emits_named_exports_for_crypto_fs_events() {
+        for (name, sentinel) in [
+            ("crypto", "createHash"),
+            ("fs", "readFile"),
+            ("events", "EventEmitter"),
+        ] {
+            let src = builtin_esm_source(name);
+            assert!(
+                src.contains(&format!("export var {} = _m.{};", sentinel, sentinel)),
+                "builtin {} must export {}: {}",
+                name, sentinel, src
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_esm_source_unknown_builtin_falls_back_to_default_only() {
+        // 'net' is a known builtin; 'unknown-builtin-xyz' is not in
+        // builtin_named_exports and yields no named exports, only default.
+        let src = builtin_esm_source("net");
+        assert!(src.contains("export default _m;"));
+        // Unknown name returns empty named list — only default + require.
+        let unknown = builtin_named_exports("does-not-exist-xyz");
+        assert!(unknown.is_empty(), "unknown builtin should have no named exports");
     }
 }
