@@ -1,4 +1,4 @@
-// @trace REQ-ENG-005 [entity:ModuleSource]
+// @trace REQ-ENG-005 [entity:ModuleSource] [bug:BUG-ENG-365]
 use ::std::cell::RefCell;
 use bun_core::ZBox;
 use bun_sys::fs as bun_fs;
@@ -9,6 +9,7 @@ use mozjs::conversions::jsstr_to_string;
 use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::rooted;
 
 use crate::gc_store;
 
@@ -87,6 +88,21 @@ pub unsafe fn install_require_on_target(
         cx, target, c"require".as_ptr(),
         ::std::option::Option::Some(require_fn), 1, JSPROP_ENUMERATE as u32,
     );
+    // BUG-ENG-365: attach require.resolve() as a property of the require
+    // function object. Re-read require from target to get the function pointer.
+    rooted!(&in(cx) let mut require_val = mozjs::jsval::UndefinedValue());
+    unsafe {
+        JS_GetProperty(
+            cx.raw_cx(),
+            target.into(),
+            c"require".as_ptr(),
+            require_val.handle_mut().into(),
+        );
+    }
+    if require_val.get().is_object() {
+        rooted!(&in(cx) let require_obj = require_val.get().to_object());
+        unsafe { attach_require_resolve(cx, require_obj.handle()) };
+    }
 }
 
 pub fn install_require(
@@ -98,7 +114,105 @@ pub fn install_require(
             cx, global, c"require".as_ptr(),
             ::std::option::Option::Some(require_fn), 1, JSPROP_ENUMERATE as u32,
         );
+        // BUG-ENG-365: attach require.resolve() on the global require function.
+        rooted!(&in(cx) let mut require_val = mozjs::jsval::UndefinedValue());
+        JS_GetProperty(
+            cx.raw_cx(),
+            global.into(),
+            c"require".as_ptr(),
+            require_val.handle_mut().into(),
+        );
+        if require_val.get().is_object() {
+            rooted!(&in(cx) let require_obj = require_val.get().to_object());
+            attach_require_resolve(cx, require_obj.handle());
+        }
     }
+}
+
+/// Attach `require.resolve(specifier)` as a property of the require function object.
+///
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext and `require_obj` is the require
+/// function object obtained from the same global.
+unsafe fn attach_require_resolve(
+    cx: &mut mozjs::context::JSContext,
+    require_obj: mozjs::rust::Handle<*mut JSObject>,
+) {
+    unsafe {
+        mozjs::rust::wrappers2::JS_DefineFunction(
+            cx,
+            require_obj,
+            c"resolve".as_ptr(),
+            ::std::option::Option::Some(require_resolve_fn),
+            1,
+            0,
+        );
+    }
+}
+
+/// `require.resolve(specifier)` — returns the absolute path that `require(specifier)`
+/// would load, or throws MODULE_NOT_FOUND if the specifier cannot be resolved.
+///
+/// Matches Node.js semantics: synchronous, returns a string path.
+///
+/// # Safety
+/// Standard JSNative — cx and vp must be valid.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn require_resolve_fn(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"require.resolve() requires a module specifier".as_ptr());
+        return false;
+    }
+    let spec_val = *args.get(0).ptr;
+    if !spec_val.is_string() {
+        JS_ReportErrorUTF8(cx, c"require.resolve() requires a string argument".as_ptr());
+        return false;
+    }
+    let specifier = crate::js_to_rust_string(cx, spec_val);
+    let base_dir = REQUIRE_DIR.with(|d| d.borrow().clone());
+
+    // BUG-ENG-365: built-in modules resolve to their bare specifier (Node.js
+    // semantics: `require.resolve('fs')` returns 'fs', not a file path).
+    let builtin_key = specifier.strip_prefix("node:").unwrap_or(&specifier);
+    let known_builtins = [
+        "fs", "path", "crypto", "os", "url", "events", "net", "http", "https",
+        "child_process", "util", "assert", "stream", "zlib", "dns", "querystring",
+        "buffer", "string_decoder", "timers", "readline", "perf_hooks",
+        "tls", "process", "vm", "tty", "worker_threads", "module",
+        "bun:test", "bun:sqlite", "bun:ffi", "bun:wrap", "harness",
+    ];
+    if known_builtins.contains(&builtin_key) {
+        let c_path = ZBox::from_bytes(builtin_key.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+        if js_str.is_null() {
+            return false;
+        }
+        args.rval().set(mozjs::jsval::StringValue(&*js_str));
+        return true;
+    }
+
+    let resolved = match resolve_specifier(&specifier, base_dir.as_deref()) {
+        Some(p) => p,
+        None => {
+            let msg = format!("Cannot find module '{}'", specifier);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    };
+    let path_str = resolved.to_string_lossy().into_owned();
+    let c_path = ZBox::from_bytes(path_str.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+    if js_str.is_null() {
+        return false;
+    }
+    args.rval().set(mozjs::jsval::StringValue(&*js_str));
+    true
 }
 
 pub fn set_require_dir(dir: PathBuf) {
@@ -233,6 +347,19 @@ unsafe extern "C" fn require_fn(
             return false;
         }
         mozjs::jsval::ObjectValue(obj)
+    } else if is_esm_module(&resolved, &content) {
+        // BUG-ENG-365: CJS↔ESM interop — require() of an ESM module.
+        // Node.js returns the module namespace (live bindings) via cjs-module-lexer.
+        // We compile/link/evaluate via SM Module API and return the namespace.
+        match load_esm_module(cx, &content, &resolved) {
+            Some(obj) if !obj.is_null() => mozjs::jsval::ObjectValue(obj),
+            _ => {
+                let msg = format!("Failed to load ESM module '{}'", specifier);
+                let c_msg = ZBox::from_bytes(msg.as_bytes());
+                JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+                return false;
+            }
+        }
     } else {
         match load_cjs_module(cx, &content, &resolved, base_dir.as_deref()) {
             Some(val) => val,
@@ -304,6 +431,115 @@ unsafe fn get_prop_from_val(cx: *mut JSContext, val: Value, name: *const i8) -> 
         return UndefinedValue();
     }
     get_prop(cx, val.to_object(), name)
+}
+
+/// BUG-ENG-365: Heuristic detect whether a file is an ESM module (vs CJS).
+///
+/// Rules:
+/// - `.mjs` extension → ESM
+/// - `.cjs` extension → CJS (never ESM)
+/// - `.js` / `.ts` → ESM if source contains `import`/`export` keywords
+///   and lacks `module.exports`/`exports.` CJS markers.
+fn is_esm_module(path: &Path, content: &str) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("mjs") => return true,
+        Some("cjs") => return false,
+        _ => {}
+    }
+    let has_esm_marker = content.contains("import ")
+        || content.contains("export ")
+        || content.contains("export default")
+        || content.contains("import *")
+        || content.contains("import {");
+    let has_cjs_marker = content.contains("module.exports")
+        || content.contains("exports.")
+        || content.contains("exports[");
+    has_esm_marker && !has_cjs_marker
+}
+
+/// BUG-ENG-365: Load an ESM module via SM Module API and return its namespace.
+///
+/// This enables `require()` of ESM modules (CJS↔ESM interop). The returned
+/// object is the module namespace (live bindings), matching Node.js behavior
+/// for `require(esmModule)`.
+///
+/// # Safety
+/// Caller must hold a valid `cx`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn load_esm_module(
+    cx: *mut JSContext,
+    source: &str,
+    path: &Path,
+) -> Option<*mut JSObject> {
+    use mozjs::glue::NewCompileOptions;
+    use mozjs::rust::transform_str_to_source_text;
+
+    // Compile as ESM module.
+    let filename_str = path.to_string_lossy().into_owned();
+    let c_filename = ZBox::from_bytes(filename_str.as_bytes());
+    let opts = NewCompileOptions(cx, c_filename.as_ptr(), 1);
+    if opts.is_null() {
+        return None;
+    }
+    let mut src = transform_str_to_source_text(source);
+    let module = mozjs_sys::jsapi::JS::CompileModule1(cx, opts, &mut src);
+    libc::free(opts as *mut _);
+    if module.is_null() {
+        return None;
+    }
+
+    // BUG-ENG-365: SetModulePrivate with file:// URL so import.meta.url and
+    // relative sub-imports resolve correctly.
+    let priv_url = path_to_file_url_require(path);
+    {
+        let c_url = ZBox::from_bytes(priv_url.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_url.as_ptr());
+        if !js_str.is_null() {
+            let val = mozjs::jsval::StringValue(&*js_str);
+            mozjs_sys::jsapi::JS::SetModulePrivate(module, &val as *const _);
+        }
+    }
+
+    let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module };
+
+    // ModuleLink drives the host_resolve_imported_module hook for sub-imports.
+    if !mozjs_sys::jsapi::JS::ModuleLink(cx, module_h) {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+
+    let mut eval_rval = UndefinedValue();
+    let eval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
+    if !mozjs_sys::jsapi::JS::ModuleEvaluate(cx, module_h, eval_h) {
+        JS_ClearPendingException(cx);
+        return None;
+    }
+
+    // Drain microtasks so synchronous module bodies complete.
+    mozjs_sys::jsapi::js::RunJobs(cx);
+
+    // Return the module namespace object (live bindings for `export`/`default`).
+    let ns = mozjs_sys::jsapi::JS::GetModuleNamespace(cx, module_h);
+    if ns.is_null() { None } else { Some(ns) }
+}
+
+/// Build a `file://` URL from an absolute path (RFC 3986 percent-encoded).
+/// Used by [load_esm_module] for SetModulePrivate.
+fn path_to_file_url_require(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    let mut out = String::with_capacity(s.len() + 7);
+    out.push_str("file://");
+    for b in s.bytes() {
+        let safe = b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
+        if safe {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{:02X}", b));
+        }
+    }
+    out
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

@@ -2068,17 +2068,20 @@ dependencies = [
 name = "bun_sm"
 version = "0.1.0"
 dependencies = [
+ "bao_engine",
  "bao_engine_macros",
  "bun_collections",
  "bun_core",
  "bun_event_loop",
  "bun_io",
+ "bun_runtime",
  "bun_sys",
  "bun_threading",
  "libc",
  "log",
  "mozjs",
  "mozjs_sys",
+ "tempfile",
 ]
 
 [[package]]

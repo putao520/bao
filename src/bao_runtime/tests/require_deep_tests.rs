@@ -71,8 +71,8 @@ fn test_require_deep() {
         check("module_exports_exists", function() { return typeof module.exports === 'object'; });
         check("module_id_type", function() { return typeof module.id === 'string'; });
 
-        // === require.resolve (not yet implemented) ===
-        check("require_resolve_not_impl", function() { return typeof require.resolve === 'undefined'; });
+        // === require.resolve (BUG-ENG-365: now implemented) ===
+        check("require_resolve_is_function", function() { return typeof require.resolve === 'function'; });
 
         // === require.cache (not yet implemented) ===
         check("require_cache_not_impl", function() { return typeof require.cache === 'undefined'; });

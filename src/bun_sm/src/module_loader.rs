@@ -1,4 +1,4 @@
-// @trace REQ-ENG-005
+// @trace REQ-ENG-005 [bug:BUG-ENG-365]
 use ::std::cell::RefCell;
 use ::std::collections::HashSet;
 use ::std::ffi::CString;
@@ -118,6 +118,182 @@ fn module_cache_get(cx: *mut JSContext, key: &str) -> Option<*mut JSObject> {
     if val.is_object() { Some(val.to_object()) } else { None }
 }
 
+// ============================================================================
+// BUG-ENG-365: SM Module API compliance helpers
+//
+// SM Module API contract (https://searchfox.org/mozilla-central/source/js/public/Modules.h):
+//   1. Embedder MUST call JS::SetModulePrivate(module, urlValue) on every
+//      module object returned by the resolve hook. The private value is the
+//      module's identifying URL — it flows back into the resolve hook as
+//      `referencingPrivate` and into the metadata hook as `privateValue`,
+//      enabling correct import.meta.url and relative-import resolution.
+//
+//   2. Embedder MUST call JS::FinishDynamicModuleImport() to complete a
+//      dynamic import() — never ResolvePromise the inner import promise
+//      directly. FinishDynamicModuleImport drives the SM-side state machine
+//      (record, link, evaluate, capability) and resolves the user-facing
+//      promise with the module namespace.
+//
+//   3. Top-level await is handled automatically by SM (hasTopLevelAwait →
+//      ExecuteAsyncModule). Embedder does NOT call SetModuleTopLevelCapability
+//      — that API does not exist in the public SM Module API surface.
+//
+//   4. CJS↔ESM interop: when ESM imports a CJS module, the resolve hook
+//      wraps the CJS module.exports in a synthetic ESM whose default export
+//      is module.exports and whose named exports are exposed via Object.keys
+//      re-exports.
+// ============================================================================
+
+/// Percent-encode a path segment for use in a `file://` URL.
+/// Encodes spaces, control chars, and unsafe ASCII per RFC 3986 unreserved set.
+fn percent_encode_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for b in path.bytes() {
+        // Unreserved per RFC 3986: A-Z a-z 0-9 - _ . ~
+        // Plus path-allowed: / (separator)
+        let safe = b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'.' | b'~' | b'/');
+        if safe {
+            out.push(b as char);
+        } else {
+            out.push('%');
+            out.push_str(&format!("{:02X}", b));
+        }
+    }
+    out
+}
+
+/// Build a `file://` URL from an absolute path, applying RFC 3986 percent-encoding.
+/// This is the canonical form for JS::SetModulePrivate per WHATWG URL spec.
+fn path_to_file_url(path: &Path) -> String {
+    let s = path.to_string_lossy();
+    // Absolute paths already begin with '/'
+    format!("file://{}", percent_encode_path(&s))
+}
+
+/// Create a JS string value holding `url`. Returns a Value the caller may
+/// pass to `JS::SetModulePrivate`. Caller-managed lifetime — must be
+/// consumed before any GC.
+///
+/// # Safety
+/// Caller must hold a valid `cx` and the returned Value must be used
+/// immediately (before any GC).
+unsafe fn make_string_value(raw_cx: *mut JSContext, url: &str) -> Value {
+    let c_url = CString::new(url).unwrap_or_else(|_| CString::new("file://").unwrap());
+    let js_str = unsafe { JS_NewStringCopyZ(raw_cx, c_url.as_ptr()) };
+    if js_str.is_null() {
+        return UndefinedValue();
+    }
+    mozjs::jsval::StringValue(&*js_str)
+}
+
+/// Attach `module_private` (a file:// URL string) to a compiled module.
+///
+/// Spec: `JS::SetModulePrivate(module, value)`. The private value is stored
+/// on the module's ScriptSourceObject and surfaces in:
+///   - host_resolve_imported_module(referencingPrivate, ...) for sub-imports
+///   - host_populate_import_meta(privateValue, metaObject) for import.meta
+///
+/// Without this call, import.meta.url is incorrect and relative imports from
+/// within the module resolve against CWD rather than the module's own URL.
+///
+/// # Safety
+/// Caller must ensure `module` is a valid compiled module object.
+unsafe fn set_module_private(raw_cx: *mut JSContext, module: *mut JSObject, url: &str) {
+    if module.is_null() {
+        return;
+    }
+    let private_val = unsafe { make_string_value(raw_cx, url) };
+    if private_val.is_undefined() {
+        return;
+    }
+    unsafe {
+        mozjs_sys::jsapi::JS::SetModulePrivate(module, &private_val as *const Value);
+    }
+}
+
+/// Retrieve the private value attached to a module via [set_module_private].
+///
+/// Wraps `JS_GetModulePrivate` (mozjs_sys::glue). Returns UndefinedValue on
+/// null module or any error.
+///
+/// # Safety
+/// Caller must ensure `module` is a valid module object.
+unsafe fn get_module_private(raw_cx: *mut JSContext, module: *mut JSObject) -> Value {
+    let _ = raw_cx;
+    if module.is_null() {
+        return UndefinedValue();
+    }
+    let mut out = UndefinedValue();
+    unsafe {
+        mozjs_sys::glue::JS_GetModulePrivate(
+            module,
+            MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut out,
+            },
+        );
+    }
+    out
+}
+
+/// Resolve a specifier against a referencing module's private value (URL).
+///
+/// If `referencing_private` is a file:// URL string, the base directory is
+/// extracted from it. Otherwise returns None (caller falls back to CURRENT_DIR).
+/// This makes relative imports (`./foo`, `../bar`) resolve relative to the
+/// importing module's location — required by ECMAScript module semantics.
+///
+/// # Safety
+/// Caller must hold a valid `cx`.
+unsafe fn base_dir_from_private_cx(
+    raw_cx: *mut JSContext,
+    referencing_private: Handle<Value>,
+) -> Option<PathBuf> {
+    if !referencing_private.is_string() {
+        return None;
+    }
+    let url_jsstr = unsafe { referencing_private.to_string() };
+    let Some(jsstr) = NonNull::new(url_jsstr) else {
+        return None;
+    };
+    let url = mozjs::conversions::jsstr_to_string(raw_cx, jsstr);
+    let path_str = url.strip_prefix("file://")?;
+    let decoded = percent_decode_path(path_str);
+    let path = PathBuf::from(decoded);
+    path.parent().map(|p| p.to_path_buf())
+}
+
+/// Percent-decode a percent-encoded path component (inverse of [percent_encode_path]).
+fn percent_decode_path(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = hex_digit(bytes[i + 1]);
+            let lo = hex_digit(bytes[i + 2]);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h << 4) | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Inject an external resolver function (e.g. `bun_resolver::Resolver` bridge).
 /// Subsequent calls to `resolve_specifier` will delegate to this function first,
 /// falling back to the built-in logic only if it returns `None`.
@@ -221,6 +397,13 @@ impl ModuleLoader {
             });
         }
 
+        // BUG-ENG-365: attach module private value (file:// URL) BEFORE linking
+        // so that host_resolve_imported_module receives a non-undefined
+        // referencingPrivate and host_populate_import_meta can populate
+        // import.meta.url correctly.
+        let entry_url = path_to_file_url(&abs_filename);
+        unsafe { set_module_private(realm_cx.raw_cx_no_gc(), module_obj.handle().get(), &entry_url) };
+
         rooted!(&in(realm_cx) let mut rval = UndefinedValue());
 
         if !unsafe { ModuleLink(realm_cx, module_obj.handle()) } {
@@ -253,7 +436,7 @@ impl ModuleLoader {
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn host_resolve_imported_module(
     raw_cx: *mut JSContext,
-    _referencing_private: Handle<Value>,
+    referencing_private: Handle<Value>,
     module_request: Handle<*mut JSObject>,
 ) -> *mut JSObject {
     let specifier = unsafe { GetModuleRequestSpecifier(raw_cx, module_request) };
@@ -334,13 +517,21 @@ export default _m;
                 let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
                 libc::free(opts as *mut _);
                 if !module.is_null() {
+                    // BUG-ENG-365: attach private value to synthetic builtin modules
+                    let priv_url = format!("builtin:{}", stripped);
+                    set_module_private(raw_cx, module, &priv_url);
                     module_cache_insert(raw_cx, &cache_key, module);
                 }
             return module;
         }
     }
 
-    let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
+    // BUG-ENG-365: derive base_dir from the referencing module's private URL
+    // when available — this makes relative imports resolve against the
+    // importing module's directory, per ECMAScript module semantics.
+    let base_from_private = unsafe { base_dir_from_private_cx(raw_cx, referencing_private) };
+    let base_dir = base_from_private
+        .or_else(|| CURRENT_DIR.with(|d| d.borrow().clone()));
     let resolved = resolve_specifier(&specifier_str, base_dir.as_deref());
 
     let ::std::option::Option::Some(path) = resolved else {
@@ -360,6 +551,30 @@ export default _m;
         ::std::result::Result::Err(_) => return ::std::ptr::null_mut(),
     };
 
+    // BUG-ENG-365: CJS↔ESM interop.
+    // When an ESM `import` targets a CJS module (`.cjs` or `.js` lacking
+    // ESM syntax with a `module.exports` shape), wrap it as a synthetic ESM
+    // whose default export is module.exports and named exports are exposed
+    // via Object.keys re-exports. This matches Node.js ESM-CJS interop.
+    if is_cjs_module(&canonical, &content) {
+        let wrapper = cjs_compat_wrapper_source(&canonical, &content);
+        let c_filename = CString::new(canonical.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| CString::new("<cjs-compat>").unwrap());
+        let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
+        if !opts.is_null() {
+            let mut src = transform_str_to_source_text(&wrapper);
+            let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
+            libc::free(opts as *mut _);
+            if !module.is_null() {
+                let priv_url = path_to_file_url(&canonical);
+                set_module_private(raw_cx, module, &priv_url);
+                module_cache_insert(raw_cx, &cache_key, module);
+                return module;
+            }
+        }
+        // Fallback: treat as ESM below if CJS wrap fails.
+    }
+
     // REQ-ENG-005 criterion 3: TypeScript/JSX transpilation before SM compilation.
     let transpiled = if needs_transpile(&path) {
         strip_typescript(&content, &path)
@@ -378,10 +593,104 @@ export default _m;
         let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
         libc::free(opts as *mut _);
         if !module.is_null() {
+            // BUG-ENG-365: SetModulePrivate on every compiled module so that
+            // subsequent imports/evaluates can resolve relative specifiers and
+            // populate import.meta.url correctly.
+            let priv_url = path_to_file_url(&canonical);
+            set_module_private(raw_cx, module, &priv_url);
             module_cache_insert(raw_cx, &cache_key, module);
         }
         module
     }
+}
+
+/// Heuristic: detect whether a file is a CJS module (vs ESM).
+///
+/// Rules:
+/// - `.cjs` extension → CJS
+/// - `.mjs` extension → ESM (never CJS)
+/// - `.js` / `.ts` → CJS if source contains `module.exports`, `exports.`,
+///   `require(`, or lacks `import`/`export` ESM keywords
+fn is_cjs_module(path: &Path, content: &str) -> bool {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("cjs") => return true,
+        Some("mjs") => return false,
+        _ => {}
+    }
+    // Strong CJS signal: assignment to module.exports or exports.x
+    let has_cjs_marker = content.contains("module.exports")
+        || content.contains("exports.")
+        || content.contains("exports[");
+    // Strong ESM signal: import/export statements
+    let has_esm_marker = content.contains("import ")
+        || content.contains("export ")
+        || content.contains("export default")
+        || content.contains("import *")
+        || content.contains("import {");
+    if has_esm_marker && !has_cjs_marker {
+        return false;
+    }
+    has_cjs_marker
+}
+
+/// Render a Rust string as a JS double-quoted string literal with proper escapes.
+fn js_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Generate the CJS-compat ESM wrapper source that wraps a CJS module.exports
+/// for ESM `import`. The wrapper:
+///   1. Defines `module`, `exports` locals (CJS environment).
+///   2. Evaluates the CJS source in a function scope.
+///   3. Exports `default = module.exports`.
+///   4. Re-exports all enumerable keys as named exports (live bindings).
+fn cjs_compat_wrapper_source(canonical: &Path, cjs_source: &str) -> String {
+    let escaped = cjs_source.replace('\\', "\\\\").replace('`', "\\`").replace("${", "\\${");
+    let filename_str = js_string_literal(&canonical.to_string_lossy());
+    let dirname_str = js_string_literal(&canonical.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
+    format!(
+        r#"
+var __cjs_module = {{ exports: {{}} }};
+var module = __cjs_module;
+var exports = __cjs_module.exports;
+var __filename = {filename_str};
+var __dirname = {dirname_str};
+(function() {{
+{src}
+}}).call(exports);
+var __cjs_default = (module.exports === exports) ? exports : module.exports;
+export default __cjs_default;
+var __cjs_keys = (typeof __cjs_default === 'object' && __cjs_default !== null)
+    ? Object.keys(__cjs_default) : [];
+for (var __i = 0; __i < __cjs_keys.length; __i++) {{
+    var __k = __cjs_keys[__i];
+    try {{
+        Object.defineProperty(exports, __k, {{
+            get: function() {{ return __cjs_default[__k]; }},
+            enumerable: true,
+            configurable: true,
+        }});
+    }} catch (e) {{}}
+}}
+"#,
+        filename_str = filename_str,
+        dirname_str = dirname_str,
+        src = escaped,
+    )
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -425,7 +734,7 @@ unsafe extern "C" fn host_populate_import_meta(
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn host_dynamic_import(
     raw_cx: *mut JSContext,
-    _referencing_private: Handle<Value>,
+    referencing_private: Handle<Value>,
     module_request: Handle<*mut JSObject>,
     promise: Handle<*mut JSObject>,
 ) -> bool {
@@ -447,33 +756,27 @@ unsafe extern "C" fn host_dynamic_import(
     ];
     let stripped = specifier_str.strip_prefix("node:").unwrap_or(&specifier_str);
     if builtin_modules.contains(&stripped) {
+        // BUG-ENG-365: built-in modules are loaded eagerly (not via
+        // FinishDynamicModuleImport). We resolve the user-facing import
+        // promise directly with the namespace. This is acceptable because
+        // builtins have no SM-side module record — they are namespace wrappers.
         // Look up the module in the require() cache by its canonical name
         let cache_key = stripped;
         let cached = module_cache_get(raw_cx, cache_key);
         if let Some(existing) = cached && !existing.is_null() {
-            let module_val = mozjs::jsval::ObjectValue(existing);
-            let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
-            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-            mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
-            return true;
+            return unsafe { resolve_dynamic_promise_with_value(raw_cx, promise, mozjs::jsval::ObjectValue(existing)) };
         }
 
         // Not in cache — create a synthetic module namespace from the global require
-        // The require() system registers modules under their plain names in the cache
         // Try with the "node:" prefix too
         let node_key = format!("node:{}", stripped);
         let node_cached = module_cache_get(raw_cx, &node_key);
         if let Some(existing) = node_cached && !existing.is_null() {
-            let module_val = mozjs::jsval::ObjectValue(existing);
-            let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
-            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-            mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
-            return true;
+            return unsafe { resolve_dynamic_promise_with_value(raw_cx, promise, mozjs::jsval::ObjectValue(existing)) };
         }
 
         // Last resort: create a namespace-like wrapper by calling require() via JS eval
         let eval_src = format!("require('{}')", stripped);
-        let _c_src = CString::new(eval_src.clone()).unwrap_or_else(|_| CString::new("undefined").unwrap());
         let c_filename = CString::new("<dynamic-import>").unwrap_or_else(|_| CString::new("<eval>").unwrap());
         let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
         if !opts.is_null() {
@@ -483,93 +786,40 @@ unsafe extern "C" fn host_dynamic_import(
             let ok = mozjs_sys::jsapi::JS::Evaluate2(raw_cx, opts, &mut src, rval_h);
             libc::free(opts as *mut _);
             if ok {
-                let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-                let rval_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &rval };
-                mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, rval_handle);
-                return true;
+                return unsafe { resolve_dynamic_promise_with_value(raw_cx, promise, rval) };
             }
         }
 
         // All attempts failed — reject
-        let msg = format!("Cannot find module '{}'", specifier_str);
-        let Ok(c_msg) = CString::new(msg) else { return false };
-        let err_obj = JS_NewPlainObject(raw_cx);
-        if !err_obj.is_null() {
-            let err_msg = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
-            if !err_msg.is_null() {
-                let msg_val = mozjs::jsval::StringValue(&*err_msg);
-                let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
-                let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
-                JS_SetProperty(raw_cx, err_h, c"message".as_ptr(), msg_h);
-            }
-            let err_val = mozjs::jsval::ObjectValue(err_obj);
-            let err_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
-            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-            mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise_h, err_handle);
-        }
-        return true;
+        return unsafe { reject_dynamic_promise(raw_cx, promise, &format!("Cannot find module '{}'", specifier_str)) };
     }
 
-    let base_dir = CURRENT_DIR.with(|d| d.borrow().clone());
+    // BUG-ENG-365: derive base_dir from referencing module's private URL.
+    let base_dir = unsafe { base_dir_from_private_cx(raw_cx, referencing_private) }
+        .or_else(|| CURRENT_DIR.with(|d| d.borrow().clone()));
     let resolved = resolve_specifier(&specifier_str, base_dir.as_deref());
 
     let ::std::option::Option::Some(path) = resolved else {
-        let msg = format!("Cannot find module '{}'", specifier_str);
-        let Ok(c_msg) = CString::new(msg) else { return false };
-        let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(raw_cx);
-        if !err_obj.is_null() {
-            let err_msg = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
-            if !err_msg.is_null() {
-                let msg_val = mozjs::jsval::StringValue(&*err_msg);
-                let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
-                let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
-                JS_SetProperty(raw_cx, err_h, c"message".as_ptr(), msg_h);
-            }
-            let err_val = mozjs::jsval::ObjectValue(err_obj);
-            let err_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
-            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-            mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise_h, err_handle);
-        }
-        return true;
+        return unsafe { reject_dynamic_promise(raw_cx, promise, &format!("Cannot find module '{}'", specifier_str)) };
     };
 
     let canonical = path.canonicalize().unwrap_or(path.clone());
     let cache_key = canonical.to_string_lossy().into_owned();
 
-    let cached = module_cache_get(raw_cx, &cache_key);
-    if let Some(existing) = cached && !existing.is_null() {
-        let module_val = mozjs::jsval::ObjectValue(existing);
-        let module_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &module_val };
-        let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-        mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, module_h);
-        return true;
-    }
-
+    // BUG-ENG-365: For file modules we MUST use FinishDynamicModuleImport
+    // per SM Module API spec. This drives the SM-side state machine and
+    // resolves the user-facing promise with the module namespace.
     let content = match fs::read_to_string(&path) {
         ::std::result::Result::Ok(c) => c,
         ::std::result::Result::Err(e) => {
-            let msg = format!("Cannot read module '{}': {}", specifier_str, e);
-            let Ok(c_msg) = CString::new(msg) else { return false };
-            let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(raw_cx);
-            if !err_obj.is_null() {
-                let err_msg = JS_NewStringCopyZ(raw_cx, c_msg.as_ptr());
-                if !err_msg.is_null() {
-                    let msg_val = mozjs::jsval::StringValue(&*err_msg);
-                    let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
-                    let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
-                    JS_SetProperty(raw_cx, err_h, c"message".as_ptr(), msg_h);
-                }
-                let err_val = mozjs::jsval::ObjectValue(err_obj);
-                let err_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
-                let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-                mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise_h, err_handle);
-            }
-            return true;
+            return unsafe { reject_dynamic_promise(raw_cx, promise, &format!("Cannot read module '{}': {}", specifier_str, e)) };
         }
     };
 
-    // REQ-ENG-005 criterion 3: TypeScript/JSX transpilation before SM compilation.
-    let transpiled = if needs_transpile(&path) {
+    // CJS target — wrap as ESM for interop; otherwise transpile TS/JSX.
+    let effective_source = if is_cjs_module(&canonical, &content) {
+        cjs_compat_wrapper_source(&canonical, &content)
+    } else if needs_transpile(&path) {
         strip_typescript(&content, &path)
     } else {
         content
@@ -580,35 +830,104 @@ unsafe extern "C" fn host_dynamic_import(
             .unwrap_or_else(|_| CString::new("<module>").unwrap());
         let opts = NewCompileOptions(raw_cx, c_filename.as_ptr(), 1);
         if opts.is_null() {
-            return false;
+            return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: compile options alloc failed") };
         }
-        let mut src = transform_str_to_source_text(&transpiled);
+        let mut src = transform_str_to_source_text(&effective_source);
         let module = mozjs_sys::jsapi::JS::CompileModule1(raw_cx, opts, &mut src);
         libc::free(opts as *mut _);
         if module.is_null() {
-            return false;
+            return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: module compilation failed") };
         }
+
+        // BUG-ENG-365: SetModulePrivate before linking.
+        let priv_url = path_to_file_url(&canonical);
+        set_module_private(raw_cx, module, &priv_url);
 
         module_cache_insert(raw_cx, &cache_key, module);
 
         let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module };
         if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_h) {
-            return false;
+            // Link failed — complete via FinishDynamicModuleImport with null eval promise.
+            let null_obj = ::std::ptr::null_mut::<JSObject>();
+            let null_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj };
+            return unsafe {
+                mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
+                    raw_cx,
+                    null_h,
+                    referencing_private,
+                    module_request,
+                    promise,
+                )
+            };
         }
 
-        let mut rval = UndefinedValue();
-        let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-        if !mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_h, rval_h) {
-            return false;
-        }
+        let mut eval_rval = UndefinedValue();
+        let eval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
+        let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_h, eval_h);
 
+        // Drain microtasks so synchronous module bodies complete.
         mozjs_sys::jsapi::js::RunJobs(raw_cx);
 
-        let ns_obj = mozjs_sys::jsapi::JS::GetModuleNamespace(raw_cx, module_h);
-        let ns_val = mozjs::jsval::ObjectValue(ns_obj);
-        let ns_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ns_val };
+        // ModuleEvaluate returns the evaluation promise (object) on success,
+        // or undefined/false on failure. Per SM spec we pass this evaluation
+        // promise to FinishDynamicModuleImport.
+        let evaluation_promise = if eval_ok && eval_rval.is_object() {
+            eval_rval.to_object()
+        } else {
+            ::std::ptr::null_mut::<JSObject>()
+        };
+        let eval_promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &evaluation_promise };
+
+        // BUG-ENG-365: spec-mandated completion path.
+        mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
+            raw_cx,
+            eval_promise_h,
+            referencing_private,
+            module_request,
+            promise,
+        )
+    }
+}
+
+/// Resolve the user-facing dynamic import promise directly with a JS value.
+/// Used for built-in modules that have no SM module record.
+///
+/// # Safety
+/// Caller must hold a valid `cx`.
+unsafe fn resolve_dynamic_promise_with_value(
+    raw_cx: *mut JSContext,
+    promise: Handle<*mut JSObject>,
+    val: Value,
+) -> bool {
+    let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
+    let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
+    unsafe { mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, val_h) }
+}
+
+/// Reject the user-facing dynamic import promise with an Error object
+/// carrying `msg`.
+///
+/// # Safety
+/// Caller must hold a valid `cx`.
+unsafe fn reject_dynamic_promise(
+    raw_cx: *mut JSContext,
+    promise: Handle<*mut JSObject>,
+    msg: &str,
+) -> bool {
+    let Ok(c_msg) = CString::new(msg) else { return false };
+    let err_obj = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(raw_cx) };
+    if !err_obj.is_null() {
+        let err_msg = unsafe { JS_NewStringCopyZ(raw_cx, c_msg.as_ptr()) };
+        if !err_msg.is_null() {
+            let msg_val = mozjs::jsval::StringValue(&*err_msg);
+            let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
+            let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
+            unsafe { JS_SetProperty(raw_cx, err_h, c"message".as_ptr(), msg_h) };
+        }
+        let err_val = mozjs::jsval::ObjectValue(err_obj);
+        let err_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
         let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-        mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, ns_h);
+        unsafe { mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise_h, err_handle) };
     }
     true
 }

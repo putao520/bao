@@ -20,6 +20,11 @@ bun_sys = { path = "../sys" }
 libc = "0.2"
 log = "0.4"
 
+[dev-dependencies]
+bao_engine = { path = "../bao_engine" }
+bun_runtime = { path = "../bao_runtime" }
+tempfile = "3"
+
 [lints.rust]
 # Stub types have unused fields/imports during development — allow temporarily
 dead_code = "allow"
