@@ -447,6 +447,30 @@ const BUN_TEST_SHIM: &str = r#"
         }
         return e;
       },
+      // @trace REQ-ENG-005 — Jest / bun:test parity: toThrowWithCode(fn, code)
+      // asserts that `fn` throws and the thrown error has `.code === code`.
+      // buffer.test.js "ParseArrayIndex() should reject values that don't fit
+      // in a 32 bits size_t" drives `.toThrowWithCode(Buffer.alloc, ERR_OUT_OF_RANGE)`.
+      toThrowWithCode: function(expectedClass, expectedCode) {
+        var threw = false;
+        var thrownError = null;
+        try {
+          actual();
+        } catch (err) {
+          threw = true;
+          thrownError = err;
+        }
+        if (!threw) {
+          throw new Error("Expected function to throw");
+        }
+        if (typeof expectedClass === 'function' && !(thrownError instanceof expectedClass)) {
+          throw new Error("Expected thrown error to be instance of " + (expectedClass.name || 'class'));
+        }
+        if (expectedCode !== undefined && thrownError.code !== expectedCode) {
+          throw new Error("Expected thrown error code \"" + expectedCode + "\" but got \"" + thrownError.code + "\"");
+        }
+        return e;
+      },
       toThrowError: function(expectedMsgOrClass) {
         var threw = false;
         var thrownError = null;
