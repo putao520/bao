@@ -851,8 +851,15 @@ fn builtin_named_exports(name: &str) -> &'static [&'static str] {
             "Buffer", "SlowBuffer", "kMaxLength", "constants", "INSPECT_MAX_BYTES",
             // @trace REQ-ENG-005 — extras imported by upstream tests.
             // buffer.test.js imports isAscii, isUtf8; buffer-resolveObjectURL
-            // imports resolveObjectURL. Blob lives on globalThis per Web IDL.
-            "isAscii", "isUtf8", "resolveObjectURL", "Blob",
+            // imports resolveObjectURL. Blob/File live on globalThis per Web
+            // IDL but buffer.test.js "File" drives
+            //   const BufferModule = await import("buffer");
+            //   expect(BufferModule.File).toBe(File);
+            // so File MUST appear as a named export. transcode is the
+            // masqueradesAsUndefined sentinel (typeof === "undefined" but
+            // callable and throws "Not implemented" — see buffer module
+            // installer in node_buffer.rs).
+            "isAscii", "isUtf8", "resolveObjectURL", "Blob", "File", "transcode",
         ],
         "crypto" => &[
             "createHash", "createHmac", "createCipher", "createCipheriv",

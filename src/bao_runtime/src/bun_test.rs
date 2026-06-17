@@ -187,6 +187,22 @@ const BUN_TEST_SHIM: &str = r#"
           if (a === null || b === null) return false;
           if (typeof a !== typeof b) return false;
           if (typeof a !== 'object') return false;
+          // @trace REQ-ENG-005 — TypedArray (Buffer/Uint8Array/...) comparison
+          // must use the byte payload, not Object.keys, because:
+          //   1. The internal `length` slot is non-enumerable; a user
+          //      defineProperty can make it enumerable (buffer.test.js
+          //      "bypassing `length` should not cause an abort" shadows
+          //      buf.length with value 1337), which would skew key counts.
+          //   2. Numeric-indexed keys are the real comparison surface.
+          // We use the canonical toJSON() form when present (Buffers return
+          // {type:'Buffer', data:[...]}); otherwise fall through to the
+          // constructor + key-count path below for plain objects.
+          if (typeof a.toJSON === 'function' && typeof b.toJSON === 'function') {
+            var ja = a.toJSON();
+            var jb = b.toJSON();
+            // Recurse so nested data arrays still get strict-equality.
+            return _strict(ja, jb);
+          }
           // Same constructor (covers class identity for Blob/Array/etc.).
           if (a.constructor !== b.constructor) {
             if (a.constructor && b.constructor && a.constructor.name !== b.constructor.name) return false;

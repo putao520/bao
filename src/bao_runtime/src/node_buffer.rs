@@ -278,13 +278,22 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // JS-side installer's binding with a native SMFunction. The native
         // accepts a Buffer/Uint8Array/TypedArray/DataView/ArrayBuffer, reads
         // its byte view, and scans for ASCII (>127) or UTF-8 validity.
+        //
+        // JSFUN_CONSTRUCTOR (0x400) marks the function as constructible so
+        // `new isAscii(buf)` is accepted. SM's [[Construct]] path for a native
+        // C++ function honours the primitive return value set via CallArgs —
+        // matching Bun's `masqueradesAsUndefined`-style behaviour where
+        // `new` does NOT override the primitive with a fresh `this`.
+        // Reference: js/src/jsapi.h `JSFUN_CONSTRUCTOR`; js/src/vm/Interpreter.cpp
+        // `InvokeConstructor` (NativeImpl) copies `args.rval()` straight through.
+        const JSFUN_CONSTRUCTOR: u32 = 0x400;
         w2::JS_DefineFunction(
             cx,
             mod_obj.handle(),
             c"isAscii".as_ptr(),
             Some(buffer_is_ascii),
             1,
-            JSPROP_ENUMERATE as u32,
+            (JSPROP_ENUMERATE as u32) | JSFUN_CONSTRUCTOR,
         );
         w2::JS_DefineFunction(
             cx,
@@ -292,11 +301,50 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             c"isUtf8".as_ptr(),
             Some(buffer_is_utf8),
             1,
+            (JSPROP_ENUMERATE as u32) | JSFUN_CONSTRUCTOR,
+        );
+
+        // @trace REQ-ENG-005 [api:buffer.transcode] — Bun.transcode is a
+        // masqueradesAsUndefined function: `typeof BufferModule.transcode`
+        // returns "undefined" but invoking it throws "Not implemented".
+        // SM has no equivalent of JSC's masqueradesAsUndefined flag — every
+        // native callable reports "function" under typeof — so the first
+        // assertion in buffer.test.js "transcode" is a known SM limitation.
+        // We still register the function so the call path at least produces
+        // the expected "Not implemented" error rather than the misleading
+        // "not a function".
+        w2::JS_DefineFunction(
+            cx,
+            mod_obj.handle(),
+            c"transcode".as_ptr(),
+            Some(buffer_transcode),
+            0,
             JSPROP_ENUMERATE as u32,
         );
 
         cache_builtin(cx, "buffer", mod_obj.get());
     }
+}
+
+// @trace REQ-ENG-005 [api:buffer.transcode] — Bun's transcode is a
+// masqueradesAsUndefined native: present on the buffer module but reports
+// `typeof === "undefined"` while still being callable. SM has no flag to
+// reproduce the typeof masquerade, so we register a plain native that throws
+// "Not implemented" on every call (the surface Bun documents for this stub
+// when iconv support is absent). buffer.test.js's second assertion
+// (`() => BufferModule.transcode()` throws "Not implemented") passes; the
+// first (`typeof === "undefined"`) is a documented SM limitation.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn buffer_transcode(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let msg = ::std::ffi::CString::new("Not implemented").unwrap();
+    mozjs::error::throw_type_error(cx, msg.as_ref());
+    args.rval().set(UndefinedValue());
+    false
 }
 
 // @trace REQ-ENG-005 [api:buffer.isAscii] — Native SMFunction returning a

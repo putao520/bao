@@ -439,13 +439,26 @@ pub fn install_buffer_global(
         }
         rooted!(&in(cx) let buf_root = buf_obj);
 
+        // @trace REQ-ENG-005 [api:Buffer.from] — JSFUN_CONSTRUCTOR (0x400)
+        // marks `from` / `alloc` as constructible so the deprecated
+        // `new Buffer.from(x)` / `new Buffer.alloc(n)` legacy patterns work.
+        // buffer.test.js "new Buffer.from()" drives
+        //   new Buffer.from("🥶") → Buffer of 4 bytes
+        // SM's [[Construct]] on a native C++ function honours the primitive
+        // return value (the freshly-created Buffer), matching Bun's
+        // behaviour where `new` on a method returning an object yields
+        // exactly that object.
+        // Reference: js/src/jsapi.h `JSFUN_CONSTRUCTOR`.
+        const JSFUN_CONSTRUCTOR_GLOBAL: u32 = 0x400;
         JS_DefineFunction(
             cx, buf_root.handle(), c"from".as_ptr(),
-            ::std::option::Option::Some(buffer_from), 1, JSPROP_ENUMERATE as u32,
+            ::std::option::Option::Some(buffer_from), 1,
+            (JSPROP_ENUMERATE as u32) | JSFUN_CONSTRUCTOR_GLOBAL,
         );
         JS_DefineFunction(
             cx, buf_root.handle(), c"alloc".as_ptr(),
-            ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
+            ::std::option::Option::Some(buffer_alloc), 1,
+            (JSPROP_ENUMERATE as u32) | JSFUN_CONSTRUCTOR_GLOBAL,
         );
         JS_DefineFunction(
             cx, buf_root.handle(), c"isBuffer".as_ptr(),
@@ -457,11 +470,13 @@ pub fn install_buffer_global(
         );
         JS_DefineFunction(
             cx, buf_root.handle(), c"allocUnsafe".as_ptr(),
-            ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
+            ::std::option::Option::Some(buffer_alloc), 1,
+            (JSPROP_ENUMERATE as u32) | JSFUN_CONSTRUCTOR_GLOBAL,
         );
         JS_DefineFunction(
             cx, buf_root.handle(), c"allocUnsafeSlow".as_ptr(),
-            ::std::option::Option::Some(buffer_alloc), 1, JSPROP_ENUMERATE as u32,
+            ::std::option::Option::Some(buffer_alloc), 1,
+            (JSPROP_ENUMERATE as u32) | JSFUN_CONSTRUCTOR_GLOBAL,
         );
         JS_DefineFunction(
             cx, buf_root.handle(), c"byteLength".as_ptr(),
@@ -596,24 +611,68 @@ pub fn install_buffer_global(
     return out;
   }
   function _base64Bytes(str) {
-    // Node.js: base64/base64url decode using atob (handles both, with
-    // url-safe substitution for base64url).
-    if (typeof globalThis.atob !== 'function') {
-      // Manual decode fallback.
-      var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-      str = str.replace(/[^A-Za-z0-9+/=]/g, '');
-      var out = [];
-      for (var i = 0; i < str.length; i += 4) {
-        var n = (chars.indexOf(str[i]) << 18) | (chars.indexOf(str[i+1]) << 12) | ((chars.indexOf(str[i+2]) & 0x3F) << 6) | (chars.indexOf(str[i+3]) & 0x3F);
-        out.push((n >> 16) & 0xFF);
-        if (str[i+2] !== '=') out.push((n >> 8) & 0xFF);
-        if (str[i+3] !== '=') out.push(n & 0xFF);
+    // @trace REQ-ENG-005 [algorithm:base64] — Node.js parity:
+    // base64 decoding reads the LOW BYTE of each UTF-16 code unit, then
+    // decodes the resulting byte sequence. Crucially, this means a two-byte
+    // JSString containing surrogate pairs contributes only the low byte of
+    // each surrogate — buffer.test.js
+    //   "two-byte strings decode from the low byte of each code unit"
+    // drives:
+    //   Buffer.from("QUJD\u{1F600}REVG", "base64").toString("latin1") === "ABC"
+    // because \uD83D narrows to 0x3D ('='), the canonical base64 padding
+    // terminator, so decoding stops after the first 3 bytes ("ABC"). Units
+    // whose low byte is NOT in the alphabet are skipped (Node treats them
+    // like whitespace) — e.g. Ľ narrows to 0x3D too, but с narrows
+    // to 0x41 ('A') which IS in the alphabet and contributes data.
+    //
+    // SM's atob() already lowers code units but it strips ALL non-alphabet
+    // characters including the padding-equivalent surrogate-derived '='.
+    // We bypass atob here and decode the low bytes directly so '=' (whether
+    // literal or surrogate-derived) terminates the run as Node does.
+    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    var out = [];
+    // Phase 1: walk code units, take low byte, drop units whose low byte is
+    // not in the alphabet and not '='. Stop entirely at the first '='.
+    var cleaned = [];
+    var stopped = false;
+    for (var i = 0; i < str.length; i++) {
+      var b = str.charCodeAt(i) & 0xFF;
+      if (b === 0x3D) { // '=' (padding or surrogate-derived terminator)
+        stopped = true;
+        break;
       }
-      return out;
+      var idx = (b >= 65 && b <= 90) ? (b - 65)            // A-Z 0-25
+             : (b >= 97 && b <= 122) ? (b - 97 + 26)       // a-z 26-51
+             : (b >= 48 && b <= 57) ? (b - 48 + 52)        // 0-9 52-61
+             : (b === 0x2B) ? 62                           // + 62
+             : (b === 0x2F) ? 63                           // / 63
+             : -1;
+      if (idx < 0) {
+        // Low byte not in alphabet — Node silently drops it (treats as ws).
+        continue;
+      }
+      cleaned.push(idx);
     }
-    var decoded = globalThis.atob(str);
-    var out = new Array(decoded.length);
-    for (var i = 0; i < decoded.length; i++) out[i] = decoded.charCodeAt(i);
+    // Phase 2: decode 4 -> 3 bytes from the cleaned indices.
+    var n = cleaned.length;
+    var i = 0;
+    while (i + 1 < n) {
+      var c0 = cleaned[i];
+      var c1 = cleaned[i + 1];
+      var triplet = (c0 << 18) | (c1 << 12);
+      out.push((triplet >> 16) & 0xFF);
+      if (i + 2 < n) {
+        var c2 = cleaned[i + 2];
+        triplet |= (c2 << 6);
+        out.push((triplet >> 8) & 0xFF);
+        if (i + 3 < n) {
+          var c3 = cleaned[i + 3];
+          triplet |= c3;
+          out.push(triplet & 0xFF);
+        }
+      }
+      i += 4;
+    }
     return out;
   }
   function _base64urlBytes(str) {
@@ -1090,7 +1149,13 @@ pub fn install_buffer_global(
   //      If it was resized down → clamp start/end to the new length.
   //   8. Fill the range.
   _bp.fill = function fill(val, start, end, encoding) {
-    var len = this.length;
+    // @trace REQ-ENG-005 [api:Buffer.fill] — Use the SM-internal
+    // `byteLength` rather than the user-visible `length` property so that
+    // buffer.test.js "bypassing `length` should not cause an abort" —
+    // which does `Object.defineProperty(buf, "length", {value: 1337})` —
+    // still fills only the 4 real bytes. SM's Uint8Array byteLength is a
+    // non-configurable / non-writable own slot, immune to defineProperty.
+    var len = (typeof this.byteLength === 'number') ? this.byteLength : this.length;
     // Resolve positional args. encoding only applies when val is a string.
     if (typeof val === 'string') {
       // Signature: fill(string[, start[, end]][, encoding])
@@ -1207,7 +1272,11 @@ pub fn install_buffer_global(
     // happened, clamp start/end to the new logical length.
     var detached = (this.buffer && this.buffer.byteLength === 0);
     if (detached) return this;
-    var curLen = this.length;
+    // @trace REQ-ENG-005 [api:Buffer.fill] — Same byteLength reasoning as
+    // the entry snapshot: the user may have shadowed `.length` via
+    // defineProperty. Re-read via byteLength so we never write past the
+    // real byte storage.
+    var curLen = (typeof this.byteLength === 'number') ? this.byteLength : this.length;
     var s = sRaw >>> 0;
     var e = eRaw >>> 0;
     if (s > curLen) s = curLen;
@@ -1395,7 +1464,12 @@ pub fn install_buffer_global(
   };
 
   _bp.toJSON = function() {
-    return { type: 'Buffer', data: Array.prototype.slice.call(this, 0, this.length) };
+    // @trace REQ-ENG-005 [api:Buffer.toJSON] — Use byteLength instead of
+    // the user-visible `length` so a Buffer whose `.length` was shadowed
+    // via defineProperty still serializes only the real bytes
+    // (buffer.test.js "bypassing `length` should not cause an abort").
+    var realLen = (typeof this.byteLength === 'number') ? this.byteLength : this.length;
+    return { type: 'Buffer', data: Array.prototype.slice.call(this, 0, realLen) };
   };
 
   // @trace REQ-ENG-005 [api:Buffer.subarray detach] — Node.js throws
@@ -2104,6 +2178,130 @@ unsafe fn buffer_view_bytes(obj: *mut JSObject) -> (usize, *mut u8) {
     }
 }
 
+/// @trace REQ-ENG-005 [algorithm:base64_low_byte]
+/// Push the base64 alphabet index of `low` (low byte of a UTF-16 code unit)
+/// onto `out`. A literal '=' (0x3D) — which can also arise as the low byte
+/// of a surrogate code unit — terminates the run and is signalled by
+/// returning `false` so the caller can `break`. Bytes outside the alphabet
+/// are silently dropped (Node treats them as whitespace).
+///
+/// @trace REQ-ENG-005 — Lenient decoding. Bun/Node accept BOTH the standard
+/// (`+`/`/`) and url-safe (`-`/`_`) alphabets in BOTH base64 and base64url
+/// modes (buffer.test.js "lenient decoding accepts both alphabets in the
+/// same input"). The `url_safe` flag is kept only for clarity / future
+/// strict modes; today both alphabets map identically.
+fn push_base64_index(out: &mut Vec<u8>, low: u8, _url_safe: bool) -> bool {
+    if low == b'=' {
+        return false;
+    }
+    let idx: i32 = match low {
+        b'A'..=b'Z' => (low - b'A') as i32,
+        b'a'..=b'z' => (low - b'a' + 26) as i32,
+        b'0'..=b'9' => (low - b'0' + 52) as i32,
+        b'+' | b'-' => 62,
+        b'/' | b'_' => 63,
+        _ => -1,
+    };
+    if idx >= 0 {
+        out.push(idx as u8);
+    }
+    true
+}
+
+/// @trace REQ-ENG-005 [algorithm:base64_low_byte]
+/// Node.js base64 decoder that reads the LOW BYTE of each UTF-16 code unit
+/// of the JSString. This is the canonical Node.js behaviour (V8 stores
+/// strings as either latin1 or two-byte; base64 decoding inspects the
+/// low byte of each char16_t regardless of storage representation).
+///
+/// buffer.test.js "two-byte strings decode from the low byte of each code
+/// unit" drives:
+///   Buffer.from("QUJD\u{1F600}REVG", "base64").toString("latin1") === "ABC"
+/// because \uD83D narrows to 0x3D ('=') — the base64 padding terminator —
+/// so decoding stops after the first 3 bytes. Units whose low byte is not
+/// in the alphabet are silently skipped (Node treats them as whitespace).
+///
+/// `url_safe` swaps the alphabet for the url-safe variant (`-`/`_`
+/// instead of `+`/`/`).
+///
+/// # Safety
+/// Caller must ensure `cx` is a valid JSContext and `js_str` is a valid
+/// SM JSString pointer.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn base64_low_byte_decode(
+    cx: *mut JSContext,
+    js_str: *mut mozjs_sys::jsapi::JSString,
+    url_safe: bool,
+) -> Vec<u8> {
+    use mozjs::jsapi::{
+        JS_DeprecatedStringHasLatin1Chars, JS_GetLatin1StringCharsAndLength,
+        JS_GetTwoByteStringCharsAndLength,
+    };
+
+    // SM strings can be stored either as latin1 (1 byte / char) or two-byte
+    // (char16_t). Either way, Node.js base64 decoding reads the LOW BYTE of
+    // each UTF-16 code unit, which is identical to the raw byte for a latin1
+    // string. We dispatch on the storage kind to avoid inflating latin1
+    // strings needlessly.
+    //
+    // We pass null nogc guards: the documented fast-path that delegates
+    // responsibility for not running JS/GC to the caller (see mozjs
+    // conversions.rs:604,629 for the same pattern). We honour this by
+    // completing the byte copy before returning.
+    let mut cleaned: Vec<u8> = Vec::new();
+    if JS_DeprecatedStringHasLatin1Chars(js_str) {
+        let mut length: usize = 0;
+        let chars_ptr = JS_GetLatin1StringCharsAndLength(cx, ::std::ptr::null(), js_str, &mut length);
+        if chars_ptr.is_null() {
+            return Vec::new();
+        }
+        cleaned.reserve(length);
+        for i in 0..length {
+            let low = *chars_ptr.add(i);
+            if !push_base64_index(&mut cleaned, low, url_safe) {
+                break;
+            }
+        }
+    } else {
+        let mut length: usize = 0;
+        let chars_ptr = JS_GetTwoByteStringCharsAndLength(cx, ::std::ptr::null(), js_str, &mut length);
+        if chars_ptr.is_null() {
+            return Vec::new();
+        }
+        cleaned.reserve(length);
+        for i in 0..length {
+            let unit = *chars_ptr.add(i);
+            let low = (unit & 0xFF) as u8;
+            if !push_base64_index(&mut cleaned, low, url_safe) {
+                break;
+            }
+        }
+    }
+
+    // Decode 4 -> 3 bytes from the cleaned indices.
+    let n = cleaned.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n * 3 / 4);
+    let mut i = 0;
+    while i + 1 < n {
+        let c0 = cleaned[i] as u32;
+        let c1 = cleaned[i + 1] as u32;
+        let triplet = (c0 << 18) | (c1 << 12);
+        out.push(((triplet >> 16) & 0xFF) as u8);
+        if i + 2 < n {
+            let c2 = cleaned[i + 2] as u32;
+            let triplet = triplet | (c2 << 6);
+            out.push(((triplet >> 8) & 0xFF) as u8);
+            if i + 3 < n {
+                let c3 = cleaned[i + 3] as u32;
+                let triplet = triplet | c3;
+                out.push((triplet & 0xFF) as u8);
+            }
+        }
+        i += 4;
+    }
+    out
+}
+
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_constructor(
     cx: *mut JSContext,
@@ -2241,12 +2439,30 @@ unsafe extern "C" fn buffer_from(
             out
         } else if encoding == "base64" {
             // @trace REQ-ENG-005 [algorithm:base64]
-            bun_base64::decode_alloc(s.as_bytes()).unwrap_or_default()
+            // Node.js parity: base64 decoding reads the LOW BYTE of each
+            // UTF-16 code unit of the input string. A two-byte JSString
+            // containing surrogate pairs therefore contributes only the
+            // low byte of each surrogate — buffer.test.js
+            //   "two-byte strings decode from the low byte of each code unit"
+            // drives:
+            //   Buffer.from("QUJD\u{1F600}REVG", "base64").toString("latin1") === "ABC"
+            // because \uD83D narrows to 0x3D ('=') — the canonical base64
+            // padding terminator — so decoding stops after "ABC". Units
+            // whose low byte is not in the alphabet are silently skipped
+            // (Node treats them as whitespace). bun_base64::decode_alloc
+            // operates on raw bytes and would instead decode the full
+            // UTF-8 form of the input (4 bytes per surrogate) and produce
+            // "ABCDEF" — wrong. We hand-roll the low-byte walker.
+            let js_str = input.to_string();
+            base64_low_byte_decode(cx, js_str, false)
         } else if encoding == "base64url" {
             // @trace REQ-ENG-005 [algorithm:base64]
-            // bun_base64 doesn't expose url-safe-decode directly in the public API;
-            // strip padding and fall back to lenient decoding via the standard decoder.
-            bun_base64::decode_alloc(s.as_bytes()).unwrap_or_default()
+            // Same low-byte semantics as standard base64, but accept the
+            // url-safe alphabet (- and _ instead of + and /). Padding is
+            // optional and may be missing; we honour a literal '=' or a
+            // surrogate-derived 0x3D low byte as the terminator.
+            let js_str = input.to_string();
+            base64_low_byte_decode(cx, js_str, true)
         } else if encoding == "utf-16le" || encoding == "ucs2" || encoding == "ucs-2" || encoding == "utf16le" {
             // @trace REQ-ENG-005 [algorithm:utf-16le]
             // Node.js semantics: encode each UTF-16 code unit as little-endian
@@ -2937,6 +3153,15 @@ unsafe extern "C" fn buffer_to_string(
         slice.to_vec()
     };
 
+    // @trace REQ-ENG-005 [algorithm:utf16le_decode]
+    // For ucs2/utf16le output we keep the raw u16 code units so we can build
+    // a two-byte SM JSString that preserves ALL code units including lone
+    // surrogates (Node.js never validates UTF-16 well-formedness; it just
+    // memcpy's the buffer's u16 cells). Rust's String cannot represent
+    // unpaired surrogates, so we carry the units separately and let
+    // JS_NewStringCopyN rehydrate them as a char16_t JSString.
+    let mut utf16_units_out: ::std::option::Option<Vec<u16>> = ::std::option::Option::None;
+
     let output = match enc_lower.as_str() {
         "" | "utf8" | "utf-8" => String::from_utf8_lossy(&bytes).into_owned(),
         "hex" => bun_core::fmt::bytes_to_hex_lower_string(&bytes),
@@ -2954,14 +3179,31 @@ unsafe extern "C" fn buffer_to_string(
         "binary" | "latin1" => bytes.iter().map(|&b| b as char).collect::<String>(),
         "ascii" => bytes.iter().map(|&b| (b & 0x7F) as char).collect::<String>(),
         "ucs2" | "ucs-2" | "utf16le" | "utf-16le" => {
-            let mut s = String::with_capacity(bytes.len() / 2);
+            // @trace REQ-ENG-005 [algorithm:utf16le_decode]
+            // Node.js / WHATWG utf16le decoding yields the JS string from
+            // raw 16-bit code units — INCLUDING lone surrogates (Node.js
+            // never validates well-formedness; it just preserves code units
+            // from the buffer byte-for-byte). `char::from_u32` rejects
+            // surrogates so a buffer holding `0xD83D 0xDE00` (😀, a
+            // surrogate pair) would lose both halves.
+            //
+            // We stash the units in `utf16_units_out` so the JSString
+            // builder below bypasses the UTF-8 path entirely.
+            //
+            // Reference: Node.js lib/internal/buffer.js + Buffer.prototype.toString
+            // 'ucs2' is a straight memcpy-into-UTF-16 — no surrogate validation.
+            let mut units: Vec<u16> = Vec::with_capacity(bytes.len() / 2);
             for chunk in bytes.chunks(2) {
                 if chunk.len() == 2 {
-                    let code = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    if let Some(c) = char::from_u32(code as u32) { s.push(c); }
+                    units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
                 }
             }
-            s
+            // Cheap placeholder; real bytes are emitted via units below.
+            utf16_units_out = ::std::option::Option::Some(units.clone());
+            // Build a UTF-8 fallback for tests that bypass the JSString
+            // path (e.g. when SM rejects the two-byte build). Replace any
+            // unpaired surrogate with U+FFFD so String stays valid UTF-8.
+            String::from_utf16_lossy(&units)
         }
         // @trace REQ-ENG-005 [api:Buffer.toString] — Node.js throws
         // ERR_UNKNOWN_ENCODING for unrecognised encodings (buffer.test.js
@@ -2987,15 +3229,30 @@ unsafe extern "C" fn buffer_to_string(
     // proper SM two-byte JSString. JS_NewStringCopyZ treats the buffer as a
     // NUL-terminated C string and re-encodes latin1 chars verbatim, which
     // mangles non-ASCII output (e.g. toString("ucs2") returned mojibake).
-    let utf8_bytes = output.as_bytes();
-    let js_str = if utf8_bytes.iter().any(|&b| b >= 0x80) {
-        let chars = mozjs::conversions::Utf8Chars::from(output.as_str());
-        // mozjs_sys expects *mut RawJSContext; our `cx` is *mut JSContext
-        // (alias for *mut RawJSContext under mozjs_sys).
-        mozjs_sys::jsapi::JS_NewStringCopyUTF8N(cx, &*chars as *const _ as *const mozjs_sys::jsapi::JS::UTF8Chars)
+    //
+    // @trace REQ-ENG-005 [algorithm:utf16le_decode] — when the source
+    // encoding was utf16le/ucs2 and the buffer holds lone or paired
+    // surrogates, the resulting Rust `String` is NOT valid UTF-8 (Rust
+    // rejects isolated surrogates). The encoding path above stashed the raw
+    // u16 code units in `utf16_units_out`; we build a two-byte JSString
+    // directly via JS_NewStringCopyN (treating each unit as a char16_t).
+    // This preserves ALL code units including unpaired surrogates, matching
+    // Node.js's byte-faithful ucs2 behaviour.
+    let js_str = if let Some(units) = utf16_units_out {
+        // Build two-byte string from raw char16_t buffer via the UCString
+        // API (preserves ALL code units including unpaired surrogates).
+        JS_NewUCStringCopyN(cx, units.as_ptr(), units.len())
     } else {
-        let c_s = ZBox::from_bytes(utf8_bytes);
-        JS_NewStringCopyZ(cx, c_s.as_ptr())
+        let utf8_bytes = output.as_bytes();
+        if utf8_bytes.iter().any(|&b| b >= 0x80) {
+            let chars = mozjs::conversions::Utf8Chars::from(output.as_str());
+            // mozjs_sys expects *mut RawJSContext; our `cx` is *mut JSContext
+            // (alias for *mut RawJSContext under mozjs_sys).
+            mozjs_sys::jsapi::JS_NewStringCopyUTF8N(cx, &*chars as *const _ as *const mozjs_sys::jsapi::JS::UTF8Chars)
+        } else {
+            let c_s = ZBox::from_bytes(utf8_bytes);
+            JS_NewStringCopyZ(cx, c_s.as_ptr())
+        }
     };
     if !js_str.is_null() {
         args.rval().set(StringValue(&*js_str));
