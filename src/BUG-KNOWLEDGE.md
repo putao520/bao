@@ -367,3 +367,68 @@ confirmReport:
 - ✅ 统一约定：bao 移植的 socket 模块一律用 per-group static vtable（参考 `NET_VTABLE`），禁止 `group.init(..., None, ...)`。
 - ✅ 知识库：本条目。
 
+---
+
+## BCE-20260618-007-R3 — drain_and_check 的 `tick_once(null)` 永久阻塞 epoll（fetch Promise 永挂）
+
+### patternId / title
+`BCE-20260618-007-R3` · `drain_and_check` / `drain_one_pass` 的 has_http 分支调用 `MiniEventLoop::tick_once(ctx=null)` → `UwsLoop::tick()` → `us_loop_run_bun_tick(loop, NULL)` → libusockets C 的 `epoll_pwait2(timeout=NULL)` 无限阻塞 → fetch worker 完成 HTTP 往返并写入 `result_slot` 后 JS 线程无 epoll 事件唤醒 → `drain_pending_fetches` 永不运行 → fetch Promise 永不 resolve → 进程挂死（exit 137）。
+
+### layer
+设计缺陷（事件循环跨线程唤醒协议缺失）。
+
+### 根因（rootCause）
+- **location**:
+  - `src/bao_runtime/src/timers.rs:172` `drain_and_check` has_http 分支：`loop_.tick_once(core::ptr::null_mut())`。
+  - `src/bao_runtime/src/timers.rs:253` `drain_one_pass` has_http 分支：同上。
+  - C 真源：`packages/bun-usockets/src/eventing/epoll_kqueue.c:382` `will_idle_inside_event_loop = had_wakeups == 0 && (!timeout || ...)` — 当 `timeout == NULL` 时 `!timeout = true` → `will_idle = 1` → `epoll_pwait2(loop->fd, …, NULL)` 阻塞直至 fd ready。
+  - 间接路径：`src/event_loop/MiniEventLoop.rs:378` `tick_once` → `(*self.loop_ptr()).tick()` → `src/uws_sys/Loop.rs:210` `tick()` → `us_loop_run_bun_tick(self, core::ptr::null())`。
+- **why**:
+  - `Bun.serve` 的服务端 socket 在 JS-thread uWS Loop 注册（BCE-007-R1 已修 liveness）。`tick_once(null)` 第一次会 `epoll_pwait2` 拿到 listen socket ready → `accept4` → `recvfrom` → `sendto` → shutdown 完成 fetch 服务端响应（strace 证据：完整往返 ✓）。
+  - 之后**没有更多 ready fd**（fetch worker 已读完响应、HTTPThread 已写 SingleHTTPChannel）。`tick_once(null)` 再次进入 `epoll_pwait2(timeout=NULL)` → 无限阻塞。
+  - fetch worker 在独立线程完成 `stealth_http_request` → `send_sync` → condvar wake → 写 `result_slot` → **不调用 `us_wakeup_loop(loop)`**（无跨线程唤醒），所以 JS-thread uWS Loop 的 wakeup eventfd 永不触发 → JS 线程永久困在 `epoll_pwait2` → `drain_pending_fetches` 永不被调用 → fetch Promise 永挂。
+- **evidence**（eprintln + strace，R2 修复后）:
+  - `[BCE7-WORKER] slot written` 后**无** `[BCE7-DRAIN]` 输出（drain_pending_fetches 在阻塞的 tick 之后，永远跑不到）。
+  - 末尾 `[BCE7-TICK] http=true tmr=false fetch=true` 后进程静止（KILL exit 137）。
+  - strace：JS 线程 `accept4 → EAGAIN` 后无任何 syscall（卡在 `epoll_pwait2`）；worker 线程 `futex(WAKE,1)=1` 但 JS 线程无对应 `futex(WAIT)` 配对（JS 线程不在 condvar 上等，而在 epoll fd 上等）。
+
+### 同类判定标准（sameClassCriterion）
+任何「JS 线程事件循环 tick + 后台线程完成异步任务 + 后台线程结果通过共享内存（无 epoll fd 唤醒）通知 JS 线程」的模式，若 JS 线程的 tick 走 `us_loop_run_bun_tick(timeout=NULL)` 路径，则 fetch/异步 IPC/任何跨线程结果都会卡住 —— 同类挂死。
+
+### 根治（fixTemplate）— 阶段4
+统一改用零超时 tick（`tick_without_idle`，对应 `us_loop_run_bun_tick(loop, &{0,0})`），让 `will_idle_inside_event_loop = false` → `epoll_pwait2` 不阻塞，drain 完 ready fd 即返回。JS 线程 yield 由 `eval-loop` 的 `std::thread::sleep(1ms)`（context.rs:462）保证，不会 busy-spin。
+
+- `timers.rs:172` `drain_and_check`：`loop_.tick_once(core::ptr::null_mut())` → `loop_.tick_without_idle(core::ptr::null_mut())`。
+- `timers.rs:253` `drain_one_pass`：同上替换。
+
+替代方案（未采用）：在 `spawn_fetch_worker` 写完 `result_slot` 后调用 `us_wakeup_loop(loop_ptr)` 唤醒 JS 线程 —— 但要求 worker 持有 JS-thread uWS Loop 指针（跨线程所有权更复杂），且 `drain_and_check` 的 has_http 分支仍需处理「http 活跃但 fetch worker 未启动」场景。零超时 tick 是更小的、更安全的根治（不改 worker 模型）。
+
+### 全量确认报告 — 阶段5
+```yaml
+confirmReport:
+  patternId: BCE-20260618-007-R3
+  sweepScope: "src/bao_runtime/src/ 全量"
+  layersScanned: [literal, structural]
+  instancesFound: 2   # drain_and_check + drain_one_pass 的 has_http 分支
+  truePositives: 2
+  falsePositives: 0
+  instancesFixed: 2   # 两处均改为 tick_without_idle
+  residual: 0
+  residualEvidence:
+    - "重扫 grep 'tick_once.*null_mut' src/bao_runtime/src/：0 命中（两处 has_http 均改为 tick_without_idle）"
+    - "cargo check --workspace：Finished，0 error"
+    - "cargo test -p bun_runtime --lib：614 passed / 0 failed"
+    - "cargo test -p bun_runtime --lib timers::：56/0"
+    - "cargo test -p bun_runtime --lib node_http::：21/0"
+    - "端到端复现：target/debug/bao -e 'Bun.serve + fetch(self)' → DONE={...} + EXIT=0（修复前 exit 137）"
+    - "test_http_depth：EXIT=0（修复前 exit 137；现存 FAIL 是 Bun.serve 默认 handler 缺失，独立问题，非 BCE-007 挂起范畴）"
+  releaseGateImpact: pass
+```
+
+### 防复发（阶段6）
+- ✅ 知识库：本条目。
+- ✅ 代码注释：`timers.rs:159-170` 完整 BCE-007-R3 根因注释（C 真源行号 + 替代方案讨论）。
+- 📌 未来风险：若 bao 引入「真正阻塞的 JS-thread tick」（如为了节流 CPU），必须同时实现「跨线程 `us_wakeup_loop` 唤醒」协议（worker 完成时唤醒 JS-thread uWS Loop），否则同类挂死复发。当前以零超时 tick + 1ms sleep 的轮询模型规避该协议复杂度。
+
+---
+

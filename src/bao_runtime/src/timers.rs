@@ -157,19 +157,31 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     let _cx_guard = CxGuard::new();
 
     // @trace BCE-20260618-003 [level:regression]
-    // Tick the MiniEventLoop — but ONLY when there are active HTTP servers,
-    // because uSockets owns its epoll fd and tick_once would block forever
-    // on epoll_wait with nothing to wake it. For the timer-only case (BAO_REGISTRY
-    // has pending timers but uSockets timer heap is empty), tick_once(null) hits
-    // epoll_wait with no fd → 30s hang. Mirror drain_one_pass (line ~217):
-    // timer-only branch advances wall-clock via a short sleep instead.
+    // BCE-007-R3 (root cause): `MiniEventLoop::tick_once` calls
+    // `UwsLoop::tick()` → `us_loop_run_bun_tick(loop, NULL)` → blocking
+    // `epoll_pwait2` (libusockets epoll_kqueue.c:391, `timeout=NULL` →
+    // `will_idle_inside_event_loop=1` → kernel blocks until a ready fd).
+    // After the JS-thread Bun.serve dispatches the request (one accept +
+    // recv + send cycle), there are no more ready fds; the worker that
+    // completes the fetch in the background cannot wake the JS-thread
+    // uWS Loop (no `us_wakeup_loop` cross-thread wake), so `tick_once`
+    // blocks forever — `drain_pending_fetches` never runs and the fetch
+    // Promise hangs.
+    //
+    // Fix: use `tick_without_idle` (zero timespec) instead of `tick_once`
+    // (NULL timespec). With `timeout = {0,0}`, `will_idle_inside_event_loop`
+    // is forced false and `epoll_pwait2` returns immediately after draining
+    // ready fds. The eval-loop's `std::thread::sleep(1ms)` after this hook
+    // yields the JS thread so I/O still progresses without busy-spinning.
+    // Mirrors `drain_one_pass` (timer-only branch) which also avoids the
+    // blocking tick path.
     let has_http_before_tick = crate::node_http::has_active_servers();
     let has_pending_before_tick = bao_has_pending_timers();
     let has_pending_fetch_before_tick = crate::fetch_api::has_pending_fetches();
     if has_http_before_tick {
-        // I/O is active — let uSockets drive it.
+        // I/O is active — let uSockets drain ready fds without blocking.
         with_event_loop(|loop_| {
-            loop_.tick_once(core::ptr::null_mut());
+            loop_.tick_without_idle(core::ptr::null_mut());
         });
     } else if has_pending_before_tick {
         // Timer-only case: bao's setTimeout lives in BAO_REGISTRY (wall-clock
@@ -237,9 +249,12 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
     let has_http = crate::node_http::has_active_servers();
     let has_pending_fetch = crate::fetch_api::has_pending_fetches();
     if has_http {
-        // I/O is active — let uSockets drive it.
+        // BCE-007-R3: use the zero-timespec non-blocking tick so the test
+        // runner (which has no eval-loop sleep to yield) makes progress
+        // without hanging on epoll_pwait2 when no fds are ready. Mirrors
+        // `drain_and_check`'s has_http branch.
         with_event_loop(|loop_| {
-            loop_.tick_once(core::ptr::null_mut());
+            loop_.tick_without_idle(core::ptr::null_mut());
         });
     } else if bao_has_pending_timers() {
         // Timer-only case: advance wall-clock so `drain_bao_timers` can pop
