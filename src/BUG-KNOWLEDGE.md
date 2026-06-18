@@ -508,3 +508,54 @@ confirmReport:
 
 ---
 
+## BCE-20260619-001 — clearInterval/clearTimeout 在自身回调内调用无效（pop-before-fire 致 registry lookup 漏）
+
+```yaml
+patternId: BCE-20260619-001
+title: clearInterval/clearTimeout 在自身回调内调用无效 — drain loop 无视 clear，interval 永远重排
+layer: 设计缺陷（时序错误：drain 先 pop 取得所有权，回调内 clear 找不到对象 → 无条件 re-arm）
+status: 已根治（残留=0）
+
+codePattern:
+  - 「drain loop 在 fire JS callback 之前从 registry 移除 timer（pop-before-fire）取得 Box 所有权；callback 内 clearInterval(id)/clearTimeout(id) 命中 registry.remove → None（已 pop），cancel 是静默 no-op」
+  - 「drain loop 在 callback 返回后无条件 `if obj.interval.is_some() { ... reinsert ... }`，无视 callback 内的 clear 意图，interval 永远复生 → 进程不退出」
+
+triggerCondition:
+  - 「JS 代码在 setInterval 回调内调用 clearInterval(selfId)（典型模式：fire N 次后 clear，test_event_loop_order.js EL-005 / 任何 self-clearing interval）」
+  - 「JS 代码在 setTimeout 回调内调用 clearTimeout(selfId)（虽然 one-shot 不重排不会挂，但 clear 仍为 no-op，语义错误）」
+  - 「典型症状：进程在 setTimeout/setInterval 测试后不退出（exit code 124/137 timeout），但 ALL PASS 已打印」
+
+detectionSignatures:
+  structural:
+    - "drain 函数中存在 `fire_js`/`fire_callback` 调用，且 fire 之前从 registry/heap `pop`/`remove`，且 fire 之后有 `insert`/`push`/`schedule` 重排 interval 的路径，且重排路径无「是否被 clear」的守卫"
+  literal:
+    - "obj.interval.is_some() 后直接 insert（无 cleared/state 守卫）"
+  antipattern:
+    - "pop-before-fire + 无条件 re-arm（缺 cancel-during-fire 信号通道）"
+
+sameClassCriterion:
+  - 「任何 drain/dispatch loop 中先 pop timer、后 fire callback、再基于 fire 前的 timer 元数据（interval/repeat）决定是否重排，但未检测 callback 内是否调用了 clear/cancel 的实现，都属于此类 BUG」
+
+fixTemplate:
+  - 「引入 thread_local「当前正在 fire 的 timer id」+ 「clear-during-fire latch flag」两个 slot：drain 在 fire 前设 firing_id 并清 flag；cancel_raw/clear_timeout 在 registry lookup miss 时检查 firing_id 是否匹配，匹配则 latch=true」
+  - 「drain 在 fire 返回后检查 latch flag：interval && !cleared_during_fire 才重排；否则 cleanup_callback + 标记 CANCELLED 状态后丢弃 Box」
+  - 「对照 Bun 的等价实现：`TimerObjectInternals.fire`（TimerObjectInternals.zig:129-269）用 `eventLoopTimer().state == .CANCELLED` 检测；bao 因 drain 取 Box 所有权无法直接用 state（Box 已移出 registry），故用 thread_local 信号通道编码同一根因不变量」
+
+regressionAssertion:
+  - 「`bao -e 'var i=setInterval(function(){clearInterval(i);},1);'` 必须 EXIT=0（最小复现：self-clearing interval 立即退出）」
+  - 「`bao -e 'var c=0;var i=setInterval(function(){c++;if(c>=3)clearInterval(i);},1);'` + 50ms 后 setTimeout 检查 c 必须 == 3（fire 精确 N 次后 clear）」
+  - 「`bao run tests/test_event_loop_order.js` 必须 RESULT: ALL PASS + EXIT=0（EL-001~005 + 进程退出）」
+  - 「cargo test -p bun_runtime --lib timers：新增 cancel_raw_during_fire_latches_cleared_flag_for_matching_id / cancel_raw_during_fire_ignores_non_matching_id / cancel_raw_during_fire_with_no_firing_timer_is_noop 三个回归测试全过」
+
+affectedTasks: [REQ-ENG-004 event loop, test_event_loop_order.js EL-005]
+```
+
+### 防复发（阶段6）
+- ✅ 知识库：本条目。
+- ✅ 代码注释：`src/bao_runtime/src/timers.rs` 的 `CURRENT_FIRING_TIMER` / `CLEARED_DURING_FIRE` thread_local 文档、`drain_bao_timers` post-fire 守卫、`cancel_raw` / `clear_timeout` 的 fallback 路径均带 BCE-20260619-001 注释。
+- ✅ 回归测试：`src/bao_runtime/src/timers.rs::bao_timeout_tests::cancel_raw_during_fire_*`（3 项 unit test）。
+- 📌 未来风险：若新增任何「drain loop 中 fire JS callback 后决定是否重排」的路径（ImmediateObject、AbortSignalTimeout、ref/unref 计数等），必须在 fire 前设置 cancel-during-fire 信号通道，并在重排前检查。Code review checklist：grep `fire_js` / `fire_callback`，确认其 drain 路径包含「firing_id advertisement + post-fire clear check」对称。
+
+---
+
+

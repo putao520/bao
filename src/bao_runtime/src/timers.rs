@@ -35,6 +35,35 @@ thread_local! {
     /// Monotonic epoch counter for stable heap ordering of equal-deadline
     /// timers. Mirrors Bun's `TimerObjectInternals.flags.epoch`.
     static NEXT_EPOCH: Cell<u32> = const { Cell::new(1) };
+
+    /// BCE-20260619-001: ID of the timer whose JS callback is currently
+    /// being dispatched by `drain_bao_timers`, or 0 if no timer is firing.
+    ///
+    /// The drain loop pops the timer from BAO_REGISTRY *before* firing its
+    /// callback (pop-before-fire pattern for re-entrant safety). That means
+    /// a `clearInterval(i)`/`clearTimeout(t)` invoked *inside* the callback
+    /// finds the timer already absent from the registry → `remove(id)`
+    /// returns None → cancel is a silent no-op. Without this signal, the
+    /// drain loop then unconditionally re-arms interval timers, defeating
+    /// the clear and pinning the process in the loop forever.
+    ///
+    /// Fix: while dispatching a timer's callback, set this slot to the
+    /// timer's id; clear_xxx/cancel_raw check it and flip
+    /// `CLEARED_DURING_FIRE` to true even when the registry lookup misses.
+    /// The drain loop consults the flag after the callback returns and
+    /// skips re-arm. Mirrors Bun's `eventLoopTimer().state == .CANCELLED`
+    /// check (TimerObjectInternals.zig:133) — same root invariant, local
+    /// encoding because bao's drain takes ownership of the Box before
+    /// firing.
+    static CURRENT_FIRING_TIMER: Cell<u32> = const { Cell::new(0) };
+
+    /// BCE-20260619-001: latched "clear was called during the in-flight
+    /// fire" flag. Reset to false by `drain_bao_timers` before each
+    /// callback dispatch; set to true by `cancel_raw`/`clear_timeout`/
+    /// `clear_interval` when they observe `CURRENT_FIRING_TIMER` matching
+    /// the cleared id (covering both the "already popped, callback fired"
+    /// and "still in registry, normal cancel" cases).
+    static CLEARED_DURING_FIRE: Cell<bool> = const { Cell::new(false) };
 }
 
 /// P1-A.3b: register the current thread's `JSContext*` for retrieval by
@@ -382,12 +411,29 @@ fn drain_bao_timers(raw_cx: *mut JSContext) -> bool {
         let Some(mut obj) = obj_box else { break; };
         fired = true;
 
+        // BCE-20260619-001: advertise the firing id + reset the clear flag
+        // before invoking JS so a re-entrant clearInterval/clearTimeout can
+        // signal cancellation even though the timer is no longer in
+        // BAO_REGISTRY (we popped it above). Cleared on the next loop iter.
+        let firing_id = obj.timer_id;
+        CURRENT_FIRING_TIMER.with(|c| c.set(firing_id));
+        CLEARED_DURING_FIRE.with(|c| c.set(false));
+
         // Fire JS callback — no BAO_REGISTRY borrow held.
         // SAFETY: raw_cx is a live JSContext* registered by drain_and_check.
         unsafe { obj.fire_js(raw_cx, &now_ts); }
 
-        // If interval, re-arm with updated deadline and re-insert.
-        if let Some(interval) = obj.interval {
+        // BCE-20260619-001: stop advertising the firing id before reading
+        // the flag — any later cancel on a different id must not see this id.
+        CURRENT_FIRING_TIMER.with(|c| c.set(0));
+        let cleared_during_fire = CLEARED_DURING_FIRE.with(|c| c.get());
+
+        // If interval and the callback did NOT call clearInterval on us,
+        // re-arm with updated deadline and re-insert. Matching Bun's
+        // `TimerObjectInternals.fire` (TimerObjectInternals.zig:204-225):
+        // state==FIRED → reschedule; state==CANCELLED → drop (is_timer_done).
+        if obj.interval.is_some() && !cleared_during_fire {
+            let interval = obj.interval.expect("checked Some above");
             let interval_ms = interval.as_millis() as i64;
             let mut next_ts = obj.event_loop_timer.next;
             while next_ts.order(&now_ts) != core::cmp::Ordering::Greater {
@@ -398,10 +444,20 @@ fn drain_bao_timers(raw_cx: *mut JSContext) -> bool {
             obj.epoch = obj.epoch.wrapping_add(1);
             BAO_REGISTRY.with(|r| r.borrow_mut().insert(obj));
         } else {
-            // One-shot: cleanup GcStore before Box is dropped.
+            // One-shot OR interval cleared during fire: cleanup GcStore
+            // before Box is dropped. Mirrors Bun's is_timer_done branch
+            // which calls setEnableKeepingEventLoopAlive(vm, false).
             obj.cleanup_callback(raw_cx);
+            // Also latch the CANCELLED state for parity with Bun's state
+            // machine — defensive: any later re-entrant cancel on this id
+            // observes CANCELLED rather than FIRED.
+            obj.event_loop_timer.state = TimerState::CANCELLED;
         }
     }
+
+    // Defensive: clear the firing slot in case we broke out of the loop
+    // without going through the post-fire reset (e.g. peek-then-miss).
+    CURRENT_FIRING_TIMER.with(|c| c.set(0));
 
     fired
 }
@@ -453,8 +509,19 @@ pub fn cancel_raw(id: u32) {
             if !cx.is_null() {
                 obj.cleanup_callback(cx);
             }
+            return;
         }
     });
+    // BCE-20260619-001: timer is not in BAO_REGISTRY. If it's the one
+    // currently firing (we popped it before the JS callback in
+    // `drain_bao_timers`), latch the "clear was called" signal so the
+    // post-callback re-arm check sees it and drops the timer instead of
+    // resurrecting it. Without this, clearInterval inside an interval
+    // callback is a silent no-op and the process never exits.
+    let firing = CURRENT_FIRING_TIMER.with(|c| c.get());
+    if firing != 0 && firing == id {
+        CLEARED_DURING_FIRE.with(|c| c.set(true));
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -486,11 +553,20 @@ unsafe extern "C" fn clear_timeout(
         let v = *args.get(0).ptr;
         if v.is_int32() {
             let id = v.to_int32() as u32;
-            BAO_REGISTRY.with(|r| {
-                if let ::std::option::Option::Some(obj) = r.borrow_mut().remove(id) {
+            let removed = BAO_REGISTRY.with(|r| {
+                r.borrow_mut().remove(id).map(|obj| {
                     obj.cleanup_callback(cx);
-                }
+                })
             });
+            // BCE-20260619-001: if the lookup missed, this may be the
+            // currently-firing timer (popped before its JS callback ran).
+            // Latch the clear-signal so drain_bao_timers skips re-arm.
+            if removed.is_none() {
+                let firing = CURRENT_FIRING_TIMER.with(|c| c.get());
+                if firing != 0 && firing == id {
+                    CLEARED_DURING_FIRE.with(|c| c.set(true));
+                }
+            }
         }
     }
     args.rval().set(UndefinedValue());
@@ -1564,5 +1640,72 @@ mod bao_timeout_tests {
         assert!(has_pending_timers(), "should have pending timer");
         cancel_raw(id);
         assert!(!has_pending_timers(), "should be empty after cancel");
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // BCE-20260619-001 regression: clearInterval / clearTimeout invoked inside
+    // the timer's own JS callback must mark the timer as cleared so the
+    // drain loop skips the post-fire re-arm. Without the firing-slot signal,
+    // the registry lookup misses (drain pops before firing) and the interval
+    // would resurrect forever, pinning the process in the event loop.
+    // ──────────────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn cancel_raw_during_fire_latches_cleared_flag_for_matching_id() {
+        // Simulate drain_bao_timers' "popped before fire" state: advertise
+        // the firing id, then cancel_raw(id) must set CLEARED_DURING_FIRE
+        // even though the timer is no longer in BAO_REGISTRY.
+        let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        let id = schedule_raw(null_cx, sentinel, 1000, true, &[]); // interval
+        // Pop it the way drain_bao_timers does.
+        let _obj = BAO_REGISTRY.with(|r| r.borrow_mut().remove(id));
+        assert!(!BAO_REGISTRY.with(|r| r.borrow().owned.contains_key(&id)));
+
+        // Advertise firing + reset flag (drain pattern).
+        CURRENT_FIRING_TIMER.with(|c| c.set(id));
+        CLEARED_DURING_FIRE.with(|c| c.set(false));
+
+        // cancel_raw on the popped id must latch the flag.
+        cancel_raw(id);
+        assert!(CLEARED_DURING_FIRE.with(|c| c.get()),
+            "cancel_raw during fire of matching id must set CLEARED_DURING_FIRE");
+
+        // Cleanup.
+        CURRENT_FIRING_TIMER.with(|c| c.set(0));
+        CLEARED_DURING_FIRE.with(|c| c.set(false));
+    }
+
+    #[test]
+    fn cancel_raw_during_fire_ignores_non_matching_id() {
+        // If a different id is being fired, cancel_raw(other_id) must NOT
+        // latch the flag — that would wrongly signal clear-of-firing-timer.
+        let sentinel: *mut JSObject = 0xdeadbeef as *mut JSObject;
+        let null_cx: *mut JSContext = ::std::ptr::null_mut();
+        let firing_id = schedule_raw(null_cx, sentinel, 1000, true, &[]);
+        let other_id = schedule_raw(null_cx, sentinel, 1000, true, &[]);
+        let _o = BAO_REGISTRY.with(|r| r.borrow_mut().remove(firing_id));
+
+        CURRENT_FIRING_TIMER.with(|c| c.set(firing_id));
+        CLEARED_DURING_FIRE.with(|c| c.set(false));
+
+        // Cancel the *other* id — it's in registry, normal path. Must not
+        // touch the firing flag.
+        cancel_raw(other_id);
+        assert!(!CLEARED_DURING_FIRE.with(|c| c.get()),
+            "cancel of non-firing id must NOT latch CLEARED_DURING_FIRE");
+
+        CURRENT_FIRING_TIMER.with(|c| c.set(0));
+    }
+
+    #[test]
+    fn cancel_raw_during_fire_with_no_firing_timer_is_noop() {
+        // When CURRENT_FIRING_TIMER is 0 (no timer firing), cancel_raw of
+        // an unknown id must be a plain no-op — flag stays false.
+        CLEARED_DURING_FIRE.with(|c| c.set(false));
+        CURRENT_FIRING_TIMER.with(|c| c.set(0));
+        cancel_raw(95123); // unknown, no firing
+        assert!(!CLEARED_DURING_FIRE.with(|c| c.get()),
+            "cancel with no firing timer must not latch flag");
     }
 }
