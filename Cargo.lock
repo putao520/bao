@@ -495,6 +495,7 @@ dependencies = [
  "bun_options_types",
  "bun_resolver",
  "bun_runtime",
+ "bun_transpiler",
  "bun_watcher",
 ]
 
@@ -1958,10 +1959,12 @@ dependencies = [
  "bun_install",
  "bun_io",
  "bun_opaque",
+ "bun_paths",
  "bun_picohttp",
  "bun_resolver",
  "bun_s3_signing",
  "bun_sha_hmac",
+ "bun_simdutf_sys",
  "bun_spawn",
  "bun_spawn_sys",
  "bun_sys",
