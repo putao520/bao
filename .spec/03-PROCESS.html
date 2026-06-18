@@ -11,7 +11,7 @@
 <h2>§1 JS 执行管线</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>数据流图: JS 文件执行</h3>
 <pre>
 用户代码 (index.ts)
@@ -64,7 +64,7 @@
 </script>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>渲染流程时序图</h3>
 <pre>
 CDP: Page.navigate(url)
@@ -122,7 +122,7 @@ CDP: Page.navigate(url)
 </script>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>CDP Domain 路由</h3>
 <pre>
 WebSocket Client (Playwright)
@@ -220,7 +220,7 @@ WebSocket Client (Playwright)
 <h2>§5 Event Loop 桥接流程</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>SpiderMonkey JobQueue ↔ Bun uSockets 桥接</h3>
 <pre>
 ┌─ SpiderMonkey Side ──────────────────────────────┐
@@ -255,7 +255,7 @@ WebSocket Client (Playwright)
 <h2>§6 Module Loader 桥接流程</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>SpiderMonkey Module Loader ↔ Bun Resolver 桥接</h3>
 <pre>
 ┌─ SpiderMonkey Side ──────────────────────────────────┐
@@ -390,7 +390,7 @@ WebSocket Client (Playwright)
 <h2>§8 线程模型与数据流</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>线程间数据流</h3>
 <pre>
 Main Thread (事件循环 + JSContext + DOM)
@@ -430,7 +430,7 @@ Main Thread (事件循环 + JSContext + DOM)
 <h2>§9 多页面管理流程</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>Page 创建流程时序图</h3>
 <pre>
 调用方: runtime.createPage(config)
@@ -469,7 +469,7 @@ Main Thread (事件循环 + JSContext + DOM)
 </pre>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>CDP 路由分发流程时序图</h3>
 <pre>
 调用方: cdp.send('Domain.method', params)
@@ -499,7 +499,7 @@ Main Thread (事件循环 + JSContext + DOM)
 </pre>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>PagePool 空闲回收流程时序图</h3>
 <pre>
 事件循环每轮 tick:
@@ -533,7 +533,7 @@ Main Thread (事件循环 + JSContext + DOM)
 <h2>§10 异常流程</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>异常处理流程</h3>
 <pre>
 JS 执行异常:
@@ -579,7 +579,7 @@ SpiderMonkey GC OOM:
 <!-- ============================================================ -->
 <h2 data-delivery="D43">§9 数据流</h2>
 <!-- ============================================================ -->
-<div data-delivery="D43" data-dataflow-source="bao-engine" data-dataflow-target="bao-browser" data-dataflow-direction="forward" data-dimension="business" data-dataflow-dimension="data" data-dataflow="DF-001" id="df-001">
+<div data-dimension="business" data-dataflow-direction="forward" data-dataflow-target="bao-browser" data-dataflow-source="bao-engine" data-delivery="D43" data-dataflow-dimension="data" data-dataflow="DF-001" id="df-001">
 <h3>DF-001: JS 执行结果 → 页面渲染数据流</h3>
 <table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr>
 <tr><td>bao-engine (SpiderMonkey eval)</td><td>bao-browser (servo DOM)</td><td>JSValue → DOM mutation → Layout → Render</td><td>business</td></tr></table>
@@ -588,7 +588,7 @@ SpiderMonkey GC OOM:
   "@type": "Dataflow",
   "id": "DF-001"
 }</script></div>
-<div data-delivery="D43" data-dataflow-source="bao-browser" data-dataflow-target="bao-cdp" data-dataflow-direction="forward" data-dimension="technical" data-dataflow-dimension="data" data-dataflow="DF-002" id="df-002">
+<div data-dimension="technical" data-dataflow-direction="forward" data-dataflow-target="bao-cdp" data-dataflow-source="bao-browser" data-delivery="D43" data-dataflow-dimension="data" data-dataflow="DF-002" id="df-002">
 <h3>DF-002: 浏览器事件 → CDP 客户端数据流</h3>
 <table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr>
 <tr><td>bao-browser (WebViewDelegate)</td><td>bao-cdp (EventBroadcaster)</td><td>ConsoleMessage(BaoEvent) → CDP JSON → WebSocket</td><td>technical</td></tr></table>
@@ -597,7 +597,7 @@ SpiderMonkey GC OOM:
   "@type": "Dataflow",
   "id": "DF-002"
 }</script></div>
-<div data-delivery="D43" data-dataflow-source="bao-cdp" data-dataflow-target="bao-browser" data-dataflow-direction="sync" data-dimension="technical" data-dataflow-dimension="data" data-dataflow="DF-003" id="df-003">
+<div data-dimension="technical" data-dataflow-direction="sync" data-dataflow-target="bao-browser" data-dataflow-source="bao-cdp" data-delivery="D43" data-dataflow-dimension="data" data-dataflow="DF-003" id="df-003">
 <h3>DF-003: CDP 命令 → 浏览器操作数据流</h3>
 <table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr>
 <tr><td>bao-cdp (WebSocket)</td><td>bao-browser (servo)</td><td>CDP method+params → DomainHandler → JS injection → Response</td><td>technical</td></tr></table>
@@ -606,7 +606,7 @@ SpiderMonkey GC OOM:
   "@type": "Dataflow",
   "id": "DF-003"
 }</script></div>
-<div data-delivery="D43" data-dataflow-source="bao-runtime" data-dataflow-target="bao-engine" data-dataflow-direction="forward" data-dimension="data" data-dataflow-dimension="data" data-dataflow="DF-004" id="df-004">
+<div data-dimension="data" data-dataflow-direction="forward" data-dataflow-target="bao-engine" data-dataflow-source="bao-runtime" data-delivery="D43" data-dataflow-dimension="data" data-dataflow="DF-004" id="df-004">
 <h3>DF-004: 模块解析 → JS 执行数据流</h3>
 <table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr>
 <tr><td>bao-runtime (bun_resolver)</td><td>bao-engine (SM ModuleLoader)</td><td>specifier → resolved URL → ModuleSource → eval</td><td>data</td></tr></table>
@@ -619,7 +619,7 @@ SpiderMonkey GC OOM:
 <!-- ============================================================ -->
 <h2 data-delivery="D44">§10 控制流</h2>
 <!-- ============================================================ -->
-<div data-delivery="D44" data-controlflow-trigger="JS evaluate call" data-controlflow-action="execute + GC" data-controlflow-guard="context initialized" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-001" id="cf-001">
+<div data-controlflow-guard="context initialized" data-controlflow-action="execute + GC" data-controlflow-trigger="JS evaluate call" data-delivery="D44" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-001" id="cf-001">
 <h3>CF-001: JS 执行控制流</h3>
 <table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr>
 <tr><td>evaluate_script()</td><td>JSContext initialized</td><td>SM compile → execute → GC sweep</td><td>SyntaxError / RuntimeError</td></tr></table>
@@ -628,7 +628,7 @@ SpiderMonkey GC OOM:
   "@type": "Controlflow",
   "id": "CF-001"
 }</script></div>
-<div data-delivery="D44" data-controlflow-trigger="CDP WebSocket message" data-controlflow-action="route + dispatch + respond" data-controlflow-guard="session active" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-002" id="cf-002">
+<div data-controlflow-guard="session active" data-controlflow-action="route + dispatch + respond" data-controlflow-trigger="CDP WebSocket message" data-delivery="D44" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-002" id="cf-002">
 <h3>CF-002: CDP 命令路由控制流</h3>
 <table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr>
 <tr><td>WebSocket JSON-RPC</td><td>Session Active</td><td>parse → dispatch → handler → Response</td><td>MethodNotFound / SessionClosed</td></tr></table>
@@ -637,7 +637,7 @@ SpiderMonkey GC OOM:
   "@type": "Controlflow",
   "id": "CF-002"
 }</script></div>
-<div data-delivery="D44" data-controlflow-trigger="console.log marker" data-controlflow-action="parse → broadcast" data-controlflow-guard="__BAO_EVT__ prefix" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-003" id="cf-003">
+<div data-controlflow-guard="__BAO_EVT__ prefix" data-controlflow-action="parse → broadcast" data-controlflow-trigger="console.log marker" data-delivery="D44" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-003" id="cf-003">
 <h3>CF-003: 浏览器事件桥接控制流</h3>
 <table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr>
 <tr><td>WebViewDelegate callback</td><td>__BAO_EVT__ prefix</td><td>BaoEvent::from_console_text() → broadcast</td><td>ConsoleMessage::Log / parse failure</td></tr></table>
@@ -646,7 +646,7 @@ SpiderMonkey GC OOM:
   "@type": "Controlflow",
   "id": "CF-003"
 }</script></div>
-<div data-delivery="D44" data-controlflow-trigger="page navigation" data-controlflow-action="create context → load → render" data-controlflow-guard="PagePool slot available" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-004" id="cf-004">
+<div data-controlflow-guard="PagePool slot available" data-controlflow-action="create context → load → render" data-controlflow-trigger="page navigation" data-delivery="D44" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-004" id="cf-004">
 <h3>CF-004: Page 生命周期控制流</h3>
 <table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr>
 <tr><td>bao browser URL request</td><td>PagePool slot available</td><td>alloc → JSContext fuse → navigate → render</td><td>Pool full / OOM → emergency GC</td></tr></table>

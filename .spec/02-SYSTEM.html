@@ -12,7 +12,7 @@
 <h2>§1 整体架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>架构总览</h3>
 <pre>
 ┌──────────────────────────────────────────────────────────┐
@@ -52,7 +52,7 @@
 <h2>§1.1 BaoRuntime 公共 API</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="interface-protocol" data-api="GET /api/bao-runtime" data-type="document" id="interface-protocol">
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-runtime" data-type="document" id="artifact-interface-protocol">
 <p>关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span>,
 <span data-xref-id="PagePool" data-xref-type="entity">PagePool</span>,
 <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>,
@@ -178,7 +178,7 @@ pub struct Permission {
 <span data-xref-id="REQ-ENG-006" data-xref-type="req">REQ-ENG-006</span>, <span data-xref-id="REQ-CLI-002" data-xref-type="req">REQ-CLI-002</span>
 <span data-xref-id="REQ-CDP-001" data-xref-type="req">REQ-CDP-001</span></p><table data-api-params=""><tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr></table></div>
 
-<div data-artifact-type="interface-protocol" data-api="GET /api/bao-runtime-js" data-type="document" id="interface-protocol">
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-runtime-js" data-type="document" id="artifact-interface-protocol">
 <h3>JS 公共 API 接口</h3>
 <pre>
 // ── Bao 全局对象 ──────────────────────────────────────────
@@ -238,7 +238,7 @@ const restrictedPage = runtime.createPage({ permission: perm });
 <h2>§1.2 库模式 (In-Process) API 契约 — 零配置路径</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="interface-protocol" data-api="GET /api/bao-library-mode" data-type="document" id="interface-protocol">
+<div data-artifact-type="interface-protocol" data-api="GET /api/bao-library-mode" data-type="document" id="artifact-interface-protocol">
 <p>Bao 是<strong>库优先</strong>的设计：CLI (<code>bao run</code>) 只是库的一个消费者。
 所有能力（SpiderMonkey JSContext、Node.js/Bun API、Web API、Stealth 反指纹、CDP、浏览器引擎）均可
 <strong>作为 Rust 库直接在进程中调用</strong>，无需子进程、无需 display server、无需独立二进制。</p>
@@ -341,7 +341,7 @@ let ext_page = cdp.new_page().await?;
 <h2>§2 Bun 源项目 Crate 架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§2.1 Crate 依赖 DAG (13 层)</h3>
 <pre>
 L0  FOUNDATION (零内部依赖)
@@ -393,7 +393,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </pre>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§2.2 JSC 依赖边界</h3>
 <p>关键发现：Bun 采用 <strong>foo + foo_jsc 两维分离模式</strong>，每个需要暴露给 JS 的功能域都有独立的纯 Rust crate 和 JSC 绑定 crate。</p>
 
@@ -415,7 +415,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <p>SpiderMonkey 迁移影响范围：<strong>仅 L11-L13 的 13 个 crate</strong>。L0-L10 的 ~85 个纯 Rust crate 完全不受影响。</p>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§2.3 Crate 统计</h3>
 <table>
 <tr><td>指标</td><td>数量</td></tr>
@@ -432,7 +432,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§3 Servo 源项目组件架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§3.1 组件分层</h3>
 <pre>
 ┌─────────────────────────────────────────────────────────┐
@@ -467,7 +467,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </pre>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§3.2 组件依赖关系</h3>
 <table>
 <tr><td>组件</td><td>Rust LOC</td><td>依赖 mozjs</td><td>依赖 IPC</td><td>独立性</td></tr>
@@ -485,7 +485,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </table>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§3.3 Servo 关键数据</h3>
 <table>
 <tr><td>指标</td><td>值</td></tr>
@@ -505,7 +505,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§4 Bao 融合架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§4.1 Bun ↔ Servo 融合映射</h3>
 <pre>
                     Bao 项目 Cargo Workspace
@@ -550,7 +550,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </pre>
 </div>
 
-<div data-integration-auth="none" data-integration-protocol="ffi" data-integration="SpiderMonkey" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-integration-auth="none" data-integration-protocol="ffi" data-integration="SpiderMonkey" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§4.2 引擎集成: SpiderMonkey via mozjs</h3>
 <script type="application/ld+json">
 {
@@ -575,7 +575,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-integration-auth="none" data-integration-protocol="embed" data-integration="libservo" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-integration-auth="none" data-integration-protocol="embed" data-integration="libservo" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§4.3 浏览器引擎集成: libservo</h3>
 <script type="application/ld+json">
 {
@@ -592,7 +592,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-integration-auth="none" data-integration-protocol="embed" data-integration="servo_webrender" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-integration-auth="none" data-integration-protocol="embed" data-integration="servo_webrender" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§4.4 渲染集成: servo webrender</h3>
 <script type="application/ld+json">
 {
@@ -609,7 +609,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-integration-auth="none" data-integration-protocol="ws" data-integration="CDPProtocol" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-integration-auth="none" data-integration-protocol="ws" data-integration="CDPProtocol" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§4.5 CDP 协议集成</h3>
 <script type="application/ld+json">
 {
@@ -630,7 +630,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 </script>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>§4.6 CDP 双层抽象架构</h3>
 <pre>
 双层 API 设计:
@@ -688,7 +688,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <h2>§4.5 多页面管理架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>多页面管理架构</h3>
 <pre>
 ┌─ BaoRuntime (顶层协调器) ──────────────────────────────────────┐
@@ -725,7 +725,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 <span data-xref-id="Permission" data-xref-type="entity">Permission</span></p>
 </div>
 
-<div data-artifact-type="use-case-diagram" data-state-machine="PageLifecycle" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-state-machine="PageLifecycle" data-type="document" id="artifact-use-case-diagram">
 <h3>Page 生命周期状态机</h3>
 <script type="application/ld+json">
 {
@@ -775,7 +775,7 @@ Created ──navigate──→ Navigating ──load_complete──→ Interact
 <h2>§5 外部依赖矩阵</h2>
 <!-- ============================================================ -->
 
-<div data-delivery="D8" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-delivery="D8" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <table>
 <tr><td>依赖</td><td>版本</td><td>许可证</td><td>用途</td><td>复用方式</td></tr>
 <tr><td>mozjs / mozjs-sys</td><td>0.15.14 / 140.10.1</td><td>MPL-2.0</td><td>SpiderMonkey FFI</td><td>git dep</td></tr>
@@ -793,7 +793,7 @@ Created ──navigate──→ Navigating ──load_complete──→ Interact
 <h2>§6 错误处理策略</h2>
 <!-- ============================================================ -->
 
-<div data-delivery="D7" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-delivery="D7" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>错误处理分层</h3>
 <pre>
 JS 层错误 → SpiderMonkey Exception → JS 可捕获
@@ -809,7 +809,7 @@ CDP 错误 → JSON-RPC Error Response → 客户端处理
 <h2>§7 运行时状态图</h2>
 <!-- ============================================================ -->
 
-<div data-delivery="D4" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-delivery="D4" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>运行时生命周期状态</h3>
 <pre>
 Uninitialized → Initializing → Ready → Running → ShuttingDown → Terminated
@@ -852,7 +852,7 @@ ShuttingDown:
 <h2>§8 数据管道</h2>
 <!-- ============================================================ -->
 
-<div data-pipeline-type="execution" data-pipeline="JSExecutionPipeline" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-pipeline-type="execution" data-pipeline="JSExecutionPipeline" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>PIPE-SYS-001: JS 执行管道 (概要)</h3>
 <script type="application/ld+json">
 {
@@ -871,7 +871,7 @@ ShuttingDown:
 </script>
 </div>
 
-<div data-pipeline-type="render" data-pipeline="RenderPipelineSummary" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-pipeline-type="render" data-pipeline="RenderPipelineSummary" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>PIPE-SYS-002: 渲染管道 (概要)</h3>
 <script type="application/ld+json">
 {
@@ -894,7 +894,7 @@ ShuttingDown:
 <h2>§9 接口协议图</h2>
 <!-- ============================================================ -->
 
-<div data-delivery="D5" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-delivery="D5" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>内部接口协议</h3>
 <pre>
 ┌─ bao_engine ─┐     FFI (C ABI)     ┌─ mozjs-sys ─┐
@@ -929,7 +929,7 @@ ShuttingDown:
 <h2>§9 事件/消息目录</h2>
 <!-- ============================================================ -->
 
-<div data-delivery="D6" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-delivery="D6" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>内部事件/消息类型</h3>
 <table>
 <tr><td>事件</td><td>方向</td><td>载体</td><td>触发条件</td></tr>
@@ -955,7 +955,7 @@ ShuttingDown:
 <h2>§4.7 Permission 沙箱架构</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>Permission 沙箱 — host_fn 层拦截</h3>
 <pre>
 实现层级: 复用 REQ-ENG-003 host_fn 抽象层
@@ -996,7 +996,7 @@ Permission 配置:
 <h2>§10 非功能需求</h2>
 <!-- ============================================================ -->
 
-<div data-nfr-category="performance" data-nfr="StartupPerformance" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-nfr-category="performance" data-nfr="StartupPerformance" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>NFR-SYS-PERF-001: 启动性能</h3>
 <script type="application/ld+json">
 {
@@ -1013,7 +1013,7 @@ Permission 配置:
 </script>
 </div>
 
-<div data-nfr-category="compatibility" data-nfr="BunAPICompatibility" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-nfr-category="compatibility" data-nfr="BunAPICompatibility" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>NFR-SYS-COMPAT-001: 兼容性</h3>
 <script type="application/ld+json">
 {
@@ -1029,7 +1029,7 @@ Permission 配置:
 </script>
 </div>
 
-<div data-nfr-category="security" data-nfr="SecurityRequirements" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-nfr-category="security" data-nfr="SecurityRequirements" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>NFR-SYS-SEC-001: 安全</h3>
 <script type="application/ld+json">
 {
@@ -1049,7 +1049,7 @@ Permission 配置:
 <h2>§11 SLA 矩阵</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram">
+<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
 <h3>服务等级目标</h3>
 <script type="application/ld+json">
 {
@@ -1082,7 +1082,7 @@ Permission 配置:
 </table>
 </div>
 
-<div data-artifact-type="mock-strategy" data-type="document" id="mock-strategy">
+<div data-artifact-type="mock-strategy" data-type="document" id="artifact-mock-strategy">
 <h3>Mock 策略</h3>
 <p>运行时引擎项目，无外部服务依赖。所有测试直接使用真实模块，无需 Mock。</p>
 <ul>
@@ -2037,16 +2037,16 @@ Bun 翻译代码中大量反模式：
 - [ ] 15+ 处 C 风格索引循环 → 迭代器适配器
 - [ ] node_crypto 5 处 thread_local clone → take()/replace() 零拷贝
 - [ ] module_loader CURRENT_DIR clone → 就地带引用
-- [ ] cargo test 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div><div id="12-处-box::new([])-→-vec::new()-或-option<vec>" data-criterion="12 处 Box::new([]) → Vec::new() 或 Option<Vec>">12 处 Box::new([]) → Vec::new() 或 Option&lt;Vec&gt;</div><div id="4+-处-option<box<t>>-→-option<t>（urlstate-等小型结构体）" data-criterion="4+ 处 Option<Box<T>> → Option<T>（UrlState 等小型结构体）">4+ 处 Option&lt;Box&lt;T&gt;&gt; → Option&lt;T&gt;（UrlState 等小型结构体）</div><div id="15+-处-c-风格索引循环-→-迭代器适配器" data-criterion="15+ 处 C 风格索引循环 → 迭代器适配器">15+ 处 C 风格索引循环 → 迭代器适配器</div><div id="node-crypto-5-处-thread-local-clone-→-take()/replace()-零拷贝" data-criterion="node_crypto 5 处 thread_local clone → take()/replace() 零拷贝">node_crypto 5 处 thread_local clone → take()/replace() 零拷贝</div><div id="module-loader-current-dir-clone-→-就地带引用" data-criterion="module_loader CURRENT_DIR clone → 就地带引用">module_loader CURRENT_DIR clone → 就地带引用</div><div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div></section><section data-artifact-type="runtime-state" data-type="document" id="runtime-state"><h3>运行时状态图</h3><div>Uninitialized → Initializing → Active → Closing → Closed
+- [ ] cargo test 通过</p><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div><div id="12-处-box::new([])-→-vec::new()-或-option<vec>" data-criterion="12 处 Box::new([]) → Vec::new() 或 Option<Vec>">12 处 Box::new([]) → Vec::new() 或 Option&lt;Vec&gt;</div><div id="4+-处-option<box<t>>-→-option<t>（urlstate-等小型结构体）" data-criterion="4+ 处 Option<Box<T>> → Option<T>（UrlState 等小型结构体）">4+ 处 Option&lt;Box&lt;T&gt;&gt; → Option&lt;T&gt;（UrlState 等小型结构体）</div><div id="15+-处-c-风格索引循环-→-迭代器适配器" data-criterion="15+ 处 C 风格索引循环 → 迭代器适配器">15+ 处 C 风格索引循环 → 迭代器适配器</div><div id="node-crypto-5-处-thread-local-clone-→-take()/replace()-零拷贝" data-criterion="node_crypto 5 处 thread_local clone → take()/replace() 零拷贝">node_crypto 5 处 thread_local clone → take()/replace() 零拷贝</div><div id="module-loader-current-dir-clone-→-就地带引用" data-criterion="module_loader CURRENT_DIR clone → 就地带引用">module_loader CURRENT_DIR clone → 就地带引用</div><div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div></section><section data-artifact-type="runtime-state" data-type="document" id="artifact-runtime-state"><h3>运行时状态图</h3><div>Uninitialized → Initializing → Active → Closing → Closed
 
 JSContext 融合后:
 - Active: SpiderMonkey + servo 共享 JSContext
 - Closing: GC drain → session cleanup
-- Closed: JSContext release → servo shutdown</div></section><section data-artifact-type="interface-protocol" data-type="document" id="interface-protocol"><h3>接口协议图</h3><div>IF-ENGINE-SM: bao-engine → mozjs (FFI)
+- Closed: JSContext release → servo shutdown</div></section><section data-artifact-type="interface-protocol" data-type="document" id="artifact-interface-protocol"><h3>接口协议图</h3><div>IF-ENGINE-SM: bao-engine → mozjs (FFI)
 IF-BROWSER-SERVO: bao-browser → servo (Rust trait impl)
 IF-CDP-BROWSER: bao-cdp ↔ bao-browser (mpsc channel)
 IF-RUNTIME-ENGINE: bao-runtime → bao-engine (Rust API)
-IF-STEALTH-CDP: bao-stealth → bao-cdp (event injection)</div></section><section data-artifact-type="event-catalog" data-type="document" id="event-catalog"><h3>事件/消息目录</h3><div>| 事件 | 方向 | 数据 | 触发条件 |
+IF-STEALTH-CDP: bao-stealth → bao-cdp (event injection)</div></section><section data-artifact-type="event-catalog" data-type="document" id="artifact-event-catalog"><h3>事件/消息目录</h3><div>| 事件 | 方向 | 数据 | 触发条件 |
 |------|------|------|----------|
 | BaoEvent::PageLoadEventFired | browser → cdp | timestamp | LoadStatus::Complete |
 | BaoEvent::DebuggerScriptParsed | browser → cdp | scriptId, url, line range | __BAO_EVT__ prefix |
@@ -2055,11 +2055,11 @@ IF-STEALTH-CDP: bao-stealth → bao-cdp (event injection)</div></section><sectio
 | BaoEvent::NetworkRequestWillBeSent | browser → cdp | requestId, url, headers | __BAO_EVT__ prefix |
 | BaoEvent::NetworkResponseReceived | browser → cdp | requestId, status, headers | __BAO_EVT__ prefix |
 | BaoEvent::NetworkLoadingFailed | browser → cdp | requestId, errorText | __BAO_EVT__ prefix |
-| BaoEvent::RuntimeExceptionThrown | browser → cdp | text, url, stackTrace | __BAO_EVT__ prefix |</div></section><section data-artifact-type="error-strategy" data-type="document" id="error-strategy"><h3>错误处理策略</h3><div>JS 层错误 → SpiderMonkey Exception → JS 可捕获
+| BaoEvent::RuntimeExceptionThrown | browser → cdp | text, url, stackTrace | __BAO_EVT__ prefix |</div></section><section data-artifact-type="error-strategy" data-type="document" id="artifact-error-strategy"><h3>错误处理策略</h3><div>JS 层错误 → SpiderMonkey Exception → JS 可捕获
 Rust 层错误 → Result<t,e> → 上抛到 JS 层或日志
 CDP 错误 → CdpError{code, message} → JSON-RPC error response
 Servo 错误 → ServoDelegate callback → 日志 + 事件
-OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><section data-artifact-type="dependency-matrix" data-type="document" id="dependency-matrix"><h3>外部依赖矩阵</h3><div>| 依赖 | 版本 | 许可证 | 用途 | 复用方式 |
+OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><section data-artifact-type="dependency-matrix" data-type="document" id="artifact-dependency-matrix"><h3>外部依赖矩阵</h3><div>| 依赖 | 版本 | 许可证 | 用途 | 复用方式 |
 |------|------|--------|------|----------|
 | mozjs/mozjs-sys | 0.15.14 | MPL-2.0 | SpiderMonkey FFI | git dep |
 | servo (libservo) | 0.1.0 | MPL-2.0 | 浏览器引擎 | path dep |
@@ -2407,14 +2407,14 @@ OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e></div></section><se
   "description": "BoringSSL-backed TLS 1.2/1.3 — 替代 bao_tls (rustls)，统一 TLS 栈到 BoringSSL"
 }</script></section>
 
-<section data-delivery="D4" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram"><h3>运行时状态图</h3><div>BaoRuntime 状态机: Uninitialized → Initialized → Running → Suspended → Shutdown
+<section data-delivery="D4" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram"><h3>运行时状态图</h3><div>BaoRuntime 状态机: Uninitialized → Initialized → Running → Suspended → Shutdown
 Uninitialized: 初始状态，未调用 BaoRuntime::new()
 Initialized: BaoRuntime::new() 完成，SpiderMonkey + servo 就绪
 Running: 事件循环运行中，JS 可执行
 Suspended: 事件循环暂停（idle timeout / 显式 suspend）
 Shutdown: 资源释放，进程退出</div></section>
 
-<section data-delivery="D5" data-artifact-type="interface-protocol" data-type="document" id="interface-protocol"><h3>接口协议图</h3><div>核心接口协议:
+<section data-delivery="D5" data-artifact-type="interface-protocol" data-type="document" id="artifact-interface-protocol"><h3>接口协议图</h3><div>核心接口协议:
 1. BaoRuntime ↔ SpiderMonkey: JSContext 生命周期管理（mozjs FFI）
 2. BaoRuntime ↔ servo: ServoDelegate / WebViewDelegate 回调协议
 3. BaoRuntime ↔ CDP: WebSocket CDP 协议（cdp-protocol crate）
@@ -2422,7 +2422,7 @@ Shutdown: 资源释放，进程退出</div></section>
 5. CDP Client ↔ bao_cdp: WebSocket JSON-RPC 2.0
 6. bao_browser ↔ servo: Embedder API（libservo crate）</div></section>
 
-<section data-delivery="D6" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram"><h3>事件/消息目录</h3><div>核心事件/消息:
+<section data-delivery="D6" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram"><h3>事件/消息目录</h3><div>核心事件/消息:
 1. ServoEvent::LoadComplete → 页面加载完成
 2. ServoEvent::DocumentReady → DOM 可操作
 3. CdpEvent::TargetAttached → CDP 会话绑定
@@ -2432,7 +2432,7 @@ Shutdown: 资源释放，进程退出</div></section>
 7. PagePoolEvent::PageCreated / PageClosed / PageIdle → 页面生命周期
 8. StealthEvent::ProfileApplied → 反指纹配置生效</div></section>
 
-<section data-delivery="D7" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram"><h3>错误处理策略</h3><div>错误分层策略:
+<section data-delivery="D7" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram"><h3>错误处理策略</h3><div>错误分层策略:
 1. BaoError: 顶层错误枚举，统一错误传播
 2. EngineError: SpiderMonkey 执行错误（编译/运行时/GC）
 3. BrowserError: servo 渲染错误（加载/布局/渲染）
@@ -2442,7 +2442,7 @@ Shutdown: 资源释放，进程退出</div></section>
 不可恢复错误: panic! 仅用于逻辑不变量违反
 日志策略: tracing crate，分级别 log（ERROR/WARN/INFO/DEBUG/TRACE）</t,></div></section>
 
-<section data-delivery="D8" data-artifact-type="use-case-diagram" data-type="document" id="use-case-diagram"><h3>外部依赖矩阵</h3><div>
+<section data-delivery="D8" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram"><h3>外部依赖矩阵</h3><div>
 | 依赖 | 版本 | 许可证 | 用途 | 可替代 |
 |------|------|--------|------|--------|
 | mozjs/mozjs-sys | latest | MPL-2.0 | SpiderMonkey FFI | 否 |
@@ -2901,7 +2901,7 @@ Shutdown: 资源释放，进程退出</div></section>
 <!-- ============================================================ -->
 <h2 data-delivery="D40">§10 架构模块</h2>
 <!-- ============================================================ -->
-<div data-delivery="D40" data-module-deps="mozjs,bun_resolver,bun_event_loop,bun_io" data-module-layer="L0" data-module-kind="module" data-module="bao-engine" id="bao-engine">
+<div data-module-layer="L0" data-module-deps="mozjs,bun_resolver,bun_event_loop,bun_io" data-delivery="D40" data-module-kind="module" data-module="bao-engine" id="bao-engine">
 <h3>bao-engine — SpiderMonkey 引擎封装</h3>
 <table><tr><th>职责</th><th>依赖</th><th>层</th></tr>
 <tr><td>SM JSContext 生命周期、JS 执行、GC 管理</td><td>mozjs, bun_resolver, bun_event_loop, bun_io</td><td>L0</td></tr></table>
@@ -2910,7 +2910,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Module",
   "name": "bao-engine"
 }</script></div>
-<div data-delivery="D40" data-module-deps="servo,bao_engine,bao_cdp" data-module-layer="L1" data-module-kind="module" data-module="bao-browser" id="bao-browser">
+<div data-module-layer="L1" data-module-deps="servo,bao_engine,bao_cdp" data-delivery="D40" data-module-kind="module" data-module="bao-browser" id="bao-browser">
 <h3>bao-browser — servo 引擎封装</h3>
 <table><tr><th>职责</th><th>依赖</th><th>层</th></tr>
 <tr><td>浏览器页面管理、JSContext 融合、CDP 事件桥接</td><td>servo, bao_engine, bao_cdp</td><td>L1</td></tr></table>
@@ -2919,7 +2919,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Module",
   "name": "bao-browser"
 }</script></div>
-<div data-delivery="D40" data-module-deps="cdp-protocol,bao_browser" data-module-layer="L1" data-module-kind="module" data-module="bao-cdp" id="bao-cdp">
+<div data-module-layer="L1" data-module-deps="cdp-protocol,bao_browser" data-delivery="D40" data-module-kind="module" data-module="bao-cdp" id="bao-cdp">
 <h3>bao-cdp — CDP 协议服务</h3>
 <table><tr><th>职责</th><th>依赖</th><th>层</th></tr>
 <tr><td>CDP 命令路由、domain handler 注册、session 管理</td><td>cdp-protocol, bao_browser</td><td>L1</td></tr></table>
@@ -2928,7 +2928,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Module",
   "name": "bao-cdp"
 }</script></div>
-<div data-delivery="D40" data-module-deps="bao_cdp,bun_http,rustls" data-module-layer="L2" data-module-kind="module" data-module="bao-stealth" id="bao-stealth">
+<div data-module-layer="L2" data-module-deps="bao_cdp,bun_http,rustls" data-delivery="D40" data-module-kind="module" data-module="bao-stealth" id="bao-stealth">
 <h3>bao-stealth — 反指纹模块</h3>
 <table><tr><th>职责</th><th>依赖</th><th>层</th></tr>
 <tr><td>TLS/HTTP/Canvas/Navigator/行为模拟</td><td>bao_cdp, bun_http, rustls</td><td>L2</td></tr></table>
@@ -2937,7 +2937,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Module",
   "name": "bao-stealth"
 }</script></div>
-<div data-delivery="D40" data-module-deps="bao_engine,bun_resolver,bun_event_loop,bun_io,bun_http,bun_base64" data-module-layer="L1" data-module-kind="module" data-module="bao-runtime" id="bao-runtime">
+<div data-module-layer="L1" data-module-deps="bao_engine,bun_resolver,bun_event_loop,bun_io,bun_http,bun_base64" data-delivery="D40" data-module-kind="module" data-module="bao-runtime" id="bao-runtime">
 <h3>bao-runtime — Bun API + Node.js polyfill</h3>
 <table><tr><th>职责</th><th>依赖</th><th>层</th></tr>
 <tr><td>Bun.* API、Node.js require/fs/crypto/http 适配</td><td>bao_engine, bun_resolver, bun_event_loop, bun_io, bun_http, bun_base64</td><td>L1</td></tr></table>
@@ -2950,7 +2950,7 @@ Shutdown: 资源释放，进程退出</div></section>
 <!-- ============================================================ -->
 <h2 data-delivery="D41">§11 接口契约</h2>
 <!-- ============================================================ -->
-<div data-delivery="D41" data-interface-direction="bao-engine → mozjs" data-interface-protocol="FFI" data-interface-kind="component" data-interface="IF-ENGINE-SM" id="if-engine-sm">
+<div data-interface-protocol="FFI" data-interface-direction="bao-engine → mozjs" data-delivery="D41" data-interface-kind="component" data-interface="IF-ENGINE-SM" id="if-engine-sm">
 <h3>IF-ENGINE-SM: bao-engine ↔ SpiderMonkey FFI</h3>
 <table><tr><th>方法</th><th>方向</th><th>协议</th></tr>
 <tr><td>create_context()</td><td>bao-engine → mozjs</td><td>FFI</td></tr>
@@ -2961,7 +2961,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Interface",
   "name": "IF-ENGINE-SM"
 }</script></div>
-<div data-delivery="D41" data-interface-direction="bao-browser → servo" data-interface-protocol="Rust trait impl" data-interface-kind="component" data-interface="IF-BROWSER-SERVO" id="if-browser-servo">
+<div data-interface-protocol="Rust trait impl" data-interface-direction="bao-browser → servo" data-delivery="D41" data-interface-kind="component" data-interface="IF-BROWSER-SERVO" id="if-browser-servo">
 <h3>IF-BROWSER-SERVO: bao-browser ↔ servo</h3>
 <table><tr><th>方法</th><th>方向</th><th>协议</th></tr>
 <tr><td>create_browser()</td><td>bao-browser → servo</td><td>trait impl</td></tr>
@@ -2972,7 +2972,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Interface",
   "name": "IF-BROWSER-SERVO"
 }</script></div>
-<div data-delivery="D41" data-interface-direction="bao-cdp → bao-browser" data-interface-protocol="mpsc channel" data-interface-kind="component" data-interface="IF-CDP-BROWSER" id="if-cdp-browser">
+<div data-interface-protocol="mpsc channel" data-interface-direction="bao-cdp → bao-browser" data-delivery="D41" data-interface-kind="component" data-interface="IF-CDP-BROWSER" id="if-cdp-browser">
 <h3>IF-CDP-BROWSER: bao-cdp ↔ bao-browser</h3>
 <table><tr><th>方法</th><th>方向</th><th>协议</th></tr>
 <tr><td>BaoEvent::from_console_text()</td><td>bao-browser → bao-cdp</td><td>mpsc</td></tr>
@@ -2986,7 +2986,7 @@ Shutdown: 资源释放，进程退出</div></section>
 <!-- ============================================================ -->
 <h2 data-delivery="D42">§12 架构决策</h2>
 <!-- ============================================================ -->
-<div data-delivery="D42" data-decision-context="JSC replacement" data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-001" id="dec-001">
+<div data-decision-context="JSC replacement" data-delivery="D42" data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-001" id="dec-001">
 <h3>DEC-001: SpiderMonkey 替代 JavaScriptCore</h3>
 <table><tr><th>决策</th><th>理由</th><th>状态</th></tr>
 <tr><td>SpiderMonkey 替代 JSC</td><td>与 servo 共享 JSContext/GC、MPL-2.0 兼容</td><td>accepted</td></tr></table>
@@ -2995,7 +2995,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Decision",
   "id": "DEC-001"
 }</script></div>
-<div data-delivery="D42" data-decision-context="Architecture" data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-002" id="dec-002">
+<div data-decision-context="Architecture" data-delivery="D42" data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-002" id="dec-002">
 <h3>DEC-002: 单进程多线程（共享 JSContext）</h3>
 <table><tr><th>决策</th><th>理由</th><th>状态</th></tr>
 <tr><td>单进程、JS 线程 + servo 渲染线程</td><td>JSContext 融合要求共享地址空间</td><td>accepted</td></tr></table>
@@ -3004,7 +3004,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Decision",
   "id": "DEC-002"
 }</script></div>
-<div data-delivery="D42" data-decision-context="CDP bridge" data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-003" id="dec-003">
+<div data-decision-context="CDP bridge" data-delivery="D42" data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-003" id="dec-003">
 <h3>DEC-003: BaoEvent 枚举替代 __BAO_ 前缀</h3>
 <table><tr><th>决策</th><th>理由</th><th>状态</th></tr>
 <tr><td>类型化 BaoEvent + ConsoleMessage 通道</td><td>消除自创协议、类型安全</td><td>accepted</td></tr></table>
@@ -3013,7 +3013,7 @@ Shutdown: 资源释放，进程退出</div></section>
   "@type": "Decision",
   "id": "DEC-003"
 }</script></div>
-<div data-delivery="D42" data-decision-context="Bun reuse" data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-004" id="dec-004">
+<div data-decision-context="Bun reuse" data-delivery="D42" data-decision-status="accepted" data-decision-dimension="technical" data-decision="DEC-004" id="dec-004">
 <h3>DEC-004: 100% 复用 Bun 纯 Rust crate</h3>
 <table><tr><th>决策</th><th>理由</th><th>状态</th></tr>
 <tr><td>禁止手写已有功能</td><td>生产验证、高性能</td><td>accepted</td></tr></table>
