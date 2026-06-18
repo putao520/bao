@@ -14,6 +14,8 @@
 ///
 /// This ZST exists solely to satisfy the `link_impl_DevServerHandle!` macro.
 /// All dispatch methods return no-op / error values.
+///
+/// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 pub struct BaoDevServer;
 
 // Provide the `Bake` arm of `DevServerHandle` dispatch interface.

@@ -9,6 +9,7 @@
 
 use core::ptr::NonNull;
 
+// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 #[unsafe(no_mangle)]
 fn __bun_jsc_enable_hot_module_reloading_for_bundler(
     _bv2: NonNull<bun_bundler::BundleV2<'static>>,

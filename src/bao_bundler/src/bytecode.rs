@@ -8,6 +8,7 @@
 //! Phase 2: SM `XDREncode` to produce XDR bytecode.
 
 /// Force-link anchor — called by `BAO_BUNDLER_ANCHOR` in lib.rs.
+// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 #[unsafe(no_mangle)]
 extern "C" fn __force_link_entry() {}
 
@@ -18,6 +19,7 @@ extern "C" fn __force_link_entry() {}
 // `unsafe extern "Rust"`. We provide the `#[no_mangle]` body here.
 // ══════════════════════════════════════════════════════════════════════════
 
+// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 #[unsafe(no_mangle)]
 fn __bun_jsc_generate_cached_bytecode(
     _format: bun_options_types::Format,
@@ -29,6 +31,7 @@ fn __bun_jsc_generate_cached_bytecode(
 }
 
 /// Test-only entry point to verify the symbol is linked.
+// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 #[cfg(test)]
 pub fn generate_cached_bytecode_for_test() -> Option<Box<[u8]>> {
     let mut url = bun_core::String::empty();

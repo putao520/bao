@@ -7,7 +7,7 @@ use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU64, Ordering};
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{UndefinedValue, Int32Value, StringValue, ObjectValue};
+use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, StringValue, ObjectValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -275,12 +275,27 @@ unsafe extern "C" fn uws_route_handler(
 // JS response methods — bridge to uWS Response::<false>
 // ──────────────────────────────────────────────────────────────
 
+/// Check if a JSVal is a PrivateValue (double with zero high bits).
+/// @trace BCE-20260618-002 [level:regression]
+/// SpiderMonkey encodes private values as doubles; this guard rejects
+/// undefined/non-private doubles that would otherwise trigger the
+/// `assert!(self.is_double())` panic in `to_private()` when a property
+/// slot is unset (e.g. server object created without listening).
+#[inline]
+fn val_is_private(v: &JSVal) -> bool {
+    v.is_double() && (v.asBits_ & 0xFFFF000000000000) == 0
+}
+
 /// Recover the `*mut uws_res` stored as `_uwsRes` on the JS response object.
 #[inline]
 unsafe fn get_uws_res(cx: *mut JSContext, obj: *mut JSObject) -> *mut bun_uws_sys::response::c::uws_res {
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
     let mut ptr_val = UndefinedValue();
     JS_GetProperty(cx, obj_h, c"_uwsRes".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ptr_val });
+    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
+    if !val_is_private(&ptr_val) {
+        return core::ptr::null_mut();
+    }
     ptr_val.to_private() as *mut bun_uws_sys::response::c::uws_res
 }
 
@@ -646,7 +661,14 @@ unsafe extern "C" fn server_close(
     // Destroy the uWS App if it exists.
     let mut app_ptr_val = UndefinedValue();
     JS_GetProperty(cx, server_h, c"_appPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut app_ptr_val });
-    let app_ptr = app_ptr_val.to_private() as *mut App<false>;
+    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
+    // http.createServer(fn).close() before listen leaves _appPtr undefined;
+    // to_private() on undefined asserts is_double() → panic across extern "C".
+    let app_ptr = if val_is_private(&app_ptr_val) {
+        app_ptr_val.to_private() as *mut App<false>
+    } else {
+        core::ptr::null_mut()
+    };
     if !app_ptr.is_null() {
         (*app_ptr).close();
         App::<false>::destroy(app_ptr);
@@ -659,7 +681,12 @@ unsafe extern "C" fn server_close(
     // Cleanup: reclaim ServerUserData box and remove GcStore entries.
     let mut ud_ptr_val = UndefinedValue();
     JS_GetProperty(cx, server_h, c"_udPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_ptr_val });
-    let ud_ptr = ud_ptr_val.to_private() as *mut ServerUserData;
+    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
+    let ud_ptr = if val_is_private(&ud_ptr_val) {
+        ud_ptr_val.to_private() as *mut ServerUserData
+    } else {
+        core::ptr::null_mut()
+    };
     if !ud_ptr.is_null() {
         // SAFETY: ud_ptr was created by Box::into_raw in server_listen.
         let ud = unsafe { Box::from_raw(ud_ptr) };

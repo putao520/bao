@@ -142,6 +142,7 @@ pub trait HostObject: Sized {
     /// # Safety
     /// `thisv` must be a JS value containing a JSObject with a valid host pointer
     /// stored in reserved slot 0.
+    /// @trace BCE-20260618-002 [level:regression]
     #[allow(unsafe_op_in_unsafe_fn)]
     unsafe fn from_private(_cx: *mut JSContext, thisv: JSVal) -> *mut Self {
         if !thisv.is_object() {
@@ -150,6 +151,13 @@ pub trait HostObject: Sized {
         let obj = thisv.to_object();
         let mut slot = UndefinedValue();
         JS_GetReservedSlot(obj, HOST_OBJECT_SLOT, &mut slot);
+        // Guard non-private doubles before to_private(). SpiderMonkey encodes
+        // private values as doubles with zero high bits; calling to_private()
+        // on an undefined/ordinary-double slot asserts is_double() → panic
+        // across the extern "C" boundary. Bail out to null when not private.
+        if !(slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0) {
+            return ::std::ptr::null_mut();
+        }
         let ptr = slot.to_private() as *mut Self;
         if ptr.is_null() {
             ::std::ptr::null_mut()

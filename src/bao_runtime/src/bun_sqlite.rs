@@ -224,6 +224,13 @@ const STATEMENT_METHODS: &[JSFunctionSpec] = &[
 
 // ── Helper: extract native pointer from reserved slot 0 ──
 
+/// Check if a JSVal is a PrivateValue (double with zero high bits).
+/// @trace BCE-20260618-002 [level:regression]
+#[inline]
+fn val_is_private(v: &JSVal) -> bool {
+    v.is_double() && (v.asBits_ & 0xFFFF000000000000) == 0
+}
+
 unsafe fn get_db_ptr(thisv: Handle<Value>) -> Option<*mut SqliteDatabase> {
     if !thisv.is_object() {
         return None;
@@ -231,6 +238,10 @@ unsafe fn get_db_ptr(thisv: Handle<Value>) -> Option<*mut SqliteDatabase> {
     let obj = thisv.to_object();
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj, SLOT_DB, &mut slot);
+    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
+    if !val_is_private(&slot) {
+        return None;
+    }
     let ptr = slot.to_private() as *mut SqliteDatabase;
     if ptr.is_null() {
         None
@@ -246,6 +257,10 @@ unsafe fn get_stmt_ptr(thisv: Handle<Value>) -> Option<*mut SqliteStatement> {
     let obj = thisv.to_object();
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj, SLOT_STMT, &mut slot);
+    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
+    if !val_is_private(&slot) {
+        return None;
+    }
     let ptr = slot.to_private() as *mut SqliteStatement;
     if ptr.is_null() {
         None

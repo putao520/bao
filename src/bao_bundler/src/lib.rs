@@ -36,6 +36,7 @@ pub use bun_bundler::*;
 // Force-link this crate's CYCLEBREAK symbols.
 // Without this anchor, the linker GCs the #[no_mangle] symbols when
 // bao_bundler is linked as a dependency but no item is explicitly referenced.
+// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 #[used]
 static BAO_BUNDLER_ANCHOR: unsafe extern "C" fn() = __force_link_entry;
 
@@ -45,6 +46,8 @@ unsafe extern "C" {
 
 /// Bundle result — compatible with the old `bao_bundler::BundleOutput` shape
 /// used by `bao_cli::cli::run_build`.
+///
+/// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 #[derive(Debug)]
 pub struct BundleOutput {
     pub code: String,
@@ -65,10 +68,14 @@ pub struct BundleOutput {
 //     SWC's official `strip` transform (generics, type annotations, unions,
 //     interfaces, type aliases, `import type`, `declare`, enums, TSX).
 //   * `.js` / `.jsx` / `.mjs` / `.cjs` — SWC parse + reprint, which normalizes
-//     the source and drops comments (the SWC round-trip is the
-//     bundler-pipeline transform for plain JS).
-//   * `minify = true` — collapse whitespace on the transpiler's normalized
-//     output (comments already removed by the SWC round-trip).
+//     the source. The SWC Emitter is handed the parsed `comments` table, so
+//     comments are **preserved** on the non-minify path (semantically faithful
+//     round-trip); they are only discarded when `minify = true` selects the
+//     `transpile_ts_drop_comments` variant (BCE-20260618-004).
+//   * `minify = true` — re-transpile through `transpile_ts_drop_comments`
+//     (SWC Emitter handed `comments = None` → all leading/trailing/inner
+//     comments dropped at codegen), then collapse whitespace on the
+//     comment-free normalized output.
 //
 // Out of scope (deferred to Phase 2, per REQ-CLI-001 / REUSE_RESULT): the full
 // `bun_bundler::BundleV2` multi-chunk graph pipeline, which requires a live
@@ -82,11 +89,19 @@ pub fn build(entrypoint: &str, minify: bool, _target: &str) -> Result<BundleOutp
 
     let fname = path.to_str().unwrap_or(entrypoint);
 
-    // Route through the real SWC transpiler. `transpile_ts` handles both TS
-    // (type strip) and plain JS (parse + reprint). On SWC hard-failure we fall
-    // back to the raw source so a single unparseable file never breaks the CLI
-    // (matches `bun_sm::module_loader::strip_typescript`'s defensive pattern).
-    let transpiled = bun_transpiler::transpile_ts(&source, fname).unwrap_or_else(|_| source);
+    // Route through the real SWC transpiler. The minify path uses the
+    // `transpile_ts_drop_comments` variant so the SWC Emitter is handed
+    // `comments = None` at codegen and all comments are dropped (the
+    // comment-stripping root fix for BCE-20260618-004). The non-minify path
+    // preserves comments via the plain `transpile_ts` variant (runtime loader
+    // contract). On SWC hard-failure both fall back to the raw source so a
+    // single unparseable file never breaks the CLI (matches
+    // `bun_sm::module_loader::strip_typescript`'s defensive pattern).
+    let transpiled = if minify {
+        bun_transpiler::transpile_ts_drop_comments(&source, fname).unwrap_or_else(|_| source)
+    } else {
+        bun_transpiler::transpile_ts(&source, fname).unwrap_or_else(|_| source)
+    };
 
     let code = if minify {
         collapse_whitespace(&transpiled)
@@ -102,15 +117,16 @@ pub fn build(entrypoint: &str, minify: bool, _target: &str) -> Result<BundleOutp
 
 /// Collapse runs of ASCII whitespace into a single space.
 ///
-/// The SWC round-trip in [`build`] already strips comments and normalizes
-/// statement layout; this is the lightweight whitespace-collapse used when
-/// `minify = true`. It is string-literal aware so it never collapses spaces
-/// inside `'...'` / `"..."` / `` `...` `` payloads (including escaped
-/// delimiters). Unlike the removed hand-written `basic_minify` it does not
-/// duplicate the comment-stripping state machine — comments are already gone
-/// by the time the transpiler's output reaches this function.
+/// Comments are already dropped upstream in [`build`] when `minify = true`
+/// (the SWC Emitter is handed `comments = None` via
+/// `transpile_ts_drop_comments`); this function only collapses whitespace on
+/// the comment-free normalized payload. It is string-literal aware so it
+/// never collapses spaces inside `'...'` / `"..."` / `` `...` `` payloads
+/// (including escaped delimiters). Unlike the removed hand-written
+/// `basic_minify` it does not duplicate the comment-stripping state machine —
+/// comment removal is the SWC Emitter's responsibility (BCE-20260618-004).
 ///
-/// @trace REQ-CLI-001 [api:POST /cli/exec]
+/// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
 fn collapse_whitespace(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(bytes.len());

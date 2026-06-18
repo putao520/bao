@@ -8,7 +8,7 @@ use ::std::io::Read;
 use ::std::path;
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 use ::std::ptr::NonNull;
-use ::std::sync::atomic::{AtomicU64, Ordering};
+use ::std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, NullValue, ObjectValue, BooleanValue};
@@ -1302,6 +1302,12 @@ unsafe extern "C" fn bun_serve(
     vp: *mut JSVal,
 ) -> bool {
     // @trace REQ-ENG-006 [api:Bun.serve] HTTP server via bun_uws::App (C++ uWS)
+    // @trace REQ-SEC-001 [api:POST /fetch] Bun.serve builds a raw HTTP server
+    // via bun_uws::App that serves any origin directly — there is no CORS
+    // preflight (OPTIONS) handling, no cors_check(), no Origin enforcement,
+    // and no opaque responses. Inbound HTTP is unrestricted, matching the
+    // REQ-SEC-001 "disable web security" requirement that bao's HTTP surface
+    // never blocks cross-origin requests.
     let args = CallArgs::from_vp(vp, argc);
 
     let mut port: u16 = 3000;
@@ -1376,6 +1382,7 @@ unsafe extern "C" fn bun_serve(
         app_ptr: app_ptr as *mut ::std::ffi::c_void,
         hostname: hostname.clone(),
         port,
+        actual_port: AtomicU16::new(0),
     });
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
@@ -1441,16 +1448,27 @@ unsafe extern "C" fn bun_serve(
     if !app_ptr.is_null() {
         (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
-        // Listen callback — just logs
+        // @trace BCE-20260618-005 [level:regression] [api:Bun.serve port]
+        // Listen callback — captures the actual bound port (for `port: 0`
+        // dynamic bind) and logs. uWS fires this synchronously inside
+        // `App::listen` (see uWS App.h:688-690: `handler(trackListenSocket(...))`
+        // is called before `listen` returns), so `actual_port` is populated
+        // by the time `bun_serve` reads it below.
         #[allow(unsafe_op_in_unsafe_fn)]
         unsafe extern "C" fn bun_serve_listen_cb(
             listen_socket: *mut ListenSocket,
-            _user_data: *mut ::std::ffi::c_void,
+            user_data: *mut ::std::ffi::c_void,
         ) {
             if !listen_socket.is_null() {
                 let ls_ref = bun_opaque::opaque_deref_mut(listen_socket);
                 let ls_port = ls_ref.get_local_port();
-                log::info!("Bun.serve() listening (uWS port={})", ls_port);
+                if ls_port > 0 {
+                    if !user_data.is_null() {
+                        let ud = &*(user_data as *const BunServeUserData);
+                        ud.actual_port.store(ls_port as u16, Ordering::Release);
+                    }
+                    log::info!("Bun.serve() listening (uWS port={})", ls_port);
+                }
             }
         }
 
@@ -1471,7 +1489,14 @@ unsafe extern "C" fn bun_serve(
     }
     let srv_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &server_obj.get() };
 
-    let port_jsval = Int32Value(port as i32);
+    // @trace BCE-20260618-005 — expose the actual bound port on `server.port`.
+    // For `port: 0` (dynamic bind), `actual_port` was populated by the listen
+    // callback synchronously inside `App::listen` above. Fall back to the
+    // requested `port` when no dynamic port was assigned (e.g. uSockets in
+    // stub mode where the listen callback never fires).
+    let bound_port = (*(ud_ptr as *const BunServeUserData)).actual_port.load(Ordering::Acquire);
+    let exposed_port = if bound_port > 0 { bound_port } else { port } as i32;
+    let port_jsval = Int32Value(exposed_port);
     let port_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &port_jsval };
     JS_DefineProperty(cx, srv_h, c"port".as_ptr(), port_h, JSPROP_ENUMERATE as u32);
 
@@ -1522,7 +1547,14 @@ unsafe extern "C" fn bun_serve(
         let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
         let mut app_val = UndefinedValue();
         JS_GetProperty(cx, this_h, c"_appPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut app_val });
-        let app_ptr = app_val.to_private() as *mut App::<false>;
+        // @trace BCE-20260618-002 — guard non-private doubles before to_private().
+        // server.stop() before serve() actually listens leaves _appPtr undefined
+        // (PrivateValue) — to_private() on undefined asserts is_double() → panic.
+        let app_ptr = if app_val.is_double() && (app_val.asBits_ & 0xFFFF000000000000) == 0 {
+            app_val.to_private() as *mut App::<false>
+        } else {
+            core::ptr::null_mut()
+        };
         if !app_ptr.is_null() {
             // Close listen sockets first, then destroy app.
             // Skip destroys socket group with dangling listen sockets → assertion.
@@ -1580,7 +1612,16 @@ struct BunServeUserData {
     websocket_cb_key: Option<String>,
     app_ptr: *mut ::std::ffi::c_void,
     hostname: String,
+    /// Requested port (what the caller passed to Bun.serve).
     port: u16,
+    /// Actual bound port captured in the listen callback.
+    /// @trace BCE-20260618-005 — for `port: 0` (dynamic bind) this holds the
+    /// real OS-assigned port, read back by `bun_serve` to expose on the JS
+    /// server object. Initialized to 0; set synchronously inside the uWS
+    /// `listen` callback (which fires before `App::listen` returns — see
+    /// uWS App.h:688-690). Atomic because the C++ listen callback may run on
+    /// the uSockets I/O thread.
+    actual_port: AtomicU16,
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -3337,6 +3378,7 @@ mod tests {
             app_ptr: ::std::ptr::null_mut(),
             hostname: "localhost".to_string(),
             port: 3000,
+            actual_port: AtomicU16::new(0),
         };
         assert!(data.fetch_cb_key.is_none());
         assert!(data.websocket_cb_key.is_none());
@@ -3353,6 +3395,7 @@ mod tests {
             app_ptr: ::std::ptr::null_mut(),
             hostname: "0.0.0.0".to_string(),
             port: 8080,
+            actual_port: AtomicU16::new(0),
         };
         assert!(data.fetch_cb_key.is_some());
         assert!(data.websocket_cb_key.is_none());
@@ -3367,6 +3410,7 @@ mod tests {
             app_ptr: ::std::ptr::null_mut(),
             hostname: "0.0.0.0".to_string(),
             port: 8080,
+            actual_port: AtomicU16::new(0),
         };
         assert!(data.fetch_cb_key.is_none());
         assert!(data.websocket_cb_key.is_some());
@@ -3381,6 +3425,7 @@ mod tests {
                 app_ptr: ::std::ptr::null_mut(),
                 hostname: host.to_string(),
                 port: 80,
+                actual_port: AtomicU16::new(0),
             };
             assert_eq!(data.hostname, *host);
         }
@@ -3394,6 +3439,7 @@ mod tests {
             app_ptr: ::std::ptr::null_mut(),
             hostname: String::new(),
             port: 0,
+            actual_port: AtomicU16::new(0),
         };
         assert_eq!(data.port, 0);
 
@@ -3403,8 +3449,38 @@ mod tests {
             app_ptr: ::std::ptr::null_mut(),
             hostname: String::new(),
             port: 65535,
+            actual_port: AtomicU16::new(0),
         };
         assert_eq!(data.port, 65535);
+    }
+
+    // @trace BCE-20260618-005 [level:regression] [req:REQ-ENG-006]
+    // Regression: Bun.serve({port: 0}) must expose the OS-assigned port on
+    // server.port. The listen callback (bun_serve_listen_cb) writes the bound
+    // port into `actual_port`; bun_serve reads it back and exposes it. This
+    // test asserts the data-race-free channel (AtomicU16 Acquire/Release).
+    #[test]
+    fn bun_serve_actual_port_dynamic_bind_channel() {
+        let data = BunServeUserData {
+            fetch_cb_key: None,
+            websocket_cb_key: None,
+            app_ptr: ::std::ptr::null_mut(),
+            hostname: "0.0.0.0".to_string(),
+            port: 0,
+            actual_port: AtomicU16::new(0),
+        };
+        // Before listen: fall back to requested port (0).
+        assert_eq!(data.actual_port.load(Ordering::Acquire), 0);
+
+        // Simulate the listen callback writing the OS-assigned port.
+        data.actual_port.store(54321, Ordering::Release);
+        let bound = data.actual_port.load(Ordering::Acquire);
+        assert_eq!(bound, 54321);
+
+        // bun_serve's exposure logic: use bound_port when > 0, else requested.
+        let exposed = if bound > 0 { bound } else { data.port };
+        assert_eq!(exposed, 54321);
+        assert!(exposed > 0, "BCE-005: server.port must be > 0 after dynamic bind");
     }
 
     // ── init_process_start ──

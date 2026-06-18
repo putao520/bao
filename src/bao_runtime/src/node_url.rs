@@ -200,11 +200,15 @@ const URL_SEARCH_PARAMS_CLASS: JSClass = JSClass {
 };
 
 /// Get the UrlState from a URL object's reserved slot.
+/// @trace BCE-20260618-002 [level:regression]
 unsafe fn get_url_state(obj: *mut JSObject) -> Option<UrlState> {
     unsafe {
         let mut slot = UndefinedValue();
         JS_GetReservedSlot(obj, SLOT_URL, &mut slot);
-        if slot.is_double() {
+        // Guard with the full PrivateValue encoding (double + zero high bits).
+        // A bare is_double() check would let through ordinary doubles and
+        // trigger to_private()'s is_double() assertion on non-private values.
+        if slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0 {
             let ptr = slot.to_private() as *mut UrlState;
             if !ptr.is_null() { return Some(*Box::from_raw(ptr)); }
         }

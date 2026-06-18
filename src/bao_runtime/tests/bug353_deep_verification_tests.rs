@@ -100,5 +100,24 @@ fn test_bug354_stop_does_not_crash() {
     "#);
     assert_eq!(t6, "ok", "T6 concurrent servers: {}", t6);
 
+    // ── T7: BCE-005 — Bun.serve({port:0}) exposes actual bound port ──
+    // @trace BCE-20260618-005 [req:REQ-ENG-006] [level:integration]
+    // Regression: server.port must be > 0 after dynamic bind (port: 0).
+    // The uWS listen callback fires synchronously inside App::listen and
+    // captures the OS-assigned port into BunServeUserData.actual_port; the
+    // JS server object exposes it via the port property.
+    eprintln!("== T7: BCE-005 server.port > 0 ==");
+    let t7 = eval_str(&mut ctx, r#"
+        var s = Bun.serve({ port: 0 });
+        var portVal = s.port;
+        s.stop();
+        (typeof portVal === "number" && portVal > 0) ? "ok:" + portVal : "fail:" + portVal
+    "#);
+    assert!(
+        t7.starts_with("ok:"),
+        "T7 BCE-005 server.port > 0 after Bun.serve({{port:0}}): {}",
+        t7
+    );
+
     bun_runtime::shutdown_thread_sm();
 }

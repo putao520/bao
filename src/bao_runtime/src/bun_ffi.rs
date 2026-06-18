@@ -233,6 +233,7 @@ unsafe extern "C" fn ffi_library_constructor(
 }
 
 /// Extract FfiLibrary pointer from `this` object's reserved slot.
+/// @trace BCE-20260618-002 [level:regression]
 unsafe fn get_lib(thisv: Handle<Value>) -> Option<*mut FfiLibrary> {
     if !thisv.is_object() {
         return None;
@@ -240,6 +241,12 @@ unsafe fn get_lib(thisv: Handle<Value>) -> Option<*mut FfiLibrary> {
     let obj = thisv.to_object();
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj, SLOT_LIB, &mut slot);
+    // Guard non-private doubles before to_private() — a freshly-constructed
+    // FfiLibrary whose dlopen() failed leaves SLOT_LIB undefined, and
+    // to_private() on undefined triggers the is_double() assertion panic.
+    if !(slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0) {
+        return None;
+    }
     let ptr = slot.to_private() as *mut FfiLibrary;
     if ptr.is_null() {
         None

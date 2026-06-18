@@ -156,15 +156,26 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     }
     let _cx_guard = CxGuard::new();
 
-    // Tick the MiniEventLoop — only if there are active servers or pending I/O.
-    // For pure synchronous scripts (no HTTP, no timers), skip the tick to
-    // avoid blocking on epoll_wait with no events.
+    // @trace BCE-20260618-003 [level:regression]
+    // Tick the MiniEventLoop — but ONLY when there are active HTTP servers,
+    // because uSockets owns its epoll fd and tick_once would block forever
+    // on epoll_wait with nothing to wake it. For the timer-only case (BAO_REGISTRY
+    // has pending timers but uSockets timer heap is empty), tick_once(null) hits
+    // epoll_wait with no fd → 30s hang. Mirror drain_one_pass (line ~217):
+    // timer-only branch advances wall-clock via a short sleep instead.
     let has_http_before_tick = crate::node_http::has_active_servers();
     let has_pending_before_tick = bao_has_pending_timers();
-    if has_http_before_tick || has_pending_before_tick {
+    if has_http_before_tick {
+        // I/O is active — let uSockets drive it.
         with_event_loop(|loop_| {
             loop_.tick_once(core::ptr::null_mut());
         });
+    } else if has_pending_before_tick {
+        // Timer-only case: bao's setTimeout lives in BAO_REGISTRY (wall-clock
+        // deadlines), not in uSockets' timer heap. An empty tick_once would
+        // block on epoll_wait with nothing to wake it. A short sleep advances
+        // wall-clock deterministically so drain_bao_timers can pop expired entries.
+        ::std::thread::sleep(::std::time::Duration::from_millis(1));
     }
 
     let has_http = crate::node_http::has_active_servers();

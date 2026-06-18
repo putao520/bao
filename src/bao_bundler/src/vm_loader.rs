@@ -12,6 +12,8 @@
 /// Stored in thread_local and accessed via `link_impl_VmLoaderCtx!`.
 /// This replaces JSC's `VirtualMachine` for the bundler's
 /// `normalize_specifier` and `get_loader_and_virtual_source` paths.
+///
+/// @trace REQ-ENG-005 [api:POST /module/resolve] [entity:ModuleSource]
 pub struct BaoVmLoaderCtx {
     pub origin_host: &'static [u8],
     pub origin_path: &'static [u8],
@@ -30,6 +32,8 @@ thread_local! {
 
 /// Set the VM loader context for the current thread.
 /// Called by `bun_runtime::BaoRuntime` during initialization.
+///
+/// @trace REQ-ENG-005 [api:POST /module/resolve] [entity:ModuleSource]
 pub fn set_vm_loader_ctx(origin_host: &'static [u8], origin_path: &'static [u8], main_path: &'static [u8]) {
     let _ = (origin_host, origin_path, main_path);
 }

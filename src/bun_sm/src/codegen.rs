@@ -235,6 +235,14 @@ pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
             r#"unsafe extern "C" fn {class_name}_finalize(gcx: *mut GCContext, obj: *mut JSObject) {{
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj, 0, &mut slot);
+    // @trace BCE-20260618-002 — guard non-private doubles before to_private().
+    // A subclass whose constructor never stored a pointer leaves slot 0
+    // undefined; to_private() on undefined asserts is_double() → panic
+    // during GC finalization. Bail out when the slot isn't a PrivateValue.
+    if !(slot.is_double() && (slot.asBits_ & 0xFFFF000000000000) == 0) {{
+        let _ = gcx;
+        return;
+    }}
     let ptr = slot.to_private() as *mut std::ffi::c_void;
     if !ptr.is_null() {{
         let _ = Box::from_raw(ptr);
