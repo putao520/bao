@@ -732,6 +732,21 @@ unsafe extern "C" fn server_close(
         // Safety: app_ptr was registered by `server_listen` via the same
         // registry; idempotent if already removed.
         unsafe { unregister_active_app(app_ptr); }
+
+        // @trace BCE-20260618-006 [level:regression] [api:http.createServer close]
+        // Clear `_appPtr` on the JS server object so subsequent `close()`
+        // calls are idempotent no-ops instead of use-after-free on the
+        // destroyed `*mut App`. Same class of bug as Bun.serve's server_stop
+        // (bun_api.rs) — double-close reads the stale pointer and calls
+        // `close()`/`destroy()` on freed memory → SIGSEGV. Set to a non-
+        // private value (UndefinedValue) so the val_is_private guard above
+        // correctly takes the null path on re-entry.
+        let undef = UndefinedValue();
+        let undef_h = Handle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &undef,
+        };
+        JS_SetProperty(cx, server_h, c"_appPtr".as_ptr(), undef_h);
     }
 
     // Cleanup: reclaim ServerUserData box and remove GcStore entries.
@@ -747,6 +762,16 @@ unsafe extern "C" fn server_close(
         // SAFETY: ud_ptr was created by Box::into_raw in server_listen.
         let ud = unsafe { Box::from_raw(ud_ptr) };
         ud.cleanup();
+
+        // @trace BCE-20260618-006 [level:regression] — same stale-pointer
+        // class as `_appPtr` above. Clear `_udPtr` so a second `close()` is
+        // a no-op (the Box has been consumed and the memory freed).
+        let undef = UndefinedValue();
+        let undef_h = Handle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &undef,
+        };
+        JS_SetProperty(cx, server_h, c"_udPtr".as_ptr(), undef_h);
     }
 
     args.rval().set(UndefinedValue());

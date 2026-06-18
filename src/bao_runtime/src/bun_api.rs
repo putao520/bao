@@ -1394,6 +1394,10 @@ unsafe extern "C" fn bun_serve(
         hostname: hostname.clone(),
         port,
         actual_port: AtomicU16::new(0),
+        // @trace REQ-ENG-006 [api:Bun.serve fetch handler] JSContext* bound to
+        // this server — read back by `bun_serve_route_handler` to call the
+        // user fetch callback. Matches node_http::ServerUserData::cx pattern.
+        cx,
     });
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
@@ -1434,23 +1438,111 @@ unsafe extern "C" fn bun_serve(
             }
         }
 
+        // @trace REQ-ENG-006 [api:Bun.serve default response] [level:design]
+        // When no `fetch` handler is registered, fall back to the reflective
+        // default response `{"method":"...","url":"..."}`. This preserves the
+        // pre-fix behavior expected by callers like `test_http_depth.js` that
+        // use `Bun.serve({ port: 0 })` (no fetch option) as a diagnostic
+        // echo server. A registered-but-uncallable handler (cx null, GC'd,
+        // or returning a non-Response value) also lands here.
         if ud.fetch_cb_key.is_none() {
+            serve_write_default_response(&mut *res_mut, &*req_ref);
+            return;
+        }
+
+        let cx = ud.cx;
+        if cx.is_null() {
+            // No JSContext — fall back to default response. Should not happen
+            // for a server created on the JS thread; defensive only.
+            serve_write_default_response(&mut *res_mut, &*req_ref);
+            return;
+        }
+
+        // @trace REQ-ENG-006 [api:Bun.serve fetch handler] [level:design]
+        // Resolve the user-supplied `fetch` JS function from GcStore. If the
+        // GC swept it (defensive — shouldn't happen while the server is
+        // referenced from JS), fall back to the default response so the HTTP
+        // request still completes (no hang).
+        let Some(fetch_handler) = ud.fetch_handler() else {
+            serve_write_default_response(&mut *res_mut, &*req_ref);
+            return;
+        };
+        if fetch_handler.is_null() {
+            serve_write_default_response(&mut *res_mut, &*req_ref);
+            return;
+        }
+
+        // Build a JS Request object from the uWS Request (method/url/headers).
+        // SAFETY: cx is live on this thread (server created on JS thread,
+        // route handler dispatched by `drain_and_check` on the same thread).
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(
+            NonNull::new_unchecked(cx),
+        );
+        let cx_ref = &mut wrapped_cx;
+
+        let req_obj = serve_build_request_object(cx_ref, &*req_ref);
+        if req_obj.is_null() {
+            serve_write_default_response(&mut *res_mut, &*req_ref);
+            return;
+        }
+
+        // Call the JS fetch handler: `fetch_handler(request)`.
+        // SAFETY: fetch_handler is a live JSObject (function) rooted by GcStore
+        // for the duration of this synchronous route handler. The cx is live.
+        let global = CurrentGlobalOrNull(cx);
+        if global.is_null() {
+            serve_write_default_response(&mut *res_mut, &*req_ref);
+            return;
+        }
+
+        let handler_val = ObjectValue(fetch_handler);
+        let handler_h = Handle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &handler_val,
+        };
+        let global_h = Handle::<*mut JSObject> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &global,
+        };
+        let req_val = ObjectValue(req_obj);
+        let call_args = HandleValueArray {
+            length_: 1,
+            elements_: &req_val,
+        };
+
+        let mut rval = UndefinedValue();
+        let rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut rval,
+        };
+        let ok = JS_CallFunctionValue(cx, global_h, handler_h, &call_args, rval_h);
+        if !ok {
+            // JS callback threw — clear pending exception and write 500.
+            JS_ClearPendingException(cx);
+            (*res_mut).write_status(b"500 Internal Server Error");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"fetch handler threw", true);
+            return;
+        }
+
+        // The fetch handler may return:
+        //   (a) a Response object synchronously, or
+        //   (b) a Promise<Response> (async handler).
+        // Resolve (b) to a Response by draining microtasks + pending fetches
+        // in a bounded spin-loop (the route handler runs on the JS thread,
+        // so no other thread can settle the promise — we must run jobs here).
+        let resp_obj = serve_resolve_response_value(cx_ref, rval);
+        if resp_obj.is_null() {
+            // Handler returned a non-Response value (undefined/null/etc.) or
+            // the promise rejected. Default to 404 (Bun semantics: returning
+            // nothing from fetch → 404 Not Found).
             (*res_mut).write_status(b"404 Not Found");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
             (*res_mut).end(b"Not Found", true);
             return;
         }
 
-        let method_bytes = req_ref.method();
-        let url_bytes = req_ref.url();
-        let method_str = ::std::str::from_utf8(method_bytes).unwrap_or("GET");
-        let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
-
-        let body = format!("{{\"method\":\"{}\",\"url\":\"{}\"}}", method_str, url_str);
-        let body_bytes = body.as_bytes();
-
-        (*res_mut).write_status(b"200 OK");
-        (*res_mut).write_header(b"Content-Type", b"application/json");
-        (*res_mut).end(body_bytes, true);
+        serve_write_response_object(cx, &mut *res_mut, resp_obj);
     }
 
     let safe_handler: Option<extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut Request, *mut ::std::ffi::c_void)> =
@@ -1577,6 +1669,27 @@ unsafe extern "C" fn bun_serve(
             unsafe { crate::node_http::unregister_active_app(app_ptr); }
             App::<false>::destroy(app_ptr);
             log::info!("Bun.serve() stopped");
+
+            // @trace BCE-20260618-006 [level:regression] [api:Bun.serve stop]
+            // Clear `_appPtr` on the JS server object so subsequent `stop()`
+            // calls are idempotent no-ops instead of use-after-free on the
+            // destroyed `*mut App`. Without this, a second `server.stop()`
+            // (common in try/finally cleanup paths and `test_http_depth.js`'s
+            // `finishTests`) reads the stale pointer and calls `close()` /
+            // `destroy()` on freed memory → SIGSEGV. Set the slot to a non-
+            // private value (UndefinedValue) so the BCE-002 private-value
+            // guard above correctly takes the null path on re-entry.
+            let undef = UndefinedValue();
+            let undef_h = Handle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &undef,
+            };
+            JS_SetProperty(
+                cx,
+                this_h,
+                c"_appPtr".as_ptr(),
+                undef_h,
+            );
         }
         // Clean up GcStore entries for fetch and websocket callbacks
         let mut fk_val = UndefinedValue();
@@ -1638,6 +1751,506 @@ struct BunServeUserData {
     /// uWS App.h:688-690). Atomic because the C++ listen callback may run on
     /// the uSockets I/O thread.
     actual_port: AtomicU16,
+    /// @trace REQ-ENG-006 [api:Bun.serve fetch handler] [level:design]
+    /// JSContext* for the bound server — used by `bun_serve_route_handler`
+    /// to invoke the user-supplied `fetch` JS callback and marshal the
+    /// returned Response back to the uWS C++ Response. Mirrors the
+    /// `node_http::ServerUserData::cx` field — same pattern: store the cx
+    /// at construction time (when `bun_serve` runs on the JS thread), read
+    /// it back from the route handler. The route handler is always invoked
+    /// on the JS thread (the uWS App is JS-thread-bound and ticked by
+    /// `drain_and_check`), so this cx is valid at dispatch time.
+    cx: *mut JSContext,
+}
+
+impl BunServeUserData {
+    /// Resolve the fetch handler JS function from GcStore.
+    /// @trace REQ-ENG-006 [api:Bun.serve fetch handler]
+    /// Returns None when: no handler registered, cx is null, or the
+    /// handler was GC'd (gc_store_get returns None — defensive).
+    fn fetch_handler(&self) -> Option<*mut JSObject> {
+        let key = self.fetch_cb_key.as_ref()?;
+        if self.cx.is_null() { return None; }
+        gc_store_get(self.cx, key)
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.serve fetch handler] [level:design]
+// Bun.serve route-handler JS↔uWS marshalling helpers.
+//
+// These free functions are invoked synchronously from
+// `bun_serve_route_handler` (which runs on the JS thread inside
+// `MiniEventLoop::tick_without_idle` dispatched by `drain_and_check`).
+// They build a JS Request object from the uWS Request, invoke the user's
+// `fetch` JS callback, resolve any returned Promise<Response> by draining
+// microtasks + pending fetches on this same thread, and finally marshal
+// the Response (status / headers / body) back to the uWS C++ Response.
+//
+// Mirrors `node_http::uws_route_handler` (the createServer path) for the
+// Request build, plus `fetch_api::build_response_object` for the inverse
+// Response→uWS direction.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Maximum iterations of the Promise-resolution spin loop before giving up.
+/// Each iteration runs microtasks (RunJobs), drains pending async fetches,
+/// and ticks the uWS Loop without blocking. The loop bound prevents an
+/// infinite hang if a handler never settles (defensive — well-behaved JS
+/// settles within a few iterations).
+const SERVE_PROMISE_POLL_MAX_ITERS: u32 = 10_000;
+
+/// Build a JS Request object from a uWS Request.
+///
+/// The returned object has the shape `{ method, url, headers }` matching
+/// `fetch_api::request_constructor`. Body is omitted (Bun.serve fetch
+/// handlers in Bao do not currently consume `request.body` — the uWS
+/// Request body is fully drained into the route handler only on demand).
+///
+/// # Safety
+/// - `cx_ref` must be a live `&mut mozjs::JSContext` on the current thread.
+/// - `req_ref` must be a live `&Request` (uWS-owned, valid for the duration
+///   of this call).
+///
+/// Returns a non-null `*mut JSObject` on success, null on allocation failure.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_build_request_object(
+    cx_ref: &mut mozjs::context::JSContext,
+    req_ref: &Request,
+) -> *mut JSObject {
+    let raw_cx = cx_ref.raw_cx();
+
+    rooted!(&in(cx_ref) let req_obj = JS_NewPlainObject(cx_ref));
+    if req_obj.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
+
+    // method
+    let method_bytes = req_ref.method();
+    let method_str = ::std::str::from_utf8(method_bytes).unwrap_or("GET");
+    {
+        let c_m = ZBox::from_bytes(method_str.as_bytes());
+        let js_m = JS_NewStringCopyZ(raw_cx, c_m.as_ptr());
+        if !js_m.is_null() {
+            let mv = StringValue(&*js_m);
+            rooted!(&in(cx_ref) let mvr = mv);
+            JS_DefineProperty(
+                raw_cx,
+                req_obj.handle().into(),
+                c"method".as_ptr(),
+                mvr.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+
+    // url (path + query string as returned by uWS — relative URL form)
+    let url_bytes = req_ref.url();
+    let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
+    {
+        let c_u = ZBox::from_bytes(url_str.as_bytes());
+        let js_u = JS_NewStringCopyZ(raw_cx, c_u.as_ptr());
+        if !js_u.is_null() {
+            let uv = StringValue(&*js_u);
+            rooted!(&in(cx_ref) let uvr = uv);
+            JS_DefineProperty(
+                raw_cx,
+                req_obj.handle().into(),
+                c"url".as_ptr(),
+                uvr.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+        }
+    }
+
+    // headers — plain object keyed by lowercased header name (matches the
+    // node_http::uws_route_handler shape and the common Fetch headers list).
+    rooted!(&in(cx_ref) let headers_obj = JS_NewPlainObject(cx_ref));
+    if !headers_obj.get().is_null() {
+        let common_headers: &[&[u8]] = &[
+            b"host", b"content-type", b"content-length", b"accept",
+            b"user-agent", b"connection", b"authorization", b"cookie",
+            b"upgrade", b"origin", b"referer",
+        ];
+        for &name in common_headers {
+            if let Some(value) = req_ref.header(name) {
+                let c_k = ZBox::from_bytes(name);
+                let c_v = ZBox::from_bytes(value);
+                let js_v = JS_NewStringCopyZ(raw_cx, c_v.as_ptr());
+                if !js_v.is_null() {
+                    let hv = StringValue(&*js_v);
+                    rooted!(&in(cx_ref) let hvr = hv);
+                    JS_DefineProperty(
+                        raw_cx,
+                        headers_obj.handle().into(),
+                        c_k.as_ptr(),
+                        hvr.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+        }
+        let hdrs_val = ObjectValue(headers_obj.get());
+        rooted!(&in(cx_ref) let hdrs_r = hdrs_val);
+        JS_DefineProperty(
+            raw_cx,
+            req_obj.handle().into(),
+            c"headers".as_ptr(),
+            hdrs_r.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    req_obj.get()
+}
+
+/// Resolve a JS value (the fetch handler's return value) into a Response
+/// JSObject, transparently awaiting a `Promise<Response>`.
+///
+/// If `rval` is already a Response object → return it.
+/// If `rval` is a Promise → spin a bounded loop running microtasks + pending
+/// fetches until the promise settles, then return its fulfilled value (if a
+/// Response object) or null (if rejected / non-Response).
+/// Otherwise → return null (caller writes 404).
+///
+/// # Safety
+/// - `cx_ref` must be a live `&mut mozjs::JSContext` on the current thread.
+/// - Must be called with no other JS-thread code mutating runtime state
+///   (the route handler is the sole mutator during dispatch).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_resolve_response_value(
+    cx_ref: &mut mozjs::context::JSContext,
+    rval: JSVal,
+) -> *mut JSObject {
+    if !rval.is_object() {
+        return ::std::ptr::null_mut();
+    }
+    let obj = rval.to_object();
+
+    // Fast path: synchronous Response object.
+    if !serve_is_promise(cx_ref, obj) {
+        return if serve_is_response_like(cx_ref, obj) { obj } else { ::std::ptr::null_mut() };
+    }
+
+    // Slow path: Promise<Response>. Drain microtasks + pending fetches + tick
+    // the uWS Loop until the promise settles (or we hit the iteration cap).
+    // SAFETY: route handler runs on JS thread; all JS that could settle this
+    // promise also runs on this thread, so RunJobs here is sufficient.
+    let raw_cx = cx_ref.raw_cx();
+    let mut iters = 0u32;
+    loop {
+        // Snapshot promise state.
+        let obj_h = Handle::<*mut JSObject> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &obj,
+        };
+        if !JS::IsPromiseObject(obj_h) {
+            // Defensive: object lost its promise-ness (shouldn't happen).
+            return ::std::ptr::null_mut();
+        }
+        let state = JS::GetPromiseState(obj_h);
+        match state {
+            PromiseState::Fulfilled => {
+                // Extract the resolution value via the mozjs glue wrapper.
+                let mut result_val = UndefinedValue();
+                mozjs::glue::JS_GetPromiseResult(
+                    obj_h,
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut result_val,
+                    },
+                );
+                if !result_val.is_object() {
+                    return ::std::ptr::null_mut();
+                }
+                let result_obj = result_val.to_object();
+                return if serve_is_response_like(cx_ref, result_obj) {
+                    result_obj
+                } else {
+                    ::std::ptr::null_mut()
+                };
+            }
+            PromiseState::Rejected => {
+                // Promise rejected — clear the pending exception (the rejection)
+                // and return null. Caller writes 404.
+                JS_ClearPendingException(raw_cx);
+                return ::std::ptr::null_mut();
+            }
+            _ => {}
+        }
+
+        // Still pending — drain microtasks (RunJobs) and pending async fetches
+        // so promise chains that depend only on microtask scheduling settle
+        // promptly. Do NOT call `drain_one_pass`/`drain_and_check` here: the
+        // route handler is already running inside `drain_and_check`'s
+        // `tick_without_idle`, and re-entering the uWS Loop tick would
+        // re-enter the C++ epoll dispatcher mid-dispatch → undefined behavior.
+        // For promises that genuinely need a setTimeout/I/O round-trip (the
+        // "delayed" async fetch handler pattern), the bounded iteration cap
+        // returns null after SERVE_PROMISE_POLL_MAX_ITERS and the caller
+        // writes 404 — this is a known limitation of the synchronous route
+        // handler model. Async-flush deferral would require storing the uWS
+        // res pointer past the handler boundary (out of scope for this fix).
+        mozjs_sys::jsapi::js::RunJobs(raw_cx);
+        let _ = crate::fetch_api::drain_pending_fetches(raw_cx);
+
+        iters += 1;
+        if iters >= SERVE_PROMISE_POLL_MAX_ITERS {
+            // Bounded — give up rather than hang the server forever.
+            return ::std::ptr::null_mut();
+        }
+        // Yield the JS thread briefly so any in-flight async fetch worker can
+        // complete (cross-thread result_slot write).
+        ::std::thread::sleep(::std::time::Duration::from_millis(1));
+    }
+}
+
+/// Check if a JS object is a Promise (SpiderMonkey internal Promise class).
+#[allow(unsafe_op_in_unsafe_fn)]
+fn serve_is_promise(_cx_ref: &mut mozjs::context::JSContext, obj: *mut JSObject) -> bool {
+    let obj_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &obj,
+    };
+    unsafe { JS::IsPromiseObject(obj_h) }
+}
+
+/// Duck-type check: does this object look like a Response (has a numeric
+/// `status` and a string `_bodyText` or string `body`)? Bao's
+/// `fetch_api::response_constructor` and `build_response_object` produce
+/// exactly this shape, so this avoids requiring an `instanceof Response`
+/// guard (which would need a rooted constructor lookup).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_is_response_like(
+    cx_ref: &mut mozjs::context::JSContext,
+    obj: *mut JSObject,
+) -> bool {
+    let raw_cx = cx_ref.raw_cx();
+    let obj_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &obj,
+    };
+    let mut status_val = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        obj_h,
+        c"status".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut status_val,
+        },
+    );
+    // Response objects always have a numeric `status`. This is sufficient
+    // to distinguish a Response from a Promise/array/other object.
+    status_val.is_int32() || status_val.is_double()
+}
+
+/// Write a JS Response object back to the uWS Response.
+///
+/// Reads `status` (default 200), `headers` (object → header lines), and
+/// `_bodyText` (body bytes, written binary-safe via ZBox). Mirrors the
+/// inverse of `fetch_api::build_response_object`.
+///
+/// # Safety
+/// - `raw_cx` must be a live `JSContext*` on the current thread.
+/// - `res_mut` must be a live `&mut Response<false>` for the duration.
+/// - `resp_obj` must be a live JSObject produced by `serve_resolve_response_value`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_write_response_object(
+    raw_cx: *mut JSContext,
+    res_mut: &mut Response<false>,
+    resp_obj: *mut JSObject,
+) {
+    let obj_h = Handle::<*mut JSObject> {
+        _phantom_0: ::std::marker::PhantomData,
+        ptr: &resp_obj,
+    };
+
+    // status (default 200 if missing/invalid)
+    let mut status_val = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        obj_h,
+        c"status".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut status_val,
+        },
+    );
+    let status_code: i32 = if status_val.is_int32() {
+        status_val.to_int32()
+    } else if status_val.is_double() {
+        status_val.to_double() as i32
+    } else {
+        200
+    };
+    let clamped = status_code.clamp(100, 599);
+    // Map status code → reason phrase for the status line. uWS wants the full
+    // "CODE REASON" form (matching `write_status(b"200 OK")` elsewhere).
+    let status_line = status_line_for(clamped);
+    res_mut.write_status(status_line.as_bytes());
+
+    // headers (plain object) — iterate enumerable string keys.
+    let mut headers_val = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        obj_h,
+        c"headers".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut headers_val,
+        },
+    );
+    if headers_val.is_object() {
+        let headers_obj = headers_val.to_object();
+        let headers_h = Handle::<*mut JSObject> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &headers_obj,
+        };
+        // @trace REQ-ENG-006 [api:Bun.serve fetch handler]
+        // Property enumeration via `GetPropertyKeys` (mozjs Rust wrapper)
+        // + `IdVector`. This is the canonical pattern used in
+        // node_url.rs / node_util.rs for iterating JS object keys without
+        // raw AutoIdArray struct layout assumptions.
+        let mut wrapped_cx_hdr = mozjs::context::JSContext::from_ptr(
+            NonNull::new_unchecked(raw_cx),
+        );
+        let cx_hdr_ref = &mut wrapped_cx_hdr;
+        let mut ids = mozjs::rust::IdVector::new(cx_hdr_ref.raw_cx());
+        let ok = GetPropertyKeys(raw_cx, headers_h, JSITER_OWNONLY, ids.handle_mut());
+        if ok {
+            for jsid in &*ids {
+                if !jsid.is_string() { continue; }
+                let key_str_ptr = jsid.to_string();
+                let key = jsstr_to_string(raw_cx, NonNull::new_unchecked(key_str_ptr));
+                let mut header_val = UndefinedValue();
+                let c_key = ZBox::from_bytes(key.as_bytes());
+                JS_GetProperty(
+                    raw_cx,
+                    headers_h,
+                    c_key.as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut header_val,
+                    },
+                );
+                let val_str = if header_val.is_string() {
+                    crate::js_to_rust_string(raw_cx, header_val)
+                } else {
+                    continue;
+                };
+
+                // Skip Content-Length — uWS recomputes it from the body bytes
+                // we pass to `end`. Trusting a stale value would corrupt the
+                // response framing.
+                if key.eq_ignore_ascii_case("content-length") {
+                    continue;
+                }
+                let c_v = ZBox::from_bytes(val_str.as_bytes());
+                res_mut.write_header(c_key.as_bytes(), c_v.as_bytes());
+            }
+        }
+    }
+
+    // body — read `_bodyText` (string). If absent, empty body.
+    let mut body_val = UndefinedValue();
+    JS_GetProperty(
+        raw_cx,
+        obj_h,
+        c"_bodyText".as_ptr(),
+        MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut body_val,
+        },
+    );
+    let body_bytes: Vec<u8> = if body_val.is_string() {
+        let s = crate::js_to_rust_string(raw_cx, body_val);
+        s.into_bytes()
+    } else {
+        Vec::new()
+    };
+
+    // Content-Length (only when body is non-empty; for empty bodies HEAD/etc.
+    // we still emit 0 via `end(b"", …)`).
+    if !body_bytes.is_empty() {
+        let cl = body_bytes.len().to_string();
+        let cl_c = ZBox::from_bytes(cl.as_bytes());
+        res_mut.write_header(b"Content-Length", cl_c.as_bytes());
+    }
+
+    res_mut.end(&body_bytes, true);
+}
+
+/// Write the default `{"method":"...","url":"..."}` response used when no
+/// fetch handler is registered or the handler cannot be resolved. Kept for
+/// backward compatibility with `Bun.serve({ port: 0 })` callers that rely on
+/// the diagnostic response shape.
+///
+/// @trace REQ-ENG-006 [api:Bun.serve default response]
+/// The `method` is upper-cased before serialization: uWS hands us the
+/// lowercase method token (per HTTP/1.1 case-insensitive convention), but
+/// consumers (e.g. `tests/test_http_depth.js`) and Bun's diagnostic echo
+/// expect the canonical uppercase form ("GET"/"POST"/...). Mirrors the
+/// behavior the legacy synchronous path produced.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn serve_write_default_response(
+    res_mut: &mut Response<false>,
+    req_ref: &Request,
+) {
+    let method_bytes = req_ref.method();
+    let url_bytes = req_ref.url();
+    let method_str_lower = ::std::str::from_utf8(method_bytes).unwrap_or("get");
+    let method_str = method_str_lower.to_ascii_uppercase();
+    let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
+
+    let body = format!("{{\"method\":\"{}\",\"url\":\"{}\"}}", method_str, url_str);
+    let body_bytes = body.as_bytes();
+
+    res_mut.write_status(b"200 OK");
+    res_mut.write_header(b"Content-Type", b"application/json");
+    res_mut.end(body_bytes, true);
+}
+
+/// Map an HTTP status code to its full status line ("CODE REASON").
+/// Covers the common codes; unknown codes fall back to just the number.
+fn status_line_for(code: i32) -> String {
+    let reason = match code {
+        100 => "Continue",
+        101 => "Switching Protocols",
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        204 => "No Content",
+        206 => "Partial Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        410 => "Gone",
+        413 => "Payload Too Large",
+        414 => "URI Too Long",
+        415 => "Unsupported Media Type",
+        426 => "Upgrade Required",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "",
+    };
+    if reason.is_empty() {
+        format!("{}", code)
+    } else {
+        format!("{} {}", code, reason)
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -3395,6 +4008,7 @@ mod tests {
             hostname: "localhost".to_string(),
             port: 3000,
             actual_port: AtomicU16::new(0),
+            cx: ::std::ptr::null_mut(),
         };
         assert!(data.fetch_cb_key.is_none());
         assert!(data.websocket_cb_key.is_none());
@@ -3412,6 +4026,7 @@ mod tests {
             hostname: "0.0.0.0".to_string(),
             port: 8080,
             actual_port: AtomicU16::new(0),
+            cx: ::std::ptr::null_mut(),
         };
         assert!(data.fetch_cb_key.is_some());
         assert!(data.websocket_cb_key.is_none());
@@ -3427,6 +4042,7 @@ mod tests {
             hostname: "0.0.0.0".to_string(),
             port: 8080,
             actual_port: AtomicU16::new(0),
+            cx: ::std::ptr::null_mut(),
         };
         assert!(data.fetch_cb_key.is_none());
         assert!(data.websocket_cb_key.is_some());
@@ -3442,6 +4058,7 @@ mod tests {
                 hostname: host.to_string(),
                 port: 80,
                 actual_port: AtomicU16::new(0),
+                cx: ::std::ptr::null_mut(),
             };
             assert_eq!(data.hostname, *host);
         }
@@ -3456,6 +4073,7 @@ mod tests {
             hostname: String::new(),
             port: 0,
             actual_port: AtomicU16::new(0),
+            cx: ::std::ptr::null_mut(),
         };
         assert_eq!(data.port, 0);
 
@@ -3466,6 +4084,7 @@ mod tests {
             hostname: String::new(),
             port: 65535,
             actual_port: AtomicU16::new(0),
+            cx: ::std::ptr::null_mut(),
         };
         assert_eq!(data.port, 65535);
     }
@@ -3484,6 +4103,7 @@ mod tests {
             hostname: "0.0.0.0".to_string(),
             port: 0,
             actual_port: AtomicU16::new(0),
+            cx: ::std::ptr::null_mut(),
         };
         // Before listen: fall back to requested port (0).
         assert_eq!(data.actual_port.load(Ordering::Acquire), 0);

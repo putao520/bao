@@ -432,3 +432,79 @@ confirmReport:
 
 ---
 
+## BCE-20260618-006 — JS 对象私有 slot 持有已释放 C++ 指针（use-after-free）
+
+```yaml
+patternId: BCE-20260618-006
+title: JS 对象私有 slot（_appPtr/_udPtr 等）持有已 destroy 的 C++ 指针 → 二次 close/stop 时 use-after-free → SIGSEGV
+layer: 设计（资源生命周期与 JS 引用解耦不完整）
+status: 已根治（残留=0）
+
+codePattern:
+  - 「JS 对象通过 PrivateValue 持有 `*mut App` / `*mut ServerUserData` 等 C++ 堆指针」
+  - 「destroy/close 消费该指针后未将 JS slot 清空为 UndefinedValue」
+  - 「二次调用 stop()/close() 时 val_is_private 仍为真 → to_private() 拿到野指针 → close()/destroy() 操作已释放内存 → SIGSEGV」
+
+triggerCondition:
+  - 同一 JS server 对象被 stop()/close() 调用 ≥2 次
+  - 实战触发路径：① `tests/test_http_depth.js::finishTests()` 的 try/catch + finally；② 用户代码 try/finally cleanup；③ 显式 `s.stop(); s.stop();`
+
+detectionSignatures:
+  structural:
+    - "JS_SetProperty/JS_DefineProperty 设置 PrivateValue 持有的 C++ 指针，紧邻 App::destroy/Box::from_raw 消费该指针的位置，且 destroy 之后无 JS_SetProperty(..._Ptr..., UndefinedValue) 清空"
+  literal:
+    - 'App::.*destroy\(.*app_ptr\)'  # grep 销毁点
+    - '_appPtr|_udPtr'               # grep 私有 slot 名
+
+sameClassCriterion:
+  - 「JS 对象通过私有 slot 持有的原生（C++/Rust 堆）指针在 destroy/from_raw 后未被清空 → 二次访问触发 use-after-free」
+  - 范围：bao_* 自有 crate（不含 bun_* 上游）
+
+fixTemplate:
+  - 「destroy/from_raw 消费指针后，立即用 JS_SetProperty 将对应私有 slot 设为 UndefinedValue（非 private 值），使二次访问走 val_is_private 守卫的 null 路径，变成幂等 no-op」
+  - 「val_is_private 守卫（BCE-002 已有）是第一道防线；slot 清空是第二道防线，二者缺一不可」
+
+regressionAssertion:
+  - 「`Bun.serve().stop().stop()` 不 SIGSEGV」
+  - 「`http.createServer().listen().close().close()` 不 SIGSEGV」
+  - 「try/finally 中 stop() 在 try 与 finally 都调用，不 SIGSEGV」
+  - 「现有回归测试：src/bao_runtime/tests/bug353_deep_verification_tests.rs::test_bce006_double_stop_idempotent（T8/T9/T10/T11 四路径）」
+
+instancesFound: 2   # Bun.serve::server_stop (bun_api.rs) + http.createServer::server_close (node_http.rs) 的 _appPtr
+truePositives: 3    # + node_http::server_close 的 _udPtr (Box::from_raw)
+falsePositives: 0
+instancesFixed: 3
+residual: 0
+
+residualEvidence:
+  - "重扫 src/bao_runtime/src/{bun_api,node_http}.rs 的 `App::.*destroy` 后无 `_appPtr` JS_SetProperty 清空：0 命中（两处都已清空）"
+  - "node_http::server_close 的 `_udPtr` Box::from_raw 后也已清空"
+  - "cargo test -p bun_runtime --lib：614 passed / 0 failed"
+  - "cargo test -p bun_runtime --test bug353_deep_verification_tests：2 passed（含新增 test_bce006_double_stop_idempotent）"
+  - "tests/test_http_depth.js（含 finishTests 的 try/catch 双 stop）：19/19 PASS, EXIT=0"
+
+confirmReport:
+  patternId: BCE-20260618-006
+  sweepScope: "src/bao_runtime/src/ 全量"
+  layersScanned: [literal, structural]
+  instancesFound: 3
+  truePositives: 3
+  falsePositives: 0
+  instancesFixed: 3
+  residual: 0
+  residualEvidence:
+    - "重扫 destroy/from_raw 后无 slot 清空：0 命中"
+    - "cargo test -p bun_runtime --lib：614/0"
+    - "cargo test -p bun_runtime --test bug353_deep_verification_tests：2/0"
+    - "tests/test_http_depth.js：19/19 PASS, EXIT=0"
+  releaseGateImpact: pass
+```
+
+### 防复发（阶段6）
+- ✅ 知识库：本条目。
+- ✅ 代码注释：`bun_api.rs::server_stop` 与 `node_http.rs::server_close` 的 BCE-20260618-006 完整根因注释。
+- ✅ 回归测试：`src/bao_runtime/tests/bug353_deep_verification_tests.rs::test_bce006_double_stop_idempotent`（T8-T11 四路径）。
+- 📌 未来风险：任何新增「JS 对象私有 slot 持有 C++ 堆指针」的资源类型（WebSocket、TLS socket、定时器句柄等）必须在 destroy 路径同步清空 slot。Code review checklist：grep `PrivateValue.*Ptr` + grep 紧邻 `destroy/from_raw` 后是否有 `JS_SetProperty(..._Ptr..., UndefinedValue)`。
+
+---
+
