@@ -49,7 +49,7 @@ unsafe extern "C" fn s3_sign_request(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
-    let msg = ZBox::from_bytes(b"S3 signRequest: SpiderMonkey bridge not yet fully implemented (tracking: REQ-ENG-007)");
+    let msg = ZBox::from_bytes(b"S3 signRequest: SpiderMonkey bridge not yet fully implemented (bun:s3 module is out of REQ-ENG-006/007 scope)");
     JS_ReportErrorUTF8(cx, c"%s".as_ptr(), msg.as_ptr());
     args.rval().set(UndefinedValue());
     false

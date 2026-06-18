@@ -44,6 +44,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createSign".as_ptr(), Some(crypto_create_sign), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createVerify".as_ptr(), Some(crypto_create_verify), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createSecretKey".as_ptr(), Some(crypto_create_secret_key), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"generateKeyPairSync".as_ptr(), Some(crypto_generate_key_pair_sync), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createECDH".as_ptr(), Some(crypto_create_ecdh), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"X509Certificate".as_ptr(), Some(crypto_x509_certificate), 1, JSPROP_ENUMERATE as u32);
 
         let mut subtle = UndefinedValue();
         let global = CurrentGlobalOrNull(cx.raw_cx());
@@ -148,8 +151,21 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     // Buffer/Uint8Array/TypedArray, DataView, and ArrayBuffer. Strings are
     // taken as-is (raw bytes); typed arrays are read by their byte view.
     // buffer.test.js "truncation after decode" drives update(Buffer.from(...)).
+    // Node.js also honors hash.update(str, inputEncoding) — decode the string
+    // per the optional 2nd argument (BUG-ENG-CIPHER-ENC class fix).
+    let input_encoding = if input.is_string() && argc >= 2 {
+        arg_to_string(cx, *args.get(1).ptr)
+            .map(|s| s.to_lowercase())
+            .filter(|s| matches!(
+                s.as_str(),
+                "hex" | "base64" | "base64url" | "utf8" | "utf-8" | "utf-16le" | "latin1" | "ascii"
+            ))
+    } else {
+        None
+    };
     let data = if input.is_string() {
-        crate::js_to_rust_string(cx, input).into_bytes()
+        let s = crate::js_to_rust_string(cx, input);
+        decode_input_string(&s, input_encoding.as_deref())
     } else if input.is_object() {
         let obj = input.to_object();
         // Try as Uint8Array / Buffer / TypedArray view.
@@ -327,8 +343,21 @@ unsafe extern "C" fn hmac_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     }
     let this = args.thisv();
     let input = *args.get(0).ptr;
+    // Node.js: hmac.update(data, inputEncoding). Decode the string per the
+    // optional 2nd argument (BUG-ENG-CIPHER-ENC class fix).
+    let input_encoding = if input.is_string() && argc >= 2 {
+        arg_to_string(cx, *args.get(1).ptr)
+            .map(|s| s.to_lowercase())
+            .filter(|s| matches!(
+                s.as_str(),
+                "hex" | "base64" | "base64url" | "utf8" | "utf-8" | "utf-16le" | "latin1" | "ascii"
+            ))
+    } else {
+        None
+    };
     let data = if input.is_string() {
-        crate::js_to_rust_string(cx, input).into_bytes()
+        let s = crate::js_to_rust_string(cx, input);
+        decode_input_string(&s, input_encoding.as_deref())
     } else {
         return throw_type_error(cx, "hmac.update() data must be a string");
     };
@@ -453,29 +482,15 @@ unsafe extern "C" fn crypto_pbkdf2_sync(cx: *mut JSContext, argc: u32, vp: *mut 
         None => return throw_type_error(cx, "pbkdf2Sync() digest must be a string"),
     };
 
-    let result: Vec<u8> = match digest_name.as_str() {
-        "sha256" => {
-            let mut out = vec![0u8; key_len];
-            if !bun_sha_hmac::pbkdf2::derive(&password, &salt, iterations, bun_sha_hmac::Algorithm::Sha256, &mut out) {
-                return throw_type_error(cx, "pbkdf2Sync() SHA-256 derivation failed");
-            }
-            out
-        }
-        "sha512" => {
-            let mut out = vec![0u8; key_len];
-            if !bun_sha_hmac::pbkdf2::derive(&password, &salt, iterations, bun_sha_hmac::Algorithm::Sha512, &mut out) {
-                return throw_type_error(cx, "pbkdf2Sync() SHA-512 derivation failed");
-            }
-            out
-        }
-        "sha1" => {
-            let mut out = vec![0u8; key_len];
-            if !bun_sha_hmac::pbkdf2::derive(&password, &salt, iterations, bun_sha_hmac::Algorithm::Sha1, &mut out) {
-                return throw_type_error(cx, "pbkdf2Sync() SHA-1 derivation failed");
-            }
-            out
-        }
-        _ => return throw_type_error(cx, &format!("Unsupported PBKDF2 digest: {}", digest_name)),
+    // @trace REQ-ENG-007 [entity:bao_crypto] DEC-ENG-003: pbkdf2 routed to
+    // bao_crypto::kdf (sha_hmac::pbkdf2 removed). Supports sha1/sha256/sha512.
+    let pbkdf2_hash = match bao_crypto::kdf::parse_pbkdf2_hash(&digest_name) {
+        Ok(h) => h,
+        Err(_) => return throw_type_error(cx, &format!("Unsupported PBKDF2 digest: {}", digest_name)),
+    };
+    let result = match bao_crypto::kdf::pbkdf2(&password, &salt, iterations, pbkdf2_hash, key_len) {
+        Ok(out) => out,
+        Err(e) => return throw_type_error(cx, &format!("pbkdf2Sync() derivation failed: {}", e)),
     };
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -603,16 +618,178 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
 }
 
 // --- createCipheriv / createDecipheriv ---
+// @trace REQ-ENG-007 [entity:BaoRuntime] [api:node:crypto createCipheriv/createDecipheriv]
+// Real BoringSSL ciphers via bao_crypto::cipher. Per-instance state stored in a
+// thread-local registry keyed by a serial-number hidden on the JS object, so two
+// concurrent cipher objects have independent state (required by test_crypto_cipher.js).
+//
+// Node.js encoding contract (BUG-ENG-CIPHER-ENC fix):
+//   cipher.update(data)                                -> Buffer
+//   cipher.update(data, inputEncoding)                 -> Buffer   (string data decoded)
+//   cipher.update(data, inputEncoding, outputEncoding) -> string   (output encoded)
+//   cipher.final()                                     -> Buffer
+//   cipher.final(outputEncoding)                       -> string
+// When no output encoding is given, a real Buffer instance is returned (so
+// Buffer.isBuffer works); with an output encoding the result is a string.
+// AEAD (AES-GCM/ChaCha20-Poly1305) exposes getAuthTag()/setAuthTag()/setAAD().
+
+/// Decode a JS string argument into bytes per `input_encoding`.
+/// - None / "utf8" / "utf-8" / "buffer": raw UTF-8 bytes.
+/// - "hex": hex-decode (invalid chars become a decode error -> raw bytes fallback).
+/// - "base64": base64-decode.
+/// Mirrors Node.js `Buffer.from(str, encoding)` semantics for cipher inputs.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn decode_input_string(s: &str, input_encoding: Option<&str>) -> Vec<u8> {
+    match input_encoding {
+        Some("hex") => hex::decode(s).unwrap_or_else(|_| s.as_bytes().to_vec()),
+        Some("base64") => bun_base64::decode_alloc(s.as_bytes())
+            .unwrap_or_else(|_| s.as_bytes().to_vec()),
+        // utf8 / utf-8 / buffer / latin1 / ascii: raw bytes (latin1/ascii map 1:1).
+        _ => s.as_bytes().to_vec(),
+    }
+}
+
+/// Produce the JS return value for cipher output bytes per `output_encoding`.
+/// - None: a real Buffer instance (Buffer.isBuffer === true).
+/// - "hex"/"base64"/"utf8"/...: an encoded string.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn encode_output_bytes(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    bytes: &[u8],
+    output_encoding: Option<&str>,
+) -> bool {
+    match output_encoding {
+        Some("hex") => return_string(cx, args, &hex::encode(bytes)),
+        Some("base64") => {
+            let encoded_bytes = bun_base64::encode_alloc(bytes);
+            let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
+            return_string(cx, args, &encoded)
+        }
+        Some("utf8") | Some("utf-8") | Some("utf-16le") | Some("latin1") | Some("ascii") => {
+            // For string-like encodings, decode the bytes as UTF-8 lossily
+            // (Node returns a string for these output encodings).
+            let s = String::from_utf8_lossy(bytes);
+            return_string(cx, args, &s)
+        }
+        Some(_) => {
+            // Unknown encoding: default to hex (Node throws, but we are lenient).
+            return_string(cx, args, &hex::encode(bytes))
+        }
+        None => {
+            // No output encoding: return a real Buffer (Node.js contract).
+            let buf_obj = crate::globals::create_buffer_object(cx, bytes);
+            if buf_obj.is_null() {
+                args.rval().set(UndefinedValue());
+            } else {
+                args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+            }
+            true
+        }
+    }
+}
 
 thread_local! {
-    static CIPHER_KEY: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
-    static CIPHER_IV: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+    static CIPHER_REGISTRY: RefCell<Vec<Option<bao_crypto::cipher::CipherCtx>>> =
+        const { RefCell::new(Vec::new()) };
+    static CIPHER_NEXT_ID: RefCell<u32> = const { RefCell::new(1) };
+}
+
+fn cipher_registry_insert(ctx: bao_crypto::cipher::CipherCtx) -> u32 {
+    let id = CIPHER_NEXT_ID.with(|next| {
+        let id = *next.borrow();
+        *next.borrow_mut() = id.wrapping_add(1);
+        id
+    });
+    let idx = id as usize;
+    CIPHER_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        if idx >= reg.len() {
+            let extra = idx + 1 - reg.len();
+            reg.reserve(extra);
+            while reg.len() <= idx {
+                reg.push(None);
+            }
+        }
+        reg[idx] = Some(ctx);
+    });
+    id
+}
+
+fn cipher_registry_take(id: u32) -> Option<bao_crypto::cipher::CipherCtx> {
+    CIPHER_REGISTRY.with(|reg| reg.borrow_mut().get_mut(id as usize).and_then(|s| s.take()))
+}
+
+fn cipher_registry_with_mut<R>(
+    id: u32,
+    f: &mut dyn FnMut(&mut bao_crypto::cipher::CipherCtx) -> R,
+) -> Option<R> {
+    CIPHER_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        match reg.get_mut(id as usize).and_then(|s| s.as_mut()) {
+            Some(ctx) => Some(f(ctx)),
+            None => None,
+        }
+    })
+}
+
+fn cipher_registry_remove(id: u32) {
+    CIPHER_REGISTRY.with(|reg| {
+        if let Some(slot) = reg.borrow_mut().get_mut(id as usize) {
+            *slot = None;
+        }
+    });
+}
+
+/// Extract key/iv bytes from a JS value: a JS string yields its UTF-8 bytes;
+/// everything else (Uint8Array/Buffer/TypedArray/number[]) yields the raw
+/// element bytes via extract_buffer_bytes. This avoids coercing a number[]
+/// key to a comma-joined decimal string.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn extract_key_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
+    if val.is_string() {
+        crate::js_to_rust_string(cx, val).into_bytes()
+    } else {
+        extract_buffer_bytes(cx, val)
+    }
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
     if !val.is_object() { return Vec::new(); }
     let obj = val.to_object();
+    // Prefer Uint8Array/TypedArray/ArrayBuffer fast paths (Buffer/Uint8Array).
+    let mut length: usize = 0;
+    let mut is_shared = false;
+    let mut data_ptr: *mut u8 = ptr::null_mut();
+    let u8_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
+        obj,
+        &mut length,
+        &mut is_shared,
+        &mut data_ptr,
+    );
+    if !u8_unwrapped.is_null() && !data_ptr.is_null() && length > 0 {
+        let slice = ::std::slice::from_raw_parts(data_ptr, length);
+        return slice.to_vec();
+    } else if !u8_unwrapped.is_null() {
+        return Vec::new();
+    }
+    let mut view_length: usize = 0;
+    let mut view_shared = false;
+    let mut view_data: *mut u8 = ptr::null_mut();
+    let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+        obj,
+        &mut view_length,
+        &mut view_shared,
+        &mut view_data,
+    );
+    if !view_unwrapped.is_null() && !view_data.is_null() && view_length > 0 {
+        let slice = ::std::slice::from_raw_parts(view_data, view_length);
+        return slice.to_vec();
+    } else if !view_unwrapped.is_null() {
+        return Vec::new();
+    }
+    // Plain number[] array fallback.
     let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
     let mut len_val = UndefinedValue();
     JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
@@ -631,26 +808,101 @@ pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn bytes_to_js_array(cx: *mut JSContext, bytes: &[u8]) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, bytes.len()));
+    if arr.get().is_null() {
+        return ptr::null_mut();
+    }
+    for (i, &byte) in bytes.iter().enumerate() {
+        let val = mozjs::jsval::Int32Value(byte as i32);
+        rooted!(&in(cx_ref) let v = val);
+        JS_DefineElement(cx, arr.handle().into(), i as u32, v.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+    arr.get()
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn store_cipher_id(cx: *mut JSContext, obj: *mut JSObject, id: u32) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let id_val = mozjs::jsval::Int32Value(id as i32);
+    rooted!(&in(cx_ref) let idv = id_val);
+    JS_DefineProperty(
+        cx,
+        obj_h.into(),
+        c"__bao_cipher_id".as_ptr(),
+        idv.handle().into(),
+        0, // not enumerable, not writable, not configurable
+    );
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn read_cipher_id(cx: *mut JSContext, obj: *mut JSObject) -> Option<u32> {
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut id_val = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c"__bao_cipher_id".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut id_val,
+    });
+    if id_val.is_int32() {
+        Some(id_val.to_int32() as u32)
+    } else {
+        None
+    }
+}
+
+unsafe fn read_cipher_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Option<u32> {
+    let this = args.thisv();
+    if !this.is_object() {
+        return None;
+    }
+    read_cipher_id(cx, this.to_object())
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_create_cipher_iv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 3 { return throw_type_error(cx, "createCipheriv() requires (algorithm, key, iv)"); }
-    let key = match arg_to_string(cx, *args.get(1).ptr) {
-        Some(s) => s.into_bytes(),
-        None => extract_buffer_bytes(cx, *args.get(1).ptr),
+    if argc < 3 {
+        return throw_type_error(cx, "createCipheriv() requires (algorithm, key, iv)");
+    }
+    let algo_name = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s.to_lowercase(),
+        None => return throw_type_error(cx, "createCipheriv() algorithm must be a string"),
     };
-    let iv = match arg_to_string(cx, *args.get(2).ptr) {
-        Some(s) => s.into_bytes(),
-        None => extract_buffer_bytes(cx, *args.get(2).ptr),
+    let key = extract_key_bytes(cx, *args.get(1).ptr);
+    let iv = extract_key_bytes(cx, *args.get(2).ptr);
+
+    let algo = match bao_crypto::cipher::parse_algorithm(&algo_name) {
+        Ok(a) => a,
+        Err(_) => return throw_type_error(cx, &format!("Unsupported cipher: {}", algo_name)),
     };
-    CIPHER_KEY.with(|k| *k.borrow_mut() = key);
-    CIPHER_IV.with(|v| *v.borrow_mut() = iv);
+    let ctx = match bao_crypto::cipher::CipherCtx::new(
+        algo,
+        &key,
+        &iv,
+        bao_crypto::cipher::Direction::Encrypt,
+    ) {
+        Ok(c) => c,
+        Err(e) => return throw_type_error(cx, &format!("createCipheriv() init failed: {}", e)),
+    };
+    let id = cipher_registry_insert(ctx);
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
-    if obj.get().is_null() { args.rval().set(UndefinedValue()); return true; }
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(cipher_update), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"final".as_ptr(), Some(cipher_final), 0, JSPROP_ENUMERATE as u32);
+    if obj.get().is_null() {
+        cipher_registry_remove(id);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    store_cipher_id(cx, obj.get(), id);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(cipher_update), 3, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"final".as_ptr(), Some(cipher_final), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getAuthTag".as_ptr(), Some(cipher_get_auth_tag), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"setAuthTag".as_ptr(), Some(cipher_set_auth_tag), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"setAAD".as_ptr(), Some(cipher_set_aad), 1, JSPROP_ENUMERATE as u32);
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -658,80 +910,201 @@ unsafe extern "C" fn crypto_create_cipher_iv(cx: *mut JSContext, argc: u32, vp: 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_create_decipher_iv(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc < 3 { return throw_type_error(cx, "createDecipheriv() requires (algorithm, key, iv)"); }
-    let key = match arg_to_string(cx, *args.get(1).ptr) {
-        Some(s) => s.into_bytes(),
-        None => extract_buffer_bytes(cx, *args.get(1).ptr),
+    if argc < 3 {
+        return throw_type_error(cx, "createDecipheriv() requires (algorithm, key, iv)");
+    }
+    let algo_name = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s.to_lowercase(),
+        None => return throw_type_error(cx, "createDecipheriv() algorithm must be a string"),
     };
-    let iv = match arg_to_string(cx, *args.get(2).ptr) {
-        Some(s) => s.into_bytes(),
-        None => extract_buffer_bytes(cx, *args.get(2).ptr),
+    let key = extract_key_bytes(cx, *args.get(1).ptr);
+    let iv = extract_key_bytes(cx, *args.get(2).ptr);
+
+    let algo = match bao_crypto::cipher::parse_algorithm(&algo_name) {
+        Ok(a) => a,
+        Err(_) => return throw_type_error(cx, &format!("Unsupported cipher: {}", algo_name)),
     };
-    CIPHER_KEY.with(|k| *k.borrow_mut() = key);
-    CIPHER_IV.with(|v| *v.borrow_mut() = iv);
+    let ctx = match bao_crypto::cipher::CipherCtx::new(
+        algo,
+        &key,
+        &iv,
+        bao_crypto::cipher::Direction::Decrypt,
+    ) {
+        Ok(c) => c,
+        Err(e) => return throw_type_error(cx, &format!("createDecipheriv() init failed: {}", e)),
+    };
+    let id = cipher_registry_insert(ctx);
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
-    if obj.get().is_null() { args.rval().set(UndefinedValue()); return true; }
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(decipher_update), 1, JSPROP_ENUMERATE as u32);
-    w2::JS_DefineFunction(cx_ref, obj.handle(), c"final".as_ptr(), Some(decipher_final), 0, JSPROP_ENUMERATE as u32);
+    if obj.get().is_null() {
+        cipher_registry_remove(id);
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    store_cipher_id(cx, obj.get(), id);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(cipher_update), 3, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"final".as_ptr(), Some(cipher_final), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getAuthTag".as_ptr(), Some(cipher_get_auth_tag), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"setAuthTag".as_ptr(), Some(cipher_set_auth_tag), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"setAAD".as_ptr(), Some(cipher_set_aad), 1, JSPROP_ENUMERATE as u32);
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn cipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 { return throw_type_error(cx, "cipher.update() requires data"); }
+unsafe fn parse_update_args(cx: *mut JSContext, args: &CallArgs, argc: u32) -> Option<Vec<u8>> {
+    if argc < 1 {
+        throw_type_error(cx, "update() requires data");
+        return None;
+    }
     let input = *args.get(0).ptr;
+    // Second argument is the input encoding (Node.js: update(data, inputEncoding, outputEncoding)).
+    // Only meaningful when `data` is a string; ignored for Buffer/TypedArray inputs.
+    let input_encoding = if input.is_string() && argc >= 2 {
+        arg_to_string(cx, *args.get(1).ptr)
+            .map(|s| s.to_lowercase())
+            .filter(|s| matches!(
+                s.as_str(),
+                "hex" | "base64" | "base64url" | "utf8" | "utf-8" | "utf-16le" | "latin1" | "ascii"
+            ))
+    } else {
+        None
+    };
     let data = if input.is_string() {
-        crate::js_to_rust_string(cx, input).into_bytes()
+        let s = crate::js_to_rust_string(cx, input);
+        decode_input_string(&s, input_encoding.as_deref())
     } else if input.is_object() {
         extract_buffer_bytes(cx, input)
     } else {
         Vec::new()
     };
-    let key = CIPHER_KEY.with(|k| k.borrow().clone());
-    let iv = CIPHER_IV.with(|v| v.borrow().clone());
-    let encrypted = xor_cipher(&data, &key, &iv);
-    return_string(cx, &args, &hex::encode(&encrypted))
+    Some(data)
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn cipher_final(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    return_string(cx, &args, "")
-}
-
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn decipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn cipher_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    if argc == 0 { return throw_type_error(cx, "decipher.update() requires data"); }
-    let input = *args.get(0).ptr;
-    let hex_data = if input.is_string() {
-        crate::js_to_rust_string(cx, input)
-    } else { String::new() };
-    let data = hex::decode(&hex_data).unwrap_or_default();
-    let key = CIPHER_KEY.with(|k| k.borrow().clone());
-    let iv = CIPHER_IV.with(|v| v.borrow().clone());
-    let decrypted = xor_cipher(&data, &key, &iv);
-    return_string(cx, &args, &String::from_utf8_lossy(&decrypted))
+    let id = match read_cipher_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "cipher.update() invalid receiver"),
+    };
+    let data = match parse_update_args(cx, &args, argc) {
+        Some(d) => d,
+        None => return false,
+    };
+    let out = match cipher_registry_with_mut(id, &mut |ctx| ctx.update(&data)) {
+        Some(Ok(bytes)) => bytes,
+        Some(Err(e)) => return throw_type_error(cx, &format!("cipher.update() failed: {}", e)),
+        None => return throw_type_error(cx, "cipher.update() stale context"),
+    };
+    // Third argument is the output encoding (Node.js: update(data, inputEnc, outputEnc)).
+    let data_val = *args.get(0).ptr;
+    let data_is_string = data_val.is_string();
+    let output_encoding = if argc >= 3 {
+        arg_to_string(cx, *args.get(2).ptr).map(|s| s.to_lowercase())
+    } else if argc == 2 && !data_is_string {
+        // update(Buffer, outputEncoding): the 2nd arg is the output encoding.
+        arg_to_string(cx, *args.get(1).ptr).map(|s| s.to_lowercase())
+    } else {
+        None
+    };
+    encode_output_bytes(cx, &args, &out, output_encoding.as_deref())
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn decipher_final(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
-    let args = CallArgs::from_vp(vp, _argc);
-    return_string(cx, &args, "")
+unsafe extern "C" fn cipher_final(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let id = match read_cipher_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "cipher.final() invalid receiver"),
+    };
+    // Finalize in place; the context stays in the registry so AEAD encrypt can
+    // still expose getAuthTag() afterwards. A second final() call hits the
+    // already-finalized guard inside CipherCtx::final_ex().
+    let result = match cipher_registry_with_mut(id, &mut |ctx| ctx.final_ex()) {
+        Some(r) => r,
+        None => return throw_type_error(cx, "cipher.final() stale context"),
+    };
+    let out = match result {
+        Ok(bytes) => bytes,
+        Err(e) => return throw_type_error(cx, &format!("cipher.final() failed: {}", e)),
+    };
+    // Optional output encoding (Node.js: final(outputEncoding)).
+    let output_encoding = if argc >= 1 {
+        arg_to_string(cx, *args.get(0).ptr).map(|s| s.to_lowercase())
+    } else {
+        None
+    };
+    encode_output_bytes(cx, &args, &out, output_encoding.as_deref())
 }
 
-fn xor_cipher(data: &[u8], key: &[u8], iv: &[u8]) -> Vec<u8> {
-    let combined_len = key.len().max(iv.len()).max(1);
-    let mut stream = Vec::with_capacity(combined_len);
-    stream.extend_from_slice(iv);
-    while stream.len() < combined_len { stream.extend_from_slice(iv); }
-    stream.extend_from_slice(key);
-    data.iter().enumerate().map(|(i, &b)| b ^ stream[i % stream.len()]).collect()
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cipher_get_auth_tag(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let id = match read_cipher_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "cipher.getAuthTag() invalid receiver"),
+    };
+    let tag = cipher_registry_with_mut(id, &mut |ctx| ctx.take_auth_tag());
+    let tag = match tag {
+        Some(Some(t)) => t,
+        _ => Vec::new(),
+    };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let arr = bytes_to_js_array(cx, &tag);
+    if arr.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(arr));
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cipher_set_auth_tag(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let id = match read_cipher_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "cipher.setAuthTag() invalid receiver"),
+    };
+    if argc < 1 {
+        return throw_type_error(cx, "cipher.setAuthTag() requires a tag");
+    }
+    let tag = extract_buffer_bytes(cx, *args.get(0).ptr);
+    let res = cipher_registry_with_mut(id, &mut |ctx| ctx.set_auth_tag(&tag));
+    match res {
+        Some(Ok(())) => {
+            args.rval().set(*args.thisv().ptr);
+            true
+        }
+        Some(Err(e)) => throw_type_error(cx, &format!("cipher.setAuthTag() failed: {}", e)),
+        None => throw_type_error(cx, "cipher.setAuthTag() stale context"),
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn cipher_set_aad(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let id = match read_cipher_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "cipher.setAAD() invalid receiver"),
+    };
+    if argc < 1 {
+        return throw_type_error(cx, "cipher.setAAD() requires data");
+    }
+    let aad = extract_buffer_bytes(cx, *args.get(0).ptr);
+    let res = cipher_registry_with_mut(id, &mut |ctx| ctx.update_aad(&aad));
+    match res {
+        Some(Ok(())) => {
+            args.rval().set(*args.thisv().ptr);
+            true
+        }
+        Some(Err(e)) => throw_type_error(cx, &format!("cipher.setAAD() failed: {}", e)),
+        None => throw_type_error(cx, "cipher.setAAD() stale context"),
+    }
 }
 
 // --- timingSafeEqual ---
@@ -747,11 +1120,10 @@ unsafe extern "C" fn crypto_timing_safe_equal(cx: *mut JSContext, argc: u32, vp:
     if a.len() != b.len() {
         return throw_type_error(cx, "timingSafeEqual() inputs must have the same length");
     }
-    let mut result = 0u8;
-    for (a_byte, b_byte) in a.iter().zip(b.iter()) {
-        result |= a_byte ^ b_byte;
-    }
-    args.rval().set(mozjs::jsval::BooleanValue(result == 0));
+    // @trace REQ-ENG-007 [api:node:crypto timingSafeEqual] real constant-time
+    // compare via BoringSSL CRYPTO_memcmp (routed through bun_boringssl_sys).
+    let equal = bun_boringssl_sys::constant_time_eq(&a, &b);
+    args.rval().set(mozjs::jsval::BooleanValue(equal));
     true
 }
 
@@ -842,12 +1214,60 @@ unsafe extern "C" fn crypto_create_sign(cx: *mut JSContext, argc: u32, vp: *mut 
 unsafe extern "C" fn sign_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 { return throw_type_error(cx, "sign.update() requires data"); }
-    let data = if (*args.get(0).ptr).is_string() {
-        crate::js_to_rust_string(cx, *args.get(0).ptr).into_bytes()
-    } else { Vec::new() };
+    let input = *args.get(0).ptr;
+    let data = if input.is_string() {
+        crate::js_to_rust_string(cx, input).into_bytes()
+    } else if input.is_object() {
+        extract_buffer_bytes(cx, input)
+    } else {
+        Vec::new()
+    };
     HASH_DATA.with(|d| d.borrow_mut().extend_from_slice(&data));
     args.rval().set(*args.thisv().ptr);
     true
+}
+
+/// Resolve a Node `createSign`/`createVerify` algorithm string into a
+/// `bao_crypto` SignAlgorithm. Returns None for HMAC-style names (which keep
+/// the HMAC path) or when the algorithm is ambiguous.
+/// @trace REQ-ENG-007 [api:node:crypto createSign] [entity:bao_crypto]
+fn resolve_sign_algorithm(algo: &str) -> Option<bao_crypto::sign::SignAlgorithm> {
+    use bao_crypto::sign::{RsaHash, SignAlgorithm};
+    let lower = algo.to_lowercase();
+    let rsa_hash = |name: &str| -> Option<RsaHash> {
+        if name.contains("256") { Some(RsaHash::Sha256) }
+        else if name.contains("384") { Some(RsaHash::Sha384) }
+        else if name.contains("512") { Some(RsaHash::Sha512) }
+        else { Some(RsaHash::Sha256) }
+    };
+    // RSA-PSS family.
+    if lower.contains("rsa-pss") || lower.contains("pss") {
+        return rsa_hash(&lower).map(|h| SignAlgorithm::RsaPss { hash: h });
+    }
+    // RSA-PKCS1v15 family.
+    if lower.starts_with("rsa") || lower.contains("rsa-sha") || lower.contains("rsa_pkcs1") {
+        return rsa_hash(&lower).map(|h| SignAlgorithm::RsaPkcs1v15 { hash: h });
+    }
+    // ECDSA family.
+    if lower.contains("ecdsa") || lower.contains("p256") || lower.contains("prime256v1") {
+        return Some(SignAlgorithm::EcdsaP256);
+    }
+    if lower.contains("p384") || lower.contains("secp384r1") {
+        return Some(SignAlgorithm::EcdsaP384);
+    }
+    // Ed25519.
+    if lower == "ed25519" || lower.contains("ed25519") {
+        return Some(SignAlgorithm::Ed25519);
+    }
+    None
+}
+
+/// Detect whether `key_bytes` is a PEM-encoded asymmetric private/public key.
+fn looks_like_pem_key(key_bytes: &[u8]) -> bool {
+    if key_bytes.len() < 11 {
+        return false;
+    }
+    key_bytes.starts_with(b"-----BEGIN ")
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -856,7 +1276,9 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let encoding = if argc > 1 {
         match arg_to_string(cx, *args.get(1).ptr) { Some(s) => s, None => "hex".to_string() }
     } else { "hex".to_string() };
-    // Sign with HMAC as fallback (real RSA signing requires additional deps)
+    // @trace REQ-ENG-007 [api:node:crypto sign.sign] [entity:bao_crypto]
+    // Real asymmetric signing via bao_crypto::sign::Signer for RSA-PKCS1v15/PSS,
+    // ECDSA P256/P384, Ed25519. HMAC remains for HMAC algorithms / raw keys.
     let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
     let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
     let key = if argc > 0 {
@@ -865,32 +1287,57 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
             None => extract_buffer_bytes(cx, *args.get(0).ptr),
         }
     } else { Vec::new() };
-    let result = match algo.as_str() {
-        "sha256" => {
-            let mut out = [0u8; EVP_MAX_MD_SIZE];
-            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
-                .map(|s| s.to_vec())
-                .unwrap_or_default()
+
+    let result: Vec<u8> = if let Some(sign_algo) = resolve_sign_algorithm(&algo) {
+        // Asymmetric path. Key must be a PEM or DER private key.
+        let signer_res = if looks_like_pem_key(&key) {
+            let pem = String::from_utf8_lossy(&key).into_owned();
+            bao_crypto::sign::Signer::from_pkcs8_pem(&sign_algo, &pem)
+        } else {
+            bao_crypto::sign::Signer::from_pkcs8_der(&sign_algo, &key)
+        };
+        let format = match sign_algo {
+            bao_crypto::sign::SignAlgorithm::Ed25519 => bao_crypto::sign::SignatureFormat::Raw,
+            _ => bao_crypto::sign::SignatureFormat::Der,
+        };
+        match signer_res {
+            Ok(signer) => match signer.sign(&data, format) {
+                Ok(sig) => sig,
+                Err(e) => return throw_type_error(cx, &format!("sign.sign() failed: {}", e)),
+            },
+            Err(e) => return throw_type_error(cx, &format!("sign.sign() key load failed: {}", e)),
         }
-        "sha512" => {
-            let mut out = [0u8; EVP_MAX_MD_SIZE];
-            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha512, &mut out)
-                .map(|s| s.to_vec())
-                .unwrap_or_default()
-        }
-        _ => {
-            let mut out = [0u8; EVP_MAX_MD_SIZE];
-            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
-                .map(|s| s.to_vec())
-                .unwrap_or_default()
-        }
+    } else {
+        // HMAC path (sha256/sha512/sha1 with a raw secret key).
+        let alg = match algo.as_str() {
+            "sha512" => bun_sha_hmac::Algorithm::Sha512,
+            "sha1" => bun_sha_hmac::Algorithm::Sha1,
+            _ => bun_sha_hmac::Algorithm::Sha256,
+        };
+        let mut out = [0u8; EVP_MAX_MD_SIZE];
+        bun_sha_hmac::generate(&key, &data, alg, &mut out)
+            .map(|s| s.to_vec())
+            .unwrap_or_default()
     };
+
     match encoding.to_lowercase().as_str() {
         "hex" => return_string(cx, &args, &hex::encode(&result)),
         "base64" => {
             let encoded_bytes = bun_base64::encode_alloc(&result);
             let encoded = ::std::str::from_utf8(&encoded_bytes).unwrap_or("").to_owned();
             return_string(cx, &args, &encoded)
+        }
+        "buffer" => {
+            // Return the raw signature as a number[] (Node buffer encoding).
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            let arr = bytes_to_js_array(cx, &result);
+            if arr.is_null() {
+                args.rval().set(UndefinedValue());
+            } else {
+                args.rval().set(mozjs::jsval::ObjectValue(arr));
+            }
+            true
         }
         _ => return_string(cx, &args, &hex::encode(&result)),
     }
@@ -917,40 +1364,58 @@ unsafe extern "C" fn crypto_create_verify(cx: *mut JSContext, argc: u32, vp: *mu
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn verify_verify(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    // Re-compute the HMAC signature and compare
+    // @trace REQ-ENG-007 [api:node:crypto verify.verify] [entity:bao_crypto]
+    // Real asymmetric verification via bao_crypto::verify::Verifier for
+    // RSA-PKCS1v15/PSS, ECDSA P256/P384, Ed25519. HMAC path retained for
+    // HMAC algorithms / raw keys (compared constant-time).
     if argc < 2 { return throw_type_error(cx, "verify.verify() requires (key, signature)"); }
     let key = match arg_to_string(cx, *args.get(0).ptr) {
         Some(s) => s.into_bytes(),
         None => extract_buffer_bytes(cx, *args.get(0).ptr),
     };
-    let sig_hex = match arg_to_string(cx, *args.get(1).ptr) {
-        Some(s) => s,
-        None => hex::encode(extract_buffer_bytes(cx, *args.get(1).ptr)),
+    // Signature may be a hex string, base64 string, or a byte array.
+    let sig_bytes = if (*args.get(1).ptr).is_object() {
+        extract_buffer_bytes(cx, *args.get(1).ptr)
+    } else {
+        let sig_str = arg_to_string(cx, *args.get(1).ptr).unwrap_or_default();
+        // Try hex first, fall back to raw bytes.
+        hex::decode(&sig_str).unwrap_or_else(|_| sig_str.into_bytes())
     };
-    let expected = hex::decode(&sig_hex).unwrap_or_default();
     let algo = HASH_ALGO.with(|a| ::std::mem::take(&mut *a.borrow_mut()));
     let data = HASH_DATA.with(|d| ::std::mem::take(&mut *d.borrow_mut()));
-    let computed = match algo.as_str() {
-        "sha256" => {
-            let mut out = [0u8; EVP_MAX_MD_SIZE];
-            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
-                .map(|s| s.to_vec())
-                .unwrap_or_default()
+
+    let verified: bool = if let Some(sign_algo) = resolve_sign_algorithm(&algo) {
+        let verifier_res = if looks_like_pem_key(&key) {
+            let pem = String::from_utf8_lossy(&key).into_owned();
+            bao_crypto::verify::Verifier::from_public_pem(&sign_algo, &pem)
+        } else {
+            bao_crypto::verify::Verifier::from_public_der(&sign_algo, &key)
+        };
+        let format = match sign_algo {
+            bao_crypto::sign::SignAlgorithm::Ed25519 => bao_crypto::sign::SignatureFormat::Raw,
+            _ => bao_crypto::sign::SignatureFormat::Der,
+        };
+        match verifier_res {
+            Ok(verifier) => match verifier.verify(&data, &sig_bytes, format) {
+                Ok(ok) => ok,
+                Err(_) => false,
+            },
+            Err(_) => false,
         }
-        _ => {
-            let mut out = [0u8; EVP_MAX_MD_SIZE];
-            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha256, &mut out)
-                .map(|s| s.to_vec())
-                .unwrap_or_default()
-        }
-    };
-    if computed.len() == expected.len() {
-        let mut eq = 0u8;
-        for (c, e) in computed.iter().zip(expected.iter()) { eq |= c ^ e; }
-        args.rval().set(mozjs::jsval::BooleanValue(eq == 0));
     } else {
-        args.rval().set(mozjs::jsval::BooleanValue(false));
-    }
+        // HMAC path: recompute and compare constant-time.
+        let alg = match algo.as_str() {
+            "sha512" => bun_sha_hmac::Algorithm::Sha512,
+            "sha1" => bun_sha_hmac::Algorithm::Sha1,
+            _ => bun_sha_hmac::Algorithm::Sha256,
+        };
+        let mut out = [0u8; EVP_MAX_MD_SIZE];
+        let computed = bun_sha_hmac::generate(&key, &data, alg, &mut out)
+            .map(|s| s.to_vec())
+            .unwrap_or_default();
+        bun_boringssl_sys::constant_time_eq(&computed, &sig_bytes)
+    };
+    args.rval().set(mozjs::jsval::BooleanValue(verified));
     true
 }
 
@@ -981,6 +1446,308 @@ unsafe extern "C" fn crypto_create_secret_key(cx: *mut JSContext, argc: u32, vp:
             JS_DefineProperty(cx, obj.handle().into(), c"export".as_ptr(), ev.handle().into(), 0);
         }
     }
+    args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
+
+// --- generateKeyPairSync ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_generate_key_pair_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    // @trace REQ-ENG-007 [api:node:crypto generateKeyPairSync] [entity:bao_crypto]
+    // Node signature: generateKeyPairSync(type, options) where type is
+    // 'rsa' | 'ec' | 'ed25519' | 'x25519'. Returns {publicKey, privateKey} as
+    // PEM strings. RSA default bits=2048; ec default curve=P256.
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 {
+        return throw_type_error(cx, "generateKeyPairSync() requires a key type");
+    }
+    let kp_type_str = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s.to_lowercase(),
+        None => return throw_type_error(cx, "generateKeyPairSync() type must be a string"),
+    };
+    let kp_type = match kp_type_str.as_str() {
+        "rsa" => {
+            let bits = read_option_number(cx, &args, argc, 1, "modulusLength", 2048);
+            bao_crypto::keypair::KeyPairType::Rsa { bits: bits as usize }
+        }
+        "ec" => {
+            let curve_name = read_option_string(cx, &args, argc, 1, "namedCurve", "P-256");
+            let curve = match curve_name.to_uppercase().as_str() {
+                "P-256" | "PRIME256V1" | "SECP256R1" => bao_crypto::keypair::EcCurve::P256,
+                "P-384" | "SECP384R1" => bao_crypto::keypair::EcCurve::P384,
+                _ => return throw_type_error(cx, &format!("unsupported EC curve: {}", curve_name)),
+            };
+            bao_crypto::keypair::KeyPairType::Ec { curve }
+        }
+        "ed25519" => bao_crypto::keypair::KeyPairType::Ed25519,
+        "x25519" => bao_crypto::keypair::KeyPairType::X25519,
+        other => return throw_type_error(cx, &format!("unsupported key type: {}", other)),
+    };
+    let result = match bao_crypto::keypair::generate_key_pair(&kp_type) {
+        Ok(r) => r,
+        Err(e) => return throw_type_error(cx, &format!("generateKeyPairSync() failed: {}", e)),
+    };
+    let pub_pem = result.public_key_pem.unwrap_or_default();
+    let priv_pem = result.private_key_pem.unwrap_or_default();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    set_string_prop(cx, obj.get(), c"publicKey".as_ptr(), &pub_pem);
+    set_string_prop(cx, obj.get(), c"privateKey".as_ptr(), &priv_pem);
+    args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn read_option_string(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    argc: u32,
+    arg_index: usize,
+    prop: &str,
+    default: &str,
+) -> String {
+    if arg_index < argc as usize {
+        let opts_val = *args.get(arg_index as u32).ptr;
+        if opts_val.is_object() {
+            let obj = opts_val.to_object();
+            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+            let mut v = UndefinedValue();
+            let prop_c: &[u8] = match prop {
+                "namedCurve" => b"namedCurve\0",
+                "modulusLength" => b"modulusLength\0",
+                _ => b"\0",
+            };
+            JS_GetProperty(cx, obj_h, prop_c.as_ptr() as *const _, MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut v,
+            });
+            if v.is_string() {
+                return crate::js_to_rust_string(cx, v);
+            }
+        }
+    }
+    default.to_string()
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn read_option_number(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    argc: u32,
+    arg_index: usize,
+    prop: &str,
+    default: i64,
+) -> i64 {
+    if arg_index < argc as usize {
+        let opts_val = *args.get(arg_index as u32).ptr;
+        if opts_val.is_object() {
+            let obj = opts_val.to_object();
+            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+            let mut v = UndefinedValue();
+            let prop_c: &[u8] = match prop {
+                "modulusLength" => b"modulusLength\0",
+                _ => b"\0",
+            };
+            JS_GetProperty(cx, obj_h, prop_c.as_ptr() as *const _, MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut v,
+            });
+            if v.is_int32() {
+                return v.to_int32() as i64;
+            } else if v.is_double() {
+                return v.to_double() as i64;
+            }
+        }
+    }
+    default
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn set_string_prop(cx: *mut JSContext, obj: *mut JSObject, name: *const core::ffi::c_char, value: &str) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const core::ffi::c_char, value.len());
+    if !js_str.is_null() {
+        rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
+        JS_DefineProperty(cx, obj_h.into(), name, v.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+}
+
+// --- createECDH ---
+
+thread_local! {
+    static ECDH_REGISTRY: RefCell<Vec<Option<bao_crypto::key_exchange::EcdhKeyPair>>> =
+        const { RefCell::new(Vec::new()) };
+    static ECDH_NEXT_ID: RefCell<u32> = const { RefCell::new(1) };
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_create_ecdh(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    // @trace REQ-ENG-007 [api:node:crypto createECDH] [entity:bao_crypto]
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 {
+        return throw_type_error(cx, "createECDH() requires a curve name");
+    }
+    let curve_name = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s,
+        None => return throw_type_error(cx, "createECDH() curve must be a string"),
+    };
+    let curve = match bao_crypto::key_exchange::parse_curve(&curve_name) {
+        Ok(c) => c,
+        Err(e) => return throw_type_error(cx, &format!("createECDH() failed: {}", e)),
+    };
+    let kp = match bao_crypto::key_exchange::EcdhKeyPair::generate(curve) {
+        Ok(k) => k,
+        Err(e) => return throw_type_error(cx, &format!("createECDH() generate failed: {}", e)),
+    };
+    let id = ECDH_NEXT_ID.with(|n| {
+        let id = *n.borrow();
+        *n.borrow_mut() = id.wrapping_add(1);
+        id
+    });
+    ECDH_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        let idx = id as usize;
+        if idx >= reg.len() {
+            let extra = idx + 1 - reg.len();
+            reg.reserve(extra);
+            while reg.len() <= idx {
+                reg.push(None);
+            }
+        }
+        reg[idx] = Some(kp);
+    });
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    store_ecdh_id(cx, obj.get(), id);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPublicKey".as_ptr(), Some(ecdh_get_public_key), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"computeSecret".as_ptr(), Some(ecdh_compute_secret), 1, JSPROP_ENUMERATE as u32);
+    args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn store_ecdh_id(cx: *mut JSContext, obj: *mut JSObject, id: u32) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let id_val = mozjs::jsval::Int32Value(id as i32);
+    rooted!(&in(cx_ref) let idv = id_val);
+    JS_DefineProperty(cx, obj_h.into(), c"__bao_ecdh_id".as_ptr(), idv.handle().into(), 0);
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn read_ecdh_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Option<u32> {
+    let this = args.thisv();
+    if !this.is_object() {
+        return None;
+    }
+    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this.to_object() };
+    let mut id_val = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c"__bao_ecdh_id".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut id_val,
+    });
+    if id_val.is_int32() {
+        Some(id_val.to_int32() as u32)
+    } else {
+        None
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ecdh_get_public_key(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let id = match read_ecdh_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "ecdh.getPublicKey() invalid receiver"),
+    };
+    let pub_bytes = ECDH_REGISTRY.with(|reg| {
+        reg.borrow().get(id as usize).and_then(|s| s.as_ref()).map(|kp| kp.public_key_bytes())
+    });
+    let pub_bytes = match pub_bytes {
+        Some(b) => b,
+        None => return throw_type_error(cx, "ecdh.getPublicKey() stale context"),
+    };
+    let arr = bytes_to_js_array(cx, &pub_bytes);
+    if arr.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(arr));
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ecdh_compute_secret(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let id = match read_ecdh_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "ecdh.computeSecret() invalid receiver"),
+    };
+    if argc < 1 {
+        return throw_type_error(cx, "ecdh.computeSecret() requires peer public key");
+    }
+    let peer_pub = extract_buffer_bytes(cx, *args.get(0).ptr);
+    let secret = ECDH_REGISTRY.with(|reg| {
+        reg.borrow().get(id as usize).and_then(|s| s.as_ref()).and_then(|kp| {
+            kp.compute_shared_secret(&peer_pub).ok()
+        })
+    });
+    let secret = match secret {
+        Some(s) => s,
+        None => return throw_type_error(cx, "ecdh.computeSecret() failed"),
+    };
+    let arr = bytes_to_js_array(cx, &secret);
+    if arr.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(arr));
+    }
+    true
+}
+
+// --- X509Certificate ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_x509_certificate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    // @trace REQ-ENG-007 [api:node:crypto X509Certificate] [entity:bao_crypto]
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 {
+        return throw_type_error(cx, "X509Certificate() requires a PEM/DER buffer");
+    }
+    let pem = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s,
+        None => return throw_type_error(cx, "X509Certificate() input must be a PEM string"),
+    };
+    let cert = match bao_crypto::certificate::X509Certificate::from_pem(&pem) {
+        Ok(c) => c,
+        Err(e) => return throw_type_error(cx, &format!("X509Certificate() parse failed: {}", e)),
+    };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    set_string_prop(cx, obj.get(), c"subject".as_ptr(), &cert.subject());
+    set_string_prop(cx, obj.get(), c"issuer".as_ptr(), &cert.issuer());
+    set_string_prop(cx, obj.get(), c"serialNumber".as_ptr(), &cert.serial_number());
+    set_string_prop(cx, obj.get(), c"validFrom".as_ptr(), &cert.valid_from());
+    set_string_prop(cx, obj.get(), c"validTo".as_ptr(), &cert.valid_to());
+    set_string_prop(cx, obj.get(), c"fingerprint256".as_ptr(), &cert.fingerprint_sha256());
+    set_string_prop(cx, obj.get(), c"fingerprint".as_ptr(), &cert.fingerprint_sha1());
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
 }
@@ -1025,43 +1792,6 @@ mod tests {
     }
 
     #[test]
-    fn xor_cipher_empty_data() {
-        assert!(xor_cipher(&[], b"key", b"iv").is_empty());
-    }
-
-    #[test]
-    fn xor_cipher_xor_is_involution() {
-        let data = b"hello world";
-        let key = b"secret";
-        let iv = b"ivector";
-        let encrypted = xor_cipher(data, key, iv);
-        let decrypted = xor_cipher(&encrypted, key, iv);
-        assert_eq!(decrypted, data.to_vec());
-    }
-
-    #[test]
-    fn xor_cipher_different_keys_differ() {
-        // data must be longer than combined_len so the key portion of the stream is reached
-        let data = b"test data that is long enough to reach the key portion";
-        let iv = b"iv";
-        assert_ne!(xor_cipher(data, b"key1", iv), xor_cipher(data, b"key2", iv));
-    }
-
-    #[test]
-    fn xor_cipher_different_ivs_differ() {
-        let data = b"test data long enough";
-        let key = b"key";
-        assert_ne!(xor_cipher(data, key, b"iv1"), xor_cipher(data, key, b"iv2"));
-    }
-
-    #[test]
-    fn xor_cipher_longer_than_stream_wraps() {
-        let data = vec![0x42u8; 100];
-        let result = xor_cipher(&data, b"k", b"i");
-        assert_eq!(result.len(), 100);
-    }
-
-    #[test]
     fn uuid_v4_length() {
         let id = uuid_v4();
         assert_eq!(id.len(), 36); // 32 hex + 4 dashes
@@ -1082,43 +1812,5 @@ mod tests {
         let ids: Vec<String> = (0..100).map(|_| uuid_v4()).collect();
         let unique: ::std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), 100);
-    }
-
-    #[test]
-    fn xor_cipher_identity_with_zero_key_and_iv() {
-        let data = b"hello world";
-        let result = xor_cipher(data, b"\x00", b"\x00");
-        // XOR with 0 is identity
-        assert_eq!(result, data);
-    }
-
-    #[test]
-    fn xor_cipher_single_byte_key() {
-        let data = b"\xff\x00\xaa\x55";
-        let result = xor_cipher(data, b"\xff", b"\x00");
-        // stream = [0x00, 0xFF] (iv first, then key appended)
-        // data[0] ^ stream[0] = 0xFF ^ 0x00 = 0xFF
-        // data[1] ^ stream[1] = 0x00 ^ 0xFF = 0xFF
-        assert_eq!(result[0], 0xFF);
-        assert_eq!(result[1], 0xFF);
-    }
-
-    #[test]
-    fn xor_cipher_preserves_length() {
-        for len in [0, 1, 15, 16, 17, 255, 256] {
-            let data = vec![0xABu8; len];
-            let result = xor_cipher(&data, b"key", b"iv");
-            assert_eq!(result.len(), len);
-        }
-    }
-
-    #[test]
-    fn xor_cipher_double_apply_restores() {
-        let data = b"secret message";
-        let key = b"mykey";
-        let iv = b"myiv ";
-        let encrypted = xor_cipher(data, key, iv);
-        let decrypted = xor_cipher(&encrypted, key, iv);
-        assert_eq!(decrypted, data);
     }
 }

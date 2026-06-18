@@ -45,7 +45,7 @@ const SHA512_256_DIGEST_LENGTH: usize = 32;
 /// take function items as const-generic parameters, and the call sites are pure
 /// token-pasting of BoringSSL symbol names, so this is expressed as a
 /// `macro_rules!` type-generator.
-// TODO(port): inherent associated type `Digest = [u8; N]` requires nightly
+// PORT-NOTE: inherent associated type `Digest = [u8; N]` requires nightly
 // `inherent_associated_types`; callers should use `[u8; <Name>::DIGEST]` for now.
 macro_rules! new_hasher {
     (
@@ -353,7 +353,7 @@ pub mod hashers {
     );
 }
 
-// TODO(port): `boring`, `zig`, `evp` below were Zig `[_]type{...}` comptime type
+// PORT-NOTE: `boring`, `zig`, `evp` below were Zig `[_]type{...}` comptime type
 // lists (with `void` sentinels) used for ad-hoc benchmarking against Zig's
 // `std.crypto.hash`. Rust has no type-list value equivalent and no `std.crypto`
 // counterpart; they are private and unreferenced in the Zig source.

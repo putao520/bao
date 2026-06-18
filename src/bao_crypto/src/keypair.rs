@@ -68,15 +68,6 @@ impl Drop for BnGuard {
     }
 }
 
-struct PkeyCtxGuard(*mut EVP_PKEY_CTX);
-impl Drop for PkeyCtxGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { EVP_PKEY_CTX_free(self.0) };
-        }
-    }
-}
-
 struct BioGuard(*mut BIO);
 impl Drop for BioGuard {
     fn drop(&mut self) {
@@ -106,15 +97,18 @@ fn bio_to_string(bio: *mut BIO) -> Result<String, CryptoError> {
 }
 
 fn serialize_pkey(pkey: *mut EVP_PKEY) -> Result<KeyPairResult, CryptoError> {
-    // DER private key
+    // DER private key. Some BoringSSL builds reject i2d_PrivateKey for raw-seed
+    // Ed25519/X25519 keys; treat DER as best-effort and let the PEM path be the
+    // source of truth (Node consumers use the PEM form).
     let mut priv_out: *mut u8 = std::ptr::null_mut();
     let priv_len = unsafe { i2d_PrivateKey(pkey, &mut priv_out) };
-    if priv_len <= 0 || priv_out.is_null() {
-        return Err(CryptoError::EncodingFailed("i2d_PrivateKey failed".into()));
-    }
-    let private_key_der =
-        unsafe { std::slice::from_raw_parts(priv_out, priv_len as usize) }.to_vec();
-    unsafe { OPENSSL_free(priv_out as *mut c_void) };
+    let private_key_der = if priv_len > 0 && !priv_out.is_null() {
+        let bytes = unsafe { std::slice::from_raw_parts(priv_out, priv_len as usize) }.to_vec();
+        unsafe { OPENSSL_free(priv_out as *mut c_void) };
+        bytes
+    } else {
+        Vec::new()
+    };
 
     // DER public key
     let mut pub_out: *mut u8 = std::ptr::null_mut();
@@ -218,40 +212,28 @@ fn generate_ec(curve: EcCurve) -> Result<KeyPairResult, CryptoError> {
 }
 
 fn generate_ed25519() -> Result<KeyPairResult, CryptoError> {
-    let ctx = PkeyCtxGuard(unsafe { EVP_PKEY_CTX_new_id(NID_Ed25519) });
-    if ctx.0.is_null() {
-        return Err(CryptoError::KeyPairError("EVP_PKEY_CTX_new_id failed".into()));
+    // BoringSSL does not support Ed25519 via EVP_PKEY_CTX_new_id keygen; generate
+    // a 32-byte seed and lift it into an EVP_PKEY via EVP_PKEY_from_raw_private_key.
+    let mut seed = [0u8; 32];
+    crate::random::rand_bytes(&mut seed)?;
+    let pkey = PkeyGuard(unsafe {
+        EVP_PKEY_from_raw_private_key(EVP_pkey_ed25519(), seed.as_ptr(), seed.len())
+    });
+    if pkey.0.is_null() {
+        return Err(CryptoError::KeyPairError("EVP_PKEY_from_raw_private_key (ed25519) failed".into()));
     }
-    if unsafe { EVP_PKEY_keygen_init(ctx.0) } != 1 {
-        return Err(CryptoError::KeyPairError("EVP_PKEY_keygen_init failed".into()));
-    }
-    let mut pkey: *mut EVP_PKEY = std::ptr::null_mut();
-    if unsafe { EVP_PKEY_keygen(ctx.0, &mut pkey) } != 1 {
-        return Err(CryptoError::KeyPairError("EVP_PKEY_keygen failed".into()));
-    }
-    let pkey = PkeyGuard(pkey);
     serialize_pkey(pkey.0)
 }
 
 fn generate_x25519() -> Result<KeyPairResult, CryptoError> {
-    unsafe {
-        let ctx = EVP_PKEY_CTX_new_id(NID_X25519);
-        if ctx.is_null() {
-            return Err(CryptoError::KeyPairError("EVP_PKEY_CTX_new_id(NID_X25519) failed".into()));
-        }
-        if EVP_PKEY_keygen_init(ctx) != 1 {
-            EVP_PKEY_CTX_free(ctx);
-            return Err(CryptoError::KeyPairError("EVP_PKEY_keygen_init failed".into()));
-        }
-        let mut pkey: *mut EVP_PKEY = std::ptr::null_mut();
-        if EVP_PKEY_keygen(ctx, &mut pkey) != 1 {
-            EVP_PKEY_CTX_free(ctx);
-            return Err(CryptoError::KeyPairError("EVP_PKEY_keygen failed".into()));
-        }
-        EVP_PKEY_CTX_free(ctx);
-
-        let result = serialize_pkey(pkey);
-        EVP_PKEY_free(pkey);
-        result
+    // Same caveat as Ed25519: BoringSSL needs the raw-seed path for X25519 keygen.
+    let mut seed = [0u8; 32];
+    crate::random::rand_bytes(&mut seed)?;
+    let pkey = PkeyGuard(unsafe {
+        EVP_PKEY_from_raw_private_key(EVP_pkey_x25519(), seed.as_ptr(), seed.len())
+    });
+    if pkey.0.is_null() {
+        return Err(CryptoError::KeyPairError("EVP_PKEY_from_raw_private_key (x25519) failed".into()));
     }
+    serialize_pkey(pkey.0)
 }

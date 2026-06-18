@@ -13,7 +13,18 @@ use std::rc::Rc;
 use serde_json::Value;
 
 use crate::backend::{CdpBackend, ExternalBackend, InternalBackend};
-use crate::protocol::CDPError;
+use crate::protocol::CdpError;
+
+/// Time-based pseudo-random id generator for session ids.
+///
+/// TASK-4-CDP: moved here from `lib.rs` (the old synchronous `CDPServer`
+/// entry that owned it was deleted). Used only to mint opaque session ids
+/// for the internal/external routing layer.
+fn rand_id() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    d.as_nanos() as u64 ^ (d.as_nanos() as u64).wrapping_shr(17)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
@@ -52,7 +63,7 @@ impl CdpRouter {
     }
 
     pub fn create_internal_session(&self, target_id: &str) -> CdpSession {
-        let session_id = format!("{:016x}", crate::rand_id());
+        let session_id = format!("{:016x}", rand_id());
         let inner = Rc::new(SessionInner {
             target_id: target_id.to_string(),
             backend: BackendKind::Internal,
@@ -68,11 +79,11 @@ impl CdpRouter {
         }
     }
 
-    pub fn connect_external(&self, endpoint: &str) -> Result<ExternalBrowser, CDPError> {
+    pub fn connect_external(&self, endpoint: &str) -> Result<ExternalBrowser, CdpError> {
         let backend = ExternalBackend::new(endpoint)?;
         *self.external.borrow_mut() = Some(backend);
 
-        let session_id = format!("{:016x}", crate::rand_id());
+        let session_id = format!("{:016x}", rand_id());
         let inner = Rc::new(SessionInner {
             target_id: endpoint.to_string(),
             backend: BackendKind::External,
@@ -94,9 +105,9 @@ impl CdpRouter {
         session_id: &str,
         method: &str,
         params: Option<Value>,
-    ) -> Result<Value, CDPError> {
+    ) -> Result<Value, CdpError> {
         let sessions = self.sessions.borrow();
-        let session = sessions.get(session_id).ok_or_else(|| CDPError {
+        let session = sessions.get(session_id).ok_or_else(|| CdpError {
             code: -32602,
             message: format!("session not found: {session_id}"),
         })?;
@@ -108,7 +119,7 @@ impl CdpRouter {
             }
             BackendKind::External => {
                 let external = self.external.borrow();
-                let backend = external.as_ref().ok_or_else(|| CDPError {
+                let backend = external.as_ref().ok_or_else(|| CdpError {
                     code: -32603,
                     message: "external backend not connected".into(),
                 })?;
@@ -117,11 +128,11 @@ impl CdpRouter {
         }
     }
 
-    pub fn detach_session(&self, session_id: &str) -> Result<(), CDPError> {
+    pub fn detach_session(&self, session_id: &str) -> Result<(), CdpError> {
         self.sessions
             .borrow_mut()
             .remove(session_id)
-            .ok_or_else(|| CDPError {
+            .ok_or_else(|| CdpError {
                 code: -32602,
                 message: format!("session not found: {session_id}"),
             })?;
@@ -157,7 +168,7 @@ impl CdpSession {
         router: &CdpRouter,
         method: &str,
         params: Option<Value>,
-    ) -> Result<Value, CDPError> {
+    ) -> Result<Value, CdpError> {
         let domain = method.split('.').next().unwrap_or("");
         self.inner
             .enabled_domains
@@ -173,7 +184,7 @@ impl CdpSession {
             .insert(event.to_string(), Box::new(handler));
     }
 
-    pub fn detach(&self, router: &CdpRouter) -> Result<(), CDPError> {
+    pub fn detach(&self, router: &CdpRouter) -> Result<(), CdpError> {
         router.detach_session(&self.session_id)
     }
 }

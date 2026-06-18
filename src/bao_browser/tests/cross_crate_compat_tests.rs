@@ -8,7 +8,7 @@ use bao_browser::{
     Permission, PermissionGuard, encode_image, ScreenshotFormat,
 };
 use bao_cdp::{
-    CdpRouter, BackendKind, CDPServer, CDPServerError,
+    CdpRouter, BackendKind,
     bridge_channel, BridgeCommand, BridgeResponse,
 };
 use bao_stealth::StealthProfile;
@@ -203,26 +203,9 @@ fn test_bridge_response_cross_crate() {
 }
 
 // ---- CDPServer ↔ StealthProfile ----
-
-#[test]
-fn test_cdp_server_with_stealth_bridge() {
-    let (sender, _receiver) = bridge_channel(std::time::Duration::from_secs(5));
-    let _server = CDPServer::with_bridge(19999, sender);
-}
-
-#[test]
-fn test_cdp_server_error_types() {
-    let errors = vec![
-        CDPServerError::Bind("port busy".into()),
-        CDPServerError::Io("read error".into()),
-        CDPServerError::WebSocket("upgrade fail".into()),
-        CDPServerError::Protocol("bad msg".into()),
-    ];
-    for err in &errors {
-        let display = format!("{}", err);
-        assert!(!display.is_empty());
-    }
-}
+// (Removed in TASK-4-CDP: the dead synchronous bao_cdp::CDPServer entry was
+// deleted; bao_browser production uses cdp_server::CdpServer, so this
+// cross-crate test of the deleted type is no longer applicable.)
 
 // ---- PageState ↔ BrowserError cross-crate consistency ----
 

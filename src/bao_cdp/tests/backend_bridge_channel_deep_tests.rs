@@ -5,15 +5,15 @@
 use std::time::Duration;
 
 use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse, bridge_channel};
-use bao_cdp::{handle_command, CDPMessage, CDPResponse};
+use bao_cdp::{handle_command, CdpMessage, CdpResponse};
 use serde_json::json;
 
 const TID: &str = "test-target";
 
 // ---- InternalBackend indirect tests (via handle_command) ----
 
-fn dispatch(method: &str, params: Option<serde_json::Value>) -> CDPResponse {
-    let msg = CDPMessage { id: 1, method: method.to_string(), params: None, session_id: None };
+fn dispatch(method: &str, params: Option<serde_json::Value>) -> CdpResponse {
+    let msg = CdpMessage { id: Some(1), method: method.to_string(), params: None, session_id: None };
     handle_command(msg, "test-target", &params, None)
 }
 

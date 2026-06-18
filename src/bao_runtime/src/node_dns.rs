@@ -1,8 +1,17 @@
 // @trace REQ-ENG-007 [entity:DNS] [code:bun_dns]
-// NOTE: Current DNS resolution uses std::net::ToSocketAddrs, which calls libc::getaddrinfo (system DNS).
-// This is equivalent to bun_dns::Backend::Libc. bun_dns types are available for future async integration.
+// Hostname → IP resolution goes through `bun_dns` (Backend::Libc): we build a
+// `GetAddrInfo` request with `Backend::Libc`, call libc::getaddrinfo directly,
+// and walk the result chain via `GetAddrInfoResult::from_addr_info`. This
+// replaces the previous `std::net::ToSocketAddrs` path (which also called libc
+// getaddrinfo but bypassed `bun_dns`'s typed addrinfo model) so the runtime
+// shares one DNS surface with bun_http / bun_install. `std::net::Ipv6Addr` is
+// used only for canonical IPv6 text rendering in render_address.
 use bun_core::ZBox;
-use ::std::net::{SocketAddr, ToSocketAddrs};
+use bun_dns::{
+    addrinfo, freeaddrinfo, Backend, Family, GetAddrInfo, GetAddrInfoResult, Options, Protocol,
+    SocketType,
+};
+use ::std::ffi::CString;
 use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
@@ -12,6 +21,95 @@ use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
 use crate::require::cache_builtin;
+
+/// Resolve `hostname` synchronously through `bun_dns` (Backend::Libc) and
+/// return each address's display string alongside its family (4 = IPv4,
+/// 6 = IPv6). The returned Vec mirrors getaddrinfo's result-chain order.
+///
+/// Empty on resolution failure (matches the prior ToSocketAddrs fallback that
+/// produced an empty lookup result).
+///
+/// @trace REQ-ENG-007 [api:dns.lookup/resolve] [code:bun_dns]
+fn resolve_hostname_libc(hostname: &str) -> Vec<(::std::string::String, i32)> {
+    // Build the typed request via bun_dns so the hints structure, family flag,
+    // and SOCK_STREAM default match Bun's resolver exactly.
+    let req = GetAddrInfo {
+        name: hostname.as_bytes().to_vec().into_boxed_slice(),
+        port: 0,
+        options: Options {
+            family: Family::Unspecified,
+            socktype: SocketType::Stream,
+            protocol: Protocol::Unspecified,
+            backend: Backend::Libc,
+            flags: 0,
+        },
+    };
+
+    // libc::getaddrinfo wants a NUL-terminated hostname. Rejected hostnames
+    // (NUL byte in input) simply yield an empty result.
+    let c_host = match CString::new(hostname) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let hints = req.options.to_libc();
+
+    let mut result_head: *mut addrinfo = ::std::ptr::null_mut();
+    let rc = unsafe {
+        libc::getaddrinfo(
+            c_host.as_ptr(),
+            ::std::ptr::null(),
+            hints.as_ref()
+                .map(|h| h as *const addrinfo)
+                .unwrap_or(::std::ptr::null()),
+            &mut result_head,
+        )
+    };
+    if rc != 0 || result_head.is_null() {
+        return Vec::new();
+    }
+
+    // Walk the chain; freeaddrinfo on scope exit (Drop would require wrapping,
+    // so do it manually after collecting).
+    let mut out: Vec<(::std::string::String, i32)> = Vec::new();
+    let mut cur: *mut addrinfo = result_head;
+    while !cur.is_null() {
+        // SAFETY: cur is non-null and points into the getaddrinfo result chain.
+        let ai = unsafe { &*cur };
+        if let Some(res) = GetAddrInfoResult::from_addr_info(ai) {
+            if let Some(s) = render_address(&res.address) {
+                let family = if res.address.family() == libc::AF_INET6 { 6 } else { 4 };
+                out.push((s, family));
+            }
+        }
+        cur = ai.ai_next;
+    }
+    // SAFETY: result_head was allocated by C getaddrinfo; chain intact above.
+    unsafe { freeaddrinfo(result_head) };
+    out
+}
+
+/// Render a `bun_dns::Address` to its canonical text form (IPv4 dotted-quad or
+/// bare IPv6). Mirrors the v4/v6 arms of `bun_dns::address_to_string` without
+/// pulling `bun_core::String` (BunString) into the JS bridge — the JS layer
+/// wants a plain `String` for `JS_NewStringCopyZ`.
+///
+/// @trace REQ-ENG-007 [code:bun_dns]
+fn render_address(addr: &bun_dns::Address) -> Option<::std::string::String> {
+    if let Some(v4) = addr.as_in4() {
+        // SAFETY: sin_addr is 4 POD bytes on every target (see bun_sys::net::Display).
+        let octets: [u8; 4] = unsafe { *::std::ptr::addr_of!(v4.sin_addr).cast::<[u8; 4]>() };
+        return Some(format!("{}.{}.{}.{}", octets[0], octets[1], octets[2], octets[3]));
+    }
+    if let Some(v6) = addr.as_in6() {
+        // SAFETY: sin6_addr is 16 POD bytes (in6_addr).
+        let bytes: [u8; 16] = unsafe { *::std::ptr::addr_of!(v6.sin6_addr).cast::<[u8; 16]>() };
+        let segs: [u16; 8] = core::array::from_fn(|i| {
+            u16::from_be_bytes([bytes[i * 2], bytes[i * 2 + 1]])
+        });
+        return Some(::std::net::Ipv6Addr::from(segs).to_string());
+    }
+    None
+}
 
 const DNS_JS: &str = r#"
 (function() {
@@ -156,50 +254,43 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         ptr: &result_obj,
     };
 
-    match (hostname.as_str(), 0u16).to_socket_addrs() {
-        Ok(mut addrs) => {
-            if let Some(addr) = addrs.next() {
-                let ip = addr.ip().to_string();
-                let family = if addr.is_ipv4() { 4 } else { 6 };
-
-                let c_ip = ZBox::from_bytes(ip.as_bytes());
-                {
-                    let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
-                    if !js_str.is_null() {
-                        let ip_val = StringValue(&*js_str);
-                        let ip_h = Handle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &ip_val,
-                        };
-                        JS_DefineProperty(
-                            cx,
-                            result_h,
-                            c"address".as_ptr(),
-                            ip_h,
-                            JSPROP_ENUMERATE as u32,
-                        );
-                    }
-                }
-
-                let family_val = Int32Value(family);
-                let family_h = Handle::<Value> {
+    // @trace REQ-ENG-007 [api:dns.lookup] [code:bun_dns] — resolve through
+    // bun_dns (Backend::Libc); take the first address for the lookup result.
+    let resolved = resolve_hostname_libc(&hostname);
+    if let Some((ip, family)) = resolved.into_iter().next() {
+        let c_ip = ZBox::from_bytes(ip.as_bytes());
+        {
+            let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+            if !js_str.is_null() {
+                let ip_val = StringValue(&*js_str);
+                let ip_h = Handle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
-                    ptr: &family_val,
+                    ptr: &ip_val,
                 };
                 JS_DefineProperty(
                     cx,
                     result_h,
-                    c"family".as_ptr(),
-                    family_h,
+                    c"address".as_ptr(),
+                    ip_h,
                     JSPROP_ENUMERATE as u32,
                 );
-            } else {
-                define_empty_lookup_result(cx, result_h);
             }
         }
-        Err(_) => {
-            define_empty_lookup_result(cx, result_h);
-        }
+
+        let family_val = Int32Value(family);
+        let family_h = Handle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &family_val,
+        };
+        JS_DefineProperty(
+            cx,
+            result_h,
+            c"family".as_ptr(),
+            family_h,
+            JSPROP_ENUMERATE as u32,
+        );
+    } else {
+        define_empty_lookup_result(cx, result_h);
     }
 
     args.rval().set(ObjectValue(result_obj));
@@ -259,23 +350,21 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         ptr: &arr_obj,
     };
 
-    if let Ok(addrs) = (hostname.as_str(), 0u16).to_socket_addrs() {
-        let mut idx = 0u32;
-        for addr in addrs {
-            let ip = addr.ip().to_string();
-            let c_ip = ZBox::from_bytes(ip.as_bytes());
-            {
-                let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
-                if !js_str.is_null() {
-                    let val = StringValue(&*js_str);
-                    let val_h = Handle::<Value> {
-                        _phantom_0: ::std::marker::PhantomData,
-                        ptr: &val,
-                    };
-                    JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
-                    idx += 1;
-                }
-            }
+    // @trace REQ-ENG-007 [api:dns.resolve] [code:bun_dns] — resolve all
+    // addresses via bun_dns (Backend::Libc) and push each into the JS array.
+    let resolved = resolve_hostname_libc(&hostname);
+    let mut idx = 0u32;
+    for (ip, _family) in resolved {
+        let c_ip = ZBox::from_bytes(ip.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+        if !js_str.is_null() {
+            let val = StringValue(&*js_str);
+            let val_h = Handle::<Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &val,
+            };
+            JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
+            idx += 1;
         }
     }
 
@@ -310,24 +399,22 @@ unsafe extern "C" fn dns_resolve6(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         ptr: &arr_obj,
     };
 
-    if let Ok(addrs) = (hostname.as_str(), 0u16).to_socket_addrs() {
-        let mut idx = 0u32;
-        for addr in addrs {
-            if let SocketAddr::V6(v6) = addr {
-                let ip = v6.ip().to_string();
-                let c_ip = ZBox::from_bytes(ip.as_bytes());
-                {
-                    let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
-                    if !js_str.is_null() {
-                        let val = StringValue(&*js_str);
-                        let val_h = Handle::<Value> {
-                            _phantom_0: ::std::marker::PhantomData,
-                            ptr: &val,
-                        };
-                        JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
-                        idx += 1;
-                    }
-                }
+    // @trace REQ-ENG-007 [api:dns.resolve6] [code:bun_dns] — resolve via
+    // bun_dns (Backend::Libc) and keep only the IPv6 (family == 6) addresses.
+    let resolved = resolve_hostname_libc(&hostname);
+    let mut idx = 0u32;
+    for (ip, family) in resolved {
+        if family == 6 {
+            let c_ip = ZBox::from_bytes(ip.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
+            if !js_str.is_null() {
+                let val = StringValue(&*js_str);
+                let val_h = Handle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &val,
+                };
+                JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
+                idx += 1;
             }
         }
     }
@@ -369,7 +456,8 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         ptr: &arr_obj,
     };
 
-    // Validate IP format and attempt reverse lookup via ToSocketAddrs
+    // Validate IP format; libc does not provide reverse DNS directly, so the
+    // IP itself is echoed back as the hostname entry.
     if let Ok(_addr) = ip_str.parse::<::std::net::IpAddr>() {
         // Standard library does not provide reverse DNS directly.
         // Return the IP itself as the hostname in the array.

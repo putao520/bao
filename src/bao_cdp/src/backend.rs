@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bun_uws::ws_client::{RecvOutcome, WebSocketClient, WsClientError};
 
-use crate::protocol::CDPError;
+use crate::protocol::CdpError;
 
 pub trait CdpBackend: Send + Sync {
     fn send_command(
@@ -16,7 +16,7 @@ pub trait CdpBackend: Send + Sync {
         method: &str,
         params: &Option<serde_json::Value>,
         target_id: &str,
-    ) -> Result<serde_json::Value, CDPError>;
+    ) -> Result<serde_json::Value, CdpError>;
 }
 
 pub struct InternalBackend;
@@ -33,9 +33,9 @@ impl CdpBackend for InternalBackend {
         method: &str,
         params: &Option<serde_json::Value>,
         target_id: &str,
-    ) -> Result<serde_json::Value, CDPError> {
-        let msg = crate::protocol::CDPMessage {
-            id: 0,
+    ) -> Result<serde_json::Value, CdpError> {
+        let msg = crate::protocol::CdpMessage {
+            id: Some(0),
             method: method.to_string(),
             params: params.clone(),
             session_id: None,
@@ -50,7 +50,7 @@ impl CdpBackend for InternalBackend {
 }
 
 /// Map a [`WsClientError`] to the CDP error code set.
-fn ws_err_to_cdp(e: WsClientError) -> CDPError {
+fn ws_err_to_cdp(e: WsClientError) -> CdpError {
     let (code, message) = match e {
         WsClientError::InvalidUrl => (-32602, "invalid ws URL".to_string()),
         WsClientError::Connect(io) => (-32603, format!("connect failed: {io}")),
@@ -58,7 +58,7 @@ fn ws_err_to_cdp(e: WsClientError) -> CDPError {
         WsClientError::Io(io) => (-32603, format!("io: {io}")),
         WsClientError::Closed => (-32603, "connection closed".to_string()),
     };
-    CDPError { code, message }
+    CdpError { code, message }
 }
 
 pub struct ExternalBackend {
@@ -67,15 +67,15 @@ pub struct ExternalBackend {
 }
 
 impl ExternalBackend {
-    pub fn new(endpoint: &str) -> Result<Self, CDPError> {
+    pub fn new(endpoint: &str) -> Result<Self, CdpError> {
         Ok(ExternalBackend {
             endpoint: endpoint.to_string(),
             ws: std::sync::Mutex::new(None),
         })
     }
 
-    fn ensure_connected(&self) -> Result<(), CDPError> {
-        let mut guard = self.ws.lock().map_err(|_| CDPError {
+    fn ensure_connected(&self) -> Result<(), CdpError> {
+        let mut guard = self.ws.lock().map_err(|_| CdpError {
             code: -32603,
             message: "lock poisoned".into(),
         })?;
@@ -97,15 +97,15 @@ impl CdpBackend for ExternalBackend {
         method: &str,
         params: &Option<serde_json::Value>,
         _target_id: &str,
-    ) -> Result<serde_json::Value, CDPError> {
+    ) -> Result<serde_json::Value, CdpError> {
         self.ensure_connected()?;
 
-        let mut guard = self.ws.lock().map_err(|_| CDPError {
+        let mut guard = self.ws.lock().map_err(|_| CdpError {
             code: -32603,
             message: "lock poisoned".into(),
         })?;
 
-        let ws = guard.as_mut().ok_or_else(|| CDPError {
+        let ws = guard.as_mut().ok_or_else(|| CdpError {
             code: -32603,
             message: "not connected".into(),
         })?;
@@ -122,7 +122,7 @@ impl CdpBackend for ExternalBackend {
         if let Some(p) = params {
             msg_obj["params"] = p.clone();
         }
-        let msg_str = serde_json::to_string(&msg_obj).map_err(|e| CDPError {
+        let msg_str = serde_json::to_string(&msg_obj).map_err(|e| CdpError {
             code: -32700,
             message: format!("serialize error: {e}"),
         })?;
@@ -135,13 +135,13 @@ impl CdpBackend for ExternalBackend {
             match ws.recv().map_err(ws_err_to_cdp)? {
                 RecvOutcome::Message(_op, payload) => {
                     let resp: serde_json::Value =
-                        serde_json::from_slice(&payload).map_err(|e| CDPError {
+                        serde_json::from_slice(&payload).map_err(|e| CdpError {
                             code: -32700,
                             message: format!("parse error: {e}"),
                         })?;
                     if resp.get("id").and_then(|v| v.as_i64()) == Some(id) {
                         if let Some(error) = resp.get("error") {
-                            return Err(CDPError {
+                            return Err(CdpError {
                                 code: error["code"].as_i64().unwrap_or(-32603),
                                 message: error["message"]
                                     .as_str()
@@ -157,7 +157,7 @@ impl CdpBackend for ExternalBackend {
                     std::thread::sleep(Duration::from_millis(10));
                 }
                 RecvOutcome::Closed => {
-                    return Err(CDPError {
+                    return Err(CdpError {
                         code: -32603,
                         message: "connection closed".into(),
                     });
@@ -165,7 +165,7 @@ impl CdpBackend for ExternalBackend {
             }
         }
 
-        Err(CDPError {
+        Err(CdpError {
             code: -32603,
             message: "response timeout".into(),
         })

@@ -233,20 +233,22 @@ fn boringssl_ec_reconstruct(
 }
 
 /// Generate X25519 keypair using BoringSSL EVP_PKEY API.
+///
+/// BoringSSL does not support X25519 via EVP_PKEY_CTX_new_id keygen; generate a
+/// 32-byte seed, lift it into an EVP_PKEY via EVP_PKEY_from_raw_private_key,
+/// then extract the raw private/public bytes.
 fn x25519_generate() -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+    let mut seed = [0u8; 32];
+    crate::random::rand_bytes(&mut seed)?;
     unsafe {
-        let ctx = PkeyCtxGuard(EVP_PKEY_CTX_new_id(NID_X25519));
-        if ctx.0.is_null() {
-            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_CTX_new_id(NID_X25519) failed".into()));
+        let pkey = PkeyGuard(EVP_PKEY_from_raw_private_key(
+            EVP_pkey_x25519(),
+            seed.as_ptr(),
+            seed.len(),
+        ));
+        if pkey.0.is_null() {
+            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_from_raw_private_key (x25519) failed".into()));
         }
-        if EVP_PKEY_keygen_init(ctx.0) != 1 {
-            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_keygen_init failed".into()));
-        }
-        let mut pkey: *mut EVP_PKEY = std::ptr::null_mut();
-        if EVP_PKEY_keygen(ctx.0, &mut pkey) != 1 {
-            return Err(CryptoError::KeyGenerationFailed("EVP_PKEY_keygen failed".into()));
-        }
-        let pkey = PkeyGuard(pkey);
 
         let mut priv_len: usize = 0;
         if EVP_PKEY_get_raw_private_key(pkey.0, std::ptr::null_mut(), &mut priv_len) != 1 {

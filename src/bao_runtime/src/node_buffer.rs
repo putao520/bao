@@ -374,11 +374,14 @@ unsafe extern "C" fn buffer_transcode(
     false
 }
 
-// @trace REQ-ENG-005 [api:buffer.isAscii] — Native SMFunction returning a
-// boolean primitive. Accepts Buffer/Uint8Array/TypedArray/DataView/
-// ArrayBuffer. Returns true iff every byte is <= 127. Used both as a function
-// AND as a constructor (new isAscii(buf)) — SM preserves primitive returns
-// from C++ natives invoked as constructors, matching Bun's behaviour.
+// @trace REQ-ENG-005 [api:buffer.isAscii] [code:bun_simdutf_sys] — Native
+// SMFunction returning a boolean primitive. Accepts Buffer/Uint8Array/
+// TypedArray/DataView/ArrayBuffer. Returns true iff every byte is <= 127.
+// Validation runs through `bun_simdutf_sys::validate_ascii`, which FFI-calls
+// into bun-simdutf.cpp (AVX2/NEON SIMD, ~3-10× faster than a byte loop).
+// Used both as a function AND as a constructor (new isAscii(buf)) — SM
+// preserves primitive returns from C++ natives invoked as constructors,
+// matching Bun's behaviour.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_is_ascii(
     cx: *mut JSContext,
@@ -394,14 +397,16 @@ unsafe extern "C" fn buffer_is_ascii(
             return true;
         }
     };
-    let is_ascii = bytes.iter().all(|&b| b <= 127);
+    let is_ascii = bun_simdutf_sys::validate_ascii(bytes.as_slice());
     args.rval().set(mozjs::jsval::BooleanValue(is_ascii));
     true
 }
 
-// @trace REQ-ENG-005 [api:buffer.isUtf8] — Native SMFunction returning a
-// boolean primitive. Validates UTF-8 byte sequences per RFC 3629 with strict
-// checks (no overlong encodings, no surrogates, proper continuation bytes).
+// @trace REQ-ENG-005 [api:buffer.isUtf8] [code:bun_simdutf_sys] — Native
+// SMFunction returning a boolean primitive. Validates UTF-8 byte sequences
+// per RFC 3629 via `bun_simdutf_sys::validate_utf8` (SIMD-accelerated; rejects
+// overlong encodings, surrogates, and malformed continuation bytes with the
+// same semantics as the hand-written DFA it replaces).
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn buffer_is_utf8(
     cx: *mut JSContext,
@@ -417,57 +422,8 @@ unsafe extern "C" fn buffer_is_utf8(
             return true;
         }
     };
-    let mut i = 0;
-    let len = bytes.len();
-    let mut ok = true;
-    while i < len {
-        let b = bytes[i];
-        if b < 0x80 {
-            i += 1;
-            continue;
-        }
-        let (need, min) = if (b & 0xE0) == 0xC0 {
-            (1, 0x80u32)
-        } else if (b & 0xF0) == 0xE0 {
-            (2, 0x800u32)
-        } else if (b & 0xF8) == 0xF0 {
-            (3, 0x10000u32)
-        } else {
-            ok = false;
-            break;
-        };
-        if i + need >= len {
-            ok = false;
-            break;
-        }
-        let mut shift = (need + 1) * 5 - (need + 1); // initial mask shift
-        // Initial mask: keep low (7 - need) bits → (1 << (7-need)) - 1
-        let mut cp = (b as u32) & ((1u32 << (7 - need)) - 1);
-        let _ = shift;
-        let mut contig = true;
-        for j in 0..need {
-            let c = bytes[i + 1 + j];
-            if (c & 0xC0) != 0x80 {
-                contig = false;
-                break;
-            }
-            cp = (cp << 6) | (c as u32 & 0x3F);
-        }
-        if !contig {
-            ok = false;
-            break;
-        }
-        if cp < min {
-            ok = false;
-            break;
-        }
-        if cp >= 0xD800 && cp <= 0xDFFF {
-            ok = false;
-            break;
-        }
-        i += 1 + need;
-    }
-    args.rval().set(mozjs::jsval::BooleanValue(ok));
+    let is_utf8 = bun_simdutf_sys::validate_utf8(bytes.as_slice());
+    args.rval().set(mozjs::jsval::BooleanValue(is_utf8));
     true
 }
 

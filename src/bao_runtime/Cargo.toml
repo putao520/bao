@@ -45,6 +45,16 @@ bun_dns = { path = "../dns" }
 bun_io = { path = "../io" }
 bun_base64 = { path = "../base64" }
 bun_s3_signing = { path = "../s3_signing" }
+# @trace REQ-ENG-007 [code:bun_simdutf_sys] — SIMD-accelerated UTF-8/ASCII
+# validation for Buffer.isUtf8 / Buffer.isAscii. Replaces the hand-written
+# byte-by-byte RFC 3629 DFA in node_buffer.rs with bun_simdutf_sys::validate_*
+# (FFI to bun-simdutf.cpp, ~3-10× faster on AVX2/NEON).
+bun_simdutf_sys = { path = "../simdutf_sys" }
+# @trace REQ-ENG-007 [code:bun_paths] — POSIX path normalization primitives
+# for node:path (resolve/normalize/join/relative). Replaces the std::path-
+# based helpers in node_path.rs with bun_paths::resolve_path (Zig-parity
+# normalize_string / join / join_abs_string).
+bun_paths = { path = "../paths" }
 bytes.workspace = true
 compact_str.workspace = true
 smallvec.workspace = true

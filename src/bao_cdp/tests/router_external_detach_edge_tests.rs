@@ -1,7 +1,7 @@
 // @trace TEST-CDP-029 [req:REQ-CDP-001,REQ-CDP-005,REQ-LIB-002] [level:unit]
 // CdpRouter connect_external error paths, ExternalBrowser fields,
 // send_command routing branches, detach_session edge cases,
-// session ID uniqueness, CDPError field verification.
+// session ID uniqueness, CdpError field verification.
 
 use bao_cdp::{CdpRouter, BackendKind};
 
@@ -298,7 +298,7 @@ fn test_backend_kind_all_debug_variants() {
     }
 }
 
-// ---- CDPError field checks ----
+// ---- CdpError field checks ----
 
 #[test]
 fn test_cdp_error_session_not_found() {

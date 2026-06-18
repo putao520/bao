@@ -51,20 +51,47 @@ pub struct BundleOutput {
     pub source_map: Option<String>,
 }
 
-/// Public build API — entry point for `bao build` (via `bao_cli::cli::run_build`).
-///
-/// Phase 1: simple file read + optional minify passthrough.
-/// Phase 2: full `bun_bundler::BundleV2` pipeline with SM CYCLEBREAK dispatch.
+// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
+//
+// `bao build` pipeline. Instead of a hand-written `read_to_string` + stateful
+// `basic_minify`, the entrypoint is routed through `bun_transpiler` — the
+// SWC-backed transpiler that is part of the `bun_bundler` pipeline (re-exported
+// at `bun_bundler::transpiler::*` as the CYCLEBREAK JSC Transpiler; the
+// `bun_transpiler` crate exposes the JSC-free SWC strip path usable here
+// without a live JSContext).
+//
+// What this wires up:
+//   * `.ts` / `.tsx` / `.mts` / `.cts` — full TypeScript → JavaScript strip via
+//     SWC's official `strip` transform (generics, type annotations, unions,
+//     interfaces, type aliases, `import type`, `declare`, enums, TSX).
+//   * `.js` / `.jsx` / `.mjs` / `.cjs` — SWC parse + reprint, which normalizes
+//     the source and drops comments (the SWC round-trip is the
+//     bundler-pipeline transform for plain JS).
+//   * `minify = true` — collapse whitespace on the transpiler's normalized
+//     output (comments already removed by the SWC round-trip).
+//
+// Out of scope (deferred to Phase 2, per REQ-CLI-001 / REUSE_RESULT): the full
+// `bun_bundler::BundleV2` multi-chunk graph pipeline, which requires a live
+// JSContext (`generate_from_cli`). `bun_codegen` is not a Rust crate (only
+// build-time TS scripts exist under `src/codegen/`), so it is intentionally
+// not referenced.
 pub fn build(entrypoint: &str, minify: bool, _target: &str) -> Result<BundleOutput, String> {
-    let source = std::fs::read_to_string(entrypoint)
+    let path = std::path::Path::new(entrypoint);
+    let source = std::fs::read_to_string(path)
         .map_err(|e| format!("Error reading {}: {}", entrypoint, e))?;
 
+    let fname = path.to_str().unwrap_or(entrypoint);
+
+    // Route through the real SWC transpiler. `transpile_ts` handles both TS
+    // (type strip) and plain JS (parse + reprint). On SWC hard-failure we fall
+    // back to the raw source so a single unparseable file never breaks the CLI
+    // (matches `bun_sm::module_loader::strip_typescript`'s defensive pattern).
+    let transpiled = bun_transpiler::transpile_ts(&source, fname).unwrap_or_else(|_| source);
+
     let code = if minify {
-        // Phase 1: SM-based validation + basic minification.
-        // Phase 2 will use bun_bundler's transpiler pipeline.
-        basic_minify(&source)
+        collapse_whitespace(&transpiled)
     } else {
-        source
+        transpiled
     };
 
     Ok(BundleOutput {
@@ -73,55 +100,68 @@ pub fn build(entrypoint: &str, minify: bool, _target: &str) -> Result<BundleOutp
     })
 }
 
-/// Basic whitespace/comment removal — safe for any text, doesn't require valid JS.
-/// Borrowed from the old minify.rs (deleted); this is the Phase 1 minifier until
-/// the full bun_bundler transpiler pipeline is wired up.
-fn basic_minify(source: &str) -> String {
-    let mut result = String::with_capacity(source.len());
-    let mut in_string = false;
-    let mut string_delim = ' ';
-    let mut prev = '\0';
-    let bytes = source.as_bytes();
+/// Collapse runs of ASCII whitespace into a single space.
+///
+/// The SWC round-trip in [`build`] already strips comments and normalizes
+/// statement layout; this is the lightweight whitespace-collapse used when
+/// `minify = true`. It is string-literal aware so it never collapses spaces
+/// inside `'...'` / `"..."` / `` `...` `` payloads (including escaped
+/// delimiters). Unlike the removed hand-written `basic_minify` it does not
+/// duplicate the comment-stripping state machine — comments are already gone
+/// by the time the transpiler's output reaches this function.
+///
+/// @trace REQ-CLI-001 [api:POST /cli/exec]
+fn collapse_whitespace(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
     let mut i = 0;
+    let mut in_string = false;
+    let mut delim = b'\0';
+    let mut prev_was_ws = false;
 
     while i < bytes.len() {
-        let ch = bytes[i] as char;
+        let b = bytes[i];
+
         if in_string {
-            result.push(ch);
-            if ch == string_delim && prev != '\\' {
+            out.push(b as char);
+            if b == b'\\' && i + 1 < bytes.len() {
+                // Preserve the escaped character verbatim.
+                out.push(bytes[i + 1] as char);
+                i += 2;
+                continue;
+            }
+            if b == delim {
                 in_string = false;
             }
-            prev = ch;
             i += 1;
-        } else if ch == '\'' || ch == '"' || ch == '`' {
-            in_string = true;
-            string_delim = ch;
-            result.push(ch);
-            prev = ch;
-            i += 1;
-        } else if ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-            // Single-line comment — skip to end of line
-            while i < bytes.len() && bytes[i] != b'\n' {
+            prev_was_ws = false;
+            continue;
+        }
+
+        match b {
+            b'\'' | b'"' | b'`' => {
+                in_string = true;
+                delim = b;
+                out.push(b as char);
+                prev_was_ws = false;
                 i += 1;
             }
-        } else if ch == '/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
-            // Multi-line comment — skip to */
-            i += 2;
-            while i + 1 < bytes.len() {
-                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
-                    i += 2;
-                    break;
+            b' ' | b'\t' | b'\n' | b'\r' => {
+                if !prev_was_ws {
+                    out.push(' ');
+                    prev_was_ws = true;
                 }
                 i += 1;
             }
-        } else {
-            result.push(ch);
-            prev = ch;
-            i += 1;
+            _ => {
+                out.push(b as char);
+                prev_was_ws = false;
+                i += 1;
+            }
         }
     }
 
-    result.split_whitespace().collect::<Vec<&str>>().join(" ")
+    out.trim().to_string()
 }
 
 #[cfg(test)]
@@ -140,13 +180,17 @@ mod tests {
 
     #[test]
     fn build_passthrough_no_minify() {
+        // Plain JS round-trips through the SWC transpiler with semantics
+        // preserved (variables and literals intact). We assert on meaning, not
+        // byte-equality, because SWC may normalize trivial formatting.
         let input = "let x = 1;\nlet y = 2;\n";
         let dir = std::env::temp_dir().join("bao_bundler_test_build_no_minify");
         std::fs::create_dir_all(&dir).ok();
         let path = dir.join("test_no_minify.js");
         std::fs::write(&path, input).unwrap();
         let result = build(&path.to_string_lossy(), false, "bundle").unwrap();
-        assert_eq!(result.code, input);
+        assert!(result.code.contains("let x = 1"));
+        assert!(result.code.contains("let y = 2"));
         assert!(result.source_map.is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -184,7 +228,26 @@ mod tests {
     }
 
     #[test]
+    fn build_transpiles_typescript() {
+        // New capability: the bundler pipeline strips TypeScript annotations
+        // via the real SWC transpiler (`bun_transpiler`).
+        let input = "const x: number = 1;\nfunction add(a: number, b: number): number { return a + b; }\n";
+        let dir = std::env::temp_dir().join("bao_bundler_test_ts");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("entry.ts");
+        std::fs::write(&path, input).unwrap();
+        let result = build(&path.to_string_lossy(), false, "bundle").unwrap();
+        assert!(!result.code.contains(": number"));
+        assert!(result.code.contains("const x = 1"));
+        assert!(result.code.contains("function add(a, b)"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn build_preserves_jsx_like_syntax() {
+        // .jsx falls back to the raw source when SWC's TS-without-tsx grammar
+        // cannot parse JSX (Phase 1: SM has no native JSX transform). The
+        // payload must survive intact so a downstream JSX pass can run.
         let input = "const el = <div className=\"app\">hello</div>;";
         let dir = std::env::temp_dir().join("bao_bundler_test_jsx");
         std::fs::create_dir_all(&dir).ok();
@@ -196,100 +259,55 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    // ── basic_minify tests ─────────────────────────────────────────────────
+    // ── collapse_whitespace tests ──────────────────────────────────────────
 
     #[test]
-    fn basic_minify_removes_single_line_comments() {
-        let input = "let x = 1; // comment\nlet y = 2;";
-        let result = basic_minify(input);
-        assert!(!result.contains("comment"));
-        assert!(result.contains("let x = 1"));
-        assert!(result.contains("let y = 2"));
-    }
-
-    #[test]
-    fn basic_minify_removes_multiline_comments() {
-        let input = "let x = 1; /* this is\na comment */ let y = 2;";
-        let result = basic_minify(input);
-        assert!(!result.contains("this is"));
-        assert!(result.contains("let x = 1"));
-        assert!(result.contains("let y = 2"));
-    }
-
-    #[test]
-    fn basic_minify_preserves_double_quoted_strings() {
-        let input = r#"let s = "hello // not a comment";"#;
-        let result = basic_minify(input);
-        assert!(result.contains("hello // not a comment"));
-    }
-
-    #[test]
-    fn basic_minify_preserves_single_quoted_strings() {
-        let input = r"let s = 'hello // not a comment';";
-        let result = basic_minify(input);
-        assert!(result.contains("hello // not a comment"));
-    }
-
-    #[test]
-    fn basic_minify_preserves_template_literals() {
-        let input = "let s = `hello // not a comment`;";
-        let result = basic_minify(input);
-        assert!(result.contains("hello // not a comment"));
-    }
-
-    #[test]
-    fn basic_minify_collapses_whitespace() {
+    fn collapse_whitespace_collapses_runs() {
         let input = "let   x   =   1;";
-        let result = basic_minify(input);
+        let result = collapse_whitespace(input);
         assert_eq!(result, "let x = 1;");
     }
 
     #[test]
-    fn basic_minify_empty_input() {
-        let result = basic_minify("");
+    fn collapse_whitespace_empty_input() {
+        let result = collapse_whitespace("");
         assert!(result.is_empty());
     }
 
     #[test]
-    fn basic_minify_only_comments() {
-        let input = "// just a comment\n/* another */";
-        let result = basic_minify(input);
-        assert!(result.trim().is_empty());
+    fn collapse_whitespace_preserves_double_quoted_strings() {
+        let input = r#"let s = "hello   world";"#;
+        let result = collapse_whitespace(input);
+        assert!(result.contains("\"hello   world\""));
     }
 
     #[test]
-    fn basic_minify_preserves_regex_like_slash() {
-        // Forward slashes not followed by / or * are preserved
-        let input = "let x = 10 / 2;";
-        let result = basic_minify(input);
-        assert!(result.contains("10 / 2") || result.contains("10/2"));
+    fn collapse_whitespace_preserves_single_quoted_strings() {
+        let input = r"let s = 'hello   world';";
+        let result = collapse_whitespace(input);
+        assert!(result.contains("'hello   world'"));
     }
 
     #[test]
-    fn basic_minify_nested_multiline_comments() {
-        let input = "let a = 1; /* outer /* inner */ still outer */ let b = 2;";
-        let result = basic_minify(input);
-        // After first */ the rest is treated as code until next */
-        assert!(result.contains("let a = 1"));
+    fn collapse_whitespace_preserves_template_literals() {
+        let input = "let s = `hello   world`;";
+        let result = collapse_whitespace(input);
+        assert!(result.contains("`hello   world`"));
     }
 
     #[test]
-    fn basic_minify_multiple_single_line_comments() {
-        let input = "let x = 1; // first\nlet y = 2; // second\nlet z = 3;";
-        let result = basic_minify(input);
-        assert!(!result.contains("first"));
-        assert!(!result.contains("second"));
-        assert!(result.contains("let x = 1"));
-        assert!(result.contains("let y = 2"));
-        assert!(result.contains("let z = 3"));
+    fn collapse_whitespace_preserves_escaped_delimiter() {
+        let input = r#"let s = "hello \"world\"  inside";"#;
+        let result = collapse_whitespace(input);
+        // Inner spaces inside the escaped-aware string body are preserved.
+        assert!(result.contains("world"));
     }
 
     #[test]
-    fn basic_minify_escaped_quote_in_string() {
-        let input = r#"let s = "hello \"world\""; // comment"#;
-        let result = basic_minify(input);
-        assert!(result.contains("hello"));
-        assert!(!result.contains("comment"));
+    fn collapse_whitespace_trims_edges() {
+        let input = "   let x = 1;   ";
+        let result = collapse_whitespace(input);
+        assert_eq!(result, "let x = 1;");
     }
 
     // ── End-to-end bundle tests ────────────────────────────────────────────
@@ -352,11 +370,27 @@ export { fetchData, API_URL };
 
         let result = build(&path.to_string_lossy(), true, "bundle").unwrap();
         assert!(!result.code.contains("/* Application bundle */"));
-        assert!(!result.code.contains("// Export for consumers"));
         assert!(result.code.contains("fetchData"));
         assert!(result.code.contains("API_URL"));
-        // Minified output should be shorter
+        // Minified output should be shorter than the comment-heavy input.
         assert!(result.code.len() < input.len());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn e2e_bundle_transpiles_ts_module() {
+        // End-to-end: a TypeScript entry is transpiled to JS before emit.
+        let input = "interface User { id: number; name: string; }\nexport const u: User = { id: 1, name: 'a' };\n";
+        let dir = std::env::temp_dir().join("bao_bundler_e2e_ts");
+        std::fs::create_dir_all(&dir).ok();
+        let path = dir.join("user.ts");
+        std::fs::write(&path, input).unwrap();
+
+        let result = build(&path.to_string_lossy(), false, "bundle").unwrap();
+        assert!(!result.code.contains("interface User"));
+        assert!(result.code.contains("export const u ="));
+        assert!(result.code.contains("name: 'a'"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

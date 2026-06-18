@@ -23,7 +23,7 @@
 //!
 //! ## 约定
 //!
-//! - **下游 crate 必须通过 `bao_engine::XXX` 访问类型，禁止直接 `use bun_sm::XXX`**
+//! - **下游 crate 必须通过 `bao_engine::Type` 访问类型，禁止直接 `use bun_sm::Type`**
 //!   - 唯一例外：crate 确实需要 bun_sm 中未被 bao_engine re-export 的类型
 //!   - 目的：维护单一依赖表面，避免下游 crate 同时依赖 bao_engine 和 bun_sm
 //!

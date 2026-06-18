@@ -1,52 +1,93 @@
-// REQ-CDP-001: CDP protocol message types and 11-domain dispatch  @trace REQ-CDP-001 [entity:CdpServer]
-// Uses cdp-protocol crate for typed parameter parsing and response construction.
-use serde::{Deserialize, Serialize};
+// REQ-CDP-001: BAO CDP 11-domain command dispatch (servo-bridge backed).
+// @trace REQ-CDP-001 [entity:CdpServer]
+//
+// TASK-4-CDP: Removed dead protocol types (CDPMessage/CDPResponse/CDPError/
+// CDPEvent) + dead codec helpers (parse_message/serialize_response/
+// serialize_event). These were byte-for-byte duplicates of
+// `cdp_server::protocol`. The wire types are now reused directly from the
+// `cdp-server` crate (re-exported via `bao_cdp`).
+//
+// What remains here is the *BAO-specific* domain dispatch — `handle_command`
+// routes the 11 CDP domains to servo-bridge-backed handlers (Page.navigate,
+// Runtime.evaluate, DOM.getDocument, ...) — plus thin serde wrappers for the
+// codec helpers (the cdp-server `protocol` module is private, so its
+// `parse_message`/`serialize_response`/`serialize_event` cannot be re-exported
+// and are re-implemented here against the shared `cdp_server` wire types).
+// Re-export the JSON-RPC 2.0 wire types so internal modules (`backend.rs`,
+// `router.rs`) and the crate root can refer to them as `protocol::CdpError`
+// etc. These ARE `cdp_server` types — no duplicate definitions.
+pub use cdp_server::{CdpError, CdpEvent, CdpMessage, CdpResponse};
 use serde_json::Value;
 
 use crate::servo_bridge::{BridgeCommand, BridgeSender};
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct CDPMessage {
-    pub id: i64,
-    pub method: String,
-    #[serde(default)]
-    pub params: Option<Value>,
-    #[serde(default)]
-    pub session_id: Option<String>,
-}
+// JSON-RPC 2.0 error code: method not found (per spec §5.1).
+const ERR_METHOD_NOT_FOUND: i64 = -32601;
+// JSON-RPC 2.0 error code: parse error (fallback on serialize failure).
+const ERR_PARSE_ERROR: i64 = -32700;
 
-#[derive(Debug, Serialize)]
-pub struct CDPResponse {
-    pub id: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<CDPError>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CDPError {
-    pub code: i64,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CDPEvent {
-    pub method: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub params: Option<Value>,
-}
-
-pub fn parse_message(raw: &str) -> Option<CDPMessage> {
+/// Parse a raw JSON-RPC 2.0 request string into a [`CdpMessage`].
+///
+/// Returns `None` on malformed JSON. Thin serde wrapper over the shared
+/// `cdp_server::CdpMessage` type.
+pub fn parse_message(raw: &str) -> Option<CdpMessage> {
     serde_json::from_str(raw).ok()
 }
 
+/// Serialize a [`CdpResponse`] to a JSON-RPC 2.0 string.
+///
+/// Falls back to a parse-error envelope on serializer failure (cannot happen
+/// for the well-formed responses produced by `handle_command`, but kept for
+/// defense-in-depth).
+pub fn serialize_response(resp: &CdpResponse) -> String {
+    serde_json::to_string(resp).unwrap_or_else(|_| {
+        format!(
+            r#"{{"id":null,"error":{{"code":{ERR_PARSE_ERROR},"message":"serialize error"}}}}"#
+        )
+    })
+}
+
+/// Serialize a CDP event notification to a JSON string.
+pub fn serialize_event(ev: &CdpEvent) -> String {
+    serde_json::to_string(ev).unwrap_or_else(|_| "{}".into())
+}
+
+/// Build a success response carrying `result`.
+fn ok_response(id: Option<i64>, result: Value) -> CdpResponse {
+    CdpResponse {
+        id,
+        result: Some(result),
+        error: None,
+    }
+}
+
+/// Build an error response carrying `code` + `message`.
+fn error_response(id: Option<i64>, code: i64, message: impl Into<String>) -> CdpResponse {
+    CdpResponse {
+        id,
+        result: None,
+        error: Some(CdpError {
+            code,
+            message: message.into(),
+        }),
+    }
+}
+
+/// BAO 11-domain CDP command dispatch.
+///
+/// Routes `msg.method` ("Domain.command") to the appropriate domain handler,
+/// forwarding servo-state-dependent commands (Page.navigate, Runtime.evaluate,
+/// DOM.getDocument, ...) to the optional servo [`BridgeSender`]. Commands that
+/// don't need servo state return stub/default responses.
+///
+/// Wire types come from `cdp_server` (id is `Option<i64>` per JSON-RPC 2.0,
+/// which permits responses to notifications that carry no id).
 pub fn handle_command(
-    msg: CDPMessage,
+    msg: CdpMessage,
     target_id: &str,
     params: &Option<Value>,
     bridge: Option<&BridgeSender>,
-) -> CDPResponse {
+) -> CdpResponse {
     let parts: Vec<&str> = msg.method.splitn(2, '.').collect();
     let domain = parts.first().copied().unwrap_or("");
     let command = parts.get(1).copied().unwrap_or("");
@@ -64,28 +105,19 @@ pub fn handle_command(
         "Debugger" => handle_debugger(command),
         "Log" => handle_log(command),
         "Fetch" => handle_fetch(command, params),
-        _ => Err(CDPError {
-            code: -32601,
+        _ => Err(CdpError {
+            code: ERR_METHOD_NOT_FOUND,
             message: format!("'{}' wasn't found", msg.method),
         }),
     };
 
     match result {
-        Ok(r) => CDPResponse { id: msg.id, result: Some(r), error: None },
-        Err(e) => CDPResponse { id: msg.id, result: None, error: Some(e) },
+        Ok(r) => ok_response(msg.id, r),
+        Err(e) => error_response(msg.id, e.code, e.message),
     }
 }
 
-pub fn serialize_response(resp: &CDPResponse) -> String {
-    serde_json::to_string(resp)
-        .unwrap_or_else(|_| r#"{"id":0,"error":{"code":-32700,"message":"serialize error"}}"#.into())
-}
-
-pub fn serialize_event(ev: &CDPEvent) -> String {
-    serde_json::to_string(ev).unwrap_or_else(|_| "{}".into())
-}
-
-type HandlerResult = Result<Value, CDPError>;
+type HandlerResult = Result<Value, CdpError>;
 
 fn params_str(params: &Option<Value>, key: &str) -> String {
     params.as_ref()
@@ -99,9 +131,9 @@ fn bridge_send(bridge: Option<&BridgeSender>, cmd: BridgeCommand) -> HandlerResu
     match bridge {
         Some(b) => {
             let resp = b.send(cmd);
-            resp.result.map_err(|e| CDPError { code: -32603, message: e })
+            resp.result.map_err(|e| CdpError { code: -32603, message: e })
         }
-        None => Err(CDPError { code: -32603, message: "no servo bridge connected".into() }),
+        None => Err(CdpError { code: -32603, message: "no servo bridge connected".into() }),
     }
 }
 
@@ -143,7 +175,7 @@ fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) 
             "sessionId": format!("{:016x}", target_id.chars().map(|c| c as u64).sum::<u64>())
         })),
         "detachFromTarget" | "sendMessageToTarget" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Target.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Target.{}' wasn't found", command) }),
     }
 }
 
@@ -223,7 +255,7 @@ fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: O
             Ok(serde_json::json!({ "identifier": "1" }))
         }
         "removeScriptToEvaluateOnNewDocument" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Page.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Page.{}' wasn't found", command) }),
     }
 }
 
@@ -251,7 +283,7 @@ fn handle_runtime(command: &str, target_id: &str, params: &Option<Value>, bridge
         "getProperties" => Ok(serde_json::json!({ "result": [] })),
         "evaluateAsync" | "runScript" => Ok(serde_json::json!({ "result": { "type": "undefined" } })),
         "releaseObject" | "releaseObjectGroup" | "compileScript" | "callArgument" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Runtime.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Runtime.{}' wasn't found", command) }),
     }
 }
 
@@ -318,7 +350,7 @@ fn handle_dom(command: &str, target_id: &str, params: &Option<Value>, bridge: Op
         }
         "resolveNode" => Ok(serde_json::json!({ "object": { "type": "node" } })),
         "pushNodesByBackendIdsToFrontend" => Ok(serde_json::json!({ "nodeIds": [] })),
-        _ => Err(CDPError { code: -32601, message: format!("'DOM.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'DOM.{}' wasn't found", command) }),
     }
 }
 
@@ -331,7 +363,7 @@ fn handle_network(command: &str) -> HandlerResult {
         "continueInterceptedRequest" => ok_empty(),
         "getCookies" | "getAllCookies" => Ok(serde_json::json!({ "cookies": [] })),
         "deleteCookies" | "setCookie" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Network.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Network.{}' wasn't found", command) }),
     }
 }
 
@@ -344,7 +376,7 @@ fn handle_css(command: &str) -> HandlerResult {
         })),
         "getInlineStylesForNode" => Ok(serde_json::json!({ "inlineStyle": null })),
         "setStyleTexts" => Ok(serde_json::json!({ "styles": [] })),
-        _ => Err(CDPError { code: -32601, message: format!("'CSS.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'CSS.{}' wasn't found", command) }),
     }
 }
 
@@ -376,7 +408,7 @@ fn handle_emulation(command: &str, target_id: &str, params: &Option<Value>, brid
         "setTouchEmulationEnabled" | "setScriptExecutionDisabled" => ok_empty(),
         "setFocusEmulationEnabled" | "setCPUThrottlingRate" => ok_empty(),
         "setDefaultBackgroundColorOverride" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Emulation.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Emulation.{}' wasn't found", command) }),
     }
 }
 
@@ -416,7 +448,7 @@ fn handle_input(command: &str, target_id: &str, params: &Option<Value>, bridge: 
             }
         }
         "setIgnoreInputEvents" | "setInterceptDrags" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Input.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Input.{}' wasn't found", command) }),
     }
 }
 
@@ -425,7 +457,7 @@ fn handle_overlay(command: &str) -> HandlerResult {
         "enable" | "disable" => ok_empty(),
         "highlightNode" | "hideHighlight" | "setInspectMode" => ok_empty(),
         "setPausedInDebuggerMessage" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Overlay.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Overlay.{}' wasn't found", command) }),
     }
 }
 
@@ -440,7 +472,7 @@ fn handle_debugger(command: &str) -> HandlerResult {
         "getPossibleBreakpoints" => Ok(serde_json::json!({ "locations": [] })),
         "getScriptSource" => Ok(serde_json::json!({ "scriptSource": "" })),
         "setPauseOnExceptions" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Debugger.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Debugger.{}' wasn't found", command) }),
     }
 }
 
@@ -448,7 +480,7 @@ fn handle_log(command: &str) -> HandlerResult {
     match command {
         "enable" | "disable" | "clear" => ok_empty(),
         "startViolationsReport" | "stopViolationsReport" => ok_empty(),
-        _ => Err(CDPError { code: -32601, message: format!("'Log.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Log.{}' wasn't found", command) }),
     }
 }
 
@@ -491,7 +523,7 @@ fn handle_fetch(command: &str, params: &Option<Value>) -> HandlerResult {
             let request_id = params_str(params, "requestId");
             Ok(serde_json::json!({ "stream": format!("stream-{}", request_id) }))
         }
-        _ => Err(CDPError { code: -32601, message: format!("'Fetch.{}' wasn't found", command) }),
+        _ => Err(CdpError { code: -32601, message: format!("'Fetch.{}' wasn't found", command) }),
     }
 }
 
@@ -501,11 +533,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    // 1. parse_message valid JSON → Some(CDPMessage) with correct id/method/params
+    // 1. parse_message valid JSON → Some(CdpMessage) with correct id/method/params
     #[test]
     fn parse_message_valid_json() {
         let msg = parse_message(r#"{"id":1,"method":"Page.enable","params":{"url":"http://x"}}"#).unwrap();
-        assert_eq!(msg.id, 1);
+        assert_eq!(msg.id, Some(1));
         assert_eq!(msg.method, "Page.enable");
         assert_eq!(msg.params, Some(json!({"url": "http://x"})));
         assert_eq!(msg.session_id, None);
@@ -528,7 +560,7 @@ mod tests {
     fn parse_message_with_session_id() {
         let raw = r#"{"id":5,"method":"Runtime.evaluate","session_id":"abc123"}"#;
         let msg = parse_message(raw).expect("should parse valid JSON with session_id");
-        assert_eq!(msg.id, 5);
+        assert_eq!(msg.id, Some(5));
         assert_eq!(msg.method, "Runtime.evaluate");
         assert_eq!(msg.session_id, Some("abc123".to_string()));
     }
@@ -537,15 +569,15 @@ mod tests {
     #[test]
     fn parse_message_null_params() {
         let msg = parse_message(r#"{"id":2,"method":"Page.enable","params":null}"#).unwrap();
-        assert_eq!(msg.id, 2);
+        assert_eq!(msg.id, Some(2));
         assert_eq!(msg.params, None);
     }
 
     // 6. serialize_response with result
     #[test]
     fn serialize_response_with_result() {
-        let resp = CDPResponse {
-            id: 1,
+        let resp = CdpResponse {
+            id: Some(1),
             result: Some(json!({"key": "val"})),
             error: None,
         };
@@ -559,10 +591,10 @@ mod tests {
     // 7. serialize_response with error
     #[test]
     fn serialize_response_with_error() {
-        let resp = CDPResponse {
-            id: 2,
+        let resp = CdpResponse {
+            id: Some(2),
             result: None,
-            error: Some(CDPError { code: -32601, message: "not found".into() }),
+            error: Some(CdpError { code: -32601, message: "not found".into() }),
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -575,7 +607,7 @@ mod tests {
     // 8. handle_command with unknown domain → error code -32601
     #[test]
     fn handle_command_unknown_domain() {
-        let msg = CDPMessage { id: 1, method: "Foo.bar".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(1), method: "Foo.bar".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -586,7 +618,7 @@ mod tests {
     // 9. handle_command Target.getTargets (no bridge) → ok with targetInfos
     #[test]
     fn handle_command_target_get_targets() {
-        let msg = CDPMessage { id: 2, method: "Target.getTargets".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(2), method: "Target.getTargets".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -598,7 +630,7 @@ mod tests {
     // 10. handle_command Target.createTarget (no bridge) → ok with targetId
     #[test]
     fn handle_command_target_create_target() {
-        let msg = CDPMessage { id: 3, method: "Target.createTarget".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(3), method: "Target.createTarget".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -609,7 +641,7 @@ mod tests {
     // 11. handle_command Target.closeTarget (no bridge) → ok with success:true
     #[test]
     fn handle_command_target_close_target() {
-        let msg = CDPMessage { id: 4, method: "Target.closeTarget".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(4), method: "Target.closeTarget".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -620,7 +652,7 @@ mod tests {
     // 12. handle_command Target.setAutoAttach → ok empty
     #[test]
     fn handle_command_target_set_auto_attach() {
-        let msg = CDPMessage { id: 5, method: "Target.setAutoAttach".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(5), method: "Target.setAutoAttach".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -630,7 +662,7 @@ mod tests {
     // 13. handle_command Page.enable → ok empty
     #[test]
     fn handle_command_page_enable() {
-        let msg = CDPMessage { id: 6, method: "Page.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(6), method: "Page.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -640,7 +672,7 @@ mod tests {
     // 14. handle_command Page.getLayoutMetrics → ok with contentSize
     #[test]
     fn handle_command_page_get_layout_metrics() {
-        let msg = CDPMessage { id: 7, method: "Page.getLayoutMetrics".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(7), method: "Page.getLayoutMetrics".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -653,7 +685,7 @@ mod tests {
     // 15. handle_command Runtime.enable → ok with executionContextId
     #[test]
     fn handle_command_runtime_enable() {
-        let msg = CDPMessage { id: 8, method: "Runtime.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(8), method: "Runtime.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -664,8 +696,8 @@ mod tests {
     // 16. handle_command Runtime.evaluate (no bridge, empty expr) → undefined result
     #[test]
     fn handle_command_runtime_evaluate_no_bridge() {
-        let msg = CDPMessage {
-            id: 9,
+        let msg = CdpMessage {
+            id: Some(9),
             method: "Runtime.evaluate".into(),
             params: Some(json!({"expression": ""})),
             session_id: None,
@@ -680,7 +712,7 @@ mod tests {
     // 17. handle_command DOM.getDocument (no bridge) → ok with root node
     #[test]
     fn handle_command_dom_get_document() {
-        let msg = CDPMessage { id: 10, method: "DOM.getDocument".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(10), method: "DOM.getDocument".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -694,8 +726,8 @@ mod tests {
     // 18. handle_command DOM.querySelector (no bridge) → ok nodeId:0
     #[test]
     fn handle_command_dom_query_selector() {
-        let msg = CDPMessage {
-            id: 11,
+        let msg = CdpMessage {
+            id: Some(11),
             method: "DOM.querySelector".into(),
             params: Some(json!({"selector": "div"})),
             session_id: None,
@@ -710,7 +742,7 @@ mod tests {
     // 19. handle_command Network.enable → ok empty
     #[test]
     fn handle_command_network_enable() {
-        let msg = CDPMessage { id: 12, method: "Network.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(12), method: "Network.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -720,7 +752,7 @@ mod tests {
     // 20. handle_command Network.getCookies → ok with empty cookies
     #[test]
     fn handle_command_network_get_cookies() {
-        let msg = CDPMessage { id: 13, method: "Network.getCookies".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(13), method: "Network.getCookies".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -731,7 +763,7 @@ mod tests {
     // 21. handle_command CSS.enable → ok empty
     #[test]
     fn handle_command_css_enable() {
-        let msg = CDPMessage { id: 14, method: "CSS.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(14), method: "CSS.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -741,7 +773,7 @@ mod tests {
     // 22. handle_command CSS.getComputedStyleForNode → ok empty computedStyle
     #[test]
     fn handle_command_css_get_computed_style() {
-        let msg = CDPMessage { id: 15, method: "CSS.getComputedStyleForNode".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(15), method: "CSS.getComputedStyleForNode".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -752,8 +784,8 @@ mod tests {
     // 23. handle_command Emulation.setDeviceMetricsOverride (no bridge) → ok empty
     #[test]
     fn handle_command_emulation_set_device_metrics() {
-        let msg = CDPMessage {
-            id: 16,
+        let msg = CdpMessage {
+            id: Some(16),
             method: "Emulation.setDeviceMetricsOverride".into(),
             params: Some(json!({"width": 800, "height": 600, "deviceScaleFactor": 2})),
             session_id: None,
@@ -767,8 +799,8 @@ mod tests {
     // 24. handle_command Input.dispatchMouseEvent (no bridge) → ok empty
     #[test]
     fn handle_command_input_dispatch_mouse() {
-        let msg = CDPMessage {
-            id: 17,
+        let msg = CdpMessage {
+            id: Some(17),
             method: "Input.dispatchMouseEvent".into(),
             params: Some(json!({"type": "mousePressed", "x": 100, "y": 200, "button": 0, "clickCount": 1})),
             session_id: None,
@@ -782,7 +814,7 @@ mod tests {
     // 25. handle_command Overlay.enable → ok empty
     #[test]
     fn handle_command_overlay_enable() {
-        let msg = CDPMessage { id: 18, method: "Overlay.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(18), method: "Overlay.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -792,7 +824,7 @@ mod tests {
     // 26. handle_command Debugger.enable → ok empty
     #[test]
     fn handle_command_debugger_enable() {
-        let msg = CDPMessage { id: 19, method: "Debugger.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(19), method: "Debugger.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -802,7 +834,7 @@ mod tests {
     // 27. handle_command Debugger.setBreakpointByUrl → ok with breakpointId
     #[test]
     fn handle_command_debugger_set_breakpoint_by_url() {
-        let msg = CDPMessage { id: 20, method: "Debugger.setBreakpointByUrl".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(20), method: "Debugger.setBreakpointByUrl".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -813,7 +845,7 @@ mod tests {
     // 28. handle_command Log.enable → ok empty
     #[test]
     fn handle_command_log_enable() {
-        let msg = CDPMessage { id: 21, method: "Log.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(21), method: "Log.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -823,8 +855,8 @@ mod tests {
     // 29. handle_command Fetch.enable with patterns → ok with patternCount
     #[test]
     fn handle_command_fetch_enable_with_patterns() {
-        let msg = CDPMessage {
-            id: 22,
+        let msg = CdpMessage {
+            id: Some(22),
             method: "Fetch.enable".into(),
             params: Some(json!({"patterns": [{"urlPattern": "*"}]})),
             session_id: None,
@@ -839,8 +871,8 @@ mod tests {
     // 30. handle_command Fetch.continueRequest → ok with requestId
     #[test]
     fn handle_command_fetch_continue_request() {
-        let msg = CDPMessage {
-            id: 23,
+        let msg = CdpMessage {
+            id: Some(23),
             method: "Fetch.continueRequest".into(),
             params: Some(json!({"requestId": "req-001"})),
             session_id: None,
@@ -852,10 +884,10 @@ mod tests {
         assert_eq!(result["requestId"], "req-001");
     }
 
-    // 31. CDPError clone + debug format
+    // 31. CdpError clone + debug format
     #[test]
     fn cdp_error_clone_and_debug() {
-        let err = CDPError { code: -32601, message: "not found".into() };
+        let err = CdpError { code: -32601, message: "not found".into() };
         let cloned = err.clone();
         assert_eq!(cloned.code, err.code);
         assert_eq!(cloned.message, err.message);
@@ -864,10 +896,10 @@ mod tests {
         assert!(debug_str.contains("not found"));
     }
 
-    // 32. CDPEvent serialize
+    // 32. CdpEvent serialize
     #[test]
     fn cdp_event_serialize() {
-        let ev = CDPEvent {
+        let ev = CdpEvent {
             method: "Page.loadEventFired".into(),
             params: Some(json!({"timestamp": 12345})),
         };
@@ -877,61 +909,61 @@ mod tests {
         assert_eq!(parsed["params"]["timestamp"], 12345);
     }
 
-    // 33. CDPMessage deserialize with unicode method name
+    // 33. CdpMessage deserialize with unicode method name
     #[test]
     fn parse_message_unicode_method() {
         let msg = parse_message(r#"{"id":99,"method":"Page.你好世界"}"#).unwrap();
-        assert_eq!(msg.id, 99);
+        assert_eq!(msg.id, Some(99));
         assert_eq!(msg.method, "Page.你好世界");
     }
 
     // ─── CdpMessage parsing edge cases ─────────────────────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
-    // 34. CDPMessage with id = 0
+    // 34. CdpMessage with id = 0
     #[test]
     fn parse_message_id_zero() {
         let msg = parse_message(r#"{"id":0,"method":"Page.enable"}"#).unwrap();
-        assert_eq!(msg.id, 0);
+        assert_eq!(msg.id, Some(0));
         assert_eq!(msg.method, "Page.enable");
     }
 
-    // 35. CDPMessage with id = i64::MAX
+    // 35. CdpMessage with id = i64::MAX
     #[test]
     fn parse_message_id_max() {
         let msg = parse_message(r#"{"id":9223372036854775807,"method":"Page.enable"}"#).unwrap();
-        assert_eq!(msg.id, i64::MAX);
+        assert_eq!(msg.id, Some(i64::MAX));
     }
 
-    // 36. CDPMessage with negative id
+    // 36. CdpMessage with negative id
     #[test]
     fn parse_message_negative_id() {
         let msg = parse_message(r#"{"id":-1,"method":"Page.enable"}"#).unwrap();
-        assert_eq!(msg.id, -1);
+        assert_eq!(msg.id, Some(-1));
     }
 
-    // 37. CDPMessage with id = i64::MIN
+    // 37. CdpMessage with id = i64::MIN
     #[test]
     fn parse_message_id_min() {
         let msg = parse_message(r#"{"id":-9223372036854775808,"method":"Page.enable"}"#).unwrap();
-        assert_eq!(msg.id, i64::MIN);
+        assert_eq!(msg.id, Some(i64::MIN));
     }
 
-    // 38. CDPMessage with empty method string
+    // 38. CdpMessage with empty method string
     #[test]
     fn parse_message_empty_method() {
         let msg = parse_message(r#"{"id":1,"method":""}"#).unwrap();
         assert_eq!(msg.method, "");
     }
 
-    // 39. CDPMessage with method containing no dot
+    // 39. CdpMessage with method containing no dot
     #[test]
     fn parse_message_method_no_dot() {
         let msg = parse_message(r#"{"id":1,"method":"NoDomain"}"#).unwrap();
         assert_eq!(msg.method, "NoDomain");
     }
 
-    // 40. CDPMessage with method containing multiple dots
+    // 40. CdpMessage with method containing multiple dots
     #[test]
     fn parse_message_method_multiple_dots() {
         let msg = parse_message(r#"{"id":1,"method":"Page.navigate.to"}"#).unwrap();
@@ -942,19 +974,19 @@ mod tests {
         assert_eq!(parts[1], "navigate.to");
     }
 
-    // 41. CDPMessage with empty string input
+    // 41. CdpMessage with empty string input
     #[test]
     fn parse_message_empty_string() {
         assert!(parse_message("").is_none());
     }
 
-    // 42. CDPMessage with whitespace-only input
+    // 42. CdpMessage with whitespace-only input
     #[test]
     fn parse_message_whitespace_only() {
         assert!(parse_message("   ").is_none());
     }
 
-    // 43. CDPMessage with extra JSON fields (should succeed, ignores unknown)
+    // 43. CdpMessage with extra JSON fields (should succeed, ignores unknown)
     #[test]
     fn parse_message_extra_fields() {
         let msg = parse_message(r#"{"id":1,"method":"Page.enable","extra":"ignored"}"#);
@@ -962,7 +994,7 @@ mod tests {
         assert_eq!(msg.unwrap().method, "Page.enable");
     }
 
-    // 44. CDPMessage params as object
+    // 44. CdpMessage params as object
     #[test]
     fn parse_message_params_object() {
         let msg = parse_message(r#"{"id":1,"method":"Page.navigate","params":{"url":"http://x.com"}}"#).unwrap();
@@ -970,7 +1002,7 @@ mod tests {
         assert_eq!(msg.params.unwrap()["url"], "http://x.com");
     }
 
-    // 45. CDPMessage params as array (unusual but valid JSON)
+    // 45. CdpMessage params as array (unusual but valid JSON)
     #[test]
     fn parse_message_params_array() {
         let msg = parse_message(r#"{"id":1,"method":"Test.cmd","params":[1,2,3]}"#).unwrap();
@@ -978,7 +1010,7 @@ mod tests {
         assert!(msg.params.unwrap().is_array());
     }
 
-    // 46. CDPMessage params as string (unusual but valid JSON)
+    // 46. CdpMessage params as string (unusual but valid JSON)
     #[test]
     fn parse_message_params_string() {
         let msg = parse_message(r#"{"id":1,"method":"Test.cmd","params":"hello"}"#).unwrap();
@@ -986,7 +1018,7 @@ mod tests {
         assert!(msg.params.unwrap().is_string());
     }
 
-    // 47. CDPMessage params as number (unusual but valid JSON)
+    // 47. CdpMessage params as number (unusual but valid JSON)
     #[test]
     fn parse_message_params_number() {
         let msg = parse_message(r#"{"id":1,"method":"Test.cmd","params":42}"#).unwrap();
@@ -994,7 +1026,7 @@ mod tests {
         assert!(msg.params.unwrap().is_number());
     }
 
-    // 48. CDPMessage params as boolean (unusual but valid JSON)
+    // 48. CdpMessage params as boolean (unusual but valid JSON)
     #[test]
     fn parse_message_params_boolean() {
         let msg = parse_message(r#"{"id":1,"method":"Test.cmd","params":true}"#).unwrap();
@@ -1002,7 +1034,7 @@ mod tests {
         assert!(msg.params.unwrap().is_boolean());
     }
 
-    // 49. CDPMessage with very long session_id
+    // 49. CdpMessage with very long session_id
     #[test]
     fn parse_message_long_session_id() {
         let long_session = "A".repeat(10000);
@@ -1011,21 +1043,21 @@ mod tests {
         assert_eq!(msg.session_id.unwrap().len(), 10000);
     }
 
-    // 50. CDPMessage with empty session_id
+    // 50. CdpMessage with empty session_id
     #[test]
     fn parse_message_empty_session_id() {
         let msg = parse_message(r#"{"id":1,"method":"Page.enable","session_id":""}"#).unwrap();
         assert_eq!(msg.session_id, Some("".to_string()));
     }
 
-    // ─── CDPResponse serialization edge cases ──────────────────────────
+    // ─── CdpResponse serialization edge cases ──────────────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
-    // 51. CDPResponse with null result
+    // 51. CdpResponse with null result
     #[test]
     fn serialize_response_null_result() {
-        let resp = CDPResponse {
-            id: 1,
+        let resp = CdpResponse {
+            id: Some(1),
             result: Some(Value::Null),
             error: None,
         };
@@ -1035,11 +1067,11 @@ mod tests {
         assert_eq!(parsed["result"], Value::Null);
     }
 
-    // 52. CDPResponse with empty object result
+    // 52. CdpResponse with empty object result
     #[test]
     fn serialize_response_empty_object_result() {
-        let resp = CDPResponse {
-            id: 2,
+        let resp = CdpResponse {
+            id: Some(2),
             result: Some(json!({})),
             error: None,
         };
@@ -1048,11 +1080,11 @@ mod tests {
         assert_eq!(parsed["result"], json!({}));
     }
 
-    // 53. CDPResponse with nested result
+    // 53. CdpResponse with nested result
     #[test]
     fn serialize_response_nested_result() {
-        let resp = CDPResponse {
-            id: 3,
+        let resp = CdpResponse {
+            id: Some(3),
             result: Some(json!({"root": {"nodeId": 1, "children": [{"nodeId": 2}]}})),
             error: None,
         };
@@ -1062,11 +1094,11 @@ mod tests {
         assert_eq!(parsed["result"]["root"]["children"][0]["nodeId"], 2);
     }
 
-    // 54. CDPResponse with id = 0
+    // 54. CdpResponse with id = 0
     #[test]
     fn serialize_response_id_zero() {
-        let resp = CDPResponse {
-            id: 0,
+        let resp = CdpResponse {
+            id: Some(0),
             result: Some(json!({"ok": true})),
             error: None,
         };
@@ -1075,11 +1107,11 @@ mod tests {
         assert_eq!(parsed["id"], 0);
     }
 
-    // 55. CDPResponse with negative id
+    // 55. CdpResponse with negative id
     #[test]
     fn serialize_response_negative_id() {
-        let resp = CDPResponse {
-            id: -42,
+        let resp = CdpResponse {
+            id: Some(-42),
             result: Some(json!({})),
             error: None,
         };
@@ -1088,11 +1120,11 @@ mod tests {
         assert_eq!(parsed["id"], -42);
     }
 
-    // 56. CDPResponse with i64::MAX id
+    // 56. CdpResponse with i64::MAX id
     #[test]
     fn serialize_response_max_id() {
-        let resp = CDPResponse {
-            id: i64::MAX,
+        let resp = CdpResponse {
+            id: Some(i64::MAX),
             result: Some(json!({})),
             error: None,
         };
@@ -1101,11 +1133,11 @@ mod tests {
         assert_eq!(parsed["id"], i64::MAX);
     }
 
-    // 57. CDPResponse with array result
+    // 57. CdpResponse with array result
     #[test]
     fn serialize_response_array_result() {
-        let resp = CDPResponse {
-            id: 5,
+        let resp = CdpResponse {
+            id: Some(5),
             result: Some(json!([1, 2, 3])),
             error: None,
         };
@@ -1114,11 +1146,11 @@ mod tests {
         assert_eq!(parsed["result"], json!([1, 2, 3]));
     }
 
-    // 58. CDPResponse with string result
+    // 58. CdpResponse with string result
     #[test]
     fn serialize_response_string_result() {
-        let resp = CDPResponse {
-            id: 6,
+        let resp = CdpResponse {
+            id: Some(6),
             result: Some(json!("hello world")),
             error: None,
         };
@@ -1127,16 +1159,16 @@ mod tests {
         assert_eq!(parsed["result"], "hello world");
     }
 
-    // ─── CDPError code boundaries ──────────────────────────────────────
+    // ─── CdpError code boundaries ──────────────────────────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
-    // 59. CDPError code -32700 (Parse error)
+    // 59. CdpError code -32700 (Parse error)
     #[test]
     fn cdp_error_code_parse_error() {
-        let resp = CDPResponse {
-            id: 1,
+        let resp = CdpResponse {
+            id: Some(1),
             result: None,
-            error: Some(CDPError { code: -32700, message: "Parse error".into() }),
+            error: Some(CdpError { code: -32700, message: "Parse error".into() }),
         };
         let s = serialize_response(&resp);
         let parsed: Value = serde_json::from_str(&s).unwrap();
@@ -1144,68 +1176,68 @@ mod tests {
         assert_eq!(parsed["error"]["message"], "Parse error");
     }
 
-    // 60. CDPError code -32600 (Invalid Request)
+    // 60. CdpError code -32600 (Invalid Request)
     #[test]
     fn cdp_error_code_invalid_request() {
-        let err = CDPError { code: -32600, message: "Invalid Request".into() };
+        let err = CdpError { code: -32600, message: "Invalid Request".into() };
         assert_eq!(err.code, -32600);
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("-32600"));
     }
 
-    // 61. CDPError code -32601 (Method not found)
+    // 61. CdpError code -32601 (Method not found)
     #[test]
     fn cdp_error_code_method_not_found() {
-        let err = CDPError { code: -32601, message: "Method not found".into() };
+        let err = CdpError { code: -32601, message: "Method not found".into() };
         assert_eq!(err.code, -32601);
     }
 
-    // 62. CDPError code -32602 (Invalid params)
+    // 62. CdpError code -32602 (Invalid params)
     #[test]
     fn cdp_error_code_invalid_params() {
-        let err = CDPError { code: -32602, message: "Invalid params".into() };
+        let err = CdpError { code: -32602, message: "Invalid params".into() };
         assert_eq!(err.code, -32602);
     }
 
-    // 63. CDPError code -32603 (Internal error)
+    // 63. CdpError code -32603 (Internal error)
     #[test]
     fn cdp_error_code_internal_error() {
-        let err = CDPError { code: -32603, message: "Internal error".into() };
+        let err = CdpError { code: -32603, message: "Internal error".into() };
         assert_eq!(err.code, -32603);
     }
 
-    // 64. CDPError with custom error code
+    // 64. CdpError with custom error code
     #[test]
     fn cdp_error_custom_code() {
-        let err = CDPError { code: -32000, message: "Server error".into() };
+        let err = CdpError { code: -32000, message: "Server error".into() };
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("-32000"));
         assert!(s.contains("Server error"));
     }
 
-    // 65. CDPError with empty message
+    // 65. CdpError with empty message
     #[test]
     fn cdp_error_empty_message() {
-        let err = CDPError { code: -32601, message: String::new() };
+        let err = CdpError { code: -32601, message: String::new() };
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("-32601"));
     }
 
-    // 66. CDPError with unicode message
+    // 66. CdpError with unicode message
     #[test]
     fn cdp_error_unicode_message() {
-        let err = CDPError { code: -32601, message: "方法未找到".into() };
+        let err = CdpError { code: -32601, message: "方法未找到".into() };
         let s = serde_json::to_string(&err).unwrap();
         assert!(s.contains("方法未找到"));
     }
 
-    // ─── CDPEvent edge cases ───────────────────────────────────────────
+    // ─── CdpEvent edge cases ───────────────────────────────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
-    // 67. CDPEvent with no params
+    // 67. CdpEvent with no params
     #[test]
     fn cdp_event_no_params() {
-        let ev = CDPEvent {
+        let ev = CdpEvent {
             method: "Page.domContentEventFired".into(),
             params: None,
         };
@@ -1215,11 +1247,11 @@ mod tests {
         assert!(parsed.get("params").is_none(), "params should be skipped when None");
     }
 
-    // 68. CDPEvent with large data
+    // 68. CdpEvent with large data
     #[test]
     fn cdp_event_large_data() {
         let large_string = "X".repeat(100_000);
-        let ev = CDPEvent {
+        let ev = CdpEvent {
             method: "Network.dataReceived".into(),
             params: Some(json!({ "dataLength": large_string.len(), "encodedDataLength": large_string.len() })),
         };
@@ -1228,10 +1260,10 @@ mod tests {
         assert_eq!(parsed["params"]["dataLength"], 100_000);
     }
 
-    // 69. CDPEvent with nested params
+    // 69. CdpEvent with nested params
     #[test]
     fn cdp_event_nested_params() {
-        let ev = CDPEvent {
+        let ev = CdpEvent {
             method: "DOM.attributeModified".into(),
             params: Some(json!({
                 "nodeId": 1,
@@ -1249,10 +1281,10 @@ mod tests {
         assert_eq!(parsed["params"]["metadata"]["source"], "user");
     }
 
-    // 70. CDPEvent with null params
+    // 70. CdpEvent with null params
     #[test]
     fn cdp_event_null_params() {
-        let ev = CDPEvent {
+        let ev = CdpEvent {
             method: "Page.frameResized".into(),
             params: Some(Value::Null),
         };
@@ -1261,10 +1293,10 @@ mod tests {
         assert_eq!(parsed["params"], Value::Null);
     }
 
-    // 71. CDPEvent with empty method
+    // 71. CdpEvent with empty method
     #[test]
     fn cdp_event_empty_method() {
-        let ev = CDPEvent {
+        let ev = CdpEvent {
             method: String::new(),
             params: None,
         };
@@ -1279,7 +1311,7 @@ mod tests {
     // 72. handle_command with method containing no dot → empty domain
     #[test]
     fn handle_command_no_dot_method() {
-        let msg = CDPMessage { id: 1, method: "NoDomain".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(1), method: "NoDomain".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1291,7 +1323,7 @@ mod tests {
     // 73. handle_command with empty method → empty domain, error
     #[test]
     fn handle_command_empty_method() {
-        let msg = CDPMessage { id: 2, method: String::new(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(2), method: String::new(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1302,7 +1334,7 @@ mod tests {
     // 74. handle_command with known domain but unknown command
     #[test]
     fn handle_command_known_domain_unknown_command() {
-        let msg = CDPMessage { id: 3, method: "Page.nonExistentCommand".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(3), method: "Page.nonExistentCommand".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1314,7 +1346,7 @@ mod tests {
     // 75. handle_command Target.getTargetInfo (no bridge) → ok with targetInfo
     #[test]
     fn handle_command_target_get_target_info() {
-        let msg = CDPMessage { id: 4, method: "Target.getTargetInfo".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(4), method: "Target.getTargetInfo".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1328,7 +1360,7 @@ mod tests {
     // 76. handle_command Target.attachToTarget → ok with sessionId
     #[test]
     fn handle_command_target_attach_to_target() {
-        let msg = CDPMessage { id: 5, method: "Target.attachToTarget".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(5), method: "Target.attachToTarget".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1340,7 +1372,7 @@ mod tests {
     // 77. handle_command Target.detachFromTarget → ok empty
     #[test]
     fn handle_command_target_detach_from_target() {
-        let msg = CDPMessage { id: 6, method: "Target.detachFromTarget".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(6), method: "Target.detachFromTarget".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1350,7 +1382,7 @@ mod tests {
     // 78. handle_command Target.setDiscoverTargets → ok empty
     #[test]
     fn handle_command_target_set_discover_targets() {
-        let msg = CDPMessage { id: 7, method: "Target.setDiscoverTargets".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(7), method: "Target.setDiscoverTargets".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1360,7 +1392,7 @@ mod tests {
     // 79. handle_command Target.getTargetTargets → ok (alias for getTargets)
     #[test]
     fn handle_command_target_get_target_targets() {
-        let msg = CDPMessage { id: 8, method: "Target.getTargetTargets".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(8), method: "Target.getTargetTargets".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1371,7 +1403,7 @@ mod tests {
     // 80. handle_command Page.navigate (no bridge) → ok with default url
     #[test]
     fn handle_command_page_navigate_no_bridge_default_url() {
-        let msg = CDPMessage { id: 9, method: "Page.navigate".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(9), method: "Page.navigate".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1382,8 +1414,8 @@ mod tests {
     // 81. handle_command Page.navigate (no bridge) with url param
     #[test]
     fn handle_command_page_navigate_with_url() {
-        let msg = CDPMessage {
-            id: 10,
+        let msg = CdpMessage {
+            id: Some(10),
             method: "Page.navigate".into(),
             params: Some(json!({"url": "https://example.com"})),
             session_id: None,
@@ -1398,7 +1430,7 @@ mod tests {
     // 82. handle_command Page.reload (no bridge) → ok
     #[test]
     fn handle_command_page_reload_no_bridge() {
-        let msg = CDPMessage { id: 11, method: "Page.reload".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(11), method: "Page.reload".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1410,7 +1442,7 @@ mod tests {
     // 83. handle_command Page.getFrameTree (no bridge) → ok
     #[test]
     fn handle_command_page_get_frame_tree() {
-        let msg = CDPMessage { id: 12, method: "Page.getFrameTree".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(12), method: "Page.getFrameTree".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1424,7 +1456,7 @@ mod tests {
     // 84. handle_command Page.getNavigationHistory (no bridge) → ok
     #[test]
     fn handle_command_page_get_navigation_history() {
-        let msg = CDPMessage { id: 13, method: "Page.getNavigationHistory".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(13), method: "Page.getNavigationHistory".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1436,7 +1468,7 @@ mod tests {
     // 85. handle_command Page.captureScreenshot (no bridge) → ok with empty data
     #[test]
     fn handle_command_page_capture_screenshot_no_bridge() {
-        let msg = CDPMessage { id: 14, method: "Page.captureScreenshot".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(14), method: "Page.captureScreenshot".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1447,7 +1479,7 @@ mod tests {
     // 86. handle_command Page.addScriptToEvaluateOnNewDocument (no bridge, empty source)
     #[test]
     fn handle_command_page_add_script_empty_source() {
-        let msg = CDPMessage { id: 15, method: "Page.addScriptToEvaluateOnNewDocument".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(15), method: "Page.addScriptToEvaluateOnNewDocument".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1458,7 +1490,7 @@ mod tests {
     // 87. handle_command Page.removeScriptToEvaluateOnNewDocument → ok empty
     #[test]
     fn handle_command_page_remove_script() {
-        let msg = CDPMessage { id: 16, method: "Page.removeScriptToEvaluateOnNewDocument".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(16), method: "Page.removeScriptToEvaluateOnNewDocument".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1468,7 +1500,7 @@ mod tests {
     // 88. handle_command Page.setContent → ok empty
     #[test]
     fn handle_command_page_set_content() {
-        let msg = CDPMessage { id: 17, method: "Page.setContent".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(17), method: "Page.setContent".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1478,7 +1510,7 @@ mod tests {
     // 89. handle_command Page.close → ok empty
     #[test]
     fn handle_command_page_close() {
-        let msg = CDPMessage { id: 18, method: "Page.close".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(18), method: "Page.close".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1488,7 +1520,7 @@ mod tests {
     // 90. handle_command Page.bringToFront → ok empty
     #[test]
     fn handle_command_page_bring_to_front() {
-        let msg = CDPMessage { id: 19, method: "Page.bringToFront".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(19), method: "Page.bringToFront".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1497,7 +1529,7 @@ mod tests {
     // 91. handle_command Page.disable → ok empty
     #[test]
     fn handle_command_page_disable() {
-        let msg = CDPMessage { id: 20, method: "Page.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(20), method: "Page.disable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1506,7 +1538,7 @@ mod tests {
     // 92. handle_command Runtime.disable → ok empty
     #[test]
     fn handle_command_runtime_disable() {
-        let msg = CDPMessage { id: 21, method: "Runtime.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(21), method: "Runtime.disable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1515,7 +1547,7 @@ mod tests {
     // 93. handle_command Runtime.callFunctionOn → ok
     #[test]
     fn handle_command_runtime_call_function_on() {
-        let msg = CDPMessage { id: 22, method: "Runtime.callFunctionOn".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(22), method: "Runtime.callFunctionOn".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1526,7 +1558,7 @@ mod tests {
     // 94. handle_command Runtime.getProperties → ok with empty array
     #[test]
     fn handle_command_runtime_get_properties() {
-        let msg = CDPMessage { id: 23, method: "Runtime.getProperties".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(23), method: "Runtime.getProperties".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1537,7 +1569,7 @@ mod tests {
     // 95. handle_command Runtime.evaluateAsync → ok
     #[test]
     fn handle_command_runtime_evaluate_async() {
-        let msg = CDPMessage { id: 24, method: "Runtime.evaluateAsync".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(24), method: "Runtime.evaluateAsync".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1546,7 +1578,7 @@ mod tests {
     // 96. handle_command Runtime.runScript → ok
     #[test]
     fn handle_command_runtime_run_script() {
-        let msg = CDPMessage { id: 25, method: "Runtime.runScript".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(25), method: "Runtime.runScript".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1555,7 +1587,7 @@ mod tests {
     // 97. handle_command Runtime.releaseObject → ok empty
     #[test]
     fn handle_command_runtime_release_object() {
-        let msg = CDPMessage { id: 26, method: "Runtime.releaseObject".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(26), method: "Runtime.releaseObject".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1564,7 +1596,7 @@ mod tests {
     // 98. handle_command Runtime.releaseObjectGroup → ok empty
     #[test]
     fn handle_command_runtime_release_object_group() {
-        let msg = CDPMessage { id: 27, method: "Runtime.releaseObjectGroup".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(27), method: "Runtime.releaseObjectGroup".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1573,7 +1605,7 @@ mod tests {
     // 99. handle_command Runtime.compileScript → ok empty
     #[test]
     fn handle_command_runtime_compile_script() {
-        let msg = CDPMessage { id: 28, method: "Runtime.compileScript".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(28), method: "Runtime.compileScript".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1582,7 +1614,7 @@ mod tests {
     // 100. handle_command Runtime.unknown → error -32601
     #[test]
     fn handle_command_runtime_unknown_command() {
-        let msg = CDPMessage { id: 29, method: "Runtime.unknownMethod".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(29), method: "Runtime.unknownMethod".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1594,7 +1626,7 @@ mod tests {
     // 101. handle_command DOM.enable → ok empty
     #[test]
     fn handle_command_dom_enable() {
-        let msg = CDPMessage { id: 30, method: "DOM.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(30), method: "DOM.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1603,7 +1635,7 @@ mod tests {
     // 102. handle_command DOM.disable → ok empty
     #[test]
     fn handle_command_dom_disable() {
-        let msg = CDPMessage { id: 31, method: "DOM.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(31), method: "DOM.disable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1612,7 +1644,7 @@ mod tests {
     // 103. handle_command DOM.describeNode → ok
     #[test]
     fn handle_command_dom_describe_node() {
-        let msg = CDPMessage { id: 32, method: "DOM.describeNode".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(32), method: "DOM.describeNode".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1623,7 +1655,7 @@ mod tests {
     // 104. handle_command DOM.getBoxModel → ok with model
     #[test]
     fn handle_command_dom_get_box_model() {
-        let msg = CDPMessage { id: 33, method: "DOM.getBoxModel".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(33), method: "DOM.getBoxModel".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1636,8 +1668,8 @@ mod tests {
     // 105. handle_command DOM.setAttributeValue (no bridge) → ok empty
     #[test]
     fn handle_command_dom_set_attribute_value_no_bridge() {
-        let msg = CDPMessage {
-            id: 34,
+        let msg = CdpMessage {
+            id: Some(34),
             method: "DOM.setAttributeValue".into(),
             params: Some(json!({"nodeId": 1, "name": "class", "value": "active"})),
             session_id: None,
@@ -1650,7 +1682,7 @@ mod tests {
     // 106. handle_command DOM.removeAttribute → ok empty
     #[test]
     fn handle_command_dom_remove_attribute() {
-        let msg = CDPMessage { id: 35, method: "DOM.removeAttribute".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(35), method: "DOM.removeAttribute".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1659,7 +1691,7 @@ mod tests {
     // 107. handle_command DOM.setOuterHTML → ok empty
     #[test]
     fn handle_command_dom_set_outer_html() {
-        let msg = CDPMessage { id: 36, method: "DOM.setOuterHTML".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(36), method: "DOM.setOuterHTML".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1668,7 +1700,7 @@ mod tests {
     // 108. handle_command DOM.insertBefore → ok empty
     #[test]
     fn handle_command_dom_insert_before() {
-        let msg = CDPMessage { id: 37, method: "DOM.insertBefore".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(37), method: "DOM.insertBefore".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1677,7 +1709,7 @@ mod tests {
     // 109. handle_command DOM.removeNode → ok empty
     #[test]
     fn handle_command_dom_remove_node() {
-        let msg = CDPMessage { id: 38, method: "DOM.removeNode".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(38), method: "DOM.removeNode".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1686,7 +1718,7 @@ mod tests {
     // 110. handle_command DOM.getOuterHTML (no bridge) → ok with default html
     #[test]
     fn handle_command_dom_get_outer_html_no_bridge() {
-        let msg = CDPMessage { id: 39, method: "DOM.getOuterHTML".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(39), method: "DOM.getOuterHTML".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1697,7 +1729,7 @@ mod tests {
     // 111. handle_command DOM.resolveNode → ok
     #[test]
     fn handle_command_dom_resolve_node() {
-        let msg = CDPMessage { id: 40, method: "DOM.resolveNode".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(40), method: "DOM.resolveNode".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1708,7 +1740,7 @@ mod tests {
     // 112. handle_command DOM.pushNodesByBackendIdsToFrontend → ok
     #[test]
     fn handle_command_dom_push_nodes_by_backend_ids() {
-        let msg = CDPMessage { id: 41, method: "DOM.pushNodesByBackendIdsToFrontend".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(41), method: "DOM.pushNodesByBackendIdsToFrontend".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1719,7 +1751,7 @@ mod tests {
     // 113. handle_command DOM.unknown → error -32601
     #[test]
     fn handle_command_dom_unknown_command() {
-        let msg = CDPMessage { id: 42, method: "DOM.nonExistent".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(42), method: "DOM.nonExistent".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1729,7 +1761,7 @@ mod tests {
     // 114. handle_command Network.disable → ok empty
     #[test]
     fn handle_command_network_disable() {
-        let msg = CDPMessage { id: 43, method: "Network.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(43), method: "Network.disable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1738,7 +1770,7 @@ mod tests {
     // 115. handle_command Network.getResponseBody → ok
     #[test]
     fn handle_command_network_get_response_body() {
-        let msg = CDPMessage { id: 44, method: "Network.getResponseBody".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(44), method: "Network.getResponseBody".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1750,7 +1782,7 @@ mod tests {
     // 116. handle_command Network.setCacheDisabled → ok empty
     #[test]
     fn handle_command_network_set_cache_disabled() {
-        let msg = CDPMessage { id: 45, method: "Network.setCacheDisabled".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(45), method: "Network.setCacheDisabled".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1759,7 +1791,7 @@ mod tests {
     // 117. handle_command Network.setExtraHTTPHeaders → ok empty
     #[test]
     fn handle_command_network_set_extra_http_headers() {
-        let msg = CDPMessage { id: 46, method: "Network.setExtraHTTPHeaders".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(46), method: "Network.setExtraHTTPHeaders".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1768,7 +1800,7 @@ mod tests {
     // 118. handle_command Network.emulateNetworkConditions → ok empty
     #[test]
     fn handle_command_network_emulate_conditions() {
-        let msg = CDPMessage { id: 47, method: "Network.emulateNetworkConditions".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(47), method: "Network.emulateNetworkConditions".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1777,7 +1809,7 @@ mod tests {
     // 119. handle_command Network.getAllCookies → ok with empty cookies
     #[test]
     fn handle_command_network_get_all_cookies() {
-        let msg = CDPMessage { id: 48, method: "Network.getAllCookies".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(48), method: "Network.getAllCookies".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1788,7 +1820,7 @@ mod tests {
     // 120. handle_command Network.deleteCookies → ok empty
     #[test]
     fn handle_command_network_delete_cookies() {
-        let msg = CDPMessage { id: 49, method: "Network.deleteCookies".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(49), method: "Network.deleteCookies".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1797,7 +1829,7 @@ mod tests {
     // 121. handle_command Network.setCookie → ok empty
     #[test]
     fn handle_command_network_set_cookie() {
-        let msg = CDPMessage { id: 50, method: "Network.setCookie".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(50), method: "Network.setCookie".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1806,7 +1838,7 @@ mod tests {
     // 122. handle_command Network.setRequestInterception → ok empty
     #[test]
     fn handle_command_network_set_request_interception() {
-        let msg = CDPMessage { id: 51, method: "Network.setRequestInterception".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(51), method: "Network.setRequestInterception".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1815,7 +1847,7 @@ mod tests {
     // 123. handle_command Network.continueInterceptedRequest → ok empty
     #[test]
     fn handle_command_network_continue_intercepted_request() {
-        let msg = CDPMessage { id: 52, method: "Network.continueInterceptedRequest".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(52), method: "Network.continueInterceptedRequest".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1824,7 +1856,7 @@ mod tests {
     // 124. handle_command Network.unknown → error -32601
     #[test]
     fn handle_command_network_unknown() {
-        let msg = CDPMessage { id: 53, method: "Network.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(53), method: "Network.bogus".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1834,7 +1866,7 @@ mod tests {
     // 125. handle_command CSS.disable → ok empty
     #[test]
     fn handle_command_css_disable() {
-        let msg = CDPMessage { id: 54, method: "CSS.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(54), method: "CSS.disable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1843,7 +1875,7 @@ mod tests {
     // 126. handle_command CSS.getMatchedStylesForNode → ok
     #[test]
     fn handle_command_css_get_matched_styles() {
-        let msg = CDPMessage { id: 55, method: "CSS.getMatchedStylesForNode".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(55), method: "CSS.getMatchedStylesForNode".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1855,7 +1887,7 @@ mod tests {
     // 127. handle_command CSS.getInlineStylesForNode → ok
     #[test]
     fn handle_command_css_get_inline_styles() {
-        let msg = CDPMessage { id: 56, method: "CSS.getInlineStylesForNode".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(56), method: "CSS.getInlineStylesForNode".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1866,7 +1898,7 @@ mod tests {
     // 128. handle_command CSS.setStyleTexts → ok
     #[test]
     fn handle_command_css_set_style_texts() {
-        let msg = CDPMessage { id: 57, method: "CSS.setStyleTexts".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(57), method: "CSS.setStyleTexts".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1877,7 +1909,7 @@ mod tests {
     // 129. handle_command CSS.unknown → error -32601
     #[test]
     fn handle_command_css_unknown() {
-        let msg = CDPMessage { id: 58, method: "CSS.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(58), method: "CSS.bogus".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1887,7 +1919,7 @@ mod tests {
     // 130. handle_command Emulation.clearDeviceMetricsOverride → ok empty
     #[test]
     fn handle_command_emulation_clear_device_metrics() {
-        let msg = CDPMessage { id: 59, method: "Emulation.clearDeviceMetricsOverride".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(59), method: "Emulation.clearDeviceMetricsOverride".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1896,7 +1928,7 @@ mod tests {
     // 131. handle_command Emulation.setUserAgentOverride (no bridge, empty ua) → ok empty
     #[test]
     fn handle_command_emulation_set_user_agent_no_bridge() {
-        let msg = CDPMessage { id: 60, method: "Emulation.setUserAgentOverride".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(60), method: "Emulation.setUserAgentOverride".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1905,7 +1937,7 @@ mod tests {
     // 132. handle_command Emulation.setTouchEmulationEnabled → ok empty
     #[test]
     fn handle_command_emulation_set_touch_emulation() {
-        let msg = CDPMessage { id: 61, method: "Emulation.setTouchEmulationEnabled".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(61), method: "Emulation.setTouchEmulationEnabled".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1914,7 +1946,7 @@ mod tests {
     // 133. handle_command Emulation.setScriptExecutionDisabled → ok empty
     #[test]
     fn handle_command_emulation_set_script_execution_disabled() {
-        let msg = CDPMessage { id: 62, method: "Emulation.setScriptExecutionDisabled".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(62), method: "Emulation.setScriptExecutionDisabled".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1923,7 +1955,7 @@ mod tests {
     // 134. handle_command Emulation.setFocusEmulationEnabled → ok empty
     #[test]
     fn handle_command_emulation_set_focus_emulation() {
-        let msg = CDPMessage { id: 63, method: "Emulation.setFocusEmulationEnabled".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(63), method: "Emulation.setFocusEmulationEnabled".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1932,7 +1964,7 @@ mod tests {
     // 135. handle_command Emulation.setCPUThrottlingRate → ok empty
     #[test]
     fn handle_command_emulation_set_cpu_throttling() {
-        let msg = CDPMessage { id: 64, method: "Emulation.setCPUThrottlingRate".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(64), method: "Emulation.setCPUThrottlingRate".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1941,7 +1973,7 @@ mod tests {
     // 136. handle_command Emulation.setDefaultBackgroundColorOverride → ok empty
     #[test]
     fn handle_command_emulation_set_default_bg_color() {
-        let msg = CDPMessage { id: 65, method: "Emulation.setDefaultBackgroundColorOverride".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(65), method: "Emulation.setDefaultBackgroundColorOverride".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1950,7 +1982,7 @@ mod tests {
     // 137. handle_command Emulation.unknown → error -32601
     #[test]
     fn handle_command_emulation_unknown() {
-        let msg = CDPMessage { id: 66, method: "Emulation.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(66), method: "Emulation.bogus".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -1960,7 +1992,7 @@ mod tests {
     // 138. handle_command Input.dispatchKeyEvent (no bridge) → ok empty
     #[test]
     fn handle_command_input_dispatch_key_no_bridge() {
-        let msg = CDPMessage { id: 67, method: "Input.dispatchKeyEvent".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(67), method: "Input.dispatchKeyEvent".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1969,7 +2001,7 @@ mod tests {
     // 139. handle_command Input.dispatchTouchEvent → ok empty
     #[test]
     fn handle_command_input_dispatch_touch() {
-        let msg = CDPMessage { id: 68, method: "Input.dispatchTouchEvent".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(68), method: "Input.dispatchTouchEvent".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1978,7 +2010,7 @@ mod tests {
     // 140. handle_command Input.insertText (no bridge, empty text) → ok empty
     #[test]
     fn handle_command_input_insert_text_no_bridge() {
-        let msg = CDPMessage { id: 69, method: "Input.insertText".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(69), method: "Input.insertText".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1987,7 +2019,7 @@ mod tests {
     // 141. handle_command Input.setIgnoreInputEvents → ok empty
     #[test]
     fn handle_command_input_set_ignore_input_events() {
-        let msg = CDPMessage { id: 70, method: "Input.setIgnoreInputEvents".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(70), method: "Input.setIgnoreInputEvents".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -1996,7 +2028,7 @@ mod tests {
     // 142. handle_command Input.setInterceptDrags → ok empty
     #[test]
     fn handle_command_input_set_intercept_drags() {
-        let msg = CDPMessage { id: 71, method: "Input.setInterceptDrags".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(71), method: "Input.setInterceptDrags".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2005,7 +2037,7 @@ mod tests {
     // 143. handle_command Input.unknown → error -32601
     #[test]
     fn handle_command_input_unknown() {
-        let msg = CDPMessage { id: 72, method: "Input.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(72), method: "Input.bogus".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2015,7 +2047,7 @@ mod tests {
     // 144. handle_command Overlay.highlightNode → ok empty
     #[test]
     fn handle_command_overlay_highlight_node() {
-        let msg = CDPMessage { id: 73, method: "Overlay.highlightNode".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(73), method: "Overlay.highlightNode".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2024,7 +2056,7 @@ mod tests {
     // 145. handle_command Overlay.hideHighlight → ok empty
     #[test]
     fn handle_command_overlay_hide_highlight() {
-        let msg = CDPMessage { id: 74, method: "Overlay.hideHighlight".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(74), method: "Overlay.hideHighlight".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2033,7 +2065,7 @@ mod tests {
     // 146. handle_command Overlay.setInspectMode → ok empty
     #[test]
     fn handle_command_overlay_set_inspect_mode() {
-        let msg = CDPMessage { id: 75, method: "Overlay.setInspectMode".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(75), method: "Overlay.setInspectMode".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2042,7 +2074,7 @@ mod tests {
     // 147. handle_command Overlay.setPausedInDebuggerMessage → ok empty
     #[test]
     fn handle_command_overlay_set_paused_in_debugger() {
-        let msg = CDPMessage { id: 76, method: "Overlay.setPausedInDebuggerMessage".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(76), method: "Overlay.setPausedInDebuggerMessage".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2051,7 +2083,7 @@ mod tests {
     // 148. handle_command Overlay.unknown → error -32601
     #[test]
     fn handle_command_overlay_unknown() {
-        let msg = CDPMessage { id: 77, method: "Overlay.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(77), method: "Overlay.bogus".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2061,7 +2093,7 @@ mod tests {
     // 149. handle_command Debugger.disable → ok empty
     #[test]
     fn handle_command_debugger_disable() {
-        let msg = CDPMessage { id: 78, method: "Debugger.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(78), method: "Debugger.disable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2070,7 +2102,7 @@ mod tests {
     // 150. handle_command Debugger.removeBreakpoint → ok empty
     #[test]
     fn handle_command_debugger_remove_breakpoint() {
-        let msg = CDPMessage { id: 79, method: "Debugger.removeBreakpoint".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(79), method: "Debugger.removeBreakpoint".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2079,7 +2111,7 @@ mod tests {
     // 151. handle_command Debugger.pause → ok empty
     #[test]
     fn handle_command_debugger_pause() {
-        let msg = CDPMessage { id: 80, method: "Debugger.pause".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(80), method: "Debugger.pause".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2088,7 +2120,7 @@ mod tests {
     // 152. handle_command Debugger.resume → ok empty
     #[test]
     fn handle_command_debugger_resume() {
-        let msg = CDPMessage { id: 81, method: "Debugger.resume".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(81), method: "Debugger.resume".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2097,7 +2129,7 @@ mod tests {
     // 153. handle_command Debugger.stepOver → ok empty
     #[test]
     fn handle_command_debugger_step_over() {
-        let msg = CDPMessage { id: 82, method: "Debugger.stepOver".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(82), method: "Debugger.stepOver".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2106,7 +2138,7 @@ mod tests {
     // 154. handle_command Debugger.stepInto → ok empty
     #[test]
     fn handle_command_debugger_step_into() {
-        let msg = CDPMessage { id: 83, method: "Debugger.stepInto".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(83), method: "Debugger.stepInto".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2115,7 +2147,7 @@ mod tests {
     // 155. handle_command Debugger.stepOut → ok empty
     #[test]
     fn handle_command_debugger_step_out() {
-        let msg = CDPMessage { id: 84, method: "Debugger.stepOut".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(84), method: "Debugger.stepOut".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2124,7 +2156,7 @@ mod tests {
     // 156. handle_command Debugger.setSkipAllPauses → ok empty
     #[test]
     fn handle_command_debugger_set_skip_all_pauses() {
-        let msg = CDPMessage { id: 85, method: "Debugger.setSkipAllPauses".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(85), method: "Debugger.setSkipAllPauses".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2133,7 +2165,7 @@ mod tests {
     // 157. handle_command Debugger.setBreakpointsActive → ok empty
     #[test]
     fn handle_command_debugger_set_breakpoints_active() {
-        let msg = CDPMessage { id: 86, method: "Debugger.setBreakpointsActive".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(86), method: "Debugger.setBreakpointsActive".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2142,7 +2174,7 @@ mod tests {
     // 158. handle_command Debugger.evaluateOnCallFrame → ok
     #[test]
     fn handle_command_debugger_evaluate_on_call_frame() {
-        let msg = CDPMessage { id: 87, method: "Debugger.evaluateOnCallFrame".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(87), method: "Debugger.evaluateOnCallFrame".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2153,7 +2185,7 @@ mod tests {
     // 159. handle_command Debugger.getPossibleBreakpoints → ok
     #[test]
     fn handle_command_debugger_get_possible_breakpoints() {
-        let msg = CDPMessage { id: 88, method: "Debugger.getPossibleBreakpoints".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(88), method: "Debugger.getPossibleBreakpoints".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2164,7 +2196,7 @@ mod tests {
     // 160. handle_command Debugger.getScriptSource → ok
     #[test]
     fn handle_command_debugger_get_script_source() {
-        let msg = CDPMessage { id: 89, method: "Debugger.getScriptSource".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(89), method: "Debugger.getScriptSource".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2175,7 +2207,7 @@ mod tests {
     // 161. handle_command Debugger.setPauseOnExceptions → ok empty
     #[test]
     fn handle_command_debugger_set_pause_on_exceptions() {
-        let msg = CDPMessage { id: 90, method: "Debugger.setPauseOnExceptions".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(90), method: "Debugger.setPauseOnExceptions".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2184,7 +2216,7 @@ mod tests {
     // 162. handle_command Debugger.unknown → error -32601
     #[test]
     fn handle_command_debugger_unknown() {
-        let msg = CDPMessage { id: 91, method: "Debugger.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(91), method: "Debugger.bogus".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2194,7 +2226,7 @@ mod tests {
     // 163. handle_command Log.disable → ok empty
     #[test]
     fn handle_command_log_disable() {
-        let msg = CDPMessage { id: 92, method: "Log.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(92), method: "Log.disable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2203,7 +2235,7 @@ mod tests {
     // 164. handle_command Log.clear → ok empty
     #[test]
     fn handle_command_log_clear() {
-        let msg = CDPMessage { id: 93, method: "Log.clear".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(93), method: "Log.clear".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2212,7 +2244,7 @@ mod tests {
     // 165. handle_command Log.startViolationsReport → ok empty
     #[test]
     fn handle_command_log_start_violations_report() {
-        let msg = CDPMessage { id: 94, method: "Log.startViolationsReport".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(94), method: "Log.startViolationsReport".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2221,7 +2253,7 @@ mod tests {
     // 166. handle_command Log.stopViolationsReport → ok empty
     #[test]
     fn handle_command_log_stop_violations_report() {
-        let msg = CDPMessage { id: 95, method: "Log.stopViolationsReport".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(95), method: "Log.stopViolationsReport".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2230,7 +2262,7 @@ mod tests {
     // 167. handle_command Log.unknown → error -32601
     #[test]
     fn handle_command_log_unknown() {
-        let msg = CDPMessage { id: 96, method: "Log.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(96), method: "Log.bogus".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2240,7 +2272,7 @@ mod tests {
     // 168. handle_command Fetch.disable → ok empty
     #[test]
     fn handle_command_fetch_disable() {
-        let msg = CDPMessage { id: 97, method: "Fetch.disable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(97), method: "Fetch.disable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2249,8 +2281,8 @@ mod tests {
     // 169. handle_command Fetch.continueWithResponse → ok
     #[test]
     fn handle_command_fetch_continue_with_response() {
-        let msg = CDPMessage {
-            id: 98,
+        let msg = CdpMessage {
+            id: Some(98),
             method: "Fetch.continueWithResponse".into(),
             params: Some(json!({"requestId": "r1"})),
             session_id: None,
@@ -2266,8 +2298,8 @@ mod tests {
     // 170. handle_command Fetch.failRequest → ok
     #[test]
     fn handle_command_fetch_fail_request() {
-        let msg = CDPMessage {
-            id: 99,
+        let msg = CdpMessage {
+            id: Some(99),
             method: "Fetch.failRequest".into(),
             params: Some(json!({"requestId": "r2", "reason": "Aborted"})),
             session_id: None,
@@ -2284,8 +2316,8 @@ mod tests {
     // 171. handle_command Fetch.fulfillRequest → ok
     #[test]
     fn handle_command_fetch_fulfill_request() {
-        let msg = CDPMessage {
-            id: 100,
+        let msg = CdpMessage {
+            id: Some(100),
             method: "Fetch.fulfillRequest".into(),
             params: Some(json!({"requestId": "r3", "responseCode": 404, "body": "dGVzdA=="})),
             session_id: None,
@@ -2302,8 +2334,8 @@ mod tests {
     // 172. handle_command Fetch.getRequestPostData → ok
     #[test]
     fn handle_command_fetch_get_request_post_data() {
-        let msg = CDPMessage {
-            id: 101,
+        let msg = CdpMessage {
+            id: Some(101),
             method: "Fetch.getRequestPostData".into(),
             params: Some(json!({"requestId": "r4"})),
             session_id: None,
@@ -2319,8 +2351,8 @@ mod tests {
     // 173. handle_command Fetch.continueWithAuth → ok
     #[test]
     fn handle_command_fetch_continue_with_auth() {
-        let msg = CDPMessage {
-            id: 102,
+        let msg = CdpMessage {
+            id: Some(102),
             method: "Fetch.continueWithAuth".into(),
             params: Some(json!({"requestId": "r5"})),
             session_id: None,
@@ -2335,8 +2367,8 @@ mod tests {
     // 174. handle_command Fetch.takeResponseBodyAsStream → ok
     #[test]
     fn handle_command_fetch_take_response_body_as_stream() {
-        let msg = CDPMessage {
-            id: 103,
+        let msg = CdpMessage {
+            id: Some(103),
             method: "Fetch.takeResponseBodyAsStream".into(),
             params: Some(json!({"requestId": "r6"})),
             session_id: None,
@@ -2351,7 +2383,7 @@ mod tests {
     // 175. handle_command Fetch.enable without patterns → patternCount 0
     #[test]
     fn handle_command_fetch_enable_without_patterns() {
-        let msg = CDPMessage { id: 104, method: "Fetch.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(104), method: "Fetch.enable".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.error.is_none());
@@ -2363,8 +2395,8 @@ mod tests {
     // 176. handle_command Fetch.enable with multiple patterns
     #[test]
     fn handle_command_fetch_enable_with_multiple_patterns() {
-        let msg = CDPMessage {
-            id: 105,
+        let msg = CdpMessage {
+            id: Some(105),
             method: "Fetch.enable".into(),
             params: Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "https://*"}]})),
             session_id: None,
@@ -2379,7 +2411,7 @@ mod tests {
     // 177. handle_command Fetch.unknown → error -32601
     #[test]
     fn handle_command_fetch_unknown() {
-        let msg = CDPMessage { id: 106, method: "Fetch.bogus".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(106), method: "Fetch.bogus".into(), params: None, session_id: None };
         let params = msg.params.clone();
         let resp = handle_command(msg, "t1", &params, None);
         assert!(resp.result.is_none());
@@ -2463,22 +2495,22 @@ mod tests {
         assert!(err.message.contains("no servo bridge connected"));
     }
 
-    // ─── CDPMessage Debug trait ────────────────────────────────────────
+    // ─── CdpMessage Debug trait ────────────────────────────────────────
     // @trace REQ-CDP-001 [req:REQ-CDP-001] [level:unit]
 
-    // 186. CDPMessage debug format
+    // 186. CdpMessage debug format
     #[test]
     fn cdp_message_debug_format() {
-        let msg = CDPMessage { id: 1, method: "Page.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(1), method: "Page.enable".into(), params: None, session_id: None };
         let debug = format!("{:?}", msg);
-        assert!(debug.contains("CDPMessage"));
+        assert!(debug.contains("CdpMessage"));
         assert!(debug.contains("Page.enable"));
     }
 
-    // 187. CDPMessage clone
+    // 187. CdpMessage clone
     #[test]
     fn cdp_message_clone() {
-        let msg = CDPMessage { id: 1, method: "Page.enable".into(), params: Some(json!({"k": "v"})), session_id: Some("s1".into()) };
+        let msg = CdpMessage { id: Some(1), method: "Page.enable".into(), params: Some(json!({"k": "v"})), session_id: Some("s1".into()) };
         let cloned = msg.clone();
         assert_eq!(cloned.id, msg.id);
         assert_eq!(cloned.method, msg.method);

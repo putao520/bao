@@ -2,10 +2,10 @@
 // @trace TEST-CDP-012 [req:REQ-CDP-002] [level:unit]
 // @trace TEST-CDP-013 [req:REQ-CDP-004] [level:unit]
 // Protocol message layer deep tests: parse_message, handle_command (all 11 domains
-// without bridge), serialize_response, serialize_event, CDPMessage/CDPResponse/
-// CDPError/CDPEvent serialization edge cases, roundtrip consistency.
+// without bridge), serialize_response, serialize_event, CdpMessage/CdpResponse/
+// CdpError/CdpEvent serialization edge cases, roundtrip consistency.
 
-use bao_cdp::{CDPMessage, CDPResponse, CDPError, CDPEvent};
+use bao_cdp::{CdpMessage, CdpResponse, CdpError, CdpEvent};
 
 const TID: &str = "test-target";
 use bao_cdp::{parse_message, handle_command, serialize_response, serialize_event};
@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 fn test_parse_valid_minimal() {
     let raw = r#"{"id":1,"method":"Page.enable"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, 1);
+    assert_eq!(msg.id, Some(1));
     assert_eq!(msg.method, "Page.enable");
     assert!(msg.params.is_none());
     assert!(msg.session_id.is_none());
@@ -29,7 +29,7 @@ fn test_parse_valid_minimal() {
 fn test_parse_full_message() {
     let raw = r#"{"id":42,"method":"Runtime.evaluate","params":{"expression":"1+1"},"session_id":"sess-abc"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, 42);
+    assert_eq!(msg.id, Some(42));
     assert_eq!(msg.method, "Runtime.evaluate");
     assert_eq!(msg.params.as_ref().unwrap()["expression"], "1+1");
     assert_eq!(msg.session_id.as_ref().unwrap(), "sess-abc");
@@ -39,7 +39,7 @@ fn test_parse_full_message() {
 fn test_parse_with_null_params() {
     let raw = r#"{"id":2,"method":"Page.enable","params":null}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, 2);
+    assert_eq!(msg.id, Some(2));
     assert!(msg.params.is_none());
 }
 
@@ -64,14 +64,14 @@ fn test_parse_with_array_params() {
 fn test_parse_negative_id() {
     let raw = r#"{"id":-1,"method":"Test.cmd"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, -1);
+    assert_eq!(msg.id, Some(-1));
 }
 
 #[test]
 fn test_parse_large_id() {
     let raw = r#"{"id":99999999999,"method":"Test.cmd"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, 99999999999i64);
+    assert_eq!(msg.id, Some(99999999999i64));
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn test_parse_float_id_fails() {
 fn test_parse_extra_fields_ignored() {
     let raw = r#"{"id":1,"method":"Test.cmd","extra":"data","another":123}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, 1);
+    assert_eq!(msg.id, Some(1));
     assert_eq!(msg.method, "Test.cmd");
 }
 
@@ -136,8 +136,13 @@ fn test_parse_null() {
 
 #[test]
 fn test_parse_missing_id() {
+    // JSON-RPC 2.0 permits notifications (no id). With CdpMessage.id as
+    // Option<i64> (TASK-4-CDP), a missing id deserializes to None and the
+    // message parses successfully (it is a valid notification).
     let raw = r#"{"method":"Page.enable"}"#;
-    assert!(parse_message(raw).is_none());
+    let msg = parse_message(raw).unwrap();
+    assert_eq!(msg.id, None);
+    assert_eq!(msg.method, "Page.enable");
 }
 
 #[test]
@@ -155,9 +160,9 @@ fn test_parse_unicode_method() {
 
 // ---- handle_command helpers ----
 
-fn dispatch(method: &str, params: Option<Value>) -> CDPResponse {
-    let msg = CDPMessage {
-        id: 1,
+fn dispatch(method: &str, params: Option<Value>) -> CdpResponse {
+    let msg = CdpMessage {
+        id: Some(1),
         method: method.to_string(),
         params: params.clone(),
         session_id: None,
@@ -169,7 +174,7 @@ fn ok_result(method: &str, params: Option<Value>) -> Value {
     dispatch(method, params).result.unwrap()
 }
 
-fn err_result(method: &str, params: Option<Value>) -> CDPError {
+fn err_result(method: &str, params: Option<Value>) -> CdpError {
     dispatch(method, params).error.unwrap()
 }
 
@@ -1024,7 +1029,7 @@ fn test_no_dot_in_method() {
 
 #[test]
 fn test_serialize_ok_response() {
-    let resp = CDPResponse { id: 1, result: Some(json!({"value": 42})), error: None };
+    let resp = CdpResponse { id: Some(1), result: Some(json!({"value": 42})), error: None };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["id"], 1);
@@ -1034,9 +1039,9 @@ fn test_serialize_ok_response() {
 
 #[test]
 fn test_serialize_error_response() {
-    let resp = CDPResponse {
-        id: 2, result: None,
-        error: Some(CDPError { code: -32601, message: "not found".into() }),
+    let resp = CdpResponse {
+        id: Some(2), result: None,
+        error: Some(CdpError { code: -32601, message: "not found".into() }),
     };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
@@ -1048,7 +1053,7 @@ fn test_serialize_error_response() {
 
 #[test]
 fn test_serialize_empty_result() {
-    let resp = CDPResponse { id: 3, result: Some(json!({})), error: None };
+    let resp = CdpResponse { id: Some(3), result: Some(json!({})), error: None };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["result"], json!({}));
@@ -1056,7 +1061,7 @@ fn test_serialize_empty_result() {
 
 #[test]
 fn test_serialize_negative_id() {
-    let resp = CDPResponse { id: -100, result: Some(json!(null)), error: None };
+    let resp = CdpResponse { id: Some(-100), result: Some(json!(null)), error: None };
     let raw = serialize_response(&resp);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["id"], -100);
@@ -1064,7 +1069,7 @@ fn test_serialize_negative_id() {
 
 #[test]
 fn test_serialize_zero_id() {
-    let resp = CDPResponse { id: 0, result: Some(json!({})), error: None };
+    let resp = CdpResponse { id: Some(0), result: Some(json!({})), error: None };
     let raw = serialize_response(&resp);
     assert!(serde_json::from_str::<Value>(&raw).is_ok());
 }
@@ -1073,7 +1078,7 @@ fn test_serialize_zero_id() {
 
 #[test]
 fn test_serialize_event_with_params() {
-    let ev = CDPEvent { method: "Page.loadEventFired".into(), params: Some(json!({"timestamp": 12345})) };
+    let ev = CdpEvent { method: "Page.loadEventFired".into(), params: Some(json!({"timestamp": 12345})) };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["method"], "Page.loadEventFired");
@@ -1082,7 +1087,7 @@ fn test_serialize_event_with_params() {
 
 #[test]
 fn test_serialize_event_without_params() {
-    let ev = CDPEvent { method: "DOM.documentUpdated".into(), params: None };
+    let ev = CdpEvent { method: "DOM.documentUpdated".into(), params: None };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["method"], "DOM.documentUpdated");
@@ -1091,7 +1096,7 @@ fn test_serialize_event_without_params() {
 
 #[test]
 fn test_serialize_event_empty_params() {
-    let ev = CDPEvent { method: "Log.entryAdded".into(), params: Some(json!({})) };
+    let ev = CdpEvent { method: "Log.entryAdded".into(), params: Some(json!({})) };
     let raw = serialize_event(&ev);
     let p: Value = serde_json::from_str(&raw).unwrap();
     assert_eq!(p["params"], json!({}));
@@ -1099,7 +1104,7 @@ fn test_serialize_event_empty_params() {
 
 #[test]
 fn test_serialize_event_complex_params() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Runtime.consoleAPICalled".into(),
         params: Some(json!({"type": "log", "timestamp": 999, "args": [{"type": "string", "value": "hello"}]})),
     };
@@ -1166,11 +1171,11 @@ fn test_roundtrip_dom_get_document() {
     assert_eq!(root["children"][0]["nodeName"], "HTML");
 }
 
-// ---- CDPError Debug/Serialize ----
+// ---- CdpError Debug/Serialize ----
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CDPError { code: -32601, message: "test error".into() };
+    let err = CdpError { code: -32601, message: "test error".into() };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32601"));
     assert!(debug.contains("test error"));
@@ -1178,24 +1183,24 @@ fn test_cdp_error_debug() {
 
 #[test]
 fn test_cdp_error_serialization() {
-    let err = CDPError { code: -32000, message: "internal".into() };
+    let err = CdpError { code: -32000, message: "internal".into() };
     let json_str = serde_json::to_string(&err).unwrap();
     let p: Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(p["code"], -32000);
     assert_eq!(p["message"], "internal");
 }
 
-// ---- CDPMessage Clone/Debug ----
+// ---- CdpMessage Clone/Debug ----
 
 #[test]
 fn test_cdp_message_clone() {
-    let msg = CDPMessage {
-        id: 1, method: "Page.enable".into(),
+    let msg = CdpMessage {
+        id: Some(1), method: "Page.enable".into(),
         params: Some(json!({"key": "val"})),
         session_id: Some("sess-1".into()),
     };
     let cloned = msg.clone();
-    assert_eq!(cloned.id, 1);
+    assert_eq!(cloned.id, Some(1));
     assert_eq!(cloned.method, "Page.enable");
     assert_eq!(cloned.params.unwrap()["key"], "val");
     assert_eq!(cloned.session_id.unwrap(), "sess-1");
@@ -1203,16 +1208,16 @@ fn test_cdp_message_clone() {
 
 #[test]
 fn test_cdp_message_debug() {
-    let msg = CDPMessage { id: 1, method: "Test.cmd".into(), params: None, session_id: None };
+    let msg = CdpMessage { id: Some(1), method: "Test.cmd".into(), params: None, session_id: None };
     let debug = format!("{:?}", msg);
     assert!(debug.contains("Test.cmd"));
 }
 
-// ---- CDPEvent Clone/Debug ----
+// ---- CdpEvent Clone/Debug ----
 
 #[test]
 fn test_cdp_event_clone() {
-    let ev = CDPEvent { method: "Page.loadEventFired".into(), params: Some(json!({"ts": 1})) };
+    let ev = CdpEvent { method: "Page.loadEventFired".into(), params: Some(json!({"ts": 1})) };
     let cloned = ev.clone();
     assert_eq!(cloned.method, "Page.loadEventFired");
     assert_eq!(cloned.params.unwrap()["ts"], 1);
@@ -1220,7 +1225,7 @@ fn test_cdp_event_clone() {
 
 #[test]
 fn test_cdp_event_debug() {
-    let ev = CDPEvent { method: "Test.evt".into(), params: None };
+    let ev = CdpEvent { method: "Test.evt".into(), params: None };
     let debug = format!("{:?}", ev);
     assert!(debug.contains("Test.evt"));
 }
@@ -1230,9 +1235,9 @@ fn test_cdp_event_debug() {
 #[test]
 fn test_response_preserves_request_id() {
     for id in [0i64, 1, -1, 999, i64::MAX, i64::MIN] {
-        let msg = CDPMessage { id, method: "Page.enable".into(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(id), method: "Page.enable".into(), params: None, session_id: None };
         let resp = handle_command(msg, "t-1", &None, None);
-        assert_eq!(resp.id, id, "Response ID should match request ID {}", id);
+        assert_eq!(resp.id, Some(id), "Response ID should match request ID {}", id);
     }
 }
 
@@ -1240,11 +1245,11 @@ fn test_response_preserves_request_id() {
 
 #[test]
 fn test_attach_to_target_session_id_deterministic() {
-    let msg1 = CDPMessage { id: 1, method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let msg1 = CdpMessage { id: Some(1), method: "Target.attachToTarget".into(), params: None, session_id: None };
     let r1 = handle_command(msg1, "target-abc", &None, None).result.unwrap();
     let sid1 = r1["sessionId"].as_str().unwrap().to_string();
 
-    let msg2 = CDPMessage { id: 2, method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let msg2 = CdpMessage { id: Some(2), method: "Target.attachToTarget".into(), params: None, session_id: None };
     let r2 = handle_command(msg2, "target-abc", &None, None).result.unwrap();
     let sid2 = r2["sessionId"].as_str().unwrap().to_string();
 
@@ -1253,11 +1258,11 @@ fn test_attach_to_target_session_id_deterministic() {
 
 #[test]
 fn test_different_targets_different_session_ids() {
-    let msg1 = CDPMessage { id: 1, method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let msg1 = CdpMessage { id: Some(1), method: "Target.attachToTarget".into(), params: None, session_id: None };
     let r1 = handle_command(msg1, "target-A", &None, None).result.unwrap();
     let sid1 = r1["sessionId"].as_str().unwrap().to_string();
 
-    let msg2 = CDPMessage { id: 2, method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let msg2 = CdpMessage { id: Some(2), method: "Target.attachToTarget".into(), params: None, session_id: None };
     let r2 = handle_command(msg2, "target-B", &None, None).result.unwrap();
     let sid2 = r2["sessionId"].as_str().unwrap().to_string();
 
@@ -1269,8 +1274,8 @@ fn test_different_targets_different_session_ids() {
 #[test]
 fn test_navigate_loader_id_from_url_length() {
     let url = "https://example.com/page";
-    let msg = CDPMessage {
-        id: 1, method: "Page.navigate".into(),
+    let msg = CdpMessage {
+        id: Some(1), method: "Page.navigate".into(),
         params: Some(json!({"url": url})),
         session_id: None,
     };
@@ -1290,7 +1295,7 @@ fn test_all_domains_unknown_command() {
     ];
     for domain in &domains {
         let method = format!("{}.completelyUnknownCommand12345", domain);
-        let msg = CDPMessage { id: 1, method: method.clone(), params: None, session_id: None };
+        let msg = CdpMessage { id: Some(1), method: method.clone(), params: None, session_id: None };
         let resp = handle_command(msg, "t-1", &None, None);
         assert!(resp.error.is_some(), "{} unknown should error", domain);
         assert_eq!(resp.error.as_ref().unwrap().code, -32601);

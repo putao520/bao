@@ -2,7 +2,7 @@
 // CdpRouter lifecycle + CdpSession + BackendKind + bridge channel integration tests
 
 use bao_cdp::{
-    CdpRouter, BackendKind, CDPServer, CDPServerError,
+    CdpRouter, BackendKind,
     bridge_channel, BridgeCommand, BridgeResponse,
 };
 use serde_json::json;
@@ -139,82 +139,6 @@ fn test_backend_kind_copy() {
     assert_eq!(a, b);
 }
 
-// ---- CDPServer construction ----
-
-#[test]
-fn test_cdp_server_new() {
-    let server = CDPServer::new(19222);
-    assert_eq!(server.port(), 19222);
-    assert!(!server.target_id().is_empty());
-}
-
-#[test]
-fn test_cdp_server_with_bridge() {
-    let (sender, _receiver) = bridge_channel(std::time::Duration::from_secs(5));
-    let server = CDPServer::with_bridge(19233, sender);
-    assert_eq!(server.port(), 19233);
-}
-
-#[test]
-fn test_cdp_server_ws_url_format() {
-    let server = CDPServer::new(19244);
-    let url = server.ws_url();
-    assert!(url.starts_with("ws://127.0.0.1:19244/devtools/page/"));
-    assert_eq!(url.len(), "ws://127.0.0.1:19244/devtools/page/".len() + 16);
-}
-
-#[test]
-fn test_cdp_server_json_url() {
-    let server = CDPServer::new(19255);
-    assert_eq!(server.json_url(), "http://127.0.0.1:19255/json");
-}
-
-#[test]
-fn test_cdp_server_target_id_is_hex() {
-    let server = CDPServer::new(19266);
-    let id = server.target_id();
-    assert_eq!(id.len(), 16);
-    assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
-}
-
-#[test]
-fn test_cdp_server_unique_target_ids() {
-    let s1 = CDPServer::new(19277);
-    let s2 = CDPServer::new(19288);
-    assert_ne!(s1.target_id(), s2.target_id());
-}
-
-// ---- CDPServerError ----
-
-#[test]
-fn test_cdp_server_error_display() {
-    let err = CDPServerError::Bind("port in use".into());
-    assert!(format!("{}", err).contains("Bind error"));
-    assert!(format!("{}", err).contains("port in use"));
-
-    let err = CDPServerError::Io("read failed".into());
-    assert!(format!("{}", err).contains("IO error"));
-
-    let err = CDPServerError::WebSocket("upgrade failed".into());
-    assert!(format!("{}", err).contains("WebSocket error"));
-
-    let err = CDPServerError::Protocol("invalid".into());
-    assert!(format!("{}", err).contains("Protocol error"));
-}
-
-#[test]
-fn test_cdp_server_error_is_std_error() {
-    let err = CDPServerError::Bind("test".into());
-    let _: &dyn std::error::Error = &err;
-}
-
-#[test]
-fn test_cdp_server_error_debug() {
-    let err = CDPServerError::Io("debug test".into());
-    let debug = format!("{:?}", err);
-    assert!(debug.contains("Io"));
-}
-
 // ---- Bridge channel ----
 
 #[test]
@@ -303,27 +227,5 @@ fn test_bridge_response_debug() {
 }
 
 // ---- CDPServer event sender ----
-
-#[test]
-fn test_cdp_server_send_event_no_panic() {
-    let server = CDPServer::new(19299);
-    // No session connected, but send_event should not panic
-    server.send_event("Page.loadEventFired", json!({"timestamp": 1234.5}));
-}
-
-#[test]
-fn test_cdp_server_event_sender_clone() {
-    let server = CDPServer::new(19300);
-    let tx1 = server.event_sender();
-    let tx2 = server.event_sender();
-    // Both should be usable
-    let _ = tx1.send(bao_cdp::CDPCommand::Shutdown);
-    let _ = tx2.send(bao_cdp::CDPCommand::Shutdown);
-}
-
-#[test]
-fn test_cdp_server_shutdown() {
-    let server = CDPServer::new(19301);
-    server.shutdown();
-    // Should not panic, server would exit run() loop
-}
+// (Removed in TASK-4-CDP: the dead synchronous CDPServer entry was deleted;
+// production + tests use cdp_server::CdpServer instead.)

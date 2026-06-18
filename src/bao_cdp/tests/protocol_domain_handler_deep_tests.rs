@@ -1,9 +1,9 @@
 // @trace TEST-CDP-019 [req:REQ-CDP-001,REQ-CDP-002,REQ-CDP-004,REQ-CDP-005] [level:unit]
 // bao_cdp protocol.rs handle_command: all 11 domains without bridge,
-// internal response validation, CDPMessage parse edge cases,
+// internal response validation, CdpMessage parse edge cases,
 // BridgeReceiver try_process/drain, BackendKind enum.
 
-use bao_cdp::{parse_message, handle_command, serialize_response, serialize_event, CDPMessage, CDPResponse, CDPError, CDPEvent};
+use bao_cdp::{parse_message, handle_command, serialize_response, serialize_event, CdpMessage, CdpResponse, CdpError, CdpEvent};
 use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse};
 use serde_json::{json, Value};
 use std::time::Duration;
@@ -11,15 +11,15 @@ use std::time::Duration;
 const TID: &str = "test-target";
 
 // Helper: parse + handle without bridge
-fn dispatch(raw: &str) -> CDPResponse {
+fn dispatch(raw: &str) -> CdpResponse {
     let msg = parse_message(raw).unwrap();
     handle_command(msg, "test-target", &None, None)
 }
 
-fn dispatch_with_params(method: &str, params: Value) -> CDPResponse {
+fn dispatch_with_params(method: &str, params: Value) -> CdpResponse {
     let p = Some(params);
-    let msg = CDPMessage {
-        id: 1,
+    let msg = CdpMessage {
+        id: Some(1),
         method: method.to_string(),
         params: None,
         session_id: None,
@@ -651,12 +651,12 @@ fn test_empty_domain() {
     assert!(resp.error.is_some());
 }
 
-// ---- CDPMessage parse ----
+// ---- CdpMessage parse ----
 
 #[test]
 fn test_parse_message_basic() {
     let msg = parse_message(r#"{"id":1,"method":"Page.navigate"}"#).unwrap();
-    assert_eq!(msg.id, 1);
+    assert_eq!(msg.id, Some(1));
     assert_eq!(msg.method, "Page.navigate");
 }
 
@@ -686,12 +686,12 @@ fn test_parse_message_invalid() {
     assert!(parse_message("[]").is_none());
 }
 
-// ---- CDPResponse serialize ----
+// ---- CdpResponse serialize ----
 
 #[test]
 fn test_serialize_response_success() {
-    let resp = CDPResponse {
-        id: 1,
+    let resp = CdpResponse {
+        id: Some(1),
         result: Some(json!({"ok": true})),
         error: None,
     };
@@ -703,21 +703,21 @@ fn test_serialize_response_success() {
 
 #[test]
 fn test_serialize_response_error() {
-    let resp = CDPResponse {
-        id: 2,
+    let resp = CdpResponse {
+        id: Some(2),
         result: None,
-        error: Some(CDPError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError { code: -32601, message: "not found".into() }),
     };
     let json_str = serialize_response(&resp);
     assert!(json_str.contains("-32601"));
     assert!(!json_str.contains("\"result\""));
 }
 
-// ---- CDPEvent serialize ----
+// ---- CdpEvent serialize ----
 
 #[test]
 fn test_serialize_event() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Page.loadEventFired".into(),
         params: Some(json!({"ts": 42})),
     };
@@ -727,7 +727,7 @@ fn test_serialize_event() {
 
 #[test]
 fn test_serialize_event_no_params() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "DOM.updated".into(),
         params: None,
     };

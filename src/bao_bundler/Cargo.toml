@@ -9,6 +9,11 @@ license.workspace = true
 # Core dependency: reuse ALL bundler logic, only provide SM implementations
 # for the CYCLEBREAK symbols and dispatch interfaces.
 bun_bundler = { path = "../bundler" }
+# SWC-backed transpiler (the real bun_bundler transpiler pipeline). The
+# `bun_bundler::transpiler::*` re-export is the JSC-backed CYCLEBREAK
+# Transpiler; `bun_transpiler::transpile_ts` is the JSC-free SWC strip path
+# usable from the Bao layer without a live JSContext.
+bun_transpiler = { path = "../transpiler" }
 bao_engine = { path = "../bao_engine" }
 bun_runtime.workspace = true
 bun_core = { path = "../bun_core" }

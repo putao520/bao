@@ -3,15 +3,15 @@
 // Page/Runtime/DOM/Network/CSS/Emulation/Input/Overlay/Debugger/Log/Fetch/Target.
 // Tests without bridge (None) to verify default/stub responses.
 
-use bao_cdp::{handle_command, serialize_response, serialize_event, CDPMessage, CDPResponse, CDPEvent};
+use bao_cdp::{handle_command, serialize_response, serialize_event, CdpMessage, CdpResponse, CdpEvent};
 
 const TID: &str = "test-target";
 use serde_json::json;
 
 
-fn dispatch(method: &str, params: Option<serde_json::Value>) -> CDPResponse {
+fn dispatch(method: &str, params: Option<serde_json::Value>) -> CdpResponse {
     let p = params;
-    let msg = CDPMessage { id: 1, method: method.to_string(), params: None, session_id: None };
+    let msg = CdpMessage { id: Some(1), method: method.to_string(), params: None, session_id: None };
     handle_command(msg, "test-target", &p, None)
 }
 
@@ -655,7 +655,7 @@ fn test_fetch_unknown() { assert_eq!(err_code("Fetch.nonexistent"), -32601); }
 
 #[test]
 fn test_serialize_ok_response() {
-    let resp = CDPResponse { id: 42, result: Some(json!({"ok":true})), error: None };
+    let resp = CdpResponse { id: Some(42), result: Some(json!({"ok":true})), error: None };
     let s = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
     assert_eq!(parsed["id"], 42);
@@ -664,14 +664,14 @@ fn test_serialize_ok_response() {
 
 #[test]
 fn test_serialize_error_response() {
-    let resp = CDPResponse { id: 1, result: None, error: Some(bao_cdp::CDPError { code: -32601, message: "not found".into() }) };
+    let resp = CdpResponse { id: Some(1), result: None, error: Some(bao_cdp::CdpError { code: -32601, message: "not found".into() }) };
     let s = serialize_response(&resp);
     assert!(s.contains("-32601"));
 }
 
 #[test]
 fn test_serialize_event() {
-    let ev = CDPEvent { method: "Page.load".into(), params: Some(json!({"ts":1})) };
+    let ev = CdpEvent { method: "Page.load".into(), params: Some(json!({"ts":1})) };
     let s = serialize_event(&ev);
     assert!(s.contains("Page.load"));
 }
@@ -690,14 +690,14 @@ fn test_domain_only_no_command() {
 
 #[test]
 fn test_response_id_matches_input() {
-    let msg = CDPMessage { id: 999, method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage { id: Some(999), method: "Page.enable".into(), params: None, session_id: None };
     let resp = handle_command(msg, "t", &None, None);
-    assert_eq!(resp.id, 999);
+    assert_eq!(resp.id, Some(999));
 }
 
 #[test]
 fn test_negative_id_preserved() {
-    let msg = CDPMessage { id: -42, method: "Page.enable".into(), params: None, session_id: None };
+    let msg = CdpMessage { id: Some(-42), method: "Page.enable".into(), params: None, session_id: None };
     let resp = handle_command(msg, "t", &None, None);
-    assert_eq!(resp.id, -42);
+    assert_eq!(resp.id, Some(-42));
 }

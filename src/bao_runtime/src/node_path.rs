@@ -368,6 +368,31 @@ unsafe extern "C" fn path_to_namespaced(cx: *mut JSContext, argc: u32, vp: *mut 
 }
 
 // --- Pure logic helpers ---
+// @trace REQ-ENG-007 [api:path] [code:bun_paths] — absolute-path resolution
+// (`make_absolute`) and relative-path computation (`pathdiff`) delegate to
+// `bun_paths::resolve_path` (Zig std `std.fs.path` faithful port):
+//   * `join_abs_string::<Posix>(cwd, parts)` resolves `cwd + parts` into a
+//     single absolute path (the equivalent of Node's `path.resolve` core).
+//   * `relative_platform::<Posix, _>(from, to)` computes the relative path
+//     from one absolute path to another (the equivalent of `path.relative`).
+//
+// The Node.js-specific `.`/`..` collapse for `posix_join` and `normalize_path`
+// stays in Rust here because Node's `path.posix.normalize` deliberately
+// preserves leading `..` above the root (e.g. `/a/../../b` → `/../b`) while
+// Zig std's `normalizeString` clamps at the root (`/b`). The bundler/resolver
+// consume the Zig semantics; the Node compatibility layer keeps its own.
+
+use bun_paths::resolve_path::{self, platform::Posix};
+
+/// Resolve the current working directory as an owned byte vector, falling
+/// back to `b"."` so absolute-path joins never see an empty cwd.
+fn cwd_bytes() -> Vec<u8> {
+    let mut buf = bun_core::PathBuffer::default();
+    match bun_core::getcwd(&mut buf) {
+        Ok(z) => z.as_bytes().to_vec(),
+        Err(_) => b".".to_vec(),
+    }
+}
 
 pub(crate) fn posix_join(parts: &[::std::string::String]) -> ::std::string::String {
     if parts.is_empty() {
@@ -479,42 +504,41 @@ pub(crate) fn make_absolute(s: &str) -> PathBuf {
     if p.is_absolute() {
         normalize_path(&p)
     } else {
-        let cwd = {
-            let mut buf = bun_core::PathBuffer::default();
-            bun_core::getcwd(&mut buf)
-                .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
-                .unwrap_or_else(|_| PathBuf::from("."))
-        };
-        normalize_path(&cwd.join(&p))
+        // @trace REQ-ENG-007 [code:bun_paths] — resolve `cwd + path` into a
+        // single absolute path via bun_paths::resolve_path::join_abs_string
+        // (Zig `joinAbsoluteString`, POSIX). Falls back to the std::path
+        // normalize if the resolved result round-trips lossily.
+        let cwd = cwd_bytes();
+        let part_bytes = s.as_bytes();
+        let resolved = resolve_path::join_abs_string::<Posix>(&cwd, &[part_bytes]);
+        PathBuf::from(String::from_utf8_lossy(resolved).into_owned())
     }
 }
 
 pub(crate) fn pathdiff(to: &Path, from: &Path) -> ::std::option::Option<PathBuf> {
-    let cwd = {
-        let mut buf = bun_core::PathBuffer::default();
-        bun_core::getcwd(&mut buf)
-            .map(|z| PathBuf::from(String::from_utf8_lossy(z.as_bytes()).into_owned()))
-            .ok()
+    let cwd = cwd_bytes();
+    let to_abs = if to.is_absolute() {
+        to.to_string_lossy().into_owned()
+    } else {
+        // Make `to` absolute against the cwd via bun_paths.
+        let resolved = resolve_path::join_abs_string::<Posix>(&cwd, &[to.to_string_lossy().as_bytes()]);
+        String::from_utf8_lossy(resolved).into_owned()
     };
-    let to_abs = if to.is_absolute() { to.to_path_buf() } else { cwd.as_ref()?.join(to) };
-    let from_abs = if from.is_absolute() { from.to_path_buf() } else { cwd.as_ref()?.join(from) };
+    let from_abs = if from.is_absolute() {
+        from.to_string_lossy().into_owned()
+    } else {
+        let resolved = resolve_path::join_abs_string::<Posix>(&cwd, &[from.to_string_lossy().as_bytes()]);
+        String::from_utf8_lossy(resolved).into_owned()
+    };
 
-    let mut to_components: Vec<_> = to_abs.components().collect();
-    let mut from_components: Vec<_> = from_abs.components().collect();
-
-    while !to_components.is_empty() && !from_components.is_empty() && to_components[0] == from_components[0] {
-        to_components.remove(0);
-        from_components.remove(0);
-    }
-
-    let mut result = PathBuf::new();
-    for _ in from_components.iter() {
-        result.push("..");
-    }
-    for comp in to_components {
-        result.push(comp);
-    }
-    ::std::option::Option::Some(result)
+    // @trace REQ-ENG-007 [code:bun_paths] — relative-path computation delegated
+    // to bun_paths::resolve_path::relative_platform (Zig `relativePath`, POSIX).
+    // ALWAYS_COPY=true so the result owns its bytes (does not alias TLS scratch).
+    let rel = resolve_path::relative_platform::<Posix, true>(
+        from_abs.as_bytes(),
+        to_abs.as_bytes(),
+    );
+    ::std::option::Option::Some(PathBuf::from(String::from_utf8_lossy(rel).into_owned()))
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

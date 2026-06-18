@@ -4,7 +4,7 @@
 // CdpSession lifecycle, detach, event handler registration, InternalBackend
 // command routing, error paths, clone/debug.
 
-use bao_cdp::{CdpRouter, BackendKind, CDPError, CDPMessage, handle_command, bridge_channel};
+use bao_cdp::{CdpRouter, BackendKind, CdpError, CdpMessage, handle_command, bridge_channel};
 
 const TID: &str = "test-target";
 use serde_json::json;
@@ -353,25 +353,25 @@ fn test_session_on_overwrite_handler() {
     // No panic
 }
 
-// ---- CDPError ----
+// ---- CdpError ----
 
 #[test]
 fn test_cdp_error_fields() {
-    let err = CDPError { code: -32601, message: "test error".into() };
+    let err = CdpError { code: -32601, message: "test error".into() };
     assert_eq!(err.code, -32601);
     assert_eq!(err.message, "test error");
 }
 
 #[test]
 fn test_cdp_error_construction() {
-    let err = CDPError { code: -32000, message: "internal error".into() };
+    let err = CdpError { code: -32000, message: "internal error".into() };
     assert_eq!(err.code, -32000);
     assert_eq!(err.message, "internal error");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CDPError { code: -32601, message: "method not found".into() };
+    let err = CdpError { code: -32601, message: "method not found".into() };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32601"));
 }
@@ -424,8 +424,8 @@ fn test_many_sessions() {
 
 fn internal_dispatch(method: &str, params: Option<serde_json::Value>) -> serde_json::Value {
     let params_ref = params.clone();
-    let msg = CDPMessage {
-        id: 1,
+    let msg = CdpMessage {
+        id: Some(1),
         method: method.to_string(),
         params,
         session_id: None,

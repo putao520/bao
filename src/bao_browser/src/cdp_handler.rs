@@ -63,8 +63,9 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // Debugger domain — route through EvaluateJs to servo's debugger.js
         // These BridgeCommands are typed (no JS string injection from CDP layer).
         // cdp_handler translates them into servo debugger.js control messages.
-        // TODO(BUG-CDP-006): Once servo devtools channel is accessible from Bao,
-        // route directly via DevtoolScriptControlMsg instead of EvaluateJs.
+        // @trace BUG-CDP-006 [domain:Debugger]: current path is EvaluateJs →
+        // servo debugger.js. A future enhancement is direct routing via
+        // DevtoolScriptControlMsg once servo's devtools channel is exposed to Bao.
         BridgeCommand::DebuggerEnable { target_id } => with_page(pool, &target_id, |page| cmd_debugger_enable(page)),
         BridgeCommand::DebuggerDisable { target_id } => with_page(pool, &target_id, |page| cmd_debugger_disable(page)),
         BridgeCommand::DebuggerSetBreakpoint { target_id, line, column, .. } =>

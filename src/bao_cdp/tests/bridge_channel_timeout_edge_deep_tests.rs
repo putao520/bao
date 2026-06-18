@@ -7,20 +7,20 @@ use std::time::Duration;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse, BridgeSender, CDPMessage, CDPEvent};
+use bao_cdp::{bridge_channel, BridgeCommand, BridgeResponse, BridgeSender, CdpMessage, CdpEvent};
 use bao_cdp::{handle_command, serialize_response, serialize_event};
 use serde_json::json;
 
 const TID: &str = "test-target";
 
 /// Helper: dispatch a CDP command with correct params passing
-fn dispatch(method: &str, params: Option<serde_json::Value>) -> bao_cdp::CDPResponse {
-    let msg = CDPMessage { id: 1, method: method.to_string(), params: params.clone(), session_id: None };
+fn dispatch(method: &str, params: Option<serde_json::Value>) -> bao_cdp::CdpResponse {
+    let msg = CdpMessage { id: Some(1), method: method.to_string(), params: params.clone(), session_id: None };
     handle_command(msg, "t1", &params, None)
 }
 
-fn dispatch_bridge(method: &str, params: Option<serde_json::Value>, target: &str, bridge: &BridgeSender) -> bao_cdp::CDPResponse {
-    let msg = CDPMessage { id: 1, method: method.to_string(), params: params.clone(), session_id: None };
+fn dispatch_bridge(method: &str, params: Option<serde_json::Value>, target: &str, bridge: &BridgeSender) -> bao_cdp::CdpResponse {
+    let msg = CdpMessage { id: Some(1), method: method.to_string(), params: params.clone(), session_id: None };
     handle_command(msg, target, &params, Some(bridge))
 }
 
@@ -749,7 +749,7 @@ fn test_serialize_response_error() {
 
 #[test]
 fn test_serialize_event_with_params() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Page.loadEventFired".into(),
         params: Some(json!({"timestamp": 12345.0})),
     };
@@ -761,7 +761,7 @@ fn test_serialize_event_with_params() {
 
 #[test]
 fn test_serialize_event_without_params() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Runtime.executionContextDestroyed".into(),
         params: None,
     };

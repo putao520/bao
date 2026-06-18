@@ -1,10 +1,10 @@
 // @trace TEST-CDP-015-SERIAL [req:REQ-CDP-001,REQ-CDP-005] [level:unit]
-// CDPMessage parse/serialize boundary tests: empty method, large id,
-// nested params, null params, session_id variants, CDPResponse success/error,
-// CDPEvent with/without params, serialize_response edge cases,
+// CdpMessage parse/serialize boundary tests: empty method, large id,
+// nested params, null params, session_id variants, CdpResponse success/error,
+// CdpEvent with/without params, serialize_response edge cases,
 // parse_message invalid inputs, roundtrip consistency.
 
-use bao_cdp::{CDPMessage, CDPResponse, CDPError, CDPEvent, parse_message, serialize_response, serialize_event};
+use bao_cdp::{CdpMessage, CdpResponse, CdpError, CdpEvent, parse_message, serialize_response, serialize_event};
 
 const TID: &str = "test-target";
 use serde_json::json;
@@ -16,7 +16,7 @@ use serde_json::json;
 fn test_parse_minimal_message() {
     let raw = r#"{"id":1,"method":"Test.run"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, 1);
+    assert_eq!(msg.id, Some(1));
     assert_eq!(msg.method, "Test.run");
     assert!(msg.params.is_none());
     assert!(msg.session_id.is_none());
@@ -54,21 +54,21 @@ fn test_parse_message_null_params() {
 fn test_parse_message_large_id() {
     let raw = r#"{"id":9223372036854775807,"method":"Test.run"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, i64::MAX);
+    assert_eq!(msg.id, Some(i64::MAX));
 }
 
 #[test]
 fn test_parse_message_zero_id() {
     let raw = r#"{"id":0,"method":"Test.run"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, 0);
+    assert_eq!(msg.id, Some(0));
 }
 
 #[test]
 fn test_parse_message_negative_id() {
     let raw = r#"{"id":-1,"method":"Test.run"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, -1);
+    assert_eq!(msg.id, Some(-1));
 }
 
 #[test]
@@ -128,8 +128,13 @@ fn test_parse_message_invalid_json() {
 
 #[test]
 fn test_parse_message_missing_id() {
+    // JSON-RPC 2.0 permits notifications (no id). With CdpMessage.id as
+    // Option<i64> (TASK-4-CDP), a missing id deserializes to None and the
+    // message parses successfully (it is a valid notification).
     let raw = r#"{"method":"Test.run"}"#;
-    assert!(parse_message(raw).is_none());
+    let msg = parse_message(raw).unwrap();
+    assert_eq!(msg.id, None);
+    assert_eq!(msg.method, "Test.run");
 }
 
 #[test]
@@ -164,15 +169,15 @@ fn test_parse_message_extra_fields() {
     // Extra fields should be ignored by serde
     let raw = r#"{"id":1,"method":"Test.run","extra":"ignored"}"#;
     let msg = parse_message(raw).unwrap();
-    assert_eq!(msg.id, 1);
+    assert_eq!(msg.id, Some(1));
 }
 
 // ---- serialize_response ----
 
 #[test]
 fn test_serialize_response_success() {
-    let resp = CDPResponse {
-        id: 1,
+    let resp = CdpResponse {
+        id: Some(1),
         result: Some(json!({"ok": true})),
         error: None,
     };
@@ -185,10 +190,10 @@ fn test_serialize_response_success() {
 
 #[test]
 fn test_serialize_response_error() {
-    let resp = CDPResponse {
-        id: 2,
+    let resp = CdpResponse {
+        id: Some(2),
         result: None,
-        error: Some(CDPError { code: -32601, message: "not found".into() }),
+        error: Some(CdpError { code: -32601, message: "not found".into() }),
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -200,8 +205,8 @@ fn test_serialize_response_error() {
 
 #[test]
 fn test_serialize_response_null_result() {
-    let resp = CDPResponse {
-        id: 3,
+    let resp = CdpResponse {
+        id: Some(3),
         result: None,
         error: None,
     };
@@ -212,8 +217,8 @@ fn test_serialize_response_null_result() {
 
 #[test]
 fn test_serialize_response_empty_result() {
-    let resp = CDPResponse {
-        id: 4,
+    let resp = CdpResponse {
+        id: Some(4),
         result: Some(json!({})),
         error: None,
     };
@@ -224,8 +229,8 @@ fn test_serialize_response_empty_result() {
 
 #[test]
 fn test_serialize_response_nested_result() {
-    let resp = CDPResponse {
-        id: 5,
+    let resp = CdpResponse {
+        id: Some(5),
         result: Some(json!({"data": {"nested": {"deep": true}}})),
         error: None,
     };
@@ -236,8 +241,8 @@ fn test_serialize_response_nested_result() {
 
 #[test]
 fn test_serialize_response_array_result() {
-    let resp = CDPResponse {
-        id: 6,
+    let resp = CdpResponse {
+        id: Some(6),
         result: Some(json!([1, 2, 3])),
         error: None,
     };
@@ -248,8 +253,8 @@ fn test_serialize_response_array_result() {
 
 #[test]
 fn test_serialize_response_negative_id() {
-    let resp = CDPResponse {
-        id: -100,
+    let resp = CdpResponse {
+        id: Some(-100),
         result: Some(json!({})),
         error: None,
     };
@@ -262,7 +267,7 @@ fn test_serialize_response_negative_id() {
 
 #[test]
 fn test_serialize_event_with_params() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Page.loadEventFired".into(),
         params: Some(json!({"timestamp": 12345})),
     };
@@ -274,7 +279,7 @@ fn test_serialize_event_with_params() {
 
 #[test]
 fn test_serialize_event_without_params() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "DOM.updated".into(),
         params: None,
     };
@@ -286,7 +291,7 @@ fn test_serialize_event_without_params() {
 
 #[test]
 fn test_serialize_event_empty_params() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Network.requestWillBeSent".into(),
         params: Some(json!({})),
     };
@@ -297,7 +302,7 @@ fn test_serialize_event_empty_params() {
 
 #[test]
 fn test_serialize_event_complex_params() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Runtime.consoleAPICalled".into(),
         params: Some(json!({
             "type": "log",
@@ -310,18 +315,18 @@ fn test_serialize_event_complex_params() {
     assert_eq!(parsed["params"]["args"][0]["value"], "hello");
 }
 
-// ---- CDPError ----
+// ---- CdpError ----
 
 #[test]
 fn test_cdp_error_code_message() {
-    let err = CDPError { code: -32600, message: "invalid request".into() };
+    let err = CdpError { code: -32600, message: "invalid request".into() };
     assert_eq!(err.code, -32600);
     assert_eq!(err.message, "invalid request");
 }
 
 #[test]
 fn test_cdp_error_debug() {
-    let err = CDPError { code: -32700, message: "parse error".into() };
+    let err = CdpError { code: -32700, message: "parse error".into() };
     let debug = format!("{:?}", err);
     assert!(debug.contains("-32700"));
     assert!(debug.contains("parse error"));
@@ -329,7 +334,7 @@ fn test_cdp_error_debug() {
 
 #[test]
 fn test_cdp_error_serialize() {
-    let err = CDPError { code: -32000, message: "internal".into() };
+    let err = CdpError { code: -32000, message: "internal".into() };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["code"], -32000);
@@ -338,7 +343,7 @@ fn test_cdp_error_serialize() {
 
 #[test]
 fn test_cdp_error_empty_message() {
-    let err = CDPError { code: -1, message: String::new() };
+    let err = CdpError { code: -1, message: String::new() };
     let json = serde_json::to_string(&err).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["message"], "");
@@ -348,8 +353,8 @@ fn test_cdp_error_empty_message() {
 
 #[test]
 fn test_roundtrip_response_serialize() {
-    let resp = CDPResponse {
-        id: 42,
+    let resp = CdpResponse {
+        id: Some(42),
         result: Some(json!({"frameId": "main", "loaderId": "l-1"})),
         error: None,
     };
@@ -361,22 +366,22 @@ fn test_roundtrip_response_serialize() {
 
 #[test]
 fn test_roundtrip_error_response() {
-    let resp = CDPResponse {
-        id: 99,
+    let resp = CdpResponse {
+        id: Some(99),
         result: None,
-        error: Some(CDPError { code: -32601, message: "'Foo.bar' wasn't found".into() }),
+        error: Some(CdpError { code: -32601, message: "'Foo.bar' wasn't found".into() }),
     };
     let raw = serialize_response(&resp);
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
     assert!(parsed["error"]["message"].as_str().unwrap().contains("Foo.bar"));
 }
 
-// ---- CDPMessage clone ----
+// ---- CdpMessage clone ----
 
 #[test]
 fn test_cdp_message_clone() {
-    let msg = CDPMessage {
-        id: 1,
+    let msg = CdpMessage {
+        id: Some(1),
         method: "Page.enable".into(),
         params: Some(json!({"key": "val"})),
         session_id: Some("sess-1".into()),
@@ -390,8 +395,8 @@ fn test_cdp_message_clone() {
 
 #[test]
 fn test_cdp_message_debug() {
-    let msg = CDPMessage {
-        id: 1,
+    let msg = CdpMessage {
+        id: Some(1),
         method: "Test.run".into(),
         params: None,
         session_id: None,
@@ -400,11 +405,11 @@ fn test_cdp_message_debug() {
     assert!(debug.contains("Test.run"));
 }
 
-// ---- CDPEvent clone ----
+// ---- CdpEvent clone ----
 
 #[test]
 fn test_cdp_event_clone() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Page.load".into(),
         params: Some(json!({"ts": 1})),
     };
@@ -417,8 +422,8 @@ fn test_cdp_event_clone() {
 
 #[test]
 fn test_serialize_response_deterministic() {
-    let resp = CDPResponse {
-        id: 1,
+    let resp = CdpResponse {
+        id: Some(1),
         result: Some(json!({"a": 1})),
         error: None,
     };
@@ -429,7 +434,7 @@ fn test_serialize_response_deterministic() {
 
 #[test]
 fn test_serialize_event_deterministic() {
-    let ev = CDPEvent {
+    let ev = CdpEvent {
         method: "Test.ev".into(),
         params: Some(json!({"x": 1})),
     };
@@ -451,8 +456,8 @@ fn test_parse_message_large_array_params() {
 #[test]
 fn test_serialize_response_large_result() {
     let data: Vec<i32> = (0..500).collect();
-    let resp = CDPResponse {
-        id: 1,
+    let resp = CdpResponse {
+        id: Some(1),
         result: Some(json!({"data": data})),
         error: None,
     };
@@ -476,10 +481,10 @@ fn test_parse_message_special_chars_in_params() {
 
 #[test]
 fn test_serialize_response_unicode_in_error() {
-    let resp = CDPResponse {
-        id: 1,
+    let resp = CdpResponse {
+        id: Some(1),
         result: None,
-        error: Some(CDPError { code: -32000, message: "エラーが発生しました".into() }),
+        error: Some(CdpError { code: -32000, message: "エラーが発生しました".into() }),
     };
     let raw = serialize_response(&resp);
     assert!(raw.contains("エラー"));

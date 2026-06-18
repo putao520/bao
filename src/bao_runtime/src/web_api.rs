@@ -4,9 +4,14 @@ use ::std::cell::RefCell;
 use bun_core::ZBox;
 use ::std::io::{Read, Write};
 use ::std::net::TcpStream;
+use ::std::net::ToSocketAddrs;
 use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU64, Ordering};
 use ::std::time::Duration;
+
+// @trace REQ-ENG-006 [code:bun_uws] — RFC 6455 codec primitives reused for
+// both the plain ws:// (via WebSocketClient) and the wss:// (TLS-driven) path.
+use bun_uws::ws_codec::apply_mask;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, ObjectValue, BooleanValue};
@@ -18,7 +23,13 @@ use crate::gc_store::{gc_store_insert, gc_store_get, gc_store_remove};
 
 // @trace REQ-ENG-005 [algorithm:base64] base64 via workspace bun_base64 (SIMD-accelerated)
 
-// ── Minimal WebSocket client (RFC 6455) ──
+// ── WebSocket client ──
+// @trace REQ-ENG-006 [api:WebSocket] [code:bun_uws] — RFC 6455 framing and the
+// plain-text (ws://) client handshake are delegated to `bun_uws::ws_client`
+// (WebSocketClient / parse_ws_url / RecvOutcome) and `bun_uws::ws_codec` /
+// `ws_handshake`. The wss:// (TLS) variant drives `bao_boringssl_bridge`'s
+// TlsConnection over the TCP socket and reuses the same `bun_uws` codec /
+// handshake primitives so the two schemes share one wire-format code path.
 
 #[derive(Debug)]
 #[allow(dead_code)]
@@ -28,156 +39,344 @@ enum WsMessage {
     Close,
 }
 
-struct WsClient {
-    stream: TcpStream,
+/// A TLS-over-TCP adapter implementing `std::io::{Read, Write}`. It owns the
+/// raw `TcpStream` plus a BoringSSL `TlsConnection` and transparently drives
+/// the TLS state machine (handshake + record decrypt/encrypt) on every I/O.
+///
+/// `bun_uws`'s `ws_handshake::client_handshake<S: Read + Write>` and
+/// `ws_codec::FrameDecoder` consume this directly, so the wss:// path reuses
+/// the exact same RFC 6455 code as the ws:// path.
+struct TlsStream {
+    tcp: TcpStream,
+    tls: bao_boringssl_bridge::connection::TlsConnection,
 }
 
-impl WsClient {
-    fn connect(url_str: &str) -> ::std::result::Result<Self, String> {
-        let (host, port, path) = parse_ws_url(url_str)?;
+impl TlsStream {
+    /// Pump the TLS state machine: flush any pending outgoing ciphertext to the
+    /// socket, then process inbound records until the TLS layer has decrypted
+    /// data ready (or WouldBlock). Returns the decrypted plaintext bytes.
+    fn pump_inbound(&mut self) -> ::std::io::Result<Vec<u8>> {
+        loop {
+            // Drain any ciphertext BoringSSL wants to send first so a
+            // mid-handshake flight isn't stranded in the write BIO.
+            self.flush_outgoing()?;
+            let res = self.tls.process().map_err(|e| {
+                ::std::io::Error::new(::std::io::ErrorKind::InvalidData, e.to_string())
+            })?;
+            if !res.plaintext.is_empty() {
+                let mut joined = Vec::new();
+                for chunk in res.plaintext {
+                    joined.extend_from_slice(&chunk);
+                }
+                return Ok(joined);
+            }
+            // No decrypted data yet — read more ciphertext from the socket.
+            let mut buf = [0u8; 16_384];
+            match self.tcp.read(&mut buf) {
+                Ok(0) => {
+                    return Err(::std::io::Error::new(
+                        ::std::io::ErrorKind::UnexpectedEof,
+                        "tls peer closed",
+                    ));
+                }
+                Ok(n) => self.tls.feed(&buf[..n]),
+                Err(ref e)
+                    if e.kind() == ::std::io::ErrorKind::WouldBlock
+                        || e.kind() == ::std::io::ErrorKind::TimedOut =>
+                {
+                    return Err(::std::io::Error::from(::std::io::ErrorKind::WouldBlock));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Write any pending ciphertext from BoringSSL's write BIO to the socket.
+    fn flush_outgoing(&mut self) -> ::std::io::Result<()> {
+        let outgoing = self.tls.take_outgoing();
+        if outgoing.is_empty() {
+            return Ok(());
+        }
+        self.tcp.write_all(&outgoing)
+    }
+}
+
+impl ::std::io::Read for TlsStream {
+    fn read(&mut self, buf: &mut [u8]) -> ::std::io::Result<usize> {
+        let plain = self.pump_inbound()?;
+        let n = plain.len().min(buf.len());
+        buf[..n].copy_from_slice(&plain[..n]);
+        Ok(n)
+    }
+}
+
+impl ::std::io::Write for TlsStream {
+    fn write(&mut self, buf: &[u8]) -> ::std::io::Result<usize> {
+        let written = self.tls.write(buf).map_err(|e| {
+            ::std::io::Error::new(::std::io::ErrorKind::InvalidData, e.to_string())
+        })?;
+        self.flush_outgoing()?;
+        Ok(written)
+    }
+    fn flush(&mut self) -> ::std::io::Result<()> {
+        self.tcp.flush()
+    }
+}
+
+/// Connection backend — plain ws:// over TCP, or wss:// over TLS.
+enum WsConn {
+    /// Plain WebSocket reusing `bun_uws::WebSocketClient` (RFC 6455 codec +
+    /// handshake + masked client→server frames, all owned by bun_uws).
+    Plain(bun_uws::ws_client::WebSocketClient),
+    /// TLS WebSocket: a `TlsStream` driven through `bun_uws`'s codec/handshake.
+    Tls {
+        stream: TlsStream,
+        decoder: bun_uws::ws_codec::FrameDecoder,
+        closed: bool,
+    },
+}
+
+impl WsConn {
+    /// Connect to a `ws://` or `wss://` URL.
+    fn connect(url: &str) -> ::std::result::Result<Self, String> {
+        let (scheme, rest) = if let Some(r) = url.strip_prefix("ws://") {
+            ("ws", r)
+        } else if let Some(r) = url.strip_prefix("wss://") {
+            ("wss", r)
+        } else {
+            // Fall back to ws:// semantics for bare hosts (preserves the prior
+            // behavior where a scheme-less URL was treated as ws://).
+            ("ws", url)
+        };
+
+        let (host, port, path) = split_authority_and_path(rest, scheme);
+        if scheme == "wss" {
+            Self::connect_tls(&host, port, &path)
+        } else {
+            // ws:// — delegate to bun_uws::WebSocketClient (reconstructs the
+            // canonical URL because bun_uws::parse_ws_url is scheme-strict).
+            let canonical = if url.starts_with("ws://") || url.starts_with("wss://") {
+                url.to_string()
+            } else {
+                format!("ws://{}", url)
+            };
+            let client = bun_uws::ws_client::WebSocketClient::connect(&canonical)
+                .map_err(|e| format!("ws connect: {}", e))?;
+            Ok(WsConn::Plain(client))
+        }
+    }
+
+    fn connect_tls(host: &str, port: u16, path: &str) -> ::std::result::Result<Self, String> {
         let addr = format!("{}:{}", host, port);
-        let mut stream = TcpStream::connect_timeout(
-            &addr.parse().map_err(|e| format!("invalid address: {}", e))?,
-            Duration::from_secs(10),
-        ).map_err(|e| format!("connect failed: {}", e))?;
-        stream.set_nonblocking(false).ok();
+        let socket_addr = addr
+            .to_socket_addrs()
+            .map_err(|e| format!("invalid address: {}", e))?
+            .next()
+            .ok_or_else(|| format!("no address for {}", addr))?;
+        let mut tcp = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(10))
+            .map_err(|e| format!("connect failed: {}", e))?;
+        tcp.set_nonblocking(false).ok();
+        tcp.set_read_timeout(Some(Duration::from_secs(10))).ok();
 
-        let mut key_base = [0u8; 16];
-        bao_crypto::random::rand_bytes(&mut key_base).unwrap();
-        let key_bytes = bun_base64::encode_alloc(&key_base);
-        let key = ::std::str::from_utf8(&key_bytes).unwrap_or("");
+        // Build the BoringSSL client connection and drive the TLS handshake.
+        let tls_client = bao_boringssl_bridge::client::TlsClient::new()
+            .map_err(|e| format!("tls client init: {}", e))?;
+        let mut tls = bao_boringssl_bridge::connection::TlsConnection::new_client(&tls_client, host)
+            .map_err(|e| format!("tls conn: {}", e))?;
 
-        let request = format!(
-            "GET {} HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {}\r\nSec-WebSocket-Version: 13\r\n\r\n",
-            path, host, key
-        );
-        stream.write_all(request.as_bytes()).map_err(|e| format!("write failed: {}", e))?;
-
-        let mut response = vec![0u8; 4096];
-        let n = stream.read(&mut response).map_err(|e| format!("read failed: {}", e))?;
-        let response_str = String::from_utf8_lossy(&response[..n]);
-        if !response_str.starts_with("HTTP/1.1 101") && !response_str.starts_with("HTTP/1.0 101") {
-            return Err(format!("upgrade failed: {}", response_str.lines().next().unwrap_or("")));
+        // Complete the TLS handshake by pumping records until active.
+        loop {
+            let outgoing = tls.take_outgoing();
+            if !outgoing.is_empty() && tcp.write_all(&outgoing).is_err() {
+                return Err("tls handshake write failed".to_string());
+            }
+            match tls.process() {
+                Ok(res) => {
+                    use bao_boringssl_bridge::connection::TlsState;
+                    if res.state == TlsState::Active || res.state == TlsState::PeerClosed {
+                        break;
+                    }
+                    // Still handshaking — read more ciphertext from the socket.
+                    let mut buf = [0u8; 16_384];
+                    match tcp.read(&mut buf) {
+                        Ok(n) if n > 0 => tls.feed(&buf[..n]),
+                        _ => {
+                            return Err("tls handshake stalled".to_string());
+                        }
+                    }
+                }
+                Err(e) => return Err(format!("tls handshake: {}", e)),
+            }
         }
 
-        Ok(Self { stream })
+        let mut stream = TlsStream { tcp, tls };
+        // RFC 6455 client handshake over the TLS stream (bun_uws-owned).
+        bun_uws::ws_handshake::client_handshake(&mut stream, host, &path)
+            .map_err(|e| format!("ws handshake: {:?}", e))?;
+        Ok(WsConn::Tls {
+            stream,
+            decoder: bun_uws::ws_codec::FrameDecoder::new(),
+            closed: false,
+        })
     }
 
     fn send_text(&mut self, text: &str) -> ::std::result::Result<(), String> {
-        let payload = text.as_bytes();
-        let mut frame = Vec::with_capacity(payload.len() + 10);
-        frame.push(0x81); // FIN + text opcode
-        write_masked_payload(&mut frame, payload);
-        self.stream.write_all(&frame).map_err(|e| format!("send failed: {}", e))
-    }
-
-    #[allow(dead_code)]
-    fn send_binary(&mut self, data: &[u8]) -> ::std::result::Result<(), String> {
-        let mut frame = Vec::with_capacity(data.len() + 10);
-        frame.push(0x82); // FIN + binary opcode
-        write_masked_payload(&mut frame, data);
-        self.stream.write_all(&frame).map_err(|e| format!("send failed: {}", e))
+        match self {
+            WsConn::Plain(c) => c
+                .send_text(text)
+                .map_err(|e| format!("send failed: {}", e)),
+            WsConn::Tls { stream, .. } => {
+                let payload = text.as_bytes();
+                let key = bun_uws::ws_codec::gen_mask_key();
+                let mut frame = Vec::with_capacity(payload.len() + 14);
+                frame.push(0x81); // FIN + text opcode
+                push_masked_len(&mut frame, payload.len());
+                frame.extend_from_slice(&key);
+                let mut masked = payload.to_vec();
+                apply_mask(&mut masked, &key);
+                stream.write_all(&frame).map_err(|e| format!("send failed: {}", e))
+            }
+        }
     }
 
     fn read_message(&mut self) -> ::std::result::Result<WsMessage, String> {
-        let mut header = [0u8; 2];
-        self.stream.read_exact(&mut header).map_err(|e| format!("read header: {}", e))?;
-
-        let opcode = header[0] & 0x0F;
-        let masked = (header[1] & 0x80) != 0;
-        let mut payload_len = (header[1] & 0x7F) as u64;
-
-        if payload_len == 126 {
-            let mut ext = [0u8; 2];
-            self.stream.read_exact(&mut ext).map_err(|e| format!("read len: {}", e))?;
-            payload_len = u16::from_be_bytes(ext) as u64;
-        } else if payload_len == 127 {
-            let mut ext = [0u8; 8];
-            self.stream.read_exact(&mut ext).map_err(|e| format!("read len: {}", e))?;
-            payload_len = u64::from_be_bytes(ext);
-        }
-
-        let mask_key = if masked {
-            let mut key = [0u8; 4];
-            self.stream.read_exact(&mut key).map_err(|e| format!("read mask: {}", e))?;
-            Some(key)
-        } else {
-            None
-        };
-
-        let mut payload = vec![0u8; payload_len as usize];
-        if payload_len > 0 {
-            self.stream.read_exact(&mut payload).map_err(|e| format!("read payload: {}", e))?;
-        }
-
-        if let Some(key) = mask_key {
-            for (i, byte) in payload.iter_mut().enumerate() {
-                *byte ^= key[i % 4];
+        match self {
+            WsConn::Plain(c) => {
+                match c.recv().map_err(|e| format!("recv: {}", e))? {
+                    bun_uws::ws_client::RecvOutcome::Message(opcode, payload) => match opcode {
+                        bun_uws::ws_codec::Opcode::Text => {
+                            Ok(WsMessage::Text(String::from_utf8_lossy(&payload).into_owned()))
+                        }
+                        bun_uws::ws_codec::Opcode::Binary => Ok(WsMessage::Binary(payload)),
+                        _ => Ok(WsMessage::Binary(payload)),
+                    },
+                    bun_uws::ws_client::RecvOutcome::Closed => Ok(WsMessage::Close),
+                    bun_uws::ws_client::RecvOutcome::Timeout => Err("wouldblock".to_string()),
+                }
+            }
+            WsConn::Tls { stream, decoder, closed } => {
+                if *closed {
+                    return Ok(WsMessage::Close);
+                }
+                let header = loop {
+                    match decoder.decode_frame(stream) {
+                        Ok(Some(h)) => break h,
+                        Ok(None) => return Err("wouldblock".to_string()),
+                        Err(ref e)
+                            if e.kind() == ::std::io::ErrorKind::WouldBlock
+                                || e.kind() == ::std::io::ErrorKind::TimedOut =>
+                        {
+                            return Err("wouldblock".to_string());
+                        }
+                        Err(ref e) if e.kind() == ::std::io::ErrorKind::UnexpectedEof => {
+                            *closed = true;
+                            return Ok(WsMessage::Close);
+                        }
+                        Err(e) => return Err(format!("recv: {}", e)),
+                    }
+                };
+                let mut payload = if header.mask {
+                    let mask_key = decoder.take_mask();
+                    let mut p = decoder.take_payload(&header);
+                    apply_mask(&mut p, &mask_key);
+                    p
+                } else {
+                    decoder.take_payload(&header)
+                };
+                match header.opcode {
+                    bun_uws::ws_codec::Opcode::Text => {
+                        Ok(WsMessage::Text(String::from_utf8_lossy(&payload).into_owned()))
+                    }
+                    bun_uws::ws_codec::Opcode::Binary => Ok(WsMessage::Binary(payload)),
+                    bun_uws::ws_codec::Opcode::Close => {
+                        *closed = true;
+                        Ok(WsMessage::Close)
+                    }
+                    bun_uws::ws_codec::Opcode::Ping => {
+                        // Echo pong (RFC 6455 §5.5.2) using bun_uws codec mask.
+                        let key = bun_uws::ws_codec::gen_mask_key();
+                        let mut frame = vec![0x8A]; // FIN + pong
+                        push_masked_len(&mut frame, payload.len());
+                        frame.extend_from_slice(&key);
+                        apply_mask(&mut payload, &key);
+                        frame.extend_from_slice(&payload);
+                        stream.write_all(&frame).map_err(|e| format!("pong: {}", e))?;
+                        self.read_message()
+                    }
+                    bun_uws::ws_codec::Opcode::Pong | bun_uws::ws_codec::Opcode::Continuation => {
+                        self.read_message()
+                    }
+                }
             }
         }
-
-        match opcode {
-            0x1 => Ok(WsMessage::Text(String::from_utf8_lossy(&payload).into_owned())),
-            0x2 => Ok(WsMessage::Binary(payload)),
-            0x8 => Ok(WsMessage::Close),
-            0x9 => {
-                self.send_pong(&payload)?;
-                self.read_message()
-            }
-            _ => Err(format!("unsupported opcode: {}", opcode)),
-        }
-    }
-
-    fn send_pong(&mut self, data: &[u8]) -> ::std::result::Result<(), String> {
-        let mut frame = vec![0x8A]; // FIN + pong opcode
-        write_masked_payload(&mut frame, data);
-        self.stream.write_all(&frame).map_err(|e| format!("pong failed: {}", e))
     }
 
     fn close(&mut self) -> ::std::result::Result<(), String> {
-        let frame = [0x88, 0x80, 0x00, 0x00, 0x00, 0x00]; // FIN + close + empty masked
-        self.stream.write_all(&frame).map_err(|e| format!("close failed: {}", e))
+        match self {
+            WsConn::Plain(c) => c.close().map_err(|e| format!("close failed: {}", e)),
+            WsConn::Tls { stream, closed, .. } => {
+                if *closed {
+                    return Ok(());
+                }
+                *closed = true;
+                let key = bun_uws::ws_codec::gen_mask_key();
+                let mut frame = vec![0x88]; // FIN + close
+                let payload = 1000u16.to_be_bytes();
+                push_masked_len(&mut frame, payload.len());
+                frame.extend_from_slice(&key);
+                let mut masked = payload.to_vec();
+                apply_mask(&mut masked, &key);
+                frame.extend_from_slice(&masked);
+                let _ = stream.write_all(&frame);
+                Ok(())
+            }
+        }
+    }
+
+    /// Switch the underlying socket between blocking and non-blocking so the
+    /// initial drain loop can poll for buffered frames without hanging.
+    fn set_nonblocking(&mut self, nonblocking: bool) {
+        match self {
+            WsConn::Plain(c) => {
+                let _ = c.stream_mut().set_nonblocking(nonblocking);
+            }
+            WsConn::Tls { stream, .. } => {
+                let _ = stream.tcp.set_nonblocking(nonblocking);
+            }
+        }
     }
 }
 
-fn parse_ws_url(url: &str) -> ::std::result::Result<(String, u16, String), String> {
-    let rest = if let Some(r) = url.strip_prefix("ws://") {
-        r
-    } else if url.starts_with("wss://") {
-        return Err("wss:// not yet supported; use ws:// for plain WebSocket".to_string());
-    } else {
-        url
-    };
-
-    let (host_port, path) = match rest.find('/') {
+/// Split `host[:port]/path` from the scheme-stripped remainder. Default port
+/// is 80 for ws://, 443 for wss://.
+fn split_authority_and_path(rest: &str, scheme: &str) -> (String, u16, String) {
+    let default_port = if scheme == "wss" { 443 } else { 80 };
+    let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], rest[i..].to_string()),
         None => (rest, "/".to_string()),
     };
-
-    let (host, port) = match host_port.rfind(':') {
-        Some(i) => (host_port[..i].to_string(), host_port[i + 1..].parse::<u16>().unwrap_or(80)),
-        None => (host_port.to_string(), 80),
+    let (host, port) = match authority.rfind(':') {
+        Some(i) => (
+            authority[..i].to_string(),
+            authority[i + 1..].parse::<u16>().unwrap_or(default_port),
+        ),
+        None => (authority.to_string(), default_port),
     };
-
-    Ok((host, port, path))
+    (host, port, path)
 }
 
-fn write_masked_payload(frame: &mut Vec<u8>, payload: &[u8]) {
-    let mut mask_key = [0u8; 4];
-    bao_crypto::random::rand_bytes(&mut mask_key).unwrap();
-    let len = payload.len();
+/// Append the masked-length + (caller-supplied) mask bytes layout for a
+/// client→server frame, matching `bun_uws::ws_codec::FrameEncoder::encode_frame`.
+fn push_masked_len(frame: &mut Vec<u8>, len: usize) {
+    let mask_bit = 0x80u8;
     if len < 126 {
-        frame.push(0x80 | len as u8);
-    } else if len < 65536 {
-        frame.push(0x80 | 126);
+        frame.push((len as u8) | mask_bit);
+    } else if len <= u16::MAX as usize {
+        frame.push(126u8 | mask_bit);
         frame.extend_from_slice(&(len as u16).to_be_bytes());
     } else {
-        frame.push(0x80 | 127);
+        frame.push(127u8 | mask_bit);
         frame.extend_from_slice(&(len as u64).to_be_bytes());
-    }
-    frame.extend_from_slice(&mask_key);
-    for (i, byte) in payload.iter().enumerate() {
-        frame.push(byte ^ mask_key[i % 4]);
     }
 }
 
@@ -188,7 +387,7 @@ static WS_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[allow(dead_code)]
 struct WsEntry {
-    client: WsClient,
+    client: WsConn,
     js_obj_key: String,
 }
 
@@ -372,7 +571,7 @@ unsafe extern "C" fn websocket_constructor(
         cx, obj_h, c"close".as_ptr(), Some(ws_close_fn), 0, JSPROP_ENUMERATE as u32,
     );
 
-    match WsClient::connect(&url) {
+    match WsConn::connect(&url) {
         Ok(mut client) => {
             let open_val = Int32Value(1);
             let open_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &open_val };
@@ -384,7 +583,7 @@ unsafe extern "C" fn websocket_constructor(
             gc_store_insert(cx, &ws_key, ws_obj.get());
 
             // Set non-blocking to drain available messages
-            let _ = client.stream.set_nonblocking(true);
+            client.set_nonblocking(true);
             loop {
                 match client.read_message() {
                     Ok(WsMessage::Text(text)) => {
@@ -409,7 +608,7 @@ unsafe extern "C" fn websocket_constructor(
                     Err(_) => break, // WouldBlock or other error
                 }
             }
-            let _ = client.stream.set_nonblocking(false);
+            client.set_nonblocking(false);
 
             let ws_idx = WS_CONNECTIONS.with(|c| {
                 let mut conns = c.borrow_mut();
@@ -743,20 +942,25 @@ mod tests {
 
     #[test]
     fn parse_ws_url_ws() {
-        let (host, port, path) = parse_ws_url("ws://example.com/chat").unwrap();
+        let (host, port, path) = split_authority_and_path("example.com/chat", "ws");
         assert_eq!(host, "example.com");
         assert_eq!(port, 80);
         assert_eq!(path, "/chat");
     }
 
+    // @trace REQ-ENG-006 [api:WebSocket wss://] — wss:// is now supported
+    // (default port 443); the prior behaviour rejected it outright.
     #[test]
-    fn parse_ws_url_wss_rejected() {
-        assert!(parse_ws_url("wss://example.com/secure").is_err());
+    fn parse_ws_url_wss_default_port() {
+        let (host, port, path) = split_authority_and_path("example.com/secure", "wss");
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+        assert_eq!(path, "/secure");
     }
 
     #[test]
     fn parse_ws_url_with_port() {
-        let (host, port, path) = parse_ws_url("ws://localhost:8080/ws").unwrap();
+        let (host, port, path) = split_authority_and_path("localhost:8080/ws", "ws");
         assert_eq!(host, "localhost");
         assert_eq!(port, 8080);
         assert_eq!(path, "/ws");
@@ -764,25 +968,19 @@ mod tests {
 
     #[test]
     fn parse_ws_url_default_path() {
-        let (_, _, path) = parse_ws_url("ws://host/").unwrap();
+        let (_, _, path) = split_authority_and_path("host/", "ws");
         assert_eq!(path, "/");
     }
 
     #[test]
     fn parse_ws_url_no_path_defaults_to_slash() {
-        let (_, _, path) = parse_ws_url("ws://host").unwrap();
+        let (_, _, path) = split_authority_and_path("host", "ws");
         assert_eq!(path, "/");
     }
 
     #[test]
-    fn parse_ws_url_bare_host_no_scheme() {
-        let (host, _, _) = parse_ws_url("example.com/chat").unwrap();
-        assert_eq!(host, "example.com");
-    }
-
-    #[test]
     fn parse_ws_url_empty_string() {
-        let (host, port, path) = parse_ws_url("").unwrap();
+        let (host, port, path) = split_authority_and_path("", "ws");
         assert_eq!(host, "");
         assert_eq!(port, 80);
         assert_eq!(path, "/");
@@ -790,7 +988,7 @@ mod tests {
 
     #[test]
     fn parse_ws_url_ipv4_with_port() {
-        let (host, port, path) = parse_ws_url("ws://127.0.0.1:9222/json").unwrap();
+        let (host, port, path) = split_authority_and_path("127.0.0.1:9222/json", "ws");
         assert_eq!(host, "127.0.0.1");
         assert_eq!(port, 9222);
         assert_eq!(path, "/json");
@@ -798,7 +996,7 @@ mod tests {
 
     #[test]
     fn parse_ws_url_query_string() {
-        let (host, port, path) = parse_ws_url("ws://example.com/ws?token=abc").unwrap();
+        let (host, port, path) = split_authority_and_path("example.com/ws?token=abc", "ws");
         assert_eq!(host, "example.com");
         assert_eq!(port, 80);
         assert!(path.starts_with("/ws"));
@@ -806,49 +1004,50 @@ mod tests {
 
     #[test]
     fn parse_ws_url_deep_path() {
-        let (host, _, path) = parse_ws_url("ws://host/a/b/c/d").unwrap();
+        let (host, _, path) = split_authority_and_path("host/a/b/c/d", "ws");
         assert_eq!(host, "host");
         assert_eq!(path, "/a/b/c/d");
     }
 
+    // @trace REQ-ENG-006 [code:bun_uws] — frame length encoding now shares
+    // bun_uws::ws_codec's layout via push_masked_len (the client→server masked
+    // length bytes). The masking key itself is per-frame random in the live
+    // path, so these unit tests verify only the length-byte shape.
     #[test]
-    fn write_masked_payload_empty() {
+    fn push_masked_len_empty() {
         let mut frame = Vec::new();
-        write_masked_payload(&mut frame, b"");
-        // Empty payload: 1 byte opcode+length + 4 bytes mask key
-        assert_eq!(frame.len(), 5);
+        push_masked_len(&mut frame, 0);
+        assert_eq!(frame.len(), 1);
         assert_eq!(frame[0] & 0x7F, 0); // length = 0
     }
 
     #[test]
-    fn write_masked_payload_short() {
+    fn push_masked_len_short() {
         let mut frame = Vec::new();
-        let payload = b"hello";
-        write_masked_payload(&mut frame, payload);
-        // 1 byte opcode+length + 4 bytes mask key + 5 bytes masked data
-        assert_eq!(frame.len(), 10);
+        push_masked_len(&mut frame, 5);
+        assert_eq!(frame.len(), 1);
         assert_eq!(frame[0] & 0x7F, 5); // length = 5
     }
 
     #[test]
-    fn write_masked_payload_medium() {
+    fn push_masked_len_medium() {
         let mut frame = Vec::new();
         let payload = vec![0u8; 200];
-        write_masked_payload(&mut frame, &payload);
-        // 1 byte + 2 bytes extended length + 4 bytes mask key + 200 bytes data
-        assert_eq!(frame.len(), 207);
+        push_masked_len(&mut frame, payload.len());
+        // 1 byte + 2 bytes extended length
+        assert_eq!(frame.len(), 3);
         assert_eq!(frame[0] & 0x7F, 126); // 126 signals 16-bit length
         let ext_len = u16::from_be_bytes([frame[1], frame[2]]);
         assert_eq!(ext_len, 200);
     }
 
     #[test]
-    fn write_masked_payload_large() {
+    fn push_masked_len_large() {
         let mut frame = Vec::new();
         let payload = vec![0u8; 70000];
-        write_masked_payload(&mut frame, &payload);
-        // 1 byte + 8 bytes extended length + 4 bytes mask key + 70000 bytes data
-        assert_eq!(frame.len(), 70013);
+        push_masked_len(&mut frame, payload.len());
+        // 1 byte + 8 bytes extended length
+        assert_eq!(frame.len(), 9);
         assert_eq!(frame[0] & 0x7F, 127); // 127 signals 64-bit length
     }
 

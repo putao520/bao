@@ -73,6 +73,36 @@ impl Verifier {
         Ok(Verifier { pkey, algo: algo.clone() })
     }
 
+    /// Load from a PEM-encoded SubjectPublicKeyInfo (public key).
+    pub fn from_public_pem(algo: &SignAlgorithm, pem: &str) -> Result<Verifier, CryptoError> {
+        let pkey = unsafe {
+            let bio = BIO_new_mem_buf(pem.as_ptr() as *const c_void, pem.len() as isize);
+            if bio.is_null() {
+                return Err(CryptoError::InvalidKey("BIO_new_mem_buf failed".into()));
+            }
+            let pkey = PEM_read_bio_PUBKEY(bio, ptr::null_mut(), None::<pem_password_cb>, ptr::null_mut());
+            BIO_free(bio);
+            if pkey.is_null() {
+                return Err(CryptoError::InvalidKey("PEM_read_bio_PUBKEY failed".into()));
+            }
+            pkey
+        };
+        Ok(Verifier { pkey, algo: algo.clone() })
+    }
+
+    /// Load from a DER-encoded SubjectPublicKeyInfo (public key).
+    pub fn from_public_der(algo: &SignAlgorithm, der: &[u8]) -> Result<Verifier, CryptoError> {
+        let pkey = unsafe {
+            let mut inp = der.as_ptr();
+            let pkey = d2i_PUBKEY(ptr::null_mut(), &mut inp, der.len() as c_long);
+            if pkey.is_null() {
+                return Err(CryptoError::InvalidKey("d2i_PUBKEY failed".into()));
+            }
+            pkey
+        };
+        Ok(Verifier { pkey, algo: algo.clone() })
+    }
+
     pub fn verify(
         &self,
         data: &[u8],
@@ -150,5 +180,83 @@ impl Verifier {
 
             Ok(result == 1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sign::{RsaHash, SignatureFormat, SignAlgorithm, Signer};
+
+    /// Generate one RSA-2048 keypair and return (private_pem, public_pem).
+    fn rsa_keypair_pem() -> (String, String) {
+        unsafe {
+            let rsa = RSA_new();
+            let bn = BN_new();
+            BN_set_word(bn, 65537);
+            assert_eq!(RSA_generate_key_ex(rsa, 2048, bn, ptr::null_mut()), 1);
+            BN_free(bn);
+            let pkey = EVP_PKEY_new();
+            assert_eq!(EVP_PKEY_set1_RSA(pkey, rsa), 1);
+            RSA_free(rsa);
+
+            // Private PKCS8 PEM.
+            let priv_bio = BIO_new(BIO_s_mem());
+            assert_eq!(
+                PEM_write_bio_PKCS8PrivateKey(
+                    priv_bio,
+                    pkey,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    0,
+                    None::<pem_password_cb>,
+                    ptr::null_mut(),
+                ),
+                1
+            );
+            let priv_pending = BIO_ctrl_pending(priv_bio);
+            let mut priv_buf = vec![0u8; priv_pending];
+            let priv_n = BIO_read(priv_bio, priv_buf.as_mut_ptr() as *mut core::ffi::c_void, priv_pending as core::ffi::c_int);
+            BIO_free(priv_bio);
+
+            // Public SubjectPublicKeyInfo PEM.
+            let pub_bio = BIO_new(BIO_s_mem());
+            assert_eq!(PEM_write_bio_PUBKEY(pub_bio, pkey), 1);
+            let pub_pending = BIO_ctrl_pending(pub_bio);
+            let mut pub_buf = vec![0u8; pub_pending];
+            let pub_n = BIO_read(pub_bio, pub_buf.as_mut_ptr() as *mut core::ffi::c_void, pub_pending as core::ffi::c_int);
+            BIO_free(pub_bio);
+
+            EVP_PKEY_free(pkey);
+            assert!(priv_n > 0 && pub_n > 0);
+            (
+                String::from_utf8(priv_buf[..priv_n as usize].to_vec()).unwrap(),
+                String::from_utf8(pub_buf[..pub_n as usize].to_vec()).unwrap(),
+            )
+        }
+    }
+
+    #[test]
+    fn verify_public_key_pem_roundtrip() {
+        // Sign with the private key, verify with the matching public key PEM.
+        let (priv_pem, pub_pem) = rsa_keypair_pem();
+        let algo = SignAlgorithm::RsaPkcs1v15 { hash: RsaHash::Sha256 };
+        let signer = Signer::from_pkcs8_pem(&algo, &priv_pem).unwrap();
+        let data = b"verify with public key pem";
+        let sig = signer.sign(data, SignatureFormat::Der).unwrap();
+
+        let verifier = Verifier::from_public_pem(&algo, &pub_pem).unwrap();
+        assert!(verifier.verify(data, &sig, SignatureFormat::Der).unwrap());
+    }
+
+    #[test]
+    fn verify_public_key_pem_rejects_tampered() {
+        let (priv_pem, pub_pem) = rsa_keypair_pem();
+        let algo = SignAlgorithm::RsaPkcs1v15 { hash: RsaHash::Sha256 };
+        let signer = Signer::from_pkcs8_pem(&algo, &priv_pem).unwrap();
+        let sig = signer.sign(b"original", SignatureFormat::Der).unwrap();
+
+        let verifier = Verifier::from_public_pem(&algo, &pub_pem).unwrap();
+        assert!(!verifier.verify(b"tampered", &sig, SignatureFormat::Der).unwrap());
     }
 }

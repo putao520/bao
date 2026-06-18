@@ -78,6 +78,17 @@ const STUB_MODULES: &[&str] = &[
 
 /// Register a single empty stub object under the given builtin key.
 fn register_stub(cx: &mut mozjs::context::JSContext, name: &str) {
+    // BUG-ENG-OVERRIDE class guard: never clobber a natively-implemented
+    // module. `install_all` registers placeholder overrides AFTER native modules,
+    // so without this guard a placeholder silently replaces the real
+    // implementation (e.g. `assert/strict`, `timers/promises`). Skip registration
+    // entirely when a real builtin is already cached under this key.
+    let cache_key = format!("builtin:{}", name);
+    if let Some(existing) = crate::gc_store::gc_store_get(unsafe { cx.raw_cx() }, &cache_key) {
+        if !existing.is_null() {
+            return;
+        }
+    }
     rooted!(&in(cx) let obj = unsafe { w2::JS_NewPlainObject(cx) });
     if obj.get().is_null() {
         return;

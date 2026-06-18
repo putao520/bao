@@ -350,32 +350,36 @@ unsafe extern "C" fn tls_connect(
 
     let _cb: Option<*mut JSObject> = None;
 
-    // Attempt TLS connection (verifies handshake)
-    if let Ok(_tcp_stream) = ::std::net::TcpStream::connect((&*host, port)) {
-        let test_url = format!("https://{}:{}", host, port);
-        let headers: Vec<(String, String)> = Vec::new();
-        let tls_result = crate::stealth_http::stealth_http_request(
-            &None, bun_http::Method::HEAD, &test_url, &headers, None,
-        );
-        let tls_ok = tls_result.is_ok();
+    // @trace REQ-ENG-007 [api:tls.connect] — verify the TLS handshake by
+    // performing a single stealth HTTPS HEAD against the target. The previous
+    // implementation opened a raw `TcpStream::connect` first as a redundant
+    // liveness probe before `stealth_http_request` (which itself does the TCP
+    // connect + TLS handshake). That double-connect doubled the DNS lookup,
+    // socket setup, and TIME_WAIT cost and could hang on unreachable hosts
+    // before the real TLS path ever ran — removed. `stealth_http_request`'s
+    // Ok/Err now directly gates the result object.
+    let test_url = format!("https://{}:{}", host, port);
+    let headers: Vec<(String, String)> = Vec::new();
+    let tls_result = crate::stealth_http::stealth_http_request(
+        &None, bun_http::Method::HEAD, &test_url, &headers, None,
+    );
 
-        if tls_ok {
-            rooted!(&in(cx_ref) let tls_obj = w2::JS_NewPlainObject(cx_ref));
-            if !tls_obj.get().is_null() {
-                rooted!(&in(cx_ref) let auth = mozjs::jsval::BooleanValue(true));
-                JS_DefineProperty(cx, tls_obj.handle().into(), c"authorized".as_ptr(), auth.handle().into(), JSPROP_ENUMERATE as u32);
-                rooted!(&in(cx_ref) let enc = mozjs::jsval::BooleanValue(true));
-                JS_DefineProperty(cx, tls_obj.handle().into(), c"encrypted".as_ptr(), enc.handle().into(), JSPROP_ENUMERATE as u32);
+    if tls_result.is_ok() {
+        rooted!(&in(cx_ref) let tls_obj = w2::JS_NewPlainObject(cx_ref));
+        if !tls_obj.get().is_null() {
+            rooted!(&in(cx_ref) let auth = mozjs::jsval::BooleanValue(true));
+            JS_DefineProperty(cx, tls_obj.handle().into(), c"authorized".as_ptr(), auth.handle().into(), JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let enc = mozjs::jsval::BooleanValue(true));
+            JS_DefineProperty(cx, tls_obj.handle().into(), c"encrypted".as_ptr(), enc.handle().into(), JSPROP_ENUMERATE as u32);
 
-                let host_str = JS_NewStringCopyN(cx, host.as_ptr() as *const ::std::os::raw::c_char, host.len());
-                if !host_str.is_null() {
-                    rooted!(&in(cx_ref) let hv = mozjs::jsval::StringValue(&*host_str));
-                    JS_DefineProperty(cx, tls_obj.handle().into(), c"servername".as_ptr(), hv.handle().into(), JSPROP_ENUMERATE as u32);
-                }
-
-                args.rval().set(ObjectValue(tls_obj.get()));
-                return true;
+            let host_str = JS_NewStringCopyN(cx, host.as_ptr() as *const ::std::os::raw::c_char, host.len());
+            if !host_str.is_null() {
+                rooted!(&in(cx_ref) let hv = mozjs::jsval::StringValue(&*host_str));
+                JS_DefineProperty(cx, tls_obj.handle().into(), c"servername".as_ptr(), hv.handle().into(), JSPROP_ENUMERATE as u32);
             }
+
+            args.rval().set(ObjectValue(tls_obj.get()));
+            return true;
         }
     }
 
