@@ -322,8 +322,6 @@ unsafe extern "C" fn tls_connect(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
 
     let (host, port) = if argc > 0 && (*args.get(0).ptr).is_object() {
         let opts = (*args.get(0).ptr).to_object();
@@ -350,40 +348,39 @@ unsafe extern "C" fn tls_connect(
 
     let _cb: Option<*mut JSObject> = None;
 
-    // @trace REQ-ENG-007 [api:tls.connect] — verify the TLS handshake by
-    // performing a single stealth HTTPS HEAD against the target. The previous
-    // implementation opened a raw `TcpStream::connect` first as a redundant
-    // liveness probe before `stealth_http_request` (which itself does the TCP
-    // connect + TLS handshake). That double-connect doubled the DNS lookup,
-    // socket setup, and TIME_WAIT cost and could hang on unreachable hosts
-    // before the real TLS path ever ran — removed. `stealth_http_request`'s
-    // Ok/Err now directly gates the result object.
-    let test_url = format!("https://{}:{}", host, port);
-    let headers: Vec<(String, String)> = Vec::new();
-    let tls_result = crate::stealth_http::stealth_http_request(
-        &None, bun_http::Method::HEAD, &test_url, &headers, None,
+    // @trace REQ-ENG-010 [api:tls.connect async] [entity:FetchTasklet]
+    //
+    // BCE-20260618-007: `tls.connect` previously called `stealth_http_request`
+    // (a single stealth HTTPS HEAD handshake probe) directly inside the
+    // JS-native frame, blocking the JS thread on the full TLS round-trip.
+    // Now it returns a *pending* Promise and schedules the probe on a detached
+    // worker via `fetch_async::start_tls_probe` (FetchTasklet pattern). The
+    // Promise resolves to a TLSSocket object (`authorized`/`encrypted`/
+    // `servername`) on success, or rejects on error.
+    //
+    // History note: an even older impl opened a raw `TcpStream::connect` as a
+    // redundant liveness probe *before* `stealth_http_request` — doubled DNS,
+    // socket setup, and TIME_WAIT cost and could hang on unreachable hosts.
+    // That was already removed; `stealth_http_request`'s Ok/Err directly gates
+    // the result. This change removes the *blocking* call from the JS thread.
+    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(
+        cx,
+        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() },
     );
+    if promise.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let promise_val = mozjs::jsval::ObjectValue(promise);
 
-    if tls_result.is_ok() {
-        rooted!(&in(cx_ref) let tls_obj = w2::JS_NewPlainObject(cx_ref));
-        if !tls_obj.get().is_null() {
-            rooted!(&in(cx_ref) let auth = mozjs::jsval::BooleanValue(true));
-            JS_DefineProperty(cx, tls_obj.handle().into(), c"authorized".as_ptr(), auth.handle().into(), JSPROP_ENUMERATE as u32);
-            rooted!(&in(cx_ref) let enc = mozjs::jsval::BooleanValue(true));
-            JS_DefineProperty(cx, tls_obj.handle().into(), c"encrypted".as_ptr(), enc.handle().into(), JSPROP_ENUMERATE as u32);
-
-            let host_str = JS_NewStringCopyN(cx, host.as_ptr() as *const ::std::os::raw::c_char, host.len());
-            if !host_str.is_null() {
-                rooted!(&in(cx_ref) let hv = mozjs::jsval::StringValue(&*host_str));
-                JS_DefineProperty(cx, tls_obj.handle().into(), c"servername".as_ptr(), hv.handle().into(), JSPROP_ENUMERATE as u32);
-            }
-
-            args.rval().set(ObjectValue(tls_obj.get()));
-            return true;
-        }
+    // SAFETY: cx is live on this thread; promise_val is the pending Promise.
+    // The worker runs the TLS handshake probe off-thread; the JS thread
+    // returns immediately with the pending Promise.
+    unsafe {
+        crate::fetch_async::start_tls_probe(cx, promise_val, host, port);
     }
 
-    args.rval().set(UndefinedValue());
+    args.rval().set(promise_val);
     true
 }
 

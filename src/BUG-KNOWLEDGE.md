@@ -241,3 +241,64 @@ confirmReport:
 - ✅ 统一守卫：未来 STUB_MODULES 与原生 builtin 的任何交集自动豁免，无需手工同步列表。
 - ✅ 知识库：本条目。
 
+
+---
+
+## BCE-20260618-007-RT — fetch(self) 运行时挂起：JS-thread uWS App liveness 注册缺失
+
+### patternId / title
+`BCE-20260618-007-RT` · Bun.serve 未注册到 JS-thread liveness registry → drain_and_check 不 tick uWS Loop → 服务端永不 accept → fetch(self) 挂死。
+
+### layer
+设计缺陷（跨模块状态追踪不一致）。
+
+### 根因（rootCause）
+- **location**:
+  - `src/bao_runtime/src/bun_api.rs:1376` `bun_serve` 创建 `App::<false>` 后**未**注册到 `node_http::ACTIVE_APPS`。
+  - `src/bao_runtime/src/timers.rs:166/189/237/269` `drain_and_check` 仅凭 `node_http::has_active_servers()` 决定是否 `tick_once` 驱动 JS-thread uWS Loop。
+- **why**: `Bun.serve` 的 uWS App 绑定到 JS-thread 的 `uWS::Loop::get()` 单例，但 `bun_serve` 不像 `node_http::server_listen` 那样 push 到 `ACTIVE_APPS`。于是 `has_active_servers()` 对 Bun.serve 恒为 false → `drain_and_check` 走 fetch-only `sleep(1ms)` 分支 → JS-thread uWS Loop 永不被 tick → listen socket 永不 accept → worker `connect()` 永卡 EINPROGRESS → worker 永不写 result_slot → fetch Promise 永不 resolve → 进程挂死。
+- **evidence**（strace，修复前）：
+  - JS 线程 0 次 `epoll_pwait2`；约 4000 次 `clock_nanosleep(1ms)` 死循环。
+  - HTTPThread `connect() = EINPROGRESS` 后无任何进展。
+  - 修复后（注册 App）：JS 线程开始 `epoll_pwait2(3, …)` 并 `accept4(6)` 成功（liveness 修复验证通过）。
+
+### 同类判定标准（sameClassCriterion）
+任何在 JS 线程创建 uWS App/socket 的模块（`Bun.serve`、`http.createServer`、未来的 WebSocket server 等）必须统一注册到 `node_http::ACTIVE_APPS`，使 `drain_and_check` 的单一 liveness 入口保持 loop tick。
+
+### 根治（fixTemplate）— 阶段4
+统一注册入口：
+- `node_http::register_active_app(*mut App<false>)`（幂等、null-safe）。
+- `node_http::unregister_active_app(*mut App<false>)`（幂等、null-safe）。
+- `bun_serve`（bun_api.rs:1376 之后）调用 `register_active_app`；`server_stop`（bun_api.rs:1558）destroy 前调用 `unregister_active_app`。
+- `node_http::server_close` 重构为复用 `unregister_active_app`（替换内联 `ACTIVE_APPS.retain`），保证单一更新路径。
+
+### 全量确认报告 — 阶段5
+```yaml
+confirmReport:
+  patternId: BCE-20260618-007-RT
+  sweepScope: "src/bao_runtime/src/ 全量"
+  layersScanned: [literal, structural]
+  instancesFound: 2              # node_http::server_listen (已注册) + bun_api::bun_serve (未注册)
+  truePositives: 1               # bun_serve 缺注册
+  falsePositives: 1              # server_listen 原本就 push ACTIVE_APPS（保留）
+  instancesFixed: 1              # bun_serve + server_stop 接入 register/unregister
+  residual: 0                    # 所有 JS-thread App 创建点统一注册
+  residualEvidence:
+    - "重扫：grep App::<false>::create 命中 2 处（node_http:561 已注册；bun_api:1376 现已注册）"
+    - "node_http::tests::bce_007_* 4/4 passed（注册/反注册/幂等/null-safe）"
+    - "cargo test -p bun_runtime --lib: 614 passed / 0 failed"
+    - "strace 修复后：JS 线程 epoll_pwait2 + accept4 正常，liveness 恢复"
+  releaseGateImpact: block (见下文残留)
+```
+
+### 残留 / 升级（C-2.1）— 残留即未完成
+本 BCE 仅根治了 **liveness 注册缺失**（第一个 rootCause）。运行时验证发现 **fetch(self) 仍挂**，因为存在**独立的、范围更广的预存缺陷**：
+
+- **第二 rootCause（未根治，超出本任务范围）**: `HTTPThread`（`src/http/AsyncHTTP.rs` / `src/http/HTTPThread.rs` / `src/http/lib.rs`）在 client socket `connect()` 成功（EPOLLOUT）后**不写 HTTP 请求**。strace 证据：worker connect → EPOLLOUT → 之后 0 次 `write/writev/sendto/sendmsg`。该缺陷影响**所有 fetch**（`fetch("http://127.0.0.1:9222/json")`、`fetch(python_http_server)` 同样挂），非 `fetch(self)` 特有。位置疑似 `HTTPClient::on_open → first_call → on_writable` 链路（`src/http/lib.rs:1568/1759/2850`）在 bao 的 bun_http 移植中存在 dispatch 未触达 vtable.on_open 的断裂。
+- **影响**: BCE-007-R1~R4 单元测试全过（liveness 注册正确），但 `Bun.serve + fetch(self)` 端到端运行时仍挂（被第二 rootCause 阻塞）。需要单独的 BCE 任务根治 HTTPThread 写路径（涉及上游 `bun_http` HTTPClient 移植，建议 architect(retrospect) 归因）。
+- **本任务交付状态**: liveness 注册修复完整且经 strace 客观验证（JS 线程恢复 accept）；HTTPThread 写路径缺陷为独立预存问题，按 CLAUDE.md C-2 升级链路报告。
+
+### 防复发（阶段6）
+- ✅ 回归测试：`node_http::tests::bce_007_register_unregister_flips_liveness` / `_register_is_idempotent` / `_unregister_unknown_is_noop` / `_null_app_is_noop`（触发签名 = Bun.serve 未注册 → has_active_servers 误报 false → 测试 fail）。
+- ✅ 统一注册入口：未来任何在 JS 线程创建 uWS App 的模块必须经 `register_active_app`，单一 liveness 真相源。
+- ✅ 知识库：本条目。

@@ -16,6 +16,9 @@ pub mod bun_test;
 pub mod bao_browser_global;
 pub mod dispatch;
 pub mod fetch_api;
+// @trace REQ-ENG-010 [entity:FetchTasklet] — async HTTP integration helper
+// (BCE-20260618-007). Shared by node_http/node_https/node_tls JS-native entries.
+pub mod fetch_async;
 pub mod h3_fetch;
 pub mod gc_store;
 pub mod globals;

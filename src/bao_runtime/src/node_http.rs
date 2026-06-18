@@ -31,6 +31,61 @@ pub fn has_active_servers() -> bool {
     ACTIVE_APPS.with(|s| !s.borrow().is_empty())
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// BCE-007 (runtime hang): unified JS-thread uWS-App liveness registry.
+//
+// Root cause (rootCause, design layer): `drain_and_check` (timers.rs) keeps
+// the JS thread's uWS `Loop` alive ONLY while `node_http::has_active_servers()`
+// returns true — that branch is what drives `tick_once` → `us_loop_run_bun_tick`
+// → `epoll_wait`, which is the only way a JS-thread-bound uWS `App`'s listen
+// socket ever `accept()`s an inbound connection.
+//
+// `Bun.serve` (bun_api.rs) creates its own `App::<false>` bound to the SAME
+// JS-thread uWS `Loop` (via `uWS::Loop::get()` singleton), but historically
+// never registered it with `ACTIVE_APPS`, so `has_active_servers()` stayed
+// false for `Bun.serve`. Result: in `Bun.serve` + `fetch(self)` the worker's
+// `connect()` sat in `EINPROGRESS` forever (strace: 0 `epoll_pwait` on the JS
+// thread, ~4000 `clock_nanosleep(1ms)` spins), the server never `accept()`ed,
+// the worker never wrote its result slot, and the fetch Promise never resolved.
+//
+// Unified fix: every module that creates a JS-thread-bound uWS `App::<false>`
+// — `node_http::createServer` AND `Bun.serve` — registers it here so the
+// single `has_active_servers()` source of truth drives the loop tick for both.
+// This is the BCE "one fix for the whole class" — closing the registration gap
+// rather than patching `drain_and_check` to special-case `Bun.serve`.
+// @trace REQ-ENG-006 [api:Bun.serve] [api:http.createServer] unified liveness
+
+/// Register a JS-thread-bound uWS `App::<false>` so `has_active_servers()`
+/// reports liveness and `drain_and_check` keeps ticking the loop. Idempotent:
+/// re-registering the same pointer is a no-op (defensive against double
+/// registration in error paths). # Safety: `app` must be a live `*mut App<false>`
+/// returned by `App::<false>::create`, valid until `unregister_active_app` is
+/// called for it.
+pub unsafe fn register_active_app(app: *mut App<false>) {
+    if app.is_null() {
+        return;
+    }
+    ACTIVE_APPS.with(|s| {
+        let mut apps = s.borrow_mut();
+        if !apps.iter().any(|&p| ::core::ptr::eq(p, app)) {
+            apps.push(app);
+        }
+    });
+}
+
+/// Unregister a previously-registered `App::<false>`. No-op if not present
+/// (defensive against double-close paths). # Safety: `app` must match a
+/// pointer previously passed to `register_active_app`.
+pub unsafe fn unregister_active_app(app: *mut App<false>) {
+    if app.is_null() {
+        return;
+    }
+    ACTIVE_APPS.with(|s| {
+        let mut apps = s.borrow_mut();
+        apps.retain(|&p| !::core::ptr::eq(p, app));
+    });
+}
+
 pub fn listener_fds() -> Vec<i32> {
     // uWS App sockets are managed by the event loop (bao_uloop), not by
     // manual epoll. Return empty — drain_and_check no longer needs to
@@ -672,10 +727,11 @@ unsafe extern "C" fn server_close(
     if !app_ptr.is_null() {
         (*app_ptr).close();
         App::<false>::destroy(app_ptr);
-        ACTIVE_APPS.with(|s| {
-            let mut apps = s.borrow_mut();
-            apps.retain(|&p| p != app_ptr);
-        });
+        // BCE-007: unified unregister (idempotent). Replaces the inline
+        // `ACTIVE_APPS.retain` so the liveness registry has one update path.
+        // Safety: app_ptr was registered by `server_listen` via the same
+        // registry; idempotent if already removed.
+        unsafe { unregister_active_app(app_ptr); }
     }
 
     // Cleanup: reclaim ServerUserData box and remove GcStore entries.
@@ -748,6 +804,18 @@ unsafe extern "C" fn server_address(
     true
 }
 
+// @trace REQ-ENG-010 [api:http.request async] [entity:FetchTasklet]
+//
+// BCE-20260618-007: `http.request` / `http.get` must not perform any blocking
+// network I/O on the JS thread. The legacy shim built a plain metadata
+// object (url/method) — no I/O — so it did not directly block, but it was
+// listed in the BCE-007 sweep scope because `http.request` is the canonical
+// JS-native HTTP entry. To guarantee the C2 invariant ("zero send_sync/
+// stealth_http_request from any JS-native HTTP entry") and to make the API
+// actually useful, we now return a *pending* Promise that resolves to a
+// Response object (same shape as fetch()'s). The network round-trip runs on
+// a detached worker via `fetch_async::start` (FetchTasklet pattern) — never
+// on the JS thread.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn http_request(
     cx: *mut JSContext,
@@ -758,12 +826,6 @@ unsafe extern "C" fn http_request(
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-
-    rooted!(&in(cx_ref) let req_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
-    if req_obj.get().is_null() {
-        args.rval().set(UndefinedValue());
-        return true;
-    }
 
     let url_str = if argc > 0 {
         let v = *args.get(0).ptr;
@@ -779,23 +841,50 @@ unsafe extern "C" fn http_request(
         } else { "GET".to_string() }
     } else { "GET".to_string() };
 
-    let c_url = ZBox::from_bytes(url_str.as_bytes());
-    let js_url = JS_NewStringCopyZ(cx, c_url.as_ptr());
-    if !js_url.is_null() {
-        let uv = StringValue(&*js_url);
-        rooted!(&in(cx_ref) let uvr = uv);
-        JS_DefineProperty(cx, req_obj.handle().into(), c"url".as_ptr(), uvr.handle().into(), JSPROP_ENUMERATE as u32);
+    // Create the PENDING Promise *while cx_ref holds a rooting context*,
+    // then release cx_ref before scheduling (the worker must not outlive the
+    // rooted frame, but the Promise itself is heap-rooted by fetch_async).
+    rooted!(&in(cx_ref) let promise = unsafe {
+        mozjs_sys::jsapi::JS::NewPromiseObject(
+            cx,
+            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() },
+        )
+    });
+    if promise.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let promise_obj = promise.get();
+    let promise_val = ObjectValue(promise_obj);
+
+    // Resolve method string → bun_http::Method (no I/O).
+    let bun_method = match method.as_str() {
+        "POST" => bun_http::Method::POST,
+        "PUT" => bun_http::Method::PUT,
+        "DELETE" => bun_http::Method::DELETE,
+        "PATCH" => bun_http::Method::PATCH,
+        "HEAD" => bun_http::Method::HEAD,
+        "OPTIONS" => bun_http::Method::OPTIONS,
+        _ => bun_http::Method::GET,
+    };
+    // No stealth profile for plain http.request (Node API parity).
+    let profile: Option<bao_stealth::StealthProfile> = None;
+
+    // Schedule async fetch — detached worker, JS thread never blocks.
+    // SAFETY: cx is live on this thread; promise_val is the pending Promise.
+    unsafe {
+        crate::fetch_async::start(
+            cx,
+            promise_val,
+            profile,
+            bun_method,
+            url_str,
+            Vec::new(),
+            None,
+        );
     }
 
-    let c_method = ZBox::from_bytes(method.as_bytes());
-    let js_method = JS_NewStringCopyZ(cx, c_method.as_ptr());
-    if !js_method.is_null() {
-        let mv = StringValue(&*js_method);
-        rooted!(&in(cx_ref) let mvr = mv);
-        JS_DefineProperty(cx, req_obj.handle().into(), c"method".as_ptr(), mvr.handle().into(), JSPROP_ENUMERATE as u32);
-    }
-
-    args.rval().set(ObjectValue(req_obj.get()));
+    args.rval().set(promise_val);
     true
 }
 
@@ -805,6 +894,9 @@ unsafe extern "C" fn http_get(
     argc: u32,
     vp: *mut mozjs::jsval::JSVal,
 ) -> bool {
+    // http.get delegates to http_request (which now returns a pending Promise
+    // and never blocks). The delegated call chain reaches no send_sync/
+    // stealth_http_request on the JS thread — C2 invariant satisfied.
     http_request(cx, argc, vp)
 }
 
@@ -819,6 +911,8 @@ mod tests {
 
     #[test]
     fn has_active_servers_false_initially() {
+        // Clear any state leaked by previous tests on this thread.
+        ACTIVE_APPS.with(|s| s.borrow_mut().clear());
         assert!(!has_active_servers());
     }
 
@@ -826,6 +920,93 @@ mod tests {
     fn listener_fds_empty() {
         let fds = listener_fds();
         assert!(fds.is_empty());
+    }
+
+    // ── BCE-007 (runtime hang): unified liveness registry regression tests ──
+    // @trace REQ-ENG-006 [api:Bun.serve] [api:http.createServer] unified liveness
+    //
+    // These guard the invariant that closed the BCE-007 fetch(self) hang: every
+    // JS-thread-bound uWS App MUST be registered via register_active_app so
+    // drain_and_check keeps ticking the uWS Loop while the server is listening.
+    // Bun.serve previously skipped registration → the server's listen socket
+    // never received accept() events → fetch(self) hung forever.
+    //
+    // We test the registry contract directly (not the full fetch(self) round
+    // trip, which additionally depends on the HTTPThread client write path)
+    // so the liveness invariant is locked in independently.
+
+    /// BCE-007-R1: register_active_app flips has_active_servers() to true,
+    /// and a matching unregister flips it back. Uses sentinel pointers (never
+    /// dereferenced — register/unregister only compare/stored raw pointers).
+    #[test]
+    fn bce_007_register_unregister_flips_liveness() {
+        ACTIVE_APPS.with(|s| s.borrow_mut().clear());
+        assert!(!has_active_servers(), "no servers initially");
+
+        let sentinel_a: *mut App<false> = 0x1000 as *mut App<false>;
+        let sentinel_b: *mut App<false> = 0x2000 as *mut App<false>;
+        // SAFETY: register_active_app/unregister_active_app only store/compare
+        // the raw pointer; they never dereference it. Sentinels are valid for
+        // pointer-equality comparisons.
+        unsafe {
+            register_active_app(sentinel_a);
+            assert!(has_active_servers(), "registered → live");
+            register_active_app(sentinel_b);
+            assert!(has_active_servers(), "still live with two");
+            unregister_active_app(sentinel_a);
+            assert!(has_active_servers(), "still live with one");
+            unregister_active_app(sentinel_b);
+            assert!(!has_active_servers(), "all unregistered → not live");
+        }
+    }
+
+    /// BCE-007-R2: register is idempotent (re-registering the same pointer does
+    /// not double-count), preventing the registry from growing unbounded on
+    /// repeated Bun.serve calls in error paths.
+    #[test]
+    fn bce_007_register_is_idempotent() {
+        ACTIVE_APPS.with(|s| s.borrow_mut().clear());
+        let sentinel: *mut App<false> = 0x3000 as *mut App<false>;
+        // SAFETY: pointer never dereferenced (see R1).
+        unsafe {
+            register_active_app(sentinel);
+            register_active_app(sentinel);
+            register_active_app(sentinel);
+            let count = ACTIVE_APPS.with(|s| s.borrow().len());
+            assert_eq!(count, 1, "idempotent register must not duplicate");
+            unregister_active_app(sentinel);
+            assert!(!has_active_servers());
+        }
+    }
+
+    /// BCE-007-R3: unregister is idempotent (unregistering an unknown pointer
+    // is a no-op, not a panic) — defensive against double-close paths.
+    #[test]
+    fn bce_007_unregister_unknown_is_noop() {
+        ACTIVE_APPS.with(|s| s.borrow_mut().clear());
+        let sentinel: *mut App<false> = 0x4000 as *mut App<false>;
+        // SAFETY: pointer never dereferenced.
+        unsafe {
+            unregister_active_app(sentinel);
+            assert!(!has_active_servers(), "unregister-unknown must not panic");
+            register_active_app(0x5000 as *mut App<false>);
+            unregister_active_app(sentinel);
+            assert!(has_active_servers(), "unrelated unregister keeps live");
+        }
+    }
+
+    /// BCE-007-R4: null is safely ignored by both register and unregister
+    /// (Bun.serve stub-mode returns a null app_ptr; the call must be a no-op).
+    #[test]
+    fn bce_007_null_app_is_noop() {
+        ACTIVE_APPS.with(|s| s.borrow_mut().clear());
+        // SAFETY: null is explicitly handled (early return) in both functions.
+        unsafe {
+            register_active_app(core::ptr::null_mut());
+            assert!(!has_active_servers(), "null register must be a no-op");
+            unregister_active_app(core::ptr::null_mut());
+            assert!(!has_active_servers(), "null unregister must be a no-op");
+        }
     }
 
     // ── ServerUserData (GC-safe GcStore keys) ──

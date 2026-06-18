@@ -3,7 +3,12 @@
 // Applies HTTP/2 header ordering and User-Agent injection from StealthProfile.
 // Actual HTTP execution is delegated to crate::http_client::http_request().
 
-use bao_stealth::{Http2Fingerprint, StealthProfile, TlsFingerprint, TlsFingerprintConfig};
+// Re-export StealthProfile so callers can refer to it as
+// `crate::stealth_http::StealthProfile`, matching the public surface of this
+// module (whose functions already take `&Option<StealthProfile>`).
+// @trace REQ-STL-001 [entity:StealthProfile re-export]
+pub use bao_stealth::StealthProfile;
+use bao_stealth::{Http2Fingerprint, TlsFingerprint, TlsFingerprintConfig};
 use bun_http::Method;
 use bun_http::ssl_config::SSLConfig;
 use bytes::Bytes;

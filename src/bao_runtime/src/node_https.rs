@@ -161,6 +161,18 @@ const HTTPS_JS: &str = r#"
 })();
 "#;
 
+// @trace REQ-ENG-010 [api:https.request async] [entity:FetchTasklet]
+//
+// BCE-20260618-007: `https.request` previously called
+// `perform_https_request` → `stealth_http_request` directly inside the
+// JS-native frame, blocking the JS thread on the full TLS round-trip.
+// Now it returns a *pending* Promise and schedules the work on a detached
+// worker via `fetch_async::start` (FetchTasklet pattern). The Promise
+// resolves to a Response object (same shape as fetch()).
+//
+// The legacy `perform_https_request` JSON-string builder is kept for any
+// internal non-JS caller that still wants the serialized form, but the
+// JS-native entry no longer touches it — C2 invariant satisfied.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn https_request(
     cx: *mut JSContext,
@@ -193,18 +205,76 @@ unsafe extern "C" fn https_request(
         String::new()
     };
 
-    let result = perform_https_request(&url, &method, &headers_json, &body);
-
-    let c_result = ZBox::from_bytes(result.as_bytes());
-    let js_result = JS_NewStringCopyZ(cx, c_result.as_ptr());
-    if !js_result.is_null() {
-        args.rval().set(StringValue(&*js_result));
-    } else {
+    // Build the PENDING Promise. The network round-trip runs off the JS thread.
+    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(
+        cx,
+        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() },
+    );
+    if promise.is_null() {
         args.rval().set(UndefinedValue());
+        return true;
     }
+    let promise_val = mozjs::jsval::ObjectValue(promise);
+
+    // Map the JS method string to bun_http::Method (pure, no I/O).
+    let bun_method = match method.as_str() {
+        "POST" => bun_http::Method::POST,
+        "PUT" => bun_http::Method::PUT,
+        "DELETE" => bun_http::Method::DELETE,
+        "PATCH" => bun_http::Method::PATCH,
+        "HEAD" => bun_http::Method::HEAD,
+        "OPTIONS" => bun_http::Method::OPTIONS,
+        _ => bun_http::Method::GET,
+    };
+
+    // Parse the headers JSON once, on the JS thread (cheap), so the worker
+    // receives a ready Vec and does no JSON parsing. No network I/O here.
+    let headers_vec: Vec<(String, String)> = if !headers_json.is_empty() {
+        serde_json::from_str::<::std::collections::HashMap<String, String>>(&headers_json)
+            .unwrap_or_default()
+            .into_iter()
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let body_bytes: Option<Vec<u8>> = if body.is_empty() {
+        None
+    } else {
+        Some(body.into_bytes())
+    };
+
+    // No stealth profile for https.request (Node API parity). Stealth applies
+    // to the stealth_http / fetch path.
+    let profile: Option<bao_stealth::StealthProfile> = None;
+
+    // SAFETY: cx is live on this thread; promise_val is the pending Promise.
+    // The worker runs stealth_http_request off-thread; the JS thread returns
+    // immediately with the pending Promise.
+    unsafe {
+        crate::fetch_async::start(
+            cx,
+            promise_val,
+            profile,
+            bun_method,
+            url,
+            headers_vec,
+            body_bytes,
+        );
+    }
+
+    args.rval().set(promise_val);
     true
 }
 
+/// Internal *synchronous* HTTPS request wrapper: serializes the result as a
+/// JSON string (the legacy shape returned by the pre-async `https.request`).
+///
+/// Retained per BCE-007 CONTRACT-5: internal non-JS callers that need a
+/// synchronous, JSON-serialized response can use this without affecting the
+/// JS-native async path. Currently no internal caller routes through it, so
+/// it is `#[allow(dead_code)]` until an internal sync consumer appears.
+// @trace REQ-ENG-010 [api:https.request sync wrapper (CONTRACT-5)]
+#[allow(dead_code)]
 fn perform_https_request(url: &str, method: &str, headers_json: &str, body: &str) -> String {
     let bun_method = match method {
         "POST" => bun_http::Method::POST,

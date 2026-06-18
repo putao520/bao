@@ -1375,6 +1375,17 @@ unsafe extern "C" fn bun_serve(
     let opts = BunSocketContextOptions::default();
     let app_ptr = App::<false>::create(&opts).unwrap_or(::std::ptr::null_mut());
 
+    // BCE-007 (runtime hang): register the App with the unified JS-thread
+    // liveness registry so `drain_and_check` keeps ticking the uWS Loop while
+    // this server is listening. Without this, the server's listen socket never
+    // receives `accept()` events and inbound connections (e.g. `fetch(self)`)
+    // hang in EINPROGRESS forever. Matches `node_http::server_listen` which
+    // pushes to the same registry. Idempotent + null-safe.
+    // @trace REQ-ENG-006 [api:Bun.serve] unified liveness registration
+    // Safety: app_ptr is a live `*mut App<false>` from `App::create` (or null,
+    // which register_active_app handles).
+    unsafe { crate::node_http::register_active_app(app_ptr); }
+
     // Store fetch_handler + websocket_handler in user_data for the route callback
     let ud = Box::new(BunServeUserData {
         fetch_cb_key,
@@ -1559,6 +1570,11 @@ unsafe extern "C" fn bun_serve(
             // Close listen sockets first, then destroy app.
             // Skip destroys socket group with dangling listen sockets → assertion.
             (*app_ptr).close();
+            // BCE-007: unregister BEFORE destroy so `has_active_servers()`
+            // stops reporting liveness for the now-destroyed App. Matches the
+            // register call in `bun_serve`; idempotent.
+            // Safety: app_ptr was registered in bun_serve (or is the null path).
+            unsafe { crate::node_http::unregister_active_app(app_ptr); }
             App::<false>::destroy(app_ptr);
             log::info!("Bun.serve() stopped");
         }
