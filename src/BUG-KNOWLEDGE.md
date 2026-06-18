@@ -302,3 +302,68 @@ confirmReport:
 - ✅ 回归测试：`node_http::tests::bce_007_register_unregister_flips_liveness` / `_register_is_idempotent` / `_unregister_unknown_is_noop` / `_null_app_is_noop`（触发签名 = Bun.serve 未注册 → has_active_servers 误报 false → 测试 fail）。
 - ✅ 统一注册入口：未来任何在 JS 线程创建 uWS App 的模块必须经 `register_active_app`，单一 liveness 真相源。
 - ✅ 知识库：本条目。
+
+---
+
+## BCE-20260618-007-R2 — HTTPThread client connect 后不写 HTTP 请求（dispatch vtable 断链）
+
+### patternId / title
+`BCE-20260618-007-R2` · bao 移植的 `bun_http` `HTTPContext::init` 传 `vtable = None` → C++ `us_dispatch_open`/`us_dispatch_writable` 在 connect 完成时返回不调用任何 handler → `Handler::on_open → first_call → on_writable` 链断 → HTTP 请求体永不写出 → **所有 fetch 挂**。
+
+### layer
+设计缺陷（移植协议失配 — 上游 Zig 用静态 kind→vtable 表，bao 只读 per-group vtable，但 init 时又传 None，两头落空）。
+
+### 根因（rootCause）
+- **location**:
+  - `src/http/HTTPContext.rs:528` `init_with_opts` 调用 `self.group.init(loop, None, owner_ptr)`（vtable=None）。
+  - `src/http/HTTPContext.rs:584` `init` 同样传 `None`。
+  - 断链点：`src/bao_uloop/src/lib.rs:509` `dispatch_via_vtable` 仅查 `group.vtable`；`HTTPContext` group 的 vtable 是 `None` → fallback 直接返回 `s`，不触达 `Handler::on_*`。
+- **why（上游对照）**:
+  - 上游 `bun/src/runtime/socket/uws_dispatch.zig:33-64` 用一个 **静态 `tables: EnumArray<SocketKind, ?*VTable>`**（`tables.set(.http_client, vtable.make(handlers.HTTPClient(false)))`）按 socket kind 查 vtable；`HTTPContext.zig:248` 也传 `null`，但上游的 `vt(s)` 函数先查静态表，所以 `http_client`/`http_client_tls` kind 仍能找到 handler。
+  - bao 的移植**只复刻了 per-group 路径**（`dispatch_via_vtable` 查 `group.vtable`），**漏了静态 kind→vtable 表**。又因为 `HTTPContext` 传 `None`，`http_client`/`http_client_tls` 两类 socket 的 dispatch **完全空转**。
+  - 端到端调用链（C++ 真源）：`packages/bun-usockets/src/loop.c:387` `us_internal_socket_after_open(s, error)`（connect 完成触发）→ `context.c:755` `us_dispatch_open(s, 1, 0, 0)` → bao `us_dispatch_open`（Rust export）→ `dispatch_via_vtable` → `group.vtable == None` → return `s`（**Handler::on_open 未被调用**）。
+- **evidence**（strace，R1 修复后仍挂）：
+  - client socket `connect() = EINPROGRESS` → 后续 EPOLLOUT → 之后 **0 次** `write/writev/sendto/sendmsg`（请求体从未发出）。
+  - 该缺陷影响**所有 fetch**（`fetch("http://127.0.0.1:9222/json")`、`fetch(python_http_server)`、`fetch(self Bun.serve)` 同挂），非 fetch-self 特有。
+  - 对照工作正常路径：`src/bao_runtime/src/node_net.rs:212` `NET_VTABLE`（`node_net` 自建 static VTable 并 `group.init(loop_, Some(&NET_VTABLE), null)`）— TCP socket 的 `net_on_open` 正常触达。
+
+### 同类判定标准（sameClassCriterion）
+任何 bao 移植的 socket 模块（`HTTPContext`、未来的 WebSocket client、SQL driver 等）若其 `SocketGroup::init` 传 `vtable = None` 且该 kind 没有对应静态 vtable 注册，则该模块的所有 dispatch 事件（`on_open`/`on_writable`/`on_data`/`on_close`/`on_handshake`）都不会被触达 — 同类断链。
+
+### 根治（fixTemplate）— 阶段4
+采用 bao 已证明正确的 `NET_VTABLE` 模式（per-group static vtable），不引入全局静态 kind→vtable 表（避免上游 Zig 反射生成器的复杂度）：
+
+1. 为 `Handler::<SSL>::on_*` 写 `unsafe extern "C"` trampoline（`http_vt_on_open`/`on_data`/`on_writable`/`on_close`/`on_timeout`/`on_long_timeout`/`on_end`/`on_connect_error`/`on_handshake`），签名匹配 `us_socket_vtable_t`（首参 `*mut us_socket_t`）。
+2. 每个 trampoline 用 `HTTPContext::<SSL>::ext_tagged_ptr(socket)` 从 socket ext slot 读出 `ActiveSocket` tagged-pointer word（即 `Handler::on_*` 第一参 `ptr: *mut c_void` 的值），然后 forward。
+3. 定义 `static HTTP_VTABLE`（`Handler::<false>`，bind `http_client` kind）和 `static HTTPS_VTABLE`（`Handler::<true>`，bind `http_client_tls` kind；`on_handshake` slot 必须填 — TLS 路径 `first_call` 从 `on_handshake` 而非 `on_open` 调）。
+4. `init_with_opts`（SSL-only）传 `Some(&HTTPS_VTABLE)`；`init`（generic）按 const-generic `SSL` 选 `HTTP_VTABLE`/`HTTPS_VTABLE`。
+
+统一策略：所有 bao 移植的 socket 模块统一用「per-group static vtable」（`NET_VTABLE` / `HTTP_VTABLE` / `HTTPS_VTABLE`），禁止再用 `vtable = None` 配静态 kind 表（bao 没有该表）。
+
+### 全量确认报告 — 阶段5
+```yaml
+confirmReport:
+  patternId: BCE-20260618-007-R2
+  sweepScope: "src/http/ + src/bao_runtime/src/ + src/bao_uloop/src/ 全量"
+  layersScanned: [literal, structural]
+  instancesFound: 3
+    - HTTPContext::init_with_opts (vtable=None)   # 真阳性 1
+    - HTTPContext::init (vtable=None)              # 真阳性 2
+    - node_net::NET_VTABLE (已正确)                # 误报，参考实现
+  truePositives: 2
+  falsePositives: 1
+  instancesFixed: 2   # init_with_opts → &HTTPS_VTABLE; init → 按 SSL 选 HTTP/HTTPS_VTABLE
+  residual: 0
+  residualEvidence:
+    - "重扫 grep 'group.*init.*None' src/http/ ：0 命中（HTTPContext 两处 init 均已传 Some）"
+    - "cargo check（workspace 全量）：Finished，0 error"
+    - "bun_http crate 内 HTTP_VTABLE/HTTPS_VTABLE dispatch slot 单元测试：3/3 passed（on_open/on_writable/on_data/on_close/on_end/on_connect_error/on_timeout/on_long_timeout 全 Some；HTTPS 额外 on_handshake Some；HTTP vs HTTPS trampoline 指针不同）"
+    - "端到端验证受限：当前构建环境 native-link 配置缺失（c-ares/lsquic/lshpack 未在 link line），无法重建 target/debug/bao 复现脚本；代码层 rootCause 已定位 + 根治 + 单元测试覆盖。"
+  releaseGateImpact: block（端到端 fetch 验证待 binary rebuild）
+```
+
+### 防复发（阶段6）
+- ✅ 回归测试：`http::HTTPContext::tests::http_vtable_dispatch_slots_populated` / `https_vtable_handshake_slot_populated` / `http_and_https_vtables_bind_distinct_trampolines`（触发签名 = vtable 任一关键 slot = None → 测试 fail）。
+- ✅ 统一约定：bao 移植的 socket 模块一律用 per-group static vtable（参考 `NET_VTABLE`），禁止 `group.init(..., None, ...)`。
+- ✅ 知识库：本条目。
+

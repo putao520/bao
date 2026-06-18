@@ -348,6 +348,26 @@ impl<const SSL: bool> HTTPContext<SSL> {
         ActiveSocket::<SSL>::init(dead_socket())
     }
 
+    /// Read the raw `ActiveSocket` tagged-pointer word stored in `socket`'s
+    /// ext slot. This is the value `Handler::on_*` methods receive as their
+    /// first `ptr: *mut c_void` argument (the dispatch layer dereferences the
+    /// ext slot before calling them). Used by the `us_dispatch_*` trampolines
+    /// in [`HTTP_VTABLE`]/[`HTTPS_VTABLE`].
+    ///
+    /// Returns null when the socket has no ext slot (closed / non-uSockets
+    /// transport); `Handler::on_*` decode `null` as `dead_socket()` via
+    /// [`Self::get_tagged`].
+    fn ext_tagged_ptr(socket: HTTPSocket<SSL>) -> *mut c_void {
+        match socket.ext::<*mut c_void>() {
+            // SAFETY: ext slot stores exactly one `*mut c_void` (the
+            // ActiveSocket tagged-pointer word); reading it back as that type
+            // is the inverse of the `*slot = tagged.ptr()` write in
+            // `set_socket_ext`.
+            Some(slot) => unsafe { *slot },
+            None => core::ptr::null_mut(),
+        }
+    }
+
     /// Write `tagged` into `socket`'s ext slot.
     ///
     /// INVARIANT (centralised here): the ext slot of every HTTP-thread socket
@@ -525,8 +545,16 @@ impl<const SSL: bool> HTTPContext<SSL> {
         // SAFETY: secure was just set to Some.
         unsafe { ssl_ctx_setup(self.ssl_ctx()) };
         let owner_ptr = std::ptr::from_mut::<Self>(self).cast::<c_void>();
+        // BCE-007-R2: install the per-kind dispatch vtable. Without this,
+        // `us_dispatch_open`/`us_dispatch_writable`/`us_dispatch_data` route
+        // through `group.vtable` (None) and never reach `Handler::on_*`, so
+        // connect completion never writes the HTTP request — every fetch
+        // hangs. The static table is keyed by `Self::KIND` upstream; here the
+        // group is uniquely owned by this `HTTPContext<SSL>`, so the per-SSL
+        // static vtable is the correct binding. `init_with_opts` is SSL-only
+        // (`debug_assert!(SSL)`), so it always binds `HTTPS_VTABLE`.
         self.group
-            .init(http::http_thread().uws_loop(), None, owner_ptr);
+            .init(http::http_thread().uws_loop(), Some(&HTTPS_VTABLE), owner_ptr);
         Ok(())
     }
 
@@ -555,8 +583,15 @@ impl<const SSL: bool> HTTPContext<SSL> {
 
     pub(crate) fn init(&mut self) {
         let owner_ptr = std::ptr::from_mut::<Self>(self).cast::<c_void>();
+        // BCE-007-R2: same rationale as `init_with_opts` — the per-kind
+        // dispatch vtable must be installed or connect completion never reaches
+        // `Handler::on_open` → `first_call` → `on_writable`, and every fetch
+        // hangs (HTTP request never written after TCP connect). Select the
+        // vtable by the const-generic SSL flag; `http_context` (`<false>`)
+        // binds `HTTP_VTABLE`, `https_context` (`<true>`) binds `HTTPS_VTABLE`.
+        let vt: &'static uws::SocketGroupVTable = if SSL { &HTTPS_VTABLE } else { &HTTP_VTABLE };
         self.group
-            .init(http::http_thread().uws_loop(), None, owner_ptr);
+            .init(http::http_thread().uws_loop(), Some(vt), owner_ptr);
         if SSL {
             let mut err = uws::create_bun_socket_error_t::none;
             self.secure = Some(
@@ -1368,6 +1403,175 @@ impl<const SSL: bool> Handler<SSL> {
     }
 }
 
+// ──────────────── us_dispatch_* trampolines + per-kind VTable ────────────────
+// BCE-007-R2 root cause: `HTTPContext::init` passed `vtable = None` to
+// `SocketGroup::init`, matching upstream Bun (which also passes null because
+// `dispatch.zig` resolves the handler through a *static kind→vtable table*,
+// not the per-group slot). Bao's `dispatch_via_vtable` only consults the
+// per-group slot, so `http_client`/`http_client_tls` sockets had no handler:
+// `us_dispatch_open` ran on connect completion but returned without ever
+// calling `Handler::on_open` → `first_call` → `on_writable`, so the HTTP
+// request was never written and every fetch hung.
+//
+// Fix: install a per-SSL static VTable on the group (same pattern as
+// `bao_runtime::node_net::NET_VTABLE`). The trampolines recover the
+// `ActiveSocket` tagged pointer from the socket ext slot — exactly what
+// `Handler::on_*` expect as their first argument — then forward.
+
+/// `us_dispatch_open` trampoline for HTTP-thread sockets.
+///
+/// `s` is a live `*mut us_socket_t`; `ip[0..ip_len]` is the peer IP when
+/// non-null. The IP is unused by `HTTPClient::on_open` (it pulls the peer
+/// from the URL), so we discard it.
+unsafe extern "C" fn http_vt_on_open<const SSL: bool>(
+    s: *mut uws::Socket,
+    _is_client: c_int,
+    _ip: *mut u8,
+    _ip_len: c_int,
+) -> *mut uws::Socket {
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_open(ptr, socket);
+    s
+}
+
+/// `us_dispatch_data` trampoline.
+unsafe extern "C" fn http_vt_on_data<const SSL: bool>(
+    s: *mut uws::Socket,
+    data: *mut u8,
+    len: c_int,
+) -> *mut uws::Socket {
+    // SAFETY: uSockets guarantees `data[0..len]` is valid for the duration of
+    // the callback when non-null.
+    let buf: &[u8] = if data.is_null() || len <= 0 {
+        &[]
+    } else {
+        unsafe { core::slice::from_raw_parts(data, usize::try_from(len).expect("int cast")) }
+    };
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_data(ptr, socket, buf);
+    s
+}
+
+/// `us_dispatch_writable` trampoline.
+unsafe extern "C" fn http_vt_on_writable<const SSL: bool>(
+    s: *mut uws::Socket,
+) -> *mut uws::Socket {
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_writable(ptr, socket);
+    s
+}
+
+/// `us_dispatch_close` trampoline.
+unsafe extern "C" fn http_vt_on_close<const SSL: bool>(
+    s: *mut uws::Socket,
+    code: c_int,
+    reason: *mut c_void,
+) -> *mut uws::Socket {
+    let reason = if reason.is_null() { None } else { Some(reason) };
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_close(ptr, socket, code, reason);
+    s
+}
+
+/// `us_dispatch_timeout` / `us_dispatch_long_timeout` trampoline (both idle
+/// timers route to `HTTPClient::on_timeout`).
+unsafe extern "C" fn http_vt_on_timeout<const SSL: bool>(
+    s: *mut uws::Socket,
+) -> *mut uws::Socket {
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_timeout(ptr, socket);
+    s
+}
+
+unsafe extern "C" fn http_vt_on_long_timeout<const SSL: bool>(
+    s: *mut uws::Socket,
+) -> *mut uws::Socket {
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_long_timeout(ptr, socket);
+    s
+}
+
+/// `us_dispatch_end` trampoline (TCP FIN).
+unsafe extern "C" fn http_vt_on_end<const SSL: bool>(
+    s: *mut uws::Socket,
+) -> *mut uws::Socket {
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_end(ptr, socket);
+    s
+}
+
+/// `us_dispatch_connect_error` trampoline.
+unsafe extern "C" fn http_vt_on_connect_error<const SSL: bool>(
+    s: *mut uws::Socket,
+    code: c_int,
+) -> *mut uws::Socket {
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_connect_error(ptr, socket, code);
+    s
+}
+
+/// `us_dispatch_handshake` trampoline (TLS handshake completion).
+unsafe extern "C" fn http_vt_on_handshake<const SSL: bool>(
+    s: *mut uws::Socket,
+    success: c_int,
+    err: uws::us_bun_verify_error_t,
+    _custom: *mut c_void,
+) {
+    // SAFETY: `s` is a live us_socket_t per the dispatch contract.
+    let socket = HTTPSocket::<SSL>::from(s);
+    let ptr = HTTPContext::<SSL>::ext_tagged_ptr(socket);
+    Handler::<SSL>::on_handshake(ptr, socket, success, err);
+}
+
+/// VTable bound to `HTTPContext<false>` (plain TCP `http_client` sockets).
+/// Installed by [`HTTPContext::init`] / [`HTTPContext::init_with_opts`].
+static HTTP_VTABLE: uws::SocketGroupVTable = uws::SocketGroupVTable {
+    on_open: Some(http_vt_on_open::<false>),
+    on_data: Some(http_vt_on_data::<false>),
+    on_fd: None,
+    on_writable: Some(http_vt_on_writable::<false>),
+    on_close: Some(http_vt_on_close::<false>),
+    on_timeout: Some(http_vt_on_timeout::<false>),
+    on_long_timeout: Some(http_vt_on_long_timeout::<false>),
+    on_end: Some(http_vt_on_end::<false>),
+    on_connect_error: Some(http_vt_on_connect_error::<false>),
+    on_connecting_error: None,
+    on_handshake: None,
+};
+
+/// VTable bound to `HTTPContext<true>` (TLS `http_client_tls` sockets).
+/// The handshake slot is populated so `us_dispatch_handshake` reaches
+/// `Handler::on_handshake` → `first_call` after the TLS handshake completes.
+static HTTPS_VTABLE: uws::SocketGroupVTable = uws::SocketGroupVTable {
+    on_open: Some(http_vt_on_open::<true>),
+    on_data: Some(http_vt_on_data::<true>),
+    on_fd: None,
+    on_writable: Some(http_vt_on_writable::<true>),
+    on_close: Some(http_vt_on_close::<true>),
+    on_timeout: Some(http_vt_on_timeout::<true>),
+    on_long_timeout: Some(http_vt_on_long_timeout::<true>),
+    on_end: Some(http_vt_on_end::<true>),
+    on_connect_error: Some(http_vt_on_connect_error::<true>),
+    on_connecting_error: None,
+    on_handshake: Some(http_vt_on_handshake::<true>),
+};
+
 /// Must be aligned to `align_of::<usize>()` so that tagged pointer values
 /// embedding this address pass the align check in `bun.cast`.
 #[repr(C, align(8))]
@@ -1386,3 +1590,81 @@ fn dead_socket() -> *const DeadSocket {
 }
 
 // ported from: src/http/HTTPContext.zig
+
+#[cfg(test)]
+mod tests {
+    //! BCE-007-R2 regression tests.
+    //!
+    //! Root cause: `HTTPContext::init`/`init_with_opts` passed `vtable = None`
+    //! to `SocketGroup::init`, so `us_dispatch_open`/`us_dispatch_writable`/
+    //! `us_dispatch_data` (called by the C++ `libusockets` loop on connect
+    //! completion / socket-writable / data-ready) routed through `group.vtable`
+    //! = `None` and returned without ever calling `Handler::on_*`. Connect
+    //! completed but the HTTP request was never written (`first_call` →
+    //! `on_writable` never ran), so every fetch hung.
+    //!
+    //! These tests assert the vtable is populated for both SSL kinds — the
+    //! minimal invariant that guarantees the dispatch chain reaches
+    //! `Handler::on_open`/`on_writable`/`on_data`. A full end-to-end fetch test
+    //! lives in the binary integration suite (requires the `bao` executable).
+
+    use super::*;
+
+    /// `HTTP_VTABLE` (plain TCP `http_client`) must wire the slots the C++
+    /// loop dispatches on connect completion and request-write. Missing
+    /// `on_open`/`on_writable` reproduces BCE-007-R2 (fetch hangs).
+    #[test]
+    fn http_vtable_dispatch_slots_populated() {
+        assert!(HTTP_VTABLE.on_open.is_some(), "on_open must reach Handler::on_open");
+        assert!(
+            HTTP_VTABLE.on_writable.is_some(),
+            "on_writable must reach Handler::on_writable"
+        );
+        assert!(HTTP_VTABLE.on_data.is_some(), "on_data must reach Handler::on_data");
+        assert!(HTTP_VTABLE.on_close.is_some(), "on_close must reach Handler::on_close");
+        assert!(HTTP_VTABLE.on_end.is_some(), "on_end must reach Handler::on_end");
+        assert!(
+            HTTP_VTABLE.on_connect_error.is_some(),
+            "on_connect_error must reach Handler::on_connect_error"
+        );
+        assert!(
+            HTTP_VTABLE.on_timeout.is_some(),
+            "on_timeout must reach Handler::on_timeout"
+        );
+        assert!(
+            HTTP_VTABLE.on_long_timeout.is_some(),
+            "on_long_timeout must reach Handler::on_long_timeout"
+        );
+    }
+
+    /// `HTTPS_VTABLE` (TLS `http_client_tls`) must additionally wire
+    /// `on_handshake` — `first_call` runs from `Handler::on_handshake` (not
+    /// `on_open`) on the TLS path, because `on_open` only arms the TLS
+    /// handshake.
+    #[test]
+    fn https_vtable_handshake_slot_populated() {
+        for (label, slot) in [
+            ("on_open", HTTPS_VTABLE.on_open.is_some()),
+            ("on_writable", HTTPS_VTABLE.on_writable.is_some()),
+            ("on_data", HTTPS_VTABLE.on_data.is_some()),
+            ("on_close", HTTPS_VTABLE.on_close.is_some()),
+            ("on_handshake", HTTPS_VTABLE.on_handshake.is_some()),
+            ("on_connect_error", HTTPS_VTABLE.on_connect_error.is_some()),
+        ] {
+            assert!(slot, "HTTPS_VTABLE.{label} must reach Handler");
+        }
+    }
+
+    /// The trampoline fn-pointers must be distinct per SSL kind — the const
+    /// generic `<SSL>` monomorphises them, so the `HTTP_VTABLE`/`HTTPS_VTABLE`
+    /// entries are not aliases of each other.
+    #[test]
+    fn http_and_https_vtables_bind_distinct_trampolines() {
+        let http_open = HTTP_VTABLE.on_open.unwrap() as *const ();
+        let https_open = HTTPS_VTABLE.on_open.unwrap() as *const ();
+        assert_ne!(
+            http_open, https_open,
+            "HTTP and HTTPS vtables must bind distinct per-SSL trampolines"
+        );
+    }
+}
