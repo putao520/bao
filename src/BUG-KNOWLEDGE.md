@@ -617,3 +617,58 @@ affectedTasks: [REQ-ENG-010 async HTTP no thread spawn, BUG-ENG-367, CRIT-FETCH-
 - ✅ 回归测试：fetch_api_tests / http_client_deep_tests 通过。
 - ✅ 代码注释：fetch_async.rs 模块文档标注 BCE-20260619-010 + "Why this replaced thread::spawn"。
 - 📌 未来风险：若新增 HTTP 异步路径（WebSocket upload、gRPC streaming 等），必须使用 AsyncHTTP+HTTPThread+ConcurrentTask 事件驱动范式，禁止 thread::spawn。Code review checklist：grep `thread::spawn` in bao_runtime fetch 路径，确认零命中。
+
+---
+
+## BCE-20260619-011 — vm sandbox 属性注入失败：CCW 上 Object.keys 不可枚举
+
+```yaml
+patternId: BCE-20260619-011
+title: vm sandbox 属性注入失败 — JS helper 在 CCW 上 Object.keys 不可枚举
+layer: 设计缺陷（跨 Compartment 属性访问语义差异）
+status: 已根治（残留=0）
+
+codePattern:
+  - 「在 sandbox AutoRealm 内执行 JS helper 函数，用 Object.keys(CCW) 枚举跨 Compartment 对象属性」
+  - 「Object.keys() 对 CCW（Cross-Compartment Wrapper）可能不枚举源对象属性，导致属性静默丢失」
+  - 「vm.runInNewContext('typeof x', {x: 42}) 返回 "undefined" 而非 "number"」
+
+triggerCondition:
+  - 「vm.runInNewContext / vm.createContext 传入 sandbox 对象后，sandbox 属性在新的 Realm 中不可访问」
+  - 「copy_sandbox_properties_to_global 使用 JS 代码片段执行属性复制」
+
+detectionSignatures:
+  structural:
+    - "AutoRealm 内执行 JS::Evaluate2 编译 JS helper 函数用于属性复制"
+    - "Object.keys() 调用在跨 Compartment 上下文中"
+  literal:
+    - "copy_sandbox_properties_to_global"
+    - "Object.keys(src)"
+  antipattern:
+    - "JS-eval-based property copying across compartments"
+
+sameClassCriterion:
+  - 「任何需要跨 SM Compartment 复制对象属性的场景，使用 JS 代码（Object.keys/for-in）枚举 CCW 属性而非 Rust FFI（GetPropertyKeys/JS_GetPropertyById）」
+
+fixTemplate:
+  - 「两阶段属性复制：Phase 1 在调用者 Realm 用 GetPropertyKeys + JS_GetPropertyById 收集属性（sandbox 在原生 Compartment，非 CCW）；Phase 2 在 sandbox Realm 用 JS_DefineProperty 定义到 global」
+  - 「值用 Heap<JS::Value> GC-traced 存储，跨 Realm 切换安全」
+  - 「仅处理 string-keyed own enumerable 属性（JSITER_OWNONLY）」
+
+regressionAssertion:
+  - 「vm.runInNewContext('typeof x === "number" ? "sandbox_ok" : "sandbox_fail"', {x: 42}) 返回 "sandbox_ok"」
+  - 「vm.runInNewContext('x + y', {x: 10, y: 20}) 返回 30」
+  - 「vm.runInNewContext('name.toUpperCase()', {name: 'hello'}) 返回 "HELLO"」
+  - 「vm.createContext({a: 1}) 后 vm.isContext(ctx) === true」
+  - 「Script.runInNewContext({x: 5}) 正确注入 sandbox 属性」
+  - 「cargo test -p bun_runtime --test vm_deep_tests 通过」
+
+affectedTasks: [REQ-ENG-011, BUG-ENG-368, DEC-ENG-003]
+```
+
+### 防复发（阶段6）
+- ✅ 知识库：本条目。
+- ✅ SPEC 沉淀：REQ-ENG-011 / BUG-ENG-368 / VmSandboxContext entity / VmSandboxLifecycle SM / DF-VM-SANDBOX-001 / DEC-ENG-003 / TEST-ENG-011。
+- ✅ 回归测试：vm_deep_tests 通过 + 手动 8 项 API 测试全过。
+- ✅ 代码注释：node_vm.rs 模块文档 + collect_sandbox_properties / define_properties_on_global 函数文档。
+- 📌 未来风险：若新增跨 Compartment 属性复制场景（如 CDP 注入、Worker postMessage 结构化克隆等），必须使用 Rust FFI（GetPropertyKeys + JS_GetPropertyById + JS_DefineProperty）在源对象原生 Compartment 中收集属性，禁止在目标 Realm 中用 JS 代码枚举 CCW。Code review checklist：grep `Object.keys\|for.*in` in node_vm.rs，确认零 JS-eval-based 属性复制。
