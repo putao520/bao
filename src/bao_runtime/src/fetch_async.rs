@@ -1,39 +1,38 @@
 // @trace REQ-ENG-010 [entity:FetchTasklet] [req:REQ-ENG-010] [level:library]
 //! Async fetch/HTTP integration with the event loop (FetchTasklet pattern).
 //!
-//! ## Why this exists (BCE-20260618-007)
+//! ## Architecture (FetchTasklet event-driven paradigm)
 //!
-//! The legacy JS-native http/https/tls entries called
-//! `stealth_http_request` (→ `http_client::http_request` →
-//! `AsyncHTTP::send_sync`) directly *inside* the JS-native call frame. That
-//! blocked the JS thread on the `SingleHTTPChannel` Condvar while
-//! `evaluate_script` was still on the stack, so the post-eval event-loop
-//! hook never ran. In a `Bun.serve({ fetch() { return fetch(self) } })`
-//! self-loop, the server's uWS App could never `accept` the in-flight
-//! self-loop connection → bidirectional deadlock.
+//! Every JS-native http/https/tls entry returns a *pending* `Promise` and
+//! delegates the actual network I/O to `AsyncHTTP::init + HTTPThread::schedule`.
+//! The HTTPThread runs a dedicated epoll loop and calls back `on_http_done`
+//! (pure-Rust, zero SM API) when the response is ready. That callback writes
+//! the result into the `outcome` slot and enqueues a `ConcurrentTask`
+//! (`resolve_tasklet`) on the JS thread's `MiniEventLoop`, which wakes the
+//! JS thread via `us_wakeup_loop`. The JS-thread ConcurrentTask callback
+//! builds the Response/error JS object and `ResolvePromise`/`RejectPromise`s.
 //!
-//! ## Fix (paradigm-level)
+//! This mirrors Bun's `FetchTasklet` design exactly:
+//!   - `AsyncHTTP::init+schedule` = Bun's `FetchTasklet::init+schedule`
+//!   - `on_http_done` = Bun's `HTTPCallback` (HTTPThread, pure-Rust)
+//!   - `resolve_tasklet` = Bun's JS-thread resolve via ConcurrentTask
+//!   - `poll_ref::ref/unref_concurrently` = Bun's `refConcurrently` keepalive
 //!
-//! Every JS-native http/https/tls entry (this module's consumers) now
-//! returns a *pending* `Promise`, hands the actual network I/O to a
-//! detached Rust worker thread, and registers a `PendingFetch` on this
-//! thread's registry. The JS-thread drain step (`drain_pending`) consumes
-//! completed fetches, builds the Response/error JS object, and
-//! `ResolvePromise`/`RejectPromise`s. The pending Promise is heap-rooted
-//! (`AddRawValueRoot`) across the async window so SM GC cannot collect it;
-//! `RemoveRawValueRoot` runs on every exit path (resolve/reject), satisfying
-//! RISK-A (GC root) and RISK-C (poll_ref lifetime).
+//! ## Why this replaced thread::spawn (BCE-20260619-010)
 //!
-//! This mirrors Bun's `FetchTasklet` design (schedule + cross-thread result
-//! channel + JS-thread resolve) using the simpler `thread::spawn` worker
-//! model, which is sound because Bao runs JS single-threaded and the worker
-//! only touches pure Rust (no SM API) — keeping the INV-5 cross-thread
-//! invariant trivially satisfied.
+//! The prior `thread::spawn` + `drain_pending` polling model had three flaws:
+//!   1. O(N) OS threads for N concurrent fetches (violates REQ-ENG-010:
+//!      "N并发fetch占OS线程数=O(1)")
+//!   2. JS-thread busy-poll `sleep(1ms)` in the fetch-only case (wasteful)
+//!   3. `drain_pending` must be called every tick (fragile coupling)
+//!
+//! The event-driven model fixes all three: HTTPThread uses a single epoll fd,
+//! ConcurrentTask auto-wakes the JS thread, and no polling is needed.
 //!
 //! ## Scope
 //!
 //! Shared helper used by the HTTP-sweep entries:
-//! - `node_http.rs:http_request` / `http_get` (http_get delegates to http_request)
+//! - `node_http.rs:http_request` / `http_get`
 //! - `node_https.rs:https_request`
 //! - `node_tls.rs:tls_connect`
 //!
@@ -41,6 +40,7 @@
 
 use ::std::cell::RefCell;
 use ::std::ffi::c_char;
+use ::std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use ::std::sync::{Arc, Mutex};
 
 use bun_core::ZBox;
@@ -53,11 +53,11 @@ use crate::stealth_http::{StealthSyncResult, stealth_http_request};
 // Public types
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Worker-thread result of a scheduled fetch. Pure data — no SM handles — so
+/// HTTPThread result of a scheduled fetch. Pure data -- no SM handles -- so
 /// it can cross the thread boundary freely (INV-5: no SM API on HTTP thread).
 type FetchOutcome = ::std::result::Result<StealthSyncResult, String>;
 
-/// How to materialize the worker's result as a JS object on resolve. Different
+/// How to materialize the result as a JS object on resolve. Different
 /// JS-native entries want different shapes: `fetch`/`http.request`/`https.request`
 /// want a `Response`; `tls.connect` (a TLS handshake probe) wants a `TLSSocket`.
 #[derive(Clone, Copy)]
@@ -70,19 +70,20 @@ pub enum ResolveKind {
 }
 
 // Host strings captured at JS-native-call time, indexed by `ResolveKind`-
-// carried indices. The worker must not touch JS state, so we pass plain Rust
-// strings across and let the JS-thread resolver look them up by index.
-// (Doc comment moved to a plain comment because `thread_local!` does not
-// surface doc-comments on the generated item.)
+// carried indices. The HTTPThread must not touch JS state, so we pass plain
+// Rust strings across and let the JS-thread resolver look them up by index.
 thread_local! {
     static HOST_STRINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
-/// A fetch tasklet: pending Promise + the channel back from the worker thread.
+/// A fetch tasklet: pending Promise + event-driven HTTP integration.
 ///
 /// Invariants (FetchTaskletLifecycle SM):
 /// - `rooted == true` while the Promise is outstanding (heap root held).
 /// - Every terminal transition (resolve/reject) must `RemoveRawValueRoot`.
+/// - `has_schedule_callback` prevents duplicate ConcurrentTask scheduling.
+/// - `outcome` is written by `on_http_done` (HTTPThread) and consumed by
+///   `resolve_tasklet` (JS thread via ConcurrentTask).
 pub struct PendingFetch {
     /// SpiderMonkey context that owns the Promise. Only touched on the JS thread.
     pub cx: *mut JSContext,
@@ -90,25 +91,40 @@ pub struct PendingFetch {
     pub promise_val: JSVal,
     /// `true` while `AddRawValueRoot` is in effect.
     pub rooted: bool,
-    /// Worker-thread result slot. `None` until the worker writes the outcome.
+    /// HTTPThread result slot. `None` until `on_http_done` writes the outcome.
     pub outcome: Arc<Mutex<Option<FetchOutcome>>>,
     /// How to materialize the result on the JS thread.
     pub kind: ResolveKind,
+    /// Pointer to the JS thread's `MiniEventLoop<'static>`. Used by
+    /// `on_http_done` to enqueue `resolve_tasklet` and wake the JS thread.
+    mini_loop_ptr: *const bun_event_loop::MiniEventLoop::MiniEventLoop<'static>,
+    /// ConcurrentTask carrier: embedded `AnyTaskWithExtraContext` that
+    /// `resolve_tasklet` uses. Initialized by `start_with_kind`, consumed
+    /// by the MiniEventLoop concurrent-task dispatcher.
+    concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext,
+    /// Prevents duplicate ConcurrentTask scheduling: `on_http_done` does a
+    /// `compare_exchange(false → true)` before enqueuing; `resolve_tasklet`
+    /// stores `false` after consuming.
+    has_schedule_callback: AtomicBool,
 }
 
 // SAFETY: `cx`/`promise_val` are only ever dereferenced on the JS thread that
-// created them; the worker thread only touches `outcome` (pure Rust). Sending
-// the struct across threads is sound as long as no SM API is called off the
-// JS thread — enforced here by keeping all SM access behind `drain_pending`
-// (JS-thread only).
+// created them; the HTTPThread only touches `outcome` and
+// `has_schedule_callback` (pure Rust / atomic). Sending the struct across
+// threads is sound as long as no SM API is called off the JS thread --
+// enforced by keeping all SM access behind `resolve_tasklet` (JS-thread only).
 unsafe impl Send for PendingFetch {}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Pending-fetch registry (JS-thread local)
+//
+// PENDING is still needed as a GC root collection (prevents SM from collecting
+// the pending Promise while the HTTPThread is in flight). But it is NOT
+// polled anymore -- ConcurrentTask auto-dispatches resolve_tasklet.
 // ──────────────────────────────────────────────────────────────────────────
 
 thread_local! {
-    static PENDING: RefCell<Vec<PendingFetch>> = const { RefCell::new(Vec::new()) };
+    static PENDING: RefCell<Vec<*mut PendingFetch>> = const { RefCell::new(Vec::new()) };
 }
 
 /// JS-thread poll: are there any outstanding async fetches on this thread?
@@ -117,18 +133,21 @@ pub fn has_pending() -> bool {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// start() — JS-thread: register a pending fetch + schedule worker
+// start() — JS-thread: register a pending fetch + schedule AsyncHTTP
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Schedule an async fetch on a detached worker thread. The caller must have
-/// already created the pending Promise via `JS::NewPromiseObject(cx, null)`,
-/// pass it here as `promise_val` (an Object JSVal), and then set `args.rval()`
-/// to the same value before returning from the extern-C trampoline.
+/// Schedule an async fetch via `AsyncHTTP::init + HTTPThread::schedule`.
+/// The caller must have already created the pending Promise via
+/// `JS::NewPromiseObject(cx, null)`, pass it here as `promise_val`
+/// (an Object JSVal), and then set `args.rval()` to the same value before
+/// returning from the extern-C trampoline.
 ///
 /// This function:
 ///   1. Heap-roots the Promise value (GUARD-A: SM GC safety across ticks).
-///   2. Spawns a worker that calls `stealth_http_request` (true non-blocking).
-///   3. Pushes a `PendingFetch` onto the JS-thread registry.
+///   2. Creates `AsyncHTTP::init` with TLS fingerprint injection.
+///   3. Schedules via `HTTPThread::schedule` (single epoll thread, O(1) OS threads).
+///   4. `ref_concurrently` on the event loop (keepalive while fetch is in flight).
+///   5. Pushes a `PendingFetch` onto the JS-thread registry.
 ///
 /// # Safety
 ///
@@ -144,7 +163,7 @@ pub unsafe fn start(
     body: Option<Vec<u8>>,
 ) {
     // SAFETY: delegate to the kind-aware start with the default Response form.
-    unsafe { start_with_kind(cx, promise_val, profile, method, url, headers, body, ResolveKind::Response, None) }
+    unsafe { start_with_kind(cx, promise_val, profile, method, url, headers, body, ResolveKind::Response) }
 }
 
 /// Schedule a TLS handshake probe: a single stealth HTTPS HEAD against
@@ -164,7 +183,7 @@ pub unsafe fn start_tls_probe(
 ) {
     let test_url = format!("https://{}:{}", host, port);
     // Capture the host string on the JS thread; the resolver looks it up by
-    // index so the worker never touches JS state.
+    // index so the HTTPThread never touches JS state.
     let host_idx = HOST_STRINGS.with(|h| {
         let mut g = h.borrow_mut();
         let idx = g.len();
@@ -182,13 +201,12 @@ pub unsafe fn start_tls_probe(
             Vec::new(),
             None,
             ResolveKind::TlsSocket { host_idx },
-            None,
         )
     }
 }
 
-/// Kind-aware scheduler. `body_slice_override` lets a caller pass a body that
-/// is *not* owned by the worker closure (reserved for future use; pass None).
+/// Kind-aware scheduler. Creates `AsyncHTTP::init`, schedules on the
+/// HTTPThread, and registers the PendingFetch for GC root protection.
 ///
 /// # Safety
 ///
@@ -203,11 +221,10 @@ unsafe fn start_with_kind(
     headers: Vec<(String, String)>,
     body: Option<Vec<u8>>,
     kind: ResolveKind,
-    _body_slice_override: Option<Vec<u8>>,
 ) {
     // GUARD-A (GC root): heap-root the pending Promise value across the async
     // window. The async window spans ticks, so the stack-rooted!() macro
-    // (whose roots die with the frame) is unsound here — we use the runtime's
+    // (whose roots die with the frame) is unsound here -- we use the runtime's
     // raw root table instead.
     let mut pv = promise_val;
     let rooted = unsafe {
@@ -217,98 +234,318 @@ unsafe fn start_with_kind(
     let rooted_val = if rooted { pv } else { promise_val };
 
     let outcome: Arc<Mutex<Option<FetchOutcome>>> = Arc::new(Mutex::new(None));
-    let worker_outcome = Arc::clone(&outcome);
 
-    // Detached worker: pure Rust only — no SM API on this thread (INV-5).
-    // DNS precheck, connect timeout, redirect handling all live inside
-    // stealth_http_request → http_client::http_request (CTRL-6: precheck is
-    // moved off the synchronous JS-native frame).
-    let _ = ::std::thread::Builder::new()
-        .name("bao-http-worker".into())
-        .spawn(move || {
-            let body_ref: Option<&[u8]> = body.as_deref();
-            let result = stealth_http_request(&profile, method, &url, &headers, body_ref);
-            if let Ok(mut slot) = worker_outcome.lock() {
-                *slot = Some(result.map_err(|e| e.to_string()));
-            }
-        });
-
-    PENDING.with(|p| {
-        p.borrow_mut().push(PendingFetch {
-            cx,
-            promise_val: rooted_val,
-            rooted,
-            outcome,
-            kind,
-        });
+    // Allocate the PendingFetch on the heap. The pointer is shared between
+    // the HTTPThread callback (on_http_done) and the JS-thread ConcurrentTask
+    // callback (resolve_tasklet). It is freed by resolve_tasklet after
+    // resolving/rejecting the promise (single-consumer: resolve_tasklet owns
+    // the deallocation).
+    let pending = Box::new(PendingFetch {
+        cx,
+        promise_val: rooted_val,
+        rooted,
+        outcome: Arc::clone(&outcome),
+        kind,
+        mini_loop_ptr: ::std::ptr::null(), // filled below
+        concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
+        has_schedule_callback: AtomicBool::new(false),
     });
-}
+    let pending_ptr = Box::into_raw(pending);
 
-// ──────────────────────────────────────────────────────────────────────────
-// drain_pending() — JS-thread: resolve/reject completed fetches
-// ──────────────────────────────────────────────────────────────────────────
+    // ── Schedule the actual HTTP request ──────────────────────────────────
+    // Use `AsyncHTTP::init` (event-driven) instead of `thread::spawn`.
+    // The HTTPThread's epoll loop drives the request; `on_http_done`
+    // is called back on the HTTPThread when the response is ready.
+    let _on_done_outcome = Arc::clone(&outcome);
 
-/// Drain completed fetches on the JS thread. Called from the event-loop hook.
-/// Returns `true` if any fetch was resolved/rejected this pass (caller may
-/// re-run `RunJobs`).
-///
-/// # Safety
-///
-/// - `cx` must be the same `JSContext*` that created the pending Promises.
-#[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn drain_pending(cx: *mut JSContext) -> bool {
-    let mut completed = false;
-    PENDING.with(|p| {
-        let mut guard = p.borrow_mut();
-        let mut i = 0;
-        while i < guard.len() {
-            // try_lock: if the worker holds the lock mid-write we just skip
-            // this entry this tick — the next drain pass will pick it up.
-            let ready = guard[i]
-                .outcome
-                .try_lock()
-                .map(|slot| slot.is_some())
-                .unwrap_or(false);
-            if !ready {
-                i += 1;
-                continue;
-            }
-            // Move the tasklet out and resolve on the JS thread (INV-5:
-            // all SM API calls happen here, not in the worker).
-            let tasklet = guard.swap_remove(i);
-            let outcome = tasklet
-                .outcome
-                .lock()
-                .ok()
-                .and_then(|mut slot| slot.take())
-                .unwrap_or_else(|| Err("fetch worker dropped result".into()));
-            resolve_tasklet(cx, tasklet, outcome);
-            completed = true;
-        }
-    });
-    if completed {
-        // Flush microtasks queued by ResolvePromise/RejectPromise.
-        mozjs_sys::jsapi::js::RunJobs(cx);
+    // Build the HTTPClientResultCallback that will fire on the HTTPThread.
+    // INV-5: on_http_done must never call SM API (only touches pure Rust).
+    let callback =
+        bun_http::HTTPClientResultCallback::new(pending_ptr, on_http_done);
+
+    // Parse URL and build header entries.
+    let parsed_url = bun_url::URL::parse(url.as_bytes());
+
+    // Build headers via HeaderBuilder (same pattern as http_client.rs).
+    let mut hb = bun_http::HeaderBuilder::default();
+    for (name, value) in &headers {
+        hb.count(name.as_bytes(), value.as_bytes());
     }
-    completed
+    if hb.allocate().is_err() {
+        // Header allocation failure -- reject the promise.
+        let mut outcome_guard = outcome.lock().unwrap();
+        *outcome_guard = Some(Err("fetch: header allocation failed".into()));
+        drop(outcome_guard);
+        // Schedule resolve immediately on JS thread.
+        schedule_resolve_on_js_thread(pending_ptr);
+        return;
+    }
+    for (name, value) in &headers {
+        hb.append(name.as_bytes(), value.as_bytes());
+    }
+    let entry_list = hb.entries;
+    let headers_buf: &[u8] = unsafe {
+        if let Some(ptr) = hb.content.ptr {
+            ::std::slice::from_raw_parts(ptr.as_ptr(), hb.content.len)
+        } else {
+            &[]
+        }
+    };
+
+    // Response buffer (heap-allocated, owned by AsyncHTTP).
+    let response_buffer =
+        Box::into_raw(Box::new(bun_core::string::MutableString::default()));
+
+    // Request body slice.
+    let body_slice: &[u8] = body.as_deref().unwrap_or_default();
+
+    // TLS fingerprint: StealthProfile → SSLConfig → SSLConfigSharedPtr.
+    let tls_props = {
+        let ssl_config =
+            crate::stealth_http::stealth_profile_to_ssl_config(&profile);
+        Some(bun_http::ssl_config::SharedPtr::new(ssl_config))
+    };
+
+    // Build AsyncHTTP::Options with TLS props.
+    let options = bun_http::async_http::Options {
+        tls_props,
+        ..Default::default()
+    };
+
+    // Initialize AsyncHTTP (event-driven, no blocking).
+    let mut async_http = bun_http::AsyncHTTP::init(
+        method,
+        parsed_url,
+        entry_list,
+        headers_buf,
+        response_buffer,
+        body_slice,
+        callback,
+        bun_http::FetchRedirect::Follow,
+        options,
+    );
+
+    // Capture the MiniEventLoop pointer for concurrent-task scheduling.
+    // SAFETY: with_event_loop borrows the MiniEventLoop on the current thread;
+    // the pointer remains valid for the thread's lifetime (intentionally
+    // leaked on thread exit, same as BaoEventLoop).
+    let loop_ptr: *const bun_event_loop::MiniEventLoop::MiniEventLoop<'static> =
+        crate::timers::with_event_loop(|loop_| loop_ as *const _);
+    // Write the pointer and initialize the ConcurrentTask into the PendingFetch.
+    // SAFETY: pending_ptr is a live heap allocation we just created.
+    unsafe {
+        (*pending_ptr).mini_loop_ptr = loop_ptr;
+
+        // Initialize the ConcurrentTask embedded in PendingFetch.
+        // `resolve_tasklet` is the callback that fires on the JS thread.
+        // The field_offset tells AnyTaskWithExtraContext where it lives
+        // inside the parent struct.
+        let _field_offset = ::std::mem::offset_of!(PendingFetch, concurrent_task);
+        (*pending_ptr)
+            .concurrent_task
+            .from(pending_ptr, resolve_tasklet_shim);
+    }
+
+    // Ensure HTTPThread is initialized before scheduling. `init` is idempotent
+    // (backed by `Once`); this mirrors Bun's `AsyncHTTP.rs:414` guard for the
+    // case where fetch is the process's first HTTP operation.
+    bun_http::http_thread::init(&Default::default());
+
+    // Schedule the AsyncHTTP task on the HTTPThread (single epoll thread).
+    let batch = bun_threading::thread_pool::Batch::from(
+        core::ptr::addr_of_mut!(async_http.task)
+    );
+    bun_http::HTTPThread::schedule(batch);
+
+    // Leak the AsyncHTTP -- its memory is managed by the HTTPThread task system.
+    // When the task completes, on_http_done fires and the HTTPThread frees the
+    // task node. The AsyncHTTP data itself lives until the callback fires.
+    ::std::mem::forget(async_http);
+
+    // ref_concurrently: keep the event loop alive while this fetch is in flight.
+    // Mirrors Bun's `FetchTasklet.refConcurrently()`.
+    // Only valid when the EventLoopCtx is JS-VM-backed (MiniEventLoop's
+    // ref_concurrently is unreachable). In test/embedded contexts without a
+    // full JS-VM loop, the fetch still works — the test just won't keep the
+    // process alive on its own (which is correct: tests control their own exit).
+    {
+        let ctx = crate::timers::with_event_loop(|loop_| {
+            bun_event_loop::MiniEventLoop::MiniEventLoop::as_event_loop_ctx(loop_)
+        });
+        if ctx.is_js() {
+            ctx.ref_concurrently();
+        }
+    }
+
+    // Register the PendingFetch pointer in the GC root collection.
+    PENDING.with(|p| {
+        p.borrow_mut().push(pending_ptr);
+    });
 }
 
-/// Build the Response/error JS object and resolve/reject the rooted Promise.
-/// Then unroot (terminal transition). Every exit path unroots (INV-2: zero
-/// exceptions).
+// ──────────────────────────────────────────────────────────────────────────
+// on_http_done — HTTPThread callback (pure-Rust, zero SM API, INV-5)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// HTTPThread completion callback. Called by `AsyncHTTP` when the HTTP
+/// response is ready (or an error occurred). This runs on the HTTPThread,
+/// NOT the JS thread, so it must never call SM API (INV-5).
 ///
-/// # Safety
+/// It:
+///   1. Copies the `HTTPClientResult` into a `FetchOutcome` (pure Rust).
+///   2. Writes the outcome into the shared slot.
+///   3. Atomically claims the scheduling slot (`has_schedule_callback`).
+///   4. If claimed, enqueues `resolve_tasklet` on the JS thread's
+///      `MiniEventLoop` via `enqueue_task_concurrent_with_extra_ctx`,
+///      which auto-wakes the JS thread.
+fn on_http_done(
+    this: *mut PendingFetch,
+    _async_http: *mut bun_http::AsyncHTTP<'static>,
+    result: bun_http::HTTPClientResult<'_>,
+) {
+    // 1. Convert HTTPClientResult → FetchOutcome (pure Rust).
+    let outcome: FetchOutcome = if let Some(fail) = result.fail {
+        Err(format!("{:?}", fail))
+    } else {
+        // Extract status code, status text, headers, and body from the result.
+        let status_code = result
+            .metadata
+            .as_ref()
+            .map(|m| m.response.status_code)
+            .unwrap_or(0);
+        let status_text: compact_str::CompactString = result
+            .metadata
+            .as_ref()
+            .map(|m| {
+                ::std::str::from_utf8(m.response.status)
+                    .unwrap_or("")
+                    .into()
+            })
+            .unwrap_or_default();
+
+        // Headers from picohttp Response.
+        let headers: smallvec::SmallVec<[(compact_str::CompactString, compact_str::CompactString); 8]> = result
+            .metadata
+            .as_ref()
+            .map(|m| {
+                m.response
+                    .headers
+                    .list
+                    .iter()
+                    .map(|h| {
+                        (
+                            compact_str::CompactString::from(
+                                ::std::str::from_utf8(h.name()).unwrap_or(""),
+                            ),
+                            compact_str::CompactString::from(
+                                ::std::str::from_utf8(h.value()).unwrap_or(""),
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Body from the MutableString response buffer.
+        let body_bytes: bytes::Bytes = result
+            .body
+            .map(|ms| bytes::Bytes::copy_from_slice(ms.list.as_slice()))
+            .unwrap_or_default();
+
+        Ok(StealthSyncResult {
+            status_code,
+            status_text,
+            headers,
+            body: body_bytes,
+        })
+    };
+
+    // 2. Write outcome into the shared slot.
+    // SAFETY: this is a shared Arc<Mutex<>>, safe to lock from any thread.
+    if let Ok(mut guard) = unsafe { &*this }.outcome.lock() {
+        *guard = Some(outcome);
+    }
+
+    // 3. Atomically claim the scheduling slot.
+    // compare_exchange: if false → true, we are the first to schedule.
+    // If already true, resolve_tasklet is already scheduled or running.
+    if unsafe { &*this }
+        .has_schedule_callback
+        .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+        .is_ok()
+    {
+        // 4. Enqueue resolve_tasklet on the JS thread's MiniEventLoop.
+        // SAFETY: mini_loop_ptr was set by start_with_kind on the JS thread;
+        // it remains valid for the thread's lifetime.
+        let loop_ptr = unsafe { &*this }.mini_loop_ptr;
+        if !loop_ptr.is_null() {
+            // SAFETY: the MiniEventLoop is alive for the thread's lifetime.
+            let loop_ref = unsafe { &mut *(
+                loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>
+            ) };
+            let concurrent_task_ptr =
+                unsafe { core::ptr::addr_of_mut!((*this).concurrent_task) };
+            // SAFETY: concurrent_task_ptr is a valid pointer to the
+            // AnyTaskWithExtraContext embedded in PendingFetch.
+            loop_ref.enqueue_task_concurrent(unsafe {
+                core::ptr::NonNull::new_unchecked(concurrent_task_ptr)
+            });
+            // enqueue_task_concurrent internally calls wakeup(), so the
+            // JS thread will be woken from any blocking epoll_wait.
+        }
+    }
+}
+
+/// Shim that bridges `AnyTaskWithExtraContext` callback signature to
+/// `resolve_tasklet`. The `ctx` parameter is the `*mut PendingFetch`.
+/// This must be a safe fn because `AnyTaskWithExtraContext::from` expects
+/// `fn(*mut T, *mut ())`, not `unsafe fn`.
+fn resolve_tasklet_shim(ctx: *mut PendingFetch, _parent: *mut ()) {
+    // SAFETY: ctx was set to pending_ptr in start_with_kind; it is a valid
+    // heap-allocated PendingFetch that has not been freed yet.
+    unsafe { resolve_tasklet(ctx) };
+}
+
+/// JS-thread ConcurrentTask callback. Fires when `on_http_done` enqueues
+/// this task on the MiniEventLoop. Runs on the JS thread (safe to call SM API).
 ///
-/// `cx` must be the Promise's owning `JSContext*` on the current thread.
-#[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn resolve_tasklet(cx: *mut JSContext, tasklet: PendingFetch, outcome: FetchOutcome) {
-    let promise_obj = tasklet.promise_val.to_object();
+/// It:
+///   1. Resets `has_schedule_callback` (allows future scheduling if needed).
+///   2. Takes the outcome from the shared slot.
+///   3. Builds the Response/error JS object and resolves/rejects the Promise.
+///   4. `RemoveRawValueRoot` (terminal cleanup).
+///   5. `unref_concurrently` (keepalive decrement).
+///   6. Deallocates the `PendingFetch` Box.
+///   7. Removes from PENDING registry.
+unsafe fn resolve_tasklet(this: *mut PendingFetch) {
+    // 1. Reset scheduling flag.
+    unsafe { &*this }
+        .has_schedule_callback
+        .store(false, AtomicOrdering::Release);
+
+    // 2. Take the outcome from the shared slot.
+    let outcome = unsafe { &*this }
+        .outcome
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take())
+        .unwrap_or_else(|| Err("fetch: result slot was empty".into()));
+
+    let cx = unsafe { &*this }.cx;
+    let kind = unsafe { &*this }.kind;
+
+    // 3. Build Response/error JS object and resolve/reject the Promise.
+    // We reconstruct the PendingFetch fields needed by resolve_tasklet_inner.
+    let promise_val = unsafe { &*this }.promise_val;
+    let rooted = unsafe { &*this }.rooted;
+
+    let promise_obj = promise_val.to_object();
     let promise_h = Handle::<*mut JSObject> {
         _phantom_0: ::std::marker::PhantomData,
         ptr: &promise_obj,
     };
 
-    match (outcome, tasklet.kind) {
+    match (outcome, kind) {
         (Ok(resp), ResolveKind::Response) => {
             let resp_obj = build_response_js(cx, &resp);
             if !resp_obj.is_null() {
@@ -319,12 +556,10 @@ unsafe fn resolve_tasklet(cx: *mut JSContext, tasklet: PendingFetch, outcome: Fe
                 };
                 JS::ResolvePromise(cx, promise_h, resp_handle);
             } else {
-                // Allocation failure — reject so the promise doesn't hang.
                 reject_with_message(cx, promise_h, "http: failed to build Response");
             }
         }
         (Ok(_resp), ResolveKind::TlsSocket { host_idx }) => {
-            // Handshake succeeded — build the TLSSocket object.
             let host = HOST_STRINGS
                 .with(|h| h.borrow().get(host_idx).cloned())
                 .unwrap_or_default();
@@ -339,7 +574,6 @@ unsafe fn resolve_tasklet(cx: *mut JSContext, tasklet: PendingFetch, outcome: Fe
             } else {
                 reject_with_message(cx, promise_h, "tls: failed to build socket object");
             }
-            // Drop the captured host string (best-effort leak-prevention).
             HOST_STRINGS.with(|h| {
                 if host_idx < h.borrow().len() {
                     h.borrow_mut()[host_idx].clear();
@@ -351,12 +585,73 @@ unsafe fn resolve_tasklet(cx: *mut JSContext, tasklet: PendingFetch, outcome: Fe
         }
     }
 
-    // Terminal cleanup: unroot (every exit path).
-    if tasklet.rooted {
-        let mut pv = tasklet.promise_val;
+    // 4. Terminal cleanup: unroot (every exit path).
+    if rooted {
+        let mut pv = promise_val;
         RemoveRawValueRoot(cx, &mut pv);
     }
+
+    // 5. unref_concurrently: decrement keepalive (must balance ref_concurrently
+    //    in start_with_kind). Only valid for JS-VM-backed loops.
+    {
+        let ctx = crate::timers::with_event_loop(|loop_| {
+            bun_event_loop::MiniEventLoop::MiniEventLoop::as_event_loop_ctx(loop_)
+        });
+        if ctx.is_js() {
+            ctx.unref_concurrently();
+        }
+    }
+
+    // 6. Remove from PENDING registry.
+    PENDING.with(|p| {
+        let mut guard = p.borrow_mut();
+        if let Some(pos) = guard.iter().position(|&ptr| ptr == this) {
+            guard.swap_remove(pos);
+        }
+    });
+
+    // 7. Deallocate the PendingFetch Box.
+    // SAFETY: this pointer was allocated by Box::into_raw in start_with_kind.
+    // We are the sole consumer (ConcurrentTask runs once); no other code
+    // accesses the Box after this point.
+    unsafe {
+        drop(Box::from_raw(this));
+    }
+
+    // Flush microtasks queued by ResolvePromise/RejectPromise.
+    mozjs_sys::jsapi::js::RunJobs(cx);
 }
+
+/// Helper: schedule resolve_tasklet on the JS thread immediately (used when
+/// the request fails synchronously before HTTPThread scheduling, e.g. header
+/// allocation failure).
+fn schedule_resolve_on_js_thread(pending_ptr: *mut PendingFetch) {
+    // Write a sentinel outcome so resolve_tasklet has something to consume.
+    // (Already written by caller before calling this function.)
+
+    // Try to claim the scheduling slot.
+    if unsafe { &*pending_ptr }
+        .has_schedule_callback
+        .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+        .is_ok()
+    {
+        let loop_ptr = unsafe { &*pending_ptr }.mini_loop_ptr;
+        if !loop_ptr.is_null() {
+            let loop_ref = unsafe { &mut *(
+                loop_ptr as *mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>
+            ) };
+            let concurrent_task_ptr =
+                unsafe { core::ptr::addr_of_mut!((*pending_ptr).concurrent_task) };
+            loop_ref.enqueue_task_concurrent(unsafe {
+                core::ptr::NonNull::new_unchecked(concurrent_task_ptr)
+            });
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// JS Response / TLSSocket / rejection builders
+// ──────────────────────────────────────────────────────────────────────────
 
 /// Build a TLSSocket-shaped JS object: `{ authorized: true, encrypted: true,
 /// servername: host }`. Mirrors the legacy synchronous `tls.connect` return
@@ -489,7 +784,6 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
                     _phantom_0: ::std::marker::PhantomData,
                     ptr: &vv,
                 };
-                // header keys arrive lowercase from stealth_http; use as-is.
                 let c_key = ZBox::from_bytes(k.as_bytes());
                 JS_DefineProperty(
                     cx,
@@ -515,7 +809,7 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
         }
     }
 
-    // body — stored as `_bodyText` (lossy UTF-8), surfaced via `.text()`.
+    // body -- stored as `_bodyText` (lossy UTF-8), surfaced via `.text()`.
     {
         let body_lossy = String::from_utf8_lossy(&resp.body);
         let c_body = ZBox::from_bytes(body_lossy.as_bytes());
@@ -530,7 +824,7 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
         }
     }
 
-    // text() — no-arg JS function returning `_bodyText`.
+    // text() -- no-arg JS function returning `_bodyText`.
     {
         let text_fn = JS_NewFunction(cx, Some(response_text_fn), 0, 0, c"text".as_ptr());
         if !text_fn.is_null() {
@@ -635,7 +929,7 @@ unsafe fn reject_with_message(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// Unit tests — pure logic (no live JSContext)
+// Unit tests -- pure logic (no live JSContext)
 // ──────────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -651,7 +945,7 @@ mod tests {
     #[test]
     fn pending_fetch_is_send() {
         // Compile-time check: PendingFetch must be Send to live in the
-        // thread_local registry that the worker writes back into.
+        // thread_local registry that the HTTPThread writes back into.
         fn assert_send<T: Send>() {}
         assert_send::<PendingFetch>();
     }
@@ -669,6 +963,29 @@ mod tests {
             Ok(r) => assert_eq!(r.status_code, 200),
             Err(_) => panic!("expected Ok"),
         }
+    }
+
+    #[test]
+    fn has_schedule_callback_atomic_roundtrip() {
+        let pf = PendingFetch {
+            cx: ::std::ptr::null_mut(),
+            promise_val: UndefinedValue(),
+            rooted: false,
+            outcome: Arc::new(Mutex::new(None)),
+            kind: ResolveKind::Response,
+            mini_loop_ptr: ::std::ptr::null(),
+            concurrent_task: Default::default(),
+            has_schedule_callback: AtomicBool::new(false),
+        };
+        assert!(!pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
+        assert!(
+            pf.has_schedule_callback
+                .compare_exchange(false, true, AtomicOrdering::AcqRel, AtomicOrdering::Acquire)
+                .is_ok()
+        );
+        assert!(pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
+        pf.has_schedule_callback.store(false, AtomicOrdering::Release);
+        assert!(!pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
     }
 
     fn stealth_result_for_test() -> StealthSyncResult {

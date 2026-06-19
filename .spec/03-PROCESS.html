@@ -579,7 +579,7 @@ SpiderMonkey GC OOM:
 <!-- ============================================================ -->
 <h2 data-delivery="D43">§9 数据流</h2>
 <!-- ============================================================ -->
-<div data-dimension="business" data-dataflow-direction="forward" data-dataflow-target="bao-browser" data-dataflow-source="bao-engine" data-delivery="D43" data-dataflow-dimension="data" data-dataflow="DF-001" id="df-001">
+<div data-delivery="D43" data-dataflow-source="bao-engine" data-dataflow-target="bao-browser" data-dataflow-direction="forward" data-dimension="business" data-dataflow-dimension="data" data-dataflow="DF-001" id="df-001">
 <h3>DF-001: JS 执行结果 → 页面渲染数据流</h3>
 <table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr>
 <tr><td>bao-engine (SpiderMonkey eval)</td><td>bao-browser (servo DOM)</td><td>JSValue → DOM mutation → Layout → Render</td><td>business</td></tr></table>
@@ -588,7 +588,7 @@ SpiderMonkey GC OOM:
   "@type": "Dataflow",
   "id": "DF-001"
 }</script></div>
-<div data-dimension="technical" data-dataflow-direction="forward" data-dataflow-target="bao-cdp" data-dataflow-source="bao-browser" data-delivery="D43" data-dataflow-dimension="data" data-dataflow="DF-002" id="df-002">
+<div data-delivery="D43" data-dataflow-source="bao-browser" data-dataflow-target="bao-cdp" data-dataflow-direction="forward" data-dimension="technical" data-dataflow-dimension="data" data-dataflow="DF-002" id="df-002">
 <h3>DF-002: 浏览器事件 → CDP 客户端数据流</h3>
 <table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr>
 <tr><td>bao-browser (WebViewDelegate)</td><td>bao-cdp (EventBroadcaster)</td><td>ConsoleMessage(BaoEvent) → CDP JSON → WebSocket</td><td>technical</td></tr></table>
@@ -597,7 +597,7 @@ SpiderMonkey GC OOM:
   "@type": "Dataflow",
   "id": "DF-002"
 }</script></div>
-<div data-dimension="technical" data-dataflow-direction="sync" data-dataflow-target="bao-browser" data-dataflow-source="bao-cdp" data-delivery="D43" data-dataflow-dimension="data" data-dataflow="DF-003" id="df-003">
+<div data-delivery="D43" data-dataflow-source="bao-cdp" data-dataflow-target="bao-browser" data-dataflow-direction="sync" data-dimension="technical" data-dataflow-dimension="data" data-dataflow="DF-003" id="df-003">
 <h3>DF-003: CDP 命令 → 浏览器操作数据流</h3>
 <table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr>
 <tr><td>bao-cdp (WebSocket)</td><td>bao-browser (servo)</td><td>CDP method+params → DomainHandler → JS injection → Response</td><td>technical</td></tr></table>
@@ -606,7 +606,7 @@ SpiderMonkey GC OOM:
   "@type": "Dataflow",
   "id": "DF-003"
 }</script></div>
-<div data-dimension="data" data-dataflow-direction="forward" data-dataflow-target="bao-engine" data-dataflow-source="bao-runtime" data-delivery="D43" data-dataflow-dimension="data" data-dataflow="DF-004" id="df-004">
+<div data-delivery="D43" data-dataflow-source="bao-runtime" data-dataflow-target="bao-engine" data-dataflow-direction="forward" data-dimension="data" data-dataflow-dimension="data" data-dataflow="DF-004" id="df-004">
 <h3>DF-004: 模块解析 → JS 执行数据流</h3>
 <table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr>
 <tr><td>bao-runtime (bun_resolver)</td><td>bao-engine (SM ModuleLoader)</td><td>specifier → resolved URL → ModuleSource → eval</td><td>data</td></tr></table>
@@ -619,7 +619,7 @@ SpiderMonkey GC OOM:
 <!-- ============================================================ -->
 <h2 data-delivery="D44">§10 控制流</h2>
 <!-- ============================================================ -->
-<div data-controlflow-guard="context initialized" data-controlflow-action="execute + GC" data-controlflow-trigger="JS evaluate call" data-delivery="D44" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-001" id="cf-001">
+<div data-delivery="D44" data-controlflow-trigger="JS evaluate call" data-controlflow-action="execute + GC" data-controlflow-guard="context initialized" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-001" id="cf-001">
 <h3>CF-001: JS 执行控制流</h3>
 <table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr>
 <tr><td>evaluate_script()</td><td>JSContext initialized</td><td>SM compile → execute → GC sweep</td><td>SyntaxError / RuntimeError</td></tr></table>
@@ -628,7 +628,7 @@ SpiderMonkey GC OOM:
   "@type": "Controlflow",
   "id": "CF-001"
 }</script></div>
-<div data-controlflow-guard="session active" data-controlflow-action="route + dispatch + respond" data-controlflow-trigger="CDP WebSocket message" data-delivery="D44" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-002" id="cf-002">
+<div data-delivery="D44" data-controlflow-trigger="CDP WebSocket message" data-controlflow-action="route + dispatch + respond" data-controlflow-guard="session active" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-002" id="cf-002">
 <h3>CF-002: CDP 命令路由控制流</h3>
 <table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr>
 <tr><td>WebSocket JSON-RPC</td><td>Session Active</td><td>parse → dispatch → handler → Response</td><td>MethodNotFound / SessionClosed</td></tr></table>
@@ -637,7 +637,7 @@ SpiderMonkey GC OOM:
   "@type": "Controlflow",
   "id": "CF-002"
 }</script></div>
-<div data-controlflow-guard="__BAO_EVT__ prefix" data-controlflow-action="parse → broadcast" data-controlflow-trigger="console.log marker" data-delivery="D44" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-003" id="cf-003">
+<div data-delivery="D44" data-controlflow-trigger="console.log marker" data-controlflow-action="parse → broadcast" data-controlflow-guard="__BAO_EVT__ prefix" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-003" id="cf-003">
 <h3>CF-003: 浏览器事件桥接控制流</h3>
 <table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr>
 <tr><td>WebViewDelegate callback</td><td>__BAO_EVT__ prefix</td><td>BaoEvent::from_console_text() → broadcast</td><td>ConsoleMessage::Log / parse failure</td></tr></table>
@@ -646,7 +646,7 @@ SpiderMonkey GC OOM:
   "@type": "Controlflow",
   "id": "CF-003"
 }</script></div>
-<div data-controlflow-guard="PagePool slot available" data-controlflow-action="create context → load → render" data-controlflow-trigger="page navigation" data-delivery="D44" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-004" id="cf-004">
+<div data-delivery="D44" data-controlflow-trigger="page navigation" data-controlflow-action="create context → load → render" data-controlflow-guard="PagePool slot available" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-004" id="cf-004">
 <h3>CF-004: Page 生命周期控制流</h3>
 <table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr>
 <tr><td>bao browser URL request</td><td>PagePool slot available</td><td>alloc → JSContext fuse → navigate → render</td><td>Pool full / OOM → emergency GC</td></tr></table>
@@ -655,5 +655,128 @@ SpiderMonkey GC OOM:
   "@type": "Controlflow",
   "id": "CF-004"
 }</script></div>
-</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001@PROCESS" data-test="TEST-CDP-001@PROCESS" id="test-cdp-001@process"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 单元测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004@PROCESS" data-test="TEST-ENG-004@PROCESS" id="test-eng-004@process"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 单元测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div></section></body>
+<section data-artifact-type="state-machine" data-state-machine="FetchTaskletLifecycle" id="artifact-state-machine"><h3>FetchTaskletLifecycle 状态机</h3><p>Phase 1 实现范围: Created→Scheduled→Done→Resolved/Rejected + TimedOut/Aborted。HeadersReceived/BodyChunkReceived 为 Phase 2 延迟状态(增量 body streaming),Phase 1 仅实现一次性 Done 路径(Scheduled→Done on http_response_complete)。TimedOut/Aborted 从 Scheduled 直接转移,Phase 1 需实现。</p><script type="application/ld+json">{
+  "@type": "StateMachine",
+  "name": "FetchTaskletLifecycle",
+  "states": [
+    "Created",
+    "Scheduled",
+    "HeadersReceived",
+    "BodyChunkReceived",
+    "Done",
+    "Resolved",
+    "Rejected",
+    "Aborted",
+    "TimedOut"
+  ],
+  "initialState": "Created",
+  "phase1States": ["Created", "Scheduled", "Done", "Resolved", "Rejected", "Aborted", "TimedOut"],
+  "phase2DeferredStates": ["HeadersReceived", "BodyChunkReceived"],
+  "transitions": [
+    {
+      "from": "Created",
+      "to": "Scheduled",
+      "on": "start"
+    },
+    {
+      "from": "Scheduled",
+      "to": "HeadersReceived",
+      "on": "http_metadata_received",
+      "phase": "Phase 2 deferred"
+    },
+    {
+      "from": "HeadersReceived",
+      "to": "BodyChunkReceived",
+      "on": "http_body_chunk",
+      "phase": "Phase 2 deferred"
+    },
+    {
+      "from": "Scheduled",
+      "to": "Done",
+      "on": "http_response_complete"
+    },
+    {
+      "from": "Done",
+      "to": "Resolved",
+      "on": "js_thread_resolve"
+    },
+    {
+      "from": "Done",
+      "to": "Rejected",
+      "on": "js_thread_reject"
+    },
+    {
+      "from": "Scheduled",
+      "to": "TimedOut",
+      "on": "connect_timeout"
+    },
+    {
+      "from": "Scheduled",
+      "to": "Aborted",
+      "on": "abort_signal"
+    },
+    {
+      "from": "Scheduled",
+      "to": "Rejected",
+      "on": "drop_before_complete"
+    }
+  ]
+}</script></section><section data-dataflow-source="bao-runtime(fetch_fn)" data-dataflow-target="HTTPThread" data-dataflow-direction="forward" data-dimension="technical" data-dataflow-dimension="data" data-dataflow="DF-FETCH-ASYNC-001" id="df-df-fetch-async-001"><h3>DF-FETCH-ASYNC-001: FetchTasklet 异步 fetch 数据流</h3><p>实现状态(S2审计回退·BLOCKED): fetch_api.rs:207 fetch_fn 仍调用 spawn_fetch_worker(std::thread::spawn),未迁移至 AsyncHTTP::init+schedule 事件驱动范式。fetch_async 模块已创建(start/drain_pending/ResolveKind)但存在双重基础设施缺陷:(1) fetch_fn 未委托 fetch_async::start,仍走旧 spawn_fetch_worker+PENDING_FETCHES 路径;(2) fetch_async::drain_pending 未被事件循环调用(timers.rs 只调 fetch_api::drain_pending_fetches);(3) node_http/node_https/node_tls 已用 fetch_async::start 但其 Promise 结果永远不会 resolve(因为 drain_pending 从未被事件循环 tick 调用)。SPEC 先前标注 D1/D13 已完成与代码实际不符,此修正回退实现状态。阻塞项: Task#50 未完成。</p><table><tr><th>源</th><th>目标</th><th>数据</th><th>维度</th></tr><tr><td>bao-runtime (fetch_fn / JS native 入口)</td><td>HTTPThread (AsyncHTTP)</td><td>FetchTasklet + AsyncHTTP::init(callback, options) + AsyncHTTP::schedule(batch)</td><td>technical</td></tr></table><p>数据流路径(DD-1/DD-2/DD-3/DD-4/DD-5):</p><pre>JS 线程                           HTTPThread                    JS 线程
+──────────                       ──────────                   ──────────
+fetch_fn(args)
+  │
+  ├─ new FetchTasklet
+  │   ├─ cx: JSContext
+  │   ├─ promise_val: JS::Value (pending Promise)
+  │   ├─ AddRawValueRoot(promise_val)  ← DD-1
+  │   ├─ kind: ResolveKind
+  │   ├─ http: AsyncHTTP::init(callback, options) ← DD-2
+  │   ├─ poll_ref.ref_concurrently()   ← DD-5
+  │   └─ profile → stealth_profile_to_ssl_config() → Options.tls_props ← DD-7
+  │
+  ├─ AsyncHTTP::schedule(batch)       ← DD-2
+  │   (O(1) threads for N concurrent fetches)
+  │                                     │
+  │                                     ├─ epoll 驱动 HTTP 请求
+  │                                     │
+  │                                     ├─ on_http_done(result) ← DD-3
+  │                                     │   ├─ HTTPClientResult → FetchOutcome
+  │                                     │   ├─ zero SM API calls (INV-5)
+  │                                     │   └─ enqueue_task_concurrent + wakeup()
+  │                                     │
+  ├─ wakeup 触发 JS 线程下一 tick      │
+  │                                     │
+  ├─ dispatch::run_task                │
+  │   ├─ FetchResolveTask::run_from_js_thread ← DD-4
+  │   │   ├─ build_response_js(cx, outcome)
+  │   │   ├─ ResolvePromise / RejectPromise
+  │   │   ├─ RemoveRawValueRoot(promise_val) ← DD-1
+  │   │   └─ poll_ref.unref_concurrently() ← DD-5
+  │   └─ (终态: resolve/reject/abort/drop 每条退出路径 unref) ← DD-5
+  │
+  └─ return promise_val to JS (pending)
+</pre><script type="application/ld+json">{
+  "@context": "https://spec.example.com/dataflow",
+  "@type": "Dataflow",
+  "id": "DF-FETCH-ASYNC-001",
+  "source": "bao-runtime(fetch_fn / JS native 入口)",
+  "target": "HTTPThread(AsyncHTTP) → JS 线程(FetchResolveTask)",
+  "direction": "forward",
+  "dimension": "technical",
+  "stages": [
+    {"name": "FetchTasklet 创建+Promise Root", "source": "JS 线程", "target": "JS 线程", "data": "FetchTasklet{cx, promise_val(AddRawValueRoot), http, kind, poll_ref}"},
+    {"name": "AsyncHTTP::init+schedule", "source": "JS 线程", "target": "HTTPThread", "data": "AsyncHTTP Options{url, headers, method, body, tls_props}"},
+    {"name": "on_http_done callback", "source": "HTTPThread", "target": "HTTPThread", "data": "HTTPClientResult → FetchOutcome, enqueue_task_concurrent + wakeup()"},
+    {"name": "FetchResolveTask dispatch", "source": "JS 线程 MiniEventLoop", "target": "JS 线程", "data": "ConcurrentTask → run_task → build_response_js → ResolvePromise/RejectPromise + RemoveRawValueRoot + poll_ref.unref"}
+  ]
+}</script></section><section data-controlflow-trigger="fetch_fn / http_request / https_request / tls_connect / stealth_http_request JS native call" data-controlflow-action="FetchTasklet 创建 → AsyncHTTP::schedule → on_http_done → ConcurrentTask → FetchResolveTask → ResolvePromise/RejectPromise" data-controlflow-guard="JSContext initialized + MiniEventLoop running" data-controlflow-dimension="technical" data-controlflow-relation="precedes" data-controlflow="CF-FETCH-ASYNC-001" id="cf-cf-fetch-async-001"><h3>CF-FETCH-ASYNC-001: FetchTasklet 异步 fetch 控制流</h3><p>实现状态(S2审计回退·BLOCKED): fetch_api.rs 旧 spawn_worker+send_sync 范式未替换(INV-2/INV-7 未实现)。fetch_fn 仍走 spawn_fetch_worker+std::thread::spawn 路径,违反 C1/C2/C10。ConcurrentTask+enqueue_task_concurrent+wakeup()跨线程投递机制未接入(fetch_async::drain_pending 从未被 timers.rs 事件循环 tick 调用)。SPEC 先前标注 D1/D6 已完成与代码实际不符,此修正回退实现状态。阻塞项: Task#50 未完成。</p><table><tr><th>触发</th><th>条件</th><th>动作</th><th>异常路径</th></tr><tr><td>JS native fetch/http/https/tls 调用</td><td>JSContext initialized + MiniEventLoop running</td><td>FetchTasklet 创建 → AsyncHTTP::schedule → on_http_done → ConcurrentTask → FetchResolveTask → ResolvePromise/RejectPromise</td><td>connect_timeout → Rejected / abort_signal → Aborted / drop_before_complete → Rejected</td></tr></table><p>控制流约束(DD-1~DD-7):</p><ul><li>INV-1: FetchTasklet owns AsyncHTTP<'static> + SM Promise (AddRawValueRoot) + ResolveKind; implements Taskable with TAG=FetchTasklet (DD-1)</li><li>INV-2: start_with_kind rewrites thread::spawn → AsyncHTTP::init(callback, options) + AsyncHTTP::schedule(batch); HTTPThread::schedule drives the request on the single HTTP thread epoll (O(1) threads for N concurrent fetches) (DD-2)</li><li>INV-3: on_http_done (HTTPClientResultCallback) runs on HTTPThread; extracts HTTPClientResult into FetchOutcome, pushes ConcurrentTask via enqueue_task_concurrent + wakeup() to JS thread; zero SM API calls on HTTPThread (INV-5) (DD-3)</li><li>INV-4: FetchResolveTask implements Taskable; dispatch::run_task arm for FetchTasklet tag calls FetchResolveTask::run_from_js_thread which does build_response_js + ResolvePromise/RejectPromise + RemoveRawValueRoot + poll_ref.unref_concurrently (DD-4)</li><li>INV-5: poll_ref 保活: start 时 ref_concurrently; resolve/reject/abort/drop 每条退出路径 unref_concurrently; Delete PENDING thread_local + drain_pending busy-poll + sleep(1ms) yield (DD-5)</li><li>INV-6: stealth_profile_to_ssl_config bridges StealthProfile → SSLConfigSharedPtr → AsyncHTTP Options.tls_props (DD-7)</li><li>INV-7: fetch_api.rs deletes spawn_fetch_worker/do_fetch_blocking/PENDING_FETCHES/PendingFetch/drain_pending_fetches/has_pending_fetches/build_response_object/FetchResponse; fetch_fn delegates to fetch_async::start; timers.rs 8 call sites change from fetch_api:: to fetch_async::; bun_api.rs 1 call site changes from drain_pending_fetches to drain_pending (DD-6)</li></ul><script type="application/ld+json">{
+  "@context": "https://spec.example.com/controlflow",
+  "@type": "Controlflow",
+  "id": "CF-FETCH-ASYNC-001",
+  "trigger": "JS native fetch/http/https/tls 调用 (6 入口: fetch_fn / node_http.rs http_request / node_http.rs http_get / node_https.rs https_request / node_tls.rs tls_connect / stealth_http.rs stealth_http_request)",
+  "guard": "JSContext initialized + MiniEventLoop running",
+  "action": "FetchTasklet 创建 → AsyncHTTP::schedule → on_http_done → ConcurrentTask → FetchResolveTask → ResolvePromise/RejectPromise",
+  "exceptionPaths": ["connect_timeout → Rejected", "abort_signal → Aborted", "drop_before_complete → Rejected"],
+  "invariants": ["INV-1: FetchTasklet owns AsyncHTTP<'static>+Promise(AddRawValueRoot)+ResolveKind", "INV-2: AsyncHTTP::init+schedule 替代 thread::spawn, O(1)线程", "INV-3: HTTPThread callback 零 SM API 调用", "INV-4: FetchResolveTask Taskable dispatch", "INV-5: poll_ref ref/unref 保活", "INV-6: stealth_profile_to_ssl_config 桥接", "INV-7: 旧代码全删+调用点迁移"]
+}</script></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001@PROCESS" data-test="TEST-CDP-001@PROCESS" id="test-cdp-001-process"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 单元测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004@PROCESS" data-test="TEST-ENG-004@PROCESS" id="test-eng-004-process"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 单元测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div></section></body>
 </html>

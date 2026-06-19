@@ -7,7 +7,7 @@
 //!
 //! Re-exports `bun_bundler::transpiler::*` for the legacy bundler pipeline.
 //!
-//! @trace REQ-ENG-005
+//! @trace REQ-ENG-005 [api:POST /module/resolve] [entity:ModuleSource]
 
 pub use bun_bundler::transpiler::*;
 
@@ -24,6 +24,8 @@ use swc_ecma_transforms_base::{fixer::fixer, hygiene::hygiene, resolver};
 use swc_ecma_transforms_typescript::strip;
 
 /// Error returned by [`transpile_ts`].
+///
+/// @trace REQ-ENG-005 [api:POST /module/resolve] [entity:ModuleSource]
 #[derive(Debug)]
 pub struct TranspileError {
     pub message: String,
@@ -45,22 +47,62 @@ impl std::error::Error for TranspileError {}
 /// - Zero runtime: only types are removed; no down-leveling of syntax beyond
 ///   what SWC's strip performs. This mirrors `tsc --isolatedModules` with
 ///   `verbatimModuleSyntax` and Node.js's type-stripping.
+/// - Comments are **preserved** (SWC Emitter is handed the parsed `comments`
+///   table). This is the runtime-module-loader contract: comment-preserved
+///   output is semantically faithful to the source. Use
+///   [`transpile_ts_drop_comments`] for the bundler minify path that needs
+///   comments discarded.
 ///
 /// On any failure returns `TranspileError`; callers fall back to the legacy
 /// hand-written stripper (kept as defensive fallback in `module_loader`).
 ///
-/// @trace REQ-ENG-005
+/// @trace REQ-ENG-005 [api:POST /module/resolve] [entity:ModuleSource]
 pub fn transpile_ts(source: &str, filename: &str) -> Result<String, TranspileError> {
+    transpile_ts_impl(source, filename, false)
+}
+
+/// Transpile a TypeScript / TSX source string into JavaScript, **discarding
+/// all comments** from the emitted output.
+///
+/// Same grammar / strip pipeline as [`transpile_ts`], but the SWC Emitter is
+/// handed `comments = None` at codegen, so leading / trailing / inner
+/// comments parsed from the source are dropped from the emitted string. This
+/// is the contract the `bao_bundler` minify path requires (a comment-free
+/// normalized payload that downstream whitespace-collapse can shrink).
+///
+/// On any failure returns `TranspileError`; callers fall back to the raw
+/// source.
+///
+/// @trace REQ-CLI-001 [api:POST /cli/exec] [entity:BaoRuntime]
+pub fn transpile_ts_drop_comments(
+    source: &str,
+    filename: &str,
+) -> Result<String, TranspileError> {
+    transpile_ts_impl(source, filename, true)
+}
+
+// @trace REQ-ENG-005 [api:POST /module/resolve] [entity:ModuleSource]
+fn transpile_ts_impl(
+    source: &str,
+    filename: &str,
+    drop_comments: bool,
+) -> Result<String, TranspileError> {
     let path = Path::new(filename);
     let tsx = matches!(
         path.extension().and_then(|e| e.to_str()),
         Some("tsx")
     );
 
-    transpile_ts_with(source, tsx, filename)
+    transpile_ts_with(source, tsx, filename, drop_comments)
 }
 
-fn transpile_ts_with(source: &str, tsx: bool, filename: &str) -> Result<String, TranspileError> {
+// @trace REQ-ENG-005 [api:POST /module/resolve] [entity:ModuleSource]
+fn transpile_ts_with(
+    source: &str,
+    tsx: bool,
+    filename: &str,
+    drop_comments: bool,
+) -> Result<String, TranspileError> {
     let cm: Lrc<SourceMap> = Default::default();
     let handler = Handler::with_tty_emitter(ColorConfig::Auto, true, false, Some(cm.clone()));
 
@@ -115,7 +157,12 @@ fn transpile_ts_with(source: &str, tsx: bool, filename: &str) -> Result<String, 
         p
     });
 
-    Ok(to_code_default(cm, Some(&comments), &out))
+    // BCE-20260618-004: the SWC Emitter only emits comments when handed a
+    // `Some(comments)` table. `Some` → comments preserved (runtime loader
+    // contract); `None` → comments dropped (bundler minify contract).
+    let comments_for_emit: Option<&dyn swc_common::comments::Comments> =
+        if drop_comments { None } else { Some(&comments) };
+    Ok(to_code_default(cm, comments_for_emit, &out))
 }
 
 #[cfg(test)]
@@ -179,5 +226,42 @@ mod tests {
         assert!(out.contains("<div>"));
         assert!(out.contains("{42}"));
         assert!(!out.contains("JSX.Element"));
+    }
+
+    // ── BCE-20260618-004 regression: comment preservation / drop contract ──
+
+    #[test]
+    fn transpile_ts_preserves_comments_runtime_contract() {
+        // Runtime loader contract: comments are preserved so emitted JS is
+        // semantically faithful to the source.
+        let src = "// leading\nconst x = 1; /* trailing */\n";
+        let out = transpile_ts(src, "x.ts").expect("transpile ok");
+        assert!(out.contains("leading"), "line comment preserved: {out:?}");
+        assert!(out.contains("trailing"), "block comment preserved: {out:?}");
+        assert!(out.contains("const x = 1;"));
+    }
+
+    #[test]
+    fn transpile_ts_drop_comments_removes_all_comments() {
+        // BCE-20260618-004 regression: the bundler minify path must emit a
+        // comment-free payload. Constructing this pattern (any combination of
+        // line + block comments) MUST yield zero comment text in the output.
+        let src = "// leading line comment\nconst API = \"v1\"; /* block comment */\n// trailing\n";
+        let out = transpile_ts_drop_comments(src, "x.ts").expect("transpile ok");
+        assert!(!out.contains("leading line comment"), "line comment dropped: {out:?}");
+        assert!(!out.contains("block comment"), "block comment dropped: {out:?}");
+        assert!(!out.contains("trailing"), "trailing comment dropped: {out:?}");
+        assert!(out.contains("const API = \"v1\";"), "code preserved: {out:?}");
+    }
+
+    #[test]
+    fn transpile_ts_drop_comments_still_strips_types() {
+        // The drop-comments variant must still perform the full TS strip.
+        let src = "// header\nconst x: number = 1;\nfunction add(a: number, b: number): number { return a + b; }\n";
+        let out = transpile_ts_drop_comments(src, "x.ts").expect("transpile ok");
+        assert!(!out.contains("header"));
+        assert!(!out.contains("number"));
+        assert!(out.contains("const x = 1"));
+        assert!(out.contains("function add(a, b)"));
     }
 }

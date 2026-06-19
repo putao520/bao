@@ -1931,8 +1931,8 @@ unsafe fn serve_resolve_response_value(
         return if serve_is_response_like(cx_ref, obj) { obj } else { ::std::ptr::null_mut() };
     }
 
-    // Slow path: Promise<Response>. Drain microtasks + pending fetches + tick
-    // the uWS Loop until the promise settles (or we hit the iteration cap).
+    // Slow path: Promise<Response>. Drain microtasks + tick MiniEventLoop
+    // (non-blocking) until the promise settles (or we hit the iteration cap).
     // SAFETY: route handler runs on JS thread; all JS that could settle this
     // promise also runs on this thread, so RunJobs here is sufficient.
     let raw_cx = cx_ref.raw_cx();
@@ -1978,29 +1978,28 @@ unsafe fn serve_resolve_response_value(
             _ => {}
         }
 
-        // Still pending — drain microtasks (RunJobs) and pending async fetches
-        // so promise chains that depend only on microtask scheduling settle
-        // promptly. Do NOT call `drain_one_pass`/`drain_and_check` here: the
-        // route handler is already running inside `drain_and_check`'s
-        // `tick_without_idle`, and re-entering the uWS Loop tick would
-        // re-enter the C++ epoll dispatcher mid-dispatch → undefined behavior.
-        // For promises that genuinely need a setTimeout/I/O round-trip (the
-        // "delayed" async fetch handler pattern), the bounded iteration cap
-        // returns null after SERVE_PROMISE_POLL_MAX_ITERS and the caller
-        // writes 404 — this is a known limitation of the synchronous route
-        // handler model. Async-flush deferral would require storing the uWS
-        // res pointer past the handler boundary (out of scope for this fix).
+        // Still pending — drain microtasks (RunJobs) and tick the MiniEventLoop
+        // (non-blocking) so ConcurrentTask callbacks from HTTPThread can fire.
+        // Do NOT call `drain_one_pass`/`drain_and_check` here: the route handler
+        // is already running inside `drain_and_check`'s `tick_without_idle`, and
+        // re-entering the uWS Loop tick would re-enter the C++ epoll dispatcher
+        // mid-dispatch → undefined behavior. The non-blocking tick_without_idle
+        // here dispatches any pending ConcurrentTask enqueues (from HTTPThread
+        // fetch completions) without re-entering the uWS Loop.
+        // For promises that genuinely need a setTimeout round-trip (the "delayed"
+        // async fetch handler pattern), the bounded iteration cap returns null
+        // after SERVE_PROMISE_POLL_MAX_ITERS and the caller writes 404 — this is
+        // a known limitation of the synchronous route handler model.
         mozjs_sys::jsapi::js::RunJobs(raw_cx);
-        let _ = crate::fetch_api::drain_pending_fetches(raw_cx);
+        crate::timers::with_event_loop(|loop_| {
+            loop_.tick_without_idle(core::ptr::null_mut());
+        });
 
         iters += 1;
         if iters >= SERVE_PROMISE_POLL_MAX_ITERS {
             // Bounded — give up rather than hang the server forever.
             return ::std::ptr::null_mut();
         }
-        // Yield the JS thread briefly so any in-flight async fetch worker can
-        // complete (cross-thread result_slot write).
-        ::std::thread::sleep(::std::time::Duration::from_millis(1));
     }
 }
 

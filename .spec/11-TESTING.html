@@ -656,7 +656,7 @@ CDP Debugger 使用 JS 标志位模拟暂停/步进，而非 SM Debugger API 原
 9. **行号计算不准确**：手动换行计数，应使用 script.getOffsetLocation(offset)
 
 ## 影响
-CDP Debugger 域核心功能完全不可用。Puppeteer/Playwright 的 step/breakpoint/evaluateOnCallFrame 功能全部失效。</p></section><section data-bug-status="draft" data-bug="BUG-ENG-365" id="bug-eng-365"><h3>BUG-ENG-365: 模块系统未合规 SM Module API 规范 — SetModulePrivate/FinishDynamicModuleImport/CJS↔ESM 互操作缺失</h3><p>## 问题
+CDP Debugger 域核心功能完全不可用。Puppeteer/Playwright 的 step/breakpoint/evaluateOnCallFrame 功能全部失效。</p></section><section data-bug-status="draft" data-bug="BUG-ENG-365" data-artifact-type="module" id="artifact-module"><h3>BUG-ENG-365: 模块系统未合规 SM Module API 规范 — SetModulePrivate/FinishDynamicModuleImport/CJS↔ESM 互操作缺失</h3><p>## 问题
 模块系统未完全合规 SM Module API 规范，具体缺陷：
 
 1. **未调用 SetModulePrivate**：导致 import.meta.url 可能不准确（private_value 可能为 undefined）
@@ -704,5 +704,5 @@ CDP Debugger 域核心功能完全不可用。Puppeteer/Playwright 的 step/brea
 <p>验证 Event Loop Tick 间隔符合 TMG-LOOP-001 max_interval_ms=20ms 约束。覆盖于 src/bao_runtime/tests/event_loop_timing_tests.rs (8 个 #[test]: 空 tick 基线 / 多次 tick 稳定性 / 单 task dispatch / timer 唤醒 / microtask drain 等)。</p>
 </div>
 
-</main></body>
+<section data-test-categories="integration,positive" data-req-ref="REQ-ENG-010" data-test="TEST-ENG-010" id="test-eng-10"><h3>TEST-ENG-010 Bun.serve self-loop fetch 双向死锁回归测试</h3><p>验证 FetchTasklet 事件驱动范式后 self-loop 场景不死锁:Bun.serve 启动 HTTP 服务 → handler 内 fetch(self URL) → 10s 内打印 DONE 并 exit 0。覆盖 BUG-ENG-367 的 6 入口 send_sync 根治验证:fetch_fn / node_http.rs http_request / node_http.rs http_get[delegated] / node_https.rs https_request / node_tls.rs tls_connect / stealth_http.rs stealth_http_request 均走 AsyncHTTP::schedule 异步路径,零 send_sync/Condvar 残留。oracle_gate 步骤「模式检查」grep bao_runtime 源码 send_sync/SingleHTTPChannel/Condvar/std::thread::spawn 在 JS extern C fn body 命中 = 0。</p><a data-xref-id="req-eng-10" data-xref-type="req" href=".html#req-eng-10">REQ-ENG-010</a><a data-xref-id="bug-eng-367" data-xref-type="bug" href="10-REQUIREMENTS.html#bug-eng-367">BUG-ENG-367</a></section></main></body>
 </html>

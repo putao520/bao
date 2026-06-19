@@ -206,7 +206,7 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
     // blocking tick path.
     let has_http_before_tick = crate::node_http::has_active_servers();
     let has_pending_before_tick = bao_has_pending_timers();
-    let has_pending_fetch_before_tick = crate::fetch_api::has_pending_fetches();
+    let has_pending_async_fetch = crate::fetch_async::has_pending();
     if has_http_before_tick {
         // I/O is active — let uSockets drain ready fds without blocking.
         with_event_loop(|loop_| {
@@ -218,28 +218,21 @@ pub fn drain_and_check(cx: &mut mozjs::context::JSContext) -> bool {
         // block on epoll_wait with nothing to wake it. A short sleep advances
         // wall-clock deterministically so drain_bao_timers can pop expired entries.
         ::std::thread::sleep(::std::time::Duration::from_millis(1));
-    } else if has_pending_fetch_before_tick {
-        // BCE-007: fetch-only case — async fetch worker(s) in flight on a
-        // separate thread, no timers or HTTP servers. A short sleep yields
-        // the JS thread so the worker can finish writing its result without
-        // busy-spinning. The drain_pending_fetches call below polls completion.
-        // @trace REQ-ENG-001 [api:fetch async]
-        ::std::thread::sleep(::std::time::Duration::from_millis(1));
     }
+    // BCE-20260619-010: fetch-only busy-poll branch removed. FetchTasklet
+    // event-driven paradigm uses ConcurrentTask auto-wakeup via MiniEventLoop;
+    // no sleep(1ms) polling is needed.
 
     let has_http = crate::node_http::has_active_servers();
     let raw_cx = unsafe { cx.raw_cx() };
     drain_bao_timers(raw_cx);
     bao_engine::job_queue::JobQueue::drain(cx);
 
-    // BCE-007: drain completed async fetches (fetch() returns a PENDING Promise
-    // and dispatches a worker thread; this resolves promises whose worker has
-    // finished). Runs after timer/job drain so fetch .then() callbacks land in
-    // the next RunJobs pass. # Safety: raw_cx is live on this thread.
-    // @trace REQ-ENG-001 [api:fetch async drain]
-    let _ = unsafe { crate::fetch_api::drain_pending_fetches(raw_cx) };
+    // BCE-20260619-010: drain_pending_fetches removed. FetchTasklet event-driven
+    // paradigm resolves promises via ConcurrentTask (resolve_tasklet), not via
+    // JS-thread polling. No drain call needed here.
 
-    bao_has_pending_timers() || has_http || crate::fetch_api::has_pending_fetches()
+    bao_has_pending_timers() || has_http || has_pending_async_fetch
 }
 
 /// Drive a single "wait for promise / timer" iteration in test-runner mode.
@@ -276,7 +269,6 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
     let _cx_guard = CxGuard::new();
 
     let has_http = crate::node_http::has_active_servers();
-    let has_pending_fetch = crate::fetch_api::has_pending_fetches();
     if has_http {
         // BCE-007-R3: use the zero-timespec non-blocking tick so the test
         // runner (which has no eval-loop sleep to yield) makes progress
@@ -290,27 +282,22 @@ pub unsafe fn drain_one_pass(raw_cx: *mut JSContext) -> bool {
         // expired entries. Short sleep keeps test throughput reasonable while
         // avoiding the epoll_wait-forever trap.
         ::std::thread::sleep(::std::time::Duration::from_millis(1));
-    } else if has_pending_fetch {
-        // BCE-007: fetch-only case — yield so the worker thread can finish.
-        // @trace REQ-ENG-001 [api:fetch async]
-        ::std::thread::sleep(::std::time::Duration::from_millis(1));
     }
+    // BCE-20260619-010: fetch-only busy-poll branch removed.
+    // FetchTasklet uses ConcurrentTask auto-wakeup; no sleep polling needed.
     let fired = drain_bao_timers(raw_cx);
     // Drain microtasks + queued promise jobs.
     mozjs_sys::jsapi::js::RunJobs(raw_cx);
-    // BCE-007: drain completed async fetch promises. Their .then()/await
-    // callbacks fire on the RunJobs pass above (drain_pending_fetches calls
-    // RunJobs internally too). # Safety: raw_cx is live on this thread.
-    // @trace REQ-ENG-001 [api:fetch async drain]
-    let _ = unsafe { crate::fetch_api::drain_pending_fetches(raw_cx) };
+    // BCE-20260619-010: drain_pending_fetches removed.
+    // FetchTasklet resolves via ConcurrentTask; no drain call needed.
     fired
 }
 
 /// Check if there are any pending timers, HTTP servers, or async fetches.
 /// Used by the test runner to know whether the loop should keep spinning.
-// @trace REQ-ENG-001 [api:fetch async] — has_pending_fetches keeps the loop alive
+// @trace REQ-ENG-010 [entity:FetchTasklet] — fetch_async::has_pending keeps the loop alive
 pub fn has_pending_work() -> bool {
-    bao_has_pending_timers() || crate::node_http::has_active_servers() || crate::fetch_api::has_pending_fetches()
+    bao_has_pending_timers() || crate::node_http::has_active_servers() || crate::fetch_async::has_pending()
 }
 
 /// Fire a JS callback via `JS_CallFunctionValue`, swallowing any pending

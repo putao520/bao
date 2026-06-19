@@ -16,7 +16,7 @@
 <p>通过 mozjs crate (v0.15.14) 集成 SpiderMonkey JS 引擎，替代 Bun 原有的 JavaScriptCore。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="bao-run-能执行-js/ts-文件并输出结果" data-criterion="bao run 能执行 JS/TS 文件并输出结果" data-criterion-id="REQ-ENG-001-C1">bao run 能执行 JS/TS 文件并输出结果</li>
+<li id="bao-run-能执行-js-ts-文件并输出结果" data-criterion="bao run 能执行 JS/TS 文件并输出结果" data-criterion-id="REQ-ENG-001-C1">bao run 能执行 JS/TS 文件并输出结果</li>
 <li id="spidermonkey-jscontext-在-main-thread-唯一实例化" data-criterion="SpiderMonkey JSContext 在 Main Thread 唯一实例化" data-criterion-id="REQ-ENG-001-C2">SpiderMonkey JSContext 在 Main Thread 唯一实例化</li>
 <li id="gc-通过-mozjs-crown-lint-编译时检查-rooting-正确性" data-criterion="GC 通过 mozjs crown lint 编译时检查 rooting 正确性" data-criterion-id="REQ-ENG-001-C3">GC 通过 mozjs crown lint 编译时检查 rooting 正确性</li>
 <li id="js-异常正确传播到-rust-层并输出-stack-trace" data-criterion="JS 异常正确传播到 Rust 层并输出 stack trace" data-criterion-id="REQ-ENG-001-C4">JS 异常正确传播到 Rust 层并输出 stack trace</li>
@@ -36,9 +36,9 @@
 <h4>验收标准</h4>
 <ul>
 <li id="所有-30-个-.classes.ts-文件的定义可被解析" data-criterion="所有 30 个 .classes.ts 文件的定义可被解析" data-criterion-id="REQ-ENG-002-C1">所有 30 个 .classes.ts 文件的定义可被解析</li>
-<li id="生成-spidermonkey-c++-绑定代码（jsclass-+-jsfunctionspec-+-jspropertyspec）" data-criterion="生成 SpiderMonkey C++ 绑定代码（JSClass + JSFunctionSpec + JSPropertySpec）" data-criterion-id="REQ-ENG-002-C2">生成 SpiderMonkey C++ 绑定代码（JSClass + JSFunctionSpec + JSPropertySpec）</li>
+<li id="生成-spidermonkey-c-绑定代码-jsclass-jsfunctionspec-jspropertyspec" data-criterion="生成 SpiderMonkey C++ 绑定代码（JSClass + JSFunctionSpec + JSPropertySpec）" data-criterion-id="REQ-ENG-002-C2">生成 SpiderMonkey C++ 绑定代码（JSClass + JSFunctionSpec + JSPropertySpec）</li>
 <li id="生成的绑定通过编译" data-criterion="生成的绑定通过编译" data-criterion-id="REQ-ENG-002-C3">生成的绑定通过编译</li>
-<li id="bun.*-api-通过-bao.*-别名可访问" data-criterion="Bun.* API 通过 Bao.* 别名可访问" data-criterion-id="REQ-ENG-002-C4">Bun.* API 通过 Bao.* 别名可访问</li>
+<li id="bun.-api-通过-bao.-别名可访问" data-criterion="Bun.* API 通过 Bao.* 别名可访问" data-criterion-id="REQ-ENG-002-C4">Bun.* API 通过 Bao.* 别名可访问</li>
 </ul>
 
 <p data-xref-id="REQ-ENG-002" data-xref-type="req">关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span></p>
@@ -51,8 +51,8 @@
 <h4>验收标准</h4>
 <ul>
 <li id="提供-rust-安全的-js-函数调用接口" data-criterion="提供 Rust 安全的 JS 函数调用接口" data-criterion-id="REQ-ENG-003-C1">提供 Rust 安全的 JS 函数调用接口</li>
-<li id="支持-js→rust-和-rust→js-类型转换" data-criterion="支持 JS→Rust 和 Rust→JS 类型转换" data-criterion-id="REQ-ENG-003-C2">支持 JS→Rust 和 Rust→JS 类型转换</li>
-<li id="js-异常自动转换为-rust-result::err" data-criterion="JS 异常自动转换为 Rust Result::Err" data-criterion-id="REQ-ENG-003-C3">JS 异常自动转换为 Rust Result::Err</li>
+<li id="支持-js-rust-和-rust-js-类型转换" data-criterion="支持 JS→Rust 和 Rust→JS 类型转换" data-criterion-id="REQ-ENG-003-C2">支持 JS→Rust 和 Rust→JS 类型转换</li>
+<li id="js-异常自动转换为-rust-result-err" data-criterion="JS 异常自动转换为 Rust Result::Err" data-criterion-id="REQ-ENG-003-C3">JS 异常自动转换为 Rust Result::Err</li>
 <li id="gc-root-管理通过-raii-自动化" data-criterion="GC root 管理通过 RAII 自动化" data-criterion-id="REQ-ENG-003-C4">GC root 管理通过 RAII 自动化</li>
 </ul>
 
@@ -65,7 +65,7 @@
 <h4>验收标准</h4>
 <ul>
 <li id="promise.then-回调在正确的-event-loop-tick-中执行" data-criterion="Promise.then 回调在正确的 event loop tick 中执行" data-criterion-id="REQ-ENG-004-C1">Promise.then 回调在正确的 event loop tick 中执行</li>
-<li id="settimeout/setinterval-由-bun-timer-管理" data-criterion="setTimeout/setInterval 由 Bun Timer 管理" data-criterion-id="REQ-ENG-004-C2">setTimeout/setInterval 由 Bun Timer 管理</li>
+<li id="settimeout-setinterval-由-bun-timer-管理" data-criterion="setTimeout/setInterval 由 Bun Timer 管理" data-criterion-id="REQ-ENG-004-C2">setTimeout/setInterval 由 Bun Timer 管理</li>
 <li id="微任务在每轮-tick-结尾-drain" data-criterion="微任务在每轮 tick 结尾 drain" data-criterion-id="REQ-ENG-004-C3">微任务在每轮 tick 结尾 drain</li>
 <li id="宏任务和微任务执行顺序正确" data-criterion="宏任务和微任务执行顺序正确" data-criterion-id="REQ-ENG-004-C4">宏任务和微任务执行顺序正确</li>
 </ul>
@@ -79,11 +79,11 @@
 <p>实现 SpiderMonkey ESM hooks → Bun resolver 的模块加载桥接。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="import/export-语法正常工作" data-criterion="import/export 语法正常工作" data-criterion-id="REQ-ENG-005-C1">import/export 语法正常工作</li>
+<li id="import-export-语法正常工作" data-criterion="import/export 语法正常工作" data-criterion-id="REQ-ENG-005-C1">import/export 语法正常工作</li>
 <li id="node-modules-解析正常" data-criterion="node_modules 解析正常" data-criterion-id="REQ-ENG-005-C2">node_modules 解析正常</li>
 <li id="ts-文件自动转译后加载" data-criterion="TS 文件自动转译后加载" data-criterion-id="REQ-ENG-005-C3">TS 文件自动转译后加载</li>
-<li id="动态-import()-正常工作" data-criterion="动态 import() 正常工作" data-criterion-id="REQ-ENG-005-C4">动态 import() 正常工作</li>
-<li id="模块缓存生效，避免重复解析" data-criterion="模块缓存生效，避免重复解析" data-criterion-id="REQ-ENG-005-C5">模块缓存生效，避免重复解析</li>
+<li id="动态-import-正常工作" data-criterion="动态 import() 正常工作" data-criterion-id="REQ-ENG-005-C4">动态 import() 正常工作</li>
+<li id="模块缓存生效-避免重复解析" data-criterion="模块缓存生效，避免重复解析" data-criterion-id="REQ-ENG-005-C5">模块缓存生效，避免重复解析</li>
 </ul>
 
 <p data-xref-id="REQ-ENG-005" data-xref-type="req">关联实体: <span data-xref-id="ModuleSource" data-xref-type="entity">ModuleSource</span></p>
@@ -95,12 +95,12 @@
 <p>将 Bun.* JS API 从 JSC 绑定适配到 SpiderMonkey 绑定。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="bun.serve()-正常启动-http-服务" data-criterion="Bun.serve() 正常启动 HTTP 服务" data-criterion-id="REQ-ENG-006-C1">Bun.serve() 正常启动 HTTP 服务</li>
-<li id="bun.file()-正常读取文件" data-criterion="Bun.file() 正常读取文件" data-criterion-id="REQ-ENG-006-C2">Bun.file() 正常读取文件</li>
-<li id="fetch()-正常发起-http-请求" data-criterion="fetch() 正常发起 HTTP 请求" data-criterion-id="REQ-ENG-006-C3">fetch() 正常发起 HTTP 请求</li>
-<li id="bun.write()-正常写入文件" data-criterion="Bun.write() 正常写入文件" data-criterion-id="REQ-ENG-006-C4">Bun.write() 正常写入文件</li>
-<li id="bun.serve()-支持-websocket-升级" data-criterion="Bun.serve() 支持 WebSocket 升级" data-criterion-id="REQ-ENG-006-C5">Bun.serve() 支持 WebSocket 升级</li>
-<li id="bao.*-是-bun.*-的别名，指向同一对象" data-criterion="Bao.* 是 Bun.* 的别名，指向同一对象" data-criterion-id="REQ-ENG-006-C6">Bao.* 是 Bun.* 的别名，指向同一对象</li>
+<li id="bun.serve-正常启动-http-服务" data-criterion="Bun.serve() 正常启动 HTTP 服务" data-criterion-id="REQ-ENG-006-C1">Bun.serve() 正常启动 HTTP 服务</li>
+<li id="bun.file-正常读取文件" data-criterion="Bun.file() 正常读取文件" data-criterion-id="REQ-ENG-006-C2">Bun.file() 正常读取文件</li>
+<li id="fetch-正常发起-http-请求" data-criterion="fetch() 正常发起 HTTP 请求" data-criterion-id="REQ-ENG-006-C3">fetch() 正常发起 HTTP 请求</li>
+<li id="bun.write-正常写入文件" data-criterion="Bun.write() 正常写入文件" data-criterion-id="REQ-ENG-006-C4">Bun.write() 正常写入文件</li>
+<li id="bun.serve-支持-websocket-升级" data-criterion="Bun.serve() 支持 WebSocket 升级" data-criterion-id="REQ-ENG-006-C5">Bun.serve() 支持 WebSocket 升级</li>
+<li id="bao.-是-bun.-的别名-指向同一对象" data-criterion="Bao.* 是 Bun.* 的别名，指向同一对象" data-criterion-id="REQ-ENG-006-C6">Bao.* 是 Bun.* 的别名，指向同一对象</li>
 </ul>
 
 <p data-xref-id="REQ-ENG-006" data-xref-type="req">关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span></p>
@@ -162,9 +162,9 @@
 <li id="bao-test-运行测试" data-criterion="bao test 运行测试" data-criterion-id="REQ-CLI-001-C2"><code>bao test</code> 运行测试</li>
 <li id="bao-build-打包" data-criterion="bao build 打包" data-criterion-id="REQ-CLI-001-C3"><code>bao build</code> 打包</li>
 <li id="bao-install-安装依赖" data-criterion="bao install 安装依赖" data-criterion-id="REQ-CLI-001-C4"><code>bao install</code> 安装依赖</li>
-<li id="bao-browser-启动-servo-+-cdp" data-criterion="bao browser 启动 servo + CDP" data-criterion-id="REQ-CLI-001-C5"><code>bao browser</code> 启动 servo + CDP</li>
-<li id="内部-crate-名保持-bun-*-不变" data-criterion="内部 crate 名保持 bun_* 不变" data-criterion-id="REQ-CLI-001-C6">内部 crate 名保持 bun_* 不变</li>
-<li id="bao-*-环境变量作为-bun-*-的别名" data-criterion="BAO_* 环境变量作为 BUN_* 的别名" data-criterion-id="REQ-CLI-001-C7">BAO_* 环境变量作为 BUN_* 的别名</li>
+<li id="bao-browser-启动-servo-cdp" data-criterion="bao browser 启动 servo + CDP" data-criterion-id="REQ-CLI-001-C5"><code>bao browser</code> 启动 servo + CDP</li>
+<li id="内部-crate-名保持-bun-不变" data-criterion="内部 crate 名保持 bun_* 不变" data-criterion-id="REQ-CLI-001-C6">内部 crate 名保持 bun_* 不变</li>
+<li id="bao-环境变量作为-bun-的别名" data-criterion="BAO_* 环境变量作为 BUN_* 的别名" data-criterion-id="REQ-CLI-001-C7">BAO_* 环境变量作为 BUN_* 的别名</li>
 </ul>
 
 <p data-xref-id="REQ-CLI-001" data-xref-type="req">关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span></p>
@@ -176,10 +176,10 @@
 <p>新增 bao browser 子命令，便捷启动 servo + CDP。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="bao-browser---url=https://example.com-启动浏览器并加载页面" data-criterion="bao browser --url=https://example.com 启动浏览器并加载页面" data-criterion-id="REQ-CLI-002-C1"><code>bao browser --url=https://example.com</code> 启动浏览器并加载页面</li>
-<li id="bao-browser---cdp-port=9222-指定-cdp-端口" data-criterion="bao browser --cdp-port=9222 指定 CDP 端口" data-criterion-id="REQ-CLI-002-C2"><code>bao browser --cdp-port=9222</code> 指定 CDP 端口</li>
-<li id="bao-browser---headless-无头模式（默认）" data-criterion="bao browser --headless 无头模式（默认）" data-criterion-id="REQ-CLI-002-C3"><code>bao browser --headless</code> 无头模式（默认）</li>
-<li id="bao-browser---stealth-启用反指纹模块" data-criterion="bao browser --stealth 启用反指纹模块" data-criterion-id="REQ-CLI-002-C4"><code>bao browser --stealth</code> 启用反指纹模块</li>
+<li id="bao-browser-url-https-example.com-启动浏览器并加载页面" data-criterion="bao browser --url=https://example.com 启动浏览器并加载页面" data-criterion-id="REQ-CLI-002-C1"><code>bao browser --url=https://example.com</code> 启动浏览器并加载页面</li>
+<li id="bao-browser-cdp-port-9222-指定-cdp-端口" data-criterion="bao browser --cdp-port=9222 指定 CDP 端口" data-criterion-id="REQ-CLI-002-C2"><code>bao browser --cdp-port=9222</code> 指定 CDP 端口</li>
+<li id="bao-browser-headless-无头模式-默认" data-criterion="bao browser --headless 无头模式（默认）" data-criterion-id="REQ-CLI-002-C3"><code>bao browser --headless</code> 无头模式（默认）</li>
+<li id="bao-browser-stealth-启用反指纹模块" data-criterion="bao browser --stealth 启用反指纹模块" data-criterion-id="REQ-CLI-002-C4"><code>bao browser --stealth</code> 启用反指纹模块</li>
 <li id="启动时输出-cdp-websocket-url-供-playwright-连接" data-criterion="启动时输出 CDP WebSocket URL 供 Playwright 连接" data-criterion-id="REQ-CLI-002-C5">启动时输出 CDP WebSocket URL 供 Playwright 连接</li>
 </ul>
 
@@ -197,14 +197,14 @@
 <p>集成 servo crate 作为浏览器引擎核心，实现 ServoDelegate + WebViewDelegate trait，使用 SoftwareRenderingContext CPU 无头渲染。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="libservo-以单进程模式运行（servobuilder-+-opts.multiprocess=false）" data-criterion="libservo 以单进程模式运行（ServoBuilder + opts.multiprocess=false）" data-criterion-id="REQ-BRW-001-C1">libservo 以单进程模式运行（ServoBuilder + opts.multiprocess=false）</li>
-<li id="servodelegate-trait-实现完整（notify-error-/-show-console-message-/-load-web-resource）" data-criterion="ServoDelegate trait 实现完整（notify_error / show_console_message / load_web_resource）" data-criterion-id="REQ-BRW-001-C2">ServoDelegate trait 实现完整（notify_error / show_console_message / load_web_resource）</li>
-<li id="webviewdelegate-trait-实现完整（screen-geometry-/-notify-url-changed-/-notify-load-status-changed-/-notify-new-frame-ready）" data-criterion="WebViewDelegate trait 实现完整（screen_geometry / notify_url_changed / notify_load_status_changed / notify_new_frame_ready）" data-criterion-id="REQ-BRW-001-C3">WebViewDelegate trait 实现完整（screen_geometry / notify_url_changed / notify_load_status_changed / notify_new_frame_ready）</li>
-<li id="dom-操作正常（查询/遍历/修改）" data-criterion="DOM 操作正常（查询/遍历/修改）" data-criterion-id="REQ-BRW-001-C4">DOM 操作正常（查询/遍历/修改）</li>
-<li id="css-样式计算正常（servo-stylo-内置）" data-criterion="CSS 样式计算正常（servo Stylo 内置）" data-criterion-id="REQ-BRW-001-C5">CSS 样式计算正常（servo Stylo 内置）</li>
-<li id="html-页面导航正常（webview::load）" data-criterion="HTML 页面导航正常（WebView::load）" data-criterion-id="REQ-BRW-001-C6">HTML 页面导航正常（WebView::load）</li>
-<li id="无头截图正常（softwarerenderingcontext-+-webview::take-screenshot-→-rgbaimage）" data-criterion="无头截图正常（SoftwareRenderingContext + WebView::take_screenshot → RgbaImage）" data-criterion-id="REQ-BRW-001-C7">无头截图正常（SoftwareRenderingContext + WebView::take_screenshot → RgbaImage）</li>
-<li id="js-在-webview-上下文执行正常（webview::evaluate-javascript）" data-criterion="JS 在 webview 上下文执行正常（WebView::evaluate_javascript）" data-criterion-id="REQ-BRW-001-C8">JS 在 webview 上下文执行正常（WebView::evaluate_javascript）</li>
+<li id="libservo-以单进程模式运行-servobuilder-opts.multiprocess-false" data-criterion="libservo 以单进程模式运行（ServoBuilder + opts.multiprocess=false）" data-criterion-id="REQ-BRW-001-C1">libservo 以单进程模式运行（ServoBuilder + opts.multiprocess=false）</li>
+<li id="servodelegate-trait-实现完整-notify-error-show-console-message-load-web-resource" data-criterion="ServoDelegate trait 实现完整（notify_error / show_console_message / load_web_resource）" data-criterion-id="REQ-BRW-001-C2">ServoDelegate trait 实现完整（notify_error / show_console_message / load_web_resource）</li>
+<li id="webviewdelegate-trait-实现完整-screen-geometry-notify-url-changed-notify-load-status-changed-notify-new-frame-ready" data-criterion="WebViewDelegate trait 实现完整（screen_geometry / notify_url_changed / notify_load_status_changed / notify_new_frame_ready）" data-criterion-id="REQ-BRW-001-C3">WebViewDelegate trait 实现完整（screen_geometry / notify_url_changed / notify_load_status_changed / notify_new_frame_ready）</li>
+<li id="dom-操作正常-查询-遍历-修改" data-criterion="DOM 操作正常（查询/遍历/修改）" data-criterion-id="REQ-BRW-001-C4">DOM 操作正常（查询/遍历/修改）</li>
+<li id="css-样式计算正常-servo-stylo-内置" data-criterion="CSS 样式计算正常（servo Stylo 内置）" data-criterion-id="REQ-BRW-001-C5">CSS 样式计算正常（servo Stylo 内置）</li>
+<li id="html-页面导航正常-webview-load" data-criterion="HTML 页面导航正常（WebView::load）" data-criterion-id="REQ-BRW-001-C6">HTML 页面导航正常（WebView::load）</li>
+<li id="无头截图正常-softwarerenderingcontext-webview-take-screenshot-rgbaimage" data-criterion="无头截图正常（SoftwareRenderingContext + WebView::take_screenshot → RgbaImage）" data-criterion-id="REQ-BRW-001-C7">无头截图正常（SoftwareRenderingContext + WebView::take_screenshot → RgbaImage）</li>
+<li id="js-在-webview-上下文执行正常-webview-evaluate-javascript" data-criterion="JS 在 webview 上下文执行正常（WebView::evaluate_javascript）" data-criterion-id="REQ-BRW-001-C8">JS 在 webview 上下文执行正常（WebView::evaluate_javascript）</li>
 </ul>
 <h4>关联设计</h4>
 <p>参见 02-SYSTEM.html §3 (Servo 组件架构) · 05-IMPLEMENTATION.html §3 (Phase 2 任务)</p>
@@ -219,15 +219,15 @@
 <p>基于 servo 内置 webrender 渲染管线，支持 SoftwareRenderingContext（无头场景）和 servo 原有渲染后端（尊重 servo 原有设计）。通过 take_screenshot() 获取 RgbaImage 后编码输出。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="html-→-css-布局-(stylo)-→-display-list-→-webrender-光栅化-→-rgba-像素缓冲管线完整" data-criterion="HTML → CSS 布局 (Stylo) → Display List → webrender 光栅化 → RGBA 像素缓冲管线完整" data-criterion-id="REQ-BRW-002-C1">HTML → CSS 布局 (Stylo) → Display List → webrender 光栅化 → RGBA 像素缓冲管线完整</li>
-<li id="支持-flexbox-布局（servo-stylo-+-layoutthread-内置）" data-criterion="支持 Flexbox 布局（servo Stylo + LayoutThread 内置）" data-criterion-id="REQ-BRW-002-C2">支持 Flexbox 布局（servo Stylo + LayoutThread 内置）</li>
-<li id="支持-grid-布局（servo-stylo-+-layoutthread-内置）" data-criterion="支持 Grid 布局（servo Stylo + LayoutThread 内置）" data-criterion-id="REQ-BRW-002-C3">支持 Grid 布局（servo Stylo + LayoutThread 内置）</li>
-<li id="支持文字渲染（servo-webrender-内置）" data-criterion="支持文字渲染（servo webrender 内置）" data-criterion-id="REQ-BRW-002-C4">支持文字渲染（servo webrender 内置）</li>
-<li id="输出-png-格式截图（rgbaimage-→-image-crate-png-编码）" data-criterion="输出 PNG 格式截图（RgbaImage → image crate PNG 编码）" data-criterion-id="REQ-BRW-002-C5">输出 PNG 格式截图（RgbaImage → image crate PNG 编码）</li>
-<li id="输出-jpeg-格式截图（rgbaimage-→-image-crate-jpeg-编码）" data-criterion="输出 JPEG 格式截图（RgbaImage → image crate JPEG 编码）" data-criterion-id="REQ-BRW-002-C6">输出 JPEG 格式截图（RgbaImage → image crate JPEG 编码）</li>
-<li id="输出-webp-格式截图（rgbaimage-→-image-crate-webp-编码）" data-criterion="输出 WebP 格式截图（RgbaImage → image crate WebP 编码）" data-criterion-id="REQ-BRW-002-C7">输出 WebP 格式截图（RgbaImage → image crate WebP 编码）</li>
-<li id="无头场景支持-softwarerenderingcontext（纯软件渲染，无需窗口系统）" data-criterion="无头场景支持 SoftwareRenderingContext（纯软件渲染，无需窗口系统）" data-criterion-id="REQ-BRW-002-C8">无头场景支持 SoftwareRenderingContext（纯软件渲染，无需窗口系统）</li>
-<li id="单次截图延迟-≤-500ms-(视口-1920×1080)" data-criterion="单次截图延迟 ≤ 500ms (视口 1920×1080)" data-criterion-id="REQ-BRW-002-C9">单次截图延迟 ≤ 500ms (视口 1920×1080)</li>
+<li id="html-css-布局-stylo-display-list-webrender-光栅化-rgba-像素缓冲管线完整" data-criterion="HTML → CSS 布局 (Stylo) → Display List → webrender 光栅化 → RGBA 像素缓冲管线完整" data-criterion-id="REQ-BRW-002-C1">HTML → CSS 布局 (Stylo) → Display List → webrender 光栅化 → RGBA 像素缓冲管线完整</li>
+<li id="支持-flexbox-布局-servo-stylo-layoutthread-内置" data-criterion="支持 Flexbox 布局（servo Stylo + LayoutThread 内置）" data-criterion-id="REQ-BRW-002-C2">支持 Flexbox 布局（servo Stylo + LayoutThread 内置）</li>
+<li id="支持-grid-布局-servo-stylo-layoutthread-内置" data-criterion="支持 Grid 布局（servo Stylo + LayoutThread 内置）" data-criterion-id="REQ-BRW-002-C3">支持 Grid 布局（servo Stylo + LayoutThread 内置）</li>
+<li id="支持文字渲染-servo-webrender-内置" data-criterion="支持文字渲染（servo webrender 内置）" data-criterion-id="REQ-BRW-002-C4">支持文字渲染（servo webrender 内置）</li>
+<li id="输出-png-格式截图-rgbaimage-image-crate-png-编码" data-criterion="输出 PNG 格式截图（RgbaImage → image crate PNG 编码）" data-criterion-id="REQ-BRW-002-C5">输出 PNG 格式截图（RgbaImage → image crate PNG 编码）</li>
+<li id="输出-jpeg-格式截图-rgbaimage-image-crate-jpeg-编码" data-criterion="输出 JPEG 格式截图（RgbaImage → image crate JPEG 编码）" data-criterion-id="REQ-BRW-002-C6">输出 JPEG 格式截图（RgbaImage → image crate JPEG 编码）</li>
+<li id="输出-webp-格式截图-rgbaimage-image-crate-webp-编码" data-criterion="输出 WebP 格式截图（RgbaImage → image crate WebP 编码）" data-criterion-id="REQ-BRW-002-C7">输出 WebP 格式截图（RgbaImage → image crate WebP 编码）</li>
+<li id="无头场景支持-softwarerenderingcontext-纯软件渲染-无需窗口系统" data-criterion="无头场景支持 SoftwareRenderingContext（纯软件渲染，无需窗口系统）" data-criterion-id="REQ-BRW-002-C8">无头场景支持 SoftwareRenderingContext（纯软件渲染，无需窗口系统）</li>
+<li id="单次截图延迟-500ms-视口-1920-1080" data-criterion="单次截图延迟 ≤ 500ms (视口 1920×1080)" data-criterion-id="REQ-BRW-002-C9">单次截图延迟 ≤ 500ms (视口 1920×1080)</li>
 </ul>
 <h4>技术说明</h4>
 <p>servo 内置完整渲染管线（Stylo CSS + LayoutThread + webrender 光栅化），尊重 servo 原有设计。
@@ -259,7 +259,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 
 <p data-xref-id="REQ-BRW-003" data-xref-type="req">关联实体: <span data-xref-id="BaoRuntime" data-xref-type="entity">BaoRuntime</span></p>
 <p>关联测试: <span data-xref-id="TEST-BRW-003" data-xref-type="test"></span></p>
-<div id="整个-bao-只有一个-jscontext（servo-scriptthread-创建）" data-criterion="整个 Bao 只有一个 JSContext（servo ScriptThread 创建）">整个 Bao 只有一个 JSContext（servo ScriptThread 创建）</div><div id="bao-的-console/require/fs/path-等-node.js-api-在-node-realm-的-global-上可用" data-criterion="Bao 的 console/require/fs/path 等 Node.js API 在 Node Realm 的 global 上可用">Bao 的 console/require/fs/path 等 Node.js API 在 Node Realm 的 global 上可用</div><div id="evaluate-js()-可信脚本通过-enterrealm(node)-切换到-node-realm-执行，拥有-node.js-+-dom-全权限" data-criterion="evaluate_js() 可信脚本通过 EnterRealm(Node) 切换到 Node Realm 执行，拥有 Node.js + DOM 全权限">evaluate_js() 可信脚本通过 EnterRealm(Node) 切换到 Node Realm 执行，拥有 Node.js + DOM 全权限</div><div id="evaluate-js-web()-页面脚本在-page-realm（window）执行，只有-web-api，物理上无法访问-node-api" data-criterion="evaluate_js_web() 页面脚本在 Page Realm（Window）执行，只有 Web API，物理上无法访问 Node API">evaluate_js_web() 页面脚本在 Page Realm（Window）执行，只有 Web API，物理上无法访问 Node API</div><div id="spidermonkey-compartment-隔离保证-page-realm-无法发现-node-realm-的任何对象" data-criterion="SpiderMonkey Compartment 隔离保证 Page Realm 无法发现 Node Realm 的任何对象">SpiderMonkey Compartment 隔离保证 Page Realm 无法发现 Node Realm 的任何对象</div><div id="gc-由-servo-spin-event-loop()-统一管理，两个-realm-共享同一-gc" data-criterion="GC 由 servo spin_event_loop() 统一管理，两个 Realm 共享同一 GC">GC 由 servo spin_event_loop() 统一管理，两个 Realm 共享同一 GC</div><div id="无-jsengine-重复初始化，node-realm-通过-js-newglobalobject-在-servo-jscontext-上创建" data-criterion="无 JSEngine 重复初始化，Node Realm 通过 JS_NewGlobalObject 在 servo JSContext 上创建">无 JSEngine 重复初始化，Node Realm 通过 JS_NewGlobalObject 在 servo JSContext 上创建</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
+<div id="整个-bao-只有一个-jscontext-servo-scriptthread-创建" data-criterion="整个 Bao 只有一个 JSContext（servo ScriptThread 创建）">整个 Bao 只有一个 JSContext（servo ScriptThread 创建）</div><div id="bao-的-console-require-fs-path-等-node.js-api-在-node-realm-的-global-上可用" data-criterion="Bao 的 console/require/fs/path 等 Node.js API 在 Node Realm 的 global 上可用">Bao 的 console/require/fs/path 等 Node.js API 在 Node Realm 的 global 上可用</div><div id="evaluate-js-可信脚本通过-enterrealm-node-切换到-node-realm-执行-拥有-node.js-dom-全权限" data-criterion="evaluate_js() 可信脚本通过 EnterRealm(Node) 切换到 Node Realm 执行，拥有 Node.js + DOM 全权限">evaluate_js() 可信脚本通过 EnterRealm(Node) 切换到 Node Realm 执行，拥有 Node.js + DOM 全权限</div><div id="evaluate-js-web-页面脚本在-page-realm-window-执行-只有-web-api-物理上无法访问-node-api" data-criterion="evaluate_js_web() 页面脚本在 Page Realm（Window）执行，只有 Web API，物理上无法访问 Node API">evaluate_js_web() 页面脚本在 Page Realm（Window）执行，只有 Web API，物理上无法访问 Node API</div><div id="spidermonkey-compartment-隔离保证-page-realm-无法发现-node-realm-的任何对象" data-criterion="SpiderMonkey Compartment 隔离保证 Page Realm 无法发现 Node Realm 的任何对象">SpiderMonkey Compartment 隔离保证 Page Realm 无法发现 Node Realm 的任何对象</div><div id="gc-由-servo-spin-event-loop-统一管理-两个-realm-共享同一-gc" data-criterion="GC 由 servo spin_event_loop() 统一管理，两个 Realm 共享同一 GC">GC 由 servo spin_event_loop() 统一管理，两个 Realm 共享同一 GC</div><div id="无-jsengine-重复初始化-node-realm-通过-js-newglobalobject-在-servo-jscontext-上创建" data-criterion="无 JSEngine 重复初始化，Node Realm 通过 JS_NewGlobalObject 在 servo JSContext 上创建">无 JSEngine 重复初始化，Node Realm 通过 JS_NewGlobalObject 在 servo JSContext 上创建</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
 <!-- ============================================================ -->
 <h2>§4 CDP 需求</h2>
@@ -270,7 +270,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>实现 CDP WebSocket 服务端，支持 Playwright/Puppeteer 连接。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="监听指定端口，接受-websocket-连接" data-criterion="监听指定端口，接受 WebSocket 连接" data-criterion-id="REQ-CDP-001-C1">监听指定端口，接受 WebSocket 连接</li>
+<li id="监听指定端口-接受-websocket-连接" data-criterion="监听指定端口，接受 WebSocket 连接" data-criterion-id="REQ-CDP-001-C1">监听指定端口，接受 WebSocket 连接</li>
 <li id="json-rpc-2.0-消息编解码正确" data-criterion="JSON-RPC 2.0 消息编解码正确" data-criterion-id="REQ-CDP-001-C2">JSON-RPC 2.0 消息编解码正确</li>
 <li id="playwright-能成功连接并列出-targets" data-criterion="Playwright 能成功连接并列出 targets" data-criterion-id="REQ-CDP-001-C3">Playwright 能成功连接并列出 targets</li>
 <li id="支持多个并发-cdp-session" data-criterion="支持多个并发 CDP session" data-criterion-id="REQ-CDP-001-C4">支持多个并发 CDP session</li>
@@ -305,8 +305,8 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <ul>
 <li id="debugger.enable-启用断点" data-criterion="Debugger.enable 启用断点" data-criterion-id="REQ-CDP-003-C1">Debugger.enable 启用断点</li>
 <li id="debugger.setbreakpointbyurl-设置行断点" data-criterion="Debugger.setBreakpointByUrl 设置行断点" data-criterion-id="REQ-CDP-003-C2">Debugger.setBreakpointByUrl 设置行断点</li>
-<li id="debugger.pause-/-debugger.resume-暂停/继续" data-criterion="Debugger.pause / Debugger.resume 暂停/继续" data-criterion-id="REQ-CDP-003-C3">Debugger.pause / Debugger.resume 暂停/继续</li>
-<li id="debugger.stepover-/-stepinto-/-stepout-单步执行" data-criterion="Debugger.stepOver / stepInto / stepOut 单步执行" data-criterion-id="REQ-CDP-003-C4">Debugger.stepOver / stepInto / stepOut 单步执行</li>
+<li id="debugger.pause-debugger.resume-暂停-继续" data-criterion="Debugger.pause / Debugger.resume 暂停/继续" data-criterion-id="REQ-CDP-003-C3">Debugger.pause / Debugger.resume 暂停/继续</li>
+<li id="debugger.stepover-stepinto-stepout-单步执行" data-criterion="Debugger.stepOver / stepInto / stepOut 单步执行" data-criterion-id="REQ-CDP-003-C4">Debugger.stepOver / stepInto / stepOut 单步执行</li>
 <li id="debugger.paused-发送断点命中通知" data-criterion="Debugger.paused 发送断点命中通知" data-criterion-id="REQ-CDP-003-C5">Debugger.paused 发送断点命中通知</li>
 <li id="debugger.scriptparsed-发送脚本解析通知" data-criterion="Debugger.scriptParsed 发送脚本解析通知" data-criterion-id="REQ-CDP-003-C6">Debugger.scriptParsed 发送脚本解析通知</li>
 </ul>
@@ -373,8 +373,8 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <li id="css.getcomputedstylefornode-返回计算样式" data-criterion="CSS.getComputedStyleForNode 返回计算样式" data-criterion-id="REQ-CDP-007-C2">CSS.getComputedStyleForNode 返回计算样式</li>
 <li id="input.dispatchmouseevent-注入鼠标事件" data-criterion="Input.dispatchMouseEvent 注入鼠标事件" data-criterion-id="REQ-CDP-007-C3">Input.dispatchMouseEvent 注入鼠标事件</li>
 <li id="input.dispatchkeyevent-注入键盘事件" data-criterion="Input.dispatchKeyEvent 注入键盘事件" data-criterion-id="REQ-CDP-007-C4">Input.dispatchKeyEvent 注入键盘事件</li>
-<li id="emulation.setdevicemetricsoverride-设置视口/设备参数" data-criterion="Emulation.setDeviceMetricsOverride 设置视口/设备参数" data-criterion-id="REQ-CDP-007-C5">Emulation.setDeviceMetricsOverride 设置视口/设备参数</li>
-<li id="overlay.highlightnode-高亮节点（截图标注）" data-criterion="Overlay.highlightNode 高亮节点（截图标注）" data-criterion-id="REQ-CDP-007-C6">Overlay.highlightNode 高亮节点（截图标注）</li>
+<li id="emulation.setdevicemetricsoverride-设置视口-设备参数" data-criterion="Emulation.setDeviceMetricsOverride 设置视口/设备参数" data-criterion-id="REQ-CDP-007-C5">Emulation.setDeviceMetricsOverride 设置视口/设备参数</li>
+<li id="overlay.highlightnode-高亮节点-截图标注" data-criterion="Overlay.highlightNode 高亮节点（截图标注）" data-criterion-id="REQ-CDP-007-C6">Overlay.highlightNode 高亮节点（截图标注）</li>
 </ul>
 
 <p data-xref-id="REQ-CDP-007" data-xref-type="req">关联实体: <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>
@@ -388,7 +388,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <li id="target.gettargets-列出所有可用-target" data-criterion="Target.getTargets 列出所有可用 target" data-criterion-id="REQ-CDP-008-C1">Target.getTargets 列出所有可用 target</li>
 <li id="target.attachtotarget-附加到指定-target" data-criterion="Target.attachToTarget 附加到指定 target" data-criterion-id="REQ-CDP-008-C2">Target.attachToTarget 附加到指定 target</li>
 <li id="target.setautoattach-自动附加新-target" data-criterion="Target.setAutoAttach 自动附加新 target" data-criterion-id="REQ-CDP-008-C3">Target.setAutoAttach 自动附加新 target</li>
-<li id="target.createdtarget-/-destroyedtarget-通知" data-criterion="Target.createdTarget / destroyedTarget 通知" data-criterion-id="REQ-CDP-008-C4">Target.createdTarget / destroyedTarget 通知</li>
+<li id="target.createdtarget-destroyedtarget-通知" data-criterion="Target.createdTarget / destroyedTarget 通知" data-criterion-id="REQ-CDP-008-C4">Target.createdTarget / destroyedTarget 通知</li>
 </ul>
 
 <p data-xref-id="REQ-CDP-008" data-xref-type="req">关联实体: <span data-xref-id="CdpRouter" data-xref-type="entity">CdpRouter</span>
@@ -418,10 +418,10 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>通过 hyper 配置调优，使 HTTP/2 SETTINGS 帧参数匹配 Firefox。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="http/2-settings-帧参数与-firefox-一致" data-criterion="HTTP/2 SETTINGS 帧参数与 Firefox 一致" data-criterion-id="REQ-STL-002-C1">HTTP/2 SETTINGS 帧参数与 Firefox 一致</li>
-<li id="http/2-window-update-帧大小与-firefox-一致" data-criterion="HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致" data-criterion-id="REQ-STL-002-C2">HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致</li>
-<li id="http/2-priority-帧模式与-firefox-一致" data-criterion="HTTP/2 PRIORITY 帧模式与 Firefox 一致" data-criterion-id="REQ-STL-002-C3">HTTP/2 PRIORITY 帧模式与 Firefox 一致</li>
-<li id="http/2-伪头部顺序与-firefox-一致" data-criterion="HTTP/2 伪头部顺序与 Firefox 一致" data-criterion-id="REQ-STL-002-C4">HTTP/2 伪头部顺序与 Firefox 一致</li>
+<li id="http-2-settings-帧参数与-firefox-一致" data-criterion="HTTP/2 SETTINGS 帧参数与 Firefox 一致" data-criterion-id="REQ-STL-002-C1">HTTP/2 SETTINGS 帧参数与 Firefox 一致</li>
+<li id="http-2-window-update-帧大小与-firefox-一致" data-criterion="HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致" data-criterion-id="REQ-STL-002-C2">HTTP/2 WINDOW_UPDATE 帧大小与 Firefox 一致</li>
+<li id="http-2-priority-帧模式与-firefox-一致" data-criterion="HTTP/2 PRIORITY 帧模式与 Firefox 一致" data-criterion-id="REQ-STL-002-C3">HTTP/2 PRIORITY 帧模式与 Firefox 一致</li>
+<li id="http-2-伪头部顺序与-firefox-一致" data-criterion="HTTP/2 伪头部顺序与 Firefox 一致" data-criterion-id="REQ-STL-002-C4">HTTP/2 伪头部顺序与 Firefox 一致</li>
 </ul>
 
 <p data-xref-id="REQ-STL-002" data-xref-type="req">关联实体: <span data-xref-id="StealthProfile" data-xref-type="entity">StealthProfile</span></p>
@@ -453,9 +453,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <li id="navigator.language-匹配目标语言" data-criterion="navigator.language 匹配目标语言" data-criterion-id="REQ-STL-004-C3">navigator.language 匹配目标语言</li>
 <li id="navigator.hardwareconcurrency-匹配目标值" data-criterion="navigator.hardwareConcurrency 匹配目标值" data-criterion-id="REQ-STL-004-C4">navigator.hardwareConcurrency 匹配目标值</li>
 <li id="navigator.webdriver-始终为-false" data-criterion="navigator.webdriver 始终为 false" data-criterion-id="REQ-STL-004-C5">navigator.webdriver 始终为 false</li>
-<li id="screen.width/height-匹配目标分辨率" data-criterion="screen.width/height 匹配目标分辨率" data-criterion-id="REQ-STL-004-C6">screen.width/height 匹配目标分辨率</li>
+<li id="screen.width-height-匹配目标分辨率" data-criterion="screen.width/height 匹配目标分辨率" data-criterion-id="REQ-STL-004-C6">screen.width/height 匹配目标分辨率</li>
 <li id="window.devicepixelratio-匹配目标值" data-criterion="window.devicePixelRatio 匹配目标值" data-criterion-id="REQ-STL-004-C7">window.devicePixelRatio 匹配目标值</li>
-<li id="所有属性从引擎层返回，js-层无法篡改检测" data-criterion="所有属性从引擎层返回，JS 层无法篡改检测" data-criterion-id="REQ-STL-004-C8">所有属性从引擎层返回，JS 层无法篡改检测</li>
+<li id="所有属性从引擎层返回-js-层无法篡改检测" data-criterion="所有属性从引擎层返回，JS 层无法篡改检测" data-criterion-id="REQ-STL-004-C8">所有属性从引擎层返回，JS 层无法篡改检测</li>
 </ul>
 
 <p data-xref-id="REQ-STL-004" data-xref-type="req">关联实体: <span data-xref-id="NavigatorProfile" data-xref-type="entity">NavigatorProfile</span>
@@ -482,7 +482,7 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <h4>验收标准</h4>
 <ul>
 <li id="鼠标移动轨迹包含贝塞尔曲线随机偏移" data-criterion="鼠标移动轨迹包含贝塞尔曲线随机偏移" data-criterion-id="REQ-STL-006-C1">鼠标移动轨迹包含贝塞尔曲线随机偏移</li>
-<li id="打字节奏包含随机延迟-(30-150ms-per-key)" data-criterion="打字节奏包含随机延迟 (30-150ms per key)" data-criterion-id="REQ-STL-006-C2">打字节奏包含随机延迟 (30-150ms per key)</li>
+<li id="打字节奏包含随机延迟-30-150ms-per-key" data-criterion="打字节奏包含随机延迟 (30-150ms per key)" data-criterion-id="REQ-STL-006-C2">打字节奏包含随机延迟 (30-150ms per key)</li>
 <li id="滚动模式包含加速-匀速-减速特征" data-criterion="滚动模式包含加速-匀速-减速特征" data-criterion-id="REQ-STL-006-C3">滚动模式包含加速-匀速-减速特征</li>
 <li id="所有随机行为使用-stealthprofile-种子确定性生成" data-criterion="所有随机行为使用 StealthProfile 种子确定性生成" data-criterion-id="REQ-STL-006-C4">所有随机行为使用 StealthProfile 种子确定性生成</li>
 </ul>
@@ -497,9 +497,9 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <h4>验收标准</h4>
 <ul>
 <li id="页面-js-中无-cdp-相关全局变量" data-criterion="页面 JS 中无 CDP 相关全局变量" data-criterion-id="REQ-STL-007-C1">页面 JS 中无 CDP 相关全局变量</li>
-<li id="页面-js-中-navigator.webdriver-===-false" data-criterion="页面 JS 中 navigator.webdriver === false" data-criterion-id="REQ-STL-007-C2">页面 JS 中 navigator.webdriver === false</li>
+<li id="页面-js-中-navigator.webdriver-false" data-criterion="页面 JS 中 navigator.webdriver === false" data-criterion-id="REQ-STL-007-C2">页面 JS 中 navigator.webdriver === false</li>
 <li id="chrome.runtime-不存在" data-criterion="chrome.runtime 不存在" data-criterion-id="REQ-STL-007-C3">chrome.runtime 不存在</li>
-<li id="window.cdc-adoqpoasnfa76pfczlmcfl-*-不存在" data-criterion="window.cdc_adoQpoasnfa76pfcZLmcfl_* 不存在" data-criterion-id="REQ-STL-007-C4">window.cdc_adoQpoasnfa76pfcZLmcfl_* 不存在</li>
+<li id="window.cdc-adoqpoasnfa76pfczlmcfl-不存在" data-criterion="window.cdc_adoQpoasnfa76pfcZLmcfl_* 不存在" data-criterion-id="REQ-STL-007-C4">window.cdc_adoQpoasnfa76pfcZLmcfl_* 不存在</li>
 <li id="所有指纹检测网站无法识别为自动化工具" data-criterion="所有指纹检测网站无法识别为自动化工具" data-criterion-id="REQ-STL-007-C5">所有指纹检测网站无法识别为自动化工具</li>
 </ul>
 
@@ -516,10 +516,10 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>支持在单个 BaoRuntime 中创建、管理和销毁多个隔离的 Page。每个 Page 对应一个 servo WebView，拥有独立的 SM Realm（JS 全局对象隔离）。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="create-page(config)-创建新-page，返回-pagehandle-(rc<page>)" data-criterion="create_page(config) 创建新 Page，返回 PageHandle (Rc<Page>)" data-criterion-id="REQ-LIB-001-C1">create_page(config) 创建新 Page，返回 PageHandle (Rc&lt;Page&gt;)</li>
-<li id="每个-page-拥有独立的-webview-+-renderingcontext-+-baowebviewdelegate" data-criterion="每个 Page 拥有独立的 WebView + RenderingContext + BaoWebViewDelegate" data-criterion-id="REQ-LIB-001-C2">每个 Page 拥有独立的 WebView + RenderingContext + BaoWebViewDelegate</li>
-<li id="page-之间-sm-realm-完全隔离（独立全局对象、独立模块缓存）" data-criterion="Page 之间 SM Realm 完全隔离（独立全局对象、独立模块缓存）" data-criterion-id="REQ-LIB-001-C3">Page 之间 SM Realm 完全隔离（独立全局对象、独立模块缓存）</li>
-<li id="close-page(id)-显式关闭-page，释放-webview-+-realm" data-criterion="close_page(id) 显式关闭 Page，释放 WebView + Realm" data-criterion-id="REQ-LIB-001-C4">close_page(id) 显式关闭 Page，释放 WebView + Realm</li>
+<li id="create-page-config-创建新-page-返回-pagehandle-rc-page" data-criterion="create_page(config) 创建新 Page，返回 PageHandle (Rc<Page>)" data-criterion-id="REQ-LIB-001-C1">create_page(config) 创建新 Page，返回 PageHandle (Rc&lt;Page&gt;)</li>
+<li id="每个-page-拥有独立的-webview-renderingcontext-baowebviewdelegate" data-criterion="每个 Page 拥有独立的 WebView + RenderingContext + BaoWebViewDelegate" data-criterion-id="REQ-LIB-001-C2">每个 Page 拥有独立的 WebView + RenderingContext + BaoWebViewDelegate</li>
+<li id="page-之间-sm-realm-完全隔离-独立全局对象-独立模块缓存" data-criterion="Page 之间 SM Realm 完全隔离（独立全局对象、独立模块缓存）" data-criterion-id="REQ-LIB-001-C3">Page 之间 SM Realm 完全隔离（独立全局对象、独立模块缓存）</li>
+<li id="close-page-id-显式关闭-page-释放-webview-realm" data-criterion="close_page(id) 显式关闭 Page，释放 WebView + Realm" data-criterion-id="REQ-LIB-001-C4">close_page(id) 显式关闭 Page，释放 WebView + Realm</li>
 <li id="page.drop-后-webview-自动触发-servo-closewebview-清理" data-criterion="Page.drop 后 WebView 自动触发 servo CloseWebView 清理" data-criterion-id="REQ-LIB-001-C5">Page.drop 后 WebView 自动触发 servo CloseWebView 清理</li>
 <li id="所有-page-共享同一-servo-实例和-jscontext" data-criterion="所有 Page 共享同一 Servo 实例和 JSContext" data-criterion-id="REQ-LIB-001-C6">所有 Page 共享同一 Servo 实例和 JSContext</li>
 </ul>
@@ -537,12 +537,12 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>实现分层资源管理策略，防止爬虫等长期运行场景下的内存泄漏。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="活跃-page（引用计数->-0）无数量上限" data-criterion="活跃 Page（引用计数 > 0）无数量上限" data-criterion-id="REQ-LIB-002-C1">活跃 Page（引用计数 &gt; 0）无数量上限</li>
-<li id="空闲-page（引用计数-=-0）进入-idle-ttl-倒计时（默认-60s）" data-criterion="空闲 Page（引用计数 = 0）进入 idle_ttl 倒计时（默认 60s）" data-criterion-id="REQ-LIB-002-C2">空闲 Page（引用计数 = 0）进入 idle_ttl 倒计时（默认 60s）</li>
-<li id="idle-ttl-到期自动回收：webview::drop-→-realm-释放-→-pixelbuffer-释放" data-criterion="idle_ttl 到期自动回收：WebView::drop → Realm 释放 → PixelBuffer 释放" data-criterion-id="REQ-LIB-002-C3">idle_ttl 到期自动回收：WebView::drop → Realm 释放 → PixelBuffer 释放</li>
-<li id="总-page-数-max-total-硬上限（默认-50），超出返回错误" data-criterion="总 Page 数 max_total 硬上限（默认 50），超出返回错误" data-criterion-id="REQ-LIB-002-C4">总 Page 数 max_total 硬上限（默认 50），超出返回错误</li>
-<li id="空闲回收集成到事件循环-tick-中（每次-spin-event-loop-检查）" data-criterion="空闲回收集成到事件循环 tick 中（每次 spin_event_loop 检查）" data-criterion-id="REQ-LIB-002-C5">空闲回收集成到事件循环 tick 中（每次 spin_event_loop 检查）</li>
-<li id="累计统计：active-/-total-created-/-total-destroyed-可查询" data-criterion="累计统计：active / total_created / total_destroyed 可查询" data-criterion-id="REQ-LIB-002-C6">累计统计：active / total_created / total_destroyed 可查询</li>
+<li id="活跃-page-引用计数-0-无数量上限" data-criterion="活跃 Page（引用计数 > 0）无数量上限" data-criterion-id="REQ-LIB-002-C1">活跃 Page（引用计数 &gt; 0）无数量上限</li>
+<li id="空闲-page-引用计数-0-进入-idle-ttl-倒计时-默认-60s" data-criterion="空闲 Page（引用计数 = 0）进入 idle_ttl 倒计时（默认 60s）" data-criterion-id="REQ-LIB-002-C2">空闲 Page（引用计数 = 0）进入 idle_ttl 倒计时（默认 60s）</li>
+<li id="idle-ttl-到期自动回收-webview-drop-realm-释放-pixelbuffer-释放" data-criterion="idle_ttl 到期自动回收：WebView::drop → Realm 释放 → PixelBuffer 释放" data-criterion-id="REQ-LIB-002-C3">idle_ttl 到期自动回收：WebView::drop → Realm 释放 → PixelBuffer 释放</li>
+<li id="总-page-数-max-total-硬上限-默认-50-超出返回错误" data-criterion="总 Page 数 max_total 硬上限（默认 50），超出返回错误" data-criterion-id="REQ-LIB-002-C4">总 Page 数 max_total 硬上限（默认 50），超出返回错误</li>
+<li id="空闲回收集成到事件循环-tick-中-每次-spin-event-loop-检查" data-criterion="空闲回收集成到事件循环 tick 中（每次 spin_event_loop 检查）" data-criterion-id="REQ-LIB-002-C5">空闲回收集成到事件循环 tick 中（每次 spin_event_loop 检查）</li>
+<li id="累计统计-active-total-created-total-destroyed-可查询" data-criterion="累计统计：active / total_created / total_destroyed 可查询" data-criterion-id="REQ-LIB-002-C6">累计统计：active / total_created / total_destroyed 可查询</li>
 </ul>
 <h4>关联设计</h4>
 <p>参见 02-SYSTEM.html §4.5 (Page 生命周期状态机) · 04-DATA-MODEL.html (PagePool 实体)</p>
@@ -557,11 +557,11 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>提供高性能 Rust/JS API（内部直调）和 CDP 兼容层（Playwright/Puppeteer 连接），支持内部 servo 和外部 CDP 端点。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="高性能-api：page.goto()-/-page.screenshot()-/-page.evaluate()-直接调用-rust，零序列化" data-criterion="高性能 API：page.goto() / page.screenshot() / page.evaluate() 直接调用 Rust，零序列化" data-criterion-id="REQ-LIB-003-C1">高性能 API：page.goto() / page.screenshot() / page.evaluate() 直接调用 Rust，零序列化</li>
-<li id="cdp-兼容层：page.createcdpsession()-返回-cdpsession，支持-send/on-消息" data-criterion="CDP 兼容层：page.createCDPSession() 返回 CDPSession，支持 send/on 消息" data-criterion-id="REQ-LIB-003-C2">CDP 兼容层：page.createCDPSession() 返回 CDPSession，支持 send/on 消息</li>
-<li id="内部后端：cdpbackendinternal-映射-cdp-域到-bao-browser-api" data-criterion="内部后端：CdpBackendInternal 映射 CDP 域到 bao_browser API" data-criterion-id="REQ-LIB-003-C3">内部后端：CdpBackendInternal 映射 CDP 域到 bao_browser API</li>
-<li id="外部后端：bao.connect('ws://host:port')-连接外部-chrome/edge" data-criterion="外部后端：Bao.connect('ws://host:port') 连接外部 Chrome/Edge" data-criterion-id="REQ-LIB-003-C4">外部后端：Bao.connect('ws://host:port') 连接外部 Chrome/Edge</li>
-<li id="cdprouter-根据参数自动选择后端（backend:-'internal'-或-endpoint:-'ws://...'）" data-criterion="CdpRouter 根据参数自动选择后端（backend: 'internal' 或 endpoint: 'ws://...'）" data-criterion-id="REQ-LIB-003-C5">CdpRouter 根据参数自动选择后端（backend: 'internal' 或 endpoint: 'ws://...'）</li>
+<li id="高性能-api-page.goto-page.screenshot-page.evaluate-直接调用-rust-零序列化" data-criterion="高性能 API：page.goto() / page.screenshot() / page.evaluate() 直接调用 Rust，零序列化" data-criterion-id="REQ-LIB-003-C1">高性能 API：page.goto() / page.screenshot() / page.evaluate() 直接调用 Rust，零序列化</li>
+<li id="cdp-兼容层-page.createcdpsession-返回-cdpsession-支持-send-on-消息" data-criterion="CDP 兼容层：page.createCDPSession() 返回 CDPSession，支持 send/on 消息" data-criterion-id="REQ-LIB-003-C2">CDP 兼容层：page.createCDPSession() 返回 CDPSession，支持 send/on 消息</li>
+<li id="内部后端-cdpbackendinternal-映射-cdp-域到-bao-browser-api" data-criterion="内部后端：CdpBackendInternal 映射 CDP 域到 bao_browser API" data-criterion-id="REQ-LIB-003-C3">内部后端：CdpBackendInternal 映射 CDP 域到 bao_browser API</li>
+<li id="外部后端-bao.connect-ws-host-port-连接外部-chrome-edge" data-criterion="外部后端：Bao.connect('ws://host:port') 连接外部 Chrome/Edge" data-criterion-id="REQ-LIB-003-C4">外部后端：Bao.connect('ws://host:port') 连接外部 Chrome/Edge</li>
+<li id="cdprouter-根据参数自动选择后端-backend-internal-或-endpoint-ws" data-criterion="CdpRouter 根据参数自动选择后端（backend: 'internal' 或 endpoint: 'ws://...'）" data-criterion-id="REQ-LIB-003-C5">CdpRouter 根据参数自动选择后端（backend: 'internal' 或 endpoint: 'ws://...'）</li>
 <li id="playwright-能通过-cdp-兼容层连接并控制-page" data-criterion="Playwright 能通过 CDP 兼容层连接并控制 Page" data-criterion-id="REQ-LIB-003-C6">Playwright 能通过 CDP 兼容层连接并控制 Page</li>
 </ul>
 <h4>关联设计</h4>
@@ -579,11 +579,11 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 <p>基于 host_fn 层拦截的可选权限系统，浏览器页面和 Bun 脚本都可复用。默认不启用（零开销），启用后为白名单模式。</p>
 <h4>验收标准</h4>
 <ul>
-<li id="无-permission-配置时所有-api-正常工作，零额外分支开销" data-criterion="无 Permission 配置时所有 API 正常工作，零额外分支开销" data-criterion-id="REQ-LIB-004-C1">无 Permission 配置时所有 API 正常工作，零额外分支开销</li>
-<li id="配置-permission-后，未授权的-host-function-调用抛出-permissiondenied-error" data-criterion="配置 Permission 后，未授权的 host function 调用抛出 PermissionDenied Error" data-criterion-id="REQ-LIB-004-C2">配置 Permission 后，未授权的 host function 调用抛出 PermissionDenied Error</li>
-<li id="权限类别：read-/-write-/-net-/-env-/-run-/-sys" data-criterion="权限类别：read / write / net / env / run / sys" data-criterion-id="REQ-LIB-004-C3">权限类别：read / write / net / env / run / sys</li>
-<li id="per-page-粒度：不同-page-可以有不同的-permission-配置" data-criterion="per-Page 粒度：不同 Page 可以有不同的 Permission 配置" data-criterion-id="REQ-LIB-004-C4">per-Page 粒度：不同 Page 可以有不同的 Permission 配置</li>
-<li id="per-script-粒度：bao.run('script.js',-{-permission-})-支持脚本级沙箱" data-criterion="per-Script 粒度：Bao.run('script.js', { permission }) 支持脚本级沙箱" data-criterion-id="REQ-LIB-004-C5">per-Script 粒度：Bao.run('script.js', { permission }) 支持脚本级沙箱</li>
+<li id="无-permission-配置时所有-api-正常工作-零额外分支开销" data-criterion="无 Permission 配置时所有 API 正常工作，零额外分支开销" data-criterion-id="REQ-LIB-004-C1">无 Permission 配置时所有 API 正常工作，零额外分支开销</li>
+<li id="配置-permission-后-未授权的-host-function-调用抛出-permissiondenied-error" data-criterion="配置 Permission 后，未授权的 host function 调用抛出 PermissionDenied Error" data-criterion-id="REQ-LIB-004-C2">配置 Permission 后，未授权的 host function 调用抛出 PermissionDenied Error</li>
+<li id="权限类别-read-write-net-env-run-sys" data-criterion="权限类别：read / write / net / env / run / sys" data-criterion-id="REQ-LIB-004-C3">权限类别：read / write / net / env / run / sys</li>
+<li id="per-page-粒度-不同-page-可以有不同的-permission-配置" data-criterion="per-Page 粒度：不同 Page 可以有不同的 Permission 配置" data-criterion-id="REQ-LIB-004-C4">per-Page 粒度：不同 Page 可以有不同的 Permission 配置</li>
+<li id="per-script-粒度-bao.run-script.js-permission-支持脚本级沙箱" data-criterion="per-Script 粒度：Bao.run('script.js', { permission }) 支持脚本级沙箱" data-criterion-id="REQ-LIB-004-C5">per-Script 粒度：Bao.run('script.js', { permission }) 支持脚本级沙箱</li>
 <li id="浏览器页面和-bun-脚本共享同一-permission-检查逻辑" data-criterion="浏览器页面和 Bun 脚本共享同一 Permission 检查逻辑" data-criterion-id="REQ-LIB-004-C6">浏览器页面和 Bun 脚本共享同一 Permission 检查逻辑</li>
 </ul>
 <h4>关联设计</h4>
@@ -685,6 +685,31 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </script>
 </div>
 
+<div id="nfr-arch-002" data-nfr="NFR-ARCH-002" data-nfr-category="architecture" data-nfr-req-ref="REQ-ENG-010">
+<h3>NFR-ARCH-002: O(1) HTTP 线程模型(禁止 per-request OS 线程)</h3>
+<script type="application/ld+json">
+{
+  "@type": "NFR",
+  "name": "O1HTTPThreadModel",
+  "category": "architecture",
+  "constraints": [
+    "N 并发 fetch/HTTP/HTTPS/TLS 请求占用 OS 线程数=O(1)(HTTPThread epoll 复用)",
+    "禁止 per-request std::thread::spawn 创建 OS 线程",
+    "禁止 JS native call 内 send_sync/Condvar 阻塞 JS 线程",
+    "所有异步 HTTP 结果经 ConcurrentTask+enqueue_task_concurrent+wakeup() 投递到 JS 线程",
+    "事件循环 tick 必须调用 fetch_async::drain_pending(统一 drain 路径),禁止双重 drain 基础设施"
+  ],
+  "metrics": [
+    {"name": "os_thread_count_per_fetch", "target": "=1(fixed HTTPThread)", "description": "N 并发 fetch 占用 OS 线程数"},
+    {"name": "std_thread_spawn_in_js_native", "target": "=0", "description": "JS extern C fn body 内 std::thread::spawn 命中数"},
+    {"name": "send_sync_in_js_native", "target": "=0", "description": "JS extern C fn body 内 send_sync/SingleHTTPChannel 命中数"},
+    {"name": "dual_drain_infrastructure", "target": "=0", "description": "事件循环中同时存在 fetch_api::drain_pending_fetches 和 fetch_async::drain_pending 的调用点数"}
+  ],
+  "enforcement": "oracle_gate 模式检查: grep bao_runtime 源码 send_sync/SingleHTTPChannel Condvar/std::thread::spawn 在 JS extern C fn body 命中=0; grep timers.rs 确认 fetch_api::drain_pending_fetches 命中=0, fetch_async::drain_pending 命中>=2"
+}
+</script>
+</div>
+
 <!-- ============================================================ -->
 <h2>§7 需求追溯矩阵</h2>
 <!-- ============================================================ -->
@@ -728,5 +753,5 @@ servo 的 ScriptThread 创建 JSContext，Bao 的 host functions
 </table>
 </div>
 
-</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-ENG-001" data-test="TEST-ENG-001" id="test-eng-001"><h4>TEST-ENG-001: REQ-ENG-001 单元测试</h4><p>TODO: 为 REQ-ENG-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-002" data-test="TEST-ENG-002" id="test-eng-002"><h4>TEST-ENG-002: REQ-ENG-002 单元测试</h4><p>TODO: 为 REQ-ENG-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-003" data-test="TEST-ENG-003" id="test-eng-003"><h4>TEST-ENG-003: REQ-ENG-003 单元测试</h4><p>TODO: 为 REQ-ENG-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-005" data-test="TEST-ENG-005" id="test-eng-005"><h4>TEST-ENG-005: REQ-ENG-005 单元测试</h4><p>TODO: 为 REQ-ENG-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-006" data-test="TEST-ENG-006" id="test-eng-006"><h4>TEST-ENG-006: REQ-ENG-006 单元测试</h4><p>TODO: 为 REQ-ENG-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-007" data-test="TEST-ENG-007" id="test-eng-007"><h4>TEST-ENG-007: REQ-ENG-007 单元测试</h4><p>TODO: 为 REQ-ENG-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CLI-001" data-test="TEST-CLI-001" id="test-cli-001"><h4>TEST-CLI-001: REQ-CLI-001 单元测试</h4><p>TODO: 为 REQ-CLI-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CLI-002" data-test="TEST-CLI-002" id="test-cli-002"><h4>TEST-CLI-002: REQ-CLI-002 单元测试</h4><p>TODO: 为 REQ-CLI-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-001" data-test="TEST-BRW-001" id="test-brw-001"><h4>TEST-BRW-001: REQ-BRW-001 单元测试</h4><p>TODO: 为 REQ-BRW-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-002" data-test="TEST-BRW-002" id="test-brw-002"><h4>TEST-BRW-002: REQ-BRW-002 单元测试</h4><p>TODO: 为 REQ-BRW-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-003" data-test="TEST-BRW-003" id="test-brw-003"><h4>TEST-BRW-003: REQ-BRW-003 单元测试</h4><p>TODO: 为 REQ-BRW-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-002" data-test="TEST-CDP-002" id="test-cdp-002"><h4>TEST-CDP-002: REQ-CDP-002 单元测试</h4><p>TODO: 为 REQ-CDP-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-003" data-test="TEST-CDP-003" id="test-cdp-003"><h4>TEST-CDP-003: REQ-CDP-003 单元测试</h4><p>TODO: 为 REQ-CDP-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-004" data-test="TEST-CDP-004" id="test-cdp-004"><h4>TEST-CDP-004: REQ-CDP-004 单元测试</h4><p>TODO: 为 REQ-CDP-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-005" data-test="TEST-CDP-005" id="test-cdp-005"><h4>TEST-CDP-005: REQ-CDP-005 单元测试</h4><p>TODO: 为 REQ-CDP-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-006" data-test="TEST-CDP-006" id="test-cdp-006"><h4>TEST-CDP-006: REQ-CDP-006 单元测试</h4><p>TODO: 为 REQ-CDP-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-007" data-test="TEST-CDP-007" id="test-cdp-007"><h4>TEST-CDP-007: REQ-CDP-007 单元测试</h4><p>TODO: 为 REQ-CDP-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-008" data-test="TEST-CDP-008" id="test-cdp-008"><h4>TEST-CDP-008: REQ-CDP-008 单元测试</h4><p>TODO: 为 REQ-CDP-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-001" data-test="TEST-STL-001" id="test-stl-001"><h4>TEST-STL-001: REQ-STL-001 单元测试</h4><p>TODO: 为 REQ-STL-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-002" data-test="TEST-STL-002" id="test-stl-002"><h4>TEST-STL-002: REQ-STL-002 单元测试</h4><p>TODO: 为 REQ-STL-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-003" data-test="TEST-STL-003" id="test-stl-003"><h4>TEST-STL-003: REQ-STL-003 单元测试</h4><p>TODO: 为 REQ-STL-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-004" data-test="TEST-STL-004" id="test-stl-004"><h4>TEST-STL-004: REQ-STL-004 单元测试</h4><p>TODO: 为 REQ-STL-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-005" data-test="TEST-STL-005" id="test-stl-005"><h4>TEST-STL-005: REQ-STL-005 单元测试</h4><p>TODO: 为 REQ-STL-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-006" data-test="TEST-STL-006" id="test-stl-006"><h4>TEST-STL-006: REQ-STL-006 单元测试</h4><p>TODO: 为 REQ-STL-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-007" data-test="TEST-STL-007" id="test-stl-007"><h4>TEST-STL-007: REQ-STL-007 单元测试</h4><p>TODO: 为 REQ-STL-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-001" data-test="TEST-LIB-001" id="test-lib-001"><h4>TEST-LIB-001: REQ-LIB-001 单元测试</h4><p>TODO: 为 REQ-LIB-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-002" data-test="TEST-LIB-002" id="test-lib-002"><h4>TEST-LIB-002: REQ-LIB-002 单元测试</h4><p>TODO: 为 REQ-LIB-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-003" data-test="TEST-LIB-003" id="test-lib-003"><h4>TEST-LIB-003: REQ-LIB-003 单元测试</h4><p>TODO: 为 REQ-LIB-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-004" data-test="TEST-LIB-004" id="test-lib-004"><h4>TEST-LIB-004: REQ-LIB-004 单元测试</h4><p>TODO: 为 REQ-LIB-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-008" data-test="TEST-ENG-008" id="test-eng-008"><h4>TEST-ENG-008: REQ-ENG-008 单元测试</h4><p>TODO: 为 REQ-ENG-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-009" data-test="TEST-ENG-009" id="test-eng-009"><h4>TEST-ENG-009: REQ-ENG-009 单元测试</h4><p>TODO: 为 REQ-ENG-009 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001@PROCESS" data-test="TEST-CDP-001@PROCESS" id="test-cdp-001@process"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 时序约束测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004@PROCESS" data-test="TEST-ENG-004@PROCESS" id="test-eng-004@process"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 时序约束测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-H3-001" data-test="TEST-H3-001" id="test-h3-001"><h4>TEST-H3-001: REQ-H3-001 h3 fetch 单元 + 真网络测试</h4><p>h3 默认启用 / Alt-Svc parse / force_http3 / HTTP/1.1 fallback（真网络测试 #[ignore] + BAO_TEST_NETWORK=1）</p></div></section></body>
+<section data-req-category="business" data-req-domain="ENG" data-req-status="approved" data-req="REQ-ENG-010" id="req-eng-10"><h3>REQ-ENG-010 异步 Fetch/HTTP 事件循环集成(复用 Bun FetchTasklet 事件驱动范式)</h3><p>所有对外 JS fetch/http/https/tls API 必须复用 Bun 上游 FetchTasklet.zig 设计模式:返回 pending Promise,通过 AsyncHTTP::init(callback)+schedule 异步发起(HTTPThread 单线程 epoll 处理 256 并发),HTTPThread result_callback 经 ConcurrentTask+enqueue_task_concurrent+wakeup()跨线程投递到 JS 线程,JS 线程下一 tick build_response_js 并 ResolvePromise/RejectPromise,poll_ref 保活事件循环。范式级修复,禁止任何 JS native call 中 send_sync 阻塞 JS 线程,禁止 per-request std::thread::spawn(违反高性能化 O(1)线程模型+去锁化+成熟库化)。架构模式 100% 复用 Bun 上游 FetchTasklet.zig(schedule-callback-resolve+ConcurrentTask+poll_ref+ref_count+mutex),SM 适配层:JSPromise.Strong→AddRawValueRoot/RemoveRawValueRoot。</p><div id="req-eng-010-c1-fetch-fn-返回-pending-promise-fetchtasklet-start-经-asynchttp-init-callback-schedule-异步发起-禁止-std-thread-spawn-send-sync-阻塞-js-线程" data-criterion="REQ-ENG-010-C1: fetch_fn 返回 pending Promise + FetchTasklet::start 经 AsyncHTTP::init(callback)+schedule 异步发起,禁止 std::thread::spawn + send_sync 阻塞 JS 线程">REQ-ENG-010-C1: fetch_fn 返回 pending Promise + FetchTasklet::start 经 AsyncHTTP::init(callback)+schedule 异步发起,禁止 std::thread::spawn + send_sync 阻塞 JS 线程</div><div id="req-eng-010-c2-6-个-js-native-入口全部迁移至-asynchttp-schedule-异步路径-零-send-sync-残留-fetch-fn-node-http.rs-http-request-node-http.rs-http-get-delegated-node-https.rs-https-request-node-tls.rs-tls-connect-stealth-http.rs-stealth-http-request" data-criterion="REQ-ENG-010-C2: 6 个 JS native 入口全部迁移至 AsyncHTTP::schedule 异步路径,零 send_sync 残留: fetch_fn / node_http.rs http_request / node_http.rs http_get[delegated] / node_https.rs https_request / node_tls.rs tls_connect / stealth_http.rs stealth_http_request">REQ-ENG-010-C2: 6 个 JS native 入口全部迁移至 AsyncHTTP::schedule 异步路径,零 send_sync 残留: fetch_fn / node_http.rs http_request / node_http.rs http_get[delegated] / node_https.rs https_request / node_tls.rs tls_connect / stealth_http.rs stealth_http_request</div><div id="req-eng-010-c3-httpthread-result-callback-concurrenttask-enqueue-task-concurrent-minieventloop-wakeup-跨线程投递到-js-线程" data-criterion="REQ-ENG-010-C3: HTTPThread result_callback → ConcurrentTask → enqueue_task_concurrent + MiniEventLoop wakeup() 跨线程投递到 JS 线程">REQ-ENG-010-C3: HTTPThread result_callback → ConcurrentTask → enqueue_task_concurrent + MiniEventLoop wakeup() 跨线程投递到 JS 线程</div><div id="req-eng-010-c4-js-线程消费-concurrenttask-build-response-js-resolvepromise-rejectpromise-removerawvalueroot" data-criterion="REQ-ENG-010-C4: JS 线程消费 ConcurrentTask → build_response_js → ResolvePromise/RejectPromise + RemoveRawValueRoot">REQ-ENG-010-C4: JS 线程消费 ConcurrentTask → build_response_js → ResolvePromise/RejectPromise + RemoveRawValueRoot</div><div id="req-eng-010-c5-poll-ref-保活-start-时-ref-concurrently-resolve-reject-abort-drop-每条退出路径-unref-concurrently" data-criterion="REQ-ENG-010-C5: poll_ref 保活: start 时 ref_concurrently; resolve/reject/abort/drop 每条退出路径 unref_concurrently">REQ-ENG-010-C5: poll_ref 保活: start 时 ref_concurrently; resolve/reject/abort/drop 每条退出路径 unref_concurrently</div><div id="req-eng-010-c6-pending-promise-堆上-root-addrawvalueroot-禁用栈上-rooted-防-sm-gc-每条终态-removerawvalueroot" data-criterion="REQ-ENG-010-C6: pending Promise 堆上 root(AddRawValueRoot,禁用栈上 rooted!())防 SM GC;每条终态 RemoveRawValueRoot">REQ-ENG-010-C6: pending Promise 堆上 root(AddRawValueRoot,禁用栈上 rooted!())防 SM GC;每条终态 RemoveRawValueRoot</div><div id="req-eng-010-c7-bun.serve-self-loop-场景-10s-内-done-exit-0" data-criterion="REQ-ENG-010-C7: Bun.serve self-loop 场景 10s 内 DONE + exit 0">REQ-ENG-010-C7: Bun.serve self-loop 场景 10s 内 DONE + exit 0</div><div id="req-eng-010-c8-不修改-bun-上游-crate-与-servo-上游-改动域限定-bao-runtime" data-criterion="REQ-ENG-010-C8: 不修改 bun_* 上游 crate 与 servo 上游;改动域限定 bao_runtime">REQ-ENG-010-C8: 不修改 bun_* 上游 crate 与 servo 上游;改动域限定 bao_runtime</div><div id="req-eng-010-c9-stealthprofile-sslconfigsharedptr-asynchttp-options.tls-props-传入-修复-tls-h2-二进制指纹断链-req-stl-001-002" data-criterion="REQ-ENG-010-C9: StealthProfile→SSLConfigSharedPtr→AsyncHTTP Options.tls_props 传入,修复 TLS/H2 二进制指纹断链(REQ-STL-001/002)">REQ-ENG-010-C9: StealthProfile→SSLConfigSharedPtr→AsyncHTTP Options.tls_props 传入,修复 TLS/H2 二进制指纹断链(REQ-STL-001/002)</div><div id="req-eng-010-c10-n-并发-fetch-占-os-线程数-o-1-复用-httpthread-epoll-禁止-per-request-spawn-os-线程" data-criterion="REQ-ENG-010-C10: N 并发 fetch 占 OS 线程数=O(1)(复用 HTTPThread epoll),禁止 per-request spawn OS 线程">REQ-ENG-010-C10: N 并发 fetch 占 OS 线程数=O(1)(复用 HTTPThread epoll),禁止 per-request spawn OS 线程</div><div id="req-eng-010-c11-httpthread-callback-内零-sm-api-调用-inv-5-所有-js-对象操作在-js-线程-run-执行" data-criterion="REQ-ENG-010-C11: HTTPThread callback 内零 SM API 调用(INV-5);所有 JS 对象操作在 JS 线程 run() 执行">REQ-ENG-010-C11: HTTPThread callback 内零 SM API 调用(INV-5);所有 JS 对象操作在 JS 线程 run() 执行</div><div data-criteria=""><strong>验收标准：</strong><ol><li>C1: grep bao_runtime 源码确认 6 个 JS native 入口(fetch_fn/http_request/http_get/https_request/tls_connect/stealth_http_request)均使用 AsyncHTTP::init+schedule 异步路径,send_sync/SingleHTTPChannel Condvar 命中=0</li><li>C2: 6 个 JS native 入口逐一验证返回 pending Promise + FetchTasklet::start 调用链,零 std::thread::spawn 残留</li><li>C3: HTTPThread on_http_done callback 内调用 enqueue_task_concurrent + MiniEventLoop::wakeup(),跨线程投递验证</li><li>C4: JS 线程 dispatch::run_task arm 匹配 FetchTasklet TAG → FetchResolveTask::run_from_js_thread → build_response_js + ResolvePromise/RejectPromise + RemoveRawValueRoot</li><li>C5: poll_ref.ref_concurrently() 在 start 调用;resolve/reject/abort/drop 每条退出路径均有 poll_ref.unref_concurrently()</li><li>C6: AddRawValueRoot 在 FetchTasklet::start 注册;RemoveRawValueRoot 在每条终态(Resolved/Rejected/Aborted/Dropped)调用;grep 确认无栈上 rooted!() 用于 Promise</li><li>C7: Bun.serve self-loop 场景(bao run server.js 内 fetch('http://localhost:3000/self')),10s 内 DONE + exit 0</li><li>C8: git diff 确认改动域限定 bao_runtime,无 bun_* 上游 crate 或 servo 上游修改</li><li>C9: StealthProfile→SSLConfigSharedPtr→AsyncHTTP Options.tls_props 传入路径验证,TLS JA3/JA4 指纹匹配</li><li>C10: N 并发 fetch(N=10/50/256)占 OS 线程数=1(HTTPThread epoll),禁止 per-request spawn</li><li>C11: HTTPThread callback 内 grep JS::/jsapi/ 命中=0,所有 JS 对象操作在 JS 线程 run() 执行</li></ol></div><div data-criterion-id="CRIT-FETCH-ASYNC-NOBLOCK" data-criterion="对外 JS fetch/http/https/tls API 必须异步集成事件循环(AsyncHTTP::init+schedule + ConcurrentTask+enqueue_task_concurrent+wakeup + poll_ref 保活),native call 中禁止 send_sync/Condvar 阻塞 JS 线程,禁止 per-request std::thread::spawn;违反则 Bun.serve self-loop 场景双向死锁 + O(N)线程爆炸。enforcement: oracle_gate 步骤「模式检查」grep bao_runtime 源码 send_sync/SingleHTTPChannel Condvar/std::thread::spawn 在 JS extern C fn body 命中 = 0;TEST-ENG-010 self-loop 回归测试必过。" id="对外-js-fetch-http-https-tls-api-必须异步集成事件循环-asynchttp-init-schedule-concurrenttask-enqueue-task-concurrent-wakeup-poll-ref-保活-native-call-中禁止-send-sync-condvar-阻塞-js-线程-禁止-per-request-std-thread-spawn-违反则-bun.serve-self-loop-场景双向死锁-o-n-线程爆炸-enforcement-oracle-gate-步骤-模式检查-grep-bao-runtime-源码-send-sync-singlehttpchannel-condvar-std-thread-spawn-在-js-extern-c-fn-body-命中-0-test-eng-010-self-loop-回归测试必过">对外 JS fetch/http/https/tls API 必须异步集成事件循环(AsyncHTTP::init+schedule + ConcurrentTask+enqueue_task_concurrent+wakeup + poll_ref 保活),native call 中禁止 send_sync/Condvar 阻塞 JS 线程,禁止 per-request std::thread::spawn;违反则 Bun.serve self-loop 场景双向死锁 + O(N)线程爆炸。enforcement: oracle_gate 步骤「模式检查」grep bao_runtime 源码 send_sync/SingleHTTPChannel Condvar/std::thread::spawn 在 JS extern C fn body 命中 = 0;TEST-ENG-010 self-loop 回归测试必过。</div><a data-xref-id="test-eng-10" data-xref-type="test" href="11-TESTING.html#test-eng-10">TEST-ENG-010</a></section><section data-bug-root-cause="S2审计确认双重基础设施缺陷(范式缺陷层):(1) fetch_fn(fetch_api.rs:207)仍调用 spawn_fetch_worker(std::thread::spawn),未委托 fetch_async::start,违反 C1/C2/C10;(2) 双重 drain 路径: timers.rs 事件循环 tick 只调 fetch_api::drain_pending_fetches(旧路径),fetch_async::drain_pending(新路径)从未被调用;(3) node_http/node_https/node_tls 已用 fetch_async::start 注册 PendingFetch,但其 Promise 结果永远不会 resolve(因为 fetch_async::drain_pending 从未被事件循环 tick 调用);(4) fetch_async::start_with_kind 仍用 std::thread::spawn(非 AsyncHTTP::init+schedule),违反 O(1)线程模型(C10)。原始死锁根因:fetch_fn 在 JS native call 同步段内调 do_fetch_blocking → stealth_http_request → http_client::http_request → AsyncHTTP::init_sync + send_sync → JS 线程在 SingleHTTPChannel Condvar 阻塞。Bun.serve 的 uWS App 寄生 JS-thread MiniEventLoop,accept 由 post_eval hook 的 drain_and_check → tick_without_idle 驱动,而 fetch 阻塞发生在 evaluate_script 同步段内,hook 循环未运行 → server 永不 accept self-loop 连接 → 双向死锁。根治方案:删除 fetch_api 旧基础设施(PENDING_FETCHES/spawn_fetch_worker/drain_pending_fetches/has_pending_fetches),fetch_fn 委托 fetch_async::start,timers.rs 迁移 drain 调用至 fetch_async::drain_pending,fetch_async::start_with_kind 重写为 AsyncHTTP::init+schedule(替代 std::thread::spawn)。位置: src/bao_runtime/src/fetch_api.rs fetch_fn + src/bao_runtime/src/fetch_async.rs start_with_kind + src/bao_runtime/src/timers.rs 事件循环 drain" data-bug-status="confirmed" data-bug="BUG-ENG-367" id="bug-eng-367"><h3>BUG-ENG-367: JS native fetch/http/https/tls API 双重基础设施缺陷(spawn_worker 未迁移 + fetch_async drain 未接入事件循环)</h3><div data-bug-root-cause="S2审计确认双重基础设施缺陷(范式缺陷层):(1) fetch_fn(fetch_api.rs:207)仍调用 spawn_fetch_worker(std::thread::spawn),未委托 fetch_async::start,违反 C1/C2/C10;(2) 双重 drain 路径: timers.rs 事件循环 tick 只调 fetch_api::drain_pending_fetches(旧路径),fetch_async::drain_pending(新路径)从未被调用;(3) node_http/node_https/node_tls 已用 fetch_async::start 注册 PendingFetch,但其 Promise 结果永远不会 resolve(因为 fetch_async::drain_pending 从未被事件循环 tick 调用);(4) fetch_async::start_with_kind 仍用 std::thread::spawn(非 AsyncHTTP::init+schedule),违反 O(1)线程模型(C10)。原始死锁根因:fetch_fn 在 JS native call 同步段内调 do_fetch_blocking → stealth_http_request → http_client::http_request → AsyncHTTP::init_sync + send_sync → JS 线程在 SingleHTTPChannel Condvar 阻塞。Bun.serve 的 uWS App 寄生 JS-thread MiniEventLoop,accept 由 post_eval hook 的 drain_and_check → tick_without_idle 驱动,而 fetch 阻塞发生在 evaluate_script 同步段内,hook 循环未运行 → server 永不 accept self-loop 连接 → 双向死锁。根治方案:删除 fetch_api 旧基础设施(PENDING_FETCHES/spawn_fetch_worker/drain_pending_fetches/has_pending_fetches),fetch_fn 委托 fetch_async::start,timers.rs 迁移 drain 调用至 fetch_async::drain_pending,fetch_async::start_with_kind 重写为 AsyncHTTP::init+schedule(替代 std::thread::spawn)。位置: src/bao_runtime/src/fetch_api.rs fetch_fn + src/bao_runtime/src/fetch_async.rs start_with_kind + src/bao_runtime/src/timers.rs 事件循环 drain">S2审计确认双重基础设施缺陷(范式缺陷层):(1) fetch_fn(fetch_api.rs:207)仍调用 spawn_fetch_worker(std::thread::spawn),未委托 fetch_async::start,违反 C1/C2/C10;(2) 双重 drain 路径: timers.rs 事件循环 tick 只调 fetch_api::drain_pending_fetches(旧路径),fetch_async::drain_pending(新路径)从未被调用;(3) node_http/node_https/node_tls 已用 fetch_async::start 注册 PendingFetch,但其 Promise 结果永远不会 resolve(因为 fetch_async::drain_pending 从未被事件循环 tick 调用);(4) fetch_async::start_with_kind 仍用 std::thread::spawn(非 AsyncHTTP::init+schedule),违反 O(1)线程模型(C10)。原始死锁根因:fetch_fn 在 JS native call 同步段内调 do_fetch_blocking → stealth_http_request → http_client::http_request → AsyncHTTP::init_sync + send_sync → JS 线程在 SingleHTTPChannel Condvar 阻塞。Bun.serve 的 uWS App 寄生 JS-thread MiniEventLoop,accept 由 post_eval hook 的 drain_and_check → tick_without_idle 驱动,而 fetch 阻塞发生在 evaluate_script 同步段内,hook 循环未运行 → server 永不 accept self-loop 连接 → 双向死锁。根治方案:删除 fetch_api 旧基础设施(PENDING_FETCHES/spawn_fetch_worker/drain_pending_fetches/has_pending_fetches),fetch_fn 委托 fetch_async::start,timers.rs 迁移 drain 调用至 fetch_async::drain_pending,fetch_async::start_with_kind 重写为 AsyncHTTP::init+schedule(替代 std::thread::spawn)。位置: src/bao_runtime/src/fetch_api.rs fetch_fn + src/bao_runtime/src/fetch_async.rs start_with_kind + src/bao_runtime/src/timers.rs 事件循环 drain</div></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-ENG-001" data-test="TEST-ENG-001" id="test-eng-001"><h4>TEST-ENG-001: REQ-ENG-001 单元测试</h4><p>TODO: 为 REQ-ENG-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-002" data-test="TEST-ENG-002" id="test-eng-002"><h4>TEST-ENG-002: REQ-ENG-002 单元测试</h4><p>TODO: 为 REQ-ENG-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-003" data-test="TEST-ENG-003" id="test-eng-003"><h4>TEST-ENG-003: REQ-ENG-003 单元测试</h4><p>TODO: 为 REQ-ENG-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-005" data-test="TEST-ENG-005" id="test-eng-005"><h4>TEST-ENG-005: REQ-ENG-005 单元测试</h4><p>TODO: 为 REQ-ENG-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-006" data-test="TEST-ENG-006" id="test-eng-006"><h4>TEST-ENG-006: REQ-ENG-006 单元测试</h4><p>TODO: 为 REQ-ENG-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-007" data-test="TEST-ENG-007" id="test-eng-007"><h4>TEST-ENG-007: REQ-ENG-007 单元测试</h4><p>TODO: 为 REQ-ENG-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CLI-001" data-test="TEST-CLI-001" id="test-cli-001"><h4>TEST-CLI-001: REQ-CLI-001 单元测试</h4><p>TODO: 为 REQ-CLI-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CLI-002" data-test="TEST-CLI-002" id="test-cli-002"><h4>TEST-CLI-002: REQ-CLI-002 单元测试</h4><p>TODO: 为 REQ-CLI-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-001" data-test="TEST-BRW-001" id="test-brw-001"><h4>TEST-BRW-001: REQ-BRW-001 单元测试</h4><p>TODO: 为 REQ-BRW-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-002" data-test="TEST-BRW-002" id="test-brw-002"><h4>TEST-BRW-002: REQ-BRW-002 单元测试</h4><p>TODO: 为 REQ-BRW-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-BRW-003" data-test="TEST-BRW-003" id="test-brw-003"><h4>TEST-BRW-003: REQ-BRW-003 单元测试</h4><p>TODO: 为 REQ-BRW-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-002" data-test="TEST-CDP-002" id="test-cdp-002"><h4>TEST-CDP-002: REQ-CDP-002 单元测试</h4><p>TODO: 为 REQ-CDP-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-003" data-test="TEST-CDP-003" id="test-cdp-003"><h4>TEST-CDP-003: REQ-CDP-003 单元测试</h4><p>TODO: 为 REQ-CDP-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-004" data-test="TEST-CDP-004" id="test-cdp-004"><h4>TEST-CDP-004: REQ-CDP-004 单元测试</h4><p>TODO: 为 REQ-CDP-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-005" data-test="TEST-CDP-005" id="test-cdp-005"><h4>TEST-CDP-005: REQ-CDP-005 单元测试</h4><p>TODO: 为 REQ-CDP-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-006" data-test="TEST-CDP-006" id="test-cdp-006"><h4>TEST-CDP-006: REQ-CDP-006 单元测试</h4><p>TODO: 为 REQ-CDP-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-007" data-test="TEST-CDP-007" id="test-cdp-007"><h4>TEST-CDP-007: REQ-CDP-007 单元测试</h4><p>TODO: 为 REQ-CDP-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-008" data-test="TEST-CDP-008" id="test-cdp-008"><h4>TEST-CDP-008: REQ-CDP-008 单元测试</h4><p>TODO: 为 REQ-CDP-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-001" data-test="TEST-STL-001" id="test-stl-001"><h4>TEST-STL-001: REQ-STL-001 单元测试</h4><p>TODO: 为 REQ-STL-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-002" data-test="TEST-STL-002" id="test-stl-002"><h4>TEST-STL-002: REQ-STL-002 单元测试</h4><p>TODO: 为 REQ-STL-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-003" data-test="TEST-STL-003" id="test-stl-003"><h4>TEST-STL-003: REQ-STL-003 单元测试</h4><p>TODO: 为 REQ-STL-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-004" data-test="TEST-STL-004" id="test-stl-004"><h4>TEST-STL-004: REQ-STL-004 单元测试</h4><p>TODO: 为 REQ-STL-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-005" data-test="TEST-STL-005" id="test-stl-005"><h4>TEST-STL-005: REQ-STL-005 单元测试</h4><p>TODO: 为 REQ-STL-005 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-006" data-test="TEST-STL-006" id="test-stl-006"><h4>TEST-STL-006: REQ-STL-006 单元测试</h4><p>TODO: 为 REQ-STL-006 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-STL-007" data-test="TEST-STL-007" id="test-stl-007"><h4>TEST-STL-007: REQ-STL-007 单元测试</h4><p>TODO: 为 REQ-STL-007 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-001" data-test="TEST-LIB-001" id="test-lib-001"><h4>TEST-LIB-001: REQ-LIB-001 单元测试</h4><p>TODO: 为 REQ-LIB-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-002" data-test="TEST-LIB-002" id="test-lib-002"><h4>TEST-LIB-002: REQ-LIB-002 单元测试</h4><p>TODO: 为 REQ-LIB-002 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-003" data-test="TEST-LIB-003" id="test-lib-003"><h4>TEST-LIB-003: REQ-LIB-003 单元测试</h4><p>TODO: 为 REQ-LIB-003 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-LIB-004" data-test="TEST-LIB-004" id="test-lib-004"><h4>TEST-LIB-004: REQ-LIB-004 单元测试</h4><p>TODO: 为 REQ-LIB-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-008" data-test="TEST-ENG-008" id="test-eng-008"><h4>TEST-ENG-008: REQ-ENG-008 单元测试</h4><p>TODO: 为 REQ-ENG-008 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-009" data-test="TEST-ENG-009" id="test-eng-009"><h4>TEST-ENG-009: REQ-ENG-009 单元测试</h4><p>TODO: 为 REQ-ENG-009 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001@PROCESS" data-test="TEST-CDP-001@PROCESS" id="test-cdp-001-process"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 时序约束测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004@PROCESS" data-test="TEST-ENG-004@PROCESS" id="test-eng-004-process"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 时序约束测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-H3-001" data-test="TEST-H3-001" id="test-h3-001"><h4>TEST-H3-001: REQ-H3-001 h3 fetch 单元 + 真网络测试</h4><p>h3 默认启用 / Alt-Svc parse / force_http3 / HTTP/1.1 fallback（真网络测试 #[ignore] + BAO_TEST_NETWORK=1）</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-010" data-test="TEST-ENG-010" id="test-eng-010"><h4>TEST-ENG-010: REQ-ENG-010 单元测试</h4><p>TODO: 为 REQ-ENG-010 编写测试用例</p></div></section></body>
 </html>
