@@ -704,5 +704,19 @@ CDP Debugger 域核心功能完全不可用。Puppeteer/Playwright 的 step/brea
 <p>验证 Event Loop Tick 间隔符合 TMG-LOOP-001 max_interval_ms=20ms 约束。覆盖于 src/bao_runtime/tests/event_loop_timing_tests.rs (8 个 #[test]: 空 tick 基线 / 多次 tick 稳定性 / 单 task dispatch / timer 唤醒 / microtask drain 等)。</p>
 </div>
 
-<section data-test-categories="integration,positive" data-req-ref="REQ-ENG-010" data-test="TEST-ENG-010" id="test-eng-10"><h3>TEST-ENG-010 Bun.serve self-loop fetch 双向死锁回归测试</h3><p>验证 FetchTasklet 事件驱动范式后 self-loop 场景不死锁:Bun.serve 启动 HTTP 服务 → handler 内 fetch(self URL) → 10s 内打印 DONE 并 exit 0。覆盖 BUG-ENG-367 的 6 入口 send_sync 根治验证:fetch_fn / node_http.rs http_request / node_http.rs http_get[delegated] / node_https.rs https_request / node_tls.rs tls_connect / stealth_http.rs stealth_http_request 均走 AsyncHTTP::schedule 异步路径,零 send_sync/Condvar 残留。oracle_gate 步骤「模式检查」grep bao_runtime 源码 send_sync/SingleHTTPChannel/Condvar/std::thread::spawn 在 JS extern C fn body 命中 = 0。</p><a data-xref-id="req-eng-10" data-xref-type="req" href=".html#req-eng-10">REQ-ENG-010</a><a data-xref-id="bug-eng-367" data-xref-type="bug" href="10-REQUIREMENTS.html#bug-eng-367">BUG-ENG-367</a></section></main></body>
+<section data-test-categories="integration,positive" data-req-ref="REQ-ENG-010" data-test="TEST-ENG-010" id="test-eng-10"><h3>TEST-ENG-010 Bun.serve self-loop fetch 双向死锁回归测试</h3><p>验证 FetchTasklet 事件驱动范式后 self-loop 场景不死锁:Bun.serve 启动 HTTP 服务 → handler 内 fetch(self URL) → 10s 内打印 DONE 并 exit 0。覆盖 BUG-ENG-367 的 6 入口 send_sync 根治验证:fetch_fn / node_http.rs http_request / node_http.rs http_get[delegated] / node_https.rs https_request / node_tls.rs tls_connect / stealth_http.rs stealth_http_request 均走 AsyncHTTP::schedule 异步路径,零 send_sync/Condvar 残留。oracle_gate 步骤「模式检查」grep bao_runtime 源码 send_sync/SingleHTTPChannel/Condvar/std::thread::spawn 在 JS extern C fn body 命中 = 0。</p><a data-xref-id="req-eng-10" data-xref-type="req" href=".html#req-eng-10">REQ-ENG-010</a><a data-xref-id="bug-eng-367" data-xref-type="bug" href="10-REQUIREMENTS.html#bug-eng-367">BUG-ENG-367</a></section><section data-test="TEST-ENG-011" id="test-eng-011">
+<h3>TEST-ENG-011: node:vm Sandbox 语义验证</h3>
+<p>@trace REQ-ENG-011 [req:REQ-ENG-011] [level:integration]</p>
+<table>
+<tr><th>用例</th><th>输入</th><th>期望</th></tr>
+<tr><td>变量注入</td><td>vm.runInNewContext('typeof x === "number" ? "sandbox_ok" : "sandbox_fail"', {x: 42})</td><td>"sandbox_ok"</td></tr>
+<tr><td>隔离性</td><td>vm.runInNewContext('var y = 1'); typeof y</td><td>"undefined"</td></tr>
+<tr><td>createContext+isContext</td><td>var ctx = vm.createContext({a:1}); vm.isContext(ctx)</td><td>true</td></tr>
+<tr><td>Script.runInContext</td><td>var s = new vm.Script('x+1'); s.runInContext(ctx)</td><td>2 (when ctx has x=1)</td></tr>
+<tr><td>跨Realm对象</td><td>var obj = vm.runInNewContext('({foo:1})'); obj.foo</td><td>1 (CCW自动解包)</td></tr>
+<tr><td>codeGeneration禁用</td><td>vm.createContext({}, {codeGeneration: {strings: false}}); eval('1')</td><td>throws</td></tr>
+<tr><td>返回值</td><td>vm.runInNewContext('42')</td><td>42</td></tr>
+<tr><td>返回对象</td><td>vm.runInNewContext('new ArrayBuffer(8)') instanceof ArrayBuffer</td><td>true (跨Realm)</td></tr>
+</table>
+</section></main></body>
 </html>

@@ -778,5 +778,61 @@ fetch_fn(args)
   "action": "FetchTasklet 创建 → AsyncHTTP::schedule → on_http_done → ConcurrentTask → FetchResolveTask → ResolvePromise/RejectPromise",
   "exceptionPaths": ["connect_timeout → Rejected", "abort_signal → Aborted", "drop_before_complete → Rejected"],
   "invariants": ["INV-1: FetchTasklet owns AsyncHTTP<'static>+Promise(AddRawValueRoot)+ResolveKind", "INV-2: AsyncHTTP::init+schedule 替代 thread::spawn, O(1)线程", "INV-3: HTTPThread callback 零 SM API 调用", "INV-4: FetchResolveTask Taskable dispatch", "INV-5: poll_ref ref/unref 保活", "INV-6: stealth_profile_to_ssl_config 桥接", "INV-7: 旧代码全删+调用点迁移"]
-}</script></section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001@PROCESS" data-test="TEST-CDP-001@PROCESS" id="test-cdp-001-process"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 单元测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004@PROCESS" data-test="TEST-ENG-004@PROCESS" id="test-eng-004-process"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 单元测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div></section></body>
+}</script></section><section data-sm="VmSandboxLifecycle" id="sm-vm-sandbox-lifecycle">
+<h3>VmSandboxLifecycle — vm Context 生命周期</h3>
+<pre>
+  Created ──► Active ──► GC_Ready
+     │           │
+     │    runInContext()
+     │    runInNewContext()
+     │           │
+     │           ▼
+     │    [Executing] ──► Active
+     │
+  createContext()
+
+States:
+  Created:      JS_NewGlobalObject 完成，Realm/Compartment 已创建
+  Active:       已 setContextifiedObject，可供 runInContext 使用
+  Executing:    AutoRealm 已切换，代码正在执行
+  GC_Ready:     无外部引用，等待 GC 回收 Realm
+</pre>
+<p>状态转换：</p>
+<ul>
+<li>createContext(sandbox) → Created: JS_NewGlobalObject + JS_InitStandardClasses + RealmPrivate 绑定</li>
+<li>setContextifiedObject → Active: sandbox 代理设置完成</li>
+<li>runInContext → Executing: AutoRealm::new(cx, sandbox_global) + evaluate</li>
+<li>执行完成 → Active: AutoRealm drop，切回调用者 Realm</li>
+<li>无引用 → GC_Ready: SM GC 回收 Compartment</li>
+</ul>
+</section><section data-df="DF-VM-SANDBOX-001" id="df-vm-sandbox-001">
+<h3>DF-VM-SANDBOX-001: vm.runInNewContext 数据流</h3>
+<pre>
+JS调用 vm.runInNewContext(code, sandbox, opts)
+     │
+     ▼
+[1] 解析 code (String) + sandbox (Object) + opts (Object)
+     │
+     ▼
+[2] vm.createContext(sandbox, opts)
+     ├─ JS_NewGlobalObject(cx, &amp;GLOBAL_CLASS, ..., RealmOptions)
+     ├─ JS_InitStandardClasses(cx, global)
+     ├─ AutoRealm::new(cx, global) → 在新 Realm 中设置 sandbox 代理
+     └─ RealmPrivate(global) = VmSandboxContext { sandbox_proxy, ... }
+     │
+     ▼
+[3] AutoRealm::new(cx, sandbox_global)
+     │
+     ▼
+[4] 在新 Realm 中 JS::Evaluate2(code)
+     │  代码中的未声明变量查找:
+     │  → sandbox_proxy → contextified_object → 新 Realm global
+     │
+     ▼
+[5] 返回值通过 CCW 跨 Compartment 传回调用者 Realm
+     │  (AutoRealm drop 自动切回)
+     ▼
+JS 获得 return value
+</pre>
+</section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-CDP-001" data-test="TEST-CDP-001" id="test-cdp-001"><h4>TEST-CDP-001: REQ-CDP-001 单元测试</h4><p>TODO: 为 REQ-CDP-001 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004" data-test="TEST-ENG-004" id="test-eng-004"><h4>TEST-ENG-004: REQ-ENG-004 单元测试</h4><p>TODO: 为 REQ-ENG-004 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-CDP-001@PROCESS" data-test="TEST-CDP-001@PROCESS" id="test-cdp-001-process"><h4>TEST-CDP-001@PROCESS: REQ-CDP-001@PROCESS 单元测试</h4><p>TODO: 为 REQ-CDP-001@PROCESS 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-ENG-004@PROCESS" data-test="TEST-ENG-004@PROCESS" id="test-eng-004-process"><h4>TEST-ENG-004@PROCESS: REQ-ENG-004@PROCESS 单元测试</h4><p>TODO: 为 REQ-ENG-004@PROCESS 编写测试用例</p></div></section></body>
 </html>
