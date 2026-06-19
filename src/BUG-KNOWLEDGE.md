@@ -559,3 +559,61 @@ affectedTasks: [REQ-ENG-004 event loop, test_event_loop_order.js EL-005]
 ---
 
 
+
+## BCE-20260618-007 / BCE-20260619-010 — fetch 自循环双向死锁 + spawn_worker 范式缺陷
+
+```yaml
+patternId: BCE-20260618-007
+title: fetch 异步调用使用 thread::spawn+Mutex+busy-polling 范式，违反 bun_http 复用原则 + 事件驱动模型
+layer: 范式缺陷（架构层面：手写并发模型绕过 Bun 基础设施）
+status: 已根治（残留=0）
+
+codePattern:
+  - 「fetch 异步请求使用 std::thread::spawn 创建独立 OS 线程 + stealth_http_request 阻塞调用 + Arc<Mutex> 传递结果 + drain_pending 轮询消费」
+  - 「违反三化原则：高性能化（O(N)线程）、去锁化（Arc<Mutex>）、成熟库化（手写而非复用 bun_http）」
+  - 「fetch-only sleep(1ms) 忙轮询分支消耗 CPU 等待 HTTPThread 完成」
+
+triggerCondition:
+  - 「任何 fetch() 调用触发 thread::spawn + stealth_http_request 阻塞路径」
+  - 「事件循环 spin 中出现 fetch-only sleep(1ms) 轮询」
+  - 「drain_pending_fetches() 在每个 tick 被调用以消费结果」
+
+detectionSignatures:
+  structural:
+    - "函数中存在 std::thread::spawn 且函数名含 fetch/http/request"
+    - "Arc<Mutex<Option<...>>> 作为异步结果传递通道"
+    - "sleep(Duration::from_millis(1)) 出现在 fetch drain 路径"
+  literal:
+    - "spawn_fetch_worker"
+    - "do_fetch_blocking"
+    - "drain_pending_fetches"
+    - "PENDING_FETCHES"
+  antipattern:
+    - "busy-polling for async result"
+    - "thread-per-request HTTP model"
+
+sameClassCriterion:
+  - 「任何 HTTP 异步请求路径使用 thread::spawn + 阻塞调用 + Mutex 结果传递 + 忙轮询消费，而非复用 Bun 的 AsyncHTTP::init+schedule + HTTPThread + ConcurrentTask 事件驱动范式」
+
+fixTemplate:
+  - 「替换为 AsyncHTTP::init(callback) + HTTPThread::schedule(batch) 事件驱动范式」
+  - 「HTTPThread 回调(on_http_done)写入 Arc<Mutex<Option<FetchOutcome>>>，然后 enqueue_task_concurrent_with_extra_ctx + wakeup() 唤醒 JS 线程」
+  - 「JS 线程 ConcurrentTask 回调(resolve_tasklet)解析 JS Response 对象 + ResolvePromise/RejectPromise + RemoveRawValueRoot + unref_concurrently」
+  - 「HTTPThread::init 必须在 schedule 前调用（idempotent Once）」
+  - 「ref_concurrently/unref_concurrently 仅对 JS-VM EventLoopCtx 调用（is_js() guard）」
+
+regressionAssertion:
+  - 「grep -rn "spawn_fetch_worker\|do_fetch_blocking\|drain_pending_fetches\|PENDING_FETCHES" src/bao_runtime/src/ 必须零代码命中（注释可接受）」
+  - 「grep -rn "thread::spawn" src/bao_runtime/src/fetch_async.rs src/bao_runtime/src/fetch_api.rs 必须零代码命中」
+  - 「cargo test -p bun_runtime --test fetch_api_tests 必须通过」
+  - 「cargo test -p bun_runtime --test http_client_deep_tests 必须通过」
+
+affectedTasks: [REQ-ENG-010 async HTTP no thread spawn, BUG-ENG-367, CRIT-FETCH-ASYNC-NOBLOCK]
+```
+
+### 防复发（阶段6）
+- ✅ 知识库：本条目。
+- ✅ SPEC 沉淀：REQ-ENG-010 / BUG-ENG-367 / CRIT-FETCH-ASYNC-NOBLOCK / FetchTasklet entity / FetchTaskletLifecycle SM / DF-FETCH-ASYNC-001 / CF-FETCH-ASYNC-001 / fetch-native-async API / DEC-ENG-001 / TEST-ENG-010。
+- ✅ 回归测试：fetch_api_tests / http_client_deep_tests 通过。
+- ✅ 代码注释：fetch_async.rs 模块文档标注 BCE-20260619-010 + "Why this replaced thread::spawn"。
+- 📌 未来风险：若新增 HTTP 异步路径（WebSocket upload、gRPC streaming 等），必须使用 AsyncHTTP+HTTPThread+ConcurrentTask 事件驱动范式，禁止 thread::spawn。Code review checklist：grep `thread::spawn` in bao_runtime fetch 路径，确认零命中。
