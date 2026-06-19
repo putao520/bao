@@ -664,13 +664,13 @@ unsafe extern "C" fn database_prepare(
             let val = PrivateValue(stmt_ptr);
             JS_SetReservedSlot(obj, SLOT_STMT, &val);
 
-            // Define instance methods
+            // Root the object and define instance methods using rooted handle
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let obj_r = obj);
             JS_DefineFunction(
                 cx,
-                Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &obj,
-                },
+                obj_r.handle().into(),
                 c"run".as_ptr(),
                 Some(statement_run),
                 0,
@@ -678,10 +678,7 @@ unsafe extern "C" fn database_prepare(
             );
             JS_DefineFunction(
                 cx,
-                Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &obj,
-                },
+                obj_r.handle().into(),
                 c"get".as_ptr(),
                 Some(statement_get),
                 0,
@@ -689,17 +686,14 @@ unsafe extern "C" fn database_prepare(
             );
             JS_DefineFunction(
                 cx,
-                Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &obj,
-                },
+                obj_r.handle().into(),
                 c"all".as_ptr(),
                 Some(statement_all),
                 0,
                 JSPROP_ENUMERATE as u32,
             );
 
-            args.rval().set(ObjectValue(obj));
+            args.rval().set(ObjectValue(obj_r.get()));
             true
         }
         Err(e) => {
@@ -1012,12 +1006,10 @@ pub fn register_database_constructor(
 
         let ctor_val = ObjectValue(ctor.get());
         rooted!(&in(cx) let cv = ctor_val);
+        rooted!(&in(cx) let module_obj_r = module_obj);
         JS_DefineProperty(
             cx.raw_cx(),
-            Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &module_obj,
-            },
+            module_obj_r.handle().into(),
             c"Database".as_ptr(),
             cv.handle().into(),
             (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,

@@ -15,40 +15,33 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
     unsafe {
         let cx_raw = cx.raw_cx();
-        let global = CurrentGlobalOrNull(cx_raw);
-        let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-        if !global.is_null() {
+        rooted!(&in(cx) let global = CurrentGlobalOrNull(cx_raw));
+        if !global.get().is_null() {
             let mut buf_val = UndefinedValue();
-            JS_GetProperty(cx_raw, global_h, c"Buffer".as_ptr(), MutableHandle::<Value> {
+            JS_GetProperty(cx_raw, global.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &mut buf_val,
             });
             if !buf_val.is_undefined() {
-                let mod_ptr = mod_obj.get();
-                let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr };
-                let buf_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &buf_val };
-                JS_DefineProperty(cx_raw, mod_h, c"Buffer".as_ptr(), buf_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx) let buf_root = buf_val);
+                JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"Buffer".as_ptr(), buf_root.handle().into(), JSPROP_ENUMERATE as u32);
             }
         }
 
-        let kmax = mozjs::jsval::DoubleValue(4294967296.0_f64);
-        let mod_ptr = mod_obj.get();
-        let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr };
-        let kmax_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &kmax };
-        JS_DefineProperty(cx_raw, mod_h, c"kMaxLength".as_ptr(), kmax_h, JSPROP_ENUMERATE as u32);
+        rooted!(&in(cx) let kmax = mozjs::jsval::DoubleValue(4294967296.0_f64));
+        JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"kMaxLength".as_ptr(), kmax.handle().into(), JSPROP_ENUMERATE as u32);
 
         // @trace REQ-ENG-005 [entity:Buffer] — Node.js module-level constants.
         // `INSPECT_MAX_BYTES` is the visible-buffer cap used by util.inspect
         // when stringifying a Buffer (default 512 in Node.js). Upstream tests
         // (buffer-inspectmaxbytes.test.ts) read, set, and re-read it, so the
         // property must be a plain writable data property — no getter/setter.
-        let inspect_max = Int32Value(512);
-        let inspect_max_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &inspect_max };
+        rooted!(&in(cx) let inspect_max = Int32Value(512));
         JS_DefineProperty(
             cx_raw,
-            mod_h,
+            mod_obj.handle().into(),
             c"INSPECT_MAX_BYTES".as_ptr(),
-            inspect_max_h,
+            inspect_max.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
         // Also expose on the Buffer constructor itself (Node.js keeps the
@@ -56,18 +49,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // is the same value re-exported). Use the same writable data descriptor
         // shape so test assignments propagate.
         let mut buf_val = UndefinedValue();
-        JS_GetProperty(cx_raw, global_h, c"Buffer".as_ptr(), MutableHandle::<Value> {
+        JS_GetProperty(cx_raw, global.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
             ptr: &mut buf_val,
         });
         if buf_val.is_object() {
-            let buf_obj = buf_val.to_object();
-            let buf_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &buf_obj };
+            rooted!(&in(cx) let buf_obj = buf_val.to_object());
             JS_DefineProperty(
                 cx_raw,
-                buf_obj_h,
+                buf_obj.handle().into(),
                 c"INSPECT_MAX_BYTES".as_ptr(),
-                inspect_max_h,
+                inspect_max.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }
@@ -78,15 +70,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             // constants.MAX_LENGTH = 2^32 (4294967296) on 64-bit platforms.
             // Exceeds i32 range, so emit as a JS double. buffer.test.js
             // "constants" asserts the exact value.
-            let cmax = mozjs::jsval::DoubleValue(4294967296.0_f64);
-            let cmax_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cmax };
-            JS_DefineProperty(cx_raw, constants_obj.handle().into(), c"MAX_LENGTH".as_ptr(), cmax_h, JSPROP_ENUMERATE as u32);
-            let smax = Int32Value(2147483647);
-            let smax_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &smax };
-            JS_DefineProperty(cx_raw, constants_obj.handle().into(), c"MAX_STRING_LENGTH".as_ptr(), smax_h, JSPROP_ENUMERATE as u32);
-            let constants_val = ObjectValue(constants_obj.get());
-            let constants_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &constants_val };
-            JS_DefineProperty(cx_raw, mod_h, c"constants".as_ptr(), constants_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx) let cmax = mozjs::jsval::DoubleValue(4294967296.0_f64));
+            JS_DefineProperty(cx_raw, constants_obj.handle().into(), c"MAX_LENGTH".as_ptr(), cmax.handle().into(), JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx) let smax = Int32Value(2147483647));
+            JS_DefineProperty(cx_raw, constants_obj.handle().into(), c"MAX_STRING_LENGTH".as_ptr(), smax.handle().into(), JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx) let constants_val = ObjectValue(constants_obj.get()));
+            JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"constants".as_ptr(), constants_val.handle().into(), JSPROP_ENUMERATE as u32);
         }
 
         // SlowBuffer = Buffer.alloc alias via JS
@@ -103,8 +92,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             mozjs_sys::jsapi::JS::Evaluate2(cx_raw, opts, &mut src, rval_handle);
             libc::free(opts as *mut _);
             if !rval.is_undefined() {
-                let sb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &rval };
-                JS_DefineProperty(cx_raw, mod_h, c"SlowBuffer".as_ptr(), sb_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx) let sb_root = rval);
+                JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"SlowBuffer".as_ptr(), sb_root.handle().into(), JSPROP_ENUMERATE as u32);
             }
         }
 
@@ -151,18 +140,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             mozjs_sys::jsapi::JS::Evaluate2(cx_raw, blob_opts, &mut blob_src_text, blob_rval_h);
             libc::free(blob_opts as *mut _);
             if blob_rval.is_object() {
-                let blob_obj = blob_rval.to_object();
+                rooted!(&in(cx) let blob_obj = blob_rval.to_object());
                 for prop in &["Blob", "File"] {
                     let cprop = ::std::ffi::CString::new(*prop).unwrap();
                     let mut val = UndefinedValue();
-                    let blob_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &blob_obj };
-                    JS_GetProperty(cx_raw, blob_h, cprop.as_ptr(), MutableHandle::<Value> {
+                    JS_GetProperty(cx_raw, blob_obj.handle().into(), cprop.as_ptr(), MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData,
                         ptr: &mut val,
                     });
                     if !val.is_undefined() {
-                        let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-                        JS_DefineProperty(cx_raw, mod_h, cprop.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+                        rooted!(&in(cx) let val_root = val);
+                        JS_DefineProperty(cx_raw, mod_obj.handle().into(), cprop.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
                     }
                 }
             }
@@ -252,19 +240,18 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             mozjs_sys::jsapi::JS::Evaluate2(cx_raw, extras_opts, &mut extras_src_text, extras_rval_h);
             libc::free(extras_opts as *mut _);
             if extras_rval.is_object() {
-                let extras_obj = extras_rval.to_object();
+                rooted!(&in(cx) let extras_obj = extras_rval.to_object());
                 // Copy isAscii / isUtf8 / resolveObjectURL onto the module
                 // object so they appear as named exports.
                 for prop in &["isAscii", "isUtf8", "resolveObjectURL"] {
                     let cprop = ::std::ffi::CString::new(*prop).unwrap();
                     let mut val = UndefinedValue();
-                    let extras_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &extras_obj };
-                    JS_GetProperty(cx_raw, extras_h, cprop.as_ptr(), MutableHandle::<Value> {
+                    JS_GetProperty(cx_raw, extras_obj.handle().into(), cprop.as_ptr(), MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData,
                         ptr: &mut val,
                     });
-                    let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-                    JS_DefineProperty(cx_raw, mod_h, cprop.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+                    rooted!(&in(cx) let val_root = val);
+                    JS_DefineProperty(cx_raw, mod_obj.handle().into(), cprop.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
                 }
             }
         }
@@ -327,24 +314,14 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             )
         });
         if !transcode_obj.is_null() {
-            let mod_ptr = mod_obj.get();
-            let mod_h = Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &mod_ptr,
-            };
             // JS_DefineProperty's (Handle<Value>) overload is the only one the
             // mozjs_sys bindings expose, so wrap the callable object in a Value.
-            let tc_ptr = transcode_obj.get();
-            let tc_val = mozjs::jsval::ObjectValue(tc_ptr);
-            let tc_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &tc_val,
-            };
+            rooted!(&in(cx) let tc_val = mozjs::jsval::ObjectValue(transcode_obj.get()));
             JS_DefineProperty(
                 cx_raw,
-                mod_h,
+                mod_obj.handle().into(),
                 c"transcode".as_ptr(),
-                tc_h,
+                tc_val.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }

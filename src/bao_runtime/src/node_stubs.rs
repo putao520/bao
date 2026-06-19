@@ -25,6 +25,7 @@ use mozjs::jsapi::*;
 use mozjs::jsval::ObjectValue;
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
+use ::std::ptr::NonNull;
 
 use crate::require::cache_builtin;
 
@@ -117,7 +118,7 @@ fn register_stub(cx: &mut mozjs::context::JSContext, name: &str) {
     // object literal on every call so the test sees a stable, plausible
     // shape even though the SM heap doesn't expose V8's exact field names.
     if name == "v8" {
-        unsafe { install_v8_methods(cx, obj.handle().get()); }
+        unsafe { install_v8_methods(cx, obj.handle().into()); }
     }
     cache_builtin(cx, name, obj.get());
 }
@@ -128,12 +129,8 @@ fn register_stub(cx: &mut mozjs::context::JSContext, name: &str) {
 /// real; the rest are not-implemented stubs that throw on call (matching
 /// Bun's `node:v8` stub behaviour — see ~/code/rust/bun/src/js/node/v8.ts).
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn install_v8_methods(cx: &mut mozjs::context::JSContext, obj: *mut JSObject) {
+unsafe fn install_v8_methods(cx: &mut mozjs::context::JSContext, obj_h: Handle<*mut JSObject>) {
     let raw_cx = cx.raw_cx();
-    let obj_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
     // getHeapStatistics(): returns an object literal with the V8 heap-stat
     // field names. SM doesn't expose V8's exact accounting, so we surface
     // a constant, plausible shape that satisfies the structural assertions
@@ -148,12 +145,8 @@ unsafe fn install_v8_methods(cx: &mut mozjs::context::JSContext, obj: *mut JSObj
     );
     if !get_heap_stats_fn.is_null() {
         let fn_obj = JS_GetFunctionObject(get_heap_stats_fn);
-        let val = ObjectValue(fn_obj);
-        let h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &val,
-        };
-        let _ = JS_DefineProperty(raw_cx, obj_h, c"getHeapStatistics".as_ptr(), h, JSPROP_ENUMERATE as u32);
+        rooted!(&in(cx) let val = ObjectValue(fn_obj));
+        let _ = JS_DefineProperty(raw_cx, obj_h, c"getHeapStatistics".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
     }
     // cachedDataVersionTag(): constant plausible value.
     let cdvt_fn = JS_NewFunction(
@@ -165,12 +158,8 @@ unsafe fn install_v8_methods(cx: &mut mozjs::context::JSContext, obj: *mut JSObj
     );
     if !cdvt_fn.is_null() {
         let fn_obj = JS_GetFunctionObject(cdvt_fn);
-        let val = ObjectValue(fn_obj);
-        let h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &val,
-        };
-        let _ = JS_DefineProperty(raw_cx, obj_h, c"cachedDataVersionTag".as_ptr(), h, JSPROP_ENUMERATE as u32);
+        rooted!(&in(cx) let val = ObjectValue(fn_obj));
+        let _ = JS_DefineProperty(raw_cx, obj_h, c"cachedDataVersionTag".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
     }
 }
 
@@ -212,17 +201,14 @@ unsafe extern "C" fn v8_get_heap_statistics(
         args.rval().set(mozjs::jsval::UndefinedValue());
         return true;
     }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let out_root = out);
     for (k, v) in fields {
         let ckey = ::std::ffi::CString::new(*k).unwrap();
-        let val = mozjs::jsval::DoubleValue(*v as f64);
-        let h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &val,
-        };
-        let out_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &out };
-        let _ = JS_DefineProperty(cx, out_h, ckey.as_ptr(), h, JSPROP_ENUMERATE as u32);
+        rooted!(&in(wrapped_cx) let dv = mozjs::jsval::DoubleValue(*v as f64));
+        let _ = JS_DefineProperty(cx, out_root.handle().into(), ckey.as_ptr(), dv.handle().into(), JSPROP_ENUMERATE as u32);
     }
-    args.rval().set(mozjs::jsval::ObjectValue(out));
+    args.rval().set(mozjs::jsval::ObjectValue(out_root.get()));
     true
 }
 

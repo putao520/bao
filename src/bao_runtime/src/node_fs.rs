@@ -168,10 +168,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     unsafe {
         let global = JS::CurrentGlobalOrNull(cx.raw_cx());
         if !global.is_null() {
-            let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-            let fs_val = mozjs::jsval::ObjectValue(fs_obj.get());
-            let fs_val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fs_val };
-            JS_DefineProperty(cx.raw_cx(), global_h, c"__fs_stream_ref".as_ptr(), fs_val_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx) let global_rooted = global);
+            rooted!(&in(cx) let fs_val = mozjs::jsval::ObjectValue(fs_obj.get()));
+            JS_DefineProperty(cx.raw_cx(), global_rooted.handle().into(), c"__fs_stream_ref".as_ptr(), fs_val.handle().into(), JSPROP_ENUMERATE as u32);
 
             let c_filename = ZBox::from_bytes("node:fs:streams".as_bytes());
             let opts = NewCompileOptions(cx.raw_cx(), c_filename.as_ptr(), 1);
@@ -184,24 +183,22 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
                 if ok && rval.is_object() {
                     let exports = rval.to_object();
-                    let exports_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &exports };
-                    let fs_ptr = fs_obj.get();
-                    let fs_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &fs_ptr };
+                    rooted!(&in(cx) let exports_rooted = exports);
 
                     for name in &["createReadStream", "createWriteStream"] {
                         let cname = ZBox::from_bytes(name.as_bytes());
                         let mut val = UndefinedValue();
-                        JS_GetProperty(cx.raw_cx(), exports_h, cname.as_ptr(),
+                        JS_GetProperty(cx.raw_cx(), exports_rooted.handle().into(), cname.as_ptr(),
                             MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
                         if !val.is_undefined() {
-                            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-                            JS_DefineProperty(cx.raw_cx(), fs_h, cname.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+                            rooted!(&in(cx) let val_root = val);
+                            JS_DefineProperty(cx.raw_cx(), fs_obj.handle().into(), cname.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
                         }
                     }
                 }
             }
 
-            JS_DeleteProperty1(cx.raw_cx(), global_h, c"__fs_stream_ref".as_ptr());
+            JS_DeleteProperty1(cx.raw_cx(), global_rooted.handle().into(), c"__fs_stream_ref".as_ptr());
         }
     }
 
@@ -240,11 +237,12 @@ unsafe fn get_encoding_opt(cx: *mut JSContext, args: &CallArgs, index: u32) -> :
         }
     }
     if val.is_object() {
-        let obj = val.to_object();
+        let mut wrapped_cx_enc = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref_enc = &mut wrapped_cx_enc;
+        rooted!(&in(cx_ref_enc) let obj = val.to_object());
         let mut enc_val = UndefinedValue();
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
         let enc_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut enc_val };
-        JS_GetProperty(cx, obj_h, c"encoding".as_ptr(), enc_h);
+        JS_GetProperty(cx, obj.handle().into(), c"encoding".as_ptr(), enc_h);
         if enc_val.is_string() {
             let s = enc_val.to_string();
             if !s.is_null() {
@@ -328,17 +326,14 @@ unsafe fn throw_fs_error(cx: *mut JSContext, op: &str, path: &str, err: &::std::
             JS_GetPendingException(cx, exn.handle_mut().into());
             let exn_val = exn.get();
             if !exn_val.is_undefined() && exn_val.is_object() {
-                let exn_obj = exn_val.to_object();
-                let code_val = StringValue(&*code_str);
-                let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &exn_obj };
-                let code_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &code_val };
-                JS_DefineProperty(cx, obj_h, c"code".as_ptr(), code_h, JSPROP_ENUMERATE as u32);
+                rooted!(in(cx) let exn_obj = exn_val.to_object());
+                rooted!(in(cx) let code_val = StringValue(&*code_str));
+                JS_DefineProperty(cx, exn_obj.handle().into(), c"code".as_ptr(), code_val.handle().into(), JSPROP_ENUMERATE as u32);
                 let path_val = ZBox::from_bytes(path.as_bytes());
                 let path_str = JS_NewStringCopyZ(cx, path_val.as_ptr());
                 if !path_str.is_null() {
-                    let path_v = StringValue(&*path_str);
-                    let path_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &path_v };
-                    JS_DefineProperty(cx, obj_h, c"path".as_ptr(), path_h, JSPROP_ENUMERATE as u32);
+                    rooted!(in(cx) let path_v = StringValue(&*path_str));
+                    JS_DefineProperty(cx, exn_obj.handle().into(), c"path".as_ptr(), path_v.handle().into(), JSPROP_ENUMERATE as u32);
                 }
                 JS_SetPendingException(cx, exn.handle().into(), ExceptionStackBehavior::DoNotCapture);
             }
@@ -739,15 +734,16 @@ unsafe extern "C" fn fs_mkdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     match result {
         ::std::result::Result::Ok(()) => {
             if argc > 1 && (*args.get(argc - 1).ptr).is_object() {
-                let cb = (*args.get(argc - 1).ptr).to_object();
-                let cb_val = mozjs::jsval::ObjectValue(cb);
-                let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
+                let mut wrapped_cx_cb = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                let cx_ref_cb = &mut wrapped_cx_cb;
+                rooted!(&in(cx_ref_cb) let cb = (*args.get(argc - 1).ptr).to_object());
+                rooted!(&in(cx_ref_cb) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
                 let null_args = HandleValueArray::empty();
                 let global = CurrentGlobalOrNull(cx);
                 if !global.is_null() {
-                    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+                    rooted!(&in(cx_ref_cb) let global_rooted = global);
                     let mut rval = UndefinedValue();
-                    JS_CallFunctionValue(cx, global_h, cb_h, &null_args, MutableHandle::<Value> {
+                    JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &null_args, MutableHandle::<Value> {
                         _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
                     });
                     JS_ClearPendingException(cx);
@@ -758,38 +754,37 @@ unsafe extern "C" fn fs_mkdir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         }
         ::std::result::Result::Err(e) => {
             if argc > 1 && (*args.get(argc - 1).ptr).is_object() {
-                let cb = (*args.get(argc - 1).ptr).to_object();
-                let cb_val = mozjs::jsval::ObjectValue(cb);
-                let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
+                let mut wrapped_cx_err = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                let cx_ref_err = &mut wrapped_cx_err;
+                rooted!(&in(cx_ref_err) let cb = (*args.get(argc - 1).ptr).to_object());
+                rooted!(&in(cx_ref_err) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
                 let err_msg = format!("EACCES: mkdir '{}': {}", path, e);
                 let c_err = ZBox::from_bytes(err_msg.as_bytes());
-                let err_obj = JS_NewPlainObject(cx);
-                if !err_obj.is_null() {
+                rooted!(&in(cx_ref_err) let err_obj = JS_NewPlainObject(cx));
+                if !err_obj.get().is_null() {
                     let msg_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
                     if !msg_str.is_null() {
-                        let msg_val = mozjs::jsval::StringValue(&*msg_str);
-                        let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
+                        rooted!(&in(cx_ref_err) let msg_val = mozjs::jsval::StringValue(&*msg_str));
                         JS_DefineProperty(cx,
-                            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj },
+                            err_obj.handle().into(),
                             c"message".as_ptr(),
-                            msg_h, JSPROP_ENUMERATE as u32);
+                            msg_val.handle().into(), JSPROP_ENUMERATE as u32);
                     }
                     let code_str = JS_NewStringCopyZ(cx, c"EACCES".as_ptr());
                     if !code_str.is_null() {
-                        let code_val = mozjs::jsval::StringValue(&*code_str);
-                        let code_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &code_val };
+                        rooted!(&in(cx_ref_err) let code_val = mozjs::jsval::StringValue(&*code_str));
                         JS_DefineProperty(cx,
-                            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj },
+                            err_obj.handle().into(),
                             c"code".as_ptr(),
-                            code_h, JSPROP_ENUMERATE as u32);
+                            code_val.handle().into(), JSPROP_ENUMERATE as u32);
                     }
-                    let err_val = mozjs::jsval::ObjectValue(err_obj);
-                    let err_args = HandleValueArray { length_: 1, elements_: &err_val as *const JSVal };
+                    rooted!(&in(cx_ref_err) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
+                    let err_args = HandleValueArray { length_: 1, elements_: &err_val.get() as *const JSVal };
                     let global = CurrentGlobalOrNull(cx);
                     if !global.is_null() {
-                        let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+                        rooted!(&in(cx_ref_err) let global_rooted = global);
                         let mut rval = UndefinedValue();
-                        JS_CallFunctionValue(cx, global_h, cb_h, &err_args, MutableHandle::<Value> {
+                        JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &err_args, MutableHandle::<Value> {
                             _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
                         });
                         JS_ClearPendingException(cx);
@@ -812,18 +807,19 @@ macro_rules! promise_simple_op {
         unsafe extern "C" fn $fn_name(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
             let args = CallArgs::from_vp(vp, argc);
             let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
-            let null_obj = ::std::ptr::null_mut::<JSObject>();
-            let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj });
-            if promise.is_null() { args.rval().set(UndefinedValue()); return false; }
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+            if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
             match $op(&path) {
                 ::std::result::Result::Ok(()) => {
-                    resolve_undefined(cx, promise);
+                    resolve_undefined(cx, promise.get());
                 }
                 ::std::result::Result::Err(e) => {
-                    reject_with_error(cx, promise, &format!("{} '{}': {}", $op_name, path, e));
+                    reject_with_error(cx, promise.get(), &format!("{} '{}': {}", $op_name, path, e));
                 }
             }
-            args.rval().set(mozjs::jsval::ObjectValue(promise));
+            args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
             true
         }
     };
@@ -837,14 +833,15 @@ unsafe extern "C" fn fs_promises_rename(cx: *mut JSContext, argc: u32, vp: *mut 
     let args = CallArgs::from_vp(vp, argc);
     let from = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     let to = match get_path_arg(cx, &args, 1) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
-    let null_obj = ::std::ptr::null_mut::<JSObject>();
-    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj });
-    if promise.is_null() { args.rval().set(UndefinedValue()); return false; }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
     match fs::rename(&from, &to) {
-        ::std::result::Result::Ok(()) => resolve_undefined(cx, promise),
-        ::std::result::Result::Err(e) => reject_with_error(cx, promise, &format!("rename '{}': {}", from, e)),
+        ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
+        ::std::result::Result::Err(e) => reject_with_error(cx, promise.get(), &format!("rename '{}': {}", from, e)),
     }
-    args.rval().set(mozjs::jsval::ObjectValue(promise));
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
     true
 }
 
@@ -853,14 +850,15 @@ unsafe extern "C" fn fs_promises_copy_file(cx: *mut JSContext, argc: u32, vp: *m
     let args = CallArgs::from_vp(vp, argc);
     let from = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     let to = match get_path_arg(cx, &args, 1) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
-    let null_obj = ::std::ptr::null_mut::<JSObject>();
-    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj });
-    if promise.is_null() { args.rval().set(UndefinedValue()); return false; }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
     match fs::copy(&from, &to) {
-        ::std::result::Result::Ok(_) => resolve_undefined(cx, promise),
-        ::std::result::Result::Err(e) => reject_with_error(cx, promise, &format!("copyFile '{}': {}", from, e)),
+        ::std::result::Result::Ok(_) => resolve_undefined(cx, promise.get()),
+        ::std::result::Result::Err(e) => reject_with_error(cx, promise.get(), &format!("copyFile '{}': {}", from, e)),
     }
-    args.rval().set(mozjs::jsval::ObjectValue(promise));
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
     true
 }
 
@@ -869,20 +867,20 @@ unsafe extern "C" fn fs_promises_read_file(cx: *mut JSContext, argc: u32, vp: *m
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     let encoding = get_encoding_opt(cx, &args, 1);
-    let null_obj = ::std::ptr::null_mut::<JSObject>();
-    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj });
-    if promise.is_null() { args.rval().set(UndefinedValue()); return false; }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
 
     match bun_fs::read(&path) {
         ::std::result::Result::Ok(data) => {
             let val = string_or_buffer(cx, &data, encoding.as_deref());
-            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &promise };
-            mozjs_sys::jsapi::JS::ResolvePromise(cx, promise_h, val_h);
+            rooted!(&in(cx_ref) let val_rooted = val);
+            unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val_rooted.handle().into()); }
         }
-        ::std::result::Result::Err(e) => reject_with_error(cx, promise, &format!("readFile '{}': {}", path, e)),
+        ::std::result::Result::Err(e) => reject_with_error(cx, promise.get(), &format!("readFile '{}': {}", path, e)),
     }
-    args.rval().set(mozjs::jsval::ObjectValue(promise));
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
     true
 }
 
@@ -895,14 +893,15 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
         let s = data_val.to_string();
         if !s.is_null() { crate::jsstr_to_rust_string(cx, s).into_bytes() } else { Vec::new() }
     } else { Vec::new() };
-    let null_obj = ::std::ptr::null_mut::<JSObject>();
-    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj });
-    if promise.is_null() { args.rval().set(UndefinedValue()); return false; }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
     match bun_fs::write(&path, &bytes) {
-        ::std::result::Result::Ok(()) => resolve_undefined(cx, promise),
-        ::std::result::Result::Err(e) => reject_with_error(cx, promise, &format!("writeFile '{}': {}", path, e)),
+        ::std::result::Result::Ok(()) => resolve_undefined(cx, promise.get()),
+        ::std::result::Result::Err(e) => reject_with_error(cx, promise.get(), &format!("writeFile '{}': {}", path, e)),
     }
-    args.rval().set(mozjs::jsval::ObjectValue(promise));
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
     true
 }
 
@@ -910,20 +909,19 @@ unsafe extern "C" fn fs_promises_write_file(cx: *mut JSContext, argc: u32, vp: *
 unsafe extern "C" fn fs_promises_stat(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
-    let null_obj = ::std::ptr::null_mut::<JSObject>();
-    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj });
-    if promise.is_null() { args.rval().set(UndefinedValue()); return false; }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
     match bun_fs::metadata(&path) {
         ::std::result::Result::Ok(meta) => {
             let stats = create_stats_object(cx, &meta);
-            let val = mozjs::jsval::ObjectValue(stats);
-            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-            let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &promise };
-            mozjs_sys::jsapi::JS::ResolvePromise(cx, promise_h, val_h);
+            rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(stats));
+            unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
         }
-        ::std::result::Result::Err(e) => reject_with_error(cx, promise, &format!("stat '{}': {}", path, e)),
+        ::std::result::Result::Err(e) => reject_with_error(cx, promise.get(), &format!("stat '{}': {}", path, e)),
     }
-    args.rval().set(mozjs::jsval::ObjectValue(promise));
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
     true
 }
 
@@ -971,12 +969,12 @@ unsafe fn get_bool_option(cx: *mut JSContext, args: &CallArgs, opt_index: u32, k
     if args.argc_ <= opt_index { return false; }
     let opt_val = *args.get(opt_index).ptr;
     if !opt_val.is_object() { return false; }
-    let obj = opt_val.to_object();
+    let mut wrapped_cx_opt = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref_opt = &mut wrapped_cx_opt;
+    rooted!(&in(cx_ref_opt) let obj = opt_val.to_object());
     let c_key = ZBox::from_bytes(key.as_bytes());
     let mut val = UndefinedValue();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-    let val_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
-    JS_GetProperty(cx, obj_h, c_key.as_ptr(), val_h);
+    JS_GetProperty(cx, obj.handle().into(), c_key.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
     val.is_boolean() && val.to_boolean()
 }
 
@@ -1045,10 +1043,11 @@ fn metadata_to_posix_stat(meta: &fs::Metadata) -> bun_sys::PosixStat {
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn create_stats_object(cx: *mut JSContext, meta: &bun_sys::PosixStat) -> *mut JSObject {
-    let stats = JS_NewPlainObject(cx);
-    if stats.is_null() { return stats; }
-    let stats_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &stats };
+unsafe fn create_stats_object(cx: *mut JSContext, meta: &bun_fs::PosixStat) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let stats = JS_NewPlainObject(cx));
+    if stats.get().is_null() { return stats.get(); }
 
     // Determine file type from mode (S_IFMT bits)
     let mode_type = (meta.mode as u32) & libc::S_IFMT;
@@ -1056,127 +1055,139 @@ unsafe fn create_stats_object(cx: *mut JSContext, meta: &bun_sys::PosixStat) -> 
     let is_dir = mode_type == libc::S_IFDIR;
     let is_symlink = mode_type == libc::S_IFLNK;
 
-    define_num_prop(cx, stats_h, "size", meta.size as f64);
-    define_num_prop(cx, stats_h, "dev", meta.dev as f64);
-    define_num_prop(cx, stats_h, "ino", meta.ino as f64);
-    define_num_prop(cx, stats_h, "mode", meta.mode as f64);
-    define_num_prop(cx, stats_h, "nlink", meta.nlink as f64);
-    define_num_prop(cx, stats_h, "uid", meta.uid as f64);
-    define_num_prop(cx, stats_h, "gid", meta.gid as f64);
-    define_num_prop(cx, stats_h, "rdev", meta.rdev as f64);
-    define_num_prop(cx, stats_h, "blksize", meta.blksize as f64);
-    define_num_prop(cx, stats_h, "blocks", meta.blocks as f64);
-    define_num_prop(cx, stats_h, "atimeMs", meta.atim.sec as f64 * 1000.0 + meta.atim.nsec as f64 / 1_000_000.0);
-    define_num_prop(cx, stats_h, "mtimeMs", meta.mtim.sec as f64 * 1000.0 + meta.mtim.nsec as f64 / 1_000_000.0);
-    define_num_prop(cx, stats_h, "ctimeMs", meta.ctim.sec as f64 * 1000.0 + meta.ctim.nsec as f64 / 1_000_000.0);
+    define_num_prop(cx, stats.get(), "size", meta.size as f64);
+    define_num_prop(cx, stats.get(), "dev", meta.dev as f64);
+    define_num_prop(cx, stats.get(), "ino", meta.ino as f64);
+    define_num_prop(cx, stats.get(), "mode", meta.mode as f64);
+    define_num_prop(cx, stats.get(), "nlink", meta.nlink as f64);
+    define_num_prop(cx, stats.get(), "uid", meta.uid as f64);
+    define_num_prop(cx, stats.get(), "gid", meta.gid as f64);
+    define_num_prop(cx, stats.get(), "rdev", meta.rdev as f64);
+    define_num_prop(cx, stats.get(), "blksize", meta.blksize as f64);
+    define_num_prop(cx, stats.get(), "blocks", meta.blocks as f64);
+    define_num_prop(cx, stats.get(), "atimeMs", meta.atim.sec as f64 * 1000.0 + meta.atim.nsec as f64 / 1_000_000.0);
+    define_num_prop(cx, stats.get(), "mtimeMs", meta.mtim.sec as f64 * 1000.0 + meta.mtim.nsec as f64 / 1_000_000.0);
+    define_num_prop(cx, stats.get(), "ctimeMs", meta.ctim.sec as f64 * 1000.0 + meta.ctim.nsec as f64 / 1_000_000.0);
 
     // Store boolean values as hidden properties for method callbacks
-    define_bool_prop(cx, stats_h, "_isFile", is_file);
-    define_bool_prop(cx, stats_h, "_isDirectory", is_dir);
-    define_bool_prop(cx, stats_h, "_isSymbolicLink", is_symlink);
+    define_bool_prop(cx, stats.get(), "_isFile", is_file);
+    define_bool_prop(cx, stats.get(), "_isDirectory", is_dir);
+    define_bool_prop(cx, stats.get(), "_isSymbolicLink", is_symlink);
 
     // Node.js Stats methods
-    JS_DefineFunction(cx, stats_h, c"isFile".as_ptr(), Some(stats_is_file), 0, JSPROP_ENUMERATE as u32);
-    JS_DefineFunction(cx, stats_h, c"isDirectory".as_ptr(), Some(stats_is_directory), 0, JSPROP_ENUMERATE as u32);
-    JS_DefineFunction(cx, stats_h, c"isSymbolicLink".as_ptr(), Some(stats_is_symlink), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isFile".as_ptr(), Some(stats_is_file), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isDirectory".as_ptr(), Some(stats_is_directory), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isSymbolicLink".as_ptr(), Some(stats_is_symlink), 0, JSPROP_ENUMERATE as u32);
 
-    stats
+    stats.get()
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn create_dirent(cx: *mut JSContext, name: &str, is_dir: bool) -> *mut JSObject {
-    let dirent = JS_NewPlainObject(cx);
-    if dirent.is_null() { return dirent; }
-    let dirent_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &dirent };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let dirent = JS_NewPlainObject(cx));
+    if dirent.get().is_null() { return dirent.get(); }
     let c_name = ZBox::from_bytes(name.as_bytes());
     let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
     if !js_str.is_null() {
-        let name_val = mozjs::jsval::StringValue(&*js_str);
-        let name_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &name_val };
-        JS_DefineProperty(cx, dirent_h, c"name".as_ptr(), name_h, JSPROP_ENUMERATE as u32);
+        rooted!(&in(cx_ref) let name_val = mozjs::jsval::StringValue(&*js_str));
+        JS_DefineProperty(cx, dirent.handle().into(), c"name".as_ptr(), name_val.handle().into(), JSPROP_ENUMERATE as u32);
     }
-    define_bool_prop(cx, dirent_h, "isFile", !is_dir);
-    define_bool_prop(cx, dirent_h, "isDirectory", is_dir);
-    dirent
+    define_bool_prop(cx, dirent.get(), "isFile", !is_dir);
+    define_bool_prop(cx, dirent.get(), "isDirectory", is_dir);
+    dirent.get()
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn resolve_undefined(cx: *mut JSContext, promise: *mut JSObject) {
-    let val = UndefinedValue();
-    let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-    let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &promise };
-    mozjs_sys::jsapi::JS::ResolvePromise(cx, promise_h, val_h);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let val = UndefinedValue());
+    rooted!(&in(cx_ref) let promise_rooted = promise);
+    mozjs_sys::jsapi::JS::ResolvePromise(cx, promise_rooted.handle().into(), val.handle().into());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn reject_with_error(cx: *mut JSContext, promise: *mut JSObject, msg: &str) {
-    let err_obj = JS_NewPlainObject(cx);
-    if !err_obj.is_null() {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
+    if !err_obj.get().is_null() {
         let c_msg = ZBox::from_bytes(msg.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
         if !js_str.is_null() {
-            let msg_val = mozjs::jsval::StringValue(&*js_str);
-            let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
-            let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
-            JS_DefineProperty(cx, err_h, c"message".as_ptr(), msg_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let msg_val = mozjs::jsval::StringValue(&*js_str));
+            JS_DefineProperty(cx, err_obj.handle().into(), c"message".as_ptr(), msg_val.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
-    let err_val = mozjs::jsval::ObjectValue(err_obj);
-    let err_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
-    let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &promise };
-    mozjs_sys::jsapi::JS::RejectPromise(cx, promise_h, err_h);
+    rooted!(&in(cx_ref) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
+    rooted!(&in(cx_ref) let promise_rooted = promise);
+    mozjs_sys::jsapi::JS::RejectPromise(cx, promise_rooted.handle().into(), err_val.handle().into());
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_num_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: &str, val: f64) {
+unsafe fn define_num_prop(cx: *mut JSContext, obj_ptr: *mut JSObject, name: &str, val: f64) {
     let c_name = ZBox::from_bytes(name.as_bytes());
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = obj_ptr);
     let js_val = if val == (val as i32) as f64 && val.abs() < i32::MAX as f64 {
         mozjs::jsval::Int32Value(val as i32)
     } else {
         mozjs::jsval::DoubleValue(val)
     };
-    let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &js_val };
-    JS_DefineProperty(cx, obj, c_name.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let v = js_val);
+    JS_DefineProperty(cx, obj.handle().into(), c_name.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_bool_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, name: &str, val: bool) {
+unsafe fn define_bool_prop(cx: *mut JSContext, obj_ptr: *mut JSObject, name: &str, val: bool) {
     let c_name = ZBox::from_bytes(name.as_bytes());
-    let js_val = mozjs::jsval::BooleanValue(val);
-    let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &js_val };
-    JS_DefineProperty(cx, obj, c_name.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = obj_ptr);
+    rooted!(&in(cx_ref) let v = mozjs::jsval::BooleanValue(val));
+    JS_DefineProperty(cx, obj.handle().into(), c_name.as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn get_hidden_bool(cx: *mut JSContext, obj: *mut JSObject, prop: &str) -> bool {
     let c_name = ZBox::from_bytes(prop.as_bytes());
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_rooted = obj);
     let mut val = UndefinedValue();
-    let val_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
-    JS_GetProperty(cx, obj_h, c_name.as_ptr(), val_h);
+    JS_GetProperty(cx, obj_rooted.handle().into(), c_name.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
     val.to_boolean()
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv().to_object();
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this, "_isFile")));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isFile")));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_directory(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv().to_object();
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this, "_isDirectory")));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isDirectory")));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_symlink(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv().to_object();
-    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this, "_isSymbolicLink")));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isSymbolicLink")));
     true
 }

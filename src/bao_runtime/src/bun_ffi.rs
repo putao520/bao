@@ -291,13 +291,13 @@ unsafe extern "C" fn ffi_dlopen(
             let val = PrivateValue(lib_ptr);
             JS_SetReservedSlot(obj, SLOT_LIB, &val);
 
-            // Define instance methods
+            // Root the object and define instance methods using rooted handle
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let obj_r = obj);
             JS_DefineFunction(
                 cx,
-                Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &obj,
-                },
+                obj_r.handle().into(),
                 c"close".as_ptr(),
                 Some(ffi_library_close),
                 0,
@@ -305,17 +305,14 @@ unsafe extern "C" fn ffi_dlopen(
             );
             JS_DefineFunction(
                 cx,
-                Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &obj,
-                },
+                obj_r.handle().into(),
                 c"symbol".as_ptr(),
                 Some(ffi_library_symbol),
                 1,
                 JSPROP_ENUMERATE as u32,
             );
 
-            args.rval().set(ObjectValue(obj));
+            args.rval().set(ObjectValue(obj_r.get()));
             true
         }
         Err(e) => {

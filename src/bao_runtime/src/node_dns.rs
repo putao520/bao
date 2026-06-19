@@ -514,22 +514,17 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 
         // Also keep mirrors on the module object for completeness (existing
         // callers may import the helpers off the dns module).
-        let mod_ptr = mod_obj.get();
-        let mod_h = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mod_ptr,
-        };
-        JS_DefineFunction(cx_raw, mod_h, c"__dns_lookup".as_ptr(), Some(dns_lookup), 1, 0);
-        JS_DefineFunction(cx_raw, mod_h, c"__dns_resolve".as_ptr(), Some(dns_resolve), 2, 0);
+        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__dns_lookup".as_ptr(), Some(dns_lookup), 1, 0);
+        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__dns_resolve".as_ptr(), Some(dns_resolve), 2, 0);
         JS_DefineFunction(
             cx_raw,
-            mod_h,
+            mod_obj.handle().into(),
             c"__dns_resolve6".as_ptr(),
             Some(dns_resolve6),
             1,
             0,
         );
-        JS_DefineFunction(cx_raw, mod_h, c"__dns_reverse".as_ptr(), Some(dns_reverse), 1, 0);
+        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__dns_reverse".as_ptr(), Some(dns_reverse), 1, 0);
 
         let c_filename = ZBox::from_bytes("node:dns".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
@@ -551,16 +546,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
 
         let exports_obj = rval.to_object();
-        let exports_h = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &exports_obj,
-        };
-
-        let mod_ptr2 = mod_obj.get();
-        let mod_h2 = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mod_ptr2,
-        };
+        rooted!(&in(cx) let exports_rooted = exports_obj);
 
         for name in &[
             "lookup",
@@ -577,7 +563,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let mut val = UndefinedValue();
             JS_GetProperty(
                 cx_raw,
-                exports_h,
+                exports_rooted.handle().into(),
                 cname.as_ptr(),
                 MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
@@ -591,7 +577,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 };
                 JS_DefineProperty(
                     cx_raw,
-                    mod_h2,
+                    mod_obj.handle().into(),
                     cname.as_ptr(),
                     val_h,
                     JSPROP_ENUMERATE as u32,

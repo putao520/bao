@@ -206,9 +206,11 @@ unsafe extern "C" fn https_request(
     };
 
     // Build the PENDING Promise. The network round-trip runs off the JS thread.
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let null_global = ::std::ptr::null_mut::<JSObject>());
     let promise = mozjs_sys::jsapi::JS::NewPromiseObject(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() },
+        null_global.handle().into(),
     );
     if promise.is_null() {
         args.rval().set(UndefinedValue());
@@ -352,14 +354,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     unsafe {
         let cx_raw = cx.raw_cx();
 
-        let mod_ptr = mod_obj.get();
-        let mod_h = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mod_ptr,
-        };
         JS_DefineFunction(
             cx_raw,
-            mod_h,
+            mod_obj.handle().into(),
             c"__https_request".as_ptr(),
             Some(https_request),
             4,
@@ -386,16 +383,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
 
         let exports_obj = rval.to_object();
-        let exports_h = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &exports_obj,
-        };
-
-        let mod_ptr2 = mod_obj.get();
-        let mod_h2 = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mod_ptr2,
-        };
+        rooted!(&in(cx) let exports_rooted = exports_obj);
 
         for name in &[
             "request",
@@ -409,7 +397,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let mut val = UndefinedValue();
             JS_GetProperty(
                 cx_raw,
-                exports_h,
+                exports_rooted.handle().into(),
                 cname.as_ptr(),
                 MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
@@ -423,7 +411,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 };
                 JS_DefineProperty(
                     cx_raw,
-                    mod_h2,
+                    mod_obj.handle().into(),
                     cname.as_ptr(),
                     val_h,
                     JSPROP_ENUMERATE as u32,

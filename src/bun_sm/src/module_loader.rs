@@ -90,15 +90,15 @@ fn module_cache_insert(cx: *mut JSContext, key: &str, obj: *mut JSObject) {
     if obj.is_null() { return; }
     let global = unsafe { CurrentGlobalOrNull(cx) };
     if global.is_null() { return; }
+    rooted!(in(cx) let global_root = global);
     let prop_name = mod_prop_name(key);
-    let obj_val = mozjs::jsval::ObjectValue(obj);
-    let obj_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &obj_val };
+    rooted!(in(cx) let obj_val = mozjs::jsval::ObjectValue(obj));
     unsafe {
         JS_DefineProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+            global_root.handle().into(),
             prop_name.as_ptr(),
-            obj_h,
+            obj_val.handle().into(),
             JSPROP_READONLY as u32,
         );
     }
@@ -110,12 +110,13 @@ fn module_cache_get(cx: *mut JSContext, key: &str) -> Option<*mut JSObject> {
     if !MODULE_CACHE.with(|c| c.borrow().contains(key)) { return None; }
     let global = unsafe { CurrentGlobalOrNull(cx) };
     if global.is_null() { return None; }
+    rooted!(in(cx) let global_root = global);
     let prop_name = mod_prop_name(key);
     let mut val = UndefinedValue();
     unsafe {
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+            global_root.handle().into(),
             prop_name.as_ptr(),
             MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val },
         );
@@ -1116,8 +1117,10 @@ unsafe extern "C" fn host_populate_import_meta(
             return false;
         }
         let url_val = mozjs::jsval::StringValue(&*url_js);
-        let url_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &url_val };
-        if !JS_DefineProperty(raw_cx, meta_object, c"url".as_ptr(), url_h, JSPROP_ENUMERATE as u32) {
+        // BCE-20260619-012: StringValue contains GC-managed JSString pointer; must be rooted.
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
+        rooted!(&in(wrapped_cx) let url_val_root = url_val);
+        if !JS_DefineProperty(raw_cx, meta_object, c"url".as_ptr(), url_val_root.handle().into(), JSPROP_ENUMERATE as u32) {
             return false;
         }
 
@@ -1145,8 +1148,9 @@ unsafe extern "C" fn host_populate_import_meta(
                 return false;
             }
             let v = mozjs::jsval::StringValue(&*js);
-            let h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-            JS_DefineProperty(raw_cx, meta_object, name.as_ptr(), h, JSPROP_ENUMERATE as u32)
+            // BCE-20260619-012: StringValue contains GC-managed JSString pointer; must be rooted.
+            rooted!(&in(wrapped_cx) let v_root = v);
+            JS_DefineProperty(raw_cx, meta_object, name.as_ptr(), v_root.handle().into(), JSPROP_ENUMERATE as u32)
         };
 
         if !define_str_prop(c"path".as_ref(), &path_str) { return false; }
@@ -1174,16 +1178,17 @@ unsafe extern "C" fn host_populate_import_meta(
         // `import.meta.require("fs")` without going through dynamic import().
         let global_obj = unsafe { CurrentGlobalOrNull(raw_cx) };
         if !global_obj.is_null() {
-            let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global_obj };
+            rooted!(in(raw_cx) let global_root = global_obj);
             let mut require_val = mozjs::jsval::UndefinedValue();
             let require_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut require_val };
-            let got = unsafe { mozjs_sys::jsapi::JS_GetProperty(raw_cx, global_h, c"require".as_ptr(), require_h) };
+            let got = unsafe { mozjs_sys::jsapi::JS_GetProperty(raw_cx, global_root.handle().into(), c"require".as_ptr(), require_h) };
             if got && require_val.is_object() {
                 let require_obj_val = require_val;
-                let require_obj_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &require_obj_val };
+                // BCE-20260619-012: require_obj_val may contain GC-managed object; must be rooted.
+                rooted!(&in(wrapped_cx) let require_obj_root = require_obj_val);
                 // Non-enumerable — `import.meta.require` is a function reference,
                 // not a data property that should serialize.
-                let _ = unsafe { JS_DefineProperty(raw_cx, meta_object, c"require".as_ptr(), require_obj_h, 0) };
+                let _ = unsafe { JS_DefineProperty(raw_cx, meta_object, c"require".as_ptr(), require_obj_root.handle().into(), 0) };
             }
         }
         true
@@ -1321,15 +1326,14 @@ unsafe extern "C" fn host_dynamic_import(
 
         module_cache_insert(raw_cx, &cache_key, module);
 
-        let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module };
-        if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_h) {
+        rooted!(in(raw_cx) let module_root = module);
+        if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_root.handle().into()) {
             // Link failed — complete via FinishDynamicModuleImport with null eval promise.
-            let null_obj = ::std::ptr::null_mut::<JSObject>();
-            let null_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj };
+            rooted!(in(raw_cx) let null_root = ::std::ptr::null_mut::<JSObject>());
             return unsafe {
                 mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
                     raw_cx,
-                    null_h,
+                    null_root.handle().into(),
                     referencing_private,
                     module_request,
                     promise,
@@ -1339,7 +1343,7 @@ unsafe extern "C" fn host_dynamic_import(
 
         let mut eval_rval = UndefinedValue();
         let eval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
-        let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_h, eval_h);
+        let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h);
 
         // Drain microtasks so synchronous module bodies complete.
         mozjs_sys::jsapi::js::RunJobs(raw_cx);
@@ -1352,12 +1356,12 @@ unsafe extern "C" fn host_dynamic_import(
         } else {
             ::std::ptr::null_mut::<JSObject>()
         };
-        let eval_promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &evaluation_promise };
+        rooted!(in(raw_cx) let eval_promise_root = evaluation_promise);
 
         // BUG-ENG-365: spec-mandated completion path.
         mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
             raw_cx,
-            eval_promise_h,
+            eval_promise_root.handle().into(),
             referencing_private,
             module_request,
             promise,
@@ -1375,9 +1379,10 @@ unsafe fn resolve_dynamic_promise_with_value(
     promise: Handle<*mut JSObject>,
     val: Value,
 ) -> bool {
-    let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-    let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-    unsafe { mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise_h, val_h) }
+    // BCE-20260619-012: val may contain GC-managed pointer; must be rooted.
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
+    rooted!(&in(wrapped_cx) let val_root = val);
+    unsafe { mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise, val_root.handle().into()) }
 }
 
 /// Reject the user-facing dynamic import promise with an Error object
@@ -1393,17 +1398,17 @@ unsafe fn reject_dynamic_promise(
     let Ok(c_msg) = CString::new(msg) else { return false };
     let err_obj = unsafe { mozjs_sys::jsapi::JS_NewPlainObject(raw_cx) };
     if !err_obj.is_null() {
+        rooted!(in(raw_cx) let err_root = err_obj);
         let err_msg = unsafe { JS_NewStringCopyZ(raw_cx, c_msg.as_ptr()) };
         if !err_msg.is_null() {
             let msg_val = mozjs::jsval::StringValue(&*err_msg);
-            let msg_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &msg_val };
-            let err_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &err_obj };
-            unsafe { JS_SetProperty(raw_cx, err_h, c"message".as_ptr(), msg_h) };
+            rooted!(in(raw_cx) let msg_h = msg_val);
+            unsafe { JS_SetProperty(raw_cx, err_root.handle().into(), c"message".as_ptr(), msg_h.handle().into()) };
         }
         let err_val = mozjs::jsval::ObjectValue(err_obj);
-        let err_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &err_val };
-        let promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: promise.ptr };
-        unsafe { mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise_h, err_handle) };
+        // BCE-20260619-012: ObjectValue contains GC-managed object; must be rooted.
+        rooted!(in(raw_cx) let err_root_val = err_val);
+        unsafe { mozjs_sys::jsapi::JS::RejectPromise(raw_cx, promise, err_root_val.handle().into()) };
     }
     true
 }
@@ -1592,14 +1597,13 @@ unsafe fn dynamic_import_data_url(
     set_module_private(raw_cx, module, specifier_str);
     module_cache_insert(raw_cx, &cache_key, module);
 
-    let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module };
-    if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_h) {
-        let null_obj = ::std::ptr::null_mut::<JSObject>();
-        let null_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &null_obj };
+    rooted!(in(raw_cx) let module_root = module);
+    if !mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_root.handle().into()) {
+        rooted!(in(raw_cx) let null_root = ::std::ptr::null_mut::<JSObject>());
         return unsafe {
             mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
                 raw_cx,
-                null_h,
+                null_root.handle().into(),
                 referencing_private,
                 module_request,
                 promise,
@@ -1609,7 +1613,7 @@ unsafe fn dynamic_import_data_url(
 
     let mut eval_rval = UndefinedValue();
     let eval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
-    let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_h, eval_h);
+    let eval_ok = mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h);
     mozjs_sys::jsapi::js::RunJobs(raw_cx);
 
     let evaluation_promise = if eval_ok && eval_rval.is_object() {
@@ -1617,11 +1621,11 @@ unsafe fn dynamic_import_data_url(
     } else {
         ::std::ptr::null_mut::<JSObject>()
     };
-    let eval_promise_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &evaluation_promise };
+    rooted!(in(raw_cx) let eval_promise_root = evaluation_promise);
 
     mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
         raw_cx,
-        eval_promise_h,
+        eval_promise_root.handle().into(),
         referencing_private,
         module_request,
         promise,
@@ -1730,21 +1734,15 @@ export default _m;
     // Step 2: link + evaluate (only if the module hasn't been linked/eval'd
     // before). Re-entering ModuleLink/ModuleEvaluate on an evaluated module
     // is illegal in SM and crashes the host process.
-    let module_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &module,
-    };
+    rooted!(in(raw_cx) let module_root = module);
     if !already_evaluated {
-        if !unsafe { mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_h) } {
-            let null_obj = ::std::ptr::null_mut::<JSObject>();
-            let null_h = Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &null_obj,
-            };
+        if !unsafe { mozjs_sys::jsapi::JS::ModuleLink(raw_cx, module_root.handle().into()) } {
+            // BCE-20260619-012: null_obj must be rooted before creating Handle
+            rooted!(in(raw_cx) let null_root = ::std::ptr::null_mut::<JSObject>());
             return unsafe {
                 mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
                     raw_cx,
-                    null_h,
+                    null_root.handle().into(),
                     referencing_private,
                     module_request,
                     promise,
@@ -1757,7 +1755,7 @@ export default _m;
             _phantom_0: ::std::marker::PhantomData,
             ptr: &mut eval_rval,
         };
-        let eval_ok = unsafe { mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_h, eval_h) };
+        let eval_ok = unsafe { mozjs_sys::jsapi::JS::ModuleEvaluate(raw_cx, module_root.handle().into(), eval_h) };
         unsafe { mozjs_sys::jsapi::js::RunJobs(raw_cx) };
 
         // Capture the evaluation promise for FinishDynamicModuleImport. When
@@ -1768,14 +1766,11 @@ export default _m;
         } else {
             ::std::ptr::null_mut::<JSObject>()
         };
-        let eval_promise_h = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &evaluation_promise,
-        };
+        rooted!(in(raw_cx) let eval_promise_root = evaluation_promise);
         return unsafe {
             mozjs_sys::jsapi::JS::FinishDynamicModuleImport(
                 raw_cx,
-                eval_promise_h,
+                eval_promise_root.handle().into(),
                 referencing_private,
                 module_request,
                 promise,
@@ -1788,11 +1783,7 @@ export default _m;
     // fetch the module namespace directly and resolve the user-facing
     // promise with it. The namespace object exposes the same shape (named
     // exports + `default`) that FinishDynamicModuleImport would resolve to.
-    let module_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &module,
-    };
-    let ns = unsafe { mozjs_sys::jsapi::JS::GetModuleNamespace(raw_cx, module_h) };
+    let ns = unsafe { mozjs_sys::jsapi::JS::GetModuleNamespace(raw_cx, module_root.handle().into()) };
     if ns.is_null() {
         return unsafe { reject_dynamic_promise(raw_cx, promise, "Internal: failed to get module namespace") };
     }

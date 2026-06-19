@@ -1,0 +1,463 @@
+{
+  "_meta": {
+    "purpose": "BCE-007 (BCE-20260618-007) 根治方案 SPEC 落地 — 可直接执行的 spec_write payload 集",
+    "source": "architect consult (converged=true) — fetch self-loop 双向死锁范式缺陷",
+    "toolConstraint": "本文件由无 spec_write MCP 工具权限的 sub-agent 产出。Commander 需用 spec_write + spec_govern(check) 逐条执行。每条 write 后立即 spec_govern(action='check', auditAction='check', dir='.spec') 须 0 error。",
+    "idAssignments": {
+      "REQ-ENG-010": "REQ ENG nextN=10 (registry confirmed)",
+      "BUG-ENG-367": "BUG ENG nextN=367 (registry confirmed)",
+      "TEST-ENG-010": "TEST ENG nextN=10 (registry confirmed)",
+      "FetchTasklet": "Entity free-form name (no counter, BaoRuntime pattern)",
+      "DEC-ENG-001": "DEC ENG domain 已在 .id-registry.json 预先创建 (nextN=2, allocated=[], 预验通过, spec_write create 不再依赖运行时 fix)"
+    },
+    "verifiedAnchors": {
+      "fetch_fn": "src/bao_runtime/src/fetch_api.rs:117 (do_fetch 同步调用，已核实)",
+      "node_http_entry": "src/bao_runtime/src/node_http.rs:752 (unsafe extern C http_request, JS native entry, 已核实)",
+      "node_http_get_entry": "src/bao_runtime/src/node_http.rs:803 (unsafe extern C http_get, 委托 http_request @808 → 同类实例; 已核实无独立 send_sync, 迁移 http_request 即连带覆盖)",
+      "node_https": "src/bao_runtime/src/node_https.rs:165 (https_request extern C 入口定义行) → 调 perform_https_request @196 → stealth_http_request @226 (阻塞调用行)",
+      "node_tls": "src/bao_runtime/src/node_tls.rs:319 (tls_connect extern C 入口定义行) → 调 stealth_http_request @363 (阻塞调用行)",
+      "stealth_http_base": "src/bao_runtime/src/stealth_http.rs:64 (pub fn stealth_http_request, 共享底层)",
+      "AsyncHTTP_send_sync": "src/http/AsyncHTTP.rs:682 (send_sync 阻塞点)",
+      "AsyncHTTP_read_item": "src/http/AsyncHTTP.rs:631 (SingleHTTPChannel Condvar 阻塞)",
+      "AsyncHTTP_schedule": "src/http/AsyncHTTP.rs:597 (schedule 异步路径已存在)",
+      "AsyncHTTP_init": "src/http/AsyncHTTP.rs:451 (init + result_callback)",
+      "enqueue_task_concurrent": "src/bun_sm/src/dispatch_sm.rs:332 (跨线程 JS 回调通道已 wire 到 BaoEventLoop)",
+      "poll_ref": "src/bun_sm/src/dispatch_sm.rs:65/163/169 (pending_unref_count + ref/unref_concurrently)",
+      "timers_tick": "src/bao_runtime/src/timers.rs:170 (drain_and_check tick_once)",
+      "bun_serve_uws": "src/bao_runtime/src/bun_api.rs:1376 (uWS App 寄生 JS-thread MiniEventLoop)",
+      "promise_template": "src/bao_runtime/src/node_fs.rs:816/841 (NewPromiseObject + ResolvePromise)"
+    },
+    "scopeValidation": {
+      "migrationEntries_6": ["fetch_api.rs:117 fetch_fn", "node_http.rs:752 http_request extern C", "node_http.rs:803 http_get extern C (委托 http_request @808, delegated)", "node_https.rs:165 https_request extern C (→ stealth_http_request @226)", "node_tls.rs:319 tls_connect extern C (→ stealth_http_request @363)", "stealth_http.rs:64 stealth_http_request (底层共享)"],
+      "h3_fetch_excluded": "src/bao_runtime/src/h3_fetch.rs 无 send_sync/stealth_http_request/do_fetch (grep 已核实，仅为 flag toggle，不在迁移范围)",
+      "riskB_s3_internal_callers": "src/bao_runtime/src/s3_api.rs 不调用 http_request/do_fetch/stealth_http_request/send_sync (grep 已核实，无内部同步调用方依赖，RISK B 实际为空集)"
+    }
+  },
+
+  "writes": [
+    {
+      "_seq": 1,
+      "_type": "req",
+      "_id": "REQ-ENG-010",
+      "_file": "10-REQUIREMENTS",
+      "_rationale": "DECISION 1/4/6 — 范式级需求：所有对外 JS fetch/http/https/tls API 异步集成事件循环",
+      "call": {
+        "dir": ".spec",
+        "elementType": "req",
+        "crudAction": "create",
+        "file": "10-REQUIREMENTS",
+        "data": {
+          "id": "REQ-ENG-010",
+          "title": "异步 Fetch/HTTP 事件循环集成（FetchTasklet 模式）",
+          "description": "所有对外 JS fetch/http/https/tls API 必须采用 Bun FetchTasklet 模式：返回 pending Promise，通过 AsyncHTTP::schedule 异步发起请求（不在 JS native call 中 send_sync 阻塞），HTTPThread 完成回调跨线程 enqueue_task_concurrent 投递到 JS 线程事件循环，JS 线程下一 tick 构建 Response JS 对象并 ResolvePromise/RejectPromise，KeepAlive poll_ref 保活事件循环。范式级修复，禁止任何 JS native call 中 send_sync/Condvar 阻塞 JS 线程，否则 Bun.serve self-loop 场景双向死锁。",
+          "domain": "ENG",
+          "category": "business",
+          "status": "approved",
+          "api": "POST /fetch/async-tasklet",
+          "entities": ["FetchTasklet", "BaoRuntime"],
+          "criteria": [
+            {"id": "REQ-ENG-010-C1", "text": "fetch_fn (fetch_api.rs:117) 返回 pending Promise，不同步调用 do_fetch/send_sync；FetchTasklet::start 经 AsyncHTTP::init+schedule 异步发起"},
+            {"id": "REQ-ENG-010-C2", "text": "6 个 JS native 入口全部迁移至 AsyncHTTP::schedule 异步路径，零 send_sync 残留（含直接与委托链）：fetch_api.rs:117 fetch_fn / node_http.rs:752 http_request / node_http.rs:803 http_get[委托 http_request @808, delegated] / node_https.rs:165 https_request[→ stealth_http_request @226] / node_tls.rs:319 tls_connect[→ stealth_http_request @363] / 底层 stealth_http.rs:64 stealth_http_request"},
+            {"id": "REQ-ENG-010-C3", "text": "HTTPThread result_callback 在 HTTP 线程触发 → 把 (promise_handle, HttpResponse) 封成 ConcurrentTask → BaoEventLoop.enqueue_task_concurrent 投递到 JS 线程"},
+            {"id": "REQ-ENG-010-C4", "text": "JS 线程下一 tick 消费 ConcurrentTask → 复用 build_response_js 构建 Response JS 对象 → ResolvePromise/RejectPromise"},
+            {"id": "REQ-ENG-010-C5", "text": "KeepAlive poll_ref：start 时 ref_concurrently 保活事件循环；resolve/reject/abort/timeout 每条退出路径都 unref_concurrently（FetchTasklet Drop 兜底 unref，事件循环不空转也不死锁）"},
+            {"id": "REQ-ENG-010-C6", "text": "pending Promise JSObject* 通过堆上 root 注册防 SM GC 回收（mozjs_sys::jsapi::JS::PersistentRootedObject 或 JS_AddExtraRoot，禁用栈上 rooted!() 宏——异步窗口跨 tick 栈帧已退）；callback 完成后 RemoveRoot（TOCTOU/GC 安全）"},
+            {"id": "REQ-ENG-010-C7", "text": "Bun.serve self-loop 场景（Bun.serve + fetch(self)）10s 内打印 DONE 并 exit 0，双向死锁解开"},
+            {"id": "REQ-ENG-010-C8", "text": "不修改 bun_* 上游 crate 与 servo 上游；改动域限定 bao_runtime（fetch_api/node_http/node_https/node_tls/stealth_http + 新建 fetch_async.rs）"},
+            {"id": "REQ-ENG-010-C9", "text": "h3_fetch.rs 无 send_sync（已核实），不在迁移范围；grep 复核确认"}
+          ],
+          "tests": ["TEST-ENG-010"],
+          "decisions": ["DEC-ENG-001"],
+          "relatedBugs": ["BUG-ENG-367"]
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 2,
+      "_type": "entity",
+      "_id": "FetchTasklet",
+      "_file": "04-DATA-MODEL",
+      "_rationale": "DECISION 4 — 新建 fetch_async.rs 封装的结构体作为数据模型 Entity",
+      "call": {
+        "dir": ".spec",
+        "elementType": "entity",
+        "crudAction": "create",
+        "file": "04-DATA-MODEL",
+        "data": {
+          "id": "FetchTasklet",
+          "name": "FetchTasklet",
+          "modelType": "relational",
+          "description": "异步 fetch 请求的任务封装（对齐 Bun FetchTasklet.zig 设计）。JS native call 创建 pending Promise + FetchTasklet 后立即返回；HTTPThread 异步完成回调跨线程 enqueue_task_concurrent 回 JS 线程 resolve/reject。保活事件循环 + 防 GC 回收。",
+          "fields": [
+            {"name": "promise", "type": "*mut JSObject", "required": true, "description": "JS pending Promise 句柄（返回给 JS 的对象）。pending Promise 堆上 root 句柄：用 mozjs_sys::jsapi::JS::PersistentRootedObject 或 JS_AddExtraRoot（堆分配）注册，禁用栈上 rooted!() 宏（异步窗口跨 tick，栈帧已退 → UAF）。resolve/reject 后 RemoveRoot 释放。"},
+            {"name": "cx", "type": "*mut JSContext", "required": true, "description": "创建 promise 的 SpiderMonkey 上下文（与 servo 共享 JSContext）"},
+            {"name": "profile", "type": "TlsProfile", "required": false, "description": "反指纹 TLS 配置（stealth_http 路径使用）"},
+            {"name": "method", "type": "Method", "required": true, "description": "HTTP 方法 (GET/POST/...)"},
+            {"name": "url", "type": "String", "required": true, "description": "请求 URL"},
+            {"name": "headers", "type": "Vec<(String, String)>", "required": false, "description": "请求头"},
+            {"name": "body", "type": "Option<Vec<u8>>", "required": false, "description": "请求体"},
+            {"name": "async_http", "type": "Box<AsyncHTTP<'static>>", "required": true, "description": "bun_http AsyncHTTP 实例（init+schedule 异步路径）"},
+            {"name": "response_buffer", "type": "Box<MutableString>", "required": true, "description": "响应体缓冲（HTTPThread 写入，JS 线程读取）"},
+            {"name": "rooted", "type": "bool", "required": true, "description": "Promise 是否已堆上 root 注册（JS::PersistentRootedObject 或 JS_AddExtraRoot，禁用栈上 rooted!()）。防 SM GC 回收（RISK A）"},
+            {"name": "poll_ref_held", "type": "bool", "required": true, "description": "是否持有 KeepAlive poll_ref (ref_concurrently 已调用，待 unref)"}
+          ],
+          "constraints": [
+            "Drop trait 必须兜底 unref_concurrently（防 RISK C 事件循环永不退出）",
+            "Drop trait 必须兜底 RemoveRoot（防堆上 PersistentRoot 泄漏）",
+            "promise 句柄在 async 窗口内必须 rooted=true（堆上 JS::PersistentRootedObject 或 JS_AddExtraRoot，禁用栈上 rooted!()）"
+          ],
+          "operations": [
+            {"name": "start", "signature": "start(cx, promise, profile, method, url, headers, body) -> Self", "description": "AsyncHTTP::init(自定义 result_callback=fetch_async_callback) + schedule(batch) + HTTPThread::schedule + poll_ref.ref_concurrently()"},
+            {"name": "fetch_async_callback", "signature": "callback(this, async_http, result) [HTTP 线程触发]", "description": "提取 HttpResponse → 把 (promise_handle, result) 封成 ConcurrentTask → enqueue_task_concurrent 投递到 JS 线程"},
+            {"name": "fetch_async_resolve", "signature": "resolve(this, result) [JS 线程触发]", "description": "build_response_js 构建 Response JS 对象 → ResolvePromise/RejectPromise → poll_ref.unref_concurrently()"},
+            {"name": "build_response_js", "signature": "build_response_js(cx, response) -> JSObject", "description": "复用现有 fetch_fn 对象构建逻辑（status/headers/body/arrayBuffer 等）提取出的可复用函数"}
+          ],
+          "relatedReqs": ["REQ-ENG-010"],
+          "relatedSM": "FetchTaskletLifecycle"
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 3,
+      "_type": "sm",
+      "_id": "FetchTaskletLifecycle",
+      "_file": "03-PROCESS",
+      "_rationale": "DECISION 4/5/6 + RISK C — 异步 fetch 任务的状态机，约束每条退出路径 unref（防事件循环空转死锁）",
+      "call": {
+        "dir": ".spec",
+        "elementType": "sm",
+        "crudAction": "create",
+        "file": "03-PROCESS",
+        "data": {
+          "id": "FetchTaskletLifecycle",
+          "name": "FetchTaskletLifecycle",
+          "description": "异步 fetch 任务生命周期状态机。约束：Created→Scheduled 必 ref_concurrently；Scheduled→Resolved/Rejected/Aborted/TimedOut 每条终态转换必 unref_concurrently + RemoveRoot（RISK C：漏 unref → 事件循环永不退出反向死锁）。",
+          "states": ["Created", "Scheduled", "Resolved", "Rejected", "Aborted", "TimedOut"],
+          "initialState": "Created",
+          "transitions": [
+            {"from": "Created", "to": "Scheduled", "on": "start", "guard": "promise rooted=true && poll_ref.ref_concurrently() 已调用"},
+            {"from": "Scheduled", "to": "Resolved", "on": "http_response_ok", "action": "build_response_js + ResolvePromise + poll_ref.unref_concurrently() + RemoveRoot"},
+            {"from": "Scheduled", "to": "Rejected", "on": "http_error", "action": "RejectPromise(error) + poll_ref.unref_concurrently() + RemoveRoot"},
+            {"from": "Scheduled", "to": "TimedOut", "on": "connect_timeout_exceeded", "action": "RejectPromise(TimeoutError) + poll_ref.unref_concurrently() + RemoveRoot"},
+            {"from": "Scheduled", "to": "Aborted", "on": "abort_signal", "action": "RejectPromise(AbortError) + poll_ref.unref_concurrently() + RemoveRoot"},
+            {"from": "Scheduled", "to": "Rejected", "on": "drop_before_complete", "action": "兜底 RejectPromise + poll_ref.unref_concurrently() + RemoveRoot（Drop trait）"}
+          ],
+          "invariants": [
+            "INV-1: 在 Scheduled 态 poll_ref_held 必为 true",
+            "INV-2: 任何离开 Scheduled 的转换必执行 unref_concurrently（零例外，含 Drop）",
+            "INV-3: 任何离开 Created/Scheduled 的终态转换必 RemoveRoot（防堆上 PersistentRoot 泄漏）",
+            "INV-4: resolved+rejected+aborted+timedout 计数之和 == 进入 Scheduled 的次数（无泄漏）",
+            "INV-5 (跨线程边界不变式): HTTPThread 侧 fetch_async_callback 仅封装 (promise_handle_raw, result) 成 ConcurrentTask 并 enqueue_task_concurrent 投递，禁止接触 *mut JSObject / *mut JSContext / 调用 ResolvePromise/RejectPromise/NewPromiseObject 等 SM API；所有 JS 对象操作（build_response_js / ResolvePromise / RejectPromise / RemoveRoot）必须在 JS-thread resolve 段（fetch_async_resolve）执行。违反 → SM GC 跨线程崩溃。"
+          ],
+          "relatedReqs": ["REQ-ENG-010"],
+          "relatedEntity": "FetchTasklet"
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 4,
+      "_type": "api",
+      "_id": "fetch-native-async",
+      "_file": "02-SYSTEM",
+      "_rationale": "DECISION 1/4 — JS native fetch 入口契约改为返回 pending Promise",
+      "call": {
+        "dir": ".spec",
+        "elementType": "api",
+        "crudAction": "create",
+        "file": "02-SYSTEM",
+        "data": {
+          "id": "fetch-native-async",
+          "name": "JS native fetch/http/https/tls 异步入口",
+          "method": "JS_NATIVE",
+          "path": "globalThis.fetch / http.request / https.request / tls.connect",
+          "category": "runtime-bridge",
+          "description": "所有对外 JS fetch/http/https/tls native call 必须返回 pending Promise，立即 schedule HTTPThread 请求（不 send_sync 阻塞 JS 线程），HTTPThread 完成回调跨线程 enqueue_task_concurrent 回 JS 线程 resolve/reject。对齐 Bun FetchTasklet 模式。",
+          "request": {
+            "url": {"type": "string", "required": true},
+            "method": {"type": "Method", "required": false, "default": "GET"},
+            "headers": {"type": "object", "required": false},
+            "body": {"type": "string|ArrayBuffer|Uint8Array|null", "required": false}
+          },
+          "response": {
+            "type": "Promise<Response>",
+            "description": "立即返回的 pending Promise；resolve 时为 Response JS 对象，reject 时为 Error"
+          },
+          "contract": [
+            "CONTRACT-1: native call 内禁止 send_sync / Condvar 阻塞（范式级，违反即 self-loop 死锁）",
+            "CONTRACT-2: 必经 AsyncHTTP::init(自定义 result_callback) + schedule 异步路径",
+            "CONTRACT-3: HTTPThread result_callback 跨线程 enqueue_task_concurrent 回 JS 线程",
+            "CONTRACT-4: JS 线程下一 tick ResolvePromise/RejectPromise + poll_ref.unref_concurrently",
+            "CONTRACT-5: 内部非 JS 调用方（如 s3_api）若需同步语义，提供独立同步 wrapper（http_client::http_request 保留供内部用），不影响 JS native 入口异步化"
+          ],
+          "migrationScope": [
+            "src/bao_runtime/src/fetch_api.rs:117 fetch_fn (主犯)",
+            "src/bao_runtime/src/node_http.rs:752 http_request extern C",
+            {"path": "src/bao_runtime/src/node_http.rs:803 http_get extern C", "note": "委托 http_request @808, 迁移 http_request 即连带覆盖; 横扫确认无独立 send_sync (delegated)"},
+            "src/bao_runtime/src/node_https.rs:165 https_request extern C (→ stealth_http_request @226)",
+            "src/bao_runtime/src/node_tls.rs:319 tls_connect extern C (→ stealth_http_request @363)",
+            "src/bao_runtime/src/stealth_http.rs:64 stealth_http_request (底层共享)",
+            "新建 src/bao_runtime/src/fetch_async.rs (FetchTasklet 封装)"
+          ],
+          "excludedFromMigration": [
+            "src/bao_runtime/src/h3_fetch.rs (无 send_sync，grep 已核实)"
+          ],
+          "relatedReqs": ["REQ-ENG-010"]
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 5,
+      "_type": "dataflow",
+      "_id": "DF-FETCH-ASYNC-001",
+      "_file": "03-PROCESS",
+      "_rationale": "DECISION 4/6 — 端到端数据流：JS native call → HTTPThread → JS 线程 resolve",
+      "call": {
+        "dir": ".spec",
+        "elementType": "dataflow",
+        "crudAction": "create",
+        "file": "03-PROCESS",
+        "data": {
+          "id": "DF-FETCH-ASYNC-001",
+          "name": "异步 Fetch 端到端数据流（FetchTasklet 模式）",
+          "description": "JS native fetch call → 立即返回 pending Promise + schedule HTTPThread → HTTPThread 异步拿响应 → 跨线程 enqueue_task_concurrent → JS 线程下一 tick resolve。self-loop 自然解开（JS 线程不阻塞 → 回 post_eval loop → tick_once 驱动 uWS accept）。",
+          "entryPoint": "JS native fetch_fn (fetch_api.rs:117)",
+          "steps": [
+            {"step": 1, "thread": "JS-thread", "action": "fetch_fn 解析参数 → NewPromiseObject(promise) → FetchTasklet::start → AsyncHTTP::init(fetch_async_callback) + schedule → poll_ref.ref_concurrently() → return pending promise（不阻塞）"},
+            {"step": 2, "thread": "JS-thread", "action": "JS 线程回 post_eval loop（context.rs:459）→ hook=drain_and_check → tick_once（timers.rs:170）"},
+            {"step": 3, "thread": "JS-thread", "action": "tick_once 驱动 uWS App（bun_api.rs:1376）accept → 路由 handler 执行（self-loop 场景 handler 内再 fetch，同样异步）"},
+            {"step": 4, "thread": "HTTPThread", "action": "AsyncHTTP 完成网络请求 → result_callback=fetch_async_callback(this, async_http, result) 触发 → 提取 HttpResponse → 封 (promise_handle, result) 成 ConcurrentTask"},
+            {"step": 5, "thread": "HTTPThread", "action": "BaoEventLoop.enqueue_task_concurrent（dispatch_sm.rs:332）投递 ConcurrentTask 到 JS-thread MiniEventLoop MPSC"},
+            {"step": 6, "thread": "JS-thread", "action": "下一 tick 消费 ConcurrentTask → fetch_async_resolve → build_response_js 构建 Response → ResolvePromise(promise, response) → poll_ref.unref_concurrently() → RemoveRoot"},
+            {"step": 7, "thread": "JS-thread", "action": "所有响应完成后 poll_ref 归零 → drain_and_check 返回 false → exit 0"}
+          ],
+          "threads": ["JS-thread", "HTTPThread (detach, AsyncHTTP.rs:1219 thread::spawn)"],
+          "crossThreadChannel": "BaoEventLoop.enqueue_task_concurrent → bun_event_loop MiniEventLoop MPSC（bundler ServerComponentParseTask.rs:126/139 已验证此通道）",
+          "selfLoopUnlock": "异步化前：fetch_fn 在 evaluate_script 同步段内 send_sync 阻塞 JS 线程 → post_eval hook loop（context.rs:458）未运行 → uWS server 永不 accept self-loop 连接 → 双向死锁。异步化后：JS 线程不阻塞 → hook loop 运行 → accept → 自然解开。",
+          "relatedReqs": ["REQ-ENG-010"],
+          "relatedCF": "CF-FETCH-ASYNC-001"
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 6,
+      "_type": "controlflow",
+      "_id": "CF-FETCH-ASYNC-001",
+      "_file": "03-PROCESS",
+      "_rationale": "DECISION 6 — self-loop 死锁解锁控制流 + RISK A/C 守卫",
+      "call": {
+        "dir": ".spec",
+        "elementType": "controlflow",
+        "crudAction": "create",
+        "file": "03-PROCESS",
+        "data": {
+          "id": "CF-FETCH-ASYNC-001",
+          "name": "异步 Fetch 控制流（含 self-loop 解锁 + poll_ref/GC 守卫）",
+          "description": "约束控制流：① JS native call 不阻塞 JS 线程（范式级）；② 每条退出路径 unref（RISK C 防事件循环永不退出）；③ Promise 异步窗口内 rooted（RISK A 防 SM GC 回收）。",
+          "controls": [
+            {"id": "CTRL-1", "type": "forbidden", "rule": "JS native call（fetch_fn/http_request extern C/https/tls）内禁止 send_sync / Condvar 阻塞 JS 线程", "rationale": "范式级。违反 → self-loop 场景 Bun.serve 的 uWS App 永不 accept → 双向死锁"},
+            {"id": "CTRL-2", "type": "required", "rule": "AsyncHTTP 必经 init(自定义 result_callback) + schedule 异步路径", "rationale": "DECISION 3 复用现有异步基础设施（AsyncHTTP.rs:597/694, Preconnect::start 范例）"},
+            {"id": "CTRL-3", "type": "required", "rule": "HTTPThread result_callback 必 enqueue_task_concurrent 投递 ConcurrentTask 回 JS 线程", "rationale": "跨线程 JS 回调通道（dispatch_sm.rs:332），bundler 已大量使用"},
+            {"id": "CTRL-4", "type": "required", "rule": "pending Promise JSObject* 异步窗口内必堆上 root 注册（mozjs_sys::jsapi::JS::PersistentRootedObject 或 JS_AddExtraRoot，堆分配）；禁用栈上 rooted!() 宏（异步窗口跨 tick，栈帧已退 → UAF）。resolve/reject 后 RemoveRoot", "rationale": "RISK A：防 SM GC 回收 pending Promise。明确 API 避免实现歧义（node_fs.rs 栈上 rooted!() 不适用于跨 tick 异步窗口）"},
+            {"id": "CTRL-5", "type": "required", "rule": "resolve/reject/abort/timeout/drop 每条退出路径必 unref_concurrently + RemoveRoot", "rationale": "RISK C：漏 unref → 事件循环永不退出（反向死锁）"},
+            {"id": "CTRL-6", "type": "boundary", "rule": "DNS 预检（do_fetch:263 connect_timeout 250ms 逻辑）移至 HTTPThread 侧，不在同步 native call 内跑", "rationale": "DECISION 5：AsyncHTTP 已含完整超时/redirect/error 状态机"},
+            {"id": "CTRL-7", "type": "scope", "rule": "不修改 bun_* 上游 crate 与 servo 上游；改动域限定 bao_runtime", "rationale": "DECISION 7：bun_http AsyncHTTP/HTTPThread API 已是异步原生设计，停止滥用 send_sync 即可"}
+          ],
+          "guards": [
+            "GUARD-A (GC root): 堆上 root（JS::PersistentRootedObject 或 JS_AddExtraRoot）注册 pending Promise；禁用栈上 rooted!()；valgrind/miri + 长时间挂起场景回归验证",
+            "GUARD-B (内部同步调用方解耦): JS native 入口（fetch/http/https/tls）异步化；内部非 JS 调用方（如 s3_api 等）若需同步语义经 http_client::http_request 保留同步路径，不影响 JS native 异步化。两者 API 解耦：JS native 异步路径与内部同步 wrapper 互不干扰。经核实当前 s3_api 不调用 http_request（RISK B 实际空集），但契约形式化保留以约束未来内部同步调用方。",
+            "GUARD-C (poll_ref 泄漏): FetchTasklet Drop 兜底 unref + RemoveRoot；BCE 横扫确认每条退出路径 unref"
+          ],
+          "relatedReqs": ["REQ-ENG-010"],
+          "relatedDF": "DF-FETCH-ASYNC-001",
+          "relatedSM": "FetchTaskletLifecycle"
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 7,
+      "_type": "test",
+      "_id": "TEST-ENG-010",
+      "_file": "11-TESTING",
+      "_rationale": "DECISION 8 — 回归测试：tests/test_fetch_self_loop.js",
+      "call": {
+        "dir": ".spec",
+        "elementType": "test",
+        "crudAction": "create",
+        "file": "11-TESTING",
+        "data": {
+          "id": "TEST-ENG-010",
+          "title": "Bun.serve self-loop fetch 双向死锁回归测试",
+          "description": "验证异步化后 self-loop 场景不死锁：Bun.serve 启动 HTTP 服务 → handler 内 fetch(self URL) → 10s 内打印 DONE 并 exit 0。异步化前此场景双向死锁（JS 线程 send_sync 阻塞 → uWS 永不 accept）。",
+          "type": "integration",
+          "category": "regression",
+          "given": "Bun.serve({port, fetch(req){ return fetch(`http://localhost:${port}/inner`) }}) 启动",
+          "when": "顶层 await fetch(`http://localhost:${port}`) 发起 self-loop 请求",
+          "then": [
+            "THEN-1: 10 秒内 stdout 打印 'DONE'",
+            "THEN-2: 进程 exit code = 0（非 hang/超时 kill）",
+            "THEN-3: 无 'pending Promise 被 GC 回收' 错误（GC root 守卫生效）",
+            "THEN-4: 所有 FetchTasklet poll_ref 归零（事件循环不空转，drain_and_check 返回 false）",
+            "THEN-5 (C2 grep 门控, oracle_gate 模式检查): grep bao_runtime/src/*.rs JS extern C fn body 经调用链到达 AsyncHTTP::send_sync / http_client::http_request / stealth_http_request 阻塞点命中 = 0（含直接与委托链: http_get→http_request / https_request→stealth_http_request / tls_connect→stealth_http_request）。范式核心约束 C2（6 入口迁移零 send_sync 残留）独立 grep 门控，不依赖 self-loop 集成测试间接覆盖。"
+          ],
+          "testFile": "tests/test_fetch_self_loop.js",
+          "timeout": "10s",
+          "covers": ["REQ-ENG-010-C7", "REQ-ENG-010-C5", "REQ-ENG-010-C6", "REQ-ENG-010-C2"],
+          "relatedReqs": ["REQ-ENG-010"]
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 8,
+      "_type": "bug",
+      "_id": "BUG-ENG-367",
+      "_file": "10-REQUIREMENTS",
+      "_rationale": "DECISION 8 — BUG-KNOWLEDGE.md 追加 BCE-20260618-007；BUG 元素承载防复发索引",
+      "call": {
+        "dir": ".spec",
+        "elementType": "bug",
+        "crudAction": "create",
+        "file": "10-REQUIREMENTS",
+        "data": {
+          "id": "BUG-ENG-367",
+          "patternId": "BCE-20260618-007",
+          "title": "JS native fetch/http/https/tls API 在 native call 内 send_sync 阻塞 JS 线程（FetchTasklet 异步集成缺失）",
+          "layer": "范式缺陷（架构级 fetch 事件循环集成模型错误）",
+          "rootCause": {
+            "location": "src/bao_runtime/src/fetch_api.rs:117 fetch_fn（同类 6 入口: node_http.rs:752 http_request / node_http.rs:803 http_get[委托 http_request @808] / node_https.rs:165 https_request[→ stealth_http_request @226] / node_tls.rs:319 tls_connect[→ stealth_http_request @363] / stealth_http.rs:64 底层共享）",
+            "why": "fetch_fn 在 JS native call 同步段内调 do_fetch → stealth_http_request → http_client::http_request → AsyncHTTP::send_sync（AsyncHTTP.rs:682）→ JS 线程在 SingleHTTPChannel Condvar（AsyncHTTP.rs:631-639 read_item）阻塞。http_get 经委托链 http_request(cx,argc,vp) 同样同步阻塞 JS 线程（同类）。此时 Bun.serve 的 uWS App（bun_api.rs:1376，寄生 JS-thread MiniEventLoop）的 accept 由 post_eval hook 的 drain_and_check → tick_once（timers.rs:170）驱动，而 fetch 阻塞发生在 evaluate_script 同步段内（context.rs:443-449），hook 循环（context.rs:458-464）未运行 → server 永不 accept self-loop 连接 → 双向死锁。"
+          },
+          "sameClassCriterion": [
+            "任何对外 JS fetch/http/https/tls native call 在其同步执行段内直接或经委托链（do_fetch / stealth_http_request / http_request / http_client::http_request / http_get→http_request 同步链）间接阻塞 JS 线程（send_sync / SingleHTTPChannel Condvar）。委托模式与直接调用等价，均为同类。"
+          ],
+          "fixTemplate": [
+            "fetch_fn 改为返回 pending Promise + FetchTasklet::start(cx, promise, ...) 立即 schedule HTTPThread（AsyncHTTP::init+schedule）+ KeepAlive poll_ref.ref_concurrently()",
+            "HTTPThread result_callback 跨线程 enqueue_task_concurrent 投递 ConcurrentTask 回 JS 线程",
+            "JS 线程下一 tick fetch_async_resolve → build_response_js + ResolvePromise/RejectPromise + poll_ref.unref_concurrently()",
+            "Promise 异步窗口堆上 root 注册（JS::PersistentRootedObject 或 JS_AddExtraRoot，禁用栈上 rooted!()）防 SM GC；每条退出路径 unref + RemoveRoot"
+          ],
+          "sweepScope": "src/bao_runtime/src/ 全量（fetch_api/node_http[node_request+http_get]/node_https/node_tls/stealth_http/h3_fetch）",
+          "instancesFound": 6,
+          "detectionSignatures": {
+            "literal": ["send_sync\\(", "SingleHTTPChannel.*Condvar", "http_request\\(cx,\\s*argc,\\s*vp\\)"],
+            "structural": ["JS extern C fn (fetch_fn/http_request/http_get/https_request/tls_connect) body 直接含 AsyncHTTP::send_sync 调用", "Call chain from any JS extern C fn reaching AsyncHTTP::send_sync or http_client::http_request or stealth_http_request (含间接/委托链: http_get→http_request, https_request→perform_https_request→stealth_http_request, tls_connect→stealth_http_request)", "callgraph-based: lsp scan dataflow from JS native entry reaching send_sync blocking point"],
+            "antipattern": ["blocking-call-in-js-native", "delegated-blocking-call-in-js-native"]
+          },
+          "regressionTest": "TEST-ENG-010 (tests/test_fetch_self_loop.js)",
+          "specCriterion": "REQ-ENG-010",
+          "knowledgeBaseEntry": "BUG-KNOWLEDGE.md :: BCE-20260618-007",
+          "status": "根治方案 SPEC 落地中（implementation phase pending）；residual sweep pending；release gate: blocked until BCE 阶段5 全量确认残留=0"
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 9,
+      "_type": "decision",
+      "_id": "DEC-ENG-001",
+      "_file": "02-SYSTEM",
+      "_rationale": "DECISION 1/2/3/7 — 范式决策记录（FetchTasklet 模式 + 迁移范围 + 复用 + 禁改上游）",
+      "_note": "DECISION 创建前需在 .id-registry.json 的 DEC.domains 新增 'ENG' domain（当前仅有 CDP/URL）。spec_write 应自动处理；若报错需 spec_govern(action='fix') 补 domain。",
+      "call": {
+        "dir": ".spec",
+        "elementType": "decision",
+        "crudAction": "create",
+        "file": "02-SYSTEM",
+        "data": {
+          "id": "DEC-ENG-001",
+          "title": "采用 Bun FetchTasklet 模式异步集成事件循环，禁 JS native call 阻塞",
+          "dimension": "technical",
+          "status": "approved",
+          "rationale": "fetch self-loop 双向死锁是范式缺陷（架构级 fetch 事件循环集成模型错误），非定点补丁。Bun 上游 FetchTasklet.zig 设计模式 = schedule + ConcurrentTask + KeepAlive/poll_ref + 跨线程 enqueueTaskConcurrent 回 JS 线程 resolve。基础设施全部已存在（AsyncHTTP::schedule HTTPThread::schedule / enqueue_task_concurrent / poll_ref / Promise API），零新发明。",
+          "decisions": [
+            "DEC-1: 所有对外 JS fetch/http/https/tls API 必须返回 pending Promise + AsyncHTTP::schedule 异步发起 + HTTPThread 完成回调跨线程 enqueue_task_concurrent 回 JS 线程 ResolvePromise/RejectPromise。禁止 native call 中 send_sync 阻塞 JS 线程。",
+            "DEC-2: 根治范围=6 入口统一迁移（fetch_fn + node_http.rs:752 http_request extern C + node_http.rs:803 http_get extern C[委托 http_request @808, 迁移 http_request 即连带覆盖, delegated] + node_https.rs:165 https_request extern C[→ stealth_http_request @226] + node_tls.rs:319 tls_connect extern C[→ stealth_http_request @363] + stealth_http.rs:64 底层共享）。h3_fetch.rs 无 send_sync（已核实），不在迁移范围。",
+            "DEC-3: 复用现有基础设施，零新发明。AsyncHTTP::schedule/init/result_callback（Preconnect::start 生产范例）/ enqueue_task_concurrent（bundler 已用）/ poll_ref（dispatch_sm.rs:65/163/169）/ Promise（node_fs.rs:816/841 模板）。",
+            "DEC-4: 新建 bao_runtime/src/fetch_async.rs 封装 FetchTasklet。start()=AsyncHTTP::init+schedule+poll_ref.ref_concurrently；fetch_async_callback(HTTP 线程)→ConcurrentTask→enqueue_task_concurrent；fetch_async_resolve(JS 线程)→build_response_js+ResolvePromise+poll_ref.unref_concurrently。fetch_fn 改为 NewPromiseObject+FetchTasklet::start+return pending promise。",
+            "DEC-5: DNS 预检移至 HTTPThread 侧（AsyncHTTP 已含完整超时/redirect/error 状态机）；Promise 异步窗口堆上 root（JS::PersistentRootedObject 或 JS_AddExtraRoot，禁用栈上 rooted!()）防 SM GC；每条退出路径 unref+RemoveRoot。",
+            "DEC-7: 不修改 bun_* 上游 crate 与 servo 上游；改动域限定 bao_runtime + 可选 bao_engine（若需 ConcurrentTask callback 的 SM dispatch helper）。"
+          ],
+          "risks": [
+            "RISK-A (GC root): pending Promise 异步窗口可能被 SM GC 回收。缓解: 堆上 root（JS::PersistentRootedObject 或 JS_AddExtraRoot，禁用栈上 rooted!()——跨 tick 栈帧已退）+ 错误路径清理 + valgrind/miri 验证。",
+            "RISK-C (poll_ref 生命周期): KeepAlive poll_ref 必须在所有路径 unref，否则事件循环永不退出（反向死锁）。缓解: FetchTasklet Drop 兜底 unref + BCE 横扫确认每条退出路径 unref。",
+            "RISK-B (内部同步调用方): 经核实 src/bao_runtime/src/s3_api.rs 不调用 http_request/do_fetch/stealth_http_request/send_sync，无内部同步调用方依赖。保留 http_client::http_request 供潜在内部同步使用，JS native 入口独立异步化。"
+          ],
+          "relatedReqs": ["REQ-ENG-010"],
+          "relatedBugs": ["BUG-ENG-367"]
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    },
+
+    {
+      "_seq": 10,
+      "_type": "criterion",
+      "_id": "CRIT-FETCH-ASYNC-NOBLOCK",
+      "_file": "03-PROCESS",
+      "_rationale": "DECISION 8 — 03-PROCESS.html JS执行管线/事件循环章节追加防复发 criterion",
+      "call": {
+        "dir": ".spec",
+        "elementType": "criterion",
+        "crudAction": "create",
+        "file": "03-PROCESS",
+        "data": {
+          "id": "CRIT-FETCH-ASYNC-NOBLOCK",
+          "title": "对外 JS HTTP API 必须异步集成事件循环（禁止 native call 阻塞 JS 线程）",
+          "section": "JS执行管线 / 事件循环",
+          "criterion": "对外 JS fetch/http/https/tls API 必须异步集成事件循环（HTTPThread::schedule + ConcurrentTask 跨线程回调 + KeepAlive poll_ref 保活），native call 中禁止 send_sync / Condvar 阻塞 JS 线程；违反则 Bun.serve self-loop 场景双向死锁。",
+          "enforcement": "oracle_gate 步骤「模式检查」grep bao_runtime 源码 send_sync/SingleHTTPChannel Condvar 在 JS extern C fn body 命中 = 0；TEST-ENG-010 self-loop 回归测试必过。",
+          "relatedReqs": ["REQ-ENG-010"],
+          "relatedCF": "CF-FETCH-ASYNC-001"
+        }
+      },
+      "governAfter": {"action": "check", "auditAction": "check", "dir": ".spec"}
+    }
+  ],
+
+  "postWriteFinalGovern": {
+    "call": {"action": "check", "auditAction": "check", "dir": ".spec"},
+    "expectation": "0 errors / 0 warnings",
+    "ifErrors": "spec_govern(action='fix', dir='.spec') 自动修复断链/格式/序号后重 check"
+  },
+
+  "bugKnowledgeAppendix": {
+    "targetFile": "src/BUG-KNOWLEDGE.md",
+    "action": "append BCE-20260618-007 section（格式对齐已有 BCE-20260618-001/002）",
+    "content_yaml": {
+      "patternId": "BCE-20260618-007",
+      "title": "JS native HTTP API 同步阻塞 JS 线程（FetchTasklet 异步集成缺失）",
+      "layer": "范式缺陷（架构级 fetch 事件循环集成模型错误）",
+      "status": "根治方案 SPEC 落地中（implementation phase pending）；residual sweep pending；release gate: blocked until BCE 阶段5 全量确认残留=0",
+      "codePattern": ["对外 JS fetch/http/https/tls native call 在同步段内直接或经委托链（do_fetch/stealth_http_request/http_request/http_client::http_request/http_get→http_request）调 send_sync / Condvar 阻塞 JS 线程"],
+      "triggerCondition": ["Bun.serve self-loop（handler 内 fetch(self)）→ 双向死锁，进程 hang 不退出"],
+      "detectionSignatures": {
+        "structural": ["JS extern C fn (fetch_fn/http_request/http_get/https_request/tls_connect) body 直接含 AsyncHTTP::send_sync 调用", "Call chain from any JS extern C fn reaching AsyncHTTP::send_sync or http_client::http_request or stealth_http_request (含委托链: http_get→http_request, https_request→perform_https_request→stealth_http_request, tls_connect→stealth_http_request)"],
+        "literal": ["send_sync\\(", "SingleHTTPChannel.*Condvar", "http_request\\(cx,\\s*argc,\\s*vp\\)"],
+        "antipattern": ["blocking-call-in-js-native", "delegated-blocking-call-in-js-native"]
+      },
+      "sameClassCriterion": ["任何对外 JS fetch/http/https/tls native call 在其同步执行段内直接或经委托链（do_fetch/stealth_http_request/http_request/http_client::http_request/http_get→http_request）间接阻塞 JS 线程（send_sync/Condvar）。委托模式与直接调用等价，均为同类"],
+      "fixTemplate": [
+        "fetch_fn 返回 pending Promise + FetchTasklet::start(cx,promise,...) + AsyncHTTP::init+schedule + poll_ref.ref_concurrently()",
+        "HTTPThread result_callback → ConcurrentTask → enqueue_task_concurrent 回 JS 线程",
+        "JS 线程下一 tick fetch_async_resolve → build_response_js + ResolvePromise/RejectPromise + poll_ref.unref_concurrently()",
+        "Promise 堆上 root 注册（JS::PersistentRootedObject 或 JS_AddExtraRoot，禁用栈上 rooted!()）；每条退出路径 unref + RemoveRoot"
+      ],
+      "regressionAssertion": ["tests/test_fetch_self_loop.js: Bun.serve+self-loop fetch 10s 内 DONE + exit 0"],
+      "affectedTasks": ["REQ-ENG-010 实现 task"]
+    }
+  }
+}

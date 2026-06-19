@@ -4,6 +4,7 @@ use bun_core::ZBox;
 use bun_sys::fs as bun_fs;
 use ::std::path::{Path, PathBuf};
 use ::std::ptr;
+use ::std::ptr::NonNull;
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::glue::NewCompileOptions;
@@ -35,7 +36,7 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
     if strict_obj.get().is_null() { return; }
 
     unsafe {
-        let assert_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &assert_obj };
+        rooted!(&in(cx) let assert_root = assert_obj);
         let strict_h = strict_obj.handle();
 
         for (name, _n_args) in &[
@@ -48,22 +49,20 @@ pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
         ] {
             let mut fn_val = UndefinedValue();
             let c_name = ZBox::from_bytes(name.as_bytes());
-            JS_GetProperty(cx.raw_cx(), assert_h, c_name.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val });
+            JS_GetProperty(cx.raw_cx(), assert_root.handle().into(), c_name.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val });
             if fn_val.is_object() {
-                let fn_obj = fn_val.to_object();
-                let fn_obj_val = ObjectValue(fn_obj);
-                let fn_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_obj_val };
-                JS_DefineProperty(cx.raw_cx(), strict_h.into(), c_name.as_ptr(), fn_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx) let fn_obj = fn_val.to_object());
+                rooted!(&in(cx) let fn_obj_val = ObjectValue(fn_obj.get()));
+                JS_DefineProperty(cx.raw_cx(), strict_h.into(), c_name.as_ptr(), fn_obj_val.handle().into(), JSPROP_ENUMERATE as u32);
             }
         }
 
         let mut ae_val = UndefinedValue();
-        JS_GetProperty(cx.raw_cx(), assert_h, c"AssertionError".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ae_val });
+        JS_GetProperty(cx.raw_cx(), assert_root.handle().into(), c"AssertionError".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ae_val });
         if ae_val.is_object() {
-            let ae_obj = ae_val.to_object();
-            let ae_val2 = ObjectValue(ae_obj);
-            let ae_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ae_val2 };
-            JS_DefineProperty(cx.raw_cx(), strict_h.into(), c"AssertionError".as_ptr(), ae_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx) let ae_obj = ae_val.to_object());
+            rooted!(&in(cx) let ae_val2 = ObjectValue(ae_obj.get()));
+            JS_DefineProperty(cx.raw_cx(), strict_h.into(), c"AssertionError".as_ptr(), ae_val2.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
 
@@ -272,9 +271,11 @@ unsafe extern "C" fn require_fn(
             let mut val = mozjs::jsval::UndefinedValue();
             let c_prop = ZBox::from_bytes("process".as_bytes());
             unsafe {
+                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                rooted!(&in(wrapped_cx) let global_root = global);
                 JS_GetProperty(
                     cx,
-                    Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+                    global_root.handle().into(),
                     c_prop.as_ptr(),
                     MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val },
                 );
@@ -328,10 +329,11 @@ unsafe extern "C" fn require_fn(
     if let Some(existing) = cached
         && !existing.is_null() {
             // Check if this is a primitive wrapper {__primitive__: val}
-            let existing_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &existing };
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let existing_root = existing);
             let mut prim_check = mozjs::jsval::UndefinedValue();
             let prim_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut prim_check };
-            unsafe { JS_GetProperty(cx, existing_h, c"__primitive__".as_ptr(), prim_h); }
+            unsafe { JS_GetProperty(cx, existing_root.handle().into(), c"__primitive__".as_ptr(), prim_h); }
             if !prim_check.is_undefined() {
                 args.rval().set(prim_check);
             } else {
@@ -390,9 +392,10 @@ unsafe extern "C" fn require_fn(
     } else {
         let wrapper = mozjs_sys::jsapi::JS_NewPlainObject(cx);
         if !wrapper.is_null() {
-            let wrapper_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &wrapper };
-            let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &exports_val };
-            JS_DefineProperty(cx, wrapper_h, c"__primitive__".as_ptr(), val_h, 0);
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let wrapper_root = wrapper);
+            rooted!(&in(wrapped_cx) let val_root = exports_val);
+            JS_DefineProperty(cx, wrapper_root.handle().into(), c"__primitive__".as_ptr(), val_root.handle().into(), 0);
         }
         wrapper
     };
@@ -429,9 +432,10 @@ unsafe fn load_json_module(cx: *mut JSContext, content: &str, specifier: &str) -
 #[inline]
 unsafe fn get_prop(cx: *mut JSContext, obj: *mut JSObject, name: *const i8) -> Value {
     let mut val = UndefinedValue();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
     let val_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
-    JS_GetProperty(cx, obj_h, name, val_h);
+    JS_GetProperty(cx, obj_root.handle().into(), name, val_h);
     val
 }
 
@@ -512,17 +516,18 @@ unsafe fn load_esm_module(
         }
     }
 
-    let module_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &module };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let module_root = module);
 
     // ModuleLink drives the host_resolve_imported_module hook for sub-imports.
-    if !mozjs_sys::jsapi::JS::ModuleLink(cx, module_h) {
+    if !mozjs_sys::jsapi::JS::ModuleLink(cx, module_root.handle().into()) {
         JS_ClearPendingException(cx);
         return None;
     }
 
     let mut eval_rval = UndefinedValue();
     let eval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut eval_rval };
-    if !mozjs_sys::jsapi::JS::ModuleEvaluate(cx, module_h, eval_h) {
+    if !mozjs_sys::jsapi::JS::ModuleEvaluate(cx, module_root.handle().into(), eval_h) {
         JS_ClearPendingException(cx);
         return None;
     }
@@ -531,7 +536,7 @@ unsafe fn load_esm_module(
     mozjs_sys::jsapi::js::RunJobs(cx);
 
     // Return the module namespace object (live bindings for `export`/`default`).
-    let ns = mozjs_sys::jsapi::JS::GetModuleNamespace(cx, module_h);
+    let ns = mozjs_sys::jsapi::JS::GetModuleNamespace(cx, module_root.handle().into());
     if ns.is_null() { None } else { Some(ns) }
 }
 
@@ -581,7 +586,8 @@ unsafe fn load_cjs_module(
         return None;
     }
 
-    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let global_root = global);
 
     // Save old globals so we can restore them after evaluation.
     let old_exports = get_prop(cx, global, c"exports".as_ptr());
@@ -589,9 +595,8 @@ unsafe fn load_cjs_module(
 
     // Set exports on global — this makes it GC-reachable via global's property table.
     {
-        let ev = mozjs::jsval::ObjectValue(exports_obj);
-        let ev_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ev };
-        JS_SetProperty(cx, global_h, c"exports".as_ptr(), ev_h);
+        rooted!(&in(wrapped_cx) let ev = mozjs::jsval::ObjectValue(exports_obj));
+        JS_SetProperty(cx, global_root.handle().into(), c"exports".as_ptr(), ev.handle().into());
     }
 
     // Create module object — JS_NewPlainObject CAN trigger GC.
@@ -600,22 +605,20 @@ unsafe fn load_cjs_module(
     {
         let module_obj = JS_NewPlainObject(cx);
         if !module_obj.is_null() {
-            let mv = mozjs::jsval::ObjectValue(module_obj);
-            let mv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mv };
-            JS_SetProperty(cx, global_h, c"module".as_ptr(), mv_h);
+            rooted!(&in(wrapped_cx) let mv = mozjs::jsval::ObjectValue(module_obj));
+            JS_SetProperty(cx, global_root.handle().into(), c"module".as_ptr(), mv.handle().into());
 
             // Re-read exports from global to get a fresh pointer after potential GC.
             // GC updates global.exports if the object moved; raw local `exports_obj` is stale.
             let fresh_exports = get_prop(cx, global, c"exports".as_ptr());
             if fresh_exports.is_object() {
-                let fresh_exp_obj = fresh_exports.to_object();
-                let fev = mozjs::jsval::ObjectValue(fresh_exp_obj);
-                let fev_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fev };
+                rooted!(&in(wrapped_cx) let fresh_exp_obj = fresh_exports.to_object());
+                rooted!(&in(wrapped_cx) let fev = mozjs::jsval::ObjectValue(fresh_exp_obj.get()));
                 // Re-read module from global for the same reason.
                 let fresh_module = get_prop(cx, global, c"module".as_ptr());
                 if fresh_module.is_object() {
-                    let fm_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &fresh_module.to_object() };
-                    JS_DefineProperty(cx, fm_h, c"exports".as_ptr(), fev_h, JSPROP_ENUMERATE as u32);
+                    rooted!(&in(wrapped_cx) let fm = fresh_module.to_object());
+                    JS_DefineProperty(cx, fm.handle().into(), c"exports".as_ptr(), fev.handle().into(), JSPROP_ENUMERATE as u32);
                 }
             }
         }
@@ -626,8 +629,8 @@ unsafe fn load_cjs_module(
     let c_filename = ZBox::from_vec(filename_str.into_bytes());
     let opts = NewCompileOptions(cx, c_filename.as_ptr(), 1);
     if opts.is_null() {
-        JS_DeleteProperty1(cx, global_h, c"exports".as_ptr());
-        JS_DeleteProperty1(cx, global_h, c"module".as_ptr());
+        JS_DeleteProperty1(cx, global_root.handle().into(), c"exports".as_ptr());
+        JS_DeleteProperty1(cx, global_root.handle().into(), c"module".as_ptr());
         REQUIRE_DIR.with(|d| *d.borrow_mut() = saved_dir);
         return None;
     }
@@ -644,15 +647,15 @@ unsafe fn load_cjs_module(
     let final_exports = get_prop_from_val(cx, module_after_eval, c"exports".as_ptr());
 
     // Restore old globals.
-    JS_DeleteProperty1(cx, global_h, c"exports".as_ptr());
-    JS_DeleteProperty1(cx, global_h, c"module".as_ptr());
+    JS_DeleteProperty1(cx, global_root.handle().into(), c"exports".as_ptr());
+    JS_DeleteProperty1(cx, global_root.handle().into(), c"module".as_ptr());
     if !old_exports.is_undefined() {
-        let restore_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &old_exports };
-        JS_SetProperty(cx, global_h, c"exports".as_ptr(), restore_h);
+        rooted!(&in(wrapped_cx) let restore_exports = old_exports);
+        JS_SetProperty(cx, global_root.handle().into(), c"exports".as_ptr(), restore_exports.handle().into());
     }
     if !old_module.is_undefined() {
-        let restore_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &old_module };
-        JS_SetProperty(cx, global_h, c"module".as_ptr(), restore_h);
+        rooted!(&in(wrapped_cx) let restore_module = old_module);
+        JS_SetProperty(cx, global_root.handle().into(), c"module".as_ptr(), restore_module.handle().into());
     }
 
     if !ok {

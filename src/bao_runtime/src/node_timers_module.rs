@@ -32,14 +32,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             if !scheduler_obj.get().is_null() {
                 w2::JS_DefineFunction(cx, scheduler_obj.handle(), c"wait".as_ptr(), Some(timers_promises_set_timeout), 1, 0);
                 w2::JS_DefineFunction(cx, scheduler_obj.handle(), c"yield".as_ptr(), Some(timers_promises_set_immediate), 0, 0);
-                let sched_val = ObjectValue(scheduler_obj.get());
-                let sched_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &sched_val };
-                JS_DefineProperty(cx.raw_cx(), promises_obj.handle().into(), c"scheduler".as_ptr(), sched_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx) let sched_val = ObjectValue(scheduler_obj.get()));
+                JS_DefineProperty(cx.raw_cx(), promises_obj.handle().into(), c"scheduler".as_ptr(), sched_val.handle().into(), JSPROP_ENUMERATE as u32);
             }
 
-            let prom_val = ObjectValue(promises_obj.get());
-            let prom_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &prom_val };
-            JS_DefineProperty(cx.raw_cx(), timers_mod.handle().into(), c"promises".as_ptr(), prom_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx) let prom_val = ObjectValue(promises_obj.get()));
+            JS_DefineProperty(cx.raw_cx(), timers_mod.handle().into(), c"promises".as_ptr(), prom_val.handle().into(), JSPROP_ENUMERATE as u32);
 
             cache_builtin(cx, "timers/promises", promises_obj.get());
         }

@@ -243,9 +243,10 @@ fn get_state(cx: *mut JSContext, obj: *mut JSObject) -> Option<EmitterState> {
         // (Socket/Server inherit from EE via prototype chain but their own class
         // differs from EMITTER_CLASS, so reading slot 0 returns arbitrary data
         // that may pass is_double() but crash to_private()).
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj_root = obj);
         let mut hidden = UndefinedValue();
-        JS_GetProperty(cx, obj_h, STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
+        JS_GetProperty(cx, obj_root.handle().into(), STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
             MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hidden });
         if hidden.is_double() {
             // Guard against non-private doubles (defensive — to_private asserts
@@ -267,10 +268,11 @@ fn set_state(cx: *mut JSContext, obj: *mut JSObject, state: EmitterState) {
         // Hidden property only — see get_state for why reserved slots are unsafe.
         let boxed = Box::new(state);
         let val = PrivateValue(Box::into_raw(boxed) as *const ::std::os::raw::c_void);
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-        let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-        JS_DefineProperty(cx, obj_h, STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
-            val_h, (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj_root = obj);
+        rooted!(&in(wrapped_cx) let val_root = val);
+        JS_DefineProperty(cx, obj_root.handle().into(), STATE_PROP.as_ptr() as *const ::std::os::raw::c_char,
+            val_root.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
     }
 }
 
@@ -546,7 +548,8 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     let global = CurrentGlobalOrNull(cx);
     if global.is_null() { set_state(cx, this_obj, state); args.rval().set(BooleanValue(had_listeners)); return true; }
-    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let global_root = global);
 
     let call_args = if emit_args.is_empty() {
         HandleValueArray::empty()
@@ -560,10 +563,10 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     for (i, key) in listener_keys.iter().enumerate() {
         if let Some(callback) = gc_store_get(cx, key) {
             let cb_val = ObjectValue(callback);
-            let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
+            rooted!(&in(wrapped_cx) let cb_root = cb_val);
             let mut rval = UndefinedValue();
             let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-            JS_CallFunctionValue(cx, global_h, cb_h, &call_args, rval_h);
+            JS_CallFunctionValue(cx, global_root.handle().into(), cb_root.handle().into(), &call_args, rval_h);
             JS_ClearPendingException(cx);
 
             let is_once = once_flags.get(i).copied().unwrap_or(false);
@@ -786,11 +789,12 @@ unsafe extern "C" fn events_static_on(cx: *mut JSContext, argc: u32, vp: *mut JS
     let args = CallArgs::from_vp(vp, argc);
     if argc < 3 || !(*args.get(0).ptr).is_object() { args.rval().set(UndefinedValue()); return true; }
     let emitter = (*args.get(0).ptr).to_object();
-    let emitter_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &emitter };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let emitter_root = emitter);
     let callback = *args.get(2).ptr;
     let on_name = ZBox::from_bytes("on".as_bytes());
     let mut on_fn = UndefinedValue();
-    JS_GetProperty(cx, emitter_h, on_name.as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, emitter_root.handle().into(), on_name.as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut on_fn,
     });
     if on_fn.is_object() {
@@ -798,10 +802,10 @@ unsafe extern "C" fn events_static_on(cx: *mut JSContext, argc: u32, vp: *mut JS
         let call_args = HandleValueArray { length_: 2, elements_: &[evt_val, callback] as *const JSVal };
         let global = CurrentGlobalOrNull(cx);
         if !global.is_null() {
-            let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-            let on_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &on_fn };
+            rooted!(&in(wrapped_cx) let global_root = global);
+            rooted!(&in(wrapped_cx) let on_root = on_fn);
             let mut rval = UndefinedValue();
-            JS_CallFunctionValue(cx, global_h, on_h, &call_args, MutableHandle::<Value> {
+            JS_CallFunctionValue(cx, global_root.handle().into(), on_root.handle().into(), &call_args, MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
             });
         }
@@ -815,11 +819,12 @@ unsafe extern "C" fn events_static_once(cx: *mut JSContext, argc: u32, vp: *mut 
     let args = CallArgs::from_vp(vp, argc);
     if argc < 3 || !(*args.get(0).ptr).is_object() { args.rval().set(UndefinedValue()); return true; }
     let emitter = (*args.get(0).ptr).to_object();
-    let emitter_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &emitter };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let emitter_root = emitter);
     let callback = *args.get(2).ptr;
     let once_name = ZBox::from_bytes("once".as_bytes());
     let mut once_fn = UndefinedValue();
-    JS_GetProperty(cx, emitter_h, once_name.as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, emitter_root.handle().into(), once_name.as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut once_fn,
     });
     if once_fn.is_object() {
@@ -827,10 +832,10 @@ unsafe extern "C" fn events_static_once(cx: *mut JSContext, argc: u32, vp: *mut 
         let call_args = HandleValueArray { length_: 2, elements_: &[evt_val, callback] as *const JSVal };
         let global = CurrentGlobalOrNull(cx);
         if !global.is_null() {
-            let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-            let once_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &once_fn };
+            rooted!(&in(wrapped_cx) let global_root = global);
+            rooted!(&in(wrapped_cx) let once_root = once_fn);
             let mut rval = UndefinedValue();
-            JS_CallFunctionValue(cx, global_h, once_h, &call_args, MutableHandle::<Value> {
+            JS_CallFunctionValue(cx, global_root.handle().into(), once_root.handle().into(), &call_args, MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
             });
         }

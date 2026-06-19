@@ -162,10 +162,11 @@ unsafe extern "C" fn module_ctor(
     // require (uses the global require)
     let global = JS::CurrentGlobalOrNull(cx);
     if !global.is_null() {
+        rooted!(&in(cx_ref) let global_root = global);
         let mut req_val = UndefinedValue();
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+            global_root.handle().into(),
             c"require".as_ptr(),
             MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut req_val },
         );
@@ -188,12 +189,14 @@ unsafe extern "C" fn module_create_require(
     let args = CallArgs::from_vp(vp, argc);
 
     // createRequire returns the global require function
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let global = JS::CurrentGlobalOrNull(cx);
     if !global.is_null() {
+        rooted!(&in(wrapped_cx) let global_root = global);
         let mut req_val = UndefinedValue();
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+            global_root.handle().into(),
             c"require".as_ptr(),
             MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut req_val },
         );

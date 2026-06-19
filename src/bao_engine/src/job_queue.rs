@@ -9,6 +9,7 @@ use ::std::sync::atomic::{AtomicUsize, Ordering};
 use mozjs::glue::{CreateJobQueue, DeleteJobQueue, JobQueueTraps};
 use mozjs::jsapi::*;
 use mozjs::jsval::UndefinedValue;
+use mozjs::rooted;
 use mozjs::rust::wrappers2::{RunJobs, SetJobQueue};
 
 static JOB_COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -89,17 +90,15 @@ unsafe extern "C" fn enqueue_job(
 
     // Store job as a property on the global object — GC-safe
     let prop = job_prop_name(id);
-    let job_val = mozjs::jsval::ObjectValue(job_obj);
-    let job_h = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &job_val,
-    };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let job_root = mozjs::jsval::ObjectValue(job_obj));
+    rooted!(&in(wrapped_cx) let global_root = global);
     unsafe {
         JS_DefineProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+            global_root.handle().into(),
             prop.as_ptr(),
-            job_h,
+            job_root.handle().into(),
             0,
         );
     }
@@ -128,11 +127,13 @@ unsafe extern "C" fn run_jobs(
 
         // Retrieve the job object from the global property
         let prop = job_prop_name(id);
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let global_root = global);
         let mut job_val = UndefinedValue();
         unsafe {
             JS_GetProperty(
                 cx,
-                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+                global_root.handle().into(),
                 prop.as_ptr(),
                 MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut job_val },
             );
@@ -143,14 +144,8 @@ unsafe extern "C" fn run_jobs(
         }
 
         let mut rval = UndefinedValue();
-        let obj_handle = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &global,
-        };
-        let fval_handle = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &job_val,
-        };
+        rooted!(&in(wrapped_cx) let obj_root = global);
+        rooted!(&in(wrapped_cx) let fval_root = job_val);
         let empty_args = HandleValueArray::empty();
         let rval_handle = MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
@@ -158,7 +153,7 @@ unsafe extern "C" fn run_jobs(
         };
 
         unsafe {
-            let ok = JS_CallFunctionValue(cx, obj_handle, fval_handle, &empty_args, rval_handle);
+            let ok = JS_CallFunctionValue(cx, obj_root.handle().into(), fval_root.handle().into(), &empty_args, rval_handle);
             if !ok {
                 JS_ClearPendingException(cx);
             }
@@ -168,7 +163,7 @@ unsafe extern "C" fn run_jobs(
         unsafe {
             JS_DeleteProperty1(
                 cx,
-                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global },
+                global_root.handle().into(),
                 prop.as_ptr(),
             );
         }

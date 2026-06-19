@@ -51,23 +51,21 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let mut subtle = UndefinedValue();
         let global = CurrentGlobalOrNull(cx.raw_cx());
         if !global.is_null() {
-            let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+            rooted!(&in(cx) let global_root = global);
             let mut global_crypto = UndefinedValue();
-            JS_GetProperty(cx.raw_cx(), global_h, c"crypto".as_ptr(), MutableHandle::<Value> {
+            JS_GetProperty(cx.raw_cx(), global_root.handle().into(), c"crypto".as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut global_crypto,
             });
             if global_crypto.is_object() {
-                let crypto_global_h = Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData, ptr: &global_crypto.to_object(),
-                };
-                JS_GetProperty(cx.raw_cx(), crypto_global_h, c"subtle".as_ptr(), MutableHandle::<Value> {
+                rooted!(&in(cx) let crypto_global = global_crypto.to_object());
+                JS_GetProperty(cx.raw_cx(), crypto_global.handle().into(), c"subtle".as_ptr(), MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData, ptr: &mut subtle,
                 });
             }
         }
         if subtle.is_object() {
-            let subtle_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &subtle };
-            JS_DefineProperty(cx.raw_cx(), crypto_obj.handle().into(), c"subtle".as_ptr(), subtle_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx) let subtle_rooted = subtle);
+            JS_DefineProperty(cx.raw_cx(), crypto_obj.handle().into(), c"subtle".as_ptr(), subtle_rooted.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
 
@@ -594,11 +592,12 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
     if argc == 0 || !(*args.get(0).ptr).is_object() {
         return throw_type_error(cx, "getRandomValues() requires a typed array");
     }
-    let arr = (*args.get(0).ptr).to_object();
-    let arr_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let arr = (*args.get(0).ptr).to_object());
 
     let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, arr_h, c"length".as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, arr.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
     });
     let len = if len_val.is_int32() { len_val.to_int32() as usize } else { return throw_type_error(cx, "getRandomValues() invalid array") };
@@ -608,12 +607,11 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
     bao_crypto::random::rand_bytes(&mut random_bytes).unwrap();
 
     for (i, &byte) in random_bytes.iter().enumerate() {
-        let v = mozjs::jsval::Int32Value(byte as i32);
-        let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-        JS_SetElement(cx, arr_h, i as u32, v_h);
+        rooted!(&in(cx_ref) let v = mozjs::jsval::Int32Value(byte as i32));
+        JS_SetElement(cx, arr.handle().into(), i as u32, v.handle().into());
     }
 
-    args.rval().set(mozjs::jsval::ObjectValue(arr));
+    args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
     true
 }
 
@@ -790,16 +788,18 @@ pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec
         return Vec::new();
     }
     // Plain number[] array fallback.
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_rooted = obj);
     let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, obj_rooted.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
     });
     let len = if len_val.is_int32() { len_val.to_int32() as usize } else { return Vec::new() };
     let mut bytes = Vec::with_capacity(len);
     for i in 0u32..len as u32 {
         let mut byte_val = UndefinedValue();
-        JS_GetElement(cx, obj_h, i, MutableHandle::<Value> {
+        JS_GetElement(cx, obj_rooted.handle().into(), i, MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
         });
         bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
@@ -827,12 +827,12 @@ unsafe fn bytes_to_js_array(cx: *mut JSContext, bytes: &[u8]) -> *mut JSObject {
 unsafe fn store_cipher_id(cx: *mut JSContext, obj: *mut JSObject, id: u32) {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    rooted!(&in(cx_ref) let obj_rooted = obj);
     let id_val = mozjs::jsval::Int32Value(id as i32);
     rooted!(&in(cx_ref) let idv = id_val);
     JS_DefineProperty(
         cx,
-        obj_h.into(),
+        obj_rooted.handle().into(),
         c"__bao_cipher_id".as_ptr(),
         idv.handle().into(),
         0, // not enumerable, not writable, not configurable
@@ -841,9 +841,11 @@ unsafe fn store_cipher_id(cx: *mut JSContext, obj: *mut JSObject, id: u32) {
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn read_cipher_id(cx: *mut JSContext, obj: *mut JSObject) -> Option<u32> {
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_rooted = obj);
     let mut id_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"__bao_cipher_id".as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, obj_rooted.handle().into(), c"__bao_cipher_id".as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut id_val,
     });
     if id_val.is_int32() {
@@ -1515,15 +1517,16 @@ unsafe fn read_option_string(
     if arg_index < argc as usize {
         let opts_val = *args.get(arg_index as u32).ptr;
         if opts_val.is_object() {
-            let obj = opts_val.to_object();
-            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let obj = opts_val.to_object());
             let mut v = UndefinedValue();
             let prop_c: &[u8] = match prop {
                 "namedCurve" => b"namedCurve\0",
                 "modulusLength" => b"modulusLength\0",
                 _ => b"\0",
             };
-            JS_GetProperty(cx, obj_h, prop_c.as_ptr() as *const _, MutableHandle::<Value> {
+            JS_GetProperty(cx, obj.handle().into(), prop_c.as_ptr() as *const _, MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut v,
             });
             if v.is_string() {
@@ -1546,14 +1549,15 @@ unsafe fn read_option_number(
     if arg_index < argc as usize {
         let opts_val = *args.get(arg_index as u32).ptr;
         if opts_val.is_object() {
-            let obj = opts_val.to_object();
-            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let obj = opts_val.to_object());
             let mut v = UndefinedValue();
             let prop_c: &[u8] = match prop {
                 "modulusLength" => b"modulusLength\0",
                 _ => b"\0",
             };
-            JS_GetProperty(cx, obj_h, prop_c.as_ptr() as *const _, MutableHandle::<Value> {
+            JS_GetProperty(cx, obj.handle().into(), prop_c.as_ptr() as *const _, MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut v,
             });
             if v.is_int32() {
@@ -1570,11 +1574,11 @@ unsafe fn read_option_number(
 unsafe fn set_string_prop(cx: *mut JSContext, obj: *mut JSObject, name: *const core::ffi::c_char, value: &str) {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    rooted!(&in(cx_ref) let obj_rooted = obj);
     let js_str = JS_NewStringCopyN(cx, value.as_ptr() as *const core::ffi::c_char, value.len());
     if !js_str.is_null() {
         rooted!(&in(cx_ref) let v = mozjs::jsval::StringValue(&*js_str));
-        JS_DefineProperty(cx, obj_h.into(), name, v.handle().into(), JSPROP_ENUMERATE as u32);
+        JS_DefineProperty(cx, obj_rooted.handle().into(), name, v.handle().into(), JSPROP_ENUMERATE as u32);
     }
 }
 
@@ -1641,10 +1645,10 @@ unsafe extern "C" fn crypto_create_ecdh(cx: *mut JSContext, argc: u32, vp: *mut 
 unsafe fn store_ecdh_id(cx: *mut JSContext, obj: *mut JSObject, id: u32) {
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    rooted!(&in(cx_ref) let obj_rooted = obj);
     let id_val = mozjs::jsval::Int32Value(id as i32);
     rooted!(&in(cx_ref) let idv = id_val);
-    JS_DefineProperty(cx, obj_h.into(), c"__bao_ecdh_id".as_ptr(), idv.handle().into(), 0);
+    JS_DefineProperty(cx, obj_rooted.handle().into(), c"__bao_ecdh_id".as_ptr(), idv.handle().into(), 0);
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -1653,9 +1657,11 @@ unsafe fn read_ecdh_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Option<
     if !this.is_object() {
         return None;
     }
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this.to_object() };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = this.to_object());
     let mut id_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"__bao_ecdh_id".as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, obj.handle().into(), c"__bao_ecdh_id".as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut id_val,
     });
     if id_val.is_int32() {

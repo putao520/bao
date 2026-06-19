@@ -54,9 +54,11 @@ unsafe fn sc_state_ensure(
     cx: *mut JSContext,
     obj: *mut JSObject,
 ) -> *mut SecureContextState {
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
     let mut slot_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"_scState".as_ptr(),
+    JS_GetProperty(cx, obj_root.handle().into(), c"_scState".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut slot_val });
 
     if val_is_private(&slot_val) {
@@ -70,8 +72,8 @@ unsafe fn sc_state_ensure(
     let state = Box::new(SecureContextState::new());
     let ptr = Box::into_raw(state) as *const core::ffi::c_void;
     let pv = mozjs::jsval::PrivateValue(ptr);
-    let pv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &pv };
-    JS_DefineProperty(cx, obj_h, c"_scState".as_ptr(), pv_h.into(), 0);
+    rooted!(&in(cx_ref) let pv_h = pv);
+    JS_DefineProperty(cx, obj_root.handle().into(), c"_scState".as_ptr(), pv_h.handle().into(), 0);
     ptr as *mut SecureContextState
 }
 
@@ -125,9 +127,11 @@ unsafe fn sc_state_add_ca(
 
 /// Drop the SecureContextState stored on a JS object (for cleanup).
 unsafe fn sc_state_drop(cx: *mut JSContext, obj: *mut JSObject) {
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
     let mut slot_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"_scState".as_ptr(),
+    JS_GetProperty(cx, obj_root.handle().into(), c"_scState".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut slot_val });
 
     if val_is_private(&slot_val) {
@@ -135,9 +139,8 @@ unsafe fn sc_state_drop(cx: *mut JSContext, obj: *mut JSObject) {
         if !ptr.is_null() {
             let _ = Box::from_raw(ptr);
         }
-        let undef = UndefinedValue();
-        let undef_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &undef };
-        JS_DefineProperty(cx, obj_h, c"_scState".as_ptr(), undef_h.into(), 0);
+        rooted!(&in(cx_ref) let undef = UndefinedValue());
+        JS_DefineProperty(cx, obj_root.handle().into(), c"_scState".as_ptr(), undef.handle().into(), 0);
     }
 }
 
@@ -257,10 +260,10 @@ unsafe extern "C" fn tls_socket_ctor(
     let cx_ref = &mut wrapped_cx;
 
     // Get the constructor's .prototype property to set as the new object's proto.
-    let callee_obj = args.calleev().to_object();
+    rooted!(&in(cx_ref) let callee_obj = args.calleev().to_object());
     let mut proto_val = UndefinedValue();
     JS_GetProperty(cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &callee_obj },
+        callee_obj.handle().into(),
         c"prototype".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val },
     );
@@ -286,24 +289,24 @@ unsafe extern "C" fn tls_socket_ctor(
 
     // If first arg is an object (socket), store reference
     if argc > 0 && (*args.get(0).ptr).is_object() {
-        let sock = (*args.get(0).ptr).to_object();
-        rooted!(&in(cx_ref) let sv = ObjectValue(sock));
+        rooted!(&in(cx_ref) let sock = (*args.get(0).ptr).to_object());
+        rooted!(&in(cx_ref) let sv = ObjectValue(sock.get()));
         JS_DefineProperty(cx, obj.handle().into(), c"_socket".as_ptr(), sv.handle().into(), 0);
     }
 
     // Store hostname from options
     if argc > 1 && (*args.get(1).ptr).is_object() {
-        let opts = (*args.get(1).ptr).to_object();
+        rooted!(&in(cx_ref) let opts = (*args.get(1).ptr).to_object());
         let mut host_val = UndefinedValue();
         JS_GetProperty(cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &opts },
+            opts.handle().into(),
             c"servername".as_ptr(),
             MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut host_val },
         );
         if host_val.is_string() {
+            rooted!(&in(cx_ref) let hv = host_val);
             JS_DefineProperty(cx, obj.handle().into(), c"servername".as_ptr(),
-                Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &host_val },
-                JSPROP_ENUMERATE as u32);
+                hv.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
 
@@ -324,13 +327,14 @@ unsafe extern "C" fn tls_connect(
     let args = CallArgs::from_vp(vp, argc);
 
     let (host, port) = if argc > 0 && (*args.get(0).ptr).is_object() {
-        let opts = (*args.get(0).ptr).to_object();
-        let opts_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &opts };
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let opts = (*args.get(0).ptr).to_object());
         let mut h = UndefinedValue();
-        JS_GetProperty(cx, opts_h, c"host".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut h });
+        JS_GetProperty(cx, opts.handle().into(), c"host".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut h });
         let host = if h.is_string() { crate::js_to_rust_string(cx, h) } else { "localhost".to_string() };
         let mut p = UndefinedValue();
-        JS_GetProperty(cx, opts_h, c"port".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut p });
+        JS_GetProperty(cx, opts.handle().into(), c"port".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut p });
         let port = if p.is_int32() { p.to_int32() as u16 } else { 443 };
         (host, port)
     } else if argc > 0 && (*args.get(0).ptr).is_int32() {
@@ -363,10 +367,12 @@ unsafe extern "C" fn tls_connect(
     // socket setup, and TIME_WAIT cost and could hang on unreachable hosts.
     // That was already removed; `stealth_http_request`'s Ok/Err directly gates
     // the result. This change removes the *blocking* call from the JS thread.
-    let promise = mozjs_sys::jsapi::JS::NewPromiseObject(
-        cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() },
-    );
+    let promise = {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let null_h = ::std::ptr::null_mut::<JSObject>());
+        mozjs_sys::jsapi::JS::NewPromiseObject(cx, null_h.handle().into())
+    };
     if promise.is_null() {
         args.rval().set(UndefinedValue());
         return true;
@@ -407,21 +413,20 @@ unsafe extern "C" fn tls_create_server(
         // Store the first arg (options or SecureContext) as _secureContext
         // tls.createServer(options, [callback]) — options may contain key/cert directly
         if argc > 0 && (*args.get(0).ptr).is_object() {
-            let opts = (*args.get(0).ptr).to_object();
-            rooted!(&in(cx_ref) let ov = ObjectValue(opts));
+            rooted!(&in(cx_ref) let opts = (*args.get(0).ptr).to_object());
+            rooted!(&in(cx_ref) let ov = ObjectValue(opts.get()));
             JS_DefineProperty(cx, server.handle().into(), c"_secureContext".as_ptr(), ov.handle().into(), 0);
 
             // Parse key/cert from options and store in SecureContextState on the server object
-            let opts_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &opts };
             let mut key_val = UndefinedValue();
-            JS_GetProperty(cx, opts_h, c"key".as_ptr(),
+            JS_GetProperty(cx, opts.handle().into(), c"key".as_ptr(),
                 MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut key_val });
             if key_val.is_string() {
                 let pem = crate::js_to_rust_string(cx, key_val);
                 sc_state_set_key(cx, server.get(), &pem);
             }
             let mut cert_val = UndefinedValue();
-            JS_GetProperty(cx, opts_h, c"cert".as_ptr(),
+            JS_GetProperty(cx, opts.handle().into(), c"cert".as_ptr(),
                 MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut cert_val });
             if cert_val.is_string() {
                 let pem = crate::js_to_rust_string(cx, cert_val);
@@ -457,8 +462,8 @@ unsafe extern "C" fn tls_create_secure_context(
         let state = Box::new(SecureContextState::new());
         let ptr = Box::into_raw(state) as *const core::ffi::c_void;
         let pv = mozjs::jsval::PrivateValue(ptr);
-        let pv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &pv };
-        JS_DefineProperty(cx, ctx.handle().into(), c"_scState".as_ptr(), pv_h.into(), 0);
+        rooted!(&in(cx_ref) let pv_h = pv);
+        JS_DefineProperty(cx, ctx.handle().into(), c"_scState".as_ptr(), pv_h.handle().into(), 0);
 
         args.rval().set(ObjectValue(ctx.get()));
         return true;
@@ -474,7 +479,10 @@ unsafe extern "C" fn sc_set_key(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         let val = *args.get(0).ptr;
         if val.is_string() {
             let pem = crate::js_to_rust_string(cx, val);
-            sc_state_set_key(cx, args.thisv().to_object(), &pem);
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+            sc_state_set_key(cx, this_obj.get(), &pem);
         }
     }
     args.rval().set(UndefinedValue());
@@ -488,7 +496,10 @@ unsafe extern "C" fn sc_set_cert(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let val = *args.get(0).ptr;
         if val.is_string() {
             let pem = crate::js_to_rust_string(cx, val);
-            sc_state_set_cert(cx, args.thisv().to_object(), &pem);
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+            sc_state_set_cert(cx, this_obj.get(), &pem);
         }
     }
     args.rval().set(UndefinedValue());
@@ -502,7 +513,10 @@ unsafe extern "C" fn sc_add_ca_cert(cx: *mut JSContext, argc: u32, vp: *mut JSVa
         let val = *args.get(0).ptr;
         if val.is_string() {
             let pem = crate::js_to_rust_string(cx, val);
-            sc_state_add_ca(cx, args.thisv().to_object(), &pem);
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+            sc_state_add_ca(cx, this_obj.get(), &pem);
         }
     }
     args.rval().set(UndefinedValue());
@@ -517,10 +531,12 @@ unsafe extern "C" fn sc_set_ca(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         if val.is_string() {
             let pem = crate::js_to_rust_string(cx, val);
             // setCA replaces the entire CA store, so reset first
-            let this_obj = args.thisv().to_object();
-            let state = sc_state_ensure(cx, this_obj);
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+            let state = sc_state_ensure(cx, this_obj.get());
             (*state).ca_certs = Vec::new();
-            sc_state_add_ca(cx, this_obj, &pem);
+            sc_state_add_ca(cx, this_obj.get(), &pem);
         }
     }
     args.rval().set(UndefinedValue());
@@ -655,16 +671,16 @@ unsafe extern "C" fn tls_socket_set_encoding(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this_obj = args.thisv().to_object();
-    let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
 
     if argc > 0 && (*args.get(0).ptr).is_string() {
-        let enc_val = *args.get(0).ptr;
-        let enc_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &enc_val };
-        JS_DefineProperty(cx, this_h, c"_encoding".as_ptr(), enc_h.into(), 0);
+        rooted!(&in(cx_ref) let enc_val = *args.get(0).ptr);
+        JS_DefineProperty(cx, this_obj.handle().into(), c"_encoding".as_ptr(), enc_val.handle().into(), 0);
     }
 
-    args.rval().set(ObjectValue(this_obj));
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -678,12 +694,12 @@ unsafe extern "C" fn tls_socket_ref(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let this_obj = args.thisv().to_object();
-    let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-    let refed = mozjs::jsval::BooleanValue(true);
-    let refed_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &refed };
-    JS_DefineProperty(cx, this_h, c"_refed".as_ptr(), refed_h.into(), 0);
-    args.rval().set(ObjectValue(this_obj));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+    rooted!(&in(cx_ref) let refed = mozjs::jsval::BooleanValue(true));
+    JS_DefineProperty(cx, this_obj.handle().into(), c"_refed".as_ptr(), refed.handle().into(), 0);
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -697,12 +713,12 @@ unsafe extern "C" fn tls_socket_unref(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let this_obj = args.thisv().to_object();
-    let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-    let refed = mozjs::jsval::BooleanValue(false);
-    let refed_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &refed };
-    JS_DefineProperty(cx, this_h, c"_refed".as_ptr(), refed_h.into(), 0);
-    args.rval().set(ObjectValue(this_obj));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = args.thisv().to_object());
+    rooted!(&in(cx_ref) let refed = mozjs::jsval::BooleanValue(false));
+    JS_DefineProperty(cx, this_obj.handle().into(), c"_refed".as_ptr(), refed.handle().into(), 0);
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -803,7 +819,10 @@ unsafe extern "C" fn tls_server_listen(
     };
 
     let this_obj = args.thisv().to_object();
-    let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_root = this_obj);
 
     // Try to read SecureContextState from this object first (set by createServer with key/cert)
     // Then fall back to _secureContext object's state
@@ -811,7 +830,7 @@ unsafe extern "C" fn tls_server_listen(
 
     // Check if this object has its own _scState
     let mut sc_val = UndefinedValue();
-    JS_GetProperty(cx, this_h, c"_scState".as_ptr(),
+    JS_GetProperty(cx, this_root.handle().into(), c"_scState".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut sc_val });
     if val_is_private(&sc_val) {
         let ptr = sc_val.to_private() as *mut SecureContextState;
@@ -823,14 +842,13 @@ unsafe extern "C" fn tls_server_listen(
     // If no state on this object, try _secureContext
     if state_ptr.is_null() {
         let mut ctx_val = UndefinedValue();
-        JS_GetProperty(cx, this_h, c"_secureContext".as_ptr(),
+        JS_GetProperty(cx, this_root.handle().into(), c"_secureContext".as_ptr(),
             MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctx_val });
 
         if ctx_val.is_object() {
-            let ctx_obj = ctx_val.to_object();
-            let ctx_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ctx_obj };
+            rooted!(&in(cx_ref) let ctx_obj = ctx_val.to_object());
             let mut ctx_sc_val = UndefinedValue();
-            JS_GetProperty(cx, ctx_h, c"_scState".as_ptr(),
+            JS_GetProperty(cx, ctx_obj.handle().into(), c"_scState".as_ptr(),
                 MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctx_sc_val });
             if ctx_sc_val.is_double() && (ctx_sc_val.asBits_ & 0xFFFF000000000000) == 0 {
                 let ptr = ctx_sc_val.to_private() as *mut SecureContextState;
@@ -885,13 +903,12 @@ unsafe extern "C" fn tls_server_listen(
     // Store the TlsServer as a private property for later use in close()
     let server_ptr = Box::into_raw(Box::new(server)) as *const core::ffi::c_void;
     let pv = mozjs::jsval::PrivateValue(server_ptr);
-    let pv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &pv };
-    JS_DefineProperty(cx, this_h, c"_tlsServer".as_ptr(), pv_h.into(), 0);
+    rooted!(&in(cx_ref) let pv_h = pv);
+    JS_DefineProperty(cx, this_root.handle().into(), c"_tlsServer".as_ptr(), pv_h.handle().into(), 0);
 
     // Store port
-    let port_val = Int32Value(port as i32);
-    let port_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &port_val };
-    JS_DefineProperty(cx, this_h, c"_listenPort".as_ptr(), port_h.into(), JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let port_val = Int32Value(port as i32));
+    JS_DefineProperty(cx, this_root.handle().into(), c"_listenPort".as_ptr(), port_val.handle().into(), JSPROP_ENUMERATE as u32);
 
     log::info!("[tls] server configured with cert+key, ready on port {}", port);
     args.rval().set(mozjs::jsval::BooleanValue(true));
@@ -907,11 +924,14 @@ unsafe extern "C" fn tls_server_close(
 ) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
     let this_obj = args.thisv().to_object();
-    let this_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_root = this_obj);
 
     // Drop TlsServer
     let mut server_val = UndefinedValue();
-    JS_GetProperty(cx, this_h, c"_tlsServer".as_ptr(),
+    JS_GetProperty(cx, this_root.handle().into(), c"_tlsServer".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut server_val });
 
     if !server_val.is_undefined() && server_val.to_private() != core::ptr::null() {
@@ -919,9 +939,8 @@ unsafe extern "C" fn tls_server_close(
         if !ptr.is_null() {
             let _ = Box::from_raw(ptr);
         }
-        let undef = UndefinedValue();
-        let undef_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &undef };
-        JS_DefineProperty(cx, this_h, c"_tlsServer".as_ptr(), undef_h.into(), 0);
+        rooted!(&in(cx_ref) let undef = UndefinedValue());
+        JS_DefineProperty(cx, this_root.handle().into(), c"_tlsServer".as_ptr(), undef.handle().into(), 0);
     }
 
     // Drop SecureContextState

@@ -582,12 +582,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let cx_raw = cx.raw_cx();
 
         // Register native helper functions on module object for JS code to call
-        let mod_ptr = mod_obj.get();
-        let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr };
-        JS_DefineFunction(cx_raw, mod_h, c"__net_listen".as_ptr(), Some(net_listen), 2, 0);
-        JS_DefineFunction(cx_raw, mod_h, c"__net_connect".as_ptr(), Some(net_connect), 2, 0);
-        JS_DefineFunction(cx_raw, mod_h, c"__net_write".as_ptr(), Some(net_write), 2, 0);
-        JS_DefineFunction(cx_raw, mod_h, c"__net_close".as_ptr(), Some(net_close), 1, 0);
+        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_listen".as_ptr(), Some(net_listen), 2, 0);
+        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_connect".as_ptr(), Some(net_connect), 2, 0);
+        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_write".as_ptr(), Some(net_write), 2, 0);
+        JS_DefineFunction(cx_raw, mod_obj.handle().into(), c"__net_close".as_ptr(), Some(net_close), 1, 0);
 
         let c_filename = ZBox::from_bytes("node:net".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
@@ -609,24 +607,18 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
 
         let exports_obj = rval.to_object();
-        let exports_h = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &exports_obj,
-        };
-
-        let mod_ptr2 = mod_obj.get();
-        let mod_h2 = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_ptr2 };
+        rooted!(&in(cx) let exports_rooted = exports_obj);
 
         for name in &["Socket", "Server", "createServer", "connect", "createConnection", "isIP", "isIPv4", "isIPv6"] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
-            JS_GetProperty(cx_raw, exports_h, cname.as_ptr(), MutableHandle::<Value> {
+            JS_GetProperty(cx_raw, exports_rooted.handle().into(), cname.as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
                 ptr: &mut val,
             });
             if !val.is_undefined() {
-                let val_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-                JS_DefineProperty(cx_raw, mod_h2, cname.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx) let val_root = val);
+                JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
             }
         }
 

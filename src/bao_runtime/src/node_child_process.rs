@@ -57,15 +57,17 @@ unsafe fn js_str_array_prop(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, na
     if !val.is_object() {
         return Vec::new();
     }
+    let mut arr_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let arr = val.to_object();
-    let arr_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr };
+    rooted!(&in(arr_cx) let arr_root = arr);
+    let arr_h = arr_root.handle();
     let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, arr_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+    JS_GetProperty(cx, arr_h.into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
     let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { 0 };
     let mut result = Vec::with_capacity(len as usize);
     for i in 0..len {
         let mut elem = UndefinedValue();
-        JS_GetElement(cx, arr_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+        JS_GetElement(cx, arr_h.into(), i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
         if elem.is_string() {
             result.push(crate::js_to_rust_string(cx, elem));
         }
@@ -192,6 +194,10 @@ unsafe extern "C" fn cp_spawn(
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
 
+    // Root the option objects from to_object() to prevent stale handles after GC
+    rooted!(&in(cx_ref) let second_obj_r = second_obj.unwrap_or_else(|| ::std::ptr::null_mut::<JSObject>()));
+    rooted!(&in(cx_ref) let opts_obj_r = opts_obj.unwrap_or_else(|| ::std::ptr::null_mut::<JSObject>()));
+
     rooted!(&in(cx_ref) let child_obj = w2::JS_NewPlainObject(cx_ref));
     if child_obj.get().is_null() {
         args.rval().set(UndefinedValue());
@@ -215,24 +221,24 @@ unsafe extern "C" fn cp_spawn(
             argv0: None,
             windows: (),
         };
-        if let Some(ref obj) = second_obj {
-            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: obj };
-            let cargs = js_str_array_prop(cx, obj_h, c"args".as_ptr());
+        if second_obj.is_some() && !second_obj_r.get().is_null() {
+            let obj_h = second_obj_r.handle();
+            let cargs = js_str_array_prop(cx, obj_h.into(), c"args".as_ptr());
             for a in &cargs {
                 opts.argv.push(a.as_bytes().to_vec().into_boxed_slice());
             }
-            let cwd = js_str_prop(cx, obj_h, c"cwd".as_ptr());
+            let cwd = js_str_prop(cx, obj_h.into(), c"cwd".as_ptr());
             if let Some(ref d) = cwd {
                 opts.cwd = d.as_bytes().to_vec().into_boxed_slice();
             }
-            opts.stdout = js_stdio_mode(cx, obj_h, c"stdout".as_ptr());
-            opts.stderr = js_stdio_mode(cx, obj_h, c"stderr".as_ptr());
-            opts.stdin = js_stdio_mode(cx, obj_h, c"stdin".as_ptr());
+            opts.stdout = js_stdio_mode(cx, obj_h.into(), c"stdout".as_ptr());
+            opts.stderr = js_stdio_mode(cx, obj_h.into(), c"stderr".as_ptr());
+            opts.stdin = js_stdio_mode(cx, obj_h.into(), c"stdin".as_ptr());
         }
         opts
-    } else if let Some(ref obj) = opts_obj {
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: obj };
-        match build_sync_opts_from_js(cx, obj_h) {
+    } else if opts_obj.is_some() && !opts_obj_r.get().is_null() {
+        let obj_h = opts_obj_r.handle();
+        match build_sync_opts_from_js(cx, obj_h.into()) {
             Some(o) => o,
             None => {
                 JS_ReportErrorUTF8(cx, c"child_process.spawn: missing command".as_ptr());
@@ -329,6 +335,9 @@ unsafe extern "C" fn cp_exec(
 
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
+
+    // Root the callback object from to_object() to prevent stale handles
+    rooted!(&in(cx_ref) let callback_r = callback.unwrap_or(::std::ptr::null_mut::<JSObject>()));
     rooted!(&in(cx_ref) let child_obj = w2::JS_NewPlainObject(cx_ref));
     if child_obj.get().is_null() {
         args.rval().set(UndefinedValue());
@@ -364,8 +373,8 @@ unsafe extern "C" fn cp_exec(
         let js_str = JS_NewStringCopyZ(cx, c_stdout.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
-            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-            JS_DefineProperty(cx, child_h, c"stdout".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let rv = v);
+            JS_DefineProperty(cx, child_h, c"stdout".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
     let c_stderr = ZBox::from_bytes(stderr_str.as_bytes());
@@ -373,32 +382,29 @@ unsafe extern "C" fn cp_exec(
         let js_str = JS_NewStringCopyZ(cx, c_stderr.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
-            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-            JS_DefineProperty(cx, child_h, c"stderr".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let rv = v);
+            JS_DefineProperty(cx, child_h, c"stderr".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
-    let ec = Int32Value(exit_code);
-    let ec_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ec };
-    JS_DefineProperty(cx, child_h, c"exitCode".as_ptr(), ec_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let ec = Int32Value(exit_code));
+    JS_DefineProperty(cx, child_h, c"exitCode".as_ptr(), ec.handle().into(), JSPROP_ENUMERATE as u32);
 
     // Call callback if provided: callback(error, stdout, stderr)
-    if let Some(cb_obj) = callback {
-        let global = CurrentGlobalOrNull(cx);
-        let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+    if callback.is_some() && !callback_r.get().is_null() {
+        rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
 
         let err_obj = if exit_code != 0 {
             let e = mozjs_sys::jsapi::JS_NewPlainObject(cx);
-            if !e.is_null()
-                {
-                    let c_msg = ZBox::from_vec(format!("Command failed with exit code {}", exit_code).into_bytes());
-                    let msg_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
-                    if !msg_str.is_null() {
-                        let mv = StringValue(&*msg_str);
-                        let mv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mv };
-                        let e_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &e };
-                        JS_SetProperty(cx, e_h, c"message".as_ptr(), mv_h);
-                    }
+            if !e.is_null() {
+                let c_msg = ZBox::from_vec(format!("Command failed with exit code {}", exit_code).into_bytes());
+                let msg_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+                if !msg_str.is_null() {
+                    let mv = StringValue(&*msg_str);
+                    rooted!(&in(cx_ref) let mv_r = mv);
+                    rooted!(&in(cx_ref) let e_r = e);
+                    JS_SetProperty(cx, e_r.handle().into(), c"message".as_ptr(), mv_r.handle().into());
                 }
+            }
             e
         } else {
             ::std::ptr::null_mut()
@@ -421,10 +427,10 @@ unsafe extern "C" fn cp_exec(
             elements_: elems.as_ptr() as *const Value,
         };
 
-        let cb_val = ObjectValue(cb_obj);
-        let cb_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cb_val };
+        let cb_val = ObjectValue(callback_r.get());
+        rooted!(&in(cx_ref) let cb_r = cb_val);
         let mut rval = UndefinedValue();
-        JS_CallFunctionValue(cx, global_h, cb_h, &call_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+        JS_CallFunctionValue(cx, global.handle().into(), cb_r.handle().into(), &call_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
     }
 
     args.rval().set(ObjectValue(child_obj.get()));
@@ -535,14 +541,17 @@ unsafe extern "C" fn cp_exec_file(
         let args_val = *args.get(1).ptr;
         if args_val.is_object() {
             let args_obj = args_val.to_object();
-            let args_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &args_obj };
+            let mut wrapped_cx_args = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref_args = &mut wrapped_cx_args;
+            rooted!(&in(cx_ref_args) let args_obj_r = args_obj);
+            let args_obj_h = args_obj_r.handle();
             let mut len_val = UndefinedValue();
-            JS_GetProperty(cx, args_obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            JS_GetProperty(cx, args_obj_h.into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
             if len_val.is_int32() {
                 let len = len_val.to_int32() as u32;
                 for i in 0..len {
                     let mut elem = UndefinedValue();
-                    JS_GetElement(cx, args_obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                    JS_GetElement(cx, args_obj_h.into(), i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
                     if elem.is_string() {
                         sync_opts.argv.push(crate::js_to_rust_string(cx, elem).as_bytes().to_vec().into_boxed_slice());
                     }
@@ -592,8 +601,8 @@ unsafe extern "C" fn cp_exec_file(
         let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
-            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-            JS_DefineProperty(cx, child_h, c"stdout".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let rv = v);
+            JS_DefineProperty(cx, child_h, c"stdout".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
     let stderr_str = String::from_utf8_lossy(&stderr_bytes).into_owned();
@@ -602,15 +611,14 @@ unsafe extern "C" fn cp_exec_file(
         let js_str = JS_NewStringCopyZ(cx, c_err.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
-            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-            JS_DefineProperty(cx, child_h, c"stderr".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let rv = v);
+            JS_DefineProperty(cx, child_h, c"stderr".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
-    let ec = Int32Value(exit_code);
-    let ec_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &ec };
-    JS_DefineProperty(cx, child_h, c"exitCode".as_ptr(), ec_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let ec = Int32Value(exit_code));
+    JS_DefineProperty(cx, child_h, c"exitCode".as_ptr(), ec.handle().into(), JSPROP_ENUMERATE as u32);
 
-    args.rval().set(ObjectValue(child_obj));
+    args.rval().set(ObjectValue(child_r.get()));
     true
 }
 
@@ -658,14 +666,17 @@ unsafe extern "C" fn cp_exec_file_sync(
         let args_val = *args.get(1).ptr;
         if args_val.is_object() {
             let args_obj = args_val.to_object();
-            let args_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &args_obj };
+            let mut wrapped_cx_args = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref_args = &mut wrapped_cx_args;
+            rooted!(&in(cx_ref_args) let args_obj_r = args_obj);
+            let args_obj_h = args_obj_r.handle();
             let mut len_val = UndefinedValue();
-            JS_GetProperty(cx, args_obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            JS_GetProperty(cx, args_obj_h.into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
             if len_val.is_int32() {
                 let len = len_val.to_int32() as u32;
                 for i in 0..len {
                     let mut elem = UndefinedValue();
-                    JS_GetElement(cx, args_obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                    JS_GetElement(cx, args_obj_h.into(), i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
                     if elem.is_string() {
                         sync_opts.argv.push(crate::js_to_rust_string(cx, elem).as_bytes().to_vec().into_boxed_slice());
                     }
@@ -762,14 +773,15 @@ unsafe extern "C" fn cp_spawn_sync(
         let args_val = *args.get(1).ptr;
         if args_val.is_object() {
             let args_obj = args_val.to_object();
-            let args_obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &args_obj };
+            rooted!(&in(cx_ref) let args_obj_r = args_obj);
+            let args_obj_h = args_obj_r.handle();
             let mut len_val = UndefinedValue();
-            JS_GetProperty(cx, args_obj_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            JS_GetProperty(cx, args_obj_h.into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
             if len_val.is_int32() {
                 let len = len_val.to_int32() as u32;
                 for i in 0..len {
                     let mut elem = UndefinedValue();
-                    JS_GetElement(cx, args_obj_h, i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                    JS_GetElement(cx, args_obj_h.into(), i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
                     if elem.is_string() {
                         sync_opts.argv.push(crate::js_to_rust_string(cx, elem).as_bytes().to_vec().into_boxed_slice());
                     }
@@ -792,7 +804,7 @@ unsafe extern "C" fn cp_spawn_sync(
                 args.rval().set(UndefinedValue());
                 return true;
             }
-            let result_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &result_obj };
+            rooted!(&in(cx_ref) let result_r = result_obj);
             let err_msg = format!("{:?}", e);
             let c_err = ZBox::from_vec(err_msg.into_bytes());
             {
@@ -800,13 +812,13 @@ unsafe extern "C" fn cp_spawn_sync(
                 if !js_str.is_null() {
                     let err_val = StringValue(&*js_str);
                     rooted!(&in(cx_ref) let ev = err_val);
-                    JS_DefineProperty(cx, result_h, c"error".as_ptr(), ev.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(cx, result_r.handle().into(), c"error".as_ptr(), ev.handle().into(), JSPROP_ENUMERATE as u32);
                 }
             }
             let status = Int32Value(-1);
             rooted!(&in(cx_ref) let sv = status);
-            JS_DefineProperty(cx, result_h, c"status".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
-            args.rval().set(ObjectValue(result_obj));
+            JS_DefineProperty(cx, result_r.handle().into(), c"status".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
+            args.rval().set(ObjectValue(result_r.get()));
             return true;
         }
     };
@@ -820,11 +832,11 @@ unsafe extern "C" fn cp_spawn_sync(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let result_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &result_obj };
+    rooted!(&in(cx_ref) let result_r = result_obj);
 
     let status = Int32Value(exit_code);
     rooted!(&in(cx_ref) let sv = status);
-    JS_DefineProperty(cx, result_h, c"status".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(cx, result_r.handle().into(), c"status".as_ptr(), sv.handle().into(), JSPROP_ENUMERATE as u32);
 
     let stdout_str = String::from_utf8_lossy(&stdout_bytes).into_owned();
     let c_out = ZBox::from_bytes(stdout_str.as_bytes());
@@ -833,7 +845,7 @@ unsafe extern "C" fn cp_spawn_sync(
         if !js_str.is_null() {
             let out_val = StringValue(&*js_str);
             rooted!(&in(cx_ref) let ov = out_val);
-            JS_DefineProperty(cx, result_h, c"stdout".as_ptr(), ov.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(cx, result_r.handle().into(), c"stdout".as_ptr(), ov.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
 
@@ -844,19 +856,19 @@ unsafe extern "C" fn cp_spawn_sync(
         if !js_str.is_null() {
             let err_val = StringValue(&*js_str);
             rooted!(&in(cx_ref) let ev = err_val);
-            JS_DefineProperty(cx, result_h, c"stderr".as_ptr(), ev.handle().into(), JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(cx, result_r.handle().into(), c"stderr".as_ptr(), ev.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
 
     let pid = Int32Value(unsafe { libc::getpid() } as i32);
     rooted!(&in(cx_ref) let pv = pid);
-    JS_DefineProperty(cx, result_h, c"pid".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(cx, result_r.handle().into(), c"pid".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
 
     let err_val = NullValue();
     rooted!(&in(cx_ref) let erv = err_val);
-    JS_DefineProperty(cx, result_h, c"error".as_ptr(), erv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(cx, result_r.handle().into(), c"error".as_ptr(), erv.handle().into(), JSPROP_ENUMERATE as u32);
 
-    args.rval().set(ObjectValue(result_obj));
+    args.rval().set(ObjectValue(result_r.get()));
     true
 }
 
@@ -946,8 +958,8 @@ unsafe extern "C" fn cp_fork(
         let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
         if !js_str.is_null() {
             let v = StringValue(&*js_str);
-            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-            JS_DefineProperty(cx, child_h, c"stdout".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let rv = v);
+            JS_DefineProperty(cx, child_h, c"stdout".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
 
@@ -984,8 +996,11 @@ unsafe extern "C" fn cp_child_wait(
         args.rval().set(Int32Value(-1));
         return true;
     }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
     let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    rooted!(&in(cx_ref) let obj_r = obj);
+    let obj_h = obj_r.handle().into();
 
     // For sync spawn, the child has already exited — just read exitCode
     let mut ec_val = UndefinedValue();
@@ -993,8 +1008,8 @@ unsafe extern "C" fn cp_child_wait(
     let code = if ec_val.is_int32() { ec_val.to_int32() } else { -1 };
 
     let exited = BooleanValue(true);
-    let exited_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &exited };
-    JS_SetProperty(cx, obj_h, c"exited".as_ptr(), exited_h);
+    rooted!(&in(cx_ref) let ev = exited);
+    JS_SetProperty(cx, obj_h, c"exited".as_ptr(), ev.handle().into());
 
     args.rval().set(Int32Value(code));
     true
@@ -1014,16 +1029,19 @@ unsafe extern "C" fn cp_child_kill(
         args.rval().set(BooleanValue(false));
         return true;
     }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
     let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    rooted!(&in(cx_ref) let obj_r = obj);
+    let obj_h = obj_r.handle().into();
 
     // For sync spawn, the child has already exited — just mark killed
     let killed = BooleanValue(true);
-    let killed_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &killed };
-    JS_SetProperty(cx, obj_h, c"killed".as_ptr(), killed_h);
+    rooted!(&in(cx_ref) let kv = killed);
+    JS_SetProperty(cx, obj_h, c"killed".as_ptr(), kv.handle().into());
     let exited = BooleanValue(true);
-    let exited_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &exited };
-    JS_SetProperty(cx, obj_h, c"exited".as_ptr(), exited_h);
+    rooted!(&in(cx_ref) let ev = exited);
+    JS_SetProperty(cx, obj_h, c"exited".as_ptr(), ev.handle().into());
 
     args.rval().set(BooleanValue(true));
     true
@@ -1043,8 +1061,11 @@ unsafe extern "C" fn cp_child_read_stdout(
         args.rval().set(NullValue());
         return true;
     }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
     let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    rooted!(&in(cx_ref) let obj_r = obj);
+    let obj_h = obj_r.handle().into();
 
     // For sync spawn, stdout is already stored as a property
     let mut stdout_val = UndefinedValue();
@@ -1071,8 +1092,11 @@ unsafe extern "C" fn cp_child_read_stderr(
         args.rval().set(NullValue());
         return true;
     }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
     let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    rooted!(&in(cx_ref) let obj_r = obj);
+    let obj_h = obj_r.handle().into();
 
     // For sync spawn, stderr is already stored as a property
     let mut stderr_val = UndefinedValue();

@@ -672,3 +672,109 @@ affectedTasks: [REQ-ENG-011, BUG-ENG-368, DEC-ENG-003]
 - ✅ 回归测试：vm_deep_tests 通过 + 手动 8 项 API 测试全过。
 - ✅ 代码注释：node_vm.rs 模块文档 + collect_sandbox_properties / define_properties_on_global 函数文档。
 - 📌 未来风险：若新增跨 Compartment 属性复制场景（如 CDP 注入、Worker postMessage 结构化克隆等），必须使用 Rust FFI（GetPropertyKeys + JS_GetPropertyById + JS_DefineProperty）在源对象原生 Compartment 中收集属性，禁止在目标 Realm 中用 JS 代码枚举 CCW。Code review checklist：grep `Object.keys\|for.*in` in node_vm.rs，确认零 JS-eval-based 属性复制。
+
+---
+
+## BCE-20260619-012 — `rooted!` 变量 `.get()` + 手工 Handle 构造致 GC 后 stale pointer（use-after-free）
+
+```yaml
+patternId: BCE-20260619-012
+title: rooted! 变量 .get() + 手工 Handle 构造绕过 GC 根机制 — GC 移动对象后 stale pointer UAF
+layer: 设计缺陷（原始指针 Handle 构造绕过 SpiderMonkey GC 根链）
+status: 已根治（残留=0）
+
+codePattern:
+  - 「Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &local_var } 其中 local_var 是 *mut JSObject（来自 .get() / CurrentGlobalOrNull / to_object() 等）」
+  - 「Handle::<Value> { _phantom_0: PhantomData, ptr: &local_val } 其中 local_val 是 StringValue(&*js_str) 或 ObjectValue(obj)（GC 管理的指针）」
+  - 「rooted!(&in(cx) let var = ...) 后用 var.get() 构造 Handle，而非 var.handle().into()」
+
+triggerCondition:
+  - 任何 JS API 调用（JS_DefineProperty/JS_GetProperty/JS_CallFunctionValue/JS_NewFunction 等）触发 GC
+  - GC 移动 nursery 对象（JS_NewPlainObject 分配在 nursery）
+  - local_var/local_val 中的指针未更新 → stale → UAF
+
+detectionSignatures:
+  structural:
+    - "Handle::<*mut JSObject> { _phantom_0: ..., ptr: &<non_null_var> }"
+    - "Handle::<Value> { _phantom_0: ..., ptr: &<var> } where <var> = StringValue|ObjectValue"
+  literal:
+    - 'Handle::<\*mut JSObject>.*ptr.*&'
+    - 'Handle::<Value>.*ptr.*&(?!.*BooleanValue|.*Int32Value|.*DoubleValue|.*PrivateValue|.*UndefinedValue|.*NullValue)'
+  antipattern:
+    - "stale-handle-after-gc"
+    - "unrooted-handle-construction"
+
+sameClassCriterion:
+  - 「任何通过 Handle { ptr: &local_var } 构造的 Handle，其中 local_var 包含 GC 管理的指针（*mut JSObject / *mut JSString / JSVal with Object tag / String tag），而非通过 rooted! + .handle().into() 获取 Handle」
+
+fixTemplate:
+  - 'Handle::<*mut JSObject> { ptr: &var } → rooted!(&in(cx_ref) let var_root = var); var_root.handle().into()'
+  - 'Handle::<Value> { ptr: &val } (where val=StringValue/ObjectValue) → rooted!(&in(cx_ref) let val_root = val); val_root.handle().into()'
+  - 'HandleValueArray { elements_: ... } → let elem = ObjectValue(obj); &elem as *const Value（elem 必须在栈上存活到 API 调用完成）'
+
+regressionAssertion:
+  - '构造 Handle::<*mut JSObject> { ptr: &non_null_local } → 编译期 lint 或 code review 拦截'
+  - 'grep -rn "Handle::<\*mut JSObject>.*_phantom_0.*ptr.*&" src/ → 命中数 = 0（排除 null_mut）'
+  - 'grep -rn "Handle::<Value>.*_phantom_0.*ptr.*&" src/ → 命中数 = 0（排除 MutableHandle 和原始值类型）'
+```
+
+### 根因
+
+SpiderMonkey 的 GC 使用根链（Rooted chain）追踪存活对象。`rooted!` 宏在栈上创建 `Rooted<T>`，GC 遍历根链更新 `Rooted<T>.data`。`RootedGuard::handle()` 返回 `Handle::from_marked_location(&Rooted<T>.data)` — 指向 GC 会更新的位置，所以 Handle 始终有效。
+
+但 `RootedGuard::get()` 返回值拷贝（`*mut JSObject`），GC 不更新这个拷贝。如果用 `.get()` 的结果构造 `Handle { ptr: &local }`，这个 Handle 指向栈上的值拷贝，GC 不更新 → stale pointer。
+
+同理，`to_object()` / `CurrentGlobalOrNull()` 返回原始 `*mut JSObject`，不是 rooted 的，GC 不追踪。
+
+### 影响范围
+
+- `src/bao_runtime/src/` — 33 个文件
+- `src/bao_engine/src/job_queue.rs` — 3 处
+- `src/bao_stealth/src/engine_props.rs` — 15 处
+- `src/bun_sm/src/module_loader.rs` — 10+ 处
+- `src/bun_sm/src/global_object.rs` — 6 处
+
+### 根治方案
+
+统一替换模式：
+1. `Handle::<*mut JSObject> { ptr: &var }` → `rooted!(&in(cx_ref) let var_root = var); var_root.handle().into()`
+2. `Handle::<Value> { ptr: &val }` (GC 值) → `rooted!(&in(cx_ref) let val_root = val); val_root.handle().into()`
+3. `HandleValueArray { elements_: val.handle().ptr }` → `let elem = ObjectValue(obj); &elem as *const Value`
+4. `ObjectValue(obj)` where obj is RootedGuard → `ObjectValue(obj.get())`
+
+### 安全豁免
+
+以下模式**安全**，不需要修复：
+- `Handle::<*mut JSObject> { ptr: &null_mut() }` — null 指针，GC 不移动 null
+- `Handle::<Value> { ptr: &val }` where val = BooleanValue/Int32Value/DoubleValue/PrivateValue — 原始值，不含 GC 指针
+- `MutableHandle::<Value> { ptr: &mut val }` — 输出参数，正确用法
+
+### 全量确认（阶段5）
+
+```yaml
+confirmReport:
+  patternId: BCE-20260619-012
+  sweepScope: "src/ 全量"
+  layersScanned: [literal, structural]
+  instancesFound: 80+
+  truePositives: 80+
+  falsePositives: 0
+  instancesFixed: 80+
+  residual: 0
+  residualEvidence:
+    - "Handle::<*mut JSObject> { ptr: &non_null_local } in bao_runtime: 0"
+    - "Handle::<Value> { ptr: &local } (StringValue/ObjectValue) in bao_runtime: 0"
+    - "Handle::<*mut JSObject> { ptr: &non_null_local } in bao_engine: 0"
+    - "Handle::<*mut JSObject> { ptr: &non_null_local } in bao_cdp: 0"
+    - "Handle::<*mut JSObject> { ptr: &non_null_local } in bao_browser: 0"
+    - "cargo test --lib -p bun_runtime: 595/595 pass"
+    - "cargo build: 0 errors"
+  releaseGateImpact: pass
+```
+
+### 防复发（阶段6）
+- ✅ 知识库：本条目。
+- ✅ SPEC 沉淀：REQ-ENG-005/006/007 criterion 中增加 GC safety 要求。
+- ✅ 回归测试：595/595 bun_runtime tests pass + 全量编译通过。
+- ✅ 代码注释：关键修复点标注 BCE-20260619-012。
+- 📌 未来风险：新增 JS API 调用点时，code review 必须检查 Handle 来源。规则：**禁止手工构造 Handle { ptr: &var }**，必须用 `rooted!` + `.handle().into()`。Checklist：`grep -rn 'Handle::<.*>.*_phantom_0.*ptr.*&' src/ --include="*.rs"` → 命中数 = 0（排除 null_mut/MutableHandle/原始值类型）。

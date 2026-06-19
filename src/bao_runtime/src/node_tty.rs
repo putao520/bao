@@ -196,15 +196,16 @@ unsafe extern "C" fn tty_set_raw_mode(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv().to_object();
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
 
     // Get fd from this object
     let mut fd_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"fd".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val },
     );
@@ -244,9 +245,9 @@ unsafe extern "C" fn tty_set_raw_mode(
 
     // Update isRaw on the object
     rooted!(&in(cx_ref) let rv = BooleanValue(raw_flag));
-    JS_DefineProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this }, c"isRaw".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+    JS_DefineProperty(cx, this.handle().into(), c"isRaw".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
 
-    args.rval().set(ObjectValue(this));
+    args.rval().set(ObjectValue(this.get()));
     true
 }
 
@@ -257,12 +258,15 @@ unsafe extern "C" fn tty_get_window_size(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let this = args.thisv().to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
 
     let mut fd_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"fd".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val },
     );
@@ -270,8 +274,6 @@ unsafe extern "C" fn tty_get_window_size(
 
     let mut ws: libc::winsize = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
     if fd >= 0 && libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) == 0 {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref = &mut wrapped_cx;
         rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, 2));
         if !arr.get().is_null() {
             rooted!(&in(cx_ref) let cv = Int32Value(ws.ws_col as i32));
@@ -293,12 +295,15 @@ unsafe extern "C" fn tty_write_stream_write(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv().to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
 
     let mut fd_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"fd".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val },
     );
@@ -320,7 +325,12 @@ unsafe extern "C" fn tty_write_stream_write(
 unsafe extern "C" fn tty_ref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
-    if this.is_object() { args.rval().set(ObjectValue(this.to_object())); } else { args.rval().set(UndefinedValue()); }
+    if this.is_object() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = this.to_object());
+        args.rval().set(ObjectValue(obj.get()));
+    } else { args.rval().set(UndefinedValue()); }
     true
 }
 
@@ -328,7 +338,12 @@ unsafe extern "C" fn tty_ref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
 unsafe extern "C" fn tty_unref(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
-    if this.is_object() { args.rval().set(ObjectValue(this.to_object())); } else { args.rval().set(UndefinedValue()); }
+    if this.is_object() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = this.to_object());
+        args.rval().set(ObjectValue(obj.get()));
+    } else { args.rval().set(UndefinedValue()); }
     true
 }
 
@@ -337,12 +352,12 @@ unsafe extern "C" fn tty_resume(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-    let readable_v = BooleanValue(true);
-    let rv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &readable_v };
-    JS_DefineProperty(cx, obj_h, c"readable".as_ptr(), rv_h, JSPROP_ENUMERATE as u32);
-    args.rval().set(ObjectValue(this_obj));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    rooted!(&in(cx_ref) let readable_v = BooleanValue(true));
+    JS_DefineProperty(cx, this_obj.handle().into(), c"readable".as_ptr(), readable_v.handle().into(), JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -351,12 +366,12 @@ unsafe extern "C" fn tty_pause(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-    let readable_v = BooleanValue(false);
-    let rv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &readable_v };
-    JS_DefineProperty(cx, obj_h, c"readable".as_ptr(), rv_h, JSPROP_ENUMERATE as u32);
-    args.rval().set(ObjectValue(this_obj));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    rooted!(&in(cx_ref) let readable_v = BooleanValue(false));
+    JS_DefineProperty(cx, this_obj.handle().into(), c"readable".as_ptr(), readable_v.handle().into(), JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -365,12 +380,12 @@ unsafe extern "C" fn tty_destroy(cx: *mut JSContext, _argc: u32, vp: *mut JSVal)
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-    let destroyed_v = BooleanValue(true);
-    let dv_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &destroyed_v };
-    JS_DefineProperty(cx, obj_h, c"destroyed".as_ptr(), dv_h, JSPROP_ENUMERATE as u32);
-    args.rval().set(ObjectValue(this_obj));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    rooted!(&in(cx_ref) let destroyed_v = BooleanValue(true));
+    JS_DefineProperty(cx, this_obj.handle().into(), c"destroyed".as_ptr(), destroyed_v.handle().into(), JSPROP_ENUMERATE as u32);
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -379,7 +394,9 @@ unsafe extern "C" fn tty_clear_line(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
 
     let dir = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
     let esc = match dir {
@@ -389,12 +406,11 @@ unsafe extern "C" fn tty_clear_line(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     };
 
     let mut fd_val = UndefinedValue();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-    JS_GetProperty(cx, obj_h, c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
+    JS_GetProperty(cx, this_obj.handle().into(), c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
     let fd = if fd_val.is_int32() { fd_val.to_int32() } else { 1 };
 
     libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
-    args.rval().set(ObjectValue(this_obj));
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -403,16 +419,17 @@ unsafe extern "C" fn tty_clear_screen_down(cx: *mut JSContext, _argc: u32, vp: *
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
 
     let esc = "\x1b[J";
     let mut fd_val = UndefinedValue();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-    JS_GetProperty(cx, obj_h, c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
+    JS_GetProperty(cx, this_obj.handle().into(), c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
     let fd = if fd_val.is_int32() { fd_val.to_int32() } else { 1 };
 
     libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
-    args.rval().set(ObjectValue(this_obj));
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -421,19 +438,20 @@ unsafe extern "C" fn tty_cursor_to(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
 
     let col = if argc > 0 { (*args.get(0).ptr).to_int32().max(0) as u32 } else { 0 };
     let row = if argc > 1 { (*args.get(1).ptr).to_int32().max(0) as u32 } else { 0 };
     let esc = format!("\x1b[{};{}H", row + 1, col + 1);
 
     let mut fd_val = UndefinedValue();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-    JS_GetProperty(cx, obj_h, c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
+    JS_GetProperty(cx, this_obj.handle().into(), c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
     let fd = if fd_val.is_int32() { fd_val.to_int32() } else { 1 };
 
     libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
-    args.rval().set(ObjectValue(this_obj));
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }
 
@@ -442,7 +460,9 @@ unsafe extern "C" fn tty_move_cursor(cx: *mut JSContext, argc: u32, vp: *mut JSV
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
 
     let dx = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
     let dy = if argc > 1 { (*args.get(1).ptr).to_int32() } else { 0 };
@@ -455,11 +475,10 @@ unsafe extern "C" fn tty_move_cursor(cx: *mut JSContext, argc: u32, vp: *mut JSV
 
     if !esc.is_empty() {
         let mut fd_val = UndefinedValue();
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj };
-        JS_GetProperty(cx, obj_h, c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
+        JS_GetProperty(cx, this_obj.handle().into(), c"fd".as_ptr(), MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fd_val });
         let fd = if fd_val.is_int32() { fd_val.to_int32() } else { 1 };
         libc::write(fd, esc.as_ptr() as *const ::std::os::raw::c_void, esc.len());
     }
-    args.rval().set(ObjectValue(this_obj));
+    args.rval().set(ObjectValue(this_obj.get()));
     true
 }

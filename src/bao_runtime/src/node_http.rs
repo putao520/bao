@@ -310,9 +310,8 @@ unsafe extern "C" fn uws_route_handler(
     JS_DefineProperty(raw_cx, res_obj.handle().into(), c"_uwsRes".as_ptr(), rv.handle().into(), 0);
 
     // Call the JS request handler: handler(req, res)
-    let handler_val = ObjectValue(handler);
-    let handler_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &handler_val };
-    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+    rooted!(&in(cx_ref) let handler_root = ObjectValue(handler));
+    rooted!(&in(cx_ref) let global_root = global);
 
     let args_vals = [ObjectValue(req_obj.get()), ObjectValue(res_obj.get())];
     let call_args = HandleValueArray {
@@ -322,7 +321,7 @@ unsafe extern "C" fn uws_route_handler(
 
     let mut rval = UndefinedValue();
     let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-    JS_CallFunctionValue(raw_cx, global_h, handler_h, &call_args, rval_h);
+    JS_CallFunctionValue(raw_cx, global_root.handle().into(), handler_root.handle().into(), &call_args, rval_h);
     JS_ClearPendingException(raw_cx);
 }
 
@@ -344,9 +343,11 @@ fn val_is_private(v: &JSVal) -> bool {
 /// Recover the `*mut uws_res` stored as `_uwsRes` on the JS response object.
 #[inline]
 unsafe fn get_uws_res(cx: *mut JSContext, obj: *mut JSObject) -> *mut bun_uws_sys::response::c::uws_res {
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = obj);
     let mut ptr_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c"_uwsRes".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ptr_val });
+    JS_GetProperty(cx, obj_root.handle().into(), c"_uwsRes".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ptr_val });
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     if !val_is_private(&ptr_val) {
         return core::ptr::null_mut();
@@ -361,17 +362,21 @@ unsafe extern "C" fn res_write_head(
     vp: *mut mozjs::jsval::JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
     if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_int32() {
             let status = v.to_int32();
             let this = args.thisv();
-            let obj = this.to_object();
-            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-            JS_SetProperty(cx, obj_h, c"statusCode".as_ptr(), Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v });
+            rooted!(&in(cx_ref) let obj = this.to_object());
+            rooted!(&in(cx_ref) let v_root = v);
+            JS_SetProperty(cx, obj.handle().into(), c"statusCode".as_ptr(), v_root.handle().into());
 
             // Write status to uWS Response.
-            let uws_res = get_uws_res(cx, obj);
+            let uws_res = get_uws_res(cx, obj.get());
             if !uws_res.is_null() {
                 let status_str = format!("{} ", status);
                 let res_mut = Response::<false>::cast_res(uws_res);
@@ -382,8 +387,8 @@ unsafe extern "C" fn res_write_head(
             if argc > 1 {
                 let hdrs_val = *args.get(1).ptr;
                 if hdrs_val.is_object() {
-                    let hdrs_obj = hdrs_val.to_object();
-                    let uws_res = get_uws_res(cx, obj);
+                    rooted!(&in(cx_ref) let hdrs_obj = hdrs_val.to_object());
+                    let uws_res = get_uws_res(cx, obj.get());
                     if !uws_res.is_null() {
                         let res_mut = Response::<false>::cast_res(uws_res);
                         // Iterate known header keys.
@@ -394,7 +399,7 @@ unsafe extern "C" fn res_write_head(
                         for &key in common {
                             let c_key = ZBox::from_bytes(key);
                             let mut hv = UndefinedValue();
-                            JS_GetProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &hdrs_obj }, c_key.as_ptr(),
+                            JS_GetProperty(cx, hdrs_obj.handle().into(), c_key.as_ptr(),
                                 MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hv });
                             if hv.is_string() {
                                 let val = crate::js_to_rust_string(cx, hv);
@@ -418,18 +423,21 @@ unsafe extern "C" fn res_write(
     vp: *mut mozjs::jsval::JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
     if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_string() {
             let data = crate::js_to_rust_string(cx, v);
             let this = args.thisv();
-            let obj = this.to_object();
+            rooted!(&in(cx_ref) let obj = this.to_object());
 
             // Accumulate body in JS _body property.
-            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
             let mut body_val = UndefinedValue();
             let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
-            JS_GetProperty(cx, obj_h, c"_body".as_ptr(), body_mh);
+            JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
             let existing = if body_val.is_string() {
                 crate::js_to_rust_string(cx, body_val)
             } else {
@@ -441,8 +449,8 @@ unsafe extern "C" fn res_write(
             let js_combined = JS_NewStringCopyZ(cx, c_combined.as_ptr());
             if !js_combined.is_null() {
                 let cv = StringValue(&*js_combined);
-                let cv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cv };
-                JS_SetProperty(cx, obj_h, c"_body".as_ptr(), cv_h);
+                rooted!(&in(cx_ref) let cv_root = cv);
+                JS_SetProperty(cx, obj.handle().into(), c"_body".as_ptr(), cv_root.handle().into());
             }
         }
     }
@@ -458,17 +466,19 @@ unsafe extern "C" fn res_end(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
     // Append final data if provided.
     if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_string() {
             let data = crate::js_to_rust_string(cx, v);
             let this = args.thisv();
-            let obj = this.to_object();
-            let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+            rooted!(&in(cx_ref) let obj = this.to_object());
             let mut body_val = UndefinedValue();
             let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
-            JS_GetProperty(cx, obj_h, c"_body".as_ptr(), body_mh);
+            JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
             let existing = if body_val.is_string() {
                 crate::js_to_rust_string(cx, body_val)
             } else { String::new() };
@@ -478,32 +488,31 @@ unsafe extern "C" fn res_end(
             let js_combined = JS_NewStringCopyZ(cx, c_combined.as_ptr());
             if !js_combined.is_null() {
                 let cv = StringValue(&*js_combined);
-                let cv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &cv };
-                JS_SetProperty(cx, obj_h, c"_body".as_ptr(), cv_h);
+                rooted!(&in(cx_ref) let cv_root = cv);
+                JS_SetProperty(cx, obj.handle().into(), c"_body".as_ptr(), cv_root.handle().into());
             }
         }
     }
 
     // Send response via uWS Response.
     let this = args.thisv();
-    let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    rooted!(&in(cx_ref) let obj = this.to_object());
 
     let mut body_val = UndefinedValue();
     let body_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut body_val };
-    JS_GetProperty(cx, obj_h, c"_body".as_ptr(), body_mh);
+    JS_GetProperty(cx, obj.handle().into(), c"_body".as_ptr(), body_mh);
     let body = if body_val.is_string() {
         crate::js_to_rust_string(cx, body_val)
     } else { String::new() };
 
-    let uws_res = get_uws_res(cx, obj);
+    let uws_res = get_uws_res(cx, obj.get());
     if !uws_res.is_null() {
         let res_mut = Response::<false>::cast_res(uws_res);
 
         // If writeHead was not called, write a default status.
         let mut status_val = Int32Value(200);
         let status_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut status_val };
-        JS_GetProperty(cx, obj_h, c"statusCode".as_ptr(), status_mh);
+        JS_GetProperty(cx, obj.handle().into(), c"statusCode".as_ptr(), status_mh);
         let status = if status_val.is_int32() { status_val.to_int32() } else { 200 };
 
         // Check if status was already written (uWS state tracks this).
@@ -515,7 +524,7 @@ unsafe extern "C" fn res_end(
         (*res_mut).end(body.as_bytes(), false);
     }
 
-    args.rval().set(ObjectValue(obj));
+    args.rval().set(ObjectValue(obj.get()));
     true
 }
 
@@ -547,10 +556,9 @@ unsafe extern "C" fn http_create_server(
             rooted!(&in(cx_ref) let cb_root = cb_val);
             JS_DefineProperty(cx, server_obj.handle().into(), c"_onRequest".as_ptr(), cb_root.handle().into(), JSPROP_ENUMERATE as u32);
 
-            let global = CurrentGlobalOrNull(cx);
-            if !global.is_null() {
-                let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-                JS_SetProperty(cx, global_h, c"_httpRequestHandler".as_ptr(), cb_root.handle().into());
+            rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
+            if !global.get().is_null() {
+                JS_SetProperty(cx, global.handle().into(), c"_httpRequestHandler".as_ptr(), cb_root.handle().into());
             }
         }
     }
@@ -596,6 +604,9 @@ unsafe extern "C" fn server_listen(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
     let port: u16 = if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_int32() { v.to_int32() as u16 }
@@ -603,12 +614,19 @@ unsafe extern "C" fn server_listen(
         else { 3000 }
     } else { 3000 };
 
+    // BCE-012: root callback objects before any GC trigger (App::create, JS_GetProperty, etc.)
     let callback = if argc > 2 {
         let v = *args.get(2).ptr;
-        if v.is_object() { Some(v.to_object()) } else { None }
+        if v.is_object() {
+            rooted!(&in(cx_ref) let cb = v.to_object());
+            Some(cb.get())
+        } else { None }
     } else if argc > 1 {
         let v = *args.get(1).ptr;
-        if v.is_object() { Some(v.to_object()) } else { None }
+        if v.is_object() {
+            rooted!(&in(cx_ref) let cb = v.to_object());
+            Some(cb.get())
+        } else { None }
     } else { None };
 
     // Create uWS App<false> (non-SSL).
@@ -624,16 +642,16 @@ unsafe extern "C" fn server_listen(
     };
 
     // Get the JS request handler from the server object.
+
     let this = args.thisv();
-    let server_obj = this.to_object();
-    let server_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &server_obj };
+    rooted!(&in(cx_ref) let server_obj = this.to_object());
 
     let mut handler_val = UndefinedValue();
     let handler_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut handler_val };
-    JS_GetProperty(cx, server_h, c"_onRequest".as_ptr(), handler_mh);
+    JS_GetProperty(cx, server_obj.handle().into(), c"_onRequest".as_ptr(), handler_mh);
 
-    let global = CurrentGlobalOrNull(cx);
-    if global.is_null() || !handler_val.is_object() {
+    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() || !handler_val.is_object() {
         // No handler — destroy app and return.
         App::<false>::destroy(app_ptr);
         let msg = ZBox::from_bytes("http.createServer requires a request handler".as_bytes());
@@ -642,7 +660,7 @@ unsafe extern "C" fn server_listen(
     }
 
     // Allocate ServerUserData on the heap. GC-safe: global+handler stored in GcStore.
-    let ud = Box::new(ServerUserData::new(cx, global, handler_val.to_object()));
+    let ud = Box::new(ServerUserData::new(cx, global.get(), handler_val.to_object()));
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
     // Register catch-all route: app.any("/*", handler, user_data)
@@ -654,11 +672,9 @@ unsafe extern "C" fn server_listen(
 
     // Store the ServerUserData pointer on the server object for cleanup in server_close.
     {
-        let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref3 = &mut wrapped_cx3;
         let ud_val = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref3) let udv = ud_val);
-        JS_DefineProperty(cx, server_h, c"_udPtr".as_ptr(), udv.handle().into(), 0);
+        rooted!(&in(cx_ref) let udv = ud_val);
+        JS_DefineProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), udv.handle().into(), 0);
     }
 
     // Listen on the specified port.
@@ -669,35 +685,29 @@ unsafe extern "C" fn server_listen(
 
     // Store app pointer on server object for close/destroy.
     {
-        let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        let cx_ref3 = &mut wrapped_cx3;
         let app_ptr_val = mozjs::jsval::PrivateValue(app_ptr as *const core::ffi::c_void);
-        rooted!(&in(cx_ref3) let apv = app_ptr_val);
-        JS_DefineProperty(cx, server_h, c"_appPtr".as_ptr(), apv.handle().into(), 0);
+        rooted!(&in(cx_ref) let apv = app_ptr_val);
+        JS_DefineProperty(cx, server_obj.handle().into(), c"_appPtr".as_ptr(), apv.handle().into(), 0);
     }
 
-    let port_val = Int32Value(port as i32);
-    let port_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &port_val };
-    JS_DefineProperty(cx, server_h, c"_listeningPort".as_ptr(), port_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let port_root = Int32Value(port as i32));
+    JS_DefineProperty(cx, server_obj.handle().into(), c"_listeningPort".as_ptr(), port_root.handle().into(), JSPROP_ENUMERATE as u32);
 
-    let listening_val = mozjs::jsval::BooleanValue(true);
-    let listening_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &listening_val };
-    JS_DefineProperty(cx, server_h, c"listening".as_ptr(), listening_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let listening_root = mozjs::jsval::BooleanValue(true));
+    JS_DefineProperty(cx, server_obj.handle().into(), c"listening".as_ptr(), listening_root.handle().into(), JSPROP_ENUMERATE as u32);
 
     ACTIVE_APPS.with(|s| s.borrow_mut().push(app_ptr));
 
     // Call listen callback if provided.
     if let Some(cb) = callback {
-        let fval = ObjectValue(cb);
-        let fval_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fval };
-        let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+        rooted!(&in(cx_ref) let fval_root = ObjectValue(cb));
         let mut rval = UndefinedValue();
         let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-        JS_CallFunctionValue(cx, global_h, fval_h, &HandleValueArray::empty(), rval_h);
+        JS_CallFunctionValue(cx, global.handle().into(), fval_root.handle().into(), &HandleValueArray::empty(), rval_h);
         JS_ClearPendingException(cx);
     }
 
-    args.rval().set(ObjectValue(server_obj));
+    args.rval().set(ObjectValue(server_obj.get()));
     true
 }
 
@@ -709,13 +719,15 @@ unsafe extern "C" fn server_close(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
     let this = args.thisv();
-    let server_obj = this.to_object();
-    let server_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &server_obj };
+    rooted!(&in(cx_ref) let server_obj = this.to_object());
 
     // Destroy the uWS App if it exists.
     let mut app_ptr_val = UndefinedValue();
-    JS_GetProperty(cx, server_h, c"_appPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut app_ptr_val });
+    JS_GetProperty(cx, server_obj.handle().into(), c"_appPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut app_ptr_val });
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     // http.createServer(fn).close() before listen leaves _appPtr undefined;
     // to_private() on undefined asserts is_double() → panic across extern "C".
@@ -741,17 +753,13 @@ unsafe extern "C" fn server_close(
         // `close()`/`destroy()` on freed memory → SIGSEGV. Set to a non-
         // private value (UndefinedValue) so the val_is_private guard above
         // correctly takes the null path on re-entry.
-        let undef = UndefinedValue();
-        let undef_h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &undef,
-        };
-        JS_SetProperty(cx, server_h, c"_appPtr".as_ptr(), undef_h);
+        rooted!(&in(cx_ref) let undef_root = UndefinedValue());
+        JS_SetProperty(cx, server_obj.handle().into(), c"_appPtr".as_ptr(), undef_root.handle().into());
     }
 
     // Cleanup: reclaim ServerUserData box and remove GcStore entries.
     let mut ud_ptr_val = UndefinedValue();
-    JS_GetProperty(cx, server_h, c"_udPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_ptr_val });
+    JS_GetProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_ptr_val });
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     let ud_ptr = if val_is_private(&ud_ptr_val) {
         ud_ptr_val.to_private() as *mut ServerUserData
@@ -766,12 +774,8 @@ unsafe extern "C" fn server_close(
         // @trace BCE-20260618-006 [level:regression] — same stale-pointer
         // class as `_appPtr` above. Clear `_udPtr` so a second `close()` is
         // a no-op (the Box has been consumed and the memory freed).
-        let undef = UndefinedValue();
-        let undef_h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &undef,
-        };
-        JS_SetProperty(cx, server_h, c"_udPtr".as_ptr(), undef_h);
+        rooted!(&in(cx_ref) let undef_root2 = UndefinedValue());
+        JS_SetProperty(cx, server_obj.handle().into(), c"_udPtr".as_ptr(), undef_root2.handle().into());
     }
 
     args.rval().set(UndefinedValue());
@@ -796,12 +800,11 @@ unsafe extern "C" fn server_address(
     }
 
     let this = args.thisv();
-    let server_obj = this.to_object();
-    let server_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &server_obj };
+    rooted!(&in(cx_ref) let server_obj = this.to_object());
 
     let mut port_val = UndefinedValue();
     let port_mh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut port_val };
-    JS_GetProperty(cx, server_h, c"_listeningPort".as_ptr(), port_mh);
+    JS_GetProperty(cx, server_obj.handle().into(), c"_listeningPort".as_ptr(), port_mh);
 
     if port_val.is_int32() {
         let p = port_val.to_int32();
@@ -869,10 +872,11 @@ unsafe extern "C" fn http_request(
     // Create the PENDING Promise *while cx_ref holds a rooting context*,
     // then release cx_ref before scheduling (the worker must not outlive the
     // rooted frame, but the Promise itself is heap-rooted by fetch_async).
+    rooted!(&in(cx_ref) let null_global = ::std::ptr::null_mut::<JSObject>());
     rooted!(&in(cx_ref) let promise = unsafe {
         mozjs_sys::jsapi::JS::NewPromiseObject(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut() },
+            null_global.handle().into(),
         )
     });
     if promise.get().is_null() {

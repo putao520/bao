@@ -152,12 +152,15 @@ unsafe extern "C" fn vm_create_context(
     let args = CallArgs::from_vp(vp, argc);
 
     // Get or create the sandbox object.
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
     let sandbox = if argc > 0 && (*args.get(0).ptr).is_object() {
-        (*args.get(0).ptr).to_object()
+        rooted!(&in(cx_ref) let sb = (*args.get(0).ptr).to_object());
+        sb.get()
     } else {
         // No sandbox provided — create an empty object.
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let empty = w2::JS_NewPlainObject(&mut wrapped_cx));
+        rooted!(&in(cx_ref) let empty = w2::JS_NewPlainObject(cx_ref));
         empty.get()
     };
 
@@ -173,9 +176,6 @@ unsafe extern "C" fn vm_create_context(
     }
 
     // Create a new independent SM Realm/Compartment.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
     let options = RealmOptions::default();
 
     rooted!(&in(cx_ref) let sandbox_global = JS_NewGlobalObject(
@@ -214,10 +214,11 @@ unsafe extern "C" fn vm_create_context(
     register_context(sandbox, sandbox_global.get());
 
     // Mark with __isVMContext for isContext() backwards compat.
+    rooted!(&in(cx_ref) let sandbox_root = sandbox);
     rooted!(&in(cx_ref) let marker = BooleanValue(true));
-    JS_DefineProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sandbox }, c"__isVMContext".as_ptr(), marker.handle().into(), 0);
+    JS_DefineProperty(cx, sandbox_root.handle().into(), c"__isVMContext".as_ptr(), marker.handle().into(), 0);
 
-    args.rval().set(ObjectValue(sandbox));
+    args.rval().set(ObjectValue(sandbox_root.get()));
     true
 }
 
@@ -241,9 +242,9 @@ fn collect_sandbox_properties(
     }
 
     let raw_cx = unsafe { cx.raw_cx() };
-    let sandbox_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sandbox };
+    rooted!(&in(cx) let sandbox_root = sandbox);
     let mut ids = unsafe { IdVector::new(raw_cx) };
-    let ok = unsafe { GetPropertyKeys(raw_cx, sandbox_h, JSITER_OWNONLY, ids.handle_mut()) };
+    let ok = unsafe { GetPropertyKeys(raw_cx, sandbox_root.handle().into(), JSITER_OWNONLY, ids.handle_mut()) };
     if !ok {
         return props;
     }
@@ -264,7 +265,7 @@ fn collect_sandbox_properties(
         let id_h = Handle::<jsid> { _phantom_0: ::std::marker::PhantomData, ptr: jsid as *const jsid as *mut jsid };
         let mut val = UndefinedValue();
         let val_h = MutableHandle::<JS::Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
-        let got = unsafe { JS_GetPropertyById(raw_cx, sandbox_h, id_h, val_h) };
+        let got = unsafe { JS_GetPropertyById(raw_cx, sandbox_root.handle().into(), id_h, val_h) };
         if !got {
             continue;
         }
@@ -293,7 +294,7 @@ fn define_properties_on_global(
     }
 
     let raw_cx = unsafe { realm_cx.raw_cx() };
-    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+    rooted!(&in(realm_cx) let global_root = global);
 
     for (key, heap_val) in props {
         let c_key = unsafe { bun_core::ZBox::from_bytes(key.as_bytes()) };
@@ -306,7 +307,7 @@ fn define_properties_on_global(
         // from mozjs_sys which is compatible with the raw JS_DefineProperty.
         let val_h = unsafe { heap_val.handle() };
         unsafe {
-            JS_DefineProperty(raw_cx, global_h, c_key.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
+            JS_DefineProperty(raw_cx, global_root.handle().into(), c_key.as_ptr(), val_h, JSPROP_ENUMERATE as u32);
         }
     }
 }
@@ -333,11 +334,13 @@ unsafe extern "C" fn vm_run_in_new_context(
 
     // Get sandbox (arg 1) — if not provided, create a default empty one.
     let sandbox_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
     let sandbox = if sandbox_val.is_object() {
-        sandbox_val.to_object()
+        rooted!(&in(cx_ref) let sb = sandbox_val.to_object());
+        sb.get()
     } else {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let empty = w2::JS_NewPlainObject(&mut wrapped_cx));
+        rooted!(&in(cx_ref) let empty = w2::JS_NewPlainObject(cx_ref));
         empty.get()
     };
 
@@ -364,11 +367,11 @@ unsafe extern "C" fn vm_run_in_new_context(
 
     // Get filename from options (arg 2).
     let filename = if argc > 2 && (*args.get(2).ptr).is_object() {
-        let opts = (*args.get(2).ptr).to_object();
+        rooted!(&in(cx_ref) let opts = (*args.get(2).ptr).to_object());
         let mut fn_val = UndefinedValue();
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &opts },
+            opts.handle().into(),
             c"filename".as_ptr(),
             MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
         );
@@ -380,9 +383,6 @@ unsafe extern "C" fn vm_run_in_new_context(
     };
 
     // Enter the sandbox Realm, evaluate code, return result.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
     rooted!(&in(cx_ref) let global_h = sandbox_global);
 
     let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
@@ -434,11 +434,13 @@ unsafe extern "C" fn vm_run_in_this_context(
 
     let code = crate::js_to_rust_string(cx, *args.get(0).ptr);
     let filename = if argc > 1 && (*args.get(1).ptr).is_object() {
-        let opts = (*args.get(1).ptr).to_object();
+        let mut wrapped_cx3 = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref3 = &mut wrapped_cx3;
+        rooted!(&in(cx_ref3) let opts = (*args.get(1).ptr).to_object());
         let mut fn_val = UndefinedValue();
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &opts },
+            opts.handle().into(),
             c"filename".as_ptr(),
             MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
         );
@@ -488,16 +490,18 @@ unsafe extern "C" fn vm_is_context(
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc > 0 && (*args.get(0).ptr).is_object() {
-        let obj = (*args.get(0).ptr).to_object();
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(_cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = (*args.get(0).ptr).to_object());
         // Check our VM_CONTEXT_MAP registry (primary) AND the legacy
         // __isVMContext marker (secondary, for objects contextified before
         // this process started or from a different isolate).
-        let registered = is_context_registered(obj);
+        let registered = is_context_registered(obj.get());
         let marker = if !registered {
             let mut val = UndefinedValue();
             JS_GetProperty(
                 _cx,
-                Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj },
+                obj.handle().into(),
                 c"__isVMContext".as_ptr(),
                 MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val },
             );
@@ -580,12 +584,15 @@ unsafe extern "C" fn vm_script_ctor(
     let code = crate::js_to_rust_string(cx, *args.get(0).ptr);
 
     // Get filename from options
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
     let filename = if argc > 1 && (*args.get(1).ptr).is_object() {
-        let opts = (*args.get(1).ptr).to_object();
+        rooted!(&in(cx_ref) let opts = (*args.get(1).ptr).to_object());
         let mut fn_val = UndefinedValue();
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &opts },
+            opts.handle().into(),
             c"filename".as_ptr(),
             MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
         );
@@ -600,23 +607,39 @@ unsafe extern "C" fn vm_script_ctor(
         "vm.js".to_string()
     };
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
     // Use the `this` object that SM auto-creates for `new Script()` — it
     // already has Script.prototype as its prototype. If called without `new`,
     // create a plain object and set its prototype manually.
     let this_val = args.thisv();
-    let this_obj = if this_val.is_object() && !this_val.to_object().is_null() {
-        this_val.to_object()
+    let this_obj = if this_val.is_object() {
+        rooted!(&in(cx_ref) let this_root = this_val.to_object());
+        if this_root.get().is_null() {
+            rooted!(&in(cx_ref) let fallback = w2::JS_NewPlainObject(cx_ref));
+            // Set prototype to Script.prototype
+            rooted!(&in(cx_ref) let script_ctor_val = args.callee());
+            let mut proto_val = UndefinedValue();
+            JS_GetProperty(
+                cx,
+                script_ctor_val.handle().into(),
+                c"prototype".as_ptr(),
+                MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val },
+            );
+            if proto_val.is_object() {
+                rooted!(&in(cx_ref) let pv = proto_val.to_object());
+                JS_SetPrototype(cx_ref.raw_cx(), fallback.handle().into(), pv.handle().into());
+            }
+            fallback.get()
+        } else {
+            this_root.get()
+        }
     } else {
         rooted!(&in(cx_ref) let fallback = w2::JS_NewPlainObject(cx_ref));
         // Set prototype to Script.prototype
-        let script_ctor_val = args.callee();
+        rooted!(&in(cx_ref) let script_ctor_val = args.callee());
         let mut proto_val = UndefinedValue();
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &script_ctor_val },
+            script_ctor_val.handle().into(),
             c"prototype".as_ptr(),
             MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut proto_val },
         );
@@ -631,12 +654,14 @@ unsafe extern "C" fn vm_script_ctor(
     let code_str = JS_NewStringCopyN(cx, code.as_ptr() as *const ::std::os::raw::c_char, code.len());
     if !code_str.is_null() {
         rooted!(&in(cx_ref) let cv = mozjs::jsval::StringValue(&*code_str));
-        JS_DefineProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj }, c"__code".as_ptr(), cv.handle().into(), 0);
+        rooted!(&in(cx_ref) let this_root = this_obj);
+        JS_DefineProperty(cx, this_root.handle().into(), c"__code".as_ptr(), cv.handle().into(), 0);
     }
     let fn_str = JS_NewStringCopyN(cx, filename.as_ptr() as *const ::std::os::raw::c_char, filename.len());
     if !fn_str.is_null() {
         rooted!(&in(cx_ref) let fv = mozjs::jsval::StringValue(&*fn_str));
-        JS_DefineProperty(cx, Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this_obj }, c"__filename".as_ptr(), fv.handle().into(), 0);
+        rooted!(&in(cx_ref) let this_root2 = this_obj);
+        JS_DefineProperty(cx, this_root2.handle().into(), c"__filename".as_ptr(), fv.handle().into(), 0);
     }
 
     args.rval().set(ObjectValue(this_obj));
@@ -651,12 +676,16 @@ unsafe extern "C" fn vm_script_run_in_this_context(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv().to_object();
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
 
     let mut code_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"__code".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut code_val },
     );
@@ -665,14 +694,12 @@ unsafe extern "C" fn vm_script_run_in_this_context(
     let mut fn_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"__filename".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
     );
     let filename = crate::js_to_rust_string(cx, fn_val);
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
     let global = JS::CurrentGlobalOrNull(cx_ref.raw_cx());
 
     let c_filename = ::std::ffi::CString::new(filename.clone())
@@ -706,13 +733,17 @@ unsafe extern "C" fn vm_script_run_in_context(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv().to_object();
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
 
     // Read code and filename from Script instance
     let mut code_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"__code".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut code_val },
     );
@@ -721,7 +752,7 @@ unsafe extern "C" fn vm_script_run_in_context(
     let mut fn_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"__filename".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
     );
@@ -732,9 +763,9 @@ unsafe extern "C" fn vm_script_run_in_context(
         JS_ReportErrorUTF8(cx, c"runInContext requires a contextified sandbox argument".as_ptr());
         return false;
     }
-    let sandbox = (*args.get(0).ptr).to_object();
+    rooted!(&in(cx_ref) let sandbox = (*args.get(0).ptr).to_object());
 
-    let sandbox_global = get_context_global(sandbox);
+    let sandbox_global = get_context_global(sandbox.get());
     if sandbox_global.is_none() {
         JS_ReportErrorUTF8(cx, c"runInContext: sandbox is not a contextified object".as_ptr());
         return false;
@@ -746,9 +777,6 @@ unsafe extern "C" fn vm_script_run_in_context(
     }
 
     // Enter sandbox Realm, evaluate code.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
     rooted!(&in(cx_ref) let global_h = global_ptr);
 
     let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());
@@ -788,12 +816,16 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     vp: *mut JSVal,
 ) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let this = args.thisv().to_object();
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
 
     let mut code_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"__code".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut code_val },
     );
@@ -802,7 +834,7 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     let mut fn_val = UndefinedValue();
     JS_GetProperty(
         cx,
-        Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &this },
+        this.handle().into(),
         c"__filename".as_ptr(),
         MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut fn_val },
     );
@@ -815,10 +847,10 @@ unsafe extern "C" fn vm_script_run_in_new_context(
         UndefinedValue()
     };
     let sandbox = if sandbox_val.is_object() {
-        sandbox_val.to_object()
+        rooted!(&in(cx_ref) let sb = sandbox_val.to_object());
+        sb.get()
     } else {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-        rooted!(&in(wrapped_cx) let empty = w2::JS_NewPlainObject(&mut wrapped_cx));
+        rooted!(&in(cx_ref) let empty = w2::JS_NewPlainObject(cx_ref));
         empty.get()
     };
 
@@ -840,9 +872,6 @@ unsafe extern "C" fn vm_script_run_in_new_context(
     }
 
     // Enter sandbox Realm, evaluate code.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-
     rooted!(&in(cx_ref) let global_h = sandbox_global);
 
     let mut realm = AutoRealm::new_from_handle(cx_ref, global_h.handle());

@@ -71,9 +71,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 for (name, val) in &signals {
                     let v = Int32Value(*val);
                     rooted!(&in(cx) let rv = v);
-                    let sig_ptr = sig_obj.get();
-                    let sig_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &sig_ptr };
-                    JS_DefineProperty(raw, sig_h, ZBox::from_bytes(name.as_bytes()).as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+                    JS_DefineProperty(raw, sig_obj.handle().into(), ZBox::from_bytes(name.as_bytes()).as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
                 }
                 w2::JS_DefineProperty3(cx, constants_obj.handle(), c"signals".as_ptr(), sig_obj.handle(), JSPROP_ENUMERATE as u32);
             }

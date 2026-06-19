@@ -20,6 +20,7 @@ use ::std::sync::OnceLock;
 use dashmap::DashMap;
 use mozjs::jsapi::*;
 use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::rooted;
 
 use crate::StealthProfile;
 
@@ -374,19 +375,20 @@ unsafe extern "C" fn getter_languages(cx: *mut JSContext, _argc: u32, vp: *mut J
         args.rval().set(UndefinedValue());
         return true;
     }
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
     for (i, lang) in langs.iter().enumerate() {
         let idx_cstr = format!("{}", i);
         let c_idx = bun_core::ZBox::from_bytes(idx_cstr.as_bytes());
         let c_lang = bun_core::ZBox::from_bytes(lang.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_lang.as_ptr());
         if !js_str.is_null() {
-            let str_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(js_str as *mut JSObject) };
-            JS_DefineProperty3(cx, obj_h, c_idx.as_ptr(), str_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(wrapped_cx) let str_root = js_str as *mut JSObject);
+            JS_DefineProperty3(cx, obj_root.handle().into(), c_idx.as_ptr(), str_root.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
-    JS_DefineProperty1(cx, obj_h, c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
-    args.rval().set(ObjectValue(obj));
+    JS_DefineProperty1(cx, obj_root.handle().into(), c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
+    args.rval().set(ObjectValue(obj_root.get()));
     true
 }
 
@@ -425,15 +427,15 @@ unsafe extern "C" fn webgl_get_parameter_override(cx: *mut JSContext, argc: u32,
         args.rval().set(UndefinedValue());
         return true;
     }
-    let this_obj = this_val.to_object();
-    let this_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &this_obj };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_root = this_val.to_object());
     let mut has: bool = false;
-    if !JS_HasProperty(cx, this_h, c"__originalGetParameter__".as_ptr(), &mut has) || !has {
+    if !JS_HasProperty(cx, this_root.handle().into(), c"__originalGetParameter__".as_ptr(), &mut has) || !has {
         args.rval().set(UndefinedValue());
         return true;
     }
     let mut fn_val = UndefinedValue();
-    JS_GetProperty(cx, this_h, c"__originalGetParameter__".as_ptr(),
+    JS_GetProperty(cx, this_root.handle().into(), c"__originalGetParameter__".as_ptr(),
         MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut fn_val });
     if !fn_val.is_object() {
         args.rval().set(UndefinedValue());
@@ -441,7 +443,7 @@ unsafe extern "C" fn webgl_get_parameter_override(cx: *mut JSContext, argc: u32,
     }
     // Call original function using bao_engine::host_fn::call_function
     let param_val: Value = *param.ptr;
-    match bao_engine::host_fn::call_function(cx, fn_val, this_obj, &[param_val]) {
+    match bao_engine::host_fn::call_function(cx, fn_val, this_root.get(), &[param_val]) {
         Ok(result) => {
             args.rval().set(result.to_jsval(cx));
             true
@@ -484,19 +486,20 @@ unsafe extern "C" fn webgl_get_supported_extensions_override(cx: *mut JSContext,
         args.rval().set(UndefinedValue());
         return true;
     }
-    let arr_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &arr };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let arr_root = arr);
     for (i, ext) in exts.iter().enumerate() {
         let idx_cstr = format!("{}", i);
         let c_idx = bun_core::ZBox::from_bytes(idx_cstr.as_bytes());
         let c_ext = bun_core::ZBox::from_bytes(ext.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_ext.as_ptr());
         if !js_str.is_null() {
-            let str_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(js_str as *mut JSObject) };
-            JS_DefineProperty3(cx, arr_h, c_idx.as_ptr(), str_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(wrapped_cx) let str_root = js_str as *mut JSObject);
+            JS_DefineProperty3(cx, arr_root.handle().into(), c_idx.as_ptr(), str_root.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
-    JS_DefineProperty1(cx, arr_h, c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
-    args.rval().set(ObjectValue(arr));
+    JS_DefineProperty1(cx, arr_root.handle().into(), c"length".as_ptr(), None, None, (JSPROP_READONLY | JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32);
+    args.rval().set(ObjectValue(arr_root.get()));
     true
 }
 
@@ -569,8 +572,9 @@ unsafe fn ensure_subobject(
         return ptr::null_mut();
     }
     let attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-    let new_obj_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &new_obj };
-    if !JS_DefineProperty3(cx, obj, c_prop.as_ptr(), new_obj_h, attrs) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let new_obj_root = new_obj);
+    if !JS_DefineProperty3(cx, obj, c_prop.as_ptr(), new_obj_root.handle().into(), attrs) {
         return ptr::null_mut();
     }
     new_obj
@@ -593,28 +597,26 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
     if !ctor_val.is_object() {
         return true;
     }
-    let ctor = ctor_val.to_object();
-    let ctor_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &ctor };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let ctor_root = ctor_val.to_object());
 
     let mut proto_val = UndefinedValue();
-    JS_GetProperty(cx, ctor_h, c"prototype".as_ptr(),
+    JS_GetProperty(cx, ctor_root.handle().into(), c"prototype".as_ptr(),
         MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut proto_val });
     if !proto_val.is_object() {
         return true;
     }
-    let proto = proto_val.to_object();
-    let proto_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &proto };
+    rooted!(&in(wrapped_cx) let proto_root = proto_val.to_object());
 
     // Save original getParameter as __originalGetParameter__
     let mut orig_gp = UndefinedValue();
-    JS_GetProperty(cx, proto_h, c"getParameter".as_ptr(),
+    JS_GetProperty(cx, proto_root.handle().into(), c"getParameter".as_ptr(),
         MutableHandle::<Value> { _phantom_0: PhantomData, ptr: &mut orig_gp });
 
     if orig_gp.is_object() {
-        let orig_fn = orig_gp.to_object();
-        let orig_fn_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &orig_fn };
+        rooted!(&in(wrapped_cx) let orig_fn_root = orig_gp.to_object());
         let save_attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-        JS_DefineProperty3(cx, proto_h, c"__originalGetParameter__".as_ptr(), orig_fn_h, save_attrs);
+        JS_DefineProperty3(cx, proto_root.handle().into(), c"__originalGetParameter__".as_ptr(), orig_fn_root.handle().into(), save_attrs);
     }
 
     // Define override getParameter as PERMANENT native function
@@ -622,17 +624,17 @@ unsafe fn install_webgl_override(cx: *mut JSContext, global: HandleObject) -> bo
     if fn_obj.is_null() {
         return false;
     }
-    let fn_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(fn_obj as *mut JSObject) };
+    rooted!(&in(wrapped_cx) let fn_root = fn_obj as *mut JSObject);
     let override_attrs = (JSPROP_PERMANENT | JSPROP_ENUMERATE) as u32;
-    let gp_ok = JS_DefineProperty3(cx, proto_h, c"getParameter".as_ptr(), fn_h, override_attrs);
+    let gp_ok = JS_DefineProperty3(cx, proto_root.handle().into(), c"getParameter".as_ptr(), fn_root.handle().into(), override_attrs);
 
     // Define override getSupportedExtensions as PERMANENT native function
     let gse_fn = JS_NewFunction(cx, Some(webgl_get_supported_extensions_override), 0, 0, c"getSupportedExtensions".as_ptr());
     if gse_fn.is_null() {
         return false;
     }
-    let gse_fn_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &(gse_fn as *mut JSObject) };
-    let gse_ok = JS_DefineProperty3(cx, proto_h, c"getSupportedExtensions".as_ptr(), gse_fn_h, override_attrs);
+    rooted!(&in(wrapped_cx) let gse_fn_root = gse_fn as *mut JSObject);
+    let gse_ok = JS_DefineProperty3(cx, proto_root.handle().into(), c"getSupportedExtensions".as_ptr(), gse_fn_root.handle().into(), override_attrs);
 
     gp_ok && gse_ok
 }
@@ -660,10 +662,11 @@ unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject)
         if JS_HasProperty(cx, global, c"chrome".as_ptr(), &mut has_chrome) && has_chrome {
             let chrome_obj = get_subobject(cx, global, "chrome");
             if !chrome_obj.is_null() {
-                let chrome_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &chrome_obj };
+                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                rooted!(&in(wrapped_cx) let chrome_root = chrome_obj);
                 let mut has_runtime: bool = false;
-                if JS_HasProperty(cx, chrome_h, c"runtime".as_ptr(), &mut has_runtime) && has_runtime {
-                    JS_DeleteProperty(cx, chrome_h, c"runtime".as_ptr(), &mut op_result);
+                if JS_HasProperty(cx, chrome_root.handle().into(), c"runtime".as_ptr(), &mut has_runtime) && has_runtime {
+                    JS_DeleteProperty(cx, chrome_root.handle().into(), c"runtime".as_ptr(), &mut op_result);
                 }
             }
         }
@@ -792,49 +795,50 @@ unsafe fn inject_audio_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bo
 /// - `global` must be the Window global JSObject for that context.
 /// - `set_profile()` must have been called on this thread before this call.
 pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -> bool {
-    let global_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &global };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let global_root = global);
     let mut all_ok = true;
 
     // --- Navigator properties ---
-    let nav = ensure_subobject(cx, global_h, "navigator");
+    let nav = ensure_subobject(cx, global_root.handle().into(), "navigator");
     if !nav.is_null() {
-        let nav_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &nav };
-        all_ok &= define_permanent_getter(cx, nav_h, "webdriver", Some(getter_webdriver));
-        all_ok &= define_permanent_getter(cx, nav_h, "userAgent", Some(getter_ua));
-        all_ok &= define_permanent_getter(cx, nav_h, "platform", Some(getter_platform));
-        all_ok &= define_permanent_getter(cx, nav_h, "language", Some(getter_language));
-        all_ok &= define_permanent_getter(cx, nav_h, "hardwareConcurrency", Some(getter_hwc));
-        all_ok &= define_permanent_getter(cx, nav_h, "maxTouchPoints", Some(getter_touch));
-        all_ok &= define_permanent_getter(cx, nav_h, "vendor", Some(getter_vendor));
-        all_ok &= define_permanent_getter(cx, nav_h, "languages", Some(getter_languages));
-        all_ok &= define_permanent_getter(cx, nav_h, "deviceMemory", Some(getter_device_memory));
+        rooted!(&in(wrapped_cx) let nav_root = nav);
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "webdriver", Some(getter_webdriver));
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "userAgent", Some(getter_ua));
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "platform", Some(getter_platform));
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "language", Some(getter_language));
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "hardwareConcurrency", Some(getter_hwc));
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "maxTouchPoints", Some(getter_touch));
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "vendor", Some(getter_vendor));
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "languages", Some(getter_languages));
+        all_ok &= define_permanent_getter(cx, nav_root.handle().into(), "deviceMemory", Some(getter_device_memory));
     }
 
     // --- Screen properties ---
-    let screen = ensure_subobject(cx, global_h, "screen");
+    let screen = ensure_subobject(cx, global_root.handle().into(), "screen");
     if !screen.is_null() {
-        let scr_h = Handle::<*mut JSObject> { _phantom_0: PhantomData, ptr: &screen };
-        all_ok &= define_permanent_getter(cx, scr_h, "width", Some(getter_screen_w));
-        all_ok &= define_permanent_getter(cx, scr_h, "height", Some(getter_screen_h));
-        all_ok &= define_permanent_getter(cx, scr_h, "availWidth", Some(getter_avail_w));
-        all_ok &= define_permanent_getter(cx, scr_h, "availHeight", Some(getter_avail_h));
-        all_ok &= define_permanent_getter(cx, scr_h, "colorDepth", Some(getter_color_depth));
-        all_ok &= define_permanent_getter(cx, scr_h, "pixelDepth", Some(getter_color_depth));
+        rooted!(&in(wrapped_cx) let scr_root = screen);
+        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "width", Some(getter_screen_w));
+        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "height", Some(getter_screen_h));
+        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "availWidth", Some(getter_avail_w));
+        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "availHeight", Some(getter_avail_h));
+        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "colorDepth", Some(getter_color_depth));
+        all_ok &= define_permanent_getter(cx, scr_root.handle().into(), "pixelDepth", Some(getter_color_depth));
     }
 
     // --- Window.devicePixelRatio ---
-    all_ok &= define_permanent_getter(cx, global_h, "devicePixelRatio", Some(getter_dpr));
+    all_ok &= define_permanent_getter(cx, global_root.handle().into(), "devicePixelRatio", Some(getter_dpr));
 
     // --- WebGL prototype override ---
-    all_ok &= install_webgl_override(cx, global_h);
+    all_ok &= install_webgl_override(cx, global_root.handle().into());
 
     // --- CDP stealth: remove chrome.runtime and cdc_* global properties ---
     // ChromeDriver injects chrome.runtime and cdc_adoQpoasnfa76pfcZLmcfl_* globals
     // that are strong automation indicators. Delete them if they exist.
-    all_ok &= delete_cdp_leaked_properties(cx, global_h);
+    all_ok &= delete_cdp_leaked_properties(cx, global_root.handle().into());
 
     // --- Canvas fingerprint JS hooks (toDataURL/toBlob/getImageData) ---
-    all_ok &= inject_audio_hooks(cx, global_h);
+    all_ok &= inject_audio_hooks(cx, global_root.handle().into());
 
     all_ok
 }

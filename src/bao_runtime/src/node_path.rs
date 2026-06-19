@@ -1,6 +1,7 @@
 // @trace REQ-ENG-007
 use bun_core::ZBox;
 use ::std::path::{Path, PathBuf, MAIN_SEPARATOR};
+use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue};
@@ -299,13 +300,14 @@ unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         args.rval().set(UndefinedValue());
         return true;
     }
-    let parsed_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &parsed };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let parsed_root = parsed);
 
-    define_string_prop(cx, parsed_handle, "root", &root);
-    define_string_prop(cx, parsed_handle, "dir", &dir);
-    define_string_prop(cx, parsed_handle, "base", &file_name);
-    define_string_prop(cx, parsed_handle, "ext", &ext);
-    define_string_prop(cx, parsed_handle, "name", &name);
+    define_string_prop(cx, parsed_root.handle().into(), "root", &root);
+    define_string_prop(cx, parsed_root.handle().into(), "dir", &dir);
+    define_string_prop(cx, parsed_root.handle().into(), "base", &file_name);
+    define_string_prop(cx, parsed_root.handle().into(), "ext", &ext);
+    define_string_prop(cx, parsed_root.handle().into(), "name", &name);
 
     args.rval().set(mozjs::jsval::ObjectValue(parsed));
     true
@@ -324,11 +326,12 @@ unsafe extern "C" fn path_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return false;
     }
     let obj = val.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-    let dir = get_string_prop(cx, obj_h, "dir");
-    let base = get_string_prop(cx, obj_h, "base");
-    let name = get_string_prop(cx, obj_h, "name");
-    let ext = get_string_prop(cx, obj_h, "ext");
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
+    let dir = get_string_prop(cx, obj_root.handle().into(), "dir");
+    let base = get_string_prop(cx, obj_root.handle().into(), "base");
+    let name = get_string_prop(cx, obj_root.handle().into(), "name");
+    let ext = get_string_prop(cx, obj_root.handle().into(), "ext");
 
     let result = if let Some(b) = base {
         if dir.as_ref().is_some_and(|d| !d.is_empty()) {
@@ -548,8 +551,9 @@ unsafe fn define_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, nam
     let js_str = JS_NewStringCopyZ(cx, c_val.as_ptr());
     if !js_str.is_null() {
         let val = mozjs::jsval::StringValue(&*js_str);
-        let val_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &val };
-        JS_DefineProperty(cx, obj, c_name.as_ptr(), val_handle, JSPROP_ENUMERATE as u32);
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let val_root = val);
+        JS_DefineProperty(cx, obj, c_name.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
     }
 }
 

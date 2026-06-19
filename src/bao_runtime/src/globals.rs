@@ -231,9 +231,10 @@ pub unsafe fn install_module_on_target(
                 ptr: &mut rval,
             };
             let factory_obj = factory.to_object();
+            rooted!(&in(cx) let factory_obj_root = factory_obj);
             let factory_obj_h = Handle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
-                ptr: &ObjectValue(factory_obj),
+                ptr: &ObjectValue(factory_obj_root.get()),
             };
             JS_CallFunctionValue(
                 raw,
@@ -249,9 +250,7 @@ pub unsafe fn install_module_on_target(
     if !dot_str.is_null() {
         let id_val = mozjs::jsval::StringValue(&*dot_str);
         rooted!(&in(cx) let id_r = id_val);
-        let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_obj.get() };
-        let id_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &id_r.get() };
-        JS_DefineProperty(raw, mod_h, c"id".as_ptr(), id_h, (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+        JS_DefineProperty(raw, mod_obj.handle().into(), c"id".as_ptr(), id_r.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
     }
 
     // Attach module to target (scope), NOT to global
@@ -334,9 +333,10 @@ pub fn install_module_global(
                     ptr: &mut rval,
                 };
                 let factory_obj = factory.to_object();
+                rooted!(&in(cx) let factory_obj_root = factory_obj);
                 let factory_obj_h = Handle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
-                    ptr: &ObjectValue(factory_obj),
+                    ptr: &ObjectValue(factory_obj_root.get()),
                 };
                 JS_CallFunctionValue(
                     raw,
@@ -352,9 +352,7 @@ pub fn install_module_global(
         if !dot_str.is_null() {
             let id_val = mozjs::jsval::StringValue(&*dot_str);
             rooted!(&in(cx) let id_r = id_val);
-            let mod_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &mod_obj.get() };
-            let id_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &id_r.get() };
-            JS_DefineProperty(raw, mod_h, c"id".as_ptr(), id_h, (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+            JS_DefineProperty(raw, mod_obj.handle().into(), c"id".as_ptr(), id_r.handle().into(), (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
         }
         JS_DefineProperty3(cx, global, c"module".as_ptr(), mod_obj.handle(), JSPROP_ENUMERATE as u32);
     }
@@ -379,18 +377,16 @@ fn install_file_globals_from_cache(
             let c_fn = ZBox::from_bytes(fn_str.as_bytes());
             let js_str = JS_NewStringCopyZ(raw, c_fn.as_ptr());
             if !js_str.is_null() {
-                let v = StringValue(&*js_str);
-                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-                JS_DefineProperty(raw, global.into(), c"__filename".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx) let v = StringValue(&*js_str));
+                JS_DefineProperty(raw, global.into(), c"__filename".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
             }
         }
         if let Some(dir_str) = dirname {
             let c_dir = ZBox::from_bytes(dir_str.as_bytes());
             let js_str = JS_NewStringCopyZ(raw, c_dir.as_ptr());
             if !js_str.is_null() {
-                let v = StringValue(&*js_str);
-                let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-                JS_DefineProperty(raw, global.into(), c"__dirname".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx) let v = StringValue(&*js_str));
+                JS_DefineProperty(raw, global.into(), c"__dirname".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
             }
         }
     }
@@ -496,9 +492,8 @@ pub fn install_buffer_global(
         // Create dedicated Buffer.prototype object (not polluting Object.prototype)
         rooted!(&in(cx) let buf_proto = JS_NewPlainObject(cx));
         if !buf_proto.get().is_null() {
-            let proto_val = ObjectValue(buf_proto.get());
-            let proto_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &proto_val };
-            JS_DefineProperty(cx.raw_cx(), buf_root.handle().into(), c"prototype".as_ptr(), proto_h, 0u32);
+            rooted!(&in(cx) let proto_val = ObjectValue(buf_proto.get()));
+            JS_DefineProperty(cx.raw_cx(), buf_root.handle().into(), c"prototype".as_ptr(), proto_val.handle().into(), 0u32);
 
             // Register native methods on prototype (shared by all instances)
             JS_DefineFunction(cx, buf_proto.handle(), c"toString".as_ptr(),
@@ -2083,8 +2078,8 @@ unsafe fn set_buffer_proto(cx: *mut JSContext, obj: *mut JSObject) {
     }
     let proto_obj = proto_val.to_object();
     rooted!(&in(cx_ref) let proto_root = proto_obj);
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
-    let _ = JS_SetPrototype(cx, obj_h, proto_root.handle().into());
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let _ = JS_SetPrototype(cx, obj_root.handle().into(), proto_root.handle().into());
 }
 
 /// Wire `Buffer.prototype.__proto__` to `Uint8Array.prototype`.
@@ -2514,10 +2509,9 @@ unsafe extern "C" fn buffer_from(
         create_buffer_from_bytes(cx, &args, &bytes)
     } else if input.is_object() {
         let obj = input.to_object();
-        let obj_handle = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &obj,
-        };
+        let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = obj);
+        let obj_handle: mozjs::jsapi::Handle<*mut JSObject> = obj_root.handle().into();
         // @trace REQ-ENG-005 — Functions are not valid Buffer.from inputs.
         // Node.js's `from(value)` only enters the object branch when
         // `typeof value === 'object' && value !== null`; a function has
@@ -2704,10 +2698,9 @@ unsafe extern "C" fn buffer_from(
 
             // Build a Uint8Array view sharing the source ArrayBuffer.
             let view = unsafe {
-                let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
                 mozjs_sys::jsapi::JS_NewUint8ArrayWithBuffer(
                     cx,
-                    obj_h,
+                    obj_root.handle().into(),
                     offset,
                     view_len_arg,
                 )
@@ -2838,17 +2831,15 @@ unsafe extern "C" fn buffer_from(
                     libc::free(opts as *mut _);
                     if rval_fn.is_object() {
                         rooted!(&in(cx_ref_t) let fn_obj = rval_fn.to_object());
-                        let obj_val = ObjectValue(obj);
-                        let elems = [obj_val];
-                        let args_arr = mozjs::jsapi::HandleValueArray { length_: 1, elements_: elems.as_ptr() };
-                        let null_obj = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &::std::ptr::null_mut::<JSObject>() };
-                        let fn_val = mozjs::jsval::ObjectValue(fn_obj.get());
-                        let fn_h = Handle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
+                        rooted!(&in(cx_ref_t) let obj_val = ObjectValue(obj_root.get()));
+                        let args_arr = mozjs::jsapi::HandleValueArray { length_: 1, elements_: &obj_val.get() as *const Value };
+                        rooted!(&in(cx_ref_t) let null_obj: *mut JSObject = ::std::ptr::null_mut());
+                        rooted!(&in(cx_ref_t) let fn_val = ObjectValue(fn_obj.get()));
                         let mut result_val = UndefinedValue();
                         let ok = JS_CallFunctionValue(
                             cx,
-                            null_obj,
-                            fn_h,
+                            null_obj.handle().into(),
+                            fn_val.handle().into(),
                             &args_arr,
                             MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut result_val },
                         );
@@ -2983,11 +2974,12 @@ unsafe extern "C" fn buffer_from(
                 );
                 if data_val.is_object() {
                     let data_obj = data_val.to_object();
-                    let data_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &data_obj };
+                    let cx_ref_d = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+                    rooted!(&in(cx_ref_d) let data_root = data_obj);
                     let mut dlen_val = UndefinedValue();
                     JS_GetProperty(
                         cx,
-                        data_h,
+                        data_root.handle().into(),
                         c"length".as_ptr(),
                         MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut dlen_val },
                     );
@@ -2997,7 +2989,7 @@ unsafe extern "C" fn buffer_from(
                         let mut elem = UndefinedValue();
                         JS_GetElement(
                             cx,
-                            data_h,
+                            data_root.handle().into(),
                             i as u32,
                             MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem },
                         );
@@ -3118,7 +3110,8 @@ unsafe extern "C" fn buffer_to_string(
     }
 
     let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
 
     // Decode the encoding argument before reading the typed-array data, so the
     // JS_GetProperty / JS_NewStringCopyZ allocations do not race with the raw
@@ -3362,10 +3355,11 @@ unsafe extern "C" fn buffer_is_buffer(
         return true;
     }
     let obj = v.to_object();
-    let obj_handle = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(_cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
     let mut marker = UndefinedValue();
     let marker_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut marker };
-    JS_GetProperty(_cx, obj_handle, c"_isBuffer".as_ptr(), marker_handle);
+    JS_GetProperty(_cx, obj_root.handle().into(), c"_isBuffer".as_ptr(), marker_handle);
     args.rval().set(mozjs::jsval::BooleanValue(marker.is_boolean() && marker.to_boolean()));
     true
 }
@@ -3386,9 +3380,10 @@ unsafe extern "C" fn buffer_concat(
     }
 
     let list_obj = list_val.to_object();
-    let list_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &list_obj };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let list_root = list_obj);
     let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, list_h, c"length".as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, list_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
     });
     let list_len: usize = if len_val.is_int32() {
@@ -3423,10 +3418,13 @@ unsafe extern "C" fn buffer_concat(
         obj: *mut JSObject,
         is_view: bool,
     }
+    // GC-trace the element objects so they survive across loop iterations
+    // (JS_GetElement triggers user-defined getters which can trigger GC).
+    let mut rooted_vec = mozjs::rust::RootedObjectVectorWrapper::new(cx);
     let mut entries: Vec<ConcatEntry> = Vec::with_capacity(list_len);
     for i in 0..list_len {
         let mut elem = UndefinedValue();
-        JS_GetElement(cx, list_h, i as u32, MutableHandle::<Value> {
+        JS_GetElement(cx, list_root.handle().into(), i as u32, MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
         });
         if !elem.is_object() {
@@ -3434,6 +3432,7 @@ unsafe extern "C" fn buffer_concat(
             continue;
         }
         let elem_obj = elem.to_object();
+        rooted_vec.append(elem_obj);
         // Use a typed-array probe to mark this element. We do not yet read
         // the final length — getters that fire on later indices may still
         // mutate this element's backing store. The probe is only used to
@@ -3486,9 +3485,9 @@ unsafe extern "C" fn buffer_concat(
         } else {
             // Legacy non-typed-array input: read the JS `length` property
             // and copy element-by-element. No detach semantics apply.
-            let elem_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &entry.obj };
+            rooted!(&in(cx_ref) let entry_root = entry.obj);
             let mut blen = UndefinedValue();
-            JS_GetProperty(cx, elem_h, c"length".as_ptr(), MutableHandle::<Value> {
+            JS_GetProperty(cx, entry_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut blen,
             });
             let b_len = if blen.is_int32() {
@@ -3577,10 +3576,10 @@ unsafe extern "C" fn buffer_concat(
         if !data.is_null() {
             ::std::ptr::copy_nonoverlapping(data, all_bytes.as_mut_ptr().add(cursor), copy_len);
         } else {
-            let elem_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &entry.obj };
+            rooted!(&in(cx_ref) let entry_root = entry.obj);
             for j in 0..copy_len {
                 let mut byte_val = UndefinedValue();
-                JS_GetElement(cx, elem_h, j as u32, MutableHandle::<Value> {
+                JS_GetElement(cx, entry_root.handle().into(), j as u32, MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
                 });
                 all_bytes[cursor + j] = if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 };
@@ -3605,7 +3604,8 @@ unsafe extern "C" fn buffer_slice(
     }
 
     let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
 
     // @trace REQ-ENG-005 [api:Buffer.slice detach] — Node.js throws TypeError
     // when the buffer's backing ArrayBuffer has been detached (e.g. via
@@ -3614,14 +3614,14 @@ unsafe extern "C" fn buffer_slice(
     // buffer.test.js "slice() on detached buffer throws TypeError" drives this.
     {
         let mut ab_val = UndefinedValue();
-        JS_GetProperty(cx, obj_h, c"buffer".as_ptr(), MutableHandle::<Value> {
+        JS_GetProperty(cx, obj_root.handle().into(), c"buffer".as_ptr(), MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut ab_val,
         });
         if ab_val.is_object() {
             let ab_obj = ab_val.to_object();
-            let ab_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ab_obj };
+            rooted!(&in(cx_ref) let ab_root = ab_obj);
             let mut byte_len_val = UndefinedValue();
-            JS_GetProperty(cx, ab_h, c"byteLength".as_ptr(), MutableHandle::<Value> {
+            JS_GetProperty(cx, ab_root.handle().into(), c"byteLength".as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_len_val,
             });
             let byte_len = if byte_len_val.is_int32() { byte_len_val.to_int32() } else { -1 };
@@ -3642,7 +3642,7 @@ unsafe extern "C" fn buffer_slice(
         ta_len
     } else {
         let mut len_val = UndefinedValue();
-        JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
+        JS_GetProperty(cx, obj_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
         });
         if len_val.is_int32() { len_val.to_int32() as usize } else { 0 }
@@ -3704,22 +3704,22 @@ unsafe extern "C" fn buffer_slice(
     if !ta_data.is_null() && ta_len > 0 {
         // Walk to the underlying ArrayBuffer via the obj's buffer slot.
         let mut ab_val = UndefinedValue();
-        JS_GetProperty(cx, obj_h, c"buffer".as_ptr(), MutableHandle::<Value> {
+        JS_GetProperty(cx, obj_root.handle().into(), c"buffer".as_ptr(), MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut ab_val,
         });
         let mut base_byte_offset: usize = 0;
         if ab_val.is_object() {
+            let ab_obj = ab_val.to_object();
+            rooted!(&in(cx_ref) let ab_root = ab_obj);
             // Source's own byteOffset — the new view is offset by this plus `start`.
             let mut bo_val = UndefinedValue();
-            JS_GetProperty(cx, obj_h, c"byteOffset".as_ptr(), MutableHandle::<Value> {
+            JS_GetProperty(cx, obj_root.handle().into(), c"byteOffset".as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut bo_val,
             });
             if bo_val.is_int32() { base_byte_offset = (bo_val.to_int32().max(0)) as usize; }
-            let ab_obj = ab_val.to_object();
-            let ab_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ab_obj };
             let view_len: i64 = (slice_end - start) as i64;
             let new_offset = base_byte_offset + start;
-            let view = mozjs_sys::jsapi::JS_NewUint8ArrayWithBuffer(cx, ab_h, new_offset, view_len);
+            let view = mozjs_sys::jsapi::JS_NewUint8ArrayWithBuffer(cx, ab_root.handle().into(), new_offset, view_len);
             if !view.is_null() {
                 set_buffer_proto(cx, view);
                 let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -3746,7 +3746,7 @@ unsafe extern "C" fn buffer_slice(
         let mut v = Vec::new();
         for i in start..slice_end {
             let mut byte_val = UndefinedValue();
-            JS_GetElement(cx, obj_h, i as u32, MutableHandle::<Value> {
+            JS_GetElement(cx, obj_root.handle().into(), i as u32, MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
             });
             v.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
@@ -3773,7 +3773,8 @@ unsafe extern "C" fn buffer_copy(
     }
 
     let src_obj = this.to_object();
-    let src_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &src_obj };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let src_root = src_obj);
 
     // Node.js Buffer#copy(target, targetStart, sourceStart, sourceEnd)
     let target_val = *args.get(0).ptr;
@@ -3782,7 +3783,7 @@ unsafe extern "C" fn buffer_copy(
         return true;
     }
     let tgt_obj = target_val.to_object();
-    let tgt_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &tgt_obj };
+    rooted!(&in(cx_ref) let tgt_root = tgt_obj);
 
     // @trace REQ-ENG-005 [api:Buffer.copy TOCTOU] — Node.js evaluates the
     // numeric arguments left-to-right via ToNumber, which invokes user
@@ -3905,13 +3906,12 @@ unsafe extern "C" fn buffer_copy(
         // targetStart + i, NOT at i (canonical Node semantics).
         for i in 0..copy_len {
             let mut byte_val = UndefinedValue();
-            JS_GetElement(cx, src_h, (src_start + i) as u32, MutableHandle::<Value> {
+            JS_GetElement(cx, src_root.handle().into(), (src_start + i) as u32, MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
             });
             let b = if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 };
-            let b_val = Int32Value(b as i32);
-            let b_handle = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &b_val };
-            JS_SetElement(cx, tgt_h, (tgt_start + i) as u32, b_handle);
+            rooted!(&in(cx_ref) let b_root = Int32Value(b as i32));
+            JS_SetElement(cx, tgt_root.handle().into(), (tgt_start + i) as u32, b_root.handle().into());
         }
     }
     args.rval().set(Int32Value(copy_len as i32));
@@ -3942,12 +3942,13 @@ unsafe fn throw_error_with_code(
         let exn_val = exn.get();
         if !exn_val.is_undefined() && exn_val.is_object() {
             let exn_obj = exn_val.to_object();
+            let cx_ref_err = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            rooted!(&in(cx_ref_err) let exn_root = exn_obj);
             let code_str = JS_NewStringCopyZ(cx, ZBox::from_bytes(code.as_bytes()).as_ptr());
             if !code_str.is_null() {
                 let code_val = StringValue(&*code_str);
-                let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &exn_obj };
-                let code_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &code_val };
-                JS_DefineProperty(cx, obj_h, c"code".as_ptr(), code_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx_ref_err) let code_r = code_val);
+                JS_DefineProperty(cx, exn_root.handle().into(), c"code".as_ptr(), code_r.handle().into(), JSPROP_ENUMERATE as u32);
                 JS_SetPendingException(cx, exn.handle().into(), ExceptionStackBehavior::DoNotCapture);
             }
         }
@@ -3969,7 +3970,8 @@ unsafe extern "C" fn buffer_equals(
     }
 
     let src_obj = this.to_object();
-    let src_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &src_obj };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let src_root = src_obj);
     let (src_len, src_data) = buffer_view_bytes(src_obj);
 
     let other_val = *args.get(0).ptr;
@@ -3978,7 +3980,7 @@ unsafe extern "C" fn buffer_equals(
         return true;
     }
     let tgt_obj = other_val.to_object();
-    let tgt_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &tgt_obj };
+    rooted!(&in(cx_ref) let tgt_root = tgt_obj);
     let (tgt_len, tgt_data) = buffer_view_bytes(tgt_obj);
 
     if src_len != tgt_len {
@@ -3997,11 +3999,11 @@ unsafe extern "C" fn buffer_equals(
     // Legacy per-element fallback.
     for i in 0..src_len {
         let mut a_val = UndefinedValue();
-        JS_GetElement(cx, src_h, i as u32, MutableHandle::<Value> {
+        JS_GetElement(cx, src_root.handle().into(), i as u32, MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut a_val,
         });
         let mut b_val = UndefinedValue();
-        JS_GetElement(cx, tgt_h, i as u32, MutableHandle::<Value> {
+        JS_GetElement(cx, tgt_root.handle().into(), i as u32, MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut b_val,
         });
         let a = if a_val.is_int32() { a_val.to_int32() as u8 } else { 0 };
@@ -4029,18 +4031,19 @@ unsafe extern "C" fn buffer_index_of(
     }
 
     let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
 
     let (buf_len, data_ptr) = buffer_view_bytes(obj);
     if data_ptr.is_null() {
         // Fallback to JS-level access for non-typed-array Buffer-likes.
         let mut len_val = UndefinedValue();
-        JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
+        JS_GetProperty(cx, obj_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
         });
         // Reuse the legacy implementation on this slow path.
         let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
-        return buffer_index_of_legacy(cx, &args, argc, obj_h, len);
+        return buffer_index_of_legacy(cx, &args, argc, obj_root.handle().into(), len);
     }
 
     // @trace REQ-ENG-005 [api:Buffer.indexOf detach semantics] — Node.js:
@@ -4496,6 +4499,8 @@ unsafe extern "C" fn buffer_byte_length(
         // → byte length. Non-view plain objects (e.g. {}) must still throw
         // ERR_INVALID_ARG_TYPE (test "Buffer.byteLength()").
         let obj = input.to_object();
+        let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = obj);
         let is_ab = mozjs_sys::jsapi::JS::IsArrayBufferObject(obj);
         let is_view = unsafe { mozjs_sys::jsapi::JS_IsArrayBufferViewObject(obj) };
         if !is_ab && !is_view {
@@ -4511,9 +4516,8 @@ unsafe extern "C" fn buffer_byte_length(
         // "Buffer.byteLength()" drives ArrayBuffer(8) → 8, Int8Array(8) → 8,
         // Buffer.from([…]) → its length.
         let n: usize = if is_ab {
-            let ab_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
             let mut bl_val = UndefinedValue();
-            JS_GetProperty(cx, ab_h, c"byteLength".as_ptr(), MutableHandle::<Value> {
+            JS_GetProperty(cx, obj_root.handle().into(), c"byteLength".as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut bl_val,
             });
             if bl_val.is_int32() { bl_val.to_int32().max(0) as usize } else { 0 }
@@ -4522,9 +4526,8 @@ unsafe extern "C" fn buffer_byte_length(
             // DataView / Buffer) — read its `.byteLength` property directly
             // rather than going through JS_GetObjectAsUint8Array (which only
             // recognises Uint8Array and returns 0 for Int8Array etc.).
-            let view_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
             let mut bl_val = UndefinedValue();
-            JS_GetProperty(cx, view_h, c"byteLength".as_ptr(), MutableHandle::<Value> {
+            JS_GetProperty(cx, obj_root.handle().into(), c"byteLength".as_ptr(), MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut bl_val,
             });
             if bl_val.is_int32() { bl_val.to_int32().max(0) as usize } else { 0 }
@@ -4563,16 +4566,17 @@ unsafe extern "C" fn buffer_compare(
             return (slice.to_vec(), n);
         }
         // Slow fallback: legacy per-element read.
-        let h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        let cx_ref_c = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref_c) let obj_root = obj);
         let mut len_val = UndefinedValue();
-        JS_GetProperty(cx, h, c"length".as_ptr(), MutableHandle::<Value> {
+        JS_GetProperty(cx, obj_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
         });
         let len = if len_val.is_int32() { len_val.to_int32() as usize } else { 0 };
         let mut bytes = ::std::vec::Vec::with_capacity(len);
         for i in 0..len {
             let mut v = UndefinedValue();
-            JS_GetElement(cx, h, i as u32, MutableHandle::<Value> {
+            JS_GetElement(cx, obj_root.handle().into(), i as u32, MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut v,
             });
             bytes.push(if v.is_int32() { v.to_int32() as u8 } else { 0 });
@@ -4590,8 +4594,11 @@ unsafe extern "C" fn buffer_compare(
         JS_ReportErrorUTF8(cx, c"The \"buf1\", \"buf2\" arguments must be of type Uint8Array or Buffer".as_ptr());
         return false;
     }
-    let (a_bytes, _) = read_bytes(a_val.to_object());
-    let (b_bytes, _) = read_bytes(b_val.to_object());
+    let cx_ref_cmp = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref_cmp) let a_root = a_val.to_object());
+    rooted!(&in(cx_ref_cmp) let b_root = b_val.to_object());
+    let (a_bytes, _) = read_bytes(a_root.handle().get());
+    let (b_bytes, _) = read_bytes(b_root.handle().get());
     args.rval().set(Int32Value(a_bytes.cmp(&b_bytes) as i32));
     true
 }
@@ -4657,9 +4664,10 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
         return true;
     }
     let arr = arr_val.to_object();
-    let arr_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let arr_root = arr);
     let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, arr_h, c"length".as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, arr_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
     });
     let len = if len_val.is_int32() { len_val.to_int32().max(0) as usize } else { 0 };
@@ -4667,9 +4675,8 @@ unsafe extern "C" fn crypto_get_random_values(cx: *mut JSContext, argc: u32, vp:
     let mut buf = vec![0u8; len];
     bao_crypto::random::rand_bytes(&mut buf).unwrap();
     for (i, &byte) in buf.iter().enumerate() {
-        let v = Int32Value(byte as i32);
-        let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-        JS_SetElement(cx, arr_h, i as u32, v_h);
+        rooted!(&in(cx_ref) let byte_root = Int32Value(byte as i32));
+        JS_SetElement(cx, arr_root.handle().into(), i as u32, byte_root.handle().into());
     }
     args.rval().set(arr_val);
     true
@@ -4693,16 +4700,17 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
     let data_val = *args.get(1).ptr;
     let bytes = if data_val.is_object() {
         let obj = data_val.to_object();
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = obj);
         let mut len_val = UndefinedValue();
-        JS_GetProperty(cx, obj_h, c"length".as_ptr(), MutableHandle::<Value> {
+        JS_GetProperty(cx, obj_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
         });
         let len = if len_val.is_int32() { len_val.to_int32().max(0) as usize } else { 0 };
         let mut v = Vec::with_capacity(len);
         for i in 0..len {
             let mut elem = UndefinedValue();
-            JS_GetElement(cx, obj_h, i as u32, MutableHandle::<Value> {
+            JS_GetElement(cx, obj_root.handle().into(), i as u32, MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData, ptr: &mut elem,
             });
             v.push(if elem.is_int32() { elem.to_int32() as u8 } else { 0 });
@@ -4756,14 +4764,15 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
         args.rval().set(UndefinedValue());
         return true;
     }
-    let arr_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &arr_obj };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let arr_root = arr_obj);
     let lv = Int32Value(hash.len() as i32);
-    let lv_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &lv };
-    JS_DefineProperty(cx, arr_h, c"length".as_ptr(), lv_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let lv_r = lv);
+    JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), lv_r.handle().into(), JSPROP_ENUMERATE as u32);
     for (i, &byte) in hash.iter().enumerate() {
         let v = Int32Value(byte as i32);
-        let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-        JS_DefineElement(cx, arr_h, i as u32, v_h, JSPROP_ENUMERATE as u32);
+        rooted!(&in(cx_ref) let v_r = v);
+        JS_DefineElement(cx, arr_root.handle().into(), i as u32, v_r.handle().into(), JSPROP_ENUMERATE as u32);
     }
     args.rval().set(mozjs::jsval::ObjectValue(arr_obj));
     true
@@ -4808,16 +4817,18 @@ unsafe extern "C" fn structured_clone_fn(
         let opts = *args.get(1).ptr;
         if opts.is_object() {
             let opts_obj = opts.to_object();
-            let opts_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &opts_obj };
+            let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            rooted!(&in(cx_ref) let opts_root = opts_obj);
             let mut transfer_val = UndefinedValue();
-            JS_GetProperty(cx, opts_h, c"transfer".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut transfer_val });
+            JS_GetProperty(cx, opts_root.handle().into(), c"transfer".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut transfer_val });
             if transfer_val.is_object() {
                 let transfer_obj = transfer_val.to_object();
-                let transfer_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &transfer_obj };
+                rooted!(&in(cx_ref) let transfer_root = transfer_obj);
                 let mut length_val = UndefinedValue();
-                JS_GetProperty(cx, transfer_h, c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut length_val });
+                JS_GetProperty(cx, transfer_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut length_val });
                 let list_len: i64 = if length_val.is_int32() { length_val.to_int32() as i64 } else if length_val.is_double() { length_val.to_double() as i64 } else { 0 };
                 let val_obj = if val.is_object() { Some(val.to_object()) } else { None };
+                rooted!(&in(cx_ref) let val_obj_root = val_obj.unwrap_or(::std::ptr::null_mut()));
                 // For each transfer-list item: read its current byteLength,
                 // create a fresh ArrayBuffer of equal size (the "clone"), and
                 // detach the source via SM's JS::DetachArrayBuffer. If the
@@ -4826,17 +4837,18 @@ unsafe extern "C" fn structured_clone_fn(
                 let mut result_for_cloned: ::std::option::Option<*mut JSObject> = None;
                 for i in 0..list_len {
                     let mut item = UndefinedValue();
-                    JS_GetElement(cx, transfer_h, i as u32, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut item });
+                    JS_GetElement(cx, transfer_root.handle().into(), i as u32, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut item });
                     if item.is_object() {
                         let item_obj = item.to_object();
+                        rooted!(&in(cx_ref) let item_root = item_obj);
                         // Only ArrayBuffers are transferable per spec.
-                        let is_ab = mozjs_sys::jsapi::JS::IsArrayBufferObject(item_obj);
+                        let is_ab = mozjs_sys::jsapi::JS::IsArrayBufferObject(item_root.handle().get());
                         if is_ab {
                             // Read length + data so we can build a clone.
                             let mut data_ptr: *mut u8 = ::std::ptr::null_mut();
                             let mut data_len: usize = 0;
                             let mut is_shared = false;
-                            mozjs_sys::jsapi::JS::GetArrayBufferLengthAndData(item_obj, &mut data_len, &mut is_shared, &mut data_ptr);
+                            mozjs_sys::jsapi::JS::GetArrayBufferLengthAndData(item_root.handle().get(), &mut data_len, &mut is_shared, &mut data_ptr);
                             // Copy bytes out so they survive detachment.
                             let bytes_copy: Vec<u8> = if !data_ptr.is_null() && data_len > 0 {
                                 ::std::slice::from_raw_parts(data_ptr, data_len).to_vec()
@@ -4844,14 +4856,10 @@ unsafe extern "C" fn structured_clone_fn(
                                 Vec::new()
                             };
                             // Detach source ArrayBuffer.
-                            {
-                                let cx_ref_d = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-                                rooted!(&in(cx_ref_d) let item_root = item_obj);
-                                mozjs_sys::jsapi::JS::DetachArrayBuffer(cx, item_root.handle().into());
-                            }
+                            mozjs_sys::jsapi::JS::DetachArrayBuffer(cx, item_root.handle().into());
                             // If this item is the value being cloned, build
                             // a clone ArrayBuffer and use it as the return.
-                            let is_top = val_obj.map_or(false, |v| v == item_obj);
+                            let is_top = val_obj.map_or(false, |_| val_obj_root.handle().get() == item_root.handle().get());
                             if is_top {
                                 let clone = mozjs_sys::jsapi::JS::NewArrayBuffer(cx, bytes_copy.len());
                                 if !clone.is_null() {
@@ -4885,31 +4893,31 @@ unsafe extern "C" fn structured_clone_fn(
     }
 
     if val.is_object() {
+        let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         let obj = val.to_object();
-        let obj_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &obj };
+        rooted!(&in(cx_ref) let obj_root = obj);
 
         let mut ctor_name = UndefinedValue();
-        JS_GetProperty(cx, obj_h, c"constructor".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctor_name });
+        JS_GetProperty(cx, obj_root.handle().into(), c"constructor".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctor_name });
         if ctor_name.is_object() {
             let ctor = ctor_name.to_object();
-            let ctor_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &ctor };
+            rooted!(&in(cx_ref) let ctor_root = ctor);
             let mut name_val = UndefinedValue();
-            JS_GetProperty(cx, ctor_h, c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
+            JS_GetProperty(cx, ctor_root.handle().into(), c"name".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut name_val });
             if name_val.is_string() {
                 let name = crate::js_to_rust_string(cx, name_val);
                 match name.as_str() {
                     "Date" => {
                         let mut time_val = UndefinedValue();
-                        JS_GetProperty(cx, obj_h, c"getTime".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut time_val });
+                        JS_GetProperty(cx, obj_root.handle().into(), c"getTime".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut time_val });
                         if time_val.is_object() {
                             let get_time_fn = time_val.to_object();
-                            let gt_val = ObjectValue(get_time_fn);
-                            let gt_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &gt_val };
+                            rooted!(&in(cx_ref) let gt_root = ObjectValue(get_time_fn));
                             let global = CurrentGlobalOrNull(cx);
                             if !global.is_null() {
-                                let _global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
+                                rooted!(&in(cx_ref) let global_root = global);
                                 let mut ms_rval = UndefinedValue();
-                                JS_CallFunctionValue(cx, obj_h, gt_h, &HandleValueArray::empty(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ms_rval });
+                                JS_CallFunctionValue(cx, obj_root.handle().into(), gt_root.handle().into(), &HandleValueArray::empty(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ms_rval });
                                 let ms = if ms_rval.is_double() { ms_rval.to_double() } else if ms_rval.is_int32() { ms_rval.to_int32() as f64 } else { 0.0 };
                                 let src = format!("new Date({})", ms);
                                 let mut eval_rval = UndefinedValue();
@@ -4926,9 +4934,9 @@ unsafe extern "C" fn structured_clone_fn(
                     }
                     "RegExp" => {
                         let mut source_val = UndefinedValue();
-                        JS_GetProperty(cx, obj_h, c"source".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut source_val });
+                        JS_GetProperty(cx, obj_root.handle().into(), c"source".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut source_val });
                         let mut flags_val = UndefinedValue();
-                        JS_GetProperty(cx, obj_h, c"flags".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut flags_val });
+                        JS_GetProperty(cx, obj_root.handle().into(), c"flags".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut flags_val });
                         let source = if source_val.is_string() { crate::js_to_rust_string(cx, source_val) } else { "".to_string() };
                         let flags = if flags_val.is_string() { crate::js_to_rust_string(cx, flags_val) } else { "".to_string() };
                         let src = format!("new RegExp(\"{}\", \"{}\")", source.replace('\\', "\\\\").replace('"', "\\\""), flags);
@@ -4958,12 +4966,12 @@ unsafe extern "C" fn structured_clone_fn(
             if json_fn_val.is_object() {
                 let global = CurrentGlobalOrNull(cx);
                 if !global.is_null() {
-                    let global_h = Handle::<*mut JSObject> { _phantom_0: ::std::marker::PhantomData, ptr: &global };
-                    let fn_val = ObjectValue(json_fn_val.to_object());
-                    let fn_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &fn_val };
-                    let obj_val = ObjectValue(obj);
-                    let obj_arg = HandleValueArray { length_: 1, elements_: &obj_val };
-                    JS_CallFunctionValue(cx, global_h, fn_h, &obj_arg, json_rval_h);
+                    rooted!(&in(cx_ref) let global_root = global);
+                    let json_fn_obj = json_fn_val.to_object();
+                    rooted!(&in(cx_ref) let fn_root = ObjectValue(json_fn_obj));
+                    rooted!(&in(cx_ref) let obj_val_rooted = ObjectValue(obj));
+                    let obj_arg = HandleValueArray { length_: 1, elements_: &obj_val_rooted.get() as *const Value };
+                    JS_CallFunctionValue(cx, global_root.handle().into(), fn_root.handle().into(), &obj_arg, json_rval_h);
                     args.rval().set(json_rval);
                     return true;
                 }
@@ -5341,20 +5349,18 @@ unsafe fn install_file_globals_on_target(
         let c_fn = ZBox::from_bytes(fn_str.as_bytes());
         let js_str = JS_NewStringCopyZ(raw, c_fn.as_ptr());
         if !js_str.is_null() {
-            let v = StringValue(&*js_str);
-            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-            JS_DefineProperty(raw, target.into(), c"__filename".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx) let v = StringValue(&*js_str));
+            JS_DefineProperty(raw, target.into(), c"__filename".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
     if let Some(dir_str) = dirname {
         let c_dir = ZBox::from_bytes(dir_str.as_bytes());
         let js_str = JS_NewStringCopyZ(raw, c_dir.as_ptr());
         if !js_str.is_null() {
-            let v = StringValue(&*js_str);
-            let v_h = Handle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &v };
-                JS_DefineProperty(raw, target.into(), c"__dirname".as_ptr(), v_h, JSPROP_ENUMERATE as u32);
-            }
+            rooted!(&in(cx) let v = StringValue(&*js_str));
+            JS_DefineProperty(raw, target.into(), c"__dirname".as_ptr(), v.handle().into(), JSPROP_ENUMERATE as u32);
         }
+    }
 }
 
 /// Create Node API scope values for privileged evaluate_js (REQ-SEC-002).
