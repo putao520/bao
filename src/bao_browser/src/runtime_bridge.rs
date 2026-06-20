@@ -284,7 +284,7 @@ pub unsafe fn evaluate_in_node_realm(
     use mozjs::jsapi::JSContext as RawJSContext;
     use mozjs::jsval::UndefinedValue;
     use mozjs::realm::AutoRealm;
-    use mozjs::rust::{CompileOptionsWrapper, Handle};
+    use mozjs::rust::CompileOptionsWrapper;
     use mozjs::rust::evaluate_script;
 
     if node_global.is_null() {
@@ -307,15 +307,20 @@ pub unsafe fn evaluate_in_node_realm(
     // evaluate_script evaluates within the entered Realm's compartment,
     // so the script sees only the Node Realm global (with Node.js + Web APIs).
     // The Page Realm's Window global is physically inaccessible from here.
-    let node_global_handle = Handle::from_marked_location(&node_global as *const *mut mozjs::jsapi::JSObject);
-    let mut realm = AutoRealm::new_from_handle(&mut cx, node_global_handle);
-    let realm_cx: &mut JSContext = &mut realm;
+    //
+    // SAFETY: node_global is a valid, live JSObject pointer (checked above).
+    // AutoRealm::new roots the object internally via JSAutoRealm, ensuring
+    // GC safety. We then use global_and_reborrow() to obtain a GC-safe Handle
+    // (backed by AutoRealm's internal rooting) instead of from_marked_location
+    // which would point to an unrooted stack location.
+    let mut realm = AutoRealm::new(&mut cx, NonNull::new(node_global).unwrap());
+    let (node_global_handle, realm) = realm.global_and_reborrow();
 
     let filename = c"bao_evaluate_js".to_owned();
-    let options = CompileOptionsWrapper::new(realm_cx, filename, 1);
+    let options = CompileOptionsWrapper::new(realm, filename, 1);
 
-    rooted!(&in(realm_cx) let mut rval = UndefinedValue());
-    let eval_result = evaluate_script(realm_cx, node_global_handle, script, rval.handle_mut(), options);
+    rooted!(&in(realm) let mut rval = UndefinedValue());
+    let eval_result = evaluate_script(realm, node_global_handle, script, rval.handle_mut(), options);
 
     if eval_result.is_err() {
         let _ = result_out.set(EvaluateResult {
@@ -337,7 +342,7 @@ pub unsafe fn evaluate_in_node_realm(
         } else {
             // Use mozjs's built-in jsstr_to_string for safe UTF-8 conversion.
             // It handles both Latin1 and TwoByte JS string encodings.
-            let raw_cx = realm_cx.raw_cx();
+            let raw_cx = realm.raw_cx();
             match NonNull::new(js_str) {
                 Some(nn) => Some(mozjs::conversions::jsstr_to_string(raw_cx, nn)),
                 None => Some(String::new()),
@@ -494,14 +499,16 @@ unsafe fn wrap_and_install_dom_proxy(
     use mozjs::rust::wrappers2::JS_WrapObject;
 
     let raw_cx = cx.raw_cx();
-    let page_global_handle = mozjs::rust::Handle::from_marked_location(
-        &page_global as *const *mut mozjs::jsapi::JSObject
-    );
+    // SAFETY: page_global is a servo Page Realm global, which is rooted by servo's
+    // realm for the lifetime of the page. We root it here via rooted! to ensure
+    // GC safety during JS_GetProperty (which can trigger GC), replacing the
+    // previous from_marked_location that pointed to an unrooted stack location.
+    rooted!(&in(cx) let page_global_root = page_global);
 
     // Get the property from Page Realm's Window global.
     let c_name = bun_core::ZBox::from_bytes(property_name.as_bytes());
     rooted!(&in(cx) let mut prop_val = UndefinedValue());
-    JS_GetProperty(raw_cx, page_global_handle.into(), c_name.as_ptr(), prop_val.handle_mut().into());
+    JS_GetProperty(raw_cx, page_global_root.handle().into(), c_name.as_ptr(), prop_val.handle_mut().into());
 
     // If the property is an object, wrap it for the Node Realm.
     if prop_val.get().is_object() {
@@ -623,13 +630,15 @@ unsafe fn lazy_dom_getter_impl(
     let mut cx = JSContext::from_ptr(cx_nn);
 
     // Get the DOM property from Page Realm
-    let page_global_handle = mozjs::rust::Handle::from_marked_location(
-        &page_global as *const *mut JSObject
-    );
+    // SAFETY: page_global is a servo Page Realm global, which is rooted by servo's
+    // realm for the lifetime of the page. We root it here via rooted! to ensure
+    // GC safety during JS_GetProperty (which can trigger GC), replacing the
+    // previous from_marked_location that pointed to an unrooted stack location.
+    rooted!(&in(cx) let page_global_root = page_global);
 
     let c_name = bun_core::ZBox::from_bytes(property_name.as_bytes());
     rooted!(&in(cx) let mut prop_val = UndefinedValue());
-    JS_GetProperty(raw_cx, page_global_handle.into(), c_name.as_ptr(), prop_val.handle_mut().into());
+    JS_GetProperty(raw_cx, page_global_root.handle().into(), c_name.as_ptr(), prop_val.handle_mut().into());
 
     if !prop_val.get().is_object() {
         return true;

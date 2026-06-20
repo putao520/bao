@@ -4,6 +4,7 @@ use ::std::ptr::NonNull;
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
 use mozjs::jsval::JSVal;
+use mozjs::rooted;
 
 #[derive(Debug, Clone)]
 pub enum JsValue {
@@ -300,8 +301,9 @@ pub unsafe fn jsval_to_jsvalue(cx: *mut JSContext, val: JSVal) -> JsValue {
     } else if val.is_double() {
         JsValue::Number(val.to_double())
     } else if val.is_string() {
-        let raw_handle = mozjs::rust::HandleValue::from_marked_location(&val);
-        let s = mozjs::rust::ToString(cx, raw_handle);
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let val_root = val);
+        let s = mozjs::rust::ToString(cx, val_root.handle().into());
         if !s.is_null() {
             let rust_str = jsstr_to_string(cx, NonNull::new(s).expect("null-checked JSString"));
             JsValue::String(rust_str)
@@ -332,11 +334,10 @@ pub unsafe fn get_property(
         _phantom_0: ::std::marker::PhantomData,
         ptr: &mut val,
     };
-    let obj_handle = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
-    if JS_GetProperty(cx, obj_handle, c_name.as_ptr(), handle) {
+    // BCE-20260619-012: root obj before passing as Handle to JS API.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
+    if JS_GetProperty(cx, obj_root.handle().into(), c_name.as_ptr(), handle) {
         jsval_to_jsvalue(cx, val)
     } else {
         JsValue::Undefined
@@ -357,13 +358,9 @@ pub unsafe fn set_property(
     let c_name = ::std::ffi::CString::new(name)
         .unwrap_or_else(|_| ::std::ffi::CString::new("").unwrap());
     let js_val = value.to_jsval(cx);
-    let val_handle = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &js_val,
-    };
-    let obj_handle = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
-    JS_SetProperty(cx, obj_handle, c_name.as_ptr(), val_handle)
+    // BCE-20260619-012: root obj and js_val before passing as Handle to JS API.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
+    rooted!(&in(cx_ref) let js_val_root = js_val);
+    JS_SetProperty(cx, obj_root.handle().into(), c_name.as_ptr(), js_val_root.handle().into())
 }

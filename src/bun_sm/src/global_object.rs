@@ -128,11 +128,13 @@ impl JSGlobalObject {
         let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
         rooted!(&in(cx_ref) let global_root = global);
         let js_val = value.into_inner().to_jsval(cx);
+        // BCE-20260619-012: root js_val (may be ObjectValue/StringValue) before passing as Handle.
+        rooted!(&in(cx_ref) let js_val_root = js_val);
         JS_DefineElement(
             cx,
             global_root.handle().into(),
             index,
-            Handle::<Value> { _phantom_0: PhantomData, ptr: &js_val },
+            js_val_root.handle().into(),
             JSPROP_ENUMERATE as u32,
         )
     }
@@ -169,11 +171,13 @@ impl JSGlobalObject {
         rooted!(&in(cx_ref) let global_root = global);
         let c_name = CString::new(name).unwrap_or_default();
         let js_val = value.into_inner().to_jsval(cx);
+        // BCE-20260619-012: root js_val (may be ObjectValue/StringValue) before passing as Handle.
+        rooted!(&in(cx_ref) let js_val_root = js_val);
         JS_SetProperty(
             cx,
             global_root.handle().into(),
             c_name.as_ptr(),
-            Handle::<Value> { _phantom_0: PhantomData, ptr: &js_val },
+            js_val_root.handle().into(),
         )
     }
 

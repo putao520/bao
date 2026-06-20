@@ -247,12 +247,11 @@ pub unsafe fn call_method(
     args: &[JSVal],
 ) -> JsResult<JsValue> {
     let c_name = ::std::ffi::CString::new(name).unwrap_or_default();
-    let obj_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
+    // BCE-20260619-012: root obj before passing as Handle to JS API.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
     let mut func_val = UndefinedValue();
-    JS_GetProperty(cx, obj_h, c_name.as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, obj_root.handle().into(), c_name.as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
         ptr: &mut func_val,
     });
@@ -298,10 +297,10 @@ pub unsafe fn take_exception(cx: *mut JSContext) -> JsError {
     }
 
     let obj = exc.to_object();
-    let obj_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
+    // BCE-20260619-012: root obj before passing as Handle to JS API.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
+    let obj_h = obj_root.handle().into();
 
     let message = get_string_property(cx, obj_h, "message").unwrap_or_else(|| "error".into());
     let filename = get_string_property(cx, obj_h, "fileName").unwrap_or_else(|| "<unknown>".into());

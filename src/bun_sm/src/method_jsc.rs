@@ -5,6 +5,7 @@
 //! This module provides the helper function for defining methods on JS objects.
 
 use mozjs::jsapi::{JSContext, JSObject, JSNative, JS_DefineFunction, JSPROP_ENUMERATE};
+use mozjs::rooted;
 
 pub struct MethodJsc;
 
@@ -23,11 +24,12 @@ pub unsafe fn define_method(
     nargs: u32,
 ) {
     let c_name = ::std::ffi::CString::new(name).unwrap_or_default();
-    let obj_h = mozjs::jsapi::Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
-    JS_DefineFunction(cx, obj_h, c_name.as_ptr(), native, nargs, JSPROP_ENUMERATE as u32);
+    // BCE-20260619-012: root obj before passing as Handle to JS API.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(cx),
+    );
+    rooted!(&in(cx_ref) let obj_root = obj);
+    JS_DefineFunction(cx, obj_root.handle().into(), c_name.as_ptr(), native, nargs, JSPROP_ENUMERATE as u32);
 }
 
 /// Register multiple methods on a JS object.

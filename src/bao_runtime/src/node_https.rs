@@ -405,15 +405,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 },
             );
             if !val.is_undefined() {
-                let val_h = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &val,
-                };
+                rooted!(&in(cx) let val_root = val);
                 JS_DefineProperty(
                     cx_raw,
                     mod_obj.handle().into(),
                     cname.as_ptr(),
-                    val_h,
+                    val_root.handle().into(),
                     JSPROP_ENUMERATE as u32,
                 );
             }

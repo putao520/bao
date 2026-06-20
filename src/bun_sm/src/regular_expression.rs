@@ -7,9 +7,11 @@
 
 use ::std::ffi::CString;
 use ::std::marker::PhantomData;
+use ::std::ptr::NonNull;
 
-use mozjs::jsapi::{JSContext as RawJSContext, JSObject, Handle, MutableHandle, Value};
+use mozjs::jsapi::{JSContext as RawJSContext, JSObject, MutableHandle, Value};
 use mozjs::jsval::UndefinedValue;
+use mozjs::rooted;
 
 /// RegExp flags — mirrors JS RegExp flag bits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,14 +118,14 @@ impl RegularExpression {
         let chars: Vec<u16> = input.encode_utf16().collect();
         let mut index = 0usize;
         let mut rval = UndefinedValue();
-        let re_h = Handle::<*mut JSObject> {
-            _phantom_0: PhantomData,
-            ptr: &self.obj,
-        };
+        // BCE-20260619-012: root re_obj before passing as Handle to JS API.
+        let re_obj = self.obj;
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let re_root = re_obj);
         unsafe {
             mozjs::jsapi::ExecuteRegExpNoStatics(
                 cx,
-                re_h,
+                re_root.handle().into(),
                 chars.as_ptr(),
                 chars.len(),
                 &mut index,

@@ -5,6 +5,7 @@
 //! Uses gc_store for GC-safe callback storage.
 
 use ::std::sync::atomic::{AtomicU8, Ordering};
+use mozjs::rooted;
 
 const STATE_PENDING: u8 = 0;
 const STATE_FULFILLED: u8 = 1;
@@ -87,6 +88,8 @@ impl Queue {
         if global.is_null() { return; }
         let key = format!("__async_wake_{:p}", module);
         if let Some(cb) = crate::gc::gc_store::get(cx, &key) {
+            // BCE-012: root global + cb_val — JS_CallFunctionValue can trigger GC
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
             let cb_val = mozjs::jsval::ObjectValue(cb);
             let module_val = mozjs::jsval::ObjectValue(module);
             let args = [module_val];
@@ -94,20 +97,14 @@ impl Queue {
                 length_: args.len(),
                 elements_: args.as_ptr(),
             };
-            let global_h = mozjs::jsapi::Handle::<*mut mozjs::jsapi::JSObject> {
-                _phantom_0: std::marker::PhantomData,
-                ptr: &global,
-            };
-            let cb_h = mozjs::jsapi::Handle::<mozjs::jsapi::Value> {
-                _phantom_0: std::marker::PhantomData,
-                ptr: &cb_val,
-            };
+            rooted!(&in(wrapped_cx) let global_root = global);
+            rooted!(&in(wrapped_cx) let cb_val_root = cb_val);
             let mut rval = mozjs::jsval::UndefinedValue();
             let rval_h = mozjs::jsapi::MutableHandle::<mozjs::jsapi::Value> {
                 _phantom_0: std::marker::PhantomData,
                 ptr: &mut rval,
             };
-            unsafe { mozjs::jsapi::JS_CallFunctionValue(cx, global_h, cb_h, &call_args, rval_h); }
+            unsafe { mozjs::jsapi::JS_CallFunctionValue(cx, global_root.handle().into(), cb_val_root.handle().into(), &call_args, rval_h); }
         }
     }
 
@@ -115,6 +112,10 @@ impl Queue {
         if module.is_null() { return; }
         let key = format!("__async_err_{:p}", module);
         if let Some(cb) = crate::gc::gc_store::get(cx, &key) {
+            let global = mozjs::jsapi::CurrentGlobalOrNull(cx);
+            if global.is_null() { return; }
+            // BCE-012: root global + cb_val — JS_CallFunctionValue can trigger GC
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
             let cb_val = mozjs::jsval::ObjectValue(cb);
             let module_val = mozjs::jsval::ObjectValue(module);
             let error_val = if error.is_null() { mozjs::jsval::UndefinedValue() } else { mozjs::jsval::ObjectValue(error) };
@@ -123,22 +124,14 @@ impl Queue {
                 length_: args.len(),
                 elements_: args.as_ptr(),
             };
-            let global = mozjs::jsapi::CurrentGlobalOrNull(cx);
-            if global.is_null() { return; }
-            let global_h = mozjs::jsapi::Handle::<*mut mozjs::jsapi::JSObject> {
-                _phantom_0: std::marker::PhantomData,
-                ptr: &global,
-            };
-            let cb_h = mozjs::jsapi::Handle::<mozjs::jsapi::Value> {
-                _phantom_0: std::marker::PhantomData,
-                ptr: &cb_val,
-            };
+            rooted!(&in(wrapped_cx) let global_root = global);
+            rooted!(&in(wrapped_cx) let cb_val_root = cb_val);
             let mut rval = mozjs::jsval::UndefinedValue();
             let rval_h = mozjs::jsapi::MutableHandle::<mozjs::jsapi::Value> {
                 _phantom_0: std::marker::PhantomData,
                 ptr: &mut rval,
             };
-            unsafe { mozjs::jsapi::JS_CallFunctionValue(cx, global_h, cb_h, &call_args, rval_h); }
+            unsafe { mozjs::jsapi::JS_CallFunctionValue(cx, global_root.handle().into(), cb_val_root.handle().into(), &call_args, rval_h); }
         }
     }
 }

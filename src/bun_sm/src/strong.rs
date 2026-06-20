@@ -88,14 +88,15 @@ impl<T> Strong<T> {
             return ::std::ptr::null_mut();
         }
         let c_key = CString::new(&*self.key).unwrap_or_default();
-        let global_h = Handle::<*mut JSObject> {
-            _phantom_0: PhantomData,
-            ptr: &global,
-        };
+        // BCE-20260619-012: root global before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            NonNull::new_unchecked(self.cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
         let mut val = UndefinedValue();
         JS_GetProperty(
             self.cx,
-            global_h,
+            global_root.handle().into(),
             c_key.as_ptr(),
             MutableHandle::<Value> {
                 _phantom_0: PhantomData,
@@ -123,11 +124,12 @@ impl<T> Strong<T> {
             return;
         }
         let c_key = CString::new(&*self.key).unwrap_or_default();
-        let global_h = Handle::<*mut JSObject> {
-            _phantom_0: PhantomData,
-            ptr: &global,
-        };
-        JS_DeleteProperty1(self.cx, global_h, c_key.as_ptr());
+        // BCE-20260619-012: root global before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            NonNull::new_unchecked(self.cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
+        JS_DeleteProperty1(self.cx, global_root.handle().into(), c_key.as_ptr());
         self.key.clear();
         self.cx = ::std::ptr::null_mut();
     }

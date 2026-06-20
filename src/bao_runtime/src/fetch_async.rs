@@ -46,6 +46,7 @@ use ::std::sync::{Arc, Mutex};
 use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, StringValue, UndefinedValue};
+use mozjs::rooted;
 
 use crate::stealth_http::{StealthSyncResult, stealth_http_request};
 
@@ -539,22 +540,18 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
     let promise_val = unsafe { &*this }.promise_val;
     let rooted = unsafe { &*this }.rooted;
 
-    let promise_obj = promise_val.to_object();
-    let promise_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &promise_obj,
-    };
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise_obj = promise_val.to_object());
+    let promise_h = promise_obj.handle().into();
 
     match (outcome, kind) {
         (Ok(resp), ResolveKind::Response) => {
             let resp_obj = build_response_js(cx, &resp);
             if !resp_obj.is_null() {
-                let resp_val = ObjectValue(resp_obj);
-                let resp_handle = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &resp_val,
-                };
-                JS::ResolvePromise(cx, promise_h, resp_handle);
+                rooted!(&in(cx_ref) let resp_val = ObjectValue(resp_obj));
+                JS::ResolvePromise(cx, promise_h, resp_val.handle().into());
             } else {
                 reject_with_message(cx, promise_h, "http: failed to build Response");
             }
@@ -565,12 +562,8 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
                 .unwrap_or_default();
             let tls_obj = build_tls_socket_js(cx, &host);
             if !tls_obj.is_null() {
-                let tls_val = ObjectValue(tls_obj);
-                let tls_handle = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &tls_val,
-                };
-                JS::ResolvePromise(cx, promise_h, tls_handle);
+                rooted!(&in(cx_ref) let tls_val = ObjectValue(tls_obj));
+                JS::ResolvePromise(cx, promise_h, tls_val.handle().into());
             } else {
                 reject_with_message(cx, promise_h, "tls: failed to build socket object");
             }
@@ -662,43 +655,31 @@ fn schedule_resolve_on_js_thread(pending_ptr: *mut PendingFetch) {
 /// `cx` must be a live `JSContext*` on the current thread.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn build_tls_socket_js(cx: *mut JSContext, host: &str) -> *mut JSObject {
-    let obj = JS_NewPlainObject(cx);
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx));
     if obj.is_null() {
-        return obj;
+        return obj.get();
     }
-    let obj_handle = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
+    let obj_handle = obj.handle().into();
 
-    let auth_val = mozjs::jsval::BooleanValue(true);
-    let auth_h = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &auth_val,
-    };
-    JS_DefineProperty(cx, obj_handle, c"authorized".as_ptr(), auth_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let auth_val = mozjs::jsval::BooleanValue(true));
+    JS_DefineProperty(cx, obj_handle, c"authorized".as_ptr(), auth_val.handle().into(), JSPROP_ENUMERATE as u32);
 
-    let enc_val = mozjs::jsval::BooleanValue(true);
-    let enc_h = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &enc_val,
-    };
-    JS_DefineProperty(cx, obj_handle, c"encrypted".as_ptr(), enc_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let enc_val = mozjs::jsval::BooleanValue(true));
+    JS_DefineProperty(cx, obj_handle, c"encrypted".as_ptr(), enc_val.handle().into(), JSPROP_ENUMERATE as u32);
 
     if !host.is_empty() {
         let c_host = ZBox::from_bytes(host.as_bytes());
         let host_js = JS_NewStringCopyZ(cx, c_host.as_ptr());
         if !host_js.is_null() {
-            let hv = StringValue(&*host_js);
-            let hv_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &hv,
-            };
-            JS_DefineProperty(cx, obj_handle, c"servername".as_ptr(), hv_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_ref) let hv = StringValue(&*host_js));
+            JS_DefineProperty(cx, obj_handle, c"servername".as_ptr(), hv.handle().into(), JSPROP_ENUMERATE as u32);
         }
     }
 
-    obj
+    obj.get()
 }
 
 /// Construct the JS Response object from a `StealthSyncResult`. Shape mirrors
@@ -710,46 +691,34 @@ unsafe fn build_tls_socket_js(cx: *mut JSContext, host: &str) -> *mut JSObject {
 /// `cx` must be a live `JSContext*` on the current thread.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mut JSObject {
-    let obj = JS_NewPlainObject(cx);
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx));
     if obj.is_null() {
-        return obj;
+        return obj.get();
     }
-    let obj_handle = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
+    let obj_handle = obj.handle().into();
 
     // status: int32
-    let status_val = mozjs::jsval::Int32Value(resp.status_code as i32);
-    let s_handle = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &status_val,
-    };
-    JS_DefineProperty(cx, obj_handle, c"status".as_ptr(), s_handle, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let status_val = mozjs::jsval::Int32Value(resp.status_code as i32));
+    JS_DefineProperty(cx, obj_handle, c"status".as_ptr(), status_val.handle().into(), JSPROP_ENUMERATE as u32);
 
     // ok: boolean (2xx)
-    let ok_val = mozjs::jsval::BooleanValue((200..300).contains(&resp.status_code));
-    let ok_handle = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &ok_val,
-    };
-    JS_DefineProperty(cx, obj_handle, c"ok".as_ptr(), ok_handle, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let ok_val = mozjs::jsval::BooleanValue((200..300).contains(&resp.status_code)));
+    JS_DefineProperty(cx, obj_handle, c"ok".as_ptr(), ok_val.handle().into(), JSPROP_ENUMERATE as u32);
 
     // statusText
     {
         let c_st = ZBox::from_bytes(resp.status_text.as_bytes());
         let st_js = JS_NewStringCopyZ(cx, c_st.as_ptr());
         if !st_js.is_null() {
-            let st_val = StringValue(&*st_js);
-            let st_handle = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &st_val,
-            };
+            rooted!(&in(cx_ref) let st_val = StringValue(&*st_js));
             JS_DefineProperty(
                 cx,
                 obj_handle,
                 c"statusText".as_ptr(),
-                st_handle,
+                st_val.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }
@@ -757,53 +726,38 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
 
     // headers (flattened to a plain enumerable object)
     {
-        let headers_obj = JS_NewPlainObject(cx);
+        rooted!(&in(cx_ref) let headers_obj = JS_NewPlainObject(cx));
         if !headers_obj.is_null() {
-            let hdr_handle = Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &headers_obj,
-            };
+            let hdr_handle = headers_obj.handle().into();
             for (k, v) in resp.headers.iter() {
                 let c_k = ZBox::from_bytes(k.as_bytes());
                 let k_js = JS_NewStringCopyZ(cx, c_k.as_ptr());
                 if k_js.is_null() {
                     continue;
                 }
-                let kv = StringValue(&*k_js);
-                let kv_handle = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &kv,
-                };
+                rooted!(&in(cx_ref) let kv = StringValue(&*k_js));
                 let c_v = ZBox::from_bytes(v.as_bytes());
                 let v_js = JS_NewStringCopyZ(cx, c_v.as_ptr());
                 if v_js.is_null() {
                     continue;
                 }
-                let vv = StringValue(&*v_js);
-                let vv_handle = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &vv,
-                };
+                rooted!(&in(cx_ref) let vv = StringValue(&*v_js));
                 let c_key = ZBox::from_bytes(k.as_bytes());
                 JS_DefineProperty(
                     cx,
                     hdr_handle,
                     c_key.as_ptr(),
-                    vv_handle,
+                    vv.handle().into(),
                     JSPROP_ENUMERATE as u32,
                 );
-                let _ = kv_handle; // suppress unused-assign
+                let _ = kv; // suppress unused-assign
             }
-            let hv = ObjectValue(headers_obj);
-            let hv_handle = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &hv,
-            };
+            rooted!(&in(cx_ref) let hv = ObjectValue(headers_obj.get()));
             JS_DefineProperty(
                 cx,
                 obj_handle,
                 c"headers".as_ptr(),
-                hv_handle,
+                hv.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }
@@ -815,12 +769,8 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
         let c_body = ZBox::from_bytes(body_lossy.as_bytes());
         let body_js = JS_NewStringCopyZ(cx, c_body.as_ptr());
         if !body_js.is_null() {
-            let bv = StringValue(&*body_js);
-            let b_handle = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &bv,
-            };
-            JS_DefineProperty(cx, obj_handle, c"_bodyText".as_ptr(), b_handle, 0);
+            rooted!(&in(cx_ref) let bv = StringValue(&*body_js));
+            JS_DefineProperty(cx, obj_handle, c"_bodyText".as_ptr(), bv.handle().into(), 0);
         }
     }
 
@@ -830,23 +780,19 @@ unsafe fn build_response_js(cx: *mut JSContext, resp: &StealthSyncResult) -> *mu
         if !text_fn.is_null() {
             let fn_obj = JS_GetFunctionObject(text_fn);
             if !fn_obj.is_null() {
-                let fv = ObjectValue(fn_obj);
-                let fv_handle = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &fv,
-                };
+                rooted!(&in(cx_ref) let fv = ObjectValue(fn_obj));
                 JS_DefineProperty(
                     cx,
                     obj_handle,
                     c"text".as_ptr(),
-                    fv_handle,
+                    fv.handle().into(),
                     JSPROP_ENUMERATE as u32,
                 );
             }
         }
     }
 
-    obj
+    obj.get()
 }
 
 /// `.text()` method: reads `_bodyText` off the Response and returns it.
@@ -863,11 +809,11 @@ unsafe extern "C" fn response_text_fn(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let this_obj = this.to_object();
-    let this_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &this_obj,
-    };
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    let this_h = this_obj.handle().into();
     let mut bt = UndefinedValue();
     let bt_h = MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData,
@@ -893,39 +839,30 @@ unsafe fn reject_with_message(
     promise_h: Handle<*mut JSObject>,
     msg: &str,
 ) {
-    let err_obj = JS_NewPlainObject(cx);
+    let mut wrapped_cx =
+        mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
     if !err_obj.is_null() {
         let c_msg = ZBox::from_bytes(msg.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
         if !js_str.is_null() {
-            let msg_val = StringValue(&*js_str);
-            let msg_handle = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &msg_val,
-            };
-            let err_h = Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &err_obj,
-            };
+            rooted!(&in(cx_ref) let msg_val = StringValue(&*js_str));
             JS_DefineProperty(
                 cx,
-                err_h,
+                err_obj.handle().into(),
                 c"message".as_ptr(),
-                msg_handle,
+                msg_val.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }
     }
-    let ev = if err_obj.is_null() {
+    rooted!(&in(cx_ref) let ev = if err_obj.is_null() {
         UndefinedValue()
     } else {
-        ObjectValue(err_obj)
-    };
-    let ev_handle = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &ev,
-    };
-    JS::RejectPromise(cx, promise_h, ev_handle);
+        ObjectValue(err_obj.get())
+    });
+    JS::RejectPromise(cx, promise_h, ev.handle().into());
 }
 
 // ──────────────────────────────────────────────────────────────────────────

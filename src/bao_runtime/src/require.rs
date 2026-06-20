@@ -413,10 +413,12 @@ unsafe fn load_json_module(cx: *mut JSContext, content: &str, specifier: &str) -
     if js_str.is_null() {
         return ptr::null_mut();
     }
-    let str_handle = Handle::<*mut JSString> { _phantom_0: ::std::marker::PhantomData, ptr: &js_str };
+    // BCE-012: root JSString — JS_ParseJSON1 can trigger GC, leaving raw Handle dangling
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let str_root = js_str);
     let mut rval = mozjs::jsval::UndefinedValue();
     let rval_handle = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
-    let ok = mozjs_sys::jsapi::JS_ParseJSON1(cx, str_handle, rval_handle);
+    let ok = mozjs_sys::jsapi::JS_ParseJSON1(cx, str_root.handle().into(), rval_handle);
     if ok && rval.is_object() {
         return rval.to_object();
     }

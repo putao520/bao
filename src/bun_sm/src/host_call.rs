@@ -7,6 +7,7 @@
 
 use crate::js_value::JSValue;
 use crate::js_error::JsResult;
+use mozjs::rooted;
 
 pub fn to_js_host_call(value: &JSValue) -> JSValue {
     value.clone()
@@ -33,15 +34,15 @@ pub unsafe fn call_method_on_object(
         return mozjs::jsval::UndefinedValue();
     }
 
+    // BCE-012: root obj/global/method_val — JS_GetProperty and JS_CallFunctionValue can trigger GC
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+
     let c_method = ::std::ffi::CString::new(method_name).unwrap_or_default();
     let mut method_val = mozjs::jsval::UndefinedValue();
-    let obj_h = mozjs::jsapi::Handle::<*mut mozjs::jsapi::JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
+    rooted!(&in(wrapped_cx) let obj_root = obj);
     mozjs::jsapi::JS_GetProperty(
         cx,
-        obj_h,
+        obj_root.handle().into(),
         c_method.as_ptr(),
         mozjs::jsapi::MutableHandle::<mozjs::jsapi::Value> {
             _phantom_0: ::std::marker::PhantomData,
@@ -58,15 +59,8 @@ pub unsafe fn call_method_on_object(
         return mozjs::jsval::UndefinedValue();
     }
 
-    let cb_val = method_val;
-    let cb_h = mozjs::jsapi::Handle::<mozjs::jsapi::Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &cb_val,
-    };
-    let global_h = mozjs::jsapi::Handle::<*mut mozjs::jsapi::JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &global,
-    };
+    rooted!(&in(wrapped_cx) let cb_val_root = method_val);
+    rooted!(&in(wrapped_cx) let global_root = global);
 
     let call_args = if args.is_empty() {
         mozjs::jsapi::HandleValueArray::empty()
@@ -79,7 +73,7 @@ pub unsafe fn call_method_on_object(
         _phantom_0: ::std::marker::PhantomData,
         ptr: &mut rval,
     };
-    mozjs::jsapi::JS_CallFunctionValue(cx, global_h, cb_h, &call_args, rval_h);
+    mozjs::jsapi::JS_CallFunctionValue(cx, global_root.handle().into(), cb_val_root.handle().into(), &call_args, rval_h);
     mozjs::jsapi::JS_ClearPendingException(cx);
     rval
 }

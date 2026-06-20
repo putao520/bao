@@ -60,8 +60,9 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> ::std::option::Option
     if val.is_undefined() || val.is_null() {
         return ::std::option::Option::None;
     }
-    let raw_handle = mozjs::rust::HandleValue::from_marked_location(&val);
-    let s = mozjs::rust::ToString(cx, raw_handle);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let val_root = val);
+    let s = mozjs::rust::ToString(cx, val_root.handle().into());
     if s.is_null() {
         return ::std::option::Option::None;
     }

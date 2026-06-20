@@ -7,7 +7,8 @@ use ::std::marker::PhantomData;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue};
+use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::rooted;
 
 use crate::js_value::JSValue;
 
@@ -43,14 +44,13 @@ pub struct JSBigInt { _private: () }
 #[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn get_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject, name: &str) -> JSValue {
     let c_name = CString::new(name).unwrap_or_default();
-    let obj_h = Handle::<*mut mozjs::jsapi::JSObject> {
-        _phantom_0: PhantomData,
-        ptr: &obj,
-    };
+    // BCE-20260619-012: root obj before passing as Handle to JS API.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
     let mut val = UndefinedValue();
     JS_GetProperty(
         cx,
-        obj_h,
+        obj_root.handle().into(),
         c_name.as_ptr(),
         MutableHandle::<Value> {
             _phantom_0: PhantomData,
@@ -67,15 +67,11 @@ pub unsafe fn get_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject,
 #[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn set_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject, name: &str, value: JSVal) {
     let c_name = CString::new(name).unwrap_or_default();
-    let obj_h = Handle::<*mut mozjs::jsapi::JSObject> {
-        _phantom_0: PhantomData,
-        ptr: &obj,
-    };
-    let val_h = Handle::<Value> {
-        _phantom_0: PhantomData,
-        ptr: &value,
-    };
-    JS_SetProperty(cx, obj_h, c_name.as_ptr(), val_h);
+    // BCE-20260619-012: root obj and value (may be Object/String JSVal) before passing as Handle.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
+    rooted!(&in(cx_ref) let value_root = value);
+    JS_SetProperty(cx, obj_root.handle().into(), c_name.as_ptr(), value_root.handle().into());
 }
 
 /// Define a property on a JS object with specific attributes.
@@ -91,15 +87,11 @@ pub unsafe fn define_property(
     attrs: u32,
 ) -> bool {
     let c_name = CString::new(name).unwrap_or_default();
-    let obj_h = Handle::<*mut mozjs::jsapi::JSObject> {
-        _phantom_0: PhantomData,
-        ptr: &obj,
-    };
-    let val_h = Handle::<Value> {
-        _phantom_0: PhantomData,
-        ptr: &value,
-    };
-    JS_DefineProperty(cx, obj_h, c_name.as_ptr(), val_h, attrs)
+    // BCE-20260619-012: root obj and value (may be Object/String JSVal) before passing as Handle.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
+    rooted!(&in(cx_ref) let value_root = value);
+    JS_DefineProperty(cx, obj_root.handle().into(), c_name.as_ptr(), value_root.handle().into(), attrs)
 }
 
 /// Check if a JS object has a property.
@@ -109,12 +101,11 @@ pub unsafe fn define_property(
 #[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn has_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject, name: &str) -> bool {
     let c_name = CString::new(name).unwrap_or_default();
-    let obj_h = Handle::<*mut mozjs::jsapi::JSObject> {
-        _phantom_0: PhantomData,
-        ptr: &obj,
-    };
+    // BCE-20260619-012: root obj before passing as Handle to JS API.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
     let mut found = false;
-    JS_HasProperty(cx, obj_h, c_name.as_ptr(), &mut found);
+    JS_HasProperty(cx, obj_root.handle().into(), c_name.as_ptr(), &mut found);
     found
 }
 
@@ -125,9 +116,8 @@ pub unsafe fn has_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject,
 #[allow(unsafe_op_in_unsafe_fn)]
 pub unsafe fn delete_property(cx: *mut JSContext, obj: *mut mozjs::jsapi::JSObject, name: &str) -> bool {
     let c_name = CString::new(name).unwrap_or_default();
-    let obj_h = Handle::<*mut mozjs::jsapi::JSObject> {
-        _phantom_0: PhantomData,
-        ptr: &obj,
-    };
-    JS_DeleteProperty1(cx, obj_h, c_name.as_ptr())
+    // BCE-20260619-012: root obj before passing as Handle to JS API.
+    let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(cx_ref) let obj_root = obj);
+    JS_DeleteProperty1(cx, obj_root.handle().into(), c_name.as_ptr())
 }

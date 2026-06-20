@@ -11,7 +11,8 @@
 
 use crate::value::JsValue;
 use mozjs::jsapi::JSObject;
-use mozjs::jsval::JSVal;/// SpiderMonkey-backed JSValue, compatible with the `bun_jsc::JSValue` API surface.
+use mozjs::jsval::JSVal;
+use mozjs::rooted;/// SpiderMonkey-backed JSValue, compatible with the `bun_jsc::JSValue` API surface.
 ///
 /// This is a newtype over `crate::value::JsValue`, providing JSC-compatible
 /// methods like `is_undefined()`, `as_number()`, `to_boolean()`, etc.
@@ -227,8 +228,9 @@ impl JSValue {
     #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn to_string(&self, cx: *mut mozjs::jsapi::JSContext) -> ::std::result::Result<String, crate::error::JsError> {
         let js_val = self.0.to_jsval(cx);
-        let handle = mozjs::rust::HandleValue::from_marked_location(&js_val);
-        let js_str = unsafe { mozjs::rust::ToString(cx, handle) };
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let val_root = js_val);
+        let js_str = unsafe { mozjs::rust::ToString(cx, val_root.handle().into()) };
         if js_str.is_null() {
             return Err(crate::error::JsError {
                 message: "ToString failed".into(),
@@ -251,12 +253,11 @@ impl JSValue {
         match self.as_object() {
             Some(obj) => Ok(obj),
             None => {
+                // BCE-012: root js_val — ToObjectSlow can trigger GC
+                let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
                 let js_val = self.0.to_jsval(cx);
-                let val_h = mozjs::jsapi::Handle::<mozjs::jsapi::Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &js_val,
-                };
-                let obj = unsafe { mozjs::jsapi::ToObjectSlow(cx, val_h, false) };
+                rooted!(&in(wrapped_cx) let js_val_root = js_val);
+                let obj = unsafe { mozjs::jsapi::ToObjectSlow(cx, js_val_root.handle().into(), false) };
                 if obj.is_null() {
                     Err(crate::error::JsError {
                         message: "ToObject failed".into(),
@@ -279,8 +280,9 @@ impl JSValue {
     #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn to_number_sm(&self, cx: *mut mozjs::jsapi::JSContext) -> ::std::result::Result<f64, crate::error::JsError> {
         let js_val = self.0.to_jsval(cx);
-        let handle = mozjs::rust::HandleValue::from_marked_location(&js_val);
-        unsafe { mozjs::rust::ToNumber(cx, handle) }.map_err(|()| crate::error::JsError {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let val_root = js_val);
+        unsafe { mozjs::rust::ToNumber(cx, val_root.handle().into()) }.map_err(|()| crate::error::JsError {
             message: "ToNumber failed".into(),
             filename: String::new(),
             line: 0,
@@ -307,11 +309,12 @@ impl JSValue {
         match self.as_object() {
             Some(obj) if !obj.is_null() => {
                 let mut is_array = false;
-                let obj_h = mozjs::jsapi::Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &obj,
-                };
-                mozjs::jsapi::IsArrayObject1(cx, obj_h, &mut is_array);
+                // BCE-20260619-012: root obj before passing as Handle to JS API.
+                let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+                    ::std::ptr::NonNull::new_unchecked(cx),
+                );
+                rooted!(&in(cx_ref) let obj_root = obj);
+                mozjs::jsapi::IsArrayObject1(cx, obj_root.handle().into(), &mut is_array);
                 is_array
             }
             _ => false,

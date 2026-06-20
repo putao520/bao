@@ -16,6 +16,7 @@ use ::std::sync::atomic::{AtomicU64, Ordering};
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
+use mozjs::rooted;
 
 // ---------------------------------------------------------------------------
 // EnsureStillAlive — no-op GC guard
@@ -68,19 +69,17 @@ pub mod gc_store {
             return;
         }
         let prop_name = CString::new(format!("__gc_cache_{key}")).unwrap_or_default();
-        let obj_val = ObjectValue(obj);
-        let obj_h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &obj_val,
-        };
+        // BCE-20260619-012: root both global and obj_val before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
+        rooted!(&in(cx_ref) let obj_val_root = ObjectValue(obj));
         JS_DefineProperty(
             cx,
-            Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &global,
-            },
+            global_root.handle().into(),
             prop_name.as_ptr(),
-            obj_h,
+            obj_val_root.handle().into(),
             JSPROP_READONLY as u32,
         );
         GC_STORE_KEYS.with(|s| s.borrow_mut().insert(key.to_string()));
@@ -96,19 +95,17 @@ pub mod gc_store {
             return;
         }
         let prop_name = CString::new(format!("__gc_{namespace}_{key}")).unwrap_or_default();
-        let obj_val = ObjectValue(obj);
-        let obj_h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &obj_val,
-        };
+        // BCE-20260619-012: root both global and obj_val before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
+        rooted!(&in(cx_ref) let obj_val_root = ObjectValue(obj));
         JS_DefineProperty(
             cx,
-            Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &global,
-            },
+            global_root.handle().into(),
             prop_name.as_ptr(),
-            obj_h,
+            obj_val_root.handle().into(),
             JSPROP_READONLY as u32,
         );
         GC_STORE_KEYS.with(|s| s.borrow_mut().insert(format!("{namespace}::{key}")));
@@ -126,12 +123,14 @@ pub mod gc_store {
         }
         let prop_name = CString::new(format!("__gc_cache_{key}")).unwrap_or_default();
         let mut val = UndefinedValue();
+        // BCE-20260619-012: root global before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &global,
-            },
+            global_root.handle().into(),
             prop_name.as_ptr(),
             MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
@@ -158,12 +157,14 @@ pub mod gc_store {
         }
         let prop_name = CString::new(format!("__gc_{namespace}_{key}")).unwrap_or_default();
         let mut val = UndefinedValue();
+        // BCE-20260619-012: root global before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
         JS_GetProperty(
             cx,
-            Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &global,
-            },
+            global_root.handle().into(),
             prop_name.as_ptr(),
             MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
@@ -185,12 +186,14 @@ pub mod gc_store {
             return;
         }
         let prop_name = CString::new(format!("__gc_cache_{key}")).unwrap_or_default();
+        // BCE-20260619-012: root global before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
         JS_DeleteProperty1(
             cx,
-            Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &global,
-            },
+            global_root.handle().into(),
             prop_name.as_ptr(),
         );
     }
@@ -203,12 +206,14 @@ pub mod gc_store {
             return;
         }
         let prop_name = CString::new(format!("__gc_{namespace}_{key}")).unwrap_or_default();
+        // BCE-20260619-012: root global before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
         JS_DeleteProperty1(
             cx,
-            Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &global,
-            },
+            global_root.handle().into(),
             prop_name.as_ptr(),
         );
     }

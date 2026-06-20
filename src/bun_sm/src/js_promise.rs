@@ -4,11 +4,10 @@
 //! In SpiderMonkey, a Promise is a JSObject with internal slots.
 
 use ::std::ffi::c_void;
-use ::std::marker::PhantomData;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::UndefinedValue;
+use mozjs::rooted;
 
 use crate::js_value::JSValue;
 use crate::strong::Strong;
@@ -49,14 +48,13 @@ impl JSPromise {
     /// # Safety
     /// `cx` must be a valid JSContext.
     #[allow(unsafe_op_in_unsafe_fn)]
-    pub unsafe fn state(&self, _cx: *mut JSContext) -> PromiseResult {
+    pub unsafe fn state(&self, cx: *mut JSContext) -> PromiseResult {
         let obj = self.as_object();
-        let obj_h = Handle::<*mut JSObject> {
-            _phantom_0: PhantomData,
-            ptr: &obj,
-        };
-        if JS::IsPromiseObject(obj_h) {
-            let state = JS::GetPromiseState(obj_h);
+        // BCE-20260619-012: root obj before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = obj);
+        if JS::IsPromiseObject(obj_root.handle().into()) {
+            let state = JS::GetPromiseState(obj_root.handle().into());
             match state {
                 PromiseState::Pending => PromiseResult::Pending,
                 PromiseState::Fulfilled => PromiseResult::Fulfilled,
@@ -76,11 +74,10 @@ impl JSPromise {
     #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn resolve(&self, cx: *mut JSContext, value: JS::Handle<Value>) {
         let obj = self.as_object();
-        let obj_h = Handle::<*mut JSObject> {
-            _phantom_0: PhantomData,
-            ptr: &obj,
-        };
-        JS::ResolvePromise(cx, obj_h, value);
+        // BCE-20260619-012: root obj before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = obj);
+        JS::ResolvePromise(cx, obj_root.handle().into(), value);
     }
 
     /// Reject the promise with a value.
@@ -90,11 +87,10 @@ impl JSPromise {
     #[allow(unsafe_op_in_unsafe_fn)]
     pub unsafe fn reject(&self, cx: *mut JSContext, value: JS::Handle<Value>) {
         let obj = self.as_object();
-        let obj_h = Handle::<*mut JSObject> {
-            _phantom_0: PhantomData,
-            ptr: &obj,
-        };
-        JS::RejectPromise(cx, obj_h, value);
+        // BCE-20260619-012: root obj before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = obj);
+        JS::RejectPromise(cx, obj_root.handle().into(), value);
     }
 }
 
@@ -150,14 +146,13 @@ impl AnyPromise {
     /// # Safety
     /// `cx` must be a valid JSContext.
     #[allow(unsafe_op_in_unsafe_fn)]
-    pub unsafe fn to_result(&self, _cx: *mut JSContext) -> PromiseResult {
+    pub unsafe fn to_result(&self, cx: *mut JSContext) -> PromiseResult {
         let obj = self.as_object();
-        let obj_h = Handle::<*mut JSObject> {
-            _phantom_0: PhantomData,
-            ptr: &obj,
-        };
-        if JS::IsPromiseObject(obj_h) {
-            let state = JS::GetPromiseState(obj_h);
+        // BCE-20260619-012: root obj before passing as Handle to JS API.
+        let cx_ref = &mut mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(cx_ref) let obj_root = obj);
+        if JS::IsPromiseObject(obj_root.handle().into()) {
+            let state = JS::GetPromiseState(obj_root.handle().into());
             match state {
                 PromiseState::Pending => PromiseResult::Pending,
                 PromiseState::Fulfilled => PromiseResult::Fulfilled,
