@@ -756,13 +756,15 @@ unsafe fn extract_key_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
 #[allow(unsafe_op_in_unsafe_fn)]
 pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
     if !val.is_object() { return Vec::new(); }
-    let obj = val.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_root = val.to_object());
     // Prefer Uint8Array/TypedArray/ArrayBuffer fast paths (Buffer/Uint8Array).
     let mut length: usize = 0;
     let mut is_shared = false;
     let mut data_ptr: *mut u8 = ptr::null_mut();
     let u8_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
-        obj,
+        obj_root.get(),
         &mut length,
         &mut is_shared,
         &mut data_ptr,
@@ -777,7 +779,7 @@ pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec
     let mut view_shared = false;
     let mut view_data: *mut u8 = ptr::null_mut();
     let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
-        obj,
+        obj_root.get(),
         &mut view_length,
         &mut view_shared,
         &mut view_data,
@@ -789,18 +791,15 @@ pub(crate) unsafe fn extract_buffer_bytes(cx: *mut JSContext, val: JSVal) -> Vec
         return Vec::new();
     }
     // Plain number[] array fallback.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
-    rooted!(&in(cx_ref) let obj_rooted = obj);
     let mut len_val = UndefinedValue();
-    JS_GetProperty(cx, obj_rooted.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
+    JS_GetProperty(cx, obj_root.handle().into(), c"length".as_ptr(), MutableHandle::<Value> {
         _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val,
     });
     let len = if len_val.is_int32() { len_val.to_int32() as usize } else { return Vec::new() };
     let mut bytes = Vec::with_capacity(len);
     for i in 0u32..len as u32 {
         let mut byte_val = UndefinedValue();
-        JS_GetElement(cx, obj_rooted.handle().into(), i, MutableHandle::<Value> {
+        JS_GetElement(cx, obj_root.handle().into(), i, MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val,
         });
         bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });

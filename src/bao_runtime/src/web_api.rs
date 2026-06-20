@@ -901,10 +901,10 @@ unsafe extern "C" fn queue_microtask_fn(cx: *mut JSContext, argc: u32, vp: *mut 
     if argc == 0 || !(*args.get(0).ptr).is_object() {
         return true;
     }
-    let callback = (*args.get(0).ptr).to_object();
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx = &mut wrapped_cx;
 
+    rooted!(&in(cx) let callback = (*args.get(0).ptr).to_object());
     rooted!(&in(cx) let undef_val = UndefinedValue());
     let resolved = CallOriginalPromiseResolve(cx, undef_val.handle());
     if resolved.is_null() {
@@ -912,9 +912,8 @@ unsafe extern "C" fn queue_microtask_fn(cx: *mut JSContext, argc: u32, vp: *mut 
         return true;
     }
     rooted!(&in(cx) let promise = resolved);
-    rooted!(&in(cx) let on_fulfilled = callback);
     rooted!(&in(cx) let null_reject = ::std::ptr::null_mut::<JSObject>());
-    CallOriginalPromiseThen(cx, promise.handle(), on_fulfilled.handle(), null_reject.handle());
+    CallOriginalPromiseThen(cx, promise.handle(), callback.handle(), null_reject.handle());
     args.rval().set(UndefinedValue());
     true
 }

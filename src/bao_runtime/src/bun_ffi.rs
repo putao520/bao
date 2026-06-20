@@ -194,7 +194,9 @@ unsafe extern "C" fn ffi_library_constructor(
         JS_ClearPendingException(cx);
         let this_val = args.thisv();
         if this_val.is_object() {
-            args.rval().set(ObjectValue(this_val.to_object()));
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let this_root = this_val.to_object());
+            args.rval().set(ObjectValue(this_root.get()));
         } else {
             args.rval().set(UndefinedValue());
         }
