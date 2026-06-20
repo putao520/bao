@@ -583,6 +583,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao_lints"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "syn",
+ "walkdir",
+]
+
+[[package]]
 name = "bao_native_stubs"
 version = "0.1.0"
 dependencies = [

@@ -15,6 +15,7 @@ members = [
     "src/bao_stealth",
     "src/bao_native_stubs",
     "src/bao_uloop",
+    "src/bao_lints",
     "src/bun_sm",
     "src/jsc_macros",
     "src/opaque",

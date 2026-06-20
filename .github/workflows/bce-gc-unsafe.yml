@@ -1,0 +1,29 @@
+name: BCE GC-unsafe Gate
+
+# BCE-20260619-012 防复发门禁
+# 在 PR 和 push 到 master 时跑 GC-unsafe Handle 行扫描器,
+# 任何残留（手搓 Handle::<*mut JSObject> { ptr: &local } 等）都会阻断合并。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  bce-gc-unsafe-scan:
+    name: BCE-012 GC-unsafe Handle scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run BCE-012 GC-unsafe Handle scanner
+        run: |
+          python3 scripts/bce_scan_gc_unsafe.py src/

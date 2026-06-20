@@ -47,3 +47,4 @@ vendor/highway/g3doc/
 rust_out
 *.profraw
 *.profdata
+.playwright-mcp/
