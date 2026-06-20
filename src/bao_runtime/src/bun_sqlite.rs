@@ -231,13 +231,14 @@ fn val_is_private(v: &JSVal) -> bool {
     v.is_double() && (v.asBits_ & 0xFFFF000000000000) == 0
 }
 
-unsafe fn get_db_ptr(thisv: Handle<Value>) -> Option<*mut SqliteDatabase> {
+unsafe fn get_db_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut SqliteDatabase> {
     if !thisv.is_object() {
         return None;
     }
-    let obj = thisv.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
     let mut slot = UndefinedValue();
-    JS_GetReservedSlot(obj, SLOT_DB, &mut slot);
+    JS_GetReservedSlot(obj_root.get(), SLOT_DB, &mut slot);
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     if !val_is_private(&slot) {
         return None;
@@ -250,13 +251,14 @@ unsafe fn get_db_ptr(thisv: Handle<Value>) -> Option<*mut SqliteDatabase> {
     }
 }
 
-unsafe fn get_stmt_ptr(thisv: Handle<Value>) -> Option<*mut SqliteStatement> {
+unsafe fn get_stmt_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut SqliteStatement> {
     if !thisv.is_object() {
         return None;
     }
-    let obj = thisv.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
     let mut slot = UndefinedValue();
-    JS_GetReservedSlot(obj, SLOT_STMT, &mut slot);
+    JS_GetReservedSlot(obj_root.get(), SLOT_STMT, &mut slot);
     // @trace BCE-20260618-002 — guard non-private doubles before to_private().
     if !val_is_private(&slot) {
         return None;
@@ -335,7 +337,9 @@ unsafe extern "C" fn database_constructor(
         JS_ClearPendingException(cx);
         let this_val = args.thisv();
         if this_val.is_object() {
-            args.rval().set(ObjectValue(this_val.to_object()));
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let this_root = this_val.to_object());
+            args.rval().set(ObjectValue(this_root.get()));
         } else {
             args.rval().set(UndefinedValue());
         }
@@ -380,7 +384,7 @@ unsafe extern "C" fn database_exec(
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
-    let db_ptr = match get_db_ptr(thisv) {
+    let db_ptr = match get_db_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             let msg = ZBox::from_bytes("Database.exec: invalid Database object".as_bytes());
@@ -420,7 +424,7 @@ unsafe extern "C" fn database_run(
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
-    let db_ptr = match get_db_ptr(thisv) {
+    let db_ptr = match get_db_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             let msg = ZBox::from_bytes("Database.run: invalid Database object".as_bytes());
@@ -483,7 +487,7 @@ unsafe extern "C" fn database_close(
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
-    let db_ptr = match get_db_ptr(thisv) {
+    let db_ptr = match get_db_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             let msg = ZBox::from_bytes("Database.close: invalid Database object".as_bytes());
@@ -517,7 +521,7 @@ unsafe extern "C" fn database_query(
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
-    let db_ptr = match get_db_ptr(thisv) {
+    let db_ptr = match get_db_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             let msg = ZBox::from_bytes("Database.query: invalid Database object".as_bytes());
@@ -616,7 +620,7 @@ unsafe extern "C" fn database_prepare(
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
-    let db_ptr = match get_db_ptr(thisv) {
+    let db_ptr = match get_db_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             let msg = ZBox::from_bytes("Database.prepare: invalid Database object".as_bytes());
@@ -715,7 +719,7 @@ unsafe extern "C" fn statement_run(
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
-    let stmt_ptr = match get_stmt_ptr(thisv) {
+    let stmt_ptr = match get_stmt_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             let msg = ZBox::from_bytes("Statement.run: invalid Statement object".as_bytes());
@@ -797,7 +801,7 @@ unsafe extern "C" fn statement_get(
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
-    let stmt_ptr = match get_stmt_ptr(thisv) {
+    let stmt_ptr = match get_stmt_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             let msg = ZBox::from_bytes("Statement.get: invalid Statement object".as_bytes());
@@ -866,7 +870,7 @@ unsafe extern "C" fn statement_all(
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
-    let stmt_ptr = match get_stmt_ptr(thisv) {
+    let stmt_ptr = match get_stmt_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             let msg = ZBox::from_bytes("Statement.all: invalid Statement object".as_bytes());
@@ -944,7 +948,7 @@ unsafe extern "C" fn database_in_transaction(
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
-    let db_ptr = match get_db_ptr(thisv) {
+    let db_ptr = match get_db_ptr(cx, thisv) {
         Some(p) => p,
         None => {
             args.rval().set(BooleanValue(false));

@@ -1,4 +1,5 @@
 // @trace REQ-ENG-007
+use ::std::ptr::NonNull;
 use bun_core::ZBox;
 use mozjs::jsapi::*;
 use mozjs::jsval::{UndefinedValue, Int32Value, ObjectValue, JSVal};
@@ -408,7 +409,7 @@ unsafe extern "C" fn buffer_is_utf8(
 // TypedArray/DataView/ArrayBuffer input. Returns None on null/undefined or
 // unrecognized input. The returned Vec is a copy that survives GC.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn collect_byte_view(_cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
+unsafe fn collect_byte_view(cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
     use ::std::ptr;
     if v.is_null_or_undefined() {
         return None;
@@ -416,14 +417,15 @@ unsafe fn collect_byte_view(_cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
     if !v.is_object() {
         return None;
     }
-    let obj = v.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = v.to_object());
     // Try TypedArray / DataView / Buffer (JS_GetObjectAsUint8Array handles
     // all TypedArray kinds; Buffer is a Uint8Array subclass).
     let mut length: usize = 0;
     let mut is_shared = false;
     let mut data_ptr: *mut u8 = ptr::null_mut();
     let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
-        obj,
+        obj_root.get(),
         &mut length,
         &mut is_shared,
         &mut data_ptr,
@@ -440,7 +442,7 @@ unsafe fn collect_byte_view(_cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
     let mut view_shared = false;
     let mut view_data: *mut u8 = ptr::null_mut();
     let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
-        obj,
+        obj_root.get(),
         &mut view_length,
         &mut view_shared,
         &mut view_data,
@@ -455,7 +457,7 @@ unsafe fn collect_byte_view(_cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
     // Try plain ArrayBuffer via JS::GetObjectAsArrayBuffer.
     let mut ab_length: usize = 0;
     let mut ab_data: *mut u8 = ptr::null_mut();
-    let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj, &mut ab_length, &mut ab_data);
+    let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj_root.get(), &mut ab_length, &mut ab_data);
     if !ab_unwrapped.is_null() && !ab_data.is_null() {
         let slice = ::std::slice::from_raw_parts(ab_data, ab_length);
         return Some(slice.to_vec());

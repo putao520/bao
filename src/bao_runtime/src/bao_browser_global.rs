@@ -369,15 +369,12 @@ unsafe extern "C" fn browser_disconnect_fn(
         return true;
     }
 
-    let obj = this.to_object();
-    let obj_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &obj,
-    };
+    let cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(_cx));
+    rooted!(&in(cx_ref) let obj_root = this.to_object());
     let mut idx_val = UndefinedValue();
     JS_GetProperty(
         _cx,
-        obj_h,
+        obj_root.handle().into(),
         c"__registry_idx".as_ptr(),
         MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,

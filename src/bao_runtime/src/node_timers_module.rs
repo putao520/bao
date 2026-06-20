@@ -57,13 +57,14 @@ unsafe extern "C" fn timers_set_timeout(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let callback = (*args.get(0).ptr).to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let callback_root = (*args.get(0).ptr).to_object());
     let delay = if argc > 1 {
         let v = *args.get(1).ptr;
         if v.is_int32() { v.to_int32().max(0) as u64 } else if v.is_double() { v.to_double().max(0.0) as u64 } else { 0 }
     } else { 0 };
 
-    let id = crate::timers::schedule_raw(cx, callback, delay, false, &[]);
+    let id = crate::timers::schedule_raw(cx, callback_root.get(), delay, false, &[]);
     args.rval().set(Int32Value(id as i32));
     true
 }
@@ -96,13 +97,14 @@ unsafe extern "C" fn timers_set_interval(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let callback = (*args.get(0).ptr).to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let callback_root = (*args.get(0).ptr).to_object());
     let delay = if argc > 1 {
         let v = *args.get(1).ptr;
         if v.is_int32() { v.to_int32().max(1) as u64 } else if v.is_double() { v.to_double().max(1.0) as u64 } else { 1 }
     } else { 1 };
 
-    let id = crate::timers::schedule_raw(cx, callback, delay, true, &[]);
+    let id = crate::timers::schedule_raw(cx, callback_root.get(), delay, true, &[]);
     args.rval().set(Int32Value(id as i32));
     true
 }
@@ -127,8 +129,9 @@ unsafe extern "C" fn timers_set_immediate(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let callback = (*args.get(0).ptr).to_object();
-    let id = crate::timers::schedule_raw(cx, callback, 0, false, &[]);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let callback_root = (*args.get(0).ptr).to_object());
+    let id = crate::timers::schedule_raw(cx, callback_root.get(), 0, false, &[]);
     args.rval().set(Int32Value(id as i32));
     true
 }

@@ -234,13 +234,14 @@ unsafe extern "C" fn ffi_library_constructor(
 
 /// Extract FfiLibrary pointer from `this` object's reserved slot.
 /// @trace BCE-20260618-002 [level:regression]
-unsafe fn get_lib(thisv: Handle<Value>) -> Option<*mut FfiLibrary> {
+unsafe fn get_lib(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut FfiLibrary> {
     if !thisv.is_object() {
         return None;
     }
-    let obj = thisv.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
     let mut slot = UndefinedValue();
-    JS_GetReservedSlot(obj, SLOT_LIB, &mut slot);
+    JS_GetReservedSlot(obj_root.get(), SLOT_LIB, &mut slot);
     // Guard non-private doubles before to_private() — a freshly-constructed
     // FfiLibrary whose dlopen() failed leaves SLOT_LIB undefined, and
     // to_private() on undefined triggers the is_double() assertion panic.
@@ -332,7 +333,7 @@ unsafe extern "C" fn ffi_library_close(
     let args = CallArgs::from_vp(vp, _argc);
     let thisv = args.thisv();
 
-    let lib_ptr = match get_lib(thisv) {
+    let lib_ptr = match get_lib(cx, thisv) {
         Some(p) => p,
         None => {
             let msg =
@@ -365,7 +366,7 @@ unsafe extern "C" fn ffi_library_symbol(
     let args = CallArgs::from_vp(vp, argc);
     let thisv = args.thisv();
 
-    let lib_ptr = match get_lib(thisv) {
+    let lib_ptr = match get_lib(cx, thisv) {
         Some(p) => p,
         None => {
             let msg =

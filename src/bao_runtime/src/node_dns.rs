@@ -244,15 +244,14 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let hostname =
         jsstr_to_string(cx, NonNull::new_unchecked(hostname_val.to_string()));
 
+    let cx_ref = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+
     let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
     if result_obj.is_null() {
         args.rval().set(UndefinedValue());
         return true;
     }
-    let result_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &result_obj,
-    };
+    rooted!(&in(cx_ref) let result_root = result_obj);
 
     // @trace REQ-ENG-007 [api:dns.lookup] [code:bun_dns] — resolve through
     // bun_dns (Backend::Libc); take the first address for the lookup result.
@@ -262,58 +261,42 @@ unsafe extern "C" fn dns_lookup(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         {
             let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
             if !js_str.is_null() {
-                let ip_val = StringValue(&*js_str);
-                let ip_h = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &ip_val,
-                };
+                rooted!(&in(cx_ref) let ip_val = StringValue(&*js_str));
                 JS_DefineProperty(
                     cx,
-                    result_h,
+                    result_root.handle().into(),
                     c"address".as_ptr(),
-                    ip_h,
+                    ip_val.handle().into(),
                     JSPROP_ENUMERATE as u32,
                 );
             }
         }
 
-        let family_val = Int32Value(family);
-        let family_h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &family_val,
-        };
+        rooted!(&in(cx_ref) let family_val = Int32Value(family));
         JS_DefineProperty(
             cx,
-            result_h,
+            result_root.handle().into(),
             c"family".as_ptr(),
-            family_h,
+            family_val.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
     } else {
-        define_empty_lookup_result(cx, result_h);
+        define_empty_lookup_result(cx, &cx_ref, result_root.handle().into());
     }
 
-    args.rval().set(ObjectValue(result_obj));
+    args.rval().set(ObjectValue(result_root.get()));
     true
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe fn define_empty_lookup_result(cx: *mut JSContext, result_h: Handle<*mut JSObject>) {
+unsafe fn define_empty_lookup_result(cx: *mut JSContext, cx_ref: &mozjs::context::JSContext, result_h: Handle<*mut JSObject>) {
     let js_str = JS_NewStringCopyZ(cx, c"".as_ptr());
     if !js_str.is_null() {
-        let ip_val = StringValue(&*js_str);
-        let ip_h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &ip_val,
-        };
-        JS_DefineProperty(cx, result_h, c"address".as_ptr(), ip_h, JSPROP_ENUMERATE as u32);
+        rooted!(&in(cx_ref) let ip_val = StringValue(&*js_str));
+        JS_DefineProperty(cx, result_h, c"address".as_ptr(), ip_val.handle().into(), JSPROP_ENUMERATE as u32);
     }
-    let family_val = Int32Value(4);
-    let family_h = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &family_val,
-    };
-    JS_DefineProperty(cx, result_h, c"family".as_ptr(), family_h, JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx_ref) let family_val = Int32Value(4));
+    JS_DefineProperty(cx, result_h, c"family".as_ptr(), family_val.handle().into(), JSPROP_ENUMERATE as u32);
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
@@ -345,10 +328,7 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         args.rval().set(UndefinedValue());
         return true;
     }
-    let arr_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &arr_obj,
-    };
+    rooted!(&in(cx_wrap) let arr_root = arr_obj);
 
     // @trace REQ-ENG-007 [api:dns.resolve] [code:bun_dns] — resolve all
     // addresses via bun_dns (Backend::Libc) and push each into the JS array.
@@ -358,17 +338,13 @@ unsafe extern "C" fn dns_resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let c_ip = ZBox::from_bytes(ip.as_bytes());
         let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
         if !js_str.is_null() {
-            let val = StringValue(&*js_str);
-            let val_h = Handle::<Value> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &val,
-            };
-            JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
+            rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+            JS_DefineElement(cx, arr_root.handle().into(), idx, val.handle().into(), JSPROP_ENUMERATE as u32);
             idx += 1;
         }
     }
 
-    args.rval().set(ObjectValue(arr_obj));
+    args.rval().set(ObjectValue(arr_root.get()));
     true
 }
 
@@ -394,10 +370,7 @@ unsafe extern "C" fn dns_resolve6(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         args.rval().set(UndefinedValue());
         return true;
     }
-    let arr_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &arr_obj,
-    };
+    rooted!(&in(cx_wrap) let arr_root = arr_obj);
 
     // @trace REQ-ENG-007 [api:dns.resolve6] [code:bun_dns] — resolve via
     // bun_dns (Backend::Libc) and keep only the IPv6 (family == 6) addresses.
@@ -408,18 +381,14 @@ unsafe extern "C" fn dns_resolve6(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
             let c_ip = ZBox::from_bytes(ip.as_bytes());
             let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
             if !js_str.is_null() {
-                let val = StringValue(&*js_str);
-                let val_h = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &val,
-                };
-                JS_DefineElement(cx, arr_h, idx, val_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                JS_DefineElement(cx, arr_root.handle().into(), idx, val.handle().into(), JSPROP_ENUMERATE as u32);
                 idx += 1;
             }
         }
     }
 
-    args.rval().set(ObjectValue(arr_obj));
+    args.rval().set(ObjectValue(arr_root.get()));
     true
 }
 
@@ -451,10 +420,7 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         args.rval().set(UndefinedValue());
         return true;
     }
-    let arr_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &arr_obj,
-    };
+    rooted!(&in(cx_wrap) let arr_root = arr_obj);
 
     // Validate IP format; libc does not provide reverse DNS directly, so the
     // IP itself is echoed back as the hostname entry.
@@ -465,17 +431,13 @@ unsafe extern "C" fn dns_reverse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         {
             let js_str = JS_NewStringCopyZ(cx, c_ip.as_ptr());
             if !js_str.is_null() {
-                let val = StringValue(&*js_str);
-                let val_h = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &val,
-                };
-                JS_DefineElement(cx, arr_h, 0, val_h, JSPROP_ENUMERATE as u32);
+                rooted!(&in(cx_wrap) let val = StringValue(&*js_str));
+                JS_DefineElement(cx, arr_root.handle().into(), 0, val.handle().into(), JSPROP_ENUMERATE as u32);
             }
         }
     }
 
-    args.rval().set(ObjectValue(arr_obj));
+    args.rval().set(ObjectValue(arr_root.get()));
     true
 }
 
@@ -495,21 +457,18 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // test_dns_net_deep family failures).
         let global = CurrentGlobalOrNull(cx_raw);
         if !global.is_null() {
-            let global_h = Handle::<*mut JSObject> {
-                _phantom_0: ::std::marker::PhantomData,
-                ptr: &global,
-            };
-            JS_DefineFunction(cx_raw, global_h, c"__dns_lookup".as_ptr(), Some(dns_lookup), 1, 0);
-            JS_DefineFunction(cx_raw, global_h, c"__dns_resolve".as_ptr(), Some(dns_resolve), 2, 0);
+            rooted!(&in(cx) let global_root = global);
+            JS_DefineFunction(cx_raw, global_root.handle().into(), c"__dns_lookup".as_ptr(), Some(dns_lookup), 1, 0);
+            JS_DefineFunction(cx_raw, global_root.handle().into(), c"__dns_resolve".as_ptr(), Some(dns_resolve), 2, 0);
             JS_DefineFunction(
                 cx_raw,
-                global_h,
+                global_root.handle().into(),
                 c"__dns_resolve6".as_ptr(),
                 Some(dns_resolve6),
                 1,
                 0,
             );
-            JS_DefineFunction(cx_raw, global_h, c"__dns_reverse".as_ptr(), Some(dns_reverse), 1, 0);
+            JS_DefineFunction(cx_raw, global_root.handle().into(), c"__dns_reverse".as_ptr(), Some(dns_reverse), 1, 0);
         }
 
         // Also keep mirrors on the module object for completeness (existing
@@ -571,15 +530,12 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 },
             );
             if !val.is_undefined() {
-                let val_h = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &val,
-                };
+                rooted!(&in(cx) let val_root = val);
                 JS_DefineProperty(
                     cx_raw,
                     mod_obj.handle().into(),
                     cname.as_ptr(),
-                    val_h,
+                    val_root.handle().into(),
                     JSPROP_ENUMERATE as u32,
                 );
             }

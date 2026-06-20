@@ -5,6 +5,7 @@ use ::std::ptr;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{UndefinedValue, Int32Value, BooleanValue};
+use mozjs::rooted;
 
 use crate::gc_store;
 
@@ -1404,18 +1405,16 @@ pub unsafe fn run_bun_tests_report(raw: *mut JSContext) -> TestReport {
 }
 
 unsafe fn is_done(raw: *mut JSContext) -> bool {
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw));
     let mut done = BooleanValue(false);
     let global = CurrentGlobalOrNull(raw);
     if global.is_null() {
         return false;
     }
-    let global_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &global,
-    };
+    rooted!(&in(cx_ref) let global_root = global);
     JS_GetProperty(
         raw,
-        global_h,
+        global_root.handle().into(),
         c"__bunTestDone".as_ptr(),
         MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
@@ -1446,10 +1445,9 @@ unsafe fn read_global_object(raw: *mut JSContext, expr: &str) -> Option<*mut JSO
 }
 
 unsafe fn read_report_from_obj(raw: *mut JSContext, report_obj: *mut JSObject) -> TestReport {
-    let obj_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &report_obj,
-    };
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw));
+    rooted!(&in(cx_ref) let obj_root = report_obj);
+    let obj_h = obj_root.handle().into();
 
     let mut passed: u32 = 0;
     let mut failed: u32 = 0;
@@ -1489,6 +1487,7 @@ unsafe fn read_report_from_obj(raw: *mut JSContext, report_obj: *mut JSObject) -
 }
 
 unsafe fn read_string_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, key: *const i8) -> Vec<String> {
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw));
     let mut arr_val = UndefinedValue();
     JS_GetProperty(
         raw,
@@ -1502,11 +1501,8 @@ unsafe fn read_string_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, k
     if !arr_val.is_object() {
         return Vec::new();
     }
-    let arr_obj = arr_val.to_object();
-    let arr_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &arr_obj,
-    };
+    rooted!(&in(cx_ref) let arr_root = arr_val.to_object());
+    let arr_h = arr_root.handle().into();
 
     let mut len_val = UndefinedValue();
     JS_GetProperty(
@@ -1538,6 +1534,7 @@ unsafe fn read_string_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, k
 }
 
 unsafe fn read_failure_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, key: *const i8) -> Vec<TestFailure> {
+    let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw));
     let mut arr_val = UndefinedValue();
     JS_GetProperty(
         raw,
@@ -1551,11 +1548,8 @@ unsafe fn read_failure_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, 
     if !arr_val.is_object() {
         return Vec::new();
     }
-    let arr_obj = arr_val.to_object();
-    let arr_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &arr_obj,
-    };
+    rooted!(&in(cx_ref) let arr_root = arr_val.to_object());
+    let arr_h = arr_root.handle().into();
 
     let mut len_val = UndefinedValue();
     JS_GetProperty(
@@ -1584,11 +1578,8 @@ unsafe fn read_failure_array(raw: *mut JSContext, obj_h: Handle<*mut JSObject>, 
         if !elem.is_object() {
             continue;
         }
-        let elem_obj = elem.to_object();
-        let elem_h = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &elem_obj,
-        };
+        rooted!(&in(cx_ref) let elem_root = elem.to_object());
+        let elem_h = elem_root.handle().into();
         out.push(TestFailure {
             name: read_obj_string(raw, elem_h, c"name".as_ptr()),
             message: read_obj_string(raw, elem_h, c"message".as_ptr()),

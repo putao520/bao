@@ -165,13 +165,14 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let s = crate::js_to_rust_string(cx, input);
         decode_input_string(&s, input_encoding.as_deref())
     } else if input.is_object() {
-        let obj = input.to_object();
+        let mut wrapped_cx_obj = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx_obj) let obj_root = input.to_object());
         // Try as Uint8Array / Buffer / TypedArray view.
         let mut length: usize = 0;
         let mut is_shared = false;
         let mut data_ptr: *mut u8 = ptr::null_mut();
         let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(
-            obj,
+            obj_root.get(),
             &mut length,
             &mut is_shared,
             &mut data_ptr,
@@ -187,7 +188,7 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             let mut view_shared = false;
             let mut view_data: *mut u8 = ptr::null_mut();
             let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
-                obj,
+                obj_root.get(),
                 &mut view_length,
                 &mut view_shared,
                 &mut view_data,
@@ -201,7 +202,7 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 // Try plain ArrayBuffer via JS::GetObjectAsArrayBuffer.
                 let mut ab_length: usize = 0;
                 let mut ab_data: *mut u8 = ptr::null_mut();
-                let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj, &mut ab_length, &mut ab_data);
+                let ab_unwrapped = mozjs_sys::jsapi::JS::GetObjectAsArrayBuffer(obj_root.get(), &mut ab_length, &mut ab_data);
                 if !ab_unwrapped.is_null() && !ab_data.is_null() && ab_length > 0 {
                     let slice = ::std::slice::from_raw_parts(ab_data, ab_length);
                     slice.to_vec()
@@ -860,7 +861,9 @@ unsafe fn read_cipher_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Optio
     if !this.is_object() {
         return None;
     }
-    read_cipher_id(cx, this.to_object())
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_root = this.to_object());
+    read_cipher_id(cx, this_root.get())
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]

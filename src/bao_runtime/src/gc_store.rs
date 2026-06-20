@@ -2,10 +2,11 @@
 use ::std::cell::RefCell;
 use ::std::collections::HashSet;
 use bun_core::ZBox;
-use ::std::ptr;
+use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, ObjectValue, UndefinedValue};
+use mozjs::rooted;
 
 /// GC-safe module cache: stores cached objects as properties on the JS global.
 /// SpiderMonkey's GC manages these naturally — no raw pointer caching needed.
@@ -52,21 +53,16 @@ impl GcStore {
         if global.is_null() {
             return;
         }
+        let cx_ref = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
+        rooted!(&in(cx_ref) let global_root = global);
+        rooted!(&in(cx_ref) let obj_val_root = ObjectValue(obj));
         let prop_name = Self::prop_name(namespace, key);
-        let obj_val = ObjectValue(obj);
-        let obj_h = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &obj_val,
-        };
         unsafe {
             JS_DefineProperty(
                 cx,
-                Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &global,
-                },
+                global_root.handle().into(),
                 prop_name.as_ptr(),
-                obj_h,
+                obj_val_root.handle().into(),
                 (JSPROP_READONLY) as u32,
             );
         }
@@ -81,15 +77,14 @@ impl GcStore {
         if global.is_null() {
             return None;
         }
+        let cx_ref = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
+        rooted!(&in(cx_ref) let global_root = global);
         let prop_name = Self::prop_name(namespace, key);
         let mut val = UndefinedValue();
         unsafe {
             JS_GetProperty(
                 cx,
-                Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &global,
-                },
+                global_root.handle().into(),
                 prop_name.as_ptr(),
                 MutableHandle::<Value> {
                     _phantom_0: ::std::marker::PhantomData,
@@ -112,14 +107,13 @@ impl GcStore {
         if global.is_null() {
             return;
         }
+        let cx_ref = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx)) };
+        rooted!(&in(cx_ref) let global_root = global);
         let prop_name = Self::prop_name(namespace, key);
         unsafe {
             JS_DeleteProperty1(
                 cx,
-                Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &global,
-                },
+                global_root.handle().into(),
                 prop_name.as_ptr(),
             );
         }

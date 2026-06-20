@@ -309,13 +309,14 @@ unsafe fn get_event_name(cx: *mut JSContext, args: &CallArgs) -> Option<String> 
     None
 }}
 
-unsafe fn get_callback(args: &CallArgs) -> Option<*mut JSObject> { unsafe {
+unsafe fn get_callback(cx: *mut JSContext, args: &CallArgs) -> Option<*mut JSObject> { unsafe {
     if args.argc_ < 2 { return None; }
     let val = *args.get(1).ptr;
     if val.is_object() {
-        let obj = val.to_object();
-        if mozjs_sys::jsapi::js::IsFunctionObject(obj) {
-            return Some(obj);
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let obj_root = val.to_object());
+        if mozjs_sys::jsapi::js::IsFunctionObject(obj_root.get()) {
+            return Some(obj_root.get());
         }
     }
     None
@@ -373,20 +374,21 @@ unsafe extern "C" fn event_emitter_constructor(
     JS_ClearPendingException(cx);
     let this_val = args.thisv();
     if this_val.is_object() {
-        let this_obj = this_val.to_object();
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        rooted!(&in(wrapped_cx) let this_obj_root = this_val.to_object());
         // Only initialize if not already an EventEmitter
-        let existing = get_state(cx, this_obj);
+        let existing = get_state(cx, this_obj_root.get());
         if let Some(state) = existing {
-            set_state(cx, this_obj, state);
+            set_state(cx, this_obj_root.get(), state);
         } else {
             let state = EmitterState {
                 listeners: HashMap::new(),
                 once_flags: HashMap::new(),
                 max_listeners: 10,
             };
-            set_state(cx, this_obj, state);
+            set_state(cx, this_obj_root.get(), state);
         }
-        args.rval().set(ObjectValue(this_obj));
+        args.rval().set(ObjectValue(this_obj_root.get()));
         return true;
     }
 
@@ -399,17 +401,19 @@ pub unsafe extern "C" fn ee_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let event_name = match get_event_name(cx, &args) {
         Some(n) => n,
-        None => { args.rval().set(ObjectValue(this_obj)); return true; }
+        None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
 
     if argc >= 2 {
         let listener_val = *args.get(1).ptr;
         if listener_val.is_object() {
-            if !is_function(listener_val.to_object()) {
+            rooted!(&in(wrapped_cx) let listener_obj_root = listener_val.to_object());
+            if !is_function(listener_obj_root.get()) {
                 throw_type_error(cx, "The \"listener\" argument must be of type function. Received object");
                 return false;
             }
@@ -419,17 +423,17 @@ pub unsafe extern "C" fn ee_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         }
     }
 
-    let callback = match get_callback(&args) {
+    let callback = match get_callback(cx, &args) {
         Some(cb) => cb,
-        None => { args.rval().set(ObjectValue(this_obj)); return true; }
+        None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
 
-    let mut state = ensure_state(cx, this_obj);
+    let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
     gc_store_insert(cx, &key, callback);
     state.listeners.entry(event_name).or_default().push(key);
-    set_state(cx, this_obj, state);
-    args.rval().set(ObjectValue(this_obj));
+    set_state(cx, this_obj_root.get(), state);
+    args.rval().set(ObjectValue(this_obj_root.get()));
     true
 }
 
@@ -438,24 +442,25 @@ pub unsafe extern "C" fn ee_once(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let event_name = match get_event_name(cx, &args) {
         Some(n) => n,
-        None => { args.rval().set(ObjectValue(this_obj)); return true; }
+        None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
-    let callback = match get_callback(&args) {
+    let callback = match get_callback(cx, &args) {
         Some(cb) => cb,
-        None => { args.rval().set(ObjectValue(this_obj)); return true; }
+        None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
 
-    let mut state = ensure_state(cx, this_obj);
+    let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
     gc_store_insert(cx, &key, callback);
     state.listeners.entry(event_name.clone()).or_default().push(key);
     state.once_flags.entry(event_name).or_default().push(true);
-    set_state(cx, this_obj, state);
-    args.rval().set(ObjectValue(this_obj));
+    set_state(cx, this_obj_root.get(), state);
+    args.rval().set(ObjectValue(this_obj_root.get()));
     true
 }
 
@@ -464,14 +469,15 @@ pub unsafe extern "C" fn ee_off(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let event_name = match get_event_name(cx, &args) {
         Some(n) => n,
-        None => { args.rval().set(ObjectValue(this_obj)); return true; }
+        None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
 
-    let mut state = ensure_state(cx, this_obj);
+    let mut state = ensure_state(cx, this_obj_root.get());
 
     if argc < 2 {
         // Remove all listeners for this event — clean up GcStore entries
@@ -481,13 +487,13 @@ pub unsafe extern "C" fn ee_off(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
             }
         }
         state.once_flags.remove(&event_name);
-        set_state(cx, this_obj, state);
-        args.rval().set(ObjectValue(this_obj));
+        set_state(cx, this_obj_root.get(), state);
+        args.rval().set(ObjectValue(this_obj_root.get()));
         return true;
     }
 
     let callback_val = *args.get(1).ptr;
-    if !callback_val.is_object() { set_state(cx, this_obj, state); args.rval().set(ObjectValue(this_obj)); return true; }
+    if !callback_val.is_object() { set_state(cx, this_obj_root.get(), state); args.rval().set(ObjectValue(this_obj_root.get())); return true; }
 
     if let Some(keys) = state.listeners.get_mut(&event_name) {
         let mut removed_indices: Vec<usize> = Vec::new();
@@ -515,8 +521,8 @@ pub unsafe extern "C" fn ee_off(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         }
     }
 
-    set_state(cx, this_obj, state);
-    args.rval().set(ObjectValue(this_obj));
+    set_state(cx, this_obj_root.get(), state);
+    args.rval().set(ObjectValue(this_obj_root.get()));
     true
 }
 
@@ -525,17 +531,18 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(BooleanValue(false)); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let event_name = match get_event_name(cx, &args) {
         Some(n) => n,
         None => { args.rval().set(BooleanValue(false)); return true; }
     };
 
-    let mut state = ensure_state(cx, this_obj);
+    let mut state = ensure_state(cx, this_obj_root.get());
     let listener_keys = match state.listeners.get(&event_name) {
         Some(l) => l.clone(),
-        None => { set_state(cx, this_obj, state); args.rval().set(BooleanValue(false)); return true; }
+        None => { set_state(cx, this_obj_root.get(), state); args.rval().set(BooleanValue(false)); return true; }
     };
     let once_flags = state.once_flags.get(&event_name).cloned().unwrap_or_default();
     let had_listeners = !listener_keys.is_empty();
@@ -547,8 +554,7 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     };
 
     let global = CurrentGlobalOrNull(cx);
-    if global.is_null() { set_state(cx, this_obj, state); args.rval().set(BooleanValue(had_listeners)); return true; }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    if global.is_null() { set_state(cx, this_obj_root.get(), state); args.rval().set(BooleanValue(had_listeners)); return true; }
     rooted!(&in(wrapped_cx) let global_root = global);
 
     let call_args = if emit_args.is_empty() {
@@ -582,7 +588,7 @@ pub unsafe extern "C" fn ee_emit(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
     state.listeners.insert(event_name.clone(), remaining_keys);
     state.once_flags.insert(event_name, remaining_once);
-    set_state(cx, this_obj, state);
+    set_state(cx, this_obj_root.get(), state);
 
     args.rval().set(BooleanValue(had_listeners));
     true
@@ -593,22 +599,23 @@ pub unsafe extern "C" fn ee_prepend(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let event_name = match get_event_name(cx, &args) {
-        Some(n) => n, None => { args.rval().set(ObjectValue(this_obj)); return true; }
+        Some(n) => n, None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
-    let callback = match get_callback(&args) {
-        Some(cb) => cb, None => { args.rval().set(ObjectValue(this_obj)); return true; }
+    let callback = match get_callback(cx, &args) {
+        Some(cb) => cb, None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
 
-    let mut state = ensure_state(cx, this_obj);
+    let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
     gc_store_insert(cx, &key, callback);
     state.listeners.entry(event_name.clone()).or_default().insert(0, key);
     state.once_flags.entry(event_name).or_default().insert(0, false);
-    set_state(cx, this_obj, state);
-    args.rval().set(ObjectValue(this_obj));
+    set_state(cx, this_obj_root.get(), state);
+    args.rval().set(ObjectValue(this_obj_root.get()));
     true
 }
 
@@ -617,22 +624,23 @@ pub unsafe extern "C" fn ee_prepend_once(cx: *mut JSContext, argc: u32, vp: *mut
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let event_name = match get_event_name(cx, &args) {
-        Some(n) => n, None => { args.rval().set(ObjectValue(this_obj)); return true; }
+        Some(n) => n, None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
-    let callback = match get_callback(&args) {
-        Some(cb) => cb, None => { args.rval().set(ObjectValue(this_obj)); return true; }
+    let callback = match get_callback(cx, &args) {
+        Some(cb) => cb, None => { args.rval().set(ObjectValue(this_obj_root.get())); return true; }
     };
 
-    let mut state = ensure_state(cx, this_obj);
+    let mut state = ensure_state(cx, this_obj_root.get());
     let key = alloc_listener_key(&event_name);
     gc_store_insert(cx, &key, callback);
     state.listeners.entry(event_name.clone()).or_default().insert(0, key);
     state.once_flags.entry(event_name).or_default().insert(0, true);
-    set_state(cx, this_obj, state);
-    args.rval().set(ObjectValue(this_obj));
+    set_state(cx, this_obj_root.get(), state);
+    args.rval().set(ObjectValue(this_obj_root.get()));
     true
 }
 
@@ -641,9 +649,10 @@ pub unsafe extern "C" fn ee_remove_all(cx: *mut JSContext, argc: u32, vp: *mut J
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
-    let mut state = ensure_state(cx, this_obj);
+    let mut state = ensure_state(cx, this_obj_root.get());
     if argc > 0 {
         if let Some(event_name) = get_event_name(cx, &args) {
             if let Some(keys) = state.listeners.remove(&event_name) {
@@ -662,8 +671,8 @@ pub unsafe extern "C" fn ee_remove_all(cx: *mut JSContext, argc: u32, vp: *mut J
         }
         state.once_flags.clear();
     }
-    set_state(cx, this_obj, state);
-    args.rval().set(ObjectValue(this_obj));
+    set_state(cx, this_obj_root.get(), state);
+    args.rval().set(ObjectValue(this_obj_root.get()));
     true
 }
 
@@ -672,23 +681,22 @@ unsafe extern "C" fn ee_listeners(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let event_name = match get_event_name(cx, &args) {
         Some(n) => n,
         None => {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let arr = mozjs::rust::wrappers2::NewArrayObject1(&mut wrapped_cx, 0));
             args.rval().set(ObjectValue(arr.get()));
             return true;
         }
     };
 
-    let state = ensure_state(cx, this_obj);
+    let state = ensure_state(cx, this_obj_root.get());
     let listener_keys = state.listeners.get(&event_name).cloned().unwrap_or_default();
-    set_state(cx, this_obj, state);
+    set_state(cx, this_obj_root.get(), state);
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, listener_keys.len()));
     let mut arr_idx = 0u32;
@@ -709,15 +717,16 @@ unsafe extern "C" fn ee_listener_count(cx: *mut JSContext, argc: u32, vp: *mut J
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(Int32Value(0)); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let event_name = match get_event_name(cx, &args) {
         Some(n) => n, None => { args.rval().set(Int32Value(0)); return true; }
     };
 
-    let state = ensure_state(cx, this_obj);
+    let state = ensure_state(cx, this_obj_root.get());
     let count = state.listeners.get(&event_name).map(|l| l.len()).unwrap_or(0) as i32;
-    set_state(cx, this_obj, state);
+    set_state(cx, this_obj_root.get(), state);
     args.rval().set(Int32Value(count));
     true
 }
@@ -727,7 +736,8 @@ unsafe extern "C" fn ee_set_max(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
     let n = if argc > 0 {
         let v = *args.get(0).ptr;
@@ -736,10 +746,10 @@ unsafe extern "C" fn ee_set_max(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         else { 10 }
     } else { 10 };
 
-    let mut state = ensure_state(cx, this_obj);
+    let mut state = ensure_state(cx, this_obj_root.get());
     state.max_listeners = n;
-    set_state(cx, this_obj, state);
-    args.rval().set(ObjectValue(this_obj));
+    set_state(cx, this_obj_root.get(), state);
+    args.rval().set(ObjectValue(this_obj_root.get()));
     true
 }
 
@@ -748,11 +758,12 @@ unsafe extern "C" fn ee_get_max(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) 
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(Int32Value(10)); return true; }
-    let this_obj = this.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
 
-    let state = ensure_state(cx, this_obj);
+    let state = ensure_state(cx, this_obj_root.get());
     let max = state.max_listeners as i32;
-    set_state(cx, this_obj, state);
+    set_state(cx, this_obj_root.get(), state);
     args.rval().set(Int32Value(max));
     true
 }
@@ -762,13 +773,13 @@ unsafe extern "C" fn ee_event_names(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let this_obj = this.to_object();
-
-    let state = ensure_state(cx, this_obj);
-    let names: Vec<String> = state.listeners.keys().cloned().collect();
-    set_state(cx, this_obj, state);
-
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_obj_root = this.to_object());
+
+    let state = ensure_state(cx, this_obj_root.get());
+    let names: Vec<String> = state.listeners.keys().cloned().collect();
+    set_state(cx, this_obj_root.get(), state);
+
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, names.len()));
     for (i, name) in names.iter().enumerate() {
@@ -788,9 +799,8 @@ unsafe extern "C" fn ee_event_names(cx: *mut JSContext, _argc: u32, vp: *mut JSV
 unsafe extern "C" fn events_static_on(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 3 || !(*args.get(0).ptr).is_object() { args.rval().set(UndefinedValue()); return true; }
-    let emitter = (*args.get(0).ptr).to_object();
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let emitter_root = emitter);
+    rooted!(&in(wrapped_cx) let emitter_root = (*args.get(0).ptr).to_object());
     let callback = *args.get(2).ptr;
     let on_name = ZBox::from_bytes("on".as_bytes());
     let mut on_fn = UndefinedValue();
@@ -810,7 +820,7 @@ unsafe extern "C" fn events_static_on(cx: *mut JSContext, argc: u32, vp: *mut JS
             });
         }
     }
-    args.rval().set(mozjs::jsval::ObjectValue(emitter));
+    args.rval().set(mozjs::jsval::ObjectValue(emitter_root.get()));
     true
 }
 
@@ -818,9 +828,8 @@ unsafe extern "C" fn events_static_on(cx: *mut JSContext, argc: u32, vp: *mut JS
 unsafe extern "C" fn events_static_once(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 3 || !(*args.get(0).ptr).is_object() { args.rval().set(UndefinedValue()); return true; }
-    let emitter = (*args.get(0).ptr).to_object();
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    rooted!(&in(wrapped_cx) let emitter_root = emitter);
+    rooted!(&in(wrapped_cx) let emitter_root = (*args.get(0).ptr).to_object());
     let callback = *args.get(2).ptr;
     let once_name = ZBox::from_bytes("once".as_bytes());
     let mut once_fn = UndefinedValue();
@@ -840,7 +849,7 @@ unsafe extern "C" fn events_static_once(cx: *mut JSContext, argc: u32, vp: *mut 
             });
         }
     }
-    args.rval().set(mozjs::jsval::ObjectValue(emitter));
+    args.rval().set(mozjs::jsval::ObjectValue(emitter_root.get()));
     true
 }
 
@@ -848,7 +857,8 @@ unsafe extern "C" fn events_static_once(cx: *mut JSContext, argc: u32, vp: *mut 
 unsafe extern "C" fn events_static_listener_count(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 || !(*args.get(0).ptr).is_object() { args.rval().set(Int32Value(0)); return true; }
-    let emitter = (*args.get(0).ptr).to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let emitter_root = (*args.get(0).ptr).to_object());
 
     let event_name = if (*args.get(1).ptr).is_string() {
         crate::js_to_rust_string(cx, *args.get(1).ptr)
@@ -857,9 +867,9 @@ unsafe extern "C" fn events_static_listener_count(cx: *mut JSContext, argc: u32,
         return true;
     };
 
-    let state = ensure_state(cx, emitter);
+    let state = ensure_state(cx, emitter_root.get());
     let count = state.listeners.get(&event_name).map(|l| l.len()).unwrap_or(0) as i32;
-    set_state(cx, emitter, state);
+    set_state(cx, emitter_root.get(), state);
     args.rval().set(Int32Value(count));
     true
 }
@@ -872,7 +882,8 @@ unsafe extern "C" fn events_static_get_event_listeners(cx: *mut JSContext, argc:
         args.rval().set(if arr.is_null() { UndefinedValue() } else { ObjectValue(arr) });
         return true;
     }
-    let emitter = (*args.get(0).ptr).to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let emitter_root = (*args.get(0).ptr).to_object());
 
     let event_name = if (*args.get(1).ptr).is_string() {
         crate::js_to_rust_string(cx, *args.get(1).ptr)
@@ -882,11 +893,10 @@ unsafe extern "C" fn events_static_get_event_listeners(cx: *mut JSContext, argc:
         return true;
     };
 
-    let state = ensure_state(cx, emitter);
+    let state = ensure_state(cx, emitter_root.get());
     let listener_keys = state.listeners.get(&event_name).cloned().unwrap_or_default();
-    set_state(cx, emitter, state);
+    set_state(cx, emitter_root.get(), state);
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let cx_ref = &mut wrapped_cx;
     rooted!(&in(cx_ref) let arr = mozjs::rust::wrappers2::NewArrayObject1(cx_ref, listener_keys.len()));
     let mut arr_idx = 0u32;

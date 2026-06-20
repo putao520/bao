@@ -106,8 +106,8 @@ t.isExternal=function(){return false};
                     if !global.is_null() && JS::Evaluate2(cx.raw_cx(), opts, &mut src, factory_h) && factory_val.is_object() {
                         let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                         rooted!(&in(wrapped_cx) let global_root = global);
-                        let types_val = ObjectValue(types_obj.get());
-                        let args_arr = HandleValueArray { length_: 1, elements_: &types_val };
+                        rooted!(&in(wrapped_cx) let types_val_root = ObjectValue(types_obj.get()));
+                        let args_arr = HandleValueArray { length_: 1, elements_: &types_val_root.get() as *const Value };
                         let mut call_rval = UndefinedValue();
                         let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
                         rooted!(&in(wrapped_cx) let factory_obj = factory_val.to_object());
@@ -462,22 +462,19 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         if !ok || !rval.is_object() {
             return;
         }
-        let assert_fn_obj = rval.to_object();
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+        rooted!(&in(wrapped_cx) let assert_fn_obj = rval.to_object());
 
         // Cache as builtin `assert` and `assert/strict`.
-        cache_builtin(cx, "assert", assert_fn_obj);
-        cache_builtin(cx, "assert/strict", assert_fn_obj);
+        cache_builtin(cx, "assert", assert_fn_obj.get());
+        cache_builtin(cx, "assert/strict", assert_fn_obj.get());
 
         // Also expose AssertionError globally for tests that reference it
         // without going through require('assert').
-        let fn_h = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &assert_fn_obj,
-        };
         let mut ae_val = UndefinedValue();
         JS_GetProperty(
             cx.raw_cx(),
-            fn_h,
+            assert_fn_obj.handle().into(),
             c"AssertionError".as_ptr(),
             MutableHandle::<Value> {
                 _phantom_0: ::std::marker::PhantomData,
@@ -487,19 +484,13 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         if ae_val.is_object() {
             let global = CurrentGlobalOrNull(cx.raw_cx());
             if !global.is_null() {
-                let global_h = Handle::<*mut JSObject> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &global,
-                };
-                let ae_h = Handle::<Value> {
-                    _phantom_0: ::std::marker::PhantomData,
-                    ptr: &ae_val,
-                };
+                rooted!(&in(wrapped_cx) let global_root = global);
+                rooted!(&in(wrapped_cx) let ae_root = ae_val);
                 JS_DefineProperty(
                     cx.raw_cx(),
-                    global_h,
+                    global_root.handle().into(),
                     c"AssertionError".as_ptr(),
-                    ae_h,
+                    ae_root.handle().into(),
                     0,
                 );
             }
@@ -664,13 +655,21 @@ type_check_fn!(util_is_undefined, |v: &JSVal| v.is_undefined());
 type_check_fn!(util_is_null, |v: &JSVal| v.is_null());
 type_check_fn!(util_is_object, |v: &JSVal| v.is_object());
 
-unsafe fn is_function(val: &JSVal) -> bool { unsafe {
+unsafe fn is_function(cx: *mut JSContext, val: &JSVal) -> bool { unsafe {
     if !val.is_object() { return false; }
-    let obj = val.to_object();
-    JS_ObjectIsFunction(obj)
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj = val.to_object());
+    JS_ObjectIsFunction(obj.get())
 }}
 
-type_check_fn!(util_is_function, |v: &JSVal| unsafe { is_function(v) });
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn util_is_function(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 { args.rval().set(BooleanValue(false)); return true; }
+    let val = *args.get(0).ptr;
+    args.rval().set(BooleanValue(is_function(cx, &val)));
+    true
+}
 
 unsafe fn is_array(cx: *mut JSContext, val: &JSVal) -> bool { unsafe {
     if !val.is_object() { return false; }
@@ -830,8 +829,8 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     }
     rooted!(&in(wrapped_cx) let global_root = global);
     rooted!(&in(wrapped_cx) let fn_obj = fn_val.get().to_object());
-    let fn_obj_val = ObjectValue(fn_obj.get());
-    let args_arr = HandleValueArray { length_: 1, elements_: &fn_obj_val };
+    rooted!(&in(wrapped_cx) let fn_obj_val = ObjectValue(fn_obj.get()));
+    let args_arr = HandleValueArray { length_: 1, elements_: &fn_obj_val.get() as *const Value };
     let mut call_rval = UndefinedValue();
     let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
     rooted!(&in(wrapped_cx) let factory_obj = factory_val.to_object());
@@ -1116,33 +1115,24 @@ unsafe extern "C" fn assert_rejects(cx: *mut JSContext, _argc: u32, vp: *mut JSV
         args.rval().set(UndefinedValue());
         return true;
     }
-    let global_h = Handle::<*mut JSObject> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &global,
-    };
-    let fn_val = *args.get(0).ptr;
-    let fn_h = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &fn_val,
-    };
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let global_root = global);
+    rooted!(&in(wrapped_cx) let fn_root = *args.get(0).ptr);
     let spec_val = if _argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
-    let spec_h = Handle::<Value> {
-        _phantom_0: ::std::marker::PhantomData,
-        ptr: &spec_val,
-    };
+    rooted!(&in(wrapped_cx) let spec_root = spec_val);
     unsafe {
         let _ = mozjs_sys::jsapi::JS_DefineProperty(
             cx,
-            global_h,
+            global_root.handle().into(),
             c"__assertRejects_fn".as_ptr(),
-            fn_h,
+            fn_root.handle().into(),
             0,
         );
         let _ = mozjs_sys::jsapi::JS_DefineProperty(
             cx,
-            global_h,
+            global_root.handle().into(),
             c"__assertRejects_spec".as_ptr(),
-            spec_h,
+            spec_root.handle().into(),
             0,
         );
     }

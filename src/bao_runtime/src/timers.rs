@@ -4,6 +4,7 @@ use ::std::time::Duration;
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{JSVal, UndefinedValue, Int32Value, ObjectValue};
+use mozjs::rooted;
 use mozjs::rust::wrappers2::JS_DefineFunction;
 
 use crate::gc_store::{gc_store_insert_ns, gc_store_get_ns, gc_store_remove_ns};
@@ -320,15 +321,11 @@ pub unsafe fn fire_js_callback_raw(
             return;
         }
 
-        let obj_handle = Handle::<*mut JSObject> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &global,
-        };
-        let fval = ObjectValue(callback);
-        let fval_handle = Handle::<Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &fval,
-        };
+        let cx_ref = mozjs::context::JSContext::from_ptr(
+            ::std::ptr::NonNull::new_unchecked(raw_cx),
+        );
+        rooted!(&in(cx_ref) let global_root = global);
+        rooted!(&in(cx_ref) let fval_root = ObjectValue(callback));
 
         let args_array = if args.is_empty() {
             HandleValueArray::empty()
@@ -345,7 +342,7 @@ pub unsafe fn fire_js_callback_raw(
             ptr: &mut rval,
         };
 
-        JS_CallFunctionValue(raw_cx, obj_handle, fval_handle, &args_array, rval_handle);
+        JS_CallFunctionValue(raw_cx, global_root.handle().into(), fval_root.handle().into(), &args_array, rval_handle);
         JS_ClearPendingException(raw_cx);
     }
 }
@@ -580,13 +577,17 @@ unsafe extern "C" fn set_immediate(
         args.rval().set(Int32Value(0));
         return true;
     }
-    let cb = (*args.get(0).ptr).to_object();
+    let cb_val = *args.get(0).ptr;
+    let cx_ref = mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(cx),
+    );
+    rooted!(&in(cx_ref) let cb = cb_val.to_object());
     let cb_args = if argc > 1 {
         (1..argc).map(|i| *args.get(i).ptr).collect()
     } else {
         Vec::new()
     };
-    let id = schedule_raw(cx, cb, 0, false, &cb_args);
+    let id = schedule_raw(cx, cb.get(), 0, false, &cb_args);
     args.rval().set(Int32Value(id as i32));
     true
 }
@@ -614,7 +615,10 @@ unsafe fn register_timer(
         return true;
     }
 
-    let callback = first.to_object();
+    let cx_ref = mozjs::context::JSContext::from_ptr(
+        ::std::ptr::NonNull::new_unchecked(_cx),
+    );
+    rooted!(&in(cx_ref) let callback = first.to_object());
 
     let delay_ms = if argc > 1 {
         let v = *args.get(1).ptr;
@@ -635,7 +639,7 @@ unsafe fn register_timer(
         Vec::new()
     };
 
-    let id = schedule_raw(_cx, callback, delay_ms, repeating, &extra_args);
+    let id = schedule_raw(_cx, callback.get(), delay_ms, repeating, &extra_args);
     args.rval().set(Int32Value(id as i32));
     true
 }

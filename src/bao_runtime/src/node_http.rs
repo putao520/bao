@@ -121,7 +121,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 });
                 libc::free(opts as *mut _);
                 if rval.is_object() {
-                    let server_ctor = ObjectValue(rval.to_object());
+                    rooted!(&in(cx) let ctor_root = rval.to_object());
+                    let server_ctor = ObjectValue(ctor_root.get());
                     rooted!(&in(cx) let sv = server_ctor);
                     JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"Server".as_ptr(), sv.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
                 }
@@ -412,7 +413,9 @@ unsafe extern "C" fn res_write_head(
             }
         }
     }
-    args.rval().set(ObjectValue(args.thisv().to_object()));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_root = args.thisv().to_object());
+    args.rval().set(ObjectValue(this_root.get()));
     true
 }
 
@@ -454,7 +457,9 @@ unsafe extern "C" fn res_write(
             }
         }
     }
-    args.rval().set(ObjectValue(args.thisv().to_object()));
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let this_root = args.thisv().to_object());
+    args.rval().set(ObjectValue(this_root.get()));
     true
 }
 
@@ -552,7 +557,8 @@ unsafe extern "C" fn http_create_server(
     if argc > 0 {
         let v = *args.get(0).ptr;
         if v.is_object() {
-            let cb_val = ObjectValue(v.to_object());
+            rooted!(&in(cx_ref) let cb_obj = v.to_object());
+            let cb_val = ObjectValue(cb_obj.get());
             rooted!(&in(cx_ref) let cb_root = cb_val);
             JS_DefineProperty(cx, server_obj.handle().into(), c"_onRequest".as_ptr(), cb_root.handle().into(), JSPROP_ENUMERATE as u32);
 
@@ -660,7 +666,8 @@ unsafe extern "C" fn server_listen(
     }
 
     // Allocate ServerUserData on the heap. GC-safe: global+handler stored in GcStore.
-    let ud = Box::new(ServerUserData::new(cx, global.get(), handler_val.to_object()));
+    rooted!(&in(cx_ref) let handler_root = handler_val.to_object());
+    let ud = Box::new(ServerUserData::new(cx, global.get(), handler_root.get()));
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
     // Register catch-all route: app.any("/*", handler, user_data)

@@ -430,13 +430,12 @@ unsafe fn ws_trigger_event(cx: *mut JSContext, ws_obj_key: &str, event_name: &st
     let c_name = ZBox::from_bytes(event_name.as_bytes());
     JS_GetProperty(cx, ws_obj_root.handle().into(), c_name.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut handler_val });
     if handler_val.is_object() {
-        let handler_obj = handler_val.to_object();
-        if JS_ObjectIsFunction(handler_obj) {
+        rooted!(&in(wrapped_cx) let handler_obj_root = handler_val.to_object());
+        if JS_ObjectIsFunction(handler_obj_root.get()) {
             let global = CurrentGlobalOrNull(cx);
             if !global.is_null() {
                 rooted!(&in(wrapped_cx) let global_root = global);
-                rooted!(&in(wrapped_cx) let handler_root = handler_obj);
-                rooted!(&in(wrapped_cx) let handler_jsval = ObjectValue(handler_root.get()));
+                rooted!(&in(wrapped_cx) let handler_jsval = ObjectValue(handler_obj_root.get()));
 
                 rooted!(&in(wrapped_cx) let event_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
                 if !event_obj.get().is_null() {
