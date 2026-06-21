@@ -1168,3 +1168,101 @@ residualEvidence:
 && hostname_ == b"localhost" { b"127.0.0.1" }`，flag 翻转即生效。
 
 **关联文件**：`src/bun_core/feature_flags.rs`、`src/http/HTTPContext.rs:914`
+
+---
+
+## BCE-20260621-EMPTY-STR — 链式 `.as_str().unwrap_or(default)` 中空字符串绕过 default 回退
+
+```yaml
+patternId: BCE-20260621-EMPTY-STR
+title: 链式 .as_str().unwrap_or(default) 中空字符串 "" 绕过 default 回退（falsy-string-default 语义未处理）
+layer: 设计缺陷（空串 falsy 语义未处理 — Option<str> + unwrap_or 链式默认中空串应视为"未提供"但 Some("") 绕过 unwrap_or）
+status: 已根治（残留=0）
+
+codePattern:
+  - 「从 serde_json::Value 取字符串字段的链式调用 `.get(k).and_then(|v| v.as_str()).unwrap_or(non_empty_default)` 中，当字段值为空串 `""` 时，`as_str()` 返回 `Some("")`，绕过 `unwrap_or(default)`，导致空串被当作有效值传入下游（如 url="" 进入导航 → loaderId=0 错误）」
+  - 「变体：`.as_str().unwrap_or(non_empty_default)` 直接调用（无 .get 前缀）同样受影响」
+
+triggerCondition:
+  - 对抗测试构造 `{"url": ""}` / `{"field": ""}` 传入 CDP 命令 → 期望回退到默认值（CDP/Chrome 语义：空 url = "未提供" → about:blank），实际空串被保留 → 下游逻辑错误（loaderId=url.len()=0、TargetInfo.url="" 等）
+
+detectionSignatures:
+  structural:
+    - "CallExpression 链式 .as_str() .unwrap_or(<非空字面量>) — 且字段语义上空串应回退（如 url/title/路径）"
+    - "CallExpression 链式 .get(k) .and_then(|v| v.as_str()) .unwrap_or(<非空字面量>)"
+  literal:
+    - '\.as_str\(\)\s*\.unwrap_or\("[^"]+"\)'  # 排除 unwrap_or("")（空默认值不构成 BUG）
+  antipattern:
+    - "falsy-string-default-missing"  # 空串 falsy 默认回退缺失
+
+sameClassCriterion:
+  - 「从 JSON Value 取字符串字段并使用 `.as_str().unwrap_or(non_empty_default)` 模式，且字段在业务语义上空串应视为"未提供"（如 CDP url 字段空串应回退 about:blank）」
+  - 「排除（非同类）：① 默认值本身是空串 `unwrap_or("")`（空默认值无 BUG）；② 非 JSON `.as_str()` 模式（如 `Option<&str>::unwrap_or` 来自 `str::split().next()` / `from_utf8()`）；③ 纯展示性元数据字段（如 list_targets 的 title，空标题回退为品牌名 "Bao" 是可接受的产品决策，非功能性 BUG）」
+
+fixTemplate:
+  - 「统一策略：在 `.as_str()` 与 `.unwrap_or(default)` 之间插入 `.filter(|s| !s.is_empty())`，让空串落入 None 分支触发 default 回退」
+  - 「修复后形态：`.get(k).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or(default)`」
+  - 「禁止不一致：同类实例必须同一 filter 策略，禁止 A 处加 filter / B 处改 default 的不一致修法」
+
+regressionAssertion:
+  - 「构造 `{"url": ""}` → dispatch("Page.navigate") → loaderId 必须 = format!("{:016x}", "about:blank".len())（= 0x0b），非 "0000000000000000"」
+  - 「现有回归测试：src/bao_cdp/tests/protocol_subcommand_full_coverage_tests.rs::test_page_navigate_empty_url_uses_default」
+  - 「现有回归测试：src/bao_cdp/tests/protocol_message_deep_tests.rs::test_page_navigate_empty_url_defaults_to_about_blank（断言已修正）」
+
+affectedTasks: [TASK-4-CDP]
+```
+
+### 归因（阶段1）
+
+- **根因**：`Option::as_str()` 对空串 `""` 返回 `Some("")`，链式 `and_then + unwrap_or(default)` 中空串不触发 default 回退。
+  `bao_cdp/src/protocol.rs:200-203` 的 Page.navigate url 处理中，`url=""` 被当作有效 url 传入，`url.len()==0` 导致 loaderId="0000000000000000"。
+- **缺陷分层**：设计缺陷（空串 falsy 语义未处理 — 业务期望"空串=未提供"，代码逻辑"空串=有效值"）。
+- **归因时间**：2026-06-21。
+
+### 横扫甄别（阶段3）
+
+| 候选位置 | 默认值 | 分类 | 原因 |
+|----------|--------|------|------|
+| `bao_cdp/src/protocol.rs:200` (Page.navigate url) | "about:blank" | 真阳性 | CDP 语义：空 url = 未提供 → 回退 about:blank |
+| `bao_cdp/src/domains/mod.rs:41` (TargetInfo url) | "about:blank" | 真阳性 | CDP 语义：空 url 的 TargetInfo 应显示 about:blank（Chrome /json/list 行为） |
+| `bao_cdp/src/domains/mod.rs:40` (TargetInfo title) | "Bao" | 误报 | 展示性元数据，空标题回退为品牌名 "Bao" 是可接受产品决策，非功能性 BUG |
+| `bao_cdp_client/src/transport/ws.rs:206,237` (CdpEvent method) | "" | 误报 | 默认值本身是空串 `unwrap_or("")`，空默认值无 BUG（pattern 排除） |
+| `bao_lints/src/spec_id.rs:84` (id_opt) | "<missing>" | 误报 | 非 JSON `.as_str()` 模式 — id_opt 来自 `element.id.as_deref()` 的 `Option<&str>` |
+| `bao_runtime/src/node_url.rs:42,48,74,75,79,82` | 各种 | 误报 | 非 JSON `.as_str()` 模式 — 来自 `str::split().next()` / `from_utf8()` 的 `Option<&str>` |
+
+**真阳性 2 / 误报 7**（全部逐一甄别并记录排除原因）。
+
+### 批量根治（阶段4）
+
+统一策略 `.filter(|s| !s.is_empty())` 应用于 2 个真阳性：
+
+1. `src/bao_cdp/src/protocol.rs:200` Page.navigate url — 加 `.filter(|s| !s.is_empty())` 在 `.as_str()` 与 `.unwrap_or("about:blank")` 之间
+2. `src/bao_cdp/src/domains/mod.rs:41` TargetInfo url — 同上策略
+
+同时修正错误断言：`src/bao_cdp/tests/protocol_message_deep_tests.rs::test_page_navigate_empty_url_defaults_to_about_blank` 原断言 `loaderId = 0`（错误，反映 BUG 行为），改为 `loaderId = format!("{:016x}", "about:blank".len())`（与测试名一致）。
+
+### 全量确认报告（阶段5）
+
+```yaml
+confirmReport:
+  sweepScope: "src/bao_{cdp,cdp_client,engine,browser,runtime,stealth,lints}/src/ 全量"
+  layersScanned: [literal]
+  instancesFound: 9            # 横扫 .as_str().unwrap_or(*) 命中
+  truePositives: 2             # protocol.rs:200 + domains/mod.rs:41
+  falsePositives: 7            # 逐一甄别排除（见表格）
+  instancesFixed: 2            # 统一 filter 策略根治
+  residual: 0
+  residualEvidence:
+    - "重扫 src/bao_*/src/ `.as_str().unwrap_or("<非空>")` 真阳性 = 0（domains/mod.rs:41 已加 filter）"
+    - "domains/mod.rs:40 (title → 'Bao') 保留为误报（展示性元数据，非功能性）"
+    - "cargo test -p bao_cdp: 1954 tests passed / 0 failed（覆盖 20 个测试二进制）"
+    - "失败测试 test_page_navigate_empty_url_uses_default: PASS"
+    - "回归测试 test_page_navigate_empty_url_defaults_to_about_blank: PASS（断言已修正）"
+  releaseGateImpact: pass
+```
+
+### 防复发（阶段6）
+
+- 回归测试：`src/bao_cdp/tests/protocol_subcommand_full_coverage_tests.rs::test_page_navigate_empty_url_uses_default`（触发空串签名 → fail → 现已 pass）。
+- 修正测试：`src/bao_cdp/tests/protocol_message_deep_tests.rs::test_page_navigate_empty_url_defaults_to_about_blank`（断言从错误的 loaderId=0 改为正确的 0x0b）。
+- 知识库：本条目。

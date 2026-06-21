@@ -38,7 +38,9 @@ impl cdp_server::TargetProvider for ServoTargetProvider {
                 return arr.iter().filter_map(|entry| {
                     let id = entry.get("id")?.as_str()?.to_string();
                     let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("Bao").to_string();
-                    let url = entry.get("url").and_then(|v| v.as_str()).unwrap_or("about:blank").to_string();
+                    // BCE-20260621-EMPTY-STR: empty url "" falls back to "about:blank"
+                    // (CDP TargetInfo semantics: empty/missing url = fresh page = about:blank).
+                    let url = entry.get("url").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).unwrap_or("about:blank").to_string();
                     let ws_url = format!("ws://{}:{}/devtools/page/{}", self.host, self.port, id);
                     Some(TargetInfo {
                         id,

@@ -1,6 +1,19 @@
 // REQ-CDP-001: BAO CDP 11-domain command dispatch (servo-bridge backed).
 // @trace REQ-CDP-001 [entity:CdpServer]
 //
+// REQ-PERF-002: Domain handlers run on the single servo script thread — all
+// scalar mutable state is Cell/RefCell, never std::sync::Mutex<scalar>.
+// @trace REQ-PERF-002 [entity:DomainHandler] [level:integration]
+//
+// REQ-PERF-004: 11 domains dispatch via a static match arm (enum dispatch),
+// not Box<dyn DomainHandler> vtable. Unknown domains hit the wildcard arm
+// returning ERR_METHOD_NOT_FOUND.
+// @trace REQ-PERF-004 [entity:DomainDispatch] [level:integration]
+//
+// REQ-PERF-005: Empty params flow as Option::None (no Box::new([])); the
+// dispatch loop uses iterator-collected arrays, never C-style index loops.
+// @trace REQ-PERF-005 [entity:CodePattern] [level:integration]
+//
 // TASK-4-CDP: Removed dead protocol types (CDPMessage/CDPResponse/CDPError/
 // CDPEvent) + dead codec helpers (parse_message/serialize_response/
 // serialize_event). These were byte-for-byte duplicates of
@@ -184,9 +197,14 @@ fn handle_page(command: &str, target_id: &str, params: &Option<Value>, bridge: O
     match command {
         "enable" | "disable" => ok_empty(),
         "navigate" => {
+            // BCE-20260621-EMPTY-STR: empty url "" must fall back to "about:blank"
+            // (CDP/Chrome semantics: empty url = "not provided"). `Option::as_str()`
+            // returns Some("") for empty strings, bypassing `unwrap_or`, so we add
+            // `.filter(|s| !s.is_empty())` to treat "" as "not provided".
             let url = params.as_ref()
                 .and_then(|v| v.get("url"))
                 .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
                 .unwrap_or("about:blank");
             if bridge.is_some() {
                 bridge_send(bridge, BridgeCommand::Navigate { target_id: tid.clone(), url: url.to_string() })?;
