@@ -1,4 +1,5 @@
 // REQ-CDP-004: CDP backend abstraction (internal/external)  @trace REQ-CDP-001
+// @trace REQ-CDP-004 [entity:InternalBackend,ExternalBackend]
 // @trace REQ-LIB-003
 //
 // REQ-CDP-UWS-001: ExternalBackend now uses `bun_uws::ws_client::WebSocketClient`

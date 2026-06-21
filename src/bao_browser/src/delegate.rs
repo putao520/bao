@@ -1,4 +1,5 @@
 // @trace REQ-BRW-001 [entity:BrowserContext]  REQ-CDP-006: Servo delegate hooks for CDP event forwarding
+// @trace REQ-CDP-006 [entity:ServoDelegateHooks] (servo delegate → CDP event forwarding)
 use std::cell::RefCell;
 use std::rc::Rc;
 

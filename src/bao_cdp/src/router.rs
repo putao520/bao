@@ -6,6 +6,10 @@
 // 使用 Cell/RefCell 替代 Mutex(enabled_domains / event_handlers / external / sessions
 // 全部 RefCell,跨线程场景的 Mutex 仅保留在 backend.rs ExternalBrowser.ws 和
 // router.rs:489 测试代码的 received Arc<Mutex<Option<String>>>)。
+//
+// @trace REQ-PERF-003 [entity:BufferManager] [level:integration]
+// REQ-PERF-003 验收:session_id 走 CompactString (≤24B inline); CdpRouter session
+// 表用 DashMap / RefCell 替代 Mutex<HashMap>; 100 并发 session 创建无丢失。
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
