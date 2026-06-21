@@ -40,6 +40,33 @@ pub struct ParseResult {
     pub source_file: String,
 }
 
+/// Identifier-shape validator used by both `validate_class_name` and
+/// `generate_bindings`. SM class names become Rust identifiers
+/// (`{Name}_constructor`, `{Name}_finalize`, ...), so they must be a legal
+/// Rust/SM identifier prefix: ASCII letter or `_` first, then ASCII
+/// alphanumeric or `_`.
+fn validate_class_name_impl(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        Some(_) => {
+            return Err(format!(
+                "class name {name:?} must start with an ASCII letter or underscore"
+            ));
+        }
+        None => return Err("class name must not be empty".to_string()),
+    }
+    for c in chars {
+        if !(c.is_ascii_alphanumeric() || c == '_') {
+            return Err(format!(
+                "class name {name:?} contains illegal character {c:?}; \
+                 only ASCII alphanumerics and underscores are allowed"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Parse a .classes.ts file content and extract class definitions.
 pub fn parse_classes(source: &str, file_name: &str) -> Result<ParseResult, String> {
     let mut classes = Vec::new();
@@ -208,7 +235,21 @@ pub struct GeneratedBindings {
 }
 
 /// Generate SpiderMonkey binding code from a parsed class definition.
+///
+/// Rejects class names that would produce invalid Rust identifiers
+/// (e.g. `<Class>_constructor`) before emitting any code, so malformed
+/// inputs surface as a clear error instead of an opaque compile failure
+/// in the generated module.
+///
+/// @trace REQ-ENG-002 [entity:CodegenBackend]
 pub fn generate_bindings(class_def: &ClassDef) -> GeneratedBindings {
+    // Validate the class name up front — every emitted identifier is derived
+    // from it (`{Name}_Class`, `{Name}_ClassOps`, `{Name}_constructor`,
+    // `{Name}_finalize`, `{Name}_proto_specs`, `{Name}_static_specs`,
+    // `init_{Name}`). A malformed name would produce broken Rust.
+    validate_class_name_impl(&class_def.name)
+        .expect("generate_bindings: invalid class name — caller must validate first");
+
     let class_name = &class_def.name;
     let js_name = format!("{}_Class", class_name);
     let ops_name = format!("{}_ClassOps", class_name);
@@ -423,7 +464,22 @@ fn collect_specs(props: &[PropertyDef]) -> (Vec<String>, Vec<String>) {
                     setter = setter,
                 ));
             }
-            _ => {}
+            PropertyKind::Value { value } => {
+                // Constant string value property. The literal is emitted as a
+                // `c"..."`-suffixed pointer so the generated module stays
+                // const-evaluable. Numeric-looking values are kept as strings
+                // because the .classes.ts `Value` kind models host-side
+                // strings, not SM `Int32Value` constants.
+                property_specs.push(format!(
+                    r#"JSPropertySpec {{
+    name: c"{name}".as_ptr(),
+    value: JSPropertySpec_ValueWrapper::StringValue(c"{value}".as_ptr()),
+    ..Default::default()
+}}"#,
+                    name = prop.name,
+                    value = value,
+                ));
+            }
         }
     }
 
@@ -513,45 +569,29 @@ pub fn generate_module(bindings: &[GeneratedBindings], module_name: &str) -> Str
     out
 }
 
-/// Macro to implement a JS class using generated bindings.
+/// Validate that a class name is a legal SpiderMonkey class identifier.
 ///
-/// Given a `GeneratedBindings` instance, this macro emits:
-/// - The `JSClass` / `JSClassOps` statics
-/// - The constructor and finalizer functions
-/// - The `init_<class>` function
+/// SM class names must be non-empty, start with an ASCII letter or underscore,
+/// and contain only ASCII alphanumerics or underscores. This is used by
+/// `generate_bindings` to reject malformed names early (before emitting
+/// invalid Rust identifiers such as `<Class>_constructor`).
 ///
-/// # Usage
-/// ```ignore
-/// let bindings = generate_bindings(&class_def);
-/// impl_js_class_via_generated!(bindings);
-/// ```
-#[macro_export]
-macro_rules! impl_js_class_via_generated {
-    ($bindings:expr) => {
-        compile_error!(
-            "impl_js_class_via_generated! must be used with a const ClassDef; \
-             use generate_bindings() at build time and include! the generated module instead."
-        );
-    };
-    ($class_name:ident, $cx:expr, $global:expr) => {
-        unsafe { $crate::codegen::init_class($cx, $global, stringify!($class_name)) }
-    };
+/// @trace REQ-ENG-002 [entity:CodegenBackend]
+pub fn validate_class_name(name: &str) -> Result<(), String> {
+    validate_class_name_impl(name)
 }
 
-/// Initialize a single generated class by name on the given global.
+/// Validate a single property (member) name. Allows string-shaped names
+/// (including dotted or hyphenated keys the host surface may expose) but
+/// rejects empty names — empty member names produce invalid `JSPropertySpec`
+/// entries that crash `JS_InitClass` at runtime.
 ///
-/// # Safety
-/// `cx` must be a valid JSContext. `global` must be a valid global object handle.
-#[allow(unsafe_op_in_unsafe_fn)]
-pub unsafe fn init_class(
-    _cx: *mut mozjs::jsapi::JSContext,
-    _global: mozjs::jsapi::Handle<*mut mozjs::jsapi::JSObject>,
-    _class_name: &str,
-) -> bool {
-    // This is a placeholder — actual init is done by the generated `init_<Class>` functions.
-    // The macro form `impl_js_class_via_generated!(MyClass, cx, global)` calls the
-    // generated `init_MyClass(cx, global)` directly.
-    false
+/// @trace REQ-ENG-002 [entity:CodegenBackend]
+pub fn validate_member_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("member name must not be empty".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1047,5 +1087,112 @@ define({
         assert!(init.contains("Some(Stream_constructor)"));
         assert!(init.contains("Stream_proto_specs"));
         assert!(init.contains("Stream_static_specs"));
+    }
+
+    // ---- Validator surface (init_class removed in favor of generated init_<Class>) ----
+
+    #[test]
+    fn test_validate_class_name_accepts_legal_identifiers() {
+        assert!(validate_class_name("Foo").is_ok());
+        assert!(validate_class_name("_Private").is_ok());
+        assert!(validate_class_name("BunFoo123").is_ok());
+        assert!(validate_class_name("A").is_ok());
+    }
+
+    #[test]
+    fn test_validate_class_name_rejects_empty() {
+        let err = validate_class_name("").unwrap_err();
+        assert!(err.contains("empty"), "error should mention empty: {err}");
+    }
+
+    #[test]
+    fn test_validate_class_name_rejects_bad_first_char() {
+        let err = validate_class_name("1Thing").unwrap_err();
+        assert!(err.contains("start"), "error should mention start: {err}");
+        let err = validate_class_name("-Dash").unwrap_err();
+        assert!(err.contains("start"));
+    }
+
+    #[test]
+    fn test_validate_class_name_rejects_illegal_chars() {
+        let err = validate_class_name("Foo.Bar").unwrap_err();
+        assert!(err.contains("illegal character"));
+        assert!(err.contains("'.'"));
+        let err = validate_class_name("Foo Bar").unwrap_err();
+        assert!(err.contains("illegal character"));
+        let err = validate_class_name("Foo$Bar").unwrap_err();
+        assert!(err.contains("illegal character"));
+    }
+
+    #[test]
+    fn test_validate_member_name_rejects_empty() {
+        assert!(validate_member_name("").is_err());
+        assert!(validate_member_name("ok").is_ok());
+        assert!(validate_member_name("dotted.name").is_ok());
+        assert!(validate_member_name("kebab-name").is_ok());
+    }
+
+    #[test]
+    fn test_generate_bindings_panics_on_invalid_class_name() {
+        let cd = ClassDef {
+            name: "Bad.Name".into(),
+            construct: false,
+            no_constructor: false,
+            finalize: false,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![],
+            static_props: vec![],
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            generate_bindings(&cd)
+        }));
+        assert!(result.is_err(), "invalid class name must panic, not emit broken code");
+    }
+
+    // ---- Value-kind property emission (previously dropped) ----
+
+    #[test]
+    fn test_generate_bindings_value_property_emits_string_spec() {
+        let cd = ClassDef {
+            name: "Constants".into(),
+            construct: false,
+            no_constructor: false,
+            finalize: false,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "version".into(),
+                kind: PropertyKind::Value { value: "1.0.0".into() },
+            }],
+            static_props: vec![],
+        };
+        let bindings = generate_bindings(&cd);
+        assert_eq!(bindings.property_specs.len(), 1);
+        assert!(bindings.property_specs[0].contains("JSPropertySpec_ValueWrapper::StringValue"));
+        assert!(bindings.property_specs[0].contains("c\"version\""));
+        assert!(bindings.property_specs[0].contains("c\"1.0.0\""));
+    }
+
+    #[test]
+    fn test_generate_module_includes_value_properties() {
+        let cd = ClassDef {
+            name: "Tags".into(),
+            construct: false,
+            no_constructor: false,
+            finalize: false,
+            configurable: true,
+            has_pending_activity: false,
+            proto: vec![PropertyDef {
+                name: "kind".into(),
+                kind: PropertyKind::Value { value: "tag".into() },
+            }],
+            static_props: vec![],
+        };
+        let bindings = generate_bindings(&cd);
+        let module = generate_module(&[bindings], "tags_module");
+        assert!(module.contains("JSPropertySpec_ValueWrapper::StringValue"));
+        assert!(module.contains("c\"tag\""));
+        assert!(module.contains("Tags_proto_specs"));
     }
 }

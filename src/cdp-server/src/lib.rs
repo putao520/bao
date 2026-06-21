@@ -15,7 +15,13 @@ mod transport;
 mod server;
 pub mod bao_event;
 
-pub use protocol::{CdpMessage, CdpResponse, CdpError, CdpEvent, SessionError};
+pub use protocol::{
+    CdpMessage, CdpResponse, CdpError, CdpEvent, SessionError,
+    parse_message, serialize_response, serialize_event,
+    ok_response, error_response, ok_empty,
+    ERR_INVALID_REQUEST, ERR_METHOD_NOT_FOUND, ERR_INVALID_PARAMS,
+    ERR_INTERNAL, ERR_PARSE_ERROR,
+};
 pub use registry::{DomainRegistry, EmptyHandler, RegistryDispatch, SharedRegistry};
 pub use event::EventBroadcaster;
 pub use bao_event::{BaoEvent, ConsoleMessage};
