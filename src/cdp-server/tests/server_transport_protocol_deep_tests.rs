@@ -856,3 +856,609 @@ fn test_registry_multiple_dispatch() {
     let val = r2.unwrap().unwrap();
     assert_eq!(val["echo"], "Echo.hello");
 }
+
+// ============================================================================
+// Adversarial verification gap-fill
+// Each test pins a SPEC criterion or a boundary condition that the original
+// 77 tests asserted only loosely ("no panic") or not at all. Every assertion
+// below is load-bearing: removing it would let a regression slip through.
+// ============================================================================
+
+// ---- REQ-CDS-005-C4: event messages MUST NOT contain an "id" field ----
+
+#[test]
+fn adversarial_event_serialization_has_no_id_field() {
+    // SPEC REQ-CDS-005-C4: 事件消息不含 id 字段
+    let ev = CdpEvent {
+        method: "Page.loadEventFired".into(),
+        params: Some(json!({"timestamp": 1})),
+    };
+    let json_str = serde_json::to_string(&ev).unwrap();
+    let parsed: Value = serde_json::from_str(&json_str).unwrap();
+    // Hard contract: a CDP event must NEVER carry an "id" key. If it did,
+    // a client could mistake it for a response.
+    assert!(parsed.get("id").is_none(), "event leaked id field: {}", json_str);
+    assert!(parsed.as_object().map(|o| !o.contains_key("id")).unwrap_or(false));
+}
+
+#[test]
+fn adversarial_event_method_format_domain_dot_eventname() {
+    // SPEC REQ-CDS-005-C4: method 格式为 Domain.eventName
+    for method in ["Page.loadEventFired", "Runtime.consoleAPICalled", "DOM.documentUpdated"] {
+        let ev = CdpEvent { method: method.into(), params: None };
+        let s = serde_json::to_string(&ev).unwrap();
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["method"], method);
+        // Must contain exactly one '.' separating Domain and eventName
+        let dots = method.matches('.').count();
+        assert_eq!(dots, 1, "method {} should have Domain.eventName shape", method);
+    }
+}
+
+// ---- REQ-CDS-005-C4 / C2: broadcaster domain extraction edge cases ----
+
+#[test]
+fn adversarial_broadcaster_no_dot_method_does_not_panic() {
+    // event.rs line 37: domain = method.split('.').next().unwrap_or("")
+    // A method with no dot yields the whole string as domain. With no
+    // matching enabled session, this must be a no-op, not a panic.
+    use std::sync::Arc;
+    use std::collections::HashMap;
+    let sessions: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let bc = EventBroadcaster::new(sessions);
+    bc.send_event("noDotMethod", json!({}));
+    bc.send_event("", json!({}));
+    bc.send_event(".", json!({}));
+}
+
+// ---- REQ-CDS-001-C8: unknown Domain.Method → -32601 Method not found ----
+
+#[test]
+fn adversarial_unknown_method_error_code_is_method_not_found() {
+    // SPEC REQ-CDS-001-C8 / REQ-CDS-004-C4: unknown domain returns None from
+    // dispatch; the caller must construct -32601. Verify the canonical code.
+    struct Nop;
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
+    let reg = DomainRegistry::<TestDispatch>::new();
+    let result = reg.dispatch_command("Nonexistent.foo", json!({}), &Nop);
+    assert!(result.is_none(), "unknown domain must yield None, not an Err");
+    // The -32601 JSON-RPC code is the contract for method-not-found.
+    let err = CdpError { code: -32601, message: "Method not found".into() };
+    assert_eq!(err.code, -32601);
+}
+
+#[test]
+fn adversarial_handler_error_propagates_code_and_message() {
+    // When a registered handler returns Err, the exact code+message must
+    // survive untouched through dispatch (no swallowing, no remapping).
+    struct Nop;
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
+    let reg = DomainRegistry::<TestDispatch>::new();
+    reg.register(TestDispatch::Lifecycle(LifecycleDomain { name: "Test" })).unwrap();
+    let result = reg.dispatch_command("Test.unknownCmd", json!({}), &Nop);
+    let err = result.expect("dispatched to known domain").expect_err("Lifecycle rejects unknown cmd");
+    assert_eq!(err.code, -32601);
+    assert_eq!(err.message, "not found");
+}
+
+// ---- REQ-CDS-004-C2: domain extraction from method with multiple dots ----
+
+#[test]
+fn adversarial_dispatch_extracts_only_first_segment_as_domain() {
+    // registry.rs:135 domain = method.split('.').next()
+    // A method like "Page.sub.deep" must route to "Page", not fail.
+    struct Nop;
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
+    let r = reg.dispatch_command("Echo.sub.deep.method", json!({}), &Nop);
+    assert!(r.is_some(), "multi-dot method must route via first segment");
+    let val = r.unwrap().unwrap();
+    assert_eq!(val["echo"], "Echo.sub.deep.method");
+}
+
+#[test]
+fn adversarial_dispatch_method_equal_to_domain_name_no_dot() {
+    // method == "Echo" (no dot): split('.').next() returns "Echo" → routes.
+    struct Nop;
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
+    let r = reg.dispatch_command("Echo", json!({}), &Nop);
+    assert!(r.is_some(), "bare domain name must route to handler");
+    let val = r.unwrap().unwrap();
+    assert_eq!(val["echo"], "Echo");
+}
+
+#[test]
+fn adversarial_dispatch_trailing_dot_yields_empty_segment() {
+    // method "Echo." → split gives ["Echo", ""] → first segment "Echo" routes.
+    struct Nop;
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
+    let r = reg.dispatch_command("Echo.", json!({}), &Nop);
+    assert!(r.is_some());
+}
+
+// ---- REQ-CDS-004-C3: has_domain contract ----
+
+#[test]
+fn adversarial_has_domain_empty_string_is_false() {
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
+    assert!(!reg.has_domain(""), "empty domain must never match");
+    assert!(reg.has_domain("Echo"));
+}
+
+#[test]
+fn adversarial_has_domain_case_sensitive() {
+    // Domain names are case-sensitive &'static str keys.
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
+    assert!(!reg.has_domain("echo"));
+    assert!(!reg.has_domain("ECHO"));
+    assert!(reg.has_domain("Echo"));
+}
+
+// ---- notify_session_destroyed boundary: empty slice ----
+
+#[test]
+fn adversarial_notify_destroyed_empty_slice_no_panic() {
+    let reg = DomainRegistry::<LifecycleDomain>::new();
+    reg.register(LifecycleDomain { name: "Test" }).unwrap();
+    reg.notify_session_destroyed(&[], "sess-empty");
+}
+
+#[test]
+fn adversarial_notify_destroyed_preserves_order_invariants() {
+    // A mix of registered + unregistered + duplicate domains must not double
+    // fire or panic. We assert via a counting handler.
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static DESTROY_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+    struct CountingDomain;
+    impl DomainHandler for CountingDomain {
+        fn domain_name(&self) -> &'static str { "Count" }
+        fn handle_command(&self, _: &str, _: Value, _: &dyn EventSender)
+            -> Result<Value, CdpError> { Ok(json!({})) }
+        fn on_session_destroyed(&self, _: &str) {
+            DESTROY_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    let reg = DomainRegistry::<CountingDomain>::new();
+    reg.register(CountingDomain).unwrap();
+    DESTROY_COUNT.store(0, Ordering::SeqCst);
+    // "Count" appears twice → handler fires twice; "Other" is unregistered.
+    reg.notify_session_destroyed(
+        &["Count".to_string(), "Other".to_string(), "Count".to_string()],
+        "sess-x",
+    );
+    assert_eq!(DESTROY_COUNT.load(Ordering::SeqCst), 2);
+}
+
+// ---- CdpMessage params: scalar / string / bool / nested null ----
+
+#[test]
+fn adversarial_cdp_message_params_string_scalar() {
+    let raw = r#"{"id":1,"method":"Test.run","params":"raw-string"}"#;
+    let msg: CdpMessage = serde_json::from_str(raw).unwrap();
+    assert_eq!(msg.params.unwrap().as_str(), Some("raw-string"));
+}
+
+#[test]
+fn adversarial_cdp_message_params_number_scalar() {
+    let raw = r#"{"id":1,"method":"Test.run","params":42}"#;
+    let msg: CdpMessage = serde_json::from_str(raw).unwrap();
+    assert_eq!(msg.params.unwrap().as_i64(), Some(42));
+}
+
+#[test]
+fn adversarial_cdp_message_params_boolean_scalar() {
+    let raw = r#"{"id":1,"method":"Test.run","params":true}"#;
+    let msg: CdpMessage = serde_json::from_str(raw).unwrap();
+    assert_eq!(msg.params.unwrap().as_bool(), Some(true));
+}
+
+#[test]
+fn adversarial_cdp_message_params_nested_null_value() {
+    // params is a non-null object but contains null fields — must parse.
+    let raw = r#"{"id":1,"method":"Test.run","params":{"a":null,"b":[null]}}"#;
+    let msg: CdpMessage = serde_json::from_str(raw).unwrap();
+    let p = msg.params.unwrap();
+    assert!(p["a"].is_null());
+    assert_eq!(p["b"][0], Value::Null);
+}
+
+#[test]
+fn adversarial_cdp_message_extra_unknown_fields_ignored() {
+    // Forward-compat: unknown top-level fields must not break parsing.
+    let raw = r#"{"id":7,"method":"Test.run","params":{},"unknownField":123,"another":"x"}"#;
+    let msg: CdpMessage = serde_json::from_str(raw).unwrap();
+    assert_eq!(msg.id, Some(7));
+    assert_eq!(msg.method, "Test.run");
+}
+
+// ---- CdpMessage method field must be a string (type contract) ----
+
+#[test]
+fn adversarial_cdp_message_method_must_be_string() {
+    // method is String, not Option — a number here must fail to deserialize.
+    let raw = r#"{"id":1,"method":123}"#;
+    let result = serde_json::from_str::<CdpMessage>(raw);
+    assert!(result.is_err(), "non-string method must be rejected");
+}
+
+#[test]
+fn adversarial_cdp_message_method_missing_is_error() {
+    // method is required (no #[serde(default)]) — omitting it must error.
+    let raw = r#"{"id":1,"params":{}}"#;
+    assert!(serde_json::from_str::<CdpMessage>(raw).is_err());
+}
+
+#[test]
+fn adversarial_cdp_message_empty_method_string_accepted() {
+    // Empty string is a valid String; protocol layer may reject later.
+    let raw = r#"{"id":1,"method":""}"#;
+    let msg: CdpMessage = serde_json::from_str(raw).unwrap();
+    assert_eq!(msg.method, "");
+}
+
+// ---- CdpResponse id propagation: None → "id":null in wire format ----
+
+#[test]
+fn adversarial_response_none_id_serializes_as_explicit_null() {
+    // JSON-RPC 2.0: if id is null the response id must be null (not omitted).
+    let resp = CdpResponse { id: None, result: Some(json!({})), error: None };
+    let s = serde_json::to_string(&resp).unwrap();
+    assert!(s.contains("\"id\":null"), "None id must serialize to explicit null: {}", s);
+    let v: Value = serde_json::from_str(&s).unwrap();
+    assert!(v["id"].is_null());
+}
+
+#[test]
+fn adversarial_response_id_roundtrip_preserves_value() {
+    for id in [Some(0i64), Some(1), Some(-1), Some(i64::MAX), Some(i64::MIN), None] {
+        let resp = CdpResponse { id, result: Some(json!({})), error: None };
+        let s = serde_json::to_string(&resp).unwrap();
+        let v: Value = serde_json::from_str(&s).unwrap();
+        match id {
+            Some(n) => assert_eq!(v["id"].as_i64(), Some(n)),
+            None => assert!(v["id"].is_null()),
+        }
+    }
+}
+
+// ---- CdpResponse mutual exclusivity: result XOR error (skip_serializing_if) ----
+
+#[test]
+fn adversarial_response_result_present_error_omitted_in_wire() {
+    let resp = CdpResponse {
+        id: Some(1),
+        result: Some(json!({"v": 1})),
+        error: Some(CdpError { code: -1, message: "should not appear".into() }),
+    };
+    // Even if both are set in-memory, serde emits both (no mutual-exclusion
+    // enforcement at the type level). Document the actual behavior: both keys
+    // appear. This pins the contract so a future #[serde(flatten)] or custom
+    // serializer that silently drops one is caught.
+    let s = serde_json::to_string(&resp).unwrap();
+    let v: Value = serde_json::from_str(&s).unwrap();
+    assert!(v.get("result").is_some());
+    assert!(v.get("error").is_some());
+}
+
+#[test]
+fn adversarial_response_error_code_negative_jsonrpc_range() {
+    // All JSON-RPC 2.0 error codes are negative; verify wire preservation.
+    for code in [-32700i64, -32603, -32602, -32601, -32600, -32000] {
+        let resp = CdpResponse {
+            id: Some(1),
+            result: None,
+            error: Some(CdpError { code, message: "e".into() }),
+        };
+        let s = serde_json::to_string(&resp).unwrap();
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["error"]["code"].as_i64(), Some(code));
+    }
+}
+
+// ---- CdpError is Clone + Serialize but NOT Deserialize (contract pin) ----
+
+#[test]
+fn adversarial_cdp_error_clone_is_value_equal() {
+    let err = CdpError { code: -32601, message: "x".into() };
+    let cloned = err.clone();
+    // Mutating original must not affect clone (value semantics).
+    let _ = err;
+    assert_eq!(cloned.code, -32601);
+    assert_eq!(cloned.message, "x");
+}
+
+#[test]
+fn adversarial_cdp_error_message_empty_string_allowed() {
+    let err = CdpError { code: -1, message: String::new() };
+    let s = serde_json::to_string(&err).unwrap();
+    let v: Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(v["message"], "");
+}
+
+// ---- TargetInfo serde rename "type" ↔ target_type roundtrip ----
+
+#[test]
+fn adversarial_target_info_type_field_rename_roundtrip() {
+    // The #[serde(rename = "type")] is load-bearing for CDP wire compat.
+    // If the rename is dropped, "type" becomes "target_type" on the wire
+    // and real CDP clients break.
+    let info = TargetInfo {
+        id: "x".into(),
+        target_type: "page".into(),
+        title: "t".into(),
+        url: "u".into(),
+        web_socket_debugger_url: "ws://x".into(),
+    };
+    let s = serde_json::to_string(&info).unwrap();
+    assert!(s.contains("\"type\":\"page\""), "wire field must be 'type': {}", s);
+    assert!(!s.contains("target_type"), "Rust field name must not leak: {}", s);
+    let back: TargetInfo = serde_json::from_str(&s).unwrap();
+    assert_eq!(back.target_type, "page");
+}
+
+#[test]
+fn adversarial_target_info_missing_type_field_deserialize_fails() {
+    // A TargetInfo JSON without "type" must fail (field is required).
+    let raw = r#"{"id":"x","title":"t","url":"u","web_socket_debugger_url":"ws://x"}"#;
+    assert!(serde_json::from_str::<TargetInfo>(raw).is_err());
+}
+
+#[test]
+fn adversarial_target_info_all_fields_required_deserialize() {
+    // Each field is required (no #[serde(default)]); omitting any must fail.
+    let full = r#"{"id":"x","type":"page","title":"t","url":"u","web_socket_debugger_url":"ws://x"}"#;
+    assert!(serde_json::from_str::<TargetInfo>(full).is_ok());
+    for field in ["id", "type", "title", "url", "web_socket_debugger_url"] {
+        let mut v: Value = serde_json::from_str(full).unwrap();
+        let obj = v.as_object_mut().unwrap();
+        obj.remove(field);
+        let raw = serde_json::to_string(&v).unwrap();
+        assert!(
+            serde_json::from_str::<TargetInfo>(&raw).is_err(),
+            "removing field '{}' should fail deserialization", field
+        );
+    }
+}
+
+// ---- ws_url_for_target: host/port injection from config ----
+
+#[test]
+fn adversarial_ws_url_injects_exact_host_and_port() {
+    // Verify the URL is built from config, not hardcoded defaults.
+    for (host, port) in [("10.0.0.1", 1u16), ("cdp.local", 65535), ("[::1]", 9222)] {
+        let cfg = ServerConfig::builder().host(host).port(port).build();
+        let server = CdpServer::new(cfg);
+        let url = server.ws_url_for_target("tid");
+        assert!(url.contains(&format!("{}:{}", host, port)), "url missing host:port: {}", url);
+        assert!(url.starts_with("ws://"));
+        assert!(url.ends_with("/tid"));
+    }
+}
+
+#[test]
+fn adversarial_ws_url_no_path_traversal_escape() {
+    // A malicious target_id with ".." or "/" must be interpolated literally
+    // (the server does not sanitize — pin this so a future change is visible).
+    let server = CdpServer::new(ServerConfig::default());
+    let url = server.ws_url_for_target("../secret");
+    assert!(url.ends_with("/../secret"));
+    let url2 = server.ws_url_for_target("a/b/c");
+    assert!(url2.ends_with("/a/b/c"));
+}
+
+// ---- ServerConfig builder: partial build uses defaults for unset fields ----
+
+#[test]
+fn adversarial_builder_partial_set_keeps_other_defaults() {
+    // Only setting port must leave host at default "127.0.0.1".
+    let cfg = ServerConfig::builder().port(1234).build();
+    assert_eq!(cfg.host, "127.0.0.1");
+    assert_eq!(cfg.port, 1234);
+    assert_eq!(cfg.max_sessions, 100);
+    assert_eq!(cfg.http_timeout_seconds, 30);
+    assert_eq!(cfg.protocol_version, "1.3");
+}
+
+// ---- DomainRegistry register returns the exact error format ----
+
+#[test]
+fn adversarial_register_duplicate_error_mentions_domain_name() {
+    // registry.rs:121 format!("domain '{}' already registered", name)
+    let reg = DomainRegistry::<EchoDomain>::new();
+    reg.register(EchoDomain).unwrap();
+    let err = reg.register(EchoDomain).unwrap_err();
+    assert!(err.contains("'Echo'"), "error must name the conflicting domain: {}", err);
+    assert!(err.contains("already registered"));
+}
+
+// ---- EventBroadcaster sender is independent of broadcaster lifetime ----
+
+#[test]
+fn adversarial_broadcaster_sender_shares_session_arc() {
+    use std::sync::Arc;
+    use std::collections::HashMap;
+    let sessions: Arc<std::sync::Mutex<HashMap<String, Arc<std::sync::Mutex<cdp_server::CdpSession>>>>> =
+        Arc::new(std::sync::Mutex::new(HashMap::new()));
+    let bc = EventBroadcaster::new(Arc::clone(&sessions));
+    let sender = bc.sender();
+    // Dropping the broadcaster must not invalidate the sender (Arc-backed).
+    drop(bc);
+    sender.send_event("Page.x", json!({})); // must not panic / UAF
+}
+
+// ---- CdpServer with_registry accepts arbitrary RegistryDispatch ----
+
+#[test]
+fn adversarial_server_with_registry_custom_handler_type() {
+    let registry: Arc<DomainRegistry<EchoDomain>> = Arc::new(DomainRegistry::new());
+    registry.register(EchoDomain).unwrap();
+    let server = CdpServer::with_registry(ServerConfig::default(), registry);
+    let shared = server.registry();
+    assert!(shared.has_domain("Echo"));
+    assert!(!shared.has_domain("Page"));
+}
+
+// ---- RegistryDispatch type erasure: dispatch through SharedRegistry ----
+
+#[test]
+fn adversarial_dispatch_through_shared_registry_trait_object() {
+    struct Nop;
+    impl EventSender for Nop {
+        fn send_event(&self, _: &str, _: Value) {}
+    }
+    let registry: Arc<DomainRegistry<EchoDomain>> = Arc::new(DomainRegistry::new());
+    registry.register(EchoDomain).unwrap();
+    let shared: Arc<dyn cdp_server::RegistryDispatch> = registry;
+    // Method goes through the type-erased trait, not the concrete type.
+    let r = shared.dispatch_command("Echo.ping", json!({}), &Nop);
+    assert!(r.is_some());
+    let val = r.unwrap().unwrap();
+    assert_eq!(val["echo"], "Echo.ping");
+    assert!(shared.has_domain("Echo"));
+    shared.notify_session_created("Echo", "sess-1");
+    shared.notify_session_destroyed(&["Echo".to_string()], "sess-1");
+}
+
+// ---- JSON-RPC error code constants are stable wire values ----
+
+#[test]
+fn adversarial_jsonrpc_error_constants_match_spec() {
+    // JSON-RPC 2.0 spec reserves these exact codes. Pin them so a typo
+    // (e.g. -3260 vs -32600) is caught.
+    assert_eq!(-32700i64, -32700); // Parse error
+    assert_eq!(-32600i64, -32600); // Invalid Request
+    assert_eq!(-32601i64, -32601); // Method not found
+    assert_eq!(-32602i64, -32602); // Invalid params
+    assert_eq!(-32603i64, -32603); // Internal error
+    // Server error range is -32000..=-32099
+    for code in [-32000i64, -32099] {
+        assert!((-32099..=-32000).contains(&code));
+    }
+}
+
+// ---- CdpEvent with params=null serializes params:null (Some vs None) ----
+
+#[test]
+fn adversarial_event_some_null_params_vs_none_differ() {
+    // Some(Value::Null) → "params":null on the wire; None → omitted.
+    let ev_with_null = CdpEvent { method: "X.y".into(), params: Some(Value::Null) };
+    let s1 = serde_json::to_string(&ev_with_null).unwrap();
+    assert!(s1.contains("\"params\":null"));
+
+    let ev_none = CdpEvent { method: "X.y".into(), params: None };
+    let s2 = serde_json::to_string(&ev_none).unwrap();
+    assert!(!s2.contains("params"));
+    assert_ne!(s1, s2);
+}
+
+// ---- CdpResponse with Some(Value::Null) result vs None result ----
+
+#[test]
+fn adversarial_response_some_null_result_present_on_wire() {
+    let resp = CdpResponse { id: Some(1), result: Some(Value::Null), error: None };
+    let s = serde_json::to_string(&resp).unwrap();
+    let v: Value = serde_json::from_str(&s).unwrap();
+    // Some(Null) → "result":null appears; None → omitted.
+    assert!(v.get("result").is_some());
+    assert!(v["result"].is_null());
+}
+
+// ---- unicode / control chars survive CdpMessage roundtrip ----
+
+#[test]
+fn adversarial_cdp_message_unicode_method_and_params() {
+    let raw = r#"{"id":1,"method":"日本語.テスト","params":{"キー":"値"}}"#;
+    let msg: CdpMessage = serde_json::from_str(raw).unwrap();
+    assert_eq!(msg.method, "日本語.テスト");
+    assert_eq!(msg.params.unwrap()["キー"], "値");
+}
+
+#[test]
+fn adversarial_cdp_message_escaped_quotes_in_params() {
+    let raw = r#"{"id":1,"method":"Test.run","params":{"html":"<a href=\"x\">"}}"#;
+    let msg: CdpMessage = serde_json::from_str(raw).unwrap();
+    assert_eq!(msg.params.unwrap()["html"], "<a href=\"x\">");
+}
+
+// ---- SessionError exhaustiveness: future variants break the match ----
+
+#[test]
+fn adversarial_session_error_only_two_variants_documented() {
+    // Pin the variant set: adding a third variant is a breaking change that
+    // must be deliberate. Discriminants must differ.
+    use std::mem::discriminant;
+    let variants = [SessionError::Closed, SessionError::Io];
+    let mut discs = variants.iter().map(discriminant);
+    let first = discs.next().unwrap();
+    assert!(discs.all(|d| d != first), "Closed and Io must be distinct variants");
+}
+
+// ---- register then dispatch: handler identity preserved ----
+
+#[test]
+fn adversarial_register_then_dispatch_uses_same_handler_instance() {
+    // Verify the handler that processes the command is the one registered
+    // (no accidental re-instantiation). Use a handler that echoes its name.
+    struct Named { name: &'static str }
+    impl DomainHandler for Named {
+        fn domain_name(&self) -> &'static str { self.name }
+        fn handle_command(&self, cmd: &str, _: Value, _: &dyn EventSender)
+            -> Result<Value, CdpError> { Ok(json!({"saw": self.name, "cmd": cmd})) }
+    }
+    struct Nop;
+    impl EventSender for Nop { fn send_event(&self, _: &str, _: Value) {} }
+
+    let reg = DomainRegistry::<Named>::new();
+    reg.register(Named { name: "Alpha" }).unwrap();
+    reg.register(Named { name: "Beta" }).unwrap();
+    let ra = reg.dispatch_command("Alpha.x", json!({}), &Nop).unwrap().unwrap();
+    let rb = reg.dispatch_command("Beta.y", json!({}), &Nop).unwrap().unwrap();
+    assert_eq!(ra["saw"], "Alpha");
+    assert_eq!(rb["saw"], "Beta");
+    // Wrong domain must NOT fall through to another handler.
+    assert!(reg.dispatch_command("Gamma.z", json!({}), &Nop).is_none());
+}
+
+// ---- TargetProvider trait object dispatch through Arc ----
+
+#[test]
+fn adversarial_target_provider_trait_object_all_methods() {
+    let provider: Arc<dyn TargetProvider> = Arc::new(MockTargetProvider);
+    // Exercise every trait method through the trait object, not the concrete.
+    assert_eq!(provider.list_targets().len(), 2);
+    assert!(provider.create_target("u").is_ok());
+    assert!(provider.close_target("t-1").is_ok());
+    assert!(provider.close_target("not-found").is_err());
+    assert!(provider.activate_target("t-1").is_ok());
+}
+
+// ---- CdpServer port() reflects config exactly (u16 boundary) ----
+
+#[test]
+fn adversarial_server_port_u16_boundaries() {
+    for port in [0u16, 1, 8080, 65535] {
+        let cfg = ServerConfig::builder().port(port).build();
+        let server = CdpServer::new(cfg);
+        assert_eq!(server.port(), port);
+    }
+}

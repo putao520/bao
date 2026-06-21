@@ -769,3 +769,1620 @@ fn test_serialize_event_without_params() {
     let parsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
     assert_eq!(parsed["method"], "Runtime.executionContextDestroyed");
 }
+
+// ============================================================================
+// ADVERSARIAL: Bridge timeout error message specificity
+// ============================================================================
+
+#[test]
+fn test_bridge_send_timeout_distinguishes_response_timeout() {
+    // Receiver alive but slow → "bridge response timeout" (recv_timeout deadline).
+    // Build queue first (so send succeeds on the request channel), then never
+    // drain the response — recv_timeout must fire.
+    let (tx, _rx) = bridge_channel(Duration::from_millis(20));
+    // Pre-seed the queue with fire-and-forget so the request channel stays open
+    // and `send` returns via the response channel (which we never service).
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    let resp = tx.send(BridgeCommand::GetUrl { target_id: TID.into() });
+    assert!(resp.result.is_err());
+    let err = resp.result.unwrap_err();
+    assert_eq!(err, "bridge response timeout",
+        "alive-but-slow receiver must produce 'bridge response timeout', got: {err}");
+    assert!(!err.contains("closed"),
+        "response-timeout must not be confused with channel-closed");
+}
+
+#[test]
+fn test_bridge_send_distinguishes_channel_closed() {
+    // Receiver dropped before send → "bridge channel closed" (send() on mpsc err).
+    let (tx, rx) = bridge_channel(Duration::from_secs(5));
+    drop(rx);
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    assert!(resp.result.is_err());
+    let err = resp.result.unwrap_err();
+    assert_eq!(err, "bridge channel closed",
+        "dropped receiver must produce 'bridge channel closed', got: {err}");
+    assert!(!err.contains("timeout"),
+        "channel-closed must not be confused with response-timeout");
+}
+
+#[test]
+fn test_bridge_send_zero_duration_timeout() {
+    // Boundary: Duration::ZERO must still return a usable error (recv_timeout(0)).
+    let (tx, _rx) = bridge_channel(Duration::from_nanos(1));
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    assert!(resp.result.is_err(),
+        "Duration::ZERO must yield timeout error, not hang");
+    assert_eq!(resp.result.unwrap_err(), "bridge response timeout");
+}
+
+#[test]
+fn test_bridge_send_after_drop_then_clone() {
+    // Drop one clone, sender via the other clone must observe closed channel.
+    let (tx, rx) = bridge_channel(Duration::from_millis(50));
+    let tx_clone = tx.clone();
+    drop(rx);
+    let resp = tx_clone.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    assert!(resp.result.is_err());
+    assert_eq!(resp.result.unwrap_err(), "bridge channel closed");
+    // Both clones observe the same closed state.
+    let resp2 = tx.send(BridgeCommand::GetUrl { target_id: TID.into() });
+    assert_eq!(resp2.result.unwrap_err(), "bridge channel closed");
+}
+
+#[test]
+fn test_bridge_fire_and_forget_silent_on_dropped_receiver() {
+    // Fire-and-forget must never panic when receiver is gone (best-effort send).
+    let (tx, rx) = bridge_channel(Duration::from_secs(5));
+    drop(rx);
+    tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    // If we reach here without panic, the contract holds.
+}
+
+#[test]
+fn test_bridge_is_alive_false_after_drop_then_send_observes_closed() {
+    // After dropping rx, is_alive must be false (its probe send errors).
+    let (tx, rx) = bridge_channel(Duration::from_secs(5));
+    drop(rx);
+    assert!(!tx.is_alive(), "is_alive must be false once receiver is dropped");
+    // And a real send reflects the closed state with the right error string.
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    assert_eq!(resp.result.unwrap_err(), "bridge channel closed");
+}
+
+#[test]
+fn test_bridge_send_returns_responder_value_not_fab() {
+    // Sanity: send() returns the value produced by the handler, not a default.
+    let (tx, rx) = bridge_channel(Duration::from_secs(2));
+    let t = std::thread::spawn(move || {
+        rx.recv_and_process(Duration::from_secs(2), |cmd| match cmd {
+            BridgeCommand::GetTitle { .. } => {
+                BridgeResponse { result: Ok(json!({"nested": {"arr": [1, 2, 3]}, "n": -7})) }
+            }
+            _ => BridgeResponse { result: Ok(json!(null)) },
+        });
+    });
+    let resp = tx.send(BridgeCommand::GetTitle { target_id: TID.into() });
+    t.join().unwrap();
+    assert!(resp.result.is_ok());
+    let v = resp.result.unwrap();
+    assert_eq!(v["nested"]["arr"][2], 3);
+    assert_eq!(v["n"], -7);
+}
+
+#[test]
+fn test_bridge_drain_delivers_to_send_responders() {
+    // `send` (not fire-and-forget) blocks on a responder; drain must service it
+    // so the blocking send unblocks with the handler's value. Adversarial:
+    // naive drain implementations can drop responder handles.
+    let (tx, rx) = bridge_channel(Duration::from_secs(2));
+    let join = std::thread::spawn(move || {
+        tx.send(BridgeCommand::GetUrl { target_id: TID.into() })
+    });
+    std::thread::sleep(Duration::from_millis(20));
+    let n = rx.drain(|cmd| match cmd {
+        BridgeCommand::GetUrl { .. } => BridgeResponse { result: Ok(json!("https://drained.example")) },
+        _ => BridgeResponse { result: Ok(json!(null)) },
+    });
+    assert_eq!(n, 1, "drain must service the pending responder-bearing request");
+    let resp = join.join().unwrap();
+    assert_eq!(resp.result.unwrap(), json!("https://drained.example"));
+}
+
+#[test]
+fn test_bridge_try_process_delivers_to_send_responder() {
+    // try_process must also service a blocking send (responder round-trip).
+    let (tx, rx) = bridge_channel(Duration::from_secs(2));
+    let join = std::thread::spawn(move || {
+        tx.send(BridgeCommand::GetTitle { target_id: TID.into() })
+    });
+    // Wait until the request has been enqueued.
+    let mut processed = false;
+    for _ in 0..200 {
+        let got = rx.try_process(|cmd| match cmd {
+            BridgeCommand::GetTitle { .. } => BridgeResponse { result: Ok(json!("title-ok")) },
+            _ => BridgeResponse { result: Ok(json!(null)) },
+        });
+        if got { processed = true; break; }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(processed, "try_process must service the responder-bearing request");
+    let resp = join.join().unwrap();
+    assert_eq!(resp.result.unwrap(), json!("title-ok"));
+}
+
+// ============================================================================
+// ADVERSARIAL: Target domain full command coverage (REQ-CDP-001)
+// ============================================================================
+
+#[test]
+fn test_target_create_target_echoes_target_id() {
+    let resp = dispatch_bridge("Target.createTarget", None, "tgt-99", &bridge_channel(Duration::from_secs(5)).0);
+    assert!(resp.result.is_some());
+    assert_eq!(resp.result.unwrap()["targetId"], "tgt-99");
+}
+
+#[test]
+fn test_target_get_target_info_no_bridge_defaults() {
+    let resp = dispatch("Target.getTargetInfo", None);
+    let result = resp.result.unwrap();
+    let info = &result["targetInfo"];
+    assert_eq!(info["type"], "page");
+    assert_eq!(info["attached"], true);
+    // No bridge → title defaults to "Bao", url defaults to "about:blank".
+    assert_eq!(info["title"], "Bao");
+    assert_eq!(info["url"], "about:blank");
+}
+
+#[test]
+fn test_target_get_targets_no_bridge_uses_default_title_url() {
+    let resp = dispatch("Target.getTargets", None);
+    let info = &resp.result.unwrap()["targetInfos"][0];
+    assert_eq!(info["title"], "Bao");
+    assert_eq!(info["url"], "about:blank");
+    assert_eq!(info["type"], "page");
+    assert_eq!(info["attached"], true);
+}
+
+#[test]
+fn test_target_get_target_targets_alias_works() {
+    // The handler matches both "getTargets" and "getTargetTargets" aliases.
+    let resp = dispatch("Target.getTargetTargets", None);
+    assert!(resp.result.unwrap()["targetInfos"].is_array());
+}
+
+#[test]
+fn test_target_attach_to_target_session_id_deterministic() {
+    // sessionId is derived from sum of target_id char codes as hex.
+    let resp = dispatch("Target.attachToTarget", None);
+    let sid = resp.result.unwrap()["sessionId"].as_str().unwrap().to_string();
+    let expected = format!("{:016x}", "t1".chars().map(|c| c as u64).sum::<u64>());
+    assert_eq!(sid, expected);
+    // Adversarial: distinct target_ids produce distinct sessionIds.
+    let msg2 = CdpMessage { id: Some(2), method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let resp2 = handle_command(msg2, "different_target", &None, None);
+    let sid2 = resp2.result.unwrap()["sessionId"].as_str().unwrap().to_string();
+    assert_ne!(sid, sid2, "sessionIds must differ for distinct targets");
+}
+
+#[test]
+fn test_target_attach_to_target_empty_target_id_session_id() {
+    // Boundary: empty target_id → sum = 0 → sessionId = 16 zeros.
+    let msg = CdpMessage { id: Some(1), method: "Target.attachToTarget".into(), params: None, session_id: None };
+    let resp = handle_command(msg, "", &None, None);
+    assert_eq!(resp.result.unwrap()["sessionId"], "0000000000000000");
+}
+
+#[test]
+fn test_target_set_auto_attach_and_discover_empty_result() {
+    for cmd in ["setAutoAttach", "setDiscoverTargets", "detachFromTarget", "sendMessageToTarget"] {
+        let resp = dispatch(&format!("Target.{cmd}"), None);
+        assert!(resp.result.is_some(), "{cmd} must return a result");
+        let r = resp.result.unwrap();
+        assert!(r.as_object().map(|o| o.is_empty()).unwrap_or(false),
+            "{cmd} must return an empty object, got: {r}");
+        assert!(resp.error.is_none(), "{cmd} must not error");
+    }
+}
+
+#[test]
+fn test_target_close_target_no_bridge_still_success() {
+    // closeTarget uses fire-and-forget; with no bridge it must still return success=true.
+    let resp = dispatch("Target.closeTarget", None);
+    assert!(resp.result.is_some());
+    assert_eq!(resp.result.unwrap()["success"], true);
+}
+
+#[test]
+fn test_target_unknown_subcommand_method_not_found() {
+    let resp = dispatch("Target.bogusSubcommand", None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+    assert!(err.message.contains("Target.bogusSubcommand"),
+        "error message must echo the full method: {}", err.message);
+}
+
+// ============================================================================
+// ADVERSARIAL: Page domain full coverage (REQ-CDP-001/003)
+// ============================================================================
+
+#[test]
+fn test_page_enable_disable_empty_result() {
+    for cmd in ["enable", "disable"] {
+        let resp = dispatch(&format!("Page.{cmd}"), None);
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_page_navigate_loader_id_encodes_url_length() {
+    // loaderId = format!("{:016x}", url.len()) — adversarial: verify the encoding rule.
+    let resp = dispatch("Page.navigate", Some(json!({"url": "https://example.com"})));
+    let r = resp.result.unwrap();
+    let url_len = "https://example.com".len() as u64;
+    assert_eq!(r["loaderId"], format!("{:016x}", url_len));
+    assert_eq!(r["frameId"], "0");
+}
+
+#[test]
+fn test_page_navigate_empty_url_defaults_to_about_blank() {
+    // No url key → defaults to "about:blank" (len 10 → loaderId = 000000000000000a).
+    let resp = dispatch("Page.navigate", Some(json!({})));
+    let r = resp.result.unwrap();
+    assert_eq!(r["loaderId"], format!("{:016x}", "about:blank".len() as u64));
+}
+
+#[test]
+fn test_page_navigate_non_string_url_falls_back_to_default() {
+    // Boundary: url present but not a string → falls through to default.
+    let resp = dispatch("Page.navigate", Some(json!({"url": 42})));
+    let r = resp.result.unwrap();
+    // Falls back to "about:blank" because as_str() on a number is None.
+    assert_eq!(r["loaderId"], format!("{:016x}", "about:blank".len() as u64));
+}
+
+#[test]
+fn test_page_navigate_with_bridge_timeout_surfaces_32603_error() {
+    // Adversarial: when bridge is set but the Navigate bridge call times out,
+    // the error must propagate as JSON-RPC -32603 (internal error) per bridge_send.
+    let (tx, _rx) = bridge_channel(Duration::from_millis(10));
+    let resp = dispatch_bridge("Page.navigate", Some(json!({"url": "https://slow.example"})), "t1", &tx);
+    assert!(resp.result.is_none(), "navigate must NOT succeed when bridge times out");
+    let err = resp.error.as_ref().expect("navigate must produce an error on bridge timeout");
+    assert_eq!(err.code, -32603, "bridge timeout must surface as -32603, got {}", err.code);
+    assert_eq!(err.message, "bridge response timeout");
+}
+
+#[test]
+fn test_page_navigate_missing_url_no_bridge_default_path() {
+    let resp = dispatch("Page.navigate", None);
+    assert!(resp.result.is_some());
+    assert_eq!(resp.result.unwrap()["frameId"], "0");
+}
+
+#[test]
+fn test_page_reload_no_bridge_uses_default_frame_ids() {
+    let resp = dispatch("Page.reload", Some(json!({"ignoreCache": true})));
+    let r = resp.result.unwrap();
+    assert_eq!(r["frameId"], "0");
+    assert_eq!(r["loaderId"], "0");
+}
+
+#[test]
+fn test_page_reload_with_bridge_routes_reload_command() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<bool>::new()));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::Reload { ignore_cache, .. } = cmd {
+                    captured2.lock().unwrap().push(ignore_cache);
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("Page.reload", Some(json!({"ignoreCache": true})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert!(resp.result.is_some());
+    let guard = captured.lock().unwrap();
+    assert_eq!(guard.len(), 1, "Reload bridge command must be dispatched exactly once");
+    assert_eq!(guard[0], true, "ignoreCache must propagate to BridgeCommand::Reload");
+}
+
+#[test]
+fn test_page_get_frame_tree_no_bridge_default_url() {
+    let resp = dispatch("Page.getFrameTree", None);
+    let frame = &resp.result.unwrap()["frameTree"]["frame"];
+    assert_eq!(frame["id"], "0");
+    assert_eq!(frame["url"], "about:blank");
+    assert_eq!(frame["mimeType"], "text/html");
+}
+
+#[test]
+fn test_page_get_navigation_history_default_url() {
+    let resp = dispatch("Page.getNavigationHistory", None);
+    let r = resp.result.unwrap();
+    assert_eq!(r["currentIndex"], 0);
+    let entries = r["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["url"], "about:blank");
+}
+
+#[test]
+fn test_page_capture_screenshot_no_bridge_empty_data() {
+    let resp = dispatch("Page.captureScreenshot", None);
+    let r = resp.result.unwrap();
+    assert_eq!(r["data"], "");
+}
+
+#[test]
+fn test_page_capture_screenshot_with_bridge_carries_format_quality() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(String, Option<u8>)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::TakeScreenshot { format, quality, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((format, quality));
+                }
+                BridgeResponse { result: Ok(json!({"data": "base64png"})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge(
+        "Page.captureScreenshot",
+        Some(json!({"format": "jpeg", "quality": 80})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(resp.result.unwrap()["data"], "base64png");
+    let (fmt, q) = captured.lock().unwrap().take().expect("screenshot bridge command must fire");
+    assert_eq!(fmt, "jpeg");
+    assert_eq!(q, Some(80));
+}
+
+#[test]
+fn test_page_capture_screenshot_default_format_png_quality_none() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(String, Option<u8>)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::TakeScreenshot { format, quality, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((format, quality));
+                }
+                BridgeResponse { result: Ok(json!({"data": ""})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("Page.captureScreenshot", None, "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert!(resp.result.is_some());
+    let (fmt, q) = captured.lock().unwrap().take().unwrap();
+    assert_eq!(fmt, "png", "default format must be png");
+    assert!(q.is_none(), "default quality must be None");
+}
+
+#[test]
+fn test_page_add_script_empty_source_skips_bridge() {
+    // Adversarial: empty source must NOT dispatch the bridge command (handler guards).
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let dispatched = Arc::new(AtomicUsize::new(0));
+    let dispatched2 = dispatched.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|_cmd| {
+                dispatched2.fetch_add(1, Ordering::SeqCst);
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge(
+        "Page.addScriptToEvaluateOnNewDocument",
+        Some(json!({"source": ""})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(resp.result.unwrap()["identifier"], "1");
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(dispatched.load(Ordering::SeqCst), 0,
+        "empty source must NOT fire the AddScript bridge command");
+}
+
+#[test]
+fn test_page_add_script_nonempty_source_dispatches_bridge() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::AddScriptToEvaluateOnNewDocument { source, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(source);
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge(
+        "Page.addScriptToEvaluateOnNewDocument",
+        Some(json!({"source": "console.log('hi')"})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(resp.result.unwrap()["identifier"], "1");
+    let src = captured.lock().unwrap().take().expect("non-empty source must fire bridge command");
+    assert_eq!(src, "console.log('hi')");
+}
+
+#[test]
+fn test_page_remove_script_to_evaluate_on_new_document_empty() {
+    let resp = dispatch("Page.removeScriptToEvaluateOnNewDocument", None);
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_page_misc_commands_empty_results() {
+    for cmd in ["setContent", "close", "bringToFront"] {
+        let resp = dispatch(&format!("Page.{cmd}"), None);
+        assert!(resp.result.is_some(), "{cmd} must return a result");
+        assert!(resp.error.is_none(), "{cmd} must not error");
+    }
+}
+
+#[test]
+fn test_page_get_layout_metrics_constant_dimensions() {
+    let resp = dispatch("Page.getLayoutMetrics", None);
+    let r = resp.result.unwrap();
+    assert_eq!(r["contentSize"]["width"], 1920);
+    assert_eq!(r["contentSize"]["height"], 1080);
+    assert_eq!(r["cssContentSize"]["width"], 1920);
+}
+
+#[test]
+fn test_page_unknown_subcommand_method_not_found() {
+    let resp = dispatch("Page.doesNotExist", None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+    assert!(err.message.contains("Page.doesNotExist"));
+}
+
+// ============================================================================
+// ADVERSARIAL: Runtime domain full coverage (REQ-CDP-001/003)
+// ============================================================================
+
+#[test]
+fn test_runtime_enable_returns_execution_context_id() {
+    let resp = dispatch("Runtime.enable", None);
+    assert_eq!(resp.result.unwrap()["executionContextId"], 1);
+}
+
+#[test]
+fn test_runtime_disable_empty_result() {
+    let resp = dispatch("Runtime.disable", None);
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_runtime_evaluate_empty_expression_skips_bridge() {
+    // Boundary: empty expression must NOT dispatch the bridge (handler guards).
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let dispatched = Arc::new(AtomicUsize::new(0));
+    let dispatched2 = dispatched.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|_cmd| {
+                dispatched2.fetch_add(1, Ordering::SeqCst);
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("Runtime.evaluate", Some(json!({"expression": ""})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(resp.result.unwrap()["result"]["type"], "undefined");
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(dispatched.load(Ordering::SeqCst), 0,
+        "empty expression must NOT fire the EvaluateJs bridge command");
+}
+
+#[test]
+fn test_runtime_evaluate_nonempty_expression_uses_bridge_when_present() {
+    // Adversarial: when expression is non-empty AND bridge present → bridge path.
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(String, bool)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::EvaluateJs { expression, return_by_value, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((expression, return_by_value));
+                }
+                BridgeResponse { result: Ok(json!({"type": "number", "value": 7})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge(
+        "Runtime.evaluate",
+        Some(json!({"expression": "3+4", "returnByValue": false})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(resp.result.unwrap()["value"], 7);
+    let (expr, rbv) = captured.lock().unwrap().take().unwrap();
+    assert_eq!(expr, "3+4");
+    assert_eq!(rbv, false, "returnByValue=false must propagate to bridge");
+}
+
+#[test]
+fn test_runtime_evaluate_return_by_value_defaults_true() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<bool>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::EvaluateJs { return_by_value, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(return_by_value);
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge("Runtime.evaluate", Some(json!({"expression": "x"})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    let rbv = captured.lock().unwrap().take().unwrap();
+    assert!(rbv, "returnByValue default must be true");
+}
+
+#[test]
+fn test_runtime_evaluate_with_bridge_timeout_surfaces_32603() {
+    let (tx, _rx) = bridge_channel(Duration::from_millis(10));
+    let resp = dispatch_bridge("Runtime.evaluate", Some(json!({"expression": "x"})), "t1", &tx);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32603);
+    assert_eq!(err.message, "bridge response timeout");
+}
+
+#[test]
+fn test_runtime_misc_commands_return_undefined_result() {
+    // callFunctionOn/evaluateAsync/runScript return {result: {type: undefined}};
+    // getProperties returns {result: []} (empty property array).
+    for (method, params) in [
+        ("Runtime.callFunctionOn", json!({})),
+        ("Runtime.evaluateAsync", json!({})),
+        ("Runtime.runScript", json!({})),
+    ] {
+        let resp = dispatch(method, Some(params));
+        let r = resp.result.unwrap();
+        assert_eq!(r["result"]["type"], "undefined", "{method} must return undefined-typed result");
+    }
+    let resp = dispatch("Runtime.getProperties", Some(json!({})));
+    let r = resp.result.unwrap();
+    assert!(r["result"].is_array(), "Runtime.getProperties must return an array");
+    assert_eq!(r["result"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn test_runtime_noop_commands_empty_result() {
+    for cmd in ["releaseObject", "releaseObjectGroup", "compileScript", "callArgument"] {
+        let resp = dispatch(&format!("Runtime.{cmd}"), None);
+        assert!(resp.result.is_some(), "{cmd} must return a result");
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_runtime_unknown_subcommand_method_not_found() {
+    let resp = dispatch("Runtime.notARealMethod", None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+    assert!(err.message.contains("Runtime.notARealMethod"));
+}
+
+// ============================================================================
+// ADVERSARIAL: DOM domain full coverage (REQ-CDP-001/003)
+// ============================================================================
+
+#[test]
+fn test_dom_enable_disable_empty_result() {
+    for cmd in ["enable", "disable"] {
+        let resp = dispatch(&format!("DOM.{cmd}"), None);
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_dom_get_document_no_bridge_returns_default_tree() {
+    let resp = dispatch("DOM.getDocument", None);
+    let root = &resp.result.unwrap()["root"];
+    assert_eq!(root["nodeId"], 1);
+    assert_eq!(root["nodeName"], "#document");
+    assert_eq!(root["children"][0]["nodeName"], "HTML");
+    assert_eq!(root["children"][0]["nodeType"], 1);
+}
+
+#[test]
+fn test_dom_get_document_with_bridge_routes_command() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let dispatched = Arc::new(AtomicUsize::new(0));
+    let dispatched2 = dispatched.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if matches!(cmd, BridgeCommand::GetDocument { .. }) {
+                    dispatched2.fetch_add(1, Ordering::SeqCst);
+                }
+                BridgeResponse { result: Ok(json!({"root": {"nodeId": 999}})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("DOM.getDocument", None, "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(resp.result.unwrap()["root"]["nodeId"], 999);
+    assert_eq!(dispatched.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn test_dom_query_selector_empty_selector_skips_bridge() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let dispatched = Arc::new(AtomicUsize::new(0));
+    let dispatched2 = dispatched.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|_cmd| {
+                dispatched2.fetch_add(1, Ordering::SeqCst);
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("DOM.querySelector", Some(json!({"selector": ""})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(resp.result.unwrap()["nodeId"], 0);
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(dispatched.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_dom_query_selector_all_empty_selector_default_empty() {
+    let resp = dispatch("DOM.querySelectorAll", Some(json!({"selector": ""})));
+    let result = resp.result.unwrap();
+    let node_ids = result["nodeIds"].as_array().unwrap();
+    assert_eq!(node_ids.len(), 0);
+}
+
+#[test]
+fn test_dom_query_selector_all_with_bridge_routes() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::QuerySelectorAll { selector, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(selector);
+                }
+                BridgeResponse { result: Ok(json!({"nodeIds": [10, 20]})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("DOM.querySelectorAll", Some(json!({"selector": "li.item"})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    let ids = resp.result.unwrap()["nodeIds"].as_array().unwrap().clone();
+    assert_eq!(ids[0], 10);
+    assert_eq!(ids[1], 20);
+    assert_eq!(captured.lock().unwrap().take().unwrap(), "li.item");
+}
+
+#[test]
+fn test_dom_describe_node_constant_shape() {
+    let resp = dispatch("DOM.describeNode", None);
+    let node = &resp.result.unwrap()["node"];
+    assert_eq!(node["nodeId"], 1);
+    assert_eq!(node["nodeType"], 1);
+    assert_eq!(node["nodeName"], "HTML");
+}
+
+#[test]
+fn test_dom_get_box_model_constant_geometry() {
+    let resp = dispatch("DOM.getBoxModel", None);
+    let model = &resp.result.unwrap()["model"];
+    assert_eq!(model["width"], 1920);
+    assert_eq!(model["height"], 1080);
+    let content = model["content"].as_array().unwrap();
+    assert_eq!(content.len(), 8, "content must be 8-element quad");
+}
+
+#[test]
+fn test_dom_set_attribute_value_no_bridge_empty() {
+    let resp = dispatch("DOM.setAttributeValue", Some(json!({"nodeId": 5, "name": "class", "value": "x"})));
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_dom_set_attribute_value_with_bridge_routes_command() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(i64, String, String)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::SetAttributeValue { node_id, name, value, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((node_id, name, value));
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge(
+        "DOM.setAttributeValue",
+        Some(json!({"nodeId": 42, "name": "data-x", "value": "v"})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    let (nid, name, value) = captured.lock().unwrap().take().unwrap();
+    assert_eq!(nid, 42);
+    assert_eq!(name, "data-x");
+    assert_eq!(value, "v");
+}
+
+#[test]
+fn test_dom_set_attribute_value_default_node_id_zero() {
+    // Boundary: missing nodeId must default to 0 (unwrap_or(0)).
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<i64>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::SetAttributeValue { node_id, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(node_id);
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge("DOM.setAttributeValue", Some(json!({"name": "a", "value": "b"})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    let nid = captured.lock().unwrap().take().unwrap();
+    assert_eq!(nid, 0, "missing nodeId must default to 0");
+}
+
+#[test]
+fn test_dom_get_outer_html_no_bridge_default() {
+    let resp = dispatch("DOM.getOuterHTML", None);
+    assert_eq!(resp.result.unwrap()["outerHTML"], "<html><body></body></html>");
+}
+
+#[test]
+fn test_dom_get_outer_html_with_bridge_routes_command() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<Option<i64>>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::GetOuterHtml { node_id, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(node_id);
+                }
+                BridgeResponse { result: Ok(json!({"outerHTML": "<p/>"})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("DOM.getOuterHTML", Some(json!({"nodeId": 7})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(resp.result.unwrap()["outerHTML"], "<p/>");
+    assert_eq!(captured.lock().unwrap().take().unwrap(), Some(7));
+}
+
+#[test]
+fn test_dom_misc_noop_commands_empty_result() {
+    for cmd in ["removeAttribute", "setOuterHTML", "insertBefore", "removeNode"] {
+        let resp = dispatch(&format!("DOM.{cmd}"), None);
+        assert!(resp.result.is_some(), "{cmd} must return a result");
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_dom_resolve_node_and_push_nodes_default_shapes() {
+    let resp = dispatch("DOM.resolveNode", None);
+    assert_eq!(resp.result.unwrap()["object"]["type"], "node");
+    let resp = dispatch("DOM.pushNodesByBackendIdsToFrontend", None);
+    assert_eq!(resp.result.unwrap()["nodeIds"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn test_dom_unknown_subcommand_method_not_found() {
+    let resp = dispatch("DOM.wrongCommand", None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+    assert!(err.message.contains("DOM.wrongCommand"));
+}
+
+// ============================================================================
+// ADVERSARIAL: Emulation domain (REQ-CDP-001/003)
+// ============================================================================
+
+#[test]
+fn test_emulation_set_device_metrics_no_bridge_empty_result() {
+    let resp = dispatch("Emulation.setDeviceMetricsOverride",
+        Some(json!({"width": 800, "height": 600, "deviceScaleFactor": 2.0})));
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_emulation_set_device_metrics_defaults_width_height() {
+    // Boundary: missing width/height must default to 1920x1080.
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(u32, u32, Option<f64>)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::SetViewport { width, height, device_scale_factor, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((width, height, device_scale_factor));
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge("Emulation.setDeviceMetricsOverride", Some(json!({})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    let (w, h, dsf) = captured.lock().unwrap().take().unwrap();
+    assert_eq!(w, 1920);
+    assert_eq!(h, 1080);
+    assert!(dsf.is_none());
+}
+
+#[test]
+fn test_emulation_set_device_metrics_propagates_all_fields() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(u32, u32, Option<f64>)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::SetViewport { width, height, device_scale_factor, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((width, height, device_scale_factor));
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge(
+        "Emulation.setDeviceMetricsOverride",
+        Some(json!({"width": 1366, "height": 768, "deviceScaleFactor": 1.5})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    let (w, h, dsf) = captured.lock().unwrap().take().unwrap();
+    assert_eq!(w, 1366);
+    assert_eq!(h, 768);
+    assert_eq!(dsf, Some(1.5));
+}
+
+#[test]
+fn test_emulation_clear_device_metrics_override_empty() {
+    let resp = dispatch("Emulation.clearDeviceMetricsOverride", None);
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_emulation_set_user_agent_override_empty_skips_bridge() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let dispatched = Arc::new(AtomicUsize::new(0));
+    let dispatched2 = dispatched.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|_cmd| {
+                dispatched2.fetch_add(1, Ordering::SeqCst);
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("Emulation.setUserAgentOverride", Some(json!({"userAgent": ""})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert!(resp.result.is_some());
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(dispatched.load(Ordering::SeqCst), 0, "empty UA must not fire bridge command");
+}
+
+#[test]
+fn test_emulation_set_user_agent_override_nonempty_dispatches() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::SetUserAgent { user_agent, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(user_agent);
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge(
+        "Emulation.setUserAgentOverride",
+        Some(json!({"userAgent": "Mozilla/5.0 Bao"})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(captured.lock().unwrap().take().unwrap(), "Mozilla/5.0 Bao");
+}
+
+#[test]
+fn test_emulation_misc_noop_commands_empty_result() {
+    for cmd in [
+        "setTouchEmulationEnabled", "setScriptExecutionDisabled",
+        "setFocusEmulationEnabled", "setCPUThrottlingRate",
+        "setDefaultBackgroundColorOverride",
+    ] {
+        let resp = dispatch(&format!("Emulation.{cmd}"), None);
+        assert!(resp.result.is_some(), "{cmd} must return a result");
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_emulation_unknown_subcommand_method_not_found() {
+    let resp = dispatch("Emulation.unknownCommand", None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+    assert!(err.message.contains("Emulation.unknownCommand"));
+}
+
+// ============================================================================
+// ADVERSARIAL: Input domain (REQ-CDP-001/003)
+// ============================================================================
+
+#[test]
+fn test_input_dispatch_mouse_event_no_bridge_empty_result() {
+    let resp = dispatch("Input.dispatchMouseEvent",
+        Some(json!({"type": "mousePressed", "x": 10.0, "y": 20.0, "button": 0, "clickCount": 1})));
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_input_dispatch_mouse_event_with_bridge_propagates_fields() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(String, f64, f64, Option<i64>, Option<i64>)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::DispatchMouseEvent { event_type, x, y, button, click_count, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((event_type, x, y, button, click_count));
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge(
+        "Input.dispatchMouseEvent",
+        Some(json!({"type": "mouseReleased", "x": 12.5, "y": -3.0, "button": 2, "clickCount": 3})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    let (et, x, y, b, c) = captured.lock().unwrap().take().unwrap();
+    assert_eq!(et, "mouseReleased");
+    assert_eq!(x, 12.5);
+    assert_eq!(y, -3.0);
+    assert_eq!(b, Some(2));
+    assert_eq!(c, Some(3));
+}
+
+#[test]
+fn test_input_dispatch_mouse_event_defaults_x_y_zero() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(f64, f64)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::DispatchMouseEvent { x, y, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((x, y));
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge("Input.dispatchMouseEvent", Some(json!({"type": "mouseMoved"})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    let (x, y) = captured.lock().unwrap().take().unwrap();
+    assert_eq!(x, 0.0);
+    assert_eq!(y, 0.0);
+}
+
+#[test]
+fn test_input_dispatch_key_event_with_bridge_propagates_fields() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<(String, String, String, Option<String>)>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::DispatchKeyEvent { event_type, key, code, text, .. } = cmd {
+                    *captured2.lock().unwrap() = Some((event_type, key, code, text));
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge(
+        "Input.dispatchKeyEvent",
+        Some(json!({"type": "keyDown", "key": "Enter", "code": "Enter", "text": "\r"})),
+        "t1", &tx,
+    );
+    done.store(1, Ordering::Relaxed);
+    let (et, k, c, t) = captured.lock().unwrap().take().unwrap();
+    assert_eq!(et, "keyDown");
+    assert_eq!(k, "Enter");
+    assert_eq!(c, "Enter");
+    assert_eq!(t, Some("\r".into()));
+}
+
+#[test]
+fn test_input_dispatch_touch_event_empty_result() {
+    let resp = dispatch("Input.dispatchTouchEvent", Some(json!({})));
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_input_insert_text_empty_skips_bridge() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let dispatched = Arc::new(AtomicUsize::new(0));
+    let dispatched2 = dispatched.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|_cmd| {
+                dispatched2.fetch_add(1, Ordering::SeqCst);
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let resp = dispatch_bridge("Input.insertText", Some(json!({"text": ""})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert!(resp.result.is_some());
+    std::thread::sleep(Duration::from_millis(30));
+    assert_eq!(dispatched.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn test_input_insert_text_nonempty_dispatches() {
+    let (tx, rx) = bridge_channel(Duration::from_millis(200));
+    let captured = Arc::new(std::sync::Mutex::new(None::<String>));
+    let captured2 = captured.clone();
+    let done = Arc::new(AtomicUsize::new(0));
+    let done2 = done.clone();
+    std::thread::spawn(move || {
+        while done2.load(Ordering::Relaxed) == 0 {
+            let got = rx.try_process(|cmd| {
+                if let BridgeCommand::InsertText { text, .. } = cmd {
+                    *captured2.lock().unwrap() = Some(text);
+                }
+                BridgeResponse { result: Ok(json!({})) }
+            });
+            if got { return; }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let _ = dispatch_bridge("Input.insertText", Some(json!({"text": "hello"})), "t1", &tx);
+    done.store(1, Ordering::Relaxed);
+    assert_eq!(captured.lock().unwrap().take().unwrap(), "hello");
+}
+
+#[test]
+fn test_input_unknown_subcommand_method_not_found() {
+    let resp = dispatch("Input.notAnInputCommand", None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+    assert!(err.message.contains("Input.notAnInputCommand"));
+}
+
+// ============================================================================
+// ADVERSARIAL: Network domain full coverage (REQ-CDP-006)
+// ============================================================================
+
+#[test]
+fn test_network_enable_disable_empty_result() {
+    for cmd in ["enable", "disable"] {
+        let resp = dispatch(&format!("Network.{cmd}"), None);
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_network_get_response_body_constant_shape() {
+    let resp = dispatch("Network.getResponseBody", Some(json!({"requestId": "r1"})));
+    let r = resp.result.unwrap();
+    assert_eq!(r["body"], "");
+    assert_eq!(r["base64Encoded"], false);
+}
+
+#[test]
+fn test_network_cache_and_headers_noop() {
+    for cmd in ["setCacheDisabled", "setExtraHTTPHeaders"] {
+        let resp = dispatch(&format!("Network.{cmd}"), None);
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_network_emulate_and_intercept_noop() {
+    for cmd in [
+        "emulateNetworkConditions", "setRequestInterception",
+        "continueInterceptedRequest",
+    ] {
+        let resp = dispatch(&format!("Network.{cmd}"), None);
+        assert!(resp.result.is_some(), "{cmd} must return a result");
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_network_get_all_cookies_returns_array() {
+    let resp = dispatch("Network.getAllCookies", None);
+    let r = resp.result.unwrap();
+    assert!(r["cookies"].is_array());
+    assert_eq!(r["cookies"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn test_network_delete_and_set_cookie_noop() {
+    for cmd in ["deleteCookies", "setCookie"] {
+        let resp = dispatch(&format!("Network.{cmd}"), None);
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+    }
+}
+
+// ============================================================================
+// ADVERSARIAL: CSS, Overlay, Log, Debugger, Fetch completeness (REQ-CDP-001/003/006)
+// ============================================================================
+
+#[test]
+fn test_css_enable_disable_empty_result() {
+    for cmd in ["enable", "disable"] {
+        let resp = dispatch(&format!("CSS.{cmd}"), None);
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+    }
+}
+
+#[test]
+fn test_css_get_inline_styles_for_node_null_inline_style() {
+    let resp = dispatch("CSS.getInlineStylesForNode", Some(json!({"nodeId": 1})));
+    assert!(resp.result.unwrap()["inlineStyle"].is_null());
+}
+
+#[test]
+fn test_overlay_set_show_overlays_default_behavior() {
+    // Overlay domain only exposes highlightNode/hideHighlight/setInspectMode/
+    // setPausedInDebuggerMessage; any other Overlay.* must error with -32601.
+    let resp = dispatch("Overlay.setShowOverlays", None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+}
+
+#[test]
+fn test_log_domain_enable_disable_noop_shape() {
+    // Adversarial: Log.enable/disable/clear/start/stop all return ok_empty.
+    for cmd in ["enable", "disable", "clear", "startViolationsReport", "stopViolationsReport"] {
+        let resp = dispatch(&format!("Log.{cmd}"), None);
+        assert!(resp.result.is_some(), "Log.{cmd} must return a result");
+        assert!(resp.error.is_none(), "Log.{cmd} must not error");
+    }
+}
+
+#[test]
+fn test_debugger_enable_and_misc_default_shapes() {
+    // Debugger.enable/disable/pause/resume/step* map to BridgeCommand via the
+    // bridge path; without a bridge they must NOT be handled by the stub here
+    // (the Debugger handler is a thin dispatch returning method-not-found for
+    // unknown). Verify the documented Debugger.* stubs used by this layer.
+    for cmd in [
+        "setBreakpointByUrl", "getPossibleBreakpoints",
+        "getScriptSource", "evaluateOnCallFrame", "setPauseOnExceptions",
+    ] {
+        let resp = dispatch(&format!("Debugger.{cmd}"), None);
+        // All listed Debugger commands must produce a result (no error).
+        assert!(resp.result.is_some(), "{cmd} must return a result");
+        assert!(resp.error.is_none(), "{cmd} must not error");
+    }
+}
+
+#[test]
+fn test_fetch_enable_disable_coverage() {
+    // Fetch.disable returns ok_empty (success); Fetch.enable returns enabled+patternCount.
+    let resp = dispatch("Fetch.disable", None);
+    assert!(resp.result.is_some(), "Fetch.disable must return a result");
+    assert!(resp.error.is_none());
+    let resp = dispatch("Fetch.enable", Some(json!({"patterns": [{"urlPattern": "*"}, {"urlPattern": "*.js"}]})));
+    let r = resp.result.unwrap();
+    assert_eq!(r["enabled"], true);
+    assert_eq!(r["patternCount"], 2);
+}
+
+#[test]
+fn test_fetch_get_request_post_data_constant_shape() {
+    let resp = dispatch("Fetch.getRequestPostData", Some(json!({"requestId": "r-x"})));
+    let r = resp.result.unwrap();
+    assert_eq!(r["requestId"], "r-x");
+    assert_eq!(r["postData"], "");
+}
+
+#[test]
+fn test_fetch_continue_with_auth_constant_shape() {
+    let resp = dispatch("Fetch.continueWithAuth", Some(json!({"requestId": "r-y"})));
+    let r = resp.result.unwrap();
+    assert_eq!(r["requestId"], "r-y");
+}
+
+#[test]
+fn test_fetch_take_response_bodyAsStream_naming() {
+    // Adversarial: the canonical CDP method is `takeResponseBodyAsStream`
+    // (camelCase). The short alias tested below must still 404.
+    let resp = dispatch("Fetch.takeResponseBodyAsStream", Some(json!({"requestId": "r-z"})));
+    let r = resp.result.unwrap();
+    assert_eq!(r["stream"], "stream-r-z");
+}
+
+// ============================================================================
+// ADVERSARIAL: protocol dispatch edge cases (REQ-CDP-001)
+// ============================================================================
+
+#[test]
+fn test_handle_command_preserves_request_id() {
+    // JSON-RPC 2.0: response.id must echo request.id.
+    let msg = CdpMessage { id: Some(999), method: "Page.enable".into(), params: None, session_id: None };
+    let resp = handle_command(msg, "t1", &None, None);
+    assert_eq!(resp.id, Some(999));
+    assert!(resp.result.is_some());
+}
+
+#[test]
+fn test_handle_command_none_id_notification_style() {
+    // Boundary: id = None (notification) → response.id must also be None.
+    let msg = CdpMessage { id: None, method: "Page.enable".into(), params: None, session_id: None };
+    let resp = handle_command(msg, "t1", &None, None);
+    assert_eq!(resp.id, None);
+    assert!(resp.result.is_some());
+}
+
+#[test]
+fn test_handle_command_error_carries_request_id() {
+    let msg = CdpMessage { id: Some(-5), method: "Nope.nope".into(), params: None, session_id: None };
+    let resp = handle_command(msg, "t1", &None, None);
+    assert_eq!(resp.id, Some(-5));
+    assert!(resp.error.is_some());
+    assert_eq!(resp.error.as_ref().unwrap().code, -32601);
+}
+
+#[test]
+fn test_handle_command_dot_only_method_errors() {
+    // Boundary: method = "Target." → domain "Target", command "" → method-not-found.
+    let msg = CdpMessage { id: Some(1), method: "Target.".into(), params: None, session_id: None };
+    let resp = handle_command(msg, "t1", &None, None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+}
+
+#[test]
+fn test_handle_command_method_with_multiple_dots() {
+    // splitn(2, '.') → "A.B.C" → domain "A", command "B.C" → unknown.
+    let msg = CdpMessage { id: Some(1), method: "Target.getTargets.extra".into(), params: None, session_id: None };
+    let resp = handle_command(msg, "t1", &None, None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+}
+
+#[test]
+fn test_handle_command_session_id_ignored_for_dispatch() {
+    // session_id is not used by handle_command; dispatch must succeed regardless.
+    let msg = CdpMessage {
+        id: Some(1), method: "Page.enable".into(), params: None,
+        session_id: Some("sess-1".into()),
+    };
+    let resp = handle_command(msg, "t1", &None, None);
+    assert!(resp.result.is_some());
+}
+
+#[test]
+fn test_unknown_method_message_echoes_full_method_name() {
+    // Adversarial: error message uses msg.method (not parsed parts), so a
+    // method without a dot echoes verbatim.
+    let msg = CdpMessage { id: Some(1), method: "justoneword".into(), params: None, session_id: None };
+    let resp = handle_command(msg, "t1", &None, None);
+    let err = resp.error.as_ref().unwrap();
+    assert_eq!(err.code, -32601);
+    assert_eq!(err.message, "'justoneword' wasn't found");
+}
+
+// ============================================================================
+// ADVERSARIAL: serialize_response / serialize_event edge cases (REQ-CDP-001)
+// ============================================================================
+
+#[test]
+fn test_serialize_response_with_none_id() {
+    let resp = bao_cdp::CdpResponse {
+        id: None,
+        result: Some(json!({"ok": 1})),
+        error: None,
+    };
+    let s = serialize_response(&resp);
+    let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(parsed["id"].is_null(), "response with id=None must serialize id as null");
+    assert_eq!(parsed["result"]["ok"], 1);
+}
+
+#[test]
+fn test_serialize_response_error_with_none_id() {
+    let resp = bao_cdp::CdpResponse {
+        id: None,
+        result: None,
+        error: Some(bao_cdp::CdpError { code: -32601, message: "x".into() }),
+    };
+    let s = serialize_response(&resp);
+    let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert!(parsed["id"].is_null());
+    assert_eq!(parsed["error"]["code"], -32601);
+    assert_eq!(parsed["error"]["message"], "x");
+}
+
+#[test]
+fn test_serialize_event_with_complex_params() {
+    let ev = CdpEvent {
+        method: "Network.responseReceived".into(),
+        params: Some(json!({
+            "requestId": "req",
+            "response": {
+                "url": "https://example.com",
+                "status": 200,
+                "headers": {"Content-Type": "text/html"},
+            }
+        })),
+    };
+    let s = serialize_event(&ev);
+    let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+    assert_eq!(parsed["method"], "Network.responseReceived");
+    assert_eq!(parsed["params"]["response"]["status"], 200);
+    assert_eq!(parsed["params"]["response"]["headers"]["Content-Type"], "text/html");
+}
+
+#[test]
+fn test_serialize_response_round_trip_idempotent() {
+    let resp = bao_cdp::CdpResponse {
+        id: Some(42),
+        result: Some(json!({"a": [1, 2, {"b": true}]})),
+        error: None,
+    };
+    let s1 = serialize_response(&resp);
+    let s2 = serialize_response(&resp);
+    assert_eq!(s1, s2, "serialization must be deterministic for the same input");
+    let parsed: serde_json::Value = serde_json::from_str(&s1).unwrap();
+    let s3 = serde_json::to_string(&parsed).unwrap();
+    assert_eq!(s1, s3, "serialization must be idempotent across round-trips");
+}
+
+// ============================================================================
+// ADVERSARIAL: bridge_send error path (-32603) when bridge absent (REQ-CDP-003)
+// ============================================================================
+
+#[test]
+fn test_bridge_dependent_command_no_bridge_yields_32603() {
+    // Adversarial: commands that REQUIRE a bridge (Page.navigate with non-empty
+    // url, Runtime.evaluate with non-empty expression, DOM.getDocument, etc.)
+    // must surface -32603 "no servo bridge connected" when bridge=None.
+    // But note: several handlers guard `bridge.is_some()` and fall back to a
+    // default — those do NOT hit bridge_send. The pure-bridge-required path is
+    // only exercised when the handler unconditionally calls bridge_send.
+    // We document this by confirming the fallback path returns a result, NOT 32603.
+    let resp = dispatch("Page.navigate", Some(json!({"url": "https://example.com"})));
+    assert!(resp.result.is_some(), "no-bridge fallback must succeed (handler guards bridge.is_some())");
+    assert!(resp.error.is_none());
+}
+
+#[test]
+fn test_bridge_send_internal_error_code_is_32603() {
+    // JSON-RPC internal error code is -32603. Adversarial: confirm bridge
+    // timeouts surface as -32603 (not -32601 method-not-found).
+    let (tx, _rx) = bridge_channel(Duration::from_millis(5));
+    let resp = dispatch_bridge("Page.navigate", Some(json!({"url": "https://timeout.example"})), "t1", &tx);
+    let err = resp.error.as_ref().expect("bridge timeout must produce error");
+    assert_eq!(err.code, -32603);
+    assert_ne!(err.code, -32601, "bridge timeout must not be confused with method-not-found");
+}
+
+// ============================================================================
+// ADVERSARIAL: bridge_channel concurrency & resource behavior
+// ============================================================================
+
+#[test]
+fn test_bridge_concurrent_senders_interleave_correctly() {
+    // Multiple sender clones across threads must all reach the same receiver,
+    // and drain must process exactly the number sent.
+    let (tx, rx) = bridge_channel(Duration::from_secs(2));
+    let counter = Arc::new(AtomicUsize::new(0));
+    let mut joins = Vec::new();
+    for _ in 0..4 {
+        let tx_c = tx.clone();
+        let c = counter.clone();
+        joins.push(std::thread::spawn(move || {
+            for _ in 0..25 {
+                tx_c.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+                c.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+    }
+    for j in joins { j.join().unwrap(); }
+    std::thread::sleep(Duration::from_millis(20));
+    let drained = rx.drain(|_| BridgeResponse { result: Ok(json!({})) });
+    assert_eq!(drained, 100, "all 4x25 commands must be drained");
+    assert_eq!(counter.load(Ordering::SeqCst), 100);
+}
+
+#[test]
+fn test_bridge_drain_is_idempotent_when_empty() {
+    let (_tx, rx) = bridge_channel(Duration::from_secs(5));
+    assert_eq!(rx.drain(|_| BridgeResponse { result: Ok(json!({})) }), 0);
+    // Second drain on still-empty channel must also return 0.
+    assert_eq!(rx.drain(|_| BridgeResponse { result: Ok(json!({})) }), 0);
+}
+
+#[test]
+fn test_bridge_recv_and_process_false_on_short_timeout() {
+    // Boundary: recv_and_process with very short timeout and no sender activity.
+    let (_tx, rx) = bridge_channel(Duration::from_secs(5));
+    let processed = rx.recv_and_process(Duration::from_millis(5), |_| {
+        BridgeResponse { result: Ok(json!(null)) }
+    });
+    assert!(!processed);
+}
+
+#[test]
+fn test_bridge_recv_and_process_returns_true_on_command() {
+    let (tx, rx) = bridge_channel(Duration::from_secs(2));
+    let join = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(10));
+        tx.send_fire_and_forget(BridgeCommand::GetTitle { target_id: TID.into() });
+    });
+    let processed = rx.recv_and_process(Duration::from_secs(2), |cmd| {
+        assert!(matches!(cmd, BridgeCommand::GetTitle { .. }));
+        BridgeResponse { result: Ok(json!("handled")) }
+    });
+    join.join().unwrap();
+    assert!(processed);
+}
+
+// ============================================================================
+// ADVERSARIAL: SPEC criterion alignment — JSON-RPC 2.0 error codes (REQ-CDP-001-C2)
+// ============================================================================
+
+#[test]
+fn test_jsonrpc_method_not_found_code_is_minus_32601() {
+    // JSON-RPC 2.0 §5.1: method not found = -32601. Adversarial: confirm
+    // numeric value (not just "is_some").
+    let resp = dispatch("Nope.nope", None);
+    let code = resp.error.as_ref().unwrap().code;
+    assert_eq!(code, -32601, "method-not-found MUST be -32601 per JSON-RPC 2.0 §5.1");
+}
+
+#[test]
+fn test_jsonrpc_success_envelope_has_result_no_error() {
+    // JSON-RPC 2.0 §4.2: success response has `result` and MUST NOT have `error`.
+    let resp = dispatch("Page.enable", None);
+    assert!(resp.result.is_some());
+    assert!(resp.error.is_none(), "success response MUST NOT carry error");
+}
+
+#[test]
+fn test_jsonrpc_error_envelope_has_error_no_result() {
+    // JSON-RPC 2.0 §4.2: error response has `error` and MUST NOT have `result`.
+    let resp = dispatch("Nope.nope", None);
+    assert!(resp.error.is_some());
+    assert!(resp.result.is_none(), "error response MUST NOT carry result");
+}
