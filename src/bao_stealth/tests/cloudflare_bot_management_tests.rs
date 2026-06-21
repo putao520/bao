@@ -26,7 +26,7 @@ use bao_stealth::{
 // ===========================================================================
 
 // ---- 1.1 Firefox JA3 must be the canonical Firefox 128 hash ----
-// @trace REQ-STL-001-C1 [req:REQ-STL-001] [level:integration]
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C1] [req:REQ-STL-001] [level:integration]
 #[test]
 fn cloudflare_firefox_ja3_matches_known_browser_hash() {
     // Arrange — Cloudflare maintains a hash DB of JA3 fingerprints per browser.
@@ -57,7 +57,7 @@ fn cloudflare_firefox_ja3_matches_known_browser_hash() {
 }
 
 // ---- 1.2 Chrome JA3 must be the canonical Chrome hash ----
-// @trace REQ-STL-001-C1 [req:REQ-STL-001] [level:integration]
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C1] [req:REQ-STL-001] [level:integration]
 #[test]
 fn cloudflare_chrome_ja3_matches_known_browser_hash() {
     // Arrange — Cloudflare has a known Chrome 120+ JA3 hash
@@ -88,7 +88,7 @@ fn cloudflare_chrome_ja3_matches_known_browser_hash() {
 }
 
 // ---- 1.3 Chrome latest JA3 includes post-2024 extensions ----
-// @trace REQ-STL-001-C1 [req:REQ-STL-001] [level:integration]
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C1] [req:REQ-STL-001] [level:integration]
 #[test]
 fn cloudflare_chrome_latest_ja3_has_modern_extensions() {
     // Arrange — Cloudflare updates detection for Chrome 130+ (Oct 2024)
@@ -108,7 +108,7 @@ fn cloudflare_chrome_latest_ja3_has_modern_extensions() {
 }
 
 // ---- 1.4 JA4 fingerprint — Cloudflare uses JA4 as secondary signal ----
-// @trace REQ-STL-001-C2 [req:REQ-STL-001] [level:integration]
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C2] [req:REQ-STL-001] [level:integration]
 #[test]
 fn cloudflare_ja4_format_matches_standard() {
     // Arrange — JA4 format: t13dNNNNNN_xxxx (FoxIO standard adopted by Cloudflare)
@@ -139,7 +139,7 @@ fn cloudflare_ja4_format_matches_standard() {
 }
 
 // ---- 1.5 JA4 deterministic — same profile produces same JA4 ----
-// @trace REQ-STL-001-C2 [req:REQ-STL-001] [level:integration]
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C2] [req:REQ-STL-001] [level:integration]
 #[test]
 fn cloudflare_ja4_deterministic_across_calls() {
     // Arrange — Cloudflare logs JA4 per request; non-deterministic JA4 is a bot signal
@@ -161,7 +161,7 @@ fn cloudflare_ja4_deterministic_across_calls() {
 // ===========================================================================
 
 // ---- 2.1 Firefox HTTP/2 Akamai fingerprint ----
-// @trace REQ-STL-002-C1 [req:REQ-STL-002] [level:integration]
+// @trace REQ-STL-002 [criterion:REQ-STL-002-C1] [req:REQ-STL-002] [level:integration]
 #[test]
 fn cloudflare_firefox_http2_akamai_fingerprint() {
     // Arrange — Cloudflare matches HTTP/2 SETTINGS against known browser patterns
@@ -183,7 +183,7 @@ fn cloudflare_firefox_http2_akamai_fingerprint() {
 }
 
 // ---- 2.2 Chrome HTTP/2 Akamai fingerprint ----
-// @trace REQ-STL-002-C1 [req:REQ-STL-002] [level:integration]
+// @trace REQ-STL-002 [criterion:REQ-STL-002-C1] [req:REQ-STL-002] [level:integration]
 #[test]
 fn cloudflare_chrome_http2_akamai_fingerprint() {
     // Arrange — Chrome HTTP/2 differs from Firefox in window sizes
@@ -201,7 +201,7 @@ fn cloudflare_chrome_http2_akamai_fingerprint() {
 }
 
 // ---- 2.3 HTTP/2 WINDOW_UPDATE size (Cloudflare secondary signal) ----
-// @trace REQ-STL-002-C2 [req:REQ-STL-002] [level:integration]
+// @trace REQ-STL-002 [criterion:REQ-STL-002-C2] [req:REQ-STL-002] [level:integration]
 #[test]
 fn cloudflare_http2_window_update_size_matches_browser() {
     // Arrange — Cloudflare checks WINDOW_UPDATE frame size separately from SETTINGS
@@ -225,7 +225,7 @@ fn cloudflare_http2_window_update_size_matches_browser() {
 }
 
 // ---- 2.4 Pseudo header order (Cloudflare detects reordered headers) ----
-// @trace REQ-STL-002-C4 [req:REQ-STL-002] [level:integration]
+// @trace REQ-STL-002 [criterion:REQ-STL-002-C4] [req:REQ-STL-002] [level:integration]
 #[test]
 fn cloudflare_http2_pseudo_header_order() {
     // Arrange — Cloudflare validates pseudo-header order matches browser
@@ -319,7 +319,7 @@ fn cloudflare_js_challenge_navigator_overrides_present() {
 }
 
 // ---- 4.2 JS hooks must override screen properties (cf-chl detection) ----
-// @trace REQ-STL-004-C6 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C6] [req:REQ-STL-004] [level:integration]
 #[test]
 fn cloudflare_js_challenge_screen_overrides_present() {
     // Arrange
@@ -342,7 +342,7 @@ fn cloudflare_js_challenge_screen_overrides_present() {
 }
 
 // ---- 4.3 JS hooks must override WebGL RENDERER/VENDOR (cf-chl detection) ----
-// @trace REQ-STL-005-C1 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C1] [req:REQ-STL-005] [level:integration]
 #[test]
 fn cloudflare_js_challenge_webgl_overrides_present() {
     // Arrange — cf-chl probes WebGL debug renderer info
@@ -378,7 +378,7 @@ fn cloudflare_js_challenge_webgl_overrides_present() {
 // ===========================================================================
 
 // ---- 5.1 Mouse path entropy — Cloudflare __cf_bm check ----
-// @trace REQ-STL-006-C1 [req:REQ-STL-006] [level:integration]
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C1] [req:REQ-STL-006] [level:integration]
 #[test]
 fn cloudflare_mouse_path_has_sufficient_entropy() {
     // Arrange — Cloudflare JS challenge measures mouse-move entropy during
@@ -410,7 +410,7 @@ fn cloudflare_mouse_path_has_sufficient_entropy() {
 }
 
 // ---- 5.2 Typing rhythm during challenge (cf-chl captcha input) ----
-// @trace REQ-STL-006-C2 [req:REQ-STL-006] [level:integration]
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C2] [req:REQ-STL-006] [level:integration]
 #[test]
 fn cloudflare_typing_rhythm_in_human_range() {
     // Arrange — Cloudflare measures keystroke timing during form-fill challenge

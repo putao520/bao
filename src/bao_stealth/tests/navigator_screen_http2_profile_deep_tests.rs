@@ -3,7 +3,7 @@
 // Http2Fingerprint akamai_fingerprint, settings_frame_payload, ordered_headers,
 // StealthProfile firefox_default/chrome_default field completeness.
 
-use bao_stealth::{NavigatorProfile, ScreenProfile, Http2Fingerprint, StealthProfile};
+use bao_stealth::{NavigatorProfile, ScreenProfile, Http2Fingerprint, StealthProfile, PriorityFrameMode};
 
 // ---- NavigatorProfile firefox ----
 
@@ -416,6 +416,8 @@ fn test_http2_custom() {
         max_header_list_size: 32768,
         window_update_size: 65535,
         pseudo_header_order: vec![":method"],
+        priority_frame_mode: PriorityFrameMode::None,
+        priority_frames: Vec::new(),
     };
     let fp = h2.akamai_fingerprint();
     assert!(fp.starts_with("4096:1:200:65535:8192:32768"));

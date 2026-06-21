@@ -23,7 +23,7 @@ use bao_stealth::{BehaviorSimulator, BehaviorConfig};
 // ===========================================================================
 
 // ---- 1.1 Mouse path has non-uniform speed (entropy > threshold) ----
-// @trace REQ-STL-006-C1 [req:REQ-STL-006] [level:integration]
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C1] [req:REQ-STL-006] [level:integration]
 #[test]
 fn recaptcha_mouse_path_speed_entropy_is_high() {
     // Arrange — reCAPTCHA measures speed variance across path segments.
@@ -59,7 +59,7 @@ fn recaptcha_mouse_path_speed_entropy_is_high() {
 }
 
 // ---- 1.2 Mouse path is non-linear (Bezier curvature) ----
-// @trace REQ-STL-006-C1 [req:REQ-STL-006] [level:integration]
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C1] [req:REQ-STL-006] [level:integration]
 #[test]
 fn recaptcha_mouse_path_deviation_from_linear() {
     // Arrange — reCAPTCHA detects perfectly linear paths as bot signal
@@ -80,7 +80,7 @@ fn recaptcha_mouse_path_deviation_from_linear() {
 }
 
 // ---- 1.3 Multiple paths from same seed are identical (deterministic) ----
-// @trace REQ-STL-006-C1 [req:REQ-STL-006] [level:integration]
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C1] [req:REQ-STL-006] [level:integration]
 #[test]
 fn recaptcha_mouse_path_deterministic_per_session() {
     // Arrange — within a single session, reCAPTCHA expects consistent behavior
@@ -259,7 +259,7 @@ fn recaptcha_click_has_arrival_settling_delay() {
 // ===========================================================================
 
 // ---- 3.1 Typing delays have natural variance (CV in human range) ----
-// @trace REQ-STL-006-C2 [req:REQ-STL-006] [level:integration]
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C2] [req:REQ-STL-006] [level:integration]
 #[test]
 fn recaptcha_typing_delay_variance_in_human_range() {
     // Arrange — reCAPTCHA measures keystroke interval CV.
@@ -290,7 +290,7 @@ fn recaptcha_typing_delay_variance_in_human_range() {
 }
 
 // ---- 3.2 Typing delays include occasional long pauses (thinking) ----
-// @trace REQ-STL-006-C2 [req:REQ-STL-006] [level:integration]
+// @trace REQ-STL-006 [criterion:REQ-STL-006-C2] [req:REQ-STL-006] [level:integration]
 #[test]
 fn recaptcha_typing_has_thinking_pauses() {
     // Arrange — Humans pause briefly before some words (thinking).

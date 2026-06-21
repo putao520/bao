@@ -30,7 +30,7 @@ use bao_stealth::{
 // ===========================================================================
 
 // ---- 1.1 Firefox WebGL renderer does not contain SwiftShader ----
-// @trace REQ-STL-005-C1 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C1] [req:REQ-STL-005] [level:integration]
 #[test]
 fn headless_firefox_webgl_renderer_not_swiftshader() {
     // Arrange — headless Chrome WebGL RENDERER = "Google SwiftShader"
@@ -49,7 +49,7 @@ fn headless_firefox_webgl_renderer_not_swiftshader() {
 }
 
 // ---- 1.2 Chrome WebGL renderer does not contain SwiftShader ----
-// @trace REQ-STL-005-C1 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C1] [req:REQ-STL-005] [level:integration]
 #[test]
 fn headless_chrome_webgl_renderer_not_swiftshader() {
     // Arrange — headless Chrome WebGL RENDERER = "Google SwiftShader"
@@ -70,7 +70,7 @@ fn headless_chrome_webgl_renderer_not_swiftshader() {
 }
 
 // ---- 1.3 WebGL vendor must NOT be the bare "Google Inc." (SwiftShader vendor) ----
-// @trace REQ-STL-005-C2 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C2] [req:REQ-STL-005] [level:integration]
 #[test]
 fn headless_webgl_vendor_not_bare_google_inc() {
     // Arrange — headless Chrome WebGL VENDOR = "Google Inc." (SwiftShader)
@@ -98,7 +98,7 @@ fn headless_webgl_vendor_not_bare_google_inc() {
 }
 
 // ---- 1.4 WebGL has non-trivial extensions list (headless = empty) ----
-// @trace REQ-STL-005-C3 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C3] [req:REQ-STL-005] [level:integration]
 #[test]
 fn headless_webgl_extensions_nonempty() {
     // Arrange — headless WebGL exposes fewer/no extensions
@@ -152,7 +152,7 @@ fn headless_webgl_max_texture_size_plausible() {
 // ===========================================================================
 
 // ---- 2.1 Canvas noise is non-trivial (headless canvas is featureless) ----
-// @trace REQ-STL-003-C1 [req:REQ-STL-003] [level:integration]
+// @trace REQ-STL-003 [criterion:REQ-STL-003-C1] [req:REQ-STL-003] [level:integration]
 #[test]
 fn headless_canvas_noise_produces_variation() {
     // Arrange — headless Canvas toDataURL produces identical bytes per session
@@ -178,7 +178,7 @@ fn headless_canvas_noise_produces_variation() {
 }
 
 // ---- 2.2 Canvas noise is deterministic (same seed → same noise) ----
-// @trace REQ-STL-003-C3 [req:REQ-STL-003] [level:integration]
+// @trace REQ-STL-003 [criterion:REQ-STL-003-C3] [req:REQ-STL-003] [level:integration]
 #[test]
 fn headless_canvas_noise_deterministic() {
     // Arrange
@@ -223,7 +223,7 @@ fn headless_canvas_todataurl_hook_present() {
 // ===========================================================================
 
 // ---- 3.1 All profile user agents exclude HeadlessChrome ----
-// @trace REQ-STL-004-C1 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C1] [req:REQ-STL-004] [level:integration]
 #[test]
 fn headless_no_useragent_contains_headless_chrome() {
     // Arrange — headless Chrome UA contains "HeadlessChrome/120.0.0.0"
@@ -251,7 +251,7 @@ fn headless_no_useragent_contains_headless_chrome() {
 }
 
 // ---- 3.2 User agents reference a real browser version ----
-// @trace REQ-STL-004-C1 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C1] [req:REQ-STL-004] [level:integration]
 #[test]
 fn headless_useragent_has_real_browser_version() {
     // Arrange — headless UA may have version "0.0.0" or be malformed
@@ -275,7 +275,7 @@ fn headless_useragent_has_real_browser_version() {
 // ===========================================================================
 
 // ---- 4.1 Screen dimensions are not 0 ----
-// @trace REQ-STL-004-C6 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C6] [req:REQ-STL-004] [level:integration]
 #[test]
 fn headless_screen_dimensions_not_zero() {
     // Arrange — headless default screen is 0x0 or 800x600
@@ -301,7 +301,7 @@ fn headless_screen_dimensions_not_zero() {
 }
 
 // ---- 4.2 Screen dimensions are not 800x600 (legacy headless default) ----
-// @trace REQ-STL-004-C6 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C6] [req:REQ-STL-004] [level:integration]
 #[test]
 fn headless_screen_not_800x600() {
     // Arrange
@@ -336,7 +336,7 @@ fn headless_screen_color_depth_is_24() {
 // ===========================================================================
 
 // ---- 5.1 JS hooks force navigator.webdriver = false ----
-// @trace REQ-STL-004-C5 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C5] [req:REQ-STL-004] [level:integration]
 #[test]
 fn headless_webdriver_forced_false_in_hooks() {
     // Arrange — headless Chrome sets navigator.webdriver = true by default
@@ -364,7 +364,7 @@ fn headless_webdriver_forced_false_in_hooks() {
 // ===========================================================================
 
 // ---- 6.1 Audio noise is non-zero ----
-// @trace REQ-STL-005-C4 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C4] [req:REQ-STL-005] [level:integration]
 #[test]
 fn headless_audio_noise_is_nonzero() {
     // Arrange — headless AudioContext produces silent (0.0) samples
@@ -387,7 +387,7 @@ fn headless_audio_noise_is_nonzero() {
 }
 
 // ---- 6.2 Audio JS hook present ----
-// @trace REQ-STL-005-C4 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C4] [req:REQ-STL-005] [level:integration]
 #[test]
 fn headless_audio_hook_present() {
     // Arrange
@@ -414,7 +414,7 @@ fn headless_audio_hook_present() {
 // ===========================================================================
 
 // ---- 7.1 Canvas noise seed is consistent regardless of headless mode ----
-// @trace REQ-STL-003-C3 [req:REQ-STL-003] [level:integration]
+// @trace REQ-STL-003 [criterion:REQ-STL-003-C3] [req:REQ-STL-003] [level:integration]
 #[test]
 fn headless_headed_canvas_noise_consistent() {
     // Arrange — same StealthProfile must produce identical canvas noise
@@ -434,7 +434,7 @@ fn headless_headed_canvas_noise_consistent() {
 }
 
 // ---- 7.2 TLS JA3 is consistent regardless of headless mode ----
-// @trace REQ-STL-001-C1 [req:REQ-STL-001] [level:integration]
+// @trace REQ-STL-001 [criterion:REQ-STL-001-C1] [req:REQ-STL-001] [level:integration]
 #[test]
 fn headless_headed_tls_ja3_consistent() {
     // Arrange
@@ -453,7 +453,7 @@ fn headless_headed_tls_ja3_consistent() {
 }
 
 // ---- 7.3 HTTP/2 Akamai fingerprint is consistent regardless of headless mode ----
-// @trace REQ-STL-002-C1 [req:REQ-STL-002] [level:integration]
+// @trace REQ-STL-002 [criterion:REQ-STL-002-C1] [req:REQ-STL-002] [level:integration]
 #[test]
 fn headless_headed_http2_consistent() {
     // Arrange

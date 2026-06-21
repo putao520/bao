@@ -30,7 +30,7 @@ use bao_stealth::{
 // ===========================================================================
 
 // ---- 1.1 webdriver flag must be false in JS injection ----
-// @trace REQ-STL-004-C5 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C5] [req:REQ-STL-004] [level:integration]
 #[test]
 fn sannysoft_webdriver_flag_hidden_in_hooks_js() {
     // Arrange — bot.sannysoft.com row "WebDriver": red if navigator.webdriver === true
@@ -88,7 +88,7 @@ fn sannysoft_user_agent_has_no_headless_marker() {
 }
 
 // ---- 1.2 navigator.languages must be a non-empty array ----
-// @trace REQ-STL-004-C3 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C3] [req:REQ-STL-004] [level:integration]
 #[test]
 fn sannysoft_navigator_languages_is_nonempty_array() {
     // Arrange — bot.sannysoft.com Languages row: red if navigator.languages === []
@@ -136,7 +136,7 @@ fn sannysoft_navigator_languages_is_nonempty_array() {
 }
 
 // ---- 1.3 hardwareConcurrency must be plausible (1-64) ----
-// @trace REQ-STL-004-C4 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C4] [req:REQ-STL-004] [level:integration]
 #[test]
 fn sannysoft_hardware_concurrency_in_human_range() {
     // Arrange — bot.sannysoft.com Hardware Concurrency row flags 0, 1, or implausible values
@@ -206,7 +206,7 @@ fn creepjs_navigator_vendor_coherent_with_useragent() {
 }
 
 // ---- 2.2 platform must be coherent with UA ----
-// @trace REQ-STL-004-C2 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C2] [req:REQ-STL-004] [level:integration]
 #[test]
 fn creepjs_platform_coherent_with_useragent() {
     // Arrange — creepjs flags UA/platform OS mismatch
@@ -298,7 +298,7 @@ fn creepjs_product_sub_engine_coherent() {
 // ===========================================================================
 
 // ---- 3.1 screen dimensions must be plausible desktop size ----
-// @trace REQ-STL-004-C6 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C6] [req:REQ-STL-004] [level:integration]
 #[test]
 fn pixelscan_screen_dimensions_are_plausible_desktop() {
     // Arrange — pixelscan flags non-standard resolutions as VM/headless signal
@@ -331,7 +331,7 @@ fn pixelscan_screen_dimensions_are_plausible_desktop() {
 }
 
 // ---- 3.2 availHeight must be ≤ height (taskbar subtracts) ----
-// @trace REQ-STL-004-C6 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C6] [req:REQ-STL-004] [level:integration]
 #[test]
 fn pixelscan_avail_height_le_full_height() {
     // Arrange — pixelscan flags availHeight > height (impossible, would be spoofing bug)
@@ -375,7 +375,7 @@ fn pixelscan_color_depth_is_standard_24() {
 }
 
 // ---- 3.4 devicePixelRatio must be plausible (1.0, 1.25, 1.5, 2.0) ----
-// @trace REQ-STL-004-C7 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C7] [req:REQ-STL-004] [level:integration]
 #[test]
 fn pixelscan_device_pixel_ratio_plausible() {
     // Arrange — pixelscan flags devicePixelRatio = 0 or unusual values
@@ -517,7 +517,7 @@ fn creepjs_appversion_coherent_with_useragent() {
 // ===========================================================================
 
 // ---- 6.1 language and languages must be mutually consistent ----
-// @trace REQ-STL-004-C3 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C3] [req:REQ-STL-004] [level:integration]
 #[test]
 fn pixelscan_language_languages_consistent() {
     // Arrange — pixelscan cross-checks navigator.language vs languages[0]

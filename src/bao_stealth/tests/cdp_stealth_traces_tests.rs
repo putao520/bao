@@ -24,7 +24,7 @@ use bao_stealth::{StealthProfile, StealthHooks};
 // ===========================================================================
 
 // ---- 1.1 webdriver override present in hooks ----
-// @trace REQ-STL-004-C5 [req:REQ-STL-007] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C5] [req:REQ-STL-007] [level:integration]
 #[test]
 fn cdp_webdriver_override_forced_false() {
     // Arrange — CDP-attached Chrome sets navigator.webdriver = true
@@ -48,7 +48,7 @@ fn cdp_webdriver_override_forced_false() {
 }
 
 // ---- 1.2 webdriver override is non-configurable ----
-// @trace REQ-STL-004-C8 [req:REQ-STL-007] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C8] [req:REQ-STL-007] [level:integration]
 #[test]
 fn cdp_webdriver_override_non_configurable() {
     // Arrange — detection services attempt to re-assign navigator.webdriver
@@ -275,7 +275,7 @@ fn cdp_individual_hooks_nonempty() {
 // ===========================================================================
 
 // ---- 7.1 Both WebGL1 and WebGL2 getParameter patched ----
-// @trace REQ-STL-005-C1 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C1] [req:REQ-STL-005] [level:integration]
 #[test]
 fn cdp_webgl1_and_webgl2_both_patched() {
     // Arrange — CDP detection may probe either WebGL1 or WebGL2 context
@@ -307,7 +307,7 @@ fn cdp_webgl1_and_webgl2_both_patched() {
 }
 
 // ---- 7.2 WebGL getSupportedExtensions patched for both contexts ----
-// @trace REQ-STL-005-C3 [req:REQ-STL-005] [level:integration]
+// @trace REQ-STL-005 [criterion:REQ-STL-005-C3] [req:REQ-STL-005] [level:integration]
 #[test]
 fn cdp_webgl_extensions_patched_both_contexts() {
     // Arrange
@@ -335,7 +335,7 @@ fn cdp_webgl_extensions_patched_both_contexts() {
 // ===========================================================================
 
 // ---- 8.1 All screen properties overridden ----
-// @trace REQ-STL-004-C6 [req:REQ-STL-004] [level:integration]
+// @trace REQ-STL-004 [criterion:REQ-STL-004-C6] [req:REQ-STL-004] [level:integration]
 #[test]
 fn cdp_all_screen_properties_overridden() {
     // Arrange — CDP-attached session may have screen object manipulated

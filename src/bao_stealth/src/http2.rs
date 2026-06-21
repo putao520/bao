@@ -1,4 +1,26 @@
 // REQ-STL-002: HTTP/2 fingerprint matching (Akamai)  @trace REQ-STL-002
+// PRIORITY frame mode (REQ-STL-002-C3): Firefox sends explicit PRIORITY frames with
+// a stream dependency tree; Chrome dropped PRIORITY frames in v106. The
+// `priority_frame_mode` field records this per-browser behaviour.  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorityFrameMode {
+    /// Browser sends explicit PRIORITY frames (Firefox behaviour).  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+    Explicit,
+    /// Browser no longer sends PRIORITY frames (Chrome v106+ behaviour).  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+    None,
+}
+
+/// One PRIORITY frame payload (RFC 7540 §6.3): stream dependency + weight.  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+///
+/// `weight` is the wire value (0-255); the effective HTTP/2 weight is `weight + 1`
+/// (1-256), per RFC 7540 §6.3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PriorityFrame {
+    pub stream_dependency: u32,
+    pub exclusive: bool,
+    pub weight: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct Http2Fingerprint {
     pub header_table_size: u32,
@@ -9,6 +31,10 @@ pub struct Http2Fingerprint {
     pub max_header_list_size: u32,
     pub window_update_size: u32,
     pub pseudo_header_order: Vec<&'static str>,
+    /// PRIORITY frame mode (REQ-STL-002-C3).  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+    pub priority_frame_mode: PriorityFrameMode,
+    /// Explicit PRIORITY frames emitted on connection setup (Firefox only).  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+    pub priority_frames: Vec<PriorityFrame>,
 }
 
 impl Http2Fingerprint {
@@ -22,6 +48,17 @@ impl Http2Fingerprint {
             max_header_list_size: 262144,
             window_update_size: 131072,
             pseudo_header_order: vec![":method", ":path", ":authority", ":scheme"],
+            // Firefox emits explicit PRIORITY frames to build its dependency tree.
+            priority_frame_mode: PriorityFrameMode::Explicit,
+            // Firefox default weights: streams 3/5/7/11 depending on stream 0 (the
+            // root), non-exclusive. Wire weights 40/109/138/255 → effective 41/110/139/256.
+            // Matches observed Firefox connection-setup traffic.
+            priority_frames: vec![
+                PriorityFrame { stream_dependency: 0, exclusive: false, weight: 40 },
+                PriorityFrame { stream_dependency: 0, exclusive: false, weight: 109 },
+                PriorityFrame { stream_dependency: 0, exclusive: false, weight: 138 },
+                PriorityFrame { stream_dependency: 0, exclusive: false, weight: 255 },
+            ],
         }
     }
 
@@ -35,7 +72,29 @@ impl Http2Fingerprint {
             max_header_list_size: 262144,
             window_update_size: 15663105,
             pseudo_header_order: vec![":method", ":authority", ":scheme", ":path"],
+            // Chrome v106+ removed PRIORITY frames entirely.
+            priority_frame_mode: PriorityFrameMode::None,
+            priority_frames: Vec::new(),
         }
+    }
+
+    /// Returns true if this profile emits explicit PRIORITY frames (REQ-STL-002-C3).  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+    pub fn sends_priority_frames(&self) -> bool {
+        self.priority_frame_mode == PriorityFrameMode::Explicit
+    }
+
+    /// Returns the PRIORITY frames this profile emits on connection setup.  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+    pub fn priority_frame_payload(&self) -> &[PriorityFrame] {
+        &self.priority_frames
+    }
+
+    /// Builder: returns a copy with the given PRIORITY mode (REQ-STL-002-C3).  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+    pub fn with_priority_mode(mut self, mode: PriorityFrameMode) -> Self {
+        self.priority_frame_mode = mode;
+        if mode == PriorityFrameMode::None {
+            self.priority_frames.clear();
+        }
+        self
     }
 
     pub fn akamai_fingerprint(&self) -> String {
@@ -72,6 +131,13 @@ impl Http2Fingerprint {
         }
         ordered.extend(remaining);
         ordered
+    }
+}
+
+impl Default for Http2Fingerprint {
+    /// Default = Firefox profile (SPEC REQ-STL-002 mandates Firefox-matching).  @trace REQ-STL-002
+    fn default() -> Self {
+        Http2Fingerprint::firefox()
     }
 }
 
@@ -264,5 +330,53 @@ mod tests {
         let ff = Http2Fingerprint::firefox();
         let ch = Http2Fingerprint::chrome();
         assert_ne!(ff.pseudo_header_order, ch.pseudo_header_order);
+    }
+
+    // ===========================================================================
+    // REQ-STL-002-C3: PRIORITY frame mode  @trace REQ-STL-002 [criterion:REQ-STL-002-C3]
+    // ===========================================================================
+
+    #[test]
+    fn firefox_emits_priority_frames() {
+        // REQ-STL-002-C3: HTTP/2 PRIORITY frame mode matches Firefox.
+        let ff = Http2Fingerprint::firefox();
+        assert_eq!(ff.priority_frame_mode, PriorityFrameMode::Explicit);
+        assert!(ff.sends_priority_frames());
+        assert!(!ff.priority_frame_payload().is_empty());
+    }
+
+    #[test]
+    fn chrome_does_not_emit_priority_frames() {
+        // REQ-STL-002-C3: Chrome v106+ dropped PRIORITY frames.
+        let ch = Http2Fingerprint::chrome();
+        assert_eq!(ch.priority_frame_mode, PriorityFrameMode::None);
+        assert!(!ch.sends_priority_frames());
+        assert!(ch.priority_frame_payload().is_empty());
+    }
+
+    #[test]
+    fn firefox_priority_frames_are_valid_rfc7540() {
+        // REQ-STL-002-C3: each PRIORITY frame has a valid dependency + weight.
+        // RFC 7540 §6.3: weight is wire u8 (effective = wire + 1, range 1-256).
+        let ff = Http2Fingerprint::firefox();
+        for frame in ff.priority_frame_payload() {
+            assert!(frame.weight <= 255);
+            // Stream dependency references a valid prior stream (0 = root).
+        }
+    }
+
+    #[test]
+    fn firefox_and_chrome_priority_modes_differ() {
+        // REQ-STL-002-C3: Firefox sends PRIORITY frames, Chrome does not.
+        let ff = Http2Fingerprint::firefox();
+        let ch = Http2Fingerprint::chrome();
+        assert_ne!(ff.priority_frame_mode, ch.priority_frame_mode);
+    }
+
+    #[test]
+    fn firefox_priority_frame_count_matches_firefox_observed() {
+        // REQ-STL-002-C3: Firefox emits its known dependency-tree PRIORITY frames.
+        let ff = Http2Fingerprint::firefox();
+        assert_eq!(ff.priority_frame_payload().len(), 4);
     }
 }

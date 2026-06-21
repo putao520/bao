@@ -3,7 +3,7 @@
 // ordering and completeness, akamai_fingerprint format, preset differentiation,
 // clone/debug, edge cases.
 
-use bao_stealth::Http2Fingerprint;
+use bao_stealth::{Http2Fingerprint, PriorityFrameMode};
 
 // ---- Construction ----
 
@@ -75,6 +75,8 @@ fn test_akamai_fingerprint_enable_push_true() {
         max_header_list_size: 8192,
         window_update_size: 0,
         pseudo_header_order: vec![],
+        priority_frame_mode: PriorityFrameMode::None,
+        priority_frames: Vec::new(),
     };
     let ak = fp.akamai_fingerprint();
     let parts: Vec<&str> = ak.split(':').collect();
@@ -132,6 +134,8 @@ fn test_settings_frame_payload_enable_push_true() {
         max_header_list_size: 1,
         window_update_size: 0,
         pseudo_header_order: vec![],
+        priority_frame_mode: PriorityFrameMode::None,
+        priority_frames: Vec::new(),
     };
     let payload = fp.settings_frame_payload();
     assert_eq!(payload[1], (0x03, 1));
@@ -384,6 +388,8 @@ fn test_custom_fingerprint() {
         max_header_list_size: 16384,
         window_update_size: 32768,
         pseudo_header_order: vec![":method", ":scheme"],
+        priority_frame_mode: PriorityFrameMode::None,
+        priority_frames: Vec::new(),
     };
     assert_eq!(fp.header_table_size, 8192);
     assert_eq!(fp.pseudo_header_order.len(), 2);
@@ -402,6 +408,8 @@ fn test_custom_fingerprint_settings_payload() {
         max_header_list_size: 4096,
         window_update_size: 0,
         pseudo_header_order: vec![],
+        priority_frame_mode: PriorityFrameMode::None,
+        priority_frames: Vec::new(),
     };
     let payload = fp.settings_frame_payload();
     assert_eq!(payload[0], (0x01, 2048));
@@ -421,6 +429,8 @@ fn test_zero_concurrent_streams() {
         max_header_list_size: 0,
         window_update_size: 0,
         pseudo_header_order: vec![],
+        priority_frame_mode: PriorityFrameMode::None,
+        priority_frames: Vec::new(),
     };
     let ak = fp.akamai_fingerprint();
     assert_eq!(ak, "0:0:0:0:0:0");
@@ -437,6 +447,8 @@ fn test_zero_settings_payload() {
         max_header_list_size: 0,
         window_update_size: 0,
         pseudo_header_order: vec![],
+        priority_frame_mode: PriorityFrameMode::None,
+        priority_frames: Vec::new(),
     };
     let payload = fp.settings_frame_payload();
     for (id, val) in &payload {

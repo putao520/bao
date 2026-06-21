@@ -14,6 +14,7 @@ pub use profile::StealthProfile;
 pub use tls::TlsFingerprint;
 pub use tls::TlsFingerprintConfig;
 pub use http2::Http2Fingerprint;
+pub use http2::{PriorityFrame, PriorityFrameMode};
 pub use canvas::CanvasNoise;
 pub use navigator::{NavigatorProfile, ScreenProfile};
 pub use webgl_audio::{WebGLProfile, AudioProfile};
