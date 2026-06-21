@@ -104,9 +104,23 @@ pub struct PendingFetch {
     /// by the MiniEventLoop concurrent-task dispatcher.
     concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext,
     /// Prevents duplicate ConcurrentTask scheduling: `on_http_done` does a
-    /// `compare_exchange(false → true)` before enqueuing; `resolve_tasklet`
-    /// stores `false` after consuming.
+    /// compare_exchange(false → true) before enqueuing; `resolve_tasklet`
+    /// stores false after consuming.
     has_schedule_callback: AtomicBool,
+    /// BUG-ENG-369 / BCE-007-R5: Backing `Box<[u8]>` for the `&'static` URL
+    /// href that the heap-allocated AsyncHTTP borrows. Leaked via
+    /// `Box::leak` in `start_with_kind`, reclaimed by `resolve_tasklet`
+    /// after the AsyncHTTP is dropped. `None` for the empty static slice.
+    url_owned: Option<*mut [u8]>,
+    /// BUG-ENG-369 / BCE-007-R5: Backing `Box<[u8]>` for the `&'static`
+    /// request body slice the AsyncHTTP borrows. Leaked via `Box::leak`,
+    /// reclaimed by `resolve_tasklet`. `None` for the empty/None body.
+    body_owned: Option<*mut [u8]>,
+    /// BUG-ENG-369 / BCE-007-R5: Backing `Box<[u8]>` for the `&'static`
+    /// headers buffer the AsyncHTTP borrows. Extracted via
+    /// `StringBuilder::move_to_slice` + `Box::into_raw`, reclaimed by
+    /// `resolve_tasklet`. `None` when there are no headers.
+    headers_owned: Option<*mut [u8]>,
 }
 
 // SAFETY: `cx`/`promise_val` are only ever dereferenced on the JS thread that
@@ -250,6 +264,9 @@ unsafe fn start_with_kind(
         mini_loop_ptr: ::std::ptr::null(), // filled below
         concurrent_task: bun_event_loop::AnyTaskWithExtraContext::AnyTaskWithExtraContext::default(),
         has_schedule_callback: AtomicBool::new(false),
+        url_owned: None,    // filled after url lift below
+        body_owned: None,   // filled after body lift below
+        headers_owned: None, // filled after headers_buf lift below
     });
     let pending_ptr = Box::into_raw(pending);
 
@@ -265,7 +282,22 @@ unsafe fn start_with_kind(
         bun_http::HTTPClientResultCallback::new(pending_ptr, on_http_done);
 
     // Parse URL and build header entries.
-    let parsed_url = bun_url::URL::parse(url.as_bytes());
+    //
+    // BUG-ENG-369 / BCE-007-R5: The AsyncHTTP is heap-allocated and outlives
+    // this stack frame (the HTTPThread dereferences its `task` field
+    // asynchronously). `URL<'a>` / `headers_buf` / `body_slice` borrow inputs
+    // must therefore outlive the AsyncHTTP too. We lift the owned `url: String`
+    // and `body: Option<Vec<u8>>` to `&'static [u8]` via `Box::leak` (the
+    // backing `Box<[u8]>` is reclaimed in `on_http_done` once the result is
+    // copied out). Mirrors the upstream `AsyncHTTP.rs` `is_url_owned` /
+    // `free_owned_href` ownership protocol.
+    let url_static: &'static [u8] = Box::leak(url.into_bytes().into_boxed_slice());
+    let parsed_url = bun_url::URL::parse(url_static);
+    // Stash the owning pointer so resolve_tasklet can reclaim the leak.
+    // SAFETY: pending_ptr is a live heap allocation; url_static is 'static.
+    unsafe {
+        (*pending_ptr).url_owned = Some(url_static as *const [u8] as *mut [u8]);
+    }
 
     // Build headers via HeaderBuilder (same pattern as http_client.rs).
     let mut hb = bun_http::HeaderBuilder::default();
@@ -274,6 +306,14 @@ unsafe fn start_with_kind(
     }
     if hb.allocate().is_err() {
         // Header allocation failure -- reject the promise.
+        // Reclaim the leaked url_static backing Box before returning.
+        // SAFETY: url_owned was set above from Box::leak(url.into_boxed_bytes());
+        // reconstitute the Box<[u8]> from the fat pointer and drop it.
+        unsafe {
+            if let Some(url_ptr) = (*pending_ptr).url_owned.take() {
+                drop(Box::from_raw(url_ptr));
+            }
+        }
         let mut outcome_guard = outcome.lock().unwrap();
         *outcome_guard = Some(Err("fetch: header allocation failed".into()));
         drop(outcome_guard);
@@ -284,21 +324,54 @@ unsafe fn start_with_kind(
     for (name, value) in &headers {
         hb.append(name.as_bytes(), value.as_bytes());
     }
-    let entry_list = hb.entries;
-    let headers_buf: &[u8] = unsafe {
-        if let Some(ptr) = hb.content.ptr {
-            ::std::slice::from_raw_parts(ptr.as_ptr(), hb.content.len)
-        } else {
-            &[]
-        }
+    // Extract `headers_buf` as an owned `Box<[u8]>` via `move_to_slice` (which
+    // `take()`s the ptr so the StringBuilder's Drop does not free it), then
+    // leak to `&'static` for the heap-allocated AsyncHTTP to borrow. The
+    // backing Box is reclaimed by `resolve_tasklet`. Note: `move_to_slice`
+    // returns the full `cap` (may include trailing uninit bytes beyond `len`);
+    // we hand the HTTP client only the first `content_len` (written) bytes and
+    // reclaim the full cap allocation in resolve_tasklet.
+    let content_len = hb.content.len;
+    let headers_cap: Box<[u8]> = hb.content.move_to_slice();
+    let headers_owned_ptr: *mut [u8] = Box::into_raw(headers_cap);
+    // SAFETY: headers_owned_ptr is a live heap allocation; the first
+    // content_len bytes are initialized (caller appended everything counted).
+    // Extend to 'static; the backing Box is reclaimed by resolve_tasklet.
+    let headers_buf_static: &'static [u8] = if content_len > 0 {
+        unsafe { ::std::slice::from_raw_parts((*headers_owned_ptr).as_ptr(), content_len) }
+    } else {
+        // No headers — reclaim immediately, use empty static slice.
+        // SAFETY: just allocated via Box::into_raw above.
+        unsafe { drop(Box::from_raw(headers_owned_ptr)); }
+        &[]
     };
+    // Stash the owning pointer for reclaim (alongside url/body), only if
+    // we kept the allocation.
+    // SAFETY: pending_ptr is a live heap allocation.
+    unsafe {
+        if content_len > 0 {
+            (*pending_ptr).headers_owned = Some(headers_owned_ptr);
+        }
+    }
+    let entry_list = hb.entries;
 
     // Response buffer (heap-allocated, owned by AsyncHTTP).
     let response_buffer =
         Box::into_raw(Box::new(bun_core::string::MutableString::default()));
 
-    // Request body slice.
-    let body_slice: &[u8] = body.as_deref().unwrap_or_default();
+    // Request body slice. Lift to 'static (body owned bytes) — reclaimed by
+    // resolve_tasklet. Empty body shares a static empty slice (no reclaim needed).
+    let body_slice: &'static [u8] = match body {
+        Some(b) if !b.is_empty() => {
+            let bs: &'static [u8] = Box::leak(b.into_boxed_slice());
+            // SAFETY: pending_ptr live; stash owning pointer for reclaim.
+            unsafe {
+                (*pending_ptr).body_owned = Some(bs as *const [u8] as *mut [u8]);
+            }
+            bs
+        }
+        _ => &[],
+    };
 
     // TLS fingerprint: StealthProfile → SSLConfig → SSLConfigSharedPtr.
     let tls_props = {
@@ -313,18 +386,44 @@ unsafe fn start_with_kind(
         ..Default::default()
     };
 
-    // Initialize AsyncHTTP (event-driven, no blocking).
-    let mut async_http = bun_http::AsyncHTTP::init(
-        method,
-        parsed_url,
-        entry_list,
-        headers_buf,
-        response_buffer,
-        body_slice,
-        callback,
-        bun_http::FetchRedirect::Follow,
-        options,
-    );
+    // ── BUG-ENG-369 / BCE-007-R5 heap-allocation fix ────────────────────────
+    // Initialize AsyncHTTP (event-driven, no blocking). The AsyncHTTP *must*
+    // be heap-allocated because its `task` field (an intrusive
+    // `thread_pool::Task`) is linked into the HTTPThread's run queue, and the
+    // HTTPThread dereferences the task pointer (via `container_of` /
+    // `from_task_ptr`) asynchronously — after `start_with_kind` returns.
+    //
+    // The prior code allocated `async_http` on this stack frame and then called
+    // `mem::forget(async_http)` to suppress Drop. `mem::forget` does NOT keep
+    // the stack memory alive — it only suppresses the Drop *glue*. The stack
+    // slot is reused as soon as the function returns, so the HTTPThread's
+    // `task` pointer becomes a **stack-use-after-free** (mirrors the
+    // `AsyncHTTP.rs:442` Preconnect heap pattern).
+    //
+    // Root-cause fix (C12 heap-allocation ownership contract):
+    //   - `Box::new(AsyncHTTP::init(...))` → `bun_core::heap::into_raw` puts
+    //     the whole AsyncHTTP on the heap with a stable address.
+    //   - `addr_of_mut!((*async_http_box).task)` hands the heap-stable task
+    //     field address to the HTTPThread scheduler.
+    //   - No `mem::forget` — ownership of the allocation is held by the heap
+    //     pointer until the completion path (`on_http_done`) deallocates it.
+    //   - `on_http_done` receives the `*mut AsyncHTTP<'static>` argument from
+    //     the HTTPThread and calls `bun_core::heap::take` to reclaim + drop it
+    //     after the result is copied out (single-consumer: completion path is
+    //     the sole deallocator).
+    let async_http_box: *mut bun_http::AsyncHTTP<'static> = bun_core::heap::into_raw(Box::new(
+        bun_http::AsyncHTTP::init(
+            method,
+            parsed_url,
+            entry_list,
+            headers_buf_static,
+            response_buffer,
+            body_slice,
+            callback,
+            bun_http::FetchRedirect::Follow,
+            options,
+        ),
+    ));
 
     // Capture the MiniEventLoop pointer for concurrent-task scheduling.
     // SAFETY: with_event_loop borrows the MiniEventLoop on the current thread;
@@ -353,15 +452,20 @@ unsafe fn start_with_kind(
     bun_http::http_thread::init(&Default::default());
 
     // Schedule the AsyncHTTP task on the HTTPThread (single epoll thread).
-    let batch = bun_threading::thread_pool::Batch::from(
-        core::ptr::addr_of_mut!(async_http.task)
-    );
+    // SAFETY: `async_http_box` is a live heap allocation whose backing memory
+    // is stable until `on_http_done` deallocates it; `(*async_http_box).task`
+    // therefore yields a task pointer the HTTPThread may dereference after
+    // this frame returns. This mirrors `AsyncHTTP.rs:442` Preconnect.
+    let batch = bun_threading::thread_pool::Batch::from(unsafe {
+        core::ptr::addr_of_mut!((*async_http_box).task)
+    });
     bun_http::HTTPThread::schedule(batch);
 
-    // Leak the AsyncHTTP -- its memory is managed by the HTTPThread task system.
-    // When the task completes, on_http_done fires and the HTTPThread frees the
-    // task node. The AsyncHTTP data itself lives until the callback fires.
-    ::std::mem::forget(async_http);
+    // No `mem::forget` — the AsyncHTTP is heap-allocated and owned by
+    // `async_http_box`. The completion path (`on_http_done`) reclaims it via
+    // `bun_core::heap::take` after copying the result out. The
+    // `async_http_box` raw pointer is intentionally not bound to a local `Box`
+    // here — ownership has been ceded to the HTTPThread task system.
 
     // ref_concurrently: keep the event loop alive while this fetch is in flight.
     // Mirrors Bun's `FetchTasklet.refConcurrently()`.
@@ -399,9 +503,12 @@ unsafe fn start_with_kind(
 ///   4. If claimed, enqueues `resolve_tasklet` on the JS thread's
 ///      `MiniEventLoop` via `enqueue_task_concurrent_with_extra_ctx`,
 ///      which auto-wakes the JS thread.
+///   5. Reclaims + drops the heap-allocated `AsyncHTTP` (C12 ownership
+///      contract: completion path is the sole deallocator of the Box the
+///      scheduler received).
 fn on_http_done(
     this: *mut PendingFetch,
-    _async_http: *mut bun_http::AsyncHTTP<'static>,
+    async_http_box: *mut bun_http::AsyncHTTP<'static>,
     result: bun_http::HTTPClientResult<'_>,
 ) {
     // 1. Convert HTTPClientResult → FetchOutcome (pure Rust).
@@ -494,6 +601,27 @@ fn on_http_done(
             // enqueue_task_concurrent internally calls wakeup(), so the
             // JS thread will be woken from any blocking epoll_wait.
         }
+    }
+
+    // 5. Reclaim + drop the heap-allocated AsyncHTTP (C12 ownership contract).
+    //
+    // `async_http_box` was allocated via `bun_core::heap::into_raw(Box::new(..))`
+    // in `start_with_kind`. The HTTPThread has finished driving this request
+    // (it called this completion callback), so the task node is no longer
+    // linked into the run queue and no further dereference of `task` will
+    // occur. We are the sole consumer — single-dealloc.
+    //
+    // SAFETY: `async_http_box` is a live heap allocation produced by
+    // `bun_core::heap::into_raw` in `start_with_kind`; this callback is the
+    // sole deallocator (no other code path `take`s or `destroy`s it).
+    // `result` has already been copied out into the `outcome` slot above, so
+    // dropping the AsyncHTTP (and its HTTPClient / response buffer slice) is
+    // sound. The `response_buffer` itself is a separate Box owned by the
+    // outer scope (its bytes were already copied into `body_bytes`).
+    if !async_http_box.is_null() {
+        // SAFETY: see above.
+        let _async_http_box = unsafe { bun_core::heap::take(async_http_box) };
+        drop(_async_http_box);
     }
 }
 
@@ -602,6 +730,24 @@ unsafe fn resolve_tasklet(this: *mut PendingFetch) {
             guard.swap_remove(pos);
         }
     });
+
+    // 6b. BUG-ENG-369 / BCE-007-R5: Reclaim the leaked 'static URL, body and
+    // headers backing buffers. The AsyncHTTP was dropped in on_http_done
+    // (step 5), which already finished reading these slices — they are now
+    // safe to free.
+    // SAFETY: url_owned/body_owned/headers_owned were set in start_with_kind;
+    // we are the sole consumer and the AsyncHTTP is no longer referencing them.
+    unsafe {
+        if let Some(url_ptr) = (*this).url_owned.take() {
+            drop(Box::from_raw(url_ptr));
+        }
+        if let Some(body_ptr) = (*this).body_owned.take() {
+            drop(Box::from_raw(body_ptr));
+        }
+        if let Some(headers_ptr) = (*this).headers_owned.take() {
+            drop(Box::from_raw(headers_ptr));
+        }
+    }
 
     // 7. Deallocate the PendingFetch Box.
     // SAFETY: this pointer was allocated by Box::into_raw in start_with_kind.
@@ -913,6 +1059,9 @@ mod tests {
             mini_loop_ptr: ::std::ptr::null(),
             concurrent_task: Default::default(),
             has_schedule_callback: AtomicBool::new(false),
+            url_owned: None,
+            body_owned: None,
+            headers_owned: None,
         };
         assert!(!pf.has_schedule_callback.load(AtomicOrdering::Relaxed));
         assert!(

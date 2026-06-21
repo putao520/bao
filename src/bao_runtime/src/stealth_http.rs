@@ -8,7 +8,7 @@
 // module (whose functions already take `&Option<StealthProfile>`).
 // @trace REQ-STL-001 [entity:StealthProfile re-export]
 pub use bao_stealth::StealthProfile;
-use bao_stealth::{Http2Fingerprint, TlsFingerprint, TlsFingerprintConfig};
+use bao_stealth::{Http2Fingerprint, PriorityFrameMode, TlsFingerprint, TlsFingerprintConfig};
 use bun_http::Method;
 use bun_http::ssl_config::SSLConfig;
 use bytes::Bytes;
@@ -340,6 +340,8 @@ mod tests {
             max_header_list_size: 65536,
             window_update_size: 65535,
             pseudo_header_order: vec![],
+            priority_frame_mode: PriorityFrameMode::None,
+            priority_frames: vec![],
         };
         let offer = h2_alpn_offer(&empty_fp);
         assert_eq!(offer, "http/1.1");

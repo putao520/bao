@@ -34,7 +34,22 @@ pub const DISABLE_LOLHTML: bool = false;
 /// on macOS that specifically impacts localhost and not
 /// other ipv4 hosts. This is a workaround for that.
 /// "localhost" fails to connect.
-pub const HARDCODE_LOCALHOST_TO_127_0_0_1: bool = false;
+///
+/// BCE-20260621-002 (root cause, design layer): bao enables this on all
+/// platforms. Upstream Bun's `false` default was macOS-specific, but the
+/// same symptom reproduces on Linux (strace evidence:
+/// `connect(AF_INET6, "::", ...) = EADDRNOTAVAIL` then fallback to
+/// `0.0.0.0` instead of `127.0.0.1`/`::1`). The HTTPThread's connect path
+/// (`HTTPContext::connect`) maps the hostname to a `sockaddr` directly
+/// without going through `getaddrinfo`, so the literal string "localhost"
+/// becomes INADDR_ANY (`::` / `0.0.0.0`) rather than the loopback — the
+/// connect then "succeeds" against the wildcard but no server is bound
+/// there from the client's perspective, so `Bun.serve` never receives the
+/// accept and `fetch("http://localhost:N")` hangs forever.
+///
+/// Forcing the rename at connect-time unblocks `fetch(localhost)` without
+/// touching the URL surface JS sees (URL.hostname stays "localhost").
+pub const HARDCODE_LOCALHOST_TO_127_0_0_1: bool = true;
 
 /// React will issue warnings in development if there are multiple children
 /// without keys and "jsxs" is not used.

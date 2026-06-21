@@ -1,4 +1,5 @@
 // @trace REQ-H3-001 [req:REQ-H3-001] [entity:H3Client] [entity:AltSvc]
+// @trace REQ-PURE-007 [level:library] (status: deprecated/overruled — lsquic C stack retained, quinn migration NOT done)
 //! HTTP/3 (h3) fetch 能力补全模块。
 //!
 //! ## 设计依据

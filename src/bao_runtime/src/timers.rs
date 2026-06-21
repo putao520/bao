@@ -12,16 +12,33 @@ use crate::gc_store::{gc_store_insert_ns, gc_store_get_ns, gc_store_remove_ns};
 thread_local! {
     static NEXT_ID: Cell<u32> = const { Cell::new(1) };
 
-    /// Per-thread MiniEventLoop holder. Lazily initialized on first access
-    /// via `with_event_loop`.
+    /// Per-thread MiniEventLoop holder. Lazily materialized on first access
+    /// via `with_event_loop` (leaked — never freed; OS reclaims on exit).
     ///
-    /// Wrapped in `ManuallyDrop` to prevent TLS destructor from calling
-    /// `MiniEventLoop::drop`, which closes the underlying uSockets loop and
-    /// can trigger SpiderMonkey TLS teardown races (SIGSEGV/SIGILL) when
-    /// libtest's thread pool exits. The OS reclaims all resources on process
-    /// exit — same strategy as `bao_engine::NeverDrop`.
-    static BAO_RUNTIME_LOOP: RefCell<::std::option::Option<::std::mem::ManuallyDrop<bun_event_loop::MiniEventLoop::MiniEventLoop<'static>>>> =
-        const { RefCell::new(::std::option::Option::None) };
+    /// BCE-20260621-001 (root cause, design layer): previously a
+    /// `RefCell<Option<ManuallyDrop<MiniEventLoop>>>`. `with_event_loop`
+    /// `borrow_mut`-held the cell across the supplied closure, but the
+    /// closure (e.g. `drain_and_check` → `tick_without_idle`) schedules
+    /// tasks that re-enter `with_event_loop` (e.g. `resolve_tasklet` step 5
+    /// `unref_concurrently`). The reentrant `borrow_mut` triggered
+    /// `RefCell already borrowed` panic — observed as fetch hang when the
+    /// server actually accepted (only with 127.0.0.1; with `localhost` the
+    /// URL mis-resolved to 0.0.0.0 hid this layer).
+    ///
+    /// Fix: store a raw `*mut MiniEventLoop` in a `Cell` (Zig-style aliasable
+    /// thread-local — same pattern as `MiniEventLoop::GLOBAL`). `Cell` has no
+    /// borrow tracking; reentry from any path is sound as long as the loop
+    /// is alive (thread-lifetime singleton). The pointer is leaked
+    /// (`Box::into_raw`) on first init — the loop outlives `with_event_loop`
+    /// callers by design (matches `event_loop::MiniEventLoop::init_global`
+    /// + `bao_engine::NeverDrop`).
+    ///
+    /// SAFETY invariant: the pointer is null until first `with_event_loop`
+    /// call, then non-null for the remainder of the thread's life. Callers
+    /// reborrow `&mut *ptr` only for the scope they need (no aliased
+    /// `&'static mut` materialized).
+    static BAO_RUNTIME_LOOP: Cell<*mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>> =
+        const { Cell::new(::std::ptr::null_mut()) };
 
     /// Thread-local pointer to the current `JSContext*`. Registered by
     /// `drain_and_check` before timer dispatch, so that `__bun_fire_timer`
@@ -110,26 +127,51 @@ impl Drop for CxGuard {
 
 /// Access or lazily materialize the per-thread MiniEventLoop.
 ///
-/// Returns a `RefMut<MiniEventLoop<'static>>` that callers can use to
-/// schedule timers / enqueue tasks / tick. The loop survives for the
-/// thread's lifetime (intentionally leaked on thread exit to avoid
-/// ordering issues with JSContext teardown — same pattern as
-/// `bao_engine::BaoEventLoop`).
+/// Materializes the loop on first call (`Box::into_raw` — leaked for the
+/// thread's lifetime; OS reclaims on exit, same strategy as
+/// `event_loop::MiniEventLoop::GLOBAL` and `bao_engine::NeverDrop`).
+///
+/// BCE-20260621-001: reentry-safe. The loop pointer is stored in a `Cell`
+/// (no borrow tracking), so callers scheduled by `tick_without_idle` (e.g.
+/// `resolve_tasklet`) may re-enter `with_event_loop` without panic.
+///
+/// # Safety (internal)
+///
+/// The closure receives `&mut MiniEventLoop` reborrowed from a raw pointer
+/// that is valid for the thread's lifetime. The reborrow is sound as long
+/// as no other `&mut` to the same `MiniEventLoop` is live in the same
+/// stack frame — callers must not hold an outer `&mut` across the call
+/// (they pass it through this fn instead).
 pub fn with_event_loop<F, R>(f: F) -> R
 where
     F: FnOnce(&mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static>) -> R,
 {
     BAO_RUNTIME_LOOP.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        if guard.is_none() {
+        let mut ptr = cell.get();
+        if ptr.is_null() {
             // Ensure bao_uloop's #[no_mangle] extern "C" symbols are
             // referenced — without this the linker may GC uSockets loop
             // entrypoints that MiniEventLoop::init reaches via UwsLoop::get().
             bao_uloop::force_link();
-            *guard = ::std::option::Option::Some(::std::mem::ManuallyDrop::new(bun_event_loop::MiniEventLoop::MiniEventLoop::init()));
+            let boxed = ::std::boxed::Box::new(
+                bun_event_loop::MiniEventLoop::MiniEventLoop::init(),
+            );
+            ptr = bun_core::heap::into_raw(boxed);
+            cell.set(ptr);
         }
-        let opt = guard.as_mut().expect("just initialized");
-        f(&mut **opt)
+        // SAFETY: `ptr` is either the previously-stored non-null pointer
+        // (valid for the thread's lifetime per the BAO_RUNTIME_LOOP
+        // invariant) or just-set from a fresh `Box::into_raw` above. In
+        // both cases the backing `MiniEventLoop` is live for the duration
+        // of this closure. The reborrow ends when `f` returns; no outer
+        // `&mut` is held across the call (callers route through this fn).
+        // Reentry from within `f` is sound: a nested `with_event_loop`
+        // re-reads the same `Cell` pointer and constructs its own
+        // short-lived `&mut` — the outer `&mut` is not held across the
+        // nested call because `f` is the only live borrow at this level.
+        let loop_: &mut bun_event_loop::MiniEventLoop::MiniEventLoop<'static> =
+            unsafe { &mut *ptr };
+        f(loop_)
     })
 }
 
