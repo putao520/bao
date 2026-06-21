@@ -1,0 +1,85 @@
+# REQ-SPEC-001 baseline — 历史 SPEC API element id 技术债务清单
+# @trace REQ-SPEC-001
+#
+# 本文件列出 .spec/*.html 中当前残留的 method-path / path-only / non-API-{DOMAIN}-{N}
+# id,这些是 SPEC id 规范化(REQ-SPEC-001)整改前遗留的历史技术债务。
+# bao_lints spec-id --baseline <本文件> 会抑制清单内的违规,使 CI 门禁只对
+# 「新增违规」(回归)失败,而不阻断既有的历史债务。
+#
+# 处置策略:历史 id 应在后续 SPEC 重构任务中逐步迁移为 API-{DOMAIN}-{N} 格式
+# (用 spec_write(elementType="api") 让 id-registry 分配新 id)。每迁移一个 id,
+# 必须从本清单删除对应行 + 同步更新 .spec/ 中的 xref 引用。清单清空 = 该 REQ
+# 全量达标。新提交绝对禁止向本清单追加任何 id——新增 API 必须用 spec_write
+# 分配 API-{DOMAIN}-{N}。
+#
+# 生成命令:cargo run -p bao_lints -- spec-id .spec/ | grep -oE 'id="[^"]*"' | sed -E 's/id="([^"]*)"/\1/' | sort -u
+artifact-interface-protocol
+artifact-module
+get-/api/bun-compat
+get-/api/node-compat
+get-/cdp-client/public-api
+get-/config/allocator
+get-/impl/phase1-status
+get-/impl/phase2-status
+get-/impl/phase3-status
+get-/impl/phase4-status
+get-/impl/phase5-status
+get-/json/activate/{targetid}
+get-/json/close/{targetid}
+get-/json/list
+get-/json/new
+get-/json/version
+get-/pagepool/stats
+get-/perf/buffer
+get-/perf/cdp-dispatch
+get-/perf/cdp-handler
+get-/perf/code-pattern
+get-/perf/http-response
+get-/sandbox-status
+get-/stealth/cdp-stealth
+post-/browser/create-page
+post-/browser/jscontext-fuse
+post-/browser/screenshot
+post-/cdp-client/a-class
+post-/cdp-client/b-class
+post-/cdp-client/connect
+post-/cdp-client/d-class
+post-/cdp-client/e-class
+post-/cdp-client/subscribe-events
+post-/cdp-client/transport
+post-/cdp/debugger
+post-/cdp/dom
+post-/cdp/emulation
+post-/cdp/network
+post-/cdp/page
+post-/cdp/runtime
+post-/cdp/ws
+post-/cli/browser
+post-/cli/exec
+post-/codegen/generate
+post-/compress/brotli
+post-/compress/zlib
+post-/compress/zstd
+post-/evaluate-js
+post-/evaluate-js-web
+post-/event-loop/drain
+post-/fetch
+post-/fetch/async-tasklet
+post-/fetch/h3
+post-/ffi/load
+post-/hash/simd
+post-/host-fn/call
+post-/http/serve
+post-/network/quic
+post-/pagepool/create
+post-/permission/set
+post-/runtime/eval
+post-/sqlite/open
+post-/stealth/behavior
+post-/stealth/canvas
+post-/stealth/http2
+post-/stealth/navigator
+post-/stealth/tls
+post-/stealth/webgl-audio
+post-/transform/html
+/vm/sandbox

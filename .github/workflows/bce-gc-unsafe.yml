@@ -1,8 +1,7 @@
 name: BCE GC-unsafe Gate
 
-# BCE-20260619-012 防复发门禁
-# 在 PR 和 push 到 master 时跑 GC-unsafe Handle 行扫描器,
-# 任何残留（手搓 Handle::<*mut JSObject> { ptr: &local } 等）都会阻断合并。
+# BCE 防复发门禁集合 — 在 PR 和 push 到 master 时跑 BCE 扫描器,任何残留都会阻断合并。
+# @trace REQ-SPEC-002 (确定性批量门禁用 CI 一次性跑,而非 six-node-dev loop)
 
 on:
   push:
@@ -12,6 +11,8 @@ on:
   workflow_dispatch:
 
 jobs:
+  # BCE-20260619-012: GC-unsafe Handle 行扫描器
+  # 任何残留（手搓 Handle::<*mut JSObject> { ptr: &local } 等）都会阻断合并。
   bce-gc-unsafe-scan:
     name: BCE-012 GC-unsafe Handle scan
     runs-on: ubuntu-latest
@@ -27,3 +28,33 @@ jobs:
       - name: Run BCE-012 GC-unsafe Handle scanner
         run: |
           python3 scripts/bce_scan_gc_unsafe.py src/
+
+  # REQ-SPEC-001 防复发门禁: SPEC API element id 格式扫描
+  # @trace REQ-SPEC-001
+  # 扫描 .spec/*.html,校验带 data-api= 的元素 id 符合 API-{DOMAIN}-{N} 格式。
+  # --baseline 抑制历史技术债务,只对新增 method-path 退化形态失败。
+  # 新增 API 必须用 spec_write(elementType="api") 分配 API-{DOMAIN}-{N},
+  # 禁止手写 post-/.../get-/.../纯路径 id,禁止向 baseline 追加新条目。
+  bce-spec-id-scan:
+    name: REQ-SPEC-001 SPEC API id-format scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-bao_lints-${{ hashFiles('src/bao_lints/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bao_lints-
+
+      - name: Run bao_lints SPEC id-format detector
+        run: |
+          cargo run -p bao_lints -- spec-id .spec/ --baseline .github/baseline-spec-id.txt
