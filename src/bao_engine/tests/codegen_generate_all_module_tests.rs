@@ -414,8 +414,9 @@ fn test_generate_bindings_static_props() {
 }
 
 #[test]
-fn test_generate_bindings_value_kind_no_specs() {
-    // PropertyKind::Value doesn't generate specs (handled in _ => {} branch)
+fn test_generate_bindings_value_kind_emits_string_value_spec() {
+    // PropertyKind::Value emits a SM string-value JSPropertySpec entry so the
+    // constant is reachable from JS (previously dropped by _ => {}).
     let cd = ClassDef {
         name: "ValOnly".into(),
         construct: false,
@@ -433,7 +434,14 @@ fn test_generate_bindings_value_kind_no_specs() {
     };
     let bindings = generate_bindings(&cd);
     assert!(bindings.function_specs.is_empty());
-    assert!(bindings.property_specs.is_empty());
+    assert_eq!(bindings.property_specs.len(), 1, "Value kind must emit one property spec");
+    let spec = &bindings.property_specs[0];
+    assert!(spec.contains("c\"constant\""), "spec must reference the member name");
+    assert!(
+        spec.contains("JSPropertySpec_ValueWrapper::StringValue"),
+        "spec must use the SM string-value wrapper"
+    );
+    assert!(spec.contains("c\"42\""), "spec must carry the constant value");
 }
 
 // ---- generate_all ----

@@ -110,7 +110,7 @@ static ENGINE_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 /// (stored in ENGINE_TLS on that thread) and stores a cloned handle here.
 /// Other threads obtain the handle without calling JSEngine::init() again.
 //
-// @trace REQ-PERF-004 [entity:DomainDispatch]
+// @trace REQ-PERF-004 [entity:DomainDispatch] [level:integration]
 // REQ-PERF-004 验收:进程级 JSEngine 单例用 `OnceLock<JSEngineHandle>` 替代
 // `Arc<Mutex<JSEngineHandle>>`,消除每次访问的 lock/unlock 开销。OnceLock 内部用
 // AtomicU8 状态机,首次 init 后所有 get() 是无锁 atomic load。

@@ -362,7 +362,10 @@ fn test_generate_bindings_with_accessor_generates_both() {
 }
 
 #[test]
-fn test_generate_bindings_value_not_in_specs() {
+fn test_generate_bindings_value_emits_string_value_spec() {
+    // PropertyKind::Value now emits a SM JSPropertySpec string-value entry
+    // so the constant is reachable from JS. Previously the kind was silently
+    // dropped (correctness bug — class constants vanished from the surface).
     let class_def = ClassDef {
         name: "ValueClass".into(),
         construct: false,
@@ -378,7 +381,11 @@ fn test_generate_bindings_value_not_in_specs() {
     };
     let bindings = generate_bindings(&class_def);
     assert!(bindings.function_specs.is_empty());
-    assert!(bindings.property_specs.is_empty());
+    assert_eq!(bindings.property_specs.len(), 1, "Value kind must emit one property spec");
+    let spec = &bindings.property_specs[0];
+    assert!(spec.contains("c\"version\""));
+    assert!(spec.contains("JSPropertySpec_ValueWrapper::StringValue"));
+    assert!(spec.contains("c\"1.0\""));
 }
 
 // ---- generate_module output ----

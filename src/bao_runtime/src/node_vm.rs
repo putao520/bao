@@ -44,30 +44,213 @@ use crate::require::cache_builtin;
 // ──────────────────────────────────────────────────────────────────────────
 
 /// Tracks contextified objects on this thread so `vm.isContext()` can
-/// recognise them. Each entry maps a JSObject* to its sandbox global.
+/// recognise them. Each entry maps a JSObject* to its sandbox global and
+/// the active code-generation policy (REQ-ENG-011 criterion 8).
 thread_local! {
-    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, *mut JSObject)>> = RefCell::new(Vec::new());
+    static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, *mut JSObject, CodeGenerationFlags)>> = RefCell::new(Vec::new());
 }
 
-/// Register a sandbox object as contextified, with its associated global.
-fn register_context(sandbox: *mut JSObject, global: *mut JSObject) {
+/// Register a sandbox object as contextified, with its associated global and
+/// code-generation policy.
+fn register_context(sandbox: *mut JSObject, global: *mut JSObject, flags: CodeGenerationFlags) {
     VM_CONTEXT_MAP.with(|m| {
-        m.borrow_mut().push((sandbox, global));
+        m.borrow_mut().push((sandbox, global, flags));
     });
 }
 
 /// Check whether an object has been contextified.
 fn is_context_registered(obj: *mut JSObject) -> bool {
     VM_CONTEXT_MAP.with(|m| {
-        m.borrow().iter().any(|&(s, _)| ptr::eq(s, obj))
+        m.borrow().iter().any(|&(s, _, _)| ptr::eq(s, obj))
     })
 }
 
 /// Look up the sandbox global for a contextified object.
 fn get_context_global(obj: *mut JSObject) -> Option<*mut JSObject> {
     VM_CONTEXT_MAP.with(|m| {
-        m.borrow().iter().find(|&&(s, _)| ptr::eq(s, obj)).map(|&(_, g)| g)
+        m.borrow().iter().find(|&&(s, _, _)| ptr::eq(s, obj)).map(|&(_, g, _)| g)
     })
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Code-generation policy (REQ-ENG-011 criterion 8: codeGeneration option)
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Flags extracted from the `codeGeneration` option object.
+///
+/// Mirrors Node.js `vm` semantics: `codeGeneration: { strings: false, wasm: false }`
+/// disables `eval`/`Function`/`new Function` string compilation and WebAssembly
+/// module compilation inside the sandbox realm respectively. Both default to
+/// `true` (allowed) when the option is absent or true.
+#[derive(Clone, Copy, Default)]
+struct CodeGenerationFlags {
+    /// When `false`, `eval(...)` / `new Function(...)` / `Function(...)` throw.
+    strings_allowed: bool,
+    /// When `false`, `new WebAssembly.Module(...)` / `WebAssembly.compile(...)`
+    /// are blocked by removing the WebAssembly global.
+    wasm_allowed: bool,
+}
+
+impl CodeGenerationFlags {
+    /// Default-permissive flags (everything allowed).
+    #[inline]
+    fn permissive() -> Self {
+        CodeGenerationFlags { strings_allowed: true, wasm_allowed: true }
+    }
+
+    /// Returns `true` when no restrictions need to be applied.
+    #[inline]
+    fn is_unrestricted(self) -> bool {
+        self.strings_allowed && self.wasm_allowed
+    }
+}
+
+/// Parse the `codeGeneration` field from a JS options object.
+///
+/// Reads `opts.codeGeneration.strings` and `opts.codeGeneration.wasm`
+/// as booleans (defaulting to `true` when absent). Returns the permissive
+/// default when `opts` is not an object or lacks the `codeGeneration` field.
+unsafe fn parse_code_generation_options(
+    cx: *mut JSContext,
+    opts_val: JSVal,
+) -> CodeGenerationFlags {
+    if !opts_val.is_object() {
+        return CodeGenerationFlags::permissive();
+    }
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let raw_cx = cx;
+
+    rooted!(&in(wrapped_cx) let opts = opts_val.to_object());
+
+    // Read opts.codeGeneration
+    let mut cgen_val = UndefinedValue();
+    let got = JS_GetProperty(
+        raw_cx,
+        opts.handle().into(),
+        c"codeGeneration".as_ptr(),
+        MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut cgen_val },
+    );
+    if !got || !cgen_val.is_object() {
+        return CodeGenerationFlags::permissive();
+    }
+
+    rooted!(&in(wrapped_cx) let cgen = cgen_val.to_object());
+
+    let mut read_bool = |key: &::std::ffi::CStr| -> bool {
+        let mut v = UndefinedValue();
+        let ok = JS_GetProperty(
+            raw_cx,
+            cgen.handle().into(),
+            key.as_ptr(),
+            MutableHandle::<JSVal> { _phantom_0: ::std::marker::PhantomData, ptr: &mut v },
+        );
+        if !ok || !v.is_boolean() {
+            true // absent / non-bool → default allowed
+        } else {
+            v.to_boolean()
+        }
+    };
+
+    CodeGenerationFlags {
+        strings_allowed: read_bool(c"strings"),
+        wasm_allowed: read_bool(c"wasm"),
+    }
+}
+
+/// Native callback for the disabled `eval` / `Function` stub.
+///
+/// Throws a `EvalError` mirroring Node's "Code generation from strings
+/// disallowed for this context" message so callers can detect the policy.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn vm_strings_disabled(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    JS_ReportErrorUTF8(
+        cx,
+        c"Code generation from strings disallowed for this context".as_ptr(),
+    );
+    args.rval().set(UndefinedValue());
+    false
+}
+
+/// Apply code-generation restrictions to the sandbox global.
+///
+/// MUST run inside the sandbox AutoRealm. When `strings_allowed` is `false`,
+/// overwrites the global `eval` and `Function` with a throwing stub. When
+/// `wasm_allowed` is `false`, deletes the `WebAssembly` global if present.
+/// SpiderMonkey lazily resolves standard classes via `JS_ResolveStandardClass`,
+/// so we redefine the properties as configurable:false enumerable:false
+/// functions which take precedence over the resolved standard class.
+fn apply_code_generation_restrictions(
+    realm_cx: &mut mozjs::context::JSContext,
+    global: *mut JSObject,
+    flags: CodeGenerationFlags,
+) {
+    if global.is_null() || flags.is_unrestricted() {
+        return;
+    }
+
+    let raw_cx = unsafe { realm_cx.raw_cx() };
+    rooted!(&in(realm_cx) let global_root = global);
+
+    if !flags.strings_allowed {
+        // Replace `eval` with a throwing function.
+        unsafe {
+            let eval_fn = JS_NewFunction(
+                raw_cx,
+                Some(vm_strings_disabled),
+                1,
+                0,
+                c"eval".as_ptr(),
+            );
+            if !eval_fn.is_null() {
+                let eval_obj = JS_GetFunctionObject(eval_fn);
+                rooted!(&in(realm_cx) let ev = mozjs::jsval::ObjectValue(eval_obj));
+                JS_DefineProperty(
+                    raw_cx,
+                    global_root.handle().into(),
+                    c"eval".as_ptr(),
+                    ev.handle().into(),
+                    0u32,
+                );
+            }
+
+            // Replace `Function` constructor (also blocks `new Function(...)`).
+            let func_fn = JS_NewFunction(
+                raw_cx,
+                Some(vm_strings_disabled),
+                1,
+                0,
+                c"Function".as_ptr(),
+            );
+            if !func_fn.is_null() {
+                let func_obj = JS_GetFunctionObject(func_fn);
+                rooted!(&in(realm_cx) let fv = mozjs::jsval::ObjectValue(func_obj));
+                JS_DefineProperty(
+                    raw_cx,
+                    global_root.handle().into(),
+                    c"Function".as_ptr(),
+                    fv.handle().into(),
+                    0u32,
+                );
+            }
+        }
+    }
+
+    if !flags.wasm_allowed {
+        // Delete `WebAssembly` global if present (lazily-resolved or defined).
+        unsafe {
+            JS_DeleteProperty1(
+                raw_cx,
+                global_root.handle().into(),
+                c"WebAssembly".as_ptr(),
+            );
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -191,6 +374,11 @@ unsafe extern "C" fn vm_create_context(
         return true;
     }
 
+    // Parse the codeGeneration option (arg 1) BEFORE entering the AutoRealm.
+    // REQ-ENG-011 criterion 8: codeGeneration can disable eval/function.
+    let cgen_opts_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let cgen_flags = unsafe { parse_code_generation_options(cx, cgen_opts_val) };
+
     // Phase 1: Collect sandbox properties in the CALLER's Realm (before
     // entering AutoRealm). This is critical because the sandbox object lives
     // in the caller's compartment; iterating it from the sandbox realm would
@@ -208,10 +396,13 @@ unsafe extern "C" fn vm_create_context(
         rooted!(&in(realm_cx) let g = sandbox_global.get());
 
         define_properties_on_global(realm_cx, sandbox_global.get(), &sandbox_props);
+
+        // Apply code-generation restrictions (eval/Function/WebAssembly).
+        apply_code_generation_restrictions(realm_cx, sandbox_global.get(), cgen_flags);
     }
 
     // Register as contextified.
-    register_context(sandbox, sandbox_global.get());
+    register_context(sandbox, sandbox_global.get(), cgen_flags);
 
     // Mark with __isVMContext for isContext() backwards compat.
     rooted!(&in(cx_ref) let sandbox_root = sandbox);
@@ -349,10 +540,12 @@ unsafe extern "C" fn vm_run_in_new_context(
         get_context_global(sandbox).unwrap_or(ptr::null_mut())
     } else {
         // Call vm_create_context internally to create the Realm.
-        // We pass the sandbox as argument 0 to createContext.
+        // Forward arg 0 (sandbox) AND arg 2 (options, carries codeGeneration)
+        // so vm_create_context parses the codeGeneration policy (criterion 8).
         // vp layout for CallArgs::from_vp: [rval_slot, magic_marker, arg0, ...]
-        let mut ctx_vp = [UndefinedValue(), UndefinedValue(), ObjectValue(sandbox)];
-        if !vm_create_context(cx, 1, ctx_vp.as_mut_ptr()) {
+        let opts_val = if argc > 2 { *args.get(2).ptr } else { UndefinedValue() };
+        let mut ctx_vp = [UndefinedValue(), UndefinedValue(), ObjectValue(sandbox), opts_val];
+        if !vm_create_context(cx, 2, ctx_vp.as_mut_ptr()) {
             args.rval().set(UndefinedValue());
             return false;
         }
@@ -854,12 +1047,14 @@ unsafe extern "C" fn vm_script_run_in_new_context(
         empty.get()
     };
 
-    // Create or reuse context
+    // Create or reuse context. Forward arg 1 (options, carries codeGeneration)
+    // to vm_create_context so criterion 8 applies to script-created contexts.
     let sandbox_global = if is_context_registered(sandbox) {
         get_context_global(sandbox).unwrap_or(ptr::null_mut())
     } else {
-        let mut ctx_vp = [UndefinedValue(), UndefinedValue(), ObjectValue(sandbox)];
-        if !vm_create_context(cx, 1, ctx_vp.as_mut_ptr()) {
+        let opts_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+        let mut ctx_vp = [UndefinedValue(), UndefinedValue(), ObjectValue(sandbox), opts_val];
+        if !vm_create_context(cx, 2, ctx_vp.as_mut_ptr()) {
             args.rval().set(UndefinedValue());
             return false;
         }

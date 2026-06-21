@@ -41,6 +41,12 @@
 //! 5. 验证：`cargo check -p bao_engine` 通过
 
 // ─── Re-exports from bun_sm (types moved there) ──────────────────────────
+// @trace REQ-ENG-001 [entity:BaoRuntime] — SpiderMonkey engine core types (value/error/dispatch) re-exported from bun_sm (mozjs v0.15.14 integration)
+// @trace REQ-ENG-007 [api:GET /api/node-compat] — Node.js compat surface (node:fs/path/http/crypto/tls/Buffer/process) bridged via bao_engine re-exports
+// @trace REQ-ENG-008 [api:POST /sqlite/open] [entity:SqliteDatabase] — bun:sqlite SpiderMonkey bridge types surfaced through bao_engine
+// @trace REQ-ENG-009 [api:POST /ffi/load] [entity:FfiLibrary] — bun:ffi SpiderMonkey bridge types surfaced through bao_engine
+// @trace REQ-ENG-010 [entity:FetchTasklet] [api:POST /fetch/async-tasklet] — async fetch/http/https/tls FetchTasklet integration re-export entry
+// @trace REQ-ENG-011 [api:/vm/sandbox] [entity:VmSandboxContext] — node:vm sandbox Realm isolation re-export entry
 pub use bun_sm::value;
 pub use bun_sm::error;
 pub use bun_sm::dispatch_sm;
@@ -58,12 +64,18 @@ pub use bun_sm::rare_data;
 pub use bun_sm::webcore_types;
 
 // ─── Re-exported from bun_sm (migrated from bao_engine) ──────────────────
+// @trace REQ-ENG-005 [entity:ModuleSource] [api:POST /module/resolve] — Module Loader bridge (SpiderMonkey ESM hooks → Bun resolver) re-exported from bun_sm
+// @trace REQ-ENG-006 [api:GET /api/bun-compat] [entity:BaoRuntime] — Bun.* / Bao.* API adaptation re-export entry (serve/file/fetch/write)
 pub use bun_sm::module_loader;
 pub use bun_sm::module_loader::{GlobalSetupFn, PostEvalHook, JobQueueDrainFn, set_job_queue_drain};
 
 // ─── Modules still owned by bao_engine ───────────────────────────────────
+// @trace REQ-ENG-003 [api:POST /host-fn/call] [entity:JsCallback] — host_fn safe FFI wrapper owned module surface (JS call / type conversion / GC root RAII)
+// @trace REQ-ENG-004 [api:POST /event-loop/drain] [entity:BaoRuntime] — Event Loop bridge (SpiderMonkey JobQueue → uSockets I/O) owned module surface
 pub mod context;
 pub mod job_queue;
+
+// @trace REQ-ENG-002 [api:POST /codegen/generate] [entity:CodegenBackend] — codegen backend rewrite (.classes.ts → SpiderMonkey bindings) re-exported via bun_sm::codegen / bun_sm::generated
 
 // Re-export proc-macros from bao_engine_macros
 pub use bao_engine_macros::codegen_cached_accessors;

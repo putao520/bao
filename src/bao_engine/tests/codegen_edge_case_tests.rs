@@ -312,10 +312,15 @@ fn test_generate_bindings_with_static_props() {
         ],
     };
     let bindings = generate_bindings(&class_def);
-    // Value-type properties are not emitted as specs by collect_specs
-    // They are parsed but currently skipped in code generation
+    // Value-type static properties emit a SM JSPropertySpec string-value
+    // entry on the constructor (klass) object so the constant is reachable.
     assert_eq!(bindings.static_function_specs.len(), 0);
-    assert_eq!(bindings.static_property_specs.len(), 0);
+    assert_eq!(bindings.static_property_specs.len(), 1);
+    assert!(bindings.static_property_specs[0].contains("c\"VERSION\""));
+    assert!(bindings.static_property_specs[0].contains("c\"2.0\""));
+    assert!(
+        bindings.static_property_specs[0].contains("JSPropertySpec_ValueWrapper::StringValue")
+    );
 }
 
 #[test]
