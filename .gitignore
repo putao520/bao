@@ -48,3 +48,6 @@ rust_out
 *.profraw
 *.profdata
 .playwright-mcp/
+
+# Claude Code workflow runtime state (not for commit)
+.claude/workflow-state.json
