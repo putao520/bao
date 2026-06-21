@@ -12,7 +12,16 @@
 <h2>§1 运行时核心数据结构</h2>
 <!-- ============================================================ -->
 
-<div data-field-webview="WebView;required;servo WebView 实例" data-field-servo="Servo;required;servo 浏览器引擎实例" data-field-js_context="JSContext;required;SpiderMonkey JS 上下文（与 servo 共享）" data-field-event_loop="EventLoop;required;Bun 事件循环" data-entity-model-type="relational" data-entity="BaoRuntime" id="baoruntime">;optional;CDP 服务（按需启动）" data-field-stealth="Option<stealthmodule>;optional;反指纹模块（按需启用）" data-field-module_cache="HashMap<url, ModuleSource="">;required;已解析模块缓存" data-field-timer_heap="TimerHeap;required;定时器最小堆"&gt;
+<div id="baoruntime" data-entity="BaoRuntime"
+  data-entity-model-type="relational"
+  data-field-event_loop="EventLoop;required;Bun 事件循环"
+  data-field-js_context="JSContext;required;SpiderMonkey JS 上下文（与 servo 共享）"
+  data-field-servo="Servo;required;servo 浏览器引擎实例"
+  data-field-webview="WebView;required;servo WebView 实例" 
+  data-field-stealth="Option&lt;stealthmodule&gt;;optional;反指纹模块（按需启用）"
+  data-field-module_cache="HashMap&lt;URL, ModuleSource&gt;"
+  data-field-module_cache_extra=" 
+  data-field-timer_heap="TimerHeap;required;定时器最小堆"&gt;
 <h3>BaoRuntime 实体 — 运行时实例</h3>
 <script type="application/ld+json">
 {
@@ -33,24 +42,33 @@
 </script>
 <table data-entity-table="BaoRuntime">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="js_context" data-required="true" data-type="json"><td>js_context</td><td>JSContext</td><td>是</td><td></td><td>SpiderMonkey JS 上下文（与 servo 共享）</td></tr>
-<tr data-field="event_loop" data-required="true" data-type="json"><td>event_loop</td><td>EventLoop</td><td>是</td><td></td><td>Bun 事件循环</td></tr>
-<tr data-field="servo" data-required="true" data-type="json"><td>servo</td><td>Servo</td><td>是</td><td></td><td>servo 浏览器引擎实例</td></tr>
-<tr data-field="webview" data-required="true" data-type="json"><td>webview</td><td>WebView</td><td>是</td><td></td><td>servo WebView 实例</td></tr>
-<tr data-field="cdp_server" data-required="false" data-type="json"><td>cdp_server</td><td>Option<cdpserver></cdpserver></td><td>否</td><td></td><td>CDP 服务（按需启动）</td></tr>
-<tr data-field="stealth" data-required="false" data-type="json"><td>stealth</td><td>Option<stealthmodule></stealthmodule></td><td>否</td><td></td><td>反指纹模块（按需启用）</td></tr>
-<tr data-field="module_cache" data-required="true" data-type="json"><td>module_cache</td><td>HashMap<url, ModuleSource=""></url,></td><td>是</td><td></td><td>已解析模块缓存</td></tr>
-<tr data-field="timer_heap" data-required="true" data-type="json"><td>timer_heap</td><td>TimerHeap</td><td>是</td><td></td><td>定时器最小堆</td></tr>
+<tr data-field="js_context" data-type="json" data-required="true"><td>js_context</td><td>JSContext</td><td>是</td><td></td><td>SpiderMonkey JS 上下文（与 servo 共享）</td></tr>
+<tr data-field="event_loop" data-type="json" data-required="true"><td>event_loop</td><td>EventLoop</td><td>是</td><td></td><td>Bun 事件循环</td></tr>
+<tr data-field="servo" data-type="json" data-required="true"><td>servo</td><td>Servo</td><td>是</td><td></td><td>servo 浏览器引擎实例</td></tr>
+<tr data-field="webview" data-type="json" data-required="true"><td>webview</td><td>WebView</td><td>是</td><td></td><td>servo WebView 实例</td></tr>
+<tr data-field="cdp_server" data-type="json" data-required="false"><td>cdp_server</td><td>Option<cdpserver></td><td>否</td><td></td><td>CDP 服务（按需启动）</td></tr>
+<tr data-field="stealth" data-type="json" data-required="false"><td>stealth</td><td>Option<stealthmodule></td><td>否</td><td></td><td>反指纹模块（按需启用）</td></tr>
+<tr data-field="module_cache" data-type="json" data-required="true"><td>module_cache</td><td>HashMap<url, ModuleSource=""></td><td>是</td><td></td><td>已解析模块缓存</td></tr>
+<tr data-field="timer_heap" data-type="json" data-required="true"><td>timer_heap</td><td>TimerHeap</td><td>是</td><td></td><td>定时器最小堆</td></tr>
 </table>
 
 
-<p data-xref-id="BaoRuntime" data-xref-type="entity">关联需求: <span data-xref-id="REQ-ENG-001" data-xref-type="req">REQ-ENG-001</span>
-<span data-xref-id="REQ-ENG-002" data-xref-type="req">REQ-ENG-002</span>, <span data-xref-id="REQ-ENG-003" data-xref-type="req">REQ-ENG-003</span>
-<span data-xref-id="REQ-ENG-004" data-xref-type="req">REQ-ENG-004</span>, <span data-xref-id="REQ-ENG-005" data-xref-type="req">REQ-ENG-005</span>
-<span data-xref-id="REQ-ENG-006" data-xref-type="req">REQ-ENG-006</span>, <span data-xref-id="REQ-ENG-007" data-xref-type="req">REQ-ENG-007</span>
-<span data-xref-id="REQ-CLI-001" data-xref-type="req">REQ-CLI-001</span>, <span data-xref-id="REQ-BRW-003" data-xref-type="req">REQ-BRW-003</span></p></url,></stealthmodule></div>
+<p data-xref-type="entity" data-xref-id="BaoRuntime">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-001">REQ-ENG-001</span>
+<span data-xref-type="req" data-xref-id="REQ-ENG-002">REQ-ENG-002</span>, <span data-xref-type="req" data-xref-id="REQ-ENG-003">REQ-ENG-003</span>
+<span data-xref-type="req" data-xref-id="REQ-ENG-004">REQ-ENG-004</span>, <span data-xref-type="req" data-xref-id="REQ-ENG-005">REQ-ENG-005</span>
+<span data-xref-type="req" data-xref-id="REQ-ENG-006">REQ-ENG-006</span>, <span data-xref-type="req" data-xref-id="REQ-ENG-007">REQ-ENG-007</span>
+<span data-xref-type="req" data-xref-id="REQ-CLI-001">REQ-CLI-001</span>, <span data-xref-type="req" data-xref-id="REQ-BRW-003">REQ-BRW-003</span></p></div>
 
-<div data-field-webview="WebView;required;servo WebView 实例 (自带 Realm 隔离)" data-field-state="enum[Created, Navigating, Interactive, Idle, Closing, Closed];required;页面生命周期状态" data-field-rendering_context="RenderingContext;required;独立渲染上下文" data-field-id="uuid;required;页面唯一标识 (WebViewId)" data-field-delegate="BaoWebViewDelegate;required;独立状态回调" data-entity-model-type="relational" data-entity="PageHandle" id="pagehandle">;optional;可选权限配置 (默认无限制)" data-field-stealth_profile="Option<stealthprofile>;optional;可选反指纹配置" data-field-last_active_at="datetime;required;最后活跃时间 (用于 idle_ttl 计算)" data-field-created_at="datetime;required;创建时间"&gt;
+<div id="pagehandle" data-entity="PageHandle"
+  data-entity-model-type="relational"
+  data-field-delegate="BaoWebViewDelegate;required;独立状态回调"
+  data-field-id="uuid;required;页面唯一标识 (WebViewId)"
+  data-field-rendering_context="RenderingContext;required;独立渲染上下文"
+  data-field-state="enum[Created, Navigating, Interactive, Idle, Closing, Closed];required;页面生命周期状态"
+  data-field-webview="WebView;required;servo WebView 实例 (自带 Realm 隔离)" 
+  data-field-stealth_profile="Option&lt;stealthprofile&gt;;optional;可选反指纹配置"
+  data-field-last_active_at="datetime;required;最后活跃时间 (用于 idle_ttl 计算)"
+  data-field-created_at="datetime;required;创建时间"&gt;
 <h3>PageHandle 实体 — 页面句柄</h3>
 <script type="application/ld+json">
 {
@@ -72,22 +90,22 @@
 </script>
 <table data-entity-table="PageHandle">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="id" data-required="true" data-type="uuid"><td>id</td><td>uuid</td><td>是</td><td></td><td>页面唯一标识 (WebViewId)</td></tr>
-<tr data-field="webview" data-required="true" data-type="json"><td>webview</td><td>WebView</td><td>是</td><td></td><td>servo WebView 实例 (自带 Realm 隔离)</td></tr>
-<tr data-field="rendering_context" data-required="true" data-type="json"><td>rendering_context</td><td>RenderingContext</td><td>是</td><td></td><td>独立渲染上下文</td></tr>
-<tr data-field="delegate" data-required="true" data-type="json"><td>delegate</td><td>BaoWebViewDelegate</td><td>是</td><td></td><td>独立状态回调</td></tr>
-<tr data-field="state" data-required="true" data-type="enum"><td>state</td><td>enum[Created, Navigating, Interactive, Idle, Closing, Closed]</td><td>是</td><td></td><td>页面生命周期状态</td></tr>
-<tr data-field="permission" data-required="false" data-type="json"><td>permission</td><td>Option<permission></permission></td><td>否</td><td></td><td>可选权限配置 (默认无限制)</td></tr>
-<tr data-field="stealth_profile" data-required="false" data-type="json"><td>stealth_profile</td><td>Option<stealthprofile></stealthprofile></td><td>否</td><td></td><td>可选反指纹配置</td></tr>
-<tr data-field="last_active_at" data-required="true" data-type="datetime"><td>last_active_at</td><td>datetime</td><td>是</td><td></td><td>最后活跃时间 (用于 idle_ttl 计算)</td></tr>
-<tr data-field="created_at" data-required="true" data-type="datetime"><td>created_at</td><td>datetime</td><td>是</td><td></td><td>创建时间</td></tr>
+<tr data-field="id" data-type="uuid" data-required="true"><td>id</td><td>uuid</td><td>是</td><td></td><td>页面唯一标识 (WebViewId)</td></tr>
+<tr data-field="webview" data-type="json" data-required="true"><td>webview</td><td>WebView</td><td>是</td><td></td><td>servo WebView 实例 (自带 Realm 隔离)</td></tr>
+<tr data-field="rendering_context" data-type="json" data-required="true"><td>rendering_context</td><td>RenderingContext</td><td>是</td><td></td><td>独立渲染上下文</td></tr>
+<tr data-field="delegate" data-type="json" data-required="true"><td>delegate</td><td>BaoWebViewDelegate</td><td>是</td><td></td><td>独立状态回调</td></tr>
+<tr data-field="state" data-type="enum" data-required="true"><td>state</td><td>enum[Created, Navigating, Interactive, Idle, Closing, Closed]</td><td>是</td><td></td><td>页面生命周期状态</td></tr>
+<tr data-field="permission" data-type="json" data-required="false"><td>permission</td><td>Option<permission></td><td>否</td><td></td><td>可选权限配置 (默认无限制)</td></tr>
+<tr data-field="stealth_profile" data-type="json" data-required="false"><td>stealth_profile</td><td>Option<stealthprofile></td><td>否</td><td></td><td>可选反指纹配置</td></tr>
+<tr data-field="last_active_at" data-type="datetime" data-required="true"><td>last_active_at</td><td>datetime</td><td>是</td><td></td><td>最后活跃时间 (用于 idle_ttl 计算)</td></tr>
+<tr data-field="created_at" data-type="datetime" data-required="true"><td>created_at</td><td>datetime</td><td>是</td><td></td><td>创建时间</td></tr>
 </table>
 
 
-<p data-xref-id="PageHandle" data-xref-type="entity">关联需求: <span data-xref-id="REQ-LIB-001" data-xref-type="req">REQ-LIB-001</span>
-<span data-xref-id="REQ-LIB-002" data-xref-type="req">REQ-LIB-002</span>, <span data-xref-id="REQ-LIB-004" data-xref-type="req">REQ-LIB-004</span></p></stealthprofile></div>
+<p data-xref-type="entity" data-xref-id="PageHandle">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-001">REQ-LIB-001</span>
+<span data-xref-type="req" data-xref-id="REQ-LIB-002">REQ-LIB-002</span>, <span data-xref-type="req" data-xref-id="REQ-LIB-004">REQ-LIB-004</span></p></div>
 
-<div data-field-servo="Servo;required;共享的 servo 实例" data-entity-model-type="relational" data-entity="PagePool" id="pagepool">&gt;;required;活跃页面 (引用计数 &gt; 0)" data-field-idle_pages="HashMap<webviewid, (PageHandle,="" Instant)="">;required;空闲页面 (引用计数 = 0，等待 TTL 回收)" data-field-max_total="integer;required;总页面数硬上限" data-field-idle_ttl_seconds="integer;required;空闲页面超时秒数" data-field-stats_active="integer;required;当前活跃页面数" data-field-stats_total_created="integer;required;累计创建页面数" data-field-stats_total_destroyed="integer;required;累计销毁页面数"&gt;
+<div id="pagepool" data-entity="PagePool" data-entity-model-type="relational" data-field-servo="Servo;required;共享的 servo 实例"  data-field-idle_pages="HashMap&lt;webviewid, (PageHandle,""  data-field-max_total="integer;required;总页面数硬上限" data-field-idle_ttl_seconds="integer;required;空闲页面超时秒数" data-field-stats_active="integer;required;当前活跃页面数" data-field-stats_total_created="integer;required;累计创建页面数" data-field-stats_total_destroyed="integer;required;累计销毁页面数"&gt;
 <h3>PagePool 实体 — 页面资源池</h3>
 <script type="application/ld+json">
 {
@@ -108,21 +126,30 @@
 </script>
 <table data-entity-table="PagePool">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="servo" data-required="true" data-type="json"><td>servo</td><td>Servo</td><td>是</td><td></td><td>共享的 servo 实例</td></tr>
-<tr data-field="active_pages" data-required="true" data-type="json"><td>active_pages</td><td>HashMap<webviewid, Rc<PageHandle="">&gt;</webviewid,></td><td>是</td><td></td><td>活跃页面 (引用计数 &gt; 0)</td></tr>
-<tr data-field="idle_pages" data-required="true" data-type="json"><td>idle_pages</td><td>HashMap<webviewid, (PageHandle,="" Instant)=""></webviewid,></td><td>是</td><td></td><td>空闲页面 (引用计数 = 0，等待 TTL 回收)</td></tr>
-<tr data-field="max_total" data-required="true" data-type="integer">= 1, 默认 50"&gt;<td>max_total</td><td>integer</td><td>是</td><td>&gt;= 1, 默认 50</td><td>总页面数硬上限</td></tr>
-<tr data-field="idle_ttl_seconds" data-required="true" data-type="integer">= 1, 默认 60"&gt;<td>idle_ttl_seconds</td><td>integer</td><td>是</td><td>&gt;= 1, 默认 60</td><td>空闲页面超时秒数</td></tr>
-<tr data-field="stats_active" data-required="true" data-type="integer"><td>stats_active</td><td>integer</td><td>是</td><td></td><td>当前活跃页面数</td></tr>
-<tr data-field="stats_total_created" data-required="true" data-type="integer"><td>stats_total_created</td><td>integer</td><td>是</td><td></td><td>累计创建页面数</td></tr>
-<tr data-field="stats_total_destroyed" data-required="true" data-type="integer"><td>stats_total_destroyed</td><td>integer</td><td>是</td><td></td><td>累计销毁页面数</td></tr>
+<tr data-field="servo" data-type="json" data-required="true"><td>servo</td><td>Servo</td><td>是</td><td></td><td>共享的 servo 实例</td></tr>
+<tr data-field="active_pages" data-type="json" data-required="true"><td>active_pages</td><td>HashMap&lt;webviewid, Rc&lt;PageHandle&gt;&gt;</td><td>是</td><td></td><td>活跃页面 (引用计数 &gt; 0)</td></tr>
+<tr data-field="idle_pages" data-type="json" data-required="true"><td>idle_pages</td><td>HashMap<webviewid, (PageHandle,="" Instant)=""></td><td>是</td><td></td><td>空闲页面 (引用计数 = 0，等待 TTL 回收)</td></tr>
+<tr data-field="max_total" data-type="integer" data-constraints="1, 默认 50" data-required="true"><td>max_total</td><td>integer</td><td>是</td><td>&gt;= 1, 默认 50</td><td>总页面数硬上限</td></tr>
+<tr data-field="idle_ttl_seconds" data-type="integer" data-constraints="1, 默认 60" data-required="true"><td>idle_ttl_seconds</td><td>integer</td><td>是</td><td>&gt;= 1, 默认 60</td><td>空闲页面超时秒数</td></tr>
+<tr data-field="stats_active" data-type="integer" data-required="true"><td>stats_active</td><td>integer</td><td>是</td><td></td><td>当前活跃页面数</td></tr>
+<tr data-field="stats_total_created" data-type="integer" data-required="true"><td>stats_total_created</td><td>integer</td><td>是</td><td></td><td>累计创建页面数</td></tr>
+<tr data-field="stats_total_destroyed" data-type="integer" data-required="true"><td>stats_total_destroyed</td><td>integer</td><td>是</td><td></td><td>累计销毁页面数</td></tr>
 </table>
 
 
-<p data-xref-id="PagePool" data-xref-type="entity">关联需求: <span data-xref-id="REQ-LIB-001" data-xref-type="req">REQ-LIB-001</span>
-<span data-xref-id="REQ-LIB-002" data-xref-type="req">REQ-LIB-002</span></p></webviewid,></div>
+<p data-xref-type="entity" data-xref-id="PagePool">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-001">REQ-LIB-001</span>
+<span data-xref-type="req" data-xref-id="REQ-LIB-002">REQ-LIB-002</span></p></div>
 
-<div data-field-viewport="Viewport;required;视口尺寸" data-field-url="string;required;当前页面 URL" data-field-state="enum[Uninitialized, Initialized, Navigating, Loading, Interactive, Complete, Closed];required;页面加载状态" data-field-id="uuid;required;上下文唯一标识" data-field-document="DomDocument;optional;DOM 文档根节点" data-entity-model-type="relational" data-entity="BrowserContext" id="browsercontext">;optional;当前绘制指令列表" data-field-pixel_buffer="Option<pixelbuffer>;optional;当前渲染结果" data-field-network_intercepts="Vec<networkintercept>;optional;网络请求拦截规则" data-field-created_at="datetime;required;创建时间"&gt;
+<div id="browsercontext" data-entity="BrowserContext"
+  data-entity-model-type="relational"
+  data-field-document="DomDocument;optional;DOM 文档根节点"
+  data-field-id="uuid;required;上下文唯一标识"
+  data-field-state="enum[Uninitialized, Initialized, Navigating, Loading, Interactive, Complete, Closed];required;页面加载状态"
+  data-field-url="string;required;当前页面 URL"
+  data-field-viewport="Viewport;required;视口尺寸" 
+  data-field-pixel_buffer="Option&lt;pixelbuffer&gt;;optional;当前渲染结果"
+  data-field-network_intercepts="Vec&lt;networkintercept&gt;;optional;网络请求拦截规则"
+  data-field-created_at="datetime;required;创建时间"&gt;
 <h3>BrowserContext 实体 — 浏览器上下文</h3>
 <script type="application/ld+json">
 {
@@ -144,22 +171,22 @@
 </script>
 <table data-entity-table="BrowserContext">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="id" data-required="true" data-type="uuid"><td>id</td><td>uuid</td><td>是</td><td></td><td>上下文唯一标识</td></tr>
-<tr data-field="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td><td>当前页面 URL</td></tr>
-<tr data-field="state" data-required="true" data-type="enum"><td>state</td><td>enum[Uninitialized, Initialized, Navigating, Loading, Interactive, Complete, Closed]</td><td>是</td><td></td><td>页面加载状态</td></tr>
-<tr data-field="document" data-required="false" data-type="json"><td>document</td><td>DomDocument</td><td>否</td><td></td><td>DOM 文档根节点</td></tr>
-<tr data-field="viewport" data-required="true" data-type="json"><td>viewport</td><td>Viewport</td><td>是</td><td></td><td>视口尺寸</td></tr>
-<tr data-field="display_list" data-required="false" data-type="json"><td>display_list</td><td>Option<displaylist></displaylist></td><td>否</td><td></td><td>当前绘制指令列表</td></tr>
-<tr data-field="pixel_buffer" data-required="false" data-type="json"><td>pixel_buffer</td><td>Option<pixelbuffer></pixelbuffer></td><td>否</td><td></td><td>当前渲染结果</td></tr>
-<tr data-field="network_intercepts">" data-required="false"&gt;<td>network_intercepts</td><td>Vec<networkintercept></networkintercept></td><td>否</td><td></td><td>网络请求拦截规则</td></tr>
-<tr data-field="created_at" data-required="true" data-type="datetime"><td>created_at</td><td>datetime</td><td>是</td><td></td><td>创建时间</td></tr>
+<tr data-field="id" data-type="uuid" data-required="true"><td>id</td><td>uuid</td><td>是</td><td></td><td>上下文唯一标识</td></tr>
+<tr data-field="url" data-type="string" data-required="true"><td>url</td><td>string</td><td>是</td><td></td><td>当前页面 URL</td></tr>
+<tr data-field="state" data-type="enum" data-required="true"><td>state</td><td>enum[Uninitialized, Initialized, Navigating, Loading, Interactive, Complete, Closed]</td><td>是</td><td></td><td>页面加载状态</td></tr>
+<tr data-field="document" data-type="json" data-required="false"><td>document</td><td>DomDocument</td><td>否</td><td></td><td>DOM 文档根节点</td></tr>
+<tr data-field="viewport" data-type="json" data-required="true"><td>viewport</td><td>Viewport</td><td>是</td><td></td><td>视口尺寸</td></tr>
+<tr data-field="display_list" data-type="json" data-required="false"><td>display_list</td><td>Option<displaylist></td><td>否</td><td></td><td>当前绘制指令列表</td></tr>
+<tr data-field="pixel_buffer" data-type="json" data-required="false"><td>pixel_buffer</td><td>Option<pixelbuffer></td><td>否</td><td></td><td>当前渲染结果</td></tr>
+<tr data-field="network_intercepts" data-type="array<NetworkIntercept>" data-required="false"><td>network_intercepts</td><td>array&lt;NetworkIntercept&gt;</td><td>否</td><td></td><td>网络请求拦截规则</td></tr>
+<tr data-field="created_at" data-type="datetime" data-required="true"><td>created_at</td><td>datetime</td><td>是</td><td></td><td>创建时间</td></tr>
 </table>
 
 
-<p data-xref-id="BrowserContext" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CLI-002" data-xref-type="req">REQ-CLI-002</span>
-<span data-xref-id="REQ-BRW-001" data-xref-type="req">REQ-BRW-001</span>, <span data-xref-id="REQ-LIB-001" data-xref-type="req">REQ-LIB-001</span></p></networkintercept></pixelbuffer></div>
+<p data-xref-type="entity" data-xref-id="BrowserContext">关联需求: <span data-xref-type="req" data-xref-id="REQ-CLI-002">REQ-CLI-002</span>
+<span data-xref-type="req" data-xref-id="REQ-BRW-001">REQ-BRW-001</span>, <span data-xref-type="req" data-xref-id="REQ-LIB-001">REQ-LIB-001</span></p></div>
 
-<div data-field-width="integer;required;" data-field-touch="boolean;required;是否支持触摸" data-field-mobile="boolean;required;是否移动设备" data-field-height="integer;required;" data-field-device_scale_factor="float;required;设备像素比" data-entity-model-type="relational" data-entity="Viewport" id="viewport">
+<div id="viewport" data-entity="Viewport" data-entity-model-type="relational" data-field-device_scale_factor="float;required;设备像素比" data-field-height="integer;required;" data-field-mobile="boolean;required;是否移动设备" data-field-touch="boolean;required;是否支持触摸" data-field-width="integer;required;">
 <h3>Viewport 实体 — 视口配置</h3>
 <script type="application/ld+json">
 {
@@ -177,19 +204,19 @@
 </script>
 <table data-entity-table="Viewport">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="width" data-required="true" data-type="integer">= 1"&gt;<td>width</td><td>integer</td><td>是</td><td>&gt;= 1</td><td></td></tr>
-<tr data-field="height" data-required="true" data-type="integer">= 1"&gt;<td>height</td><td>integer</td><td>是</td><td>&gt;= 1</td><td></td></tr>
-<tr data-field="device_scale_factor" data-required="true" data-type="float"> 0"&gt;<td>device_scale_factor</td><td>float</td><td>是</td><td>&gt; 0</td><td>设备像素比</td></tr>
-<tr data-field="mobile" data-required="true" data-type="boolean"><td>mobile</td><td>boolean</td><td>是</td><td></td><td>是否移动设备</td></tr>
-<tr data-field="touch" data-required="true" data-type="boolean"><td>touch</td><td>boolean</td><td>是</td><td></td><td>是否支持触摸</td></tr>
+<tr data-field="width" data-type="integer" data-required="true">= 1"&gt;<td>width</td><td>integer</td><td>是</td><td>&gt;= 1</td><td></td></tr>
+<tr data-field="height" data-type="integer" data-required="true">= 1"&gt;<td>height</td><td>integer</td><td>是</td><td>&gt;= 1</td><td></td></tr>
+<tr data-field="device_scale_factor" data-type="float" data-required="true"> 0"&gt;<td>device_scale_factor</td><td>float</td><td>是</td><td>&gt; 0</td><td>设备像素比</td></tr>
+<tr data-field="mobile" data-type="boolean" data-required="true"><td>mobile</td><td>boolean</td><td>是</td><td></td><td>是否移动设备</td></tr>
+<tr data-field="touch" data-type="boolean" data-required="true"><td>touch</td><td>boolean</td><td>是</td><td></td><td>是否支持触摸</td></tr>
 </table>
 
 
-<p data-xref-id="Viewport" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CLI-002" data-xref-type="req">REQ-CLI-002</span>
-<span data-xref-id="REQ-BRW-001" data-xref-type="req">REQ-BRW-001</span>, <span data-xref-id="REQ-BRW-002" data-xref-type="req">REQ-BRW-002</span>
-<span data-xref-id="REQ-CDP-004" data-xref-type="req">REQ-CDP-004</span></p></div>
+<p data-xref-type="entity" data-xref-id="Viewport">关联需求: <span data-xref-type="req" data-xref-id="REQ-CLI-002">REQ-CLI-002</span>
+<span data-xref-type="req" data-xref-id="REQ-BRW-001">REQ-BRW-001</span>, <span data-xref-type="req" data-xref-id="REQ-BRW-002">REQ-BRW-002</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-004">REQ-CDP-004</span></p></div>
 
-<div data-field-width="integer;required;像素宽度" data-field-height="integer;required;像素高度" data-entity-model-type="relational" data-entity="PixelBuffer" id="pixelbuffer">;required;RGBA 像素数据, length = width * height * 4" data-field-format="enum[RGBA8];required;像素格式"&gt;
+<div id="pixelbuffer" data-entity="PixelBuffer" data-entity-model-type="relational" data-field-height="integer;required;像素高度" data-field-width="integer;required;像素宽度"  data-field-format="enum[RGBA8];required;像素格式"&gt;
 <h3>PixelBuffer 实体 — 渲染像素缓冲</h3>
 <script type="application/ld+json">
 {
@@ -206,22 +233,22 @@
 </script>
 <table data-entity-table="PixelBuffer">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="width" data-required="true" data-type="integer"><td>width</td><td>integer</td><td>是</td><td></td><td>像素宽度</td></tr>
-<tr data-field="height" data-required="true" data-type="integer"><td>height</td><td>integer</td><td>是</td><td></td><td>像素高度</td></tr>
-<tr data-field="data">" data-required="true"&gt;<td>data</td><td>array<uint8></uint8></td><td>是</td><td></td><td>RGBA 像素数据, length = width * height * 4</td></tr>
-<tr data-field="format" data-required="true" data-type="enum"><td>format</td><td>enum[RGBA8]</td><td>是</td><td></td><td>像素格式</td></tr>
+<tr data-field="width" data-type="integer" data-required="true"><td>width</td><td>integer</td><td>是</td><td></td><td>像素宽度</td></tr>
+<tr data-field="height" data-type="integer" data-required="true"><td>height</td><td>integer</td><td>是</td><td></td><td>像素高度</td></tr>
+<tr data-field="data" data-type="array<uint8></uint8>" data-required="true"><td>data</td><td>array&lt;uint8&gt;&lt;/uint8&gt;</td><td>是</td><td></td><td>RGBA 像素数据, length = width * height * 4</td></tr>
+<tr data-field="format" data-type="enum" data-required="true"><td>format</td><td>enum[RGBA8]</td><td>是</td><td></td><td>像素格式</td></tr>
 </table>
 
 
-<p data-xref-id="PixelBuffer" data-xref-type="entity">关联需求: <span data-xref-id="REQ-BRW-001" data-xref-type="req">REQ-BRW-001</span>
-<span data-xref-id="REQ-BRW-002" data-xref-type="req">REQ-BRW-002</span>, <span data-xref-id="REQ-CDP-004" data-xref-type="req">REQ-CDP-004</span>
-<span data-xref-id="REQ-STL-003" data-xref-type="req">REQ-STL-003</span></p></div>
+<p data-xref-type="entity" data-xref-id="PixelBuffer">关联需求: <span data-xref-type="req" data-xref-id="REQ-BRW-001">REQ-BRW-001</span>
+<span data-xref-type="req" data-xref-id="REQ-BRW-002">REQ-BRW-002</span>, <span data-xref-type="req" data-xref-id="REQ-CDP-004">REQ-CDP-004</span>
+<span data-xref-type="req" data-xref-id="REQ-STL-003">REQ-STL-003</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§2 CDP 抽象层数据结构</h2>
 <!-- ============================================================ -->
 
-<div data-field-default_backend="enum[Internal, External];required;默认后端类型" data-entity-model-type="relational" data-entity="CdpRouter" id="cdprouter">;optional;内部后端 (直接操作 bao_browser API)" data-field-external_backend="Option<cdpbackendexternal>;optional;外部后端 (WebSocket 客户端)"&gt;
+<div id="cdprouter" data-entity="CdpRouter" data-entity-model-type="relational" data-field-default_backend="enum[Internal, External];required;默认后端类型"  data-field-external_backend="Option&lt;cdpbackendexternal&gt;;optional;外部后端 (WebSocket 客户端)"&gt;
 <h3>CdpRouter 实体 — CDP 路由器</h3>
 <script type="application/ld+json">
 {
@@ -237,20 +264,20 @@
 </script>
 <table data-entity-table="CdpRouter">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="default_backend" data-required="true" data-type="enum"><td>default_backend</td><td>enum[Internal, External]</td><td>是</td><td></td><td>默认后端类型</td></tr>
-<tr data-field="internal_backend" data-required="false" data-type="json"><td>internal_backend</td><td>Option<cdpbackendinternal></cdpbackendinternal></td><td>否</td><td></td><td>内部后端 (直接操作 bao_browser API)</td></tr>
-<tr data-field="external_backend" data-required="false" data-type="json"><td>external_backend</td><td>Option<cdpbackendexternal></cdpbackendexternal></td><td>否</td><td></td><td>外部后端 (WebSocket 客户端)</td></tr>
+<tr data-field="default_backend" data-type="enum" data-required="true"><td>default_backend</td><td>enum[Internal, External]</td><td>是</td><td></td><td>默认后端类型</td></tr>
+<tr data-field="internal_backend" data-type="json" data-required="false"><td>internal_backend</td><td>Option<cdpbackendinternal></td><td>否</td><td></td><td>内部后端 (直接操作 bao_browser API)</td></tr>
+<tr data-field="external_backend" data-type="json" data-required="false"><td>external_backend</td><td>Option<cdpbackendexternal></td><td>否</td><td></td><td>外部后端 (WebSocket 客户端)</td></tr>
 </table>
 
 
-<p data-xref-id="CdpRouter" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CLI-002" data-xref-type="req">REQ-CLI-002</span>
-<span data-xref-id="REQ-CDP-001" data-xref-type="req">REQ-CDP-001</span>, <span data-xref-id="REQ-CDP-002" data-xref-type="req">REQ-CDP-002</span>
-<span data-xref-id="REQ-CDP-003" data-xref-type="req">REQ-CDP-003</span>, <span data-xref-id="REQ-CDP-004" data-xref-type="req">REQ-CDP-004</span>
-<span data-xref-id="REQ-CDP-005" data-xref-type="req">REQ-CDP-005</span>, <span data-xref-id="REQ-CDP-006" data-xref-type="req">REQ-CDP-006</span>
-<span data-xref-id="REQ-CDP-007" data-xref-type="req">REQ-CDP-007</span>, <span data-xref-id="REQ-CDP-008" data-xref-type="req">REQ-CDP-008</span>
-<span data-xref-id="REQ-LIB-003" data-xref-type="req">REQ-LIB-003</span></p></cdpbackendexternal></div>
+<p data-xref-type="entity" data-xref-id="CdpRouter">关联需求: <span data-xref-type="req" data-xref-id="REQ-CLI-002">REQ-CLI-002</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span>, <span data-xref-type="req" data-xref-id="REQ-CDP-002">REQ-CDP-002</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-003">REQ-CDP-003</span>, <span data-xref-type="req" data-xref-id="REQ-CDP-004">REQ-CDP-004</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-005">REQ-CDP-005</span>, <span data-xref-type="req" data-xref-id="REQ-CDP-006">REQ-CDP-006</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-007">REQ-CDP-007</span>, <span data-xref-type="req" data-xref-id="REQ-CDP-008">REQ-CDP-008</span>
+<span data-xref-type="req" data-xref-id="REQ-LIB-003">REQ-LIB-003</span></p></div>
 
-<div data-field-page_pool="PagePool;required;页面资源池引用" data-entity-model-type="relational" data-entity="CdpBackendInternal" id="cdpbackendinternal">&gt;;required;CDP domain 处理器映射"&gt;
+<div id="cdpbackendinternal" data-entity="CdpBackendInternal" data-entity-model-type="relational" data-field-page_pool="PagePool;required;页面资源池引用">&gt;;required;CDP domain 处理器映射"&gt;
 <h3>CdpBackendInternal 实体 — CDP 内部后端</h3>
 <script type="application/ld+json">
 {
@@ -265,14 +292,14 @@
 </script>
 <table data-entity-table="CdpBackendInternal">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="page_pool" data-required="true" data-type="json"><td>page_pool</td><td>PagePool</td><td>是</td><td></td><td>页面资源池引用</td></tr>
-<tr data-field="domain_handlers" data-required="true" data-type="json"><td>domain_handlers</td><td>HashMap<string, Box<dyn="" CdpDomainHandler="">&gt;</string,></td><td>是</td><td></td><td>CDP domain 处理器映射</td></tr>
+<tr data-field="page_pool" data-type="json" data-required="true"><td>page_pool</td><td>PagePool</td><td>是</td><td></td><td>页面资源池引用</td></tr>
+<tr data-field="domain_handlers" data-type="json" data-required="true"><td>domain_handlers</td><td>HashMap&lt;String, Box&lt;dyn CdpDomainHandler&gt;&gt;</td><td>是</td><td></td><td>CDP domain 处理器映射</td></tr>
 </table>
 
 
-<p data-xref-id="CdpBackendInternal" data-xref-type="entity">关联需求: <span data-xref-id="REQ-LIB-003" data-xref-type="req">REQ-LIB-003</span></p></div>
+<p data-xref-type="entity" data-xref-id="CdpBackendInternal">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-003">REQ-LIB-003</span></p></div>
 
-<div data-field-endpoint="string;required;WebSocket 端点 URL (ws://host:port)" data-field-connection="WebSocketConn;required;WebSocket 客户端连接" data-entity-model-type="relational" data-entity="CdpBackendExternal" id="cdpbackendexternal">;required;外部会话映射"&gt;
+<div id="cdpbackendexternal" data-entity="CdpBackendExternal" data-entity-model-type="relational" data-field-connection="WebSocketConn;required;WebSocket 客户端连接" data-field-endpoint="string;required;WebSocket 端点 URL (ws://host:port)">;required;外部会话映射"&gt;
 <h3>CdpBackendExternal 实体 — CDP 外部后端</h3>
 <script type="application/ld+json">
 {
@@ -288,15 +315,15 @@
 </script>
 <table data-entity-table="CdpBackendExternal">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="endpoint" data-required="true" data-type="string"><td>endpoint</td><td>string</td><td>是</td><td></td><td>WebSocket 端点 URL (ws://host:port)</td></tr>
-<tr data-field="connection" data-required="true" data-type="json"><td>connection</td><td>WebSocketConn</td><td>是</td><td></td><td>WebSocket 客户端连接</td></tr>
-<tr data-field="sessions" data-required="true" data-type="json"><td>sessions</td><td>HashMap<string, ExternalSession=""></string,></td><td>是</td><td></td><td>外部会话映射</td></tr>
+<tr data-field="endpoint" data-type="string" data-required="true"><td>endpoint</td><td>string</td><td>是</td><td></td><td>WebSocket 端点 URL (ws://host:port)</td></tr>
+<tr data-field="connection" data-type="json" data-required="true"><td>connection</td><td>WebSocketConn</td><td>是</td><td></td><td>WebSocket 客户端连接</td></tr>
+<tr data-field="sessions" data-type="json" data-required="true"><td>sessions</td><td>HashMap<string, ExternalSession=""></td><td>是</td><td></td><td>外部会话映射</td></tr>
 </table>
 
 
-<p data-xref-id="CdpBackendExternal" data-xref-type="entity">关联需求: <span data-xref-id="REQ-LIB-003" data-xref-type="req">REQ-LIB-003</span></p></div>
+<p data-xref-type="entity" data-xref-id="CdpBackendExternal">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-003">REQ-LIB-003</span></p></div>
 
-<div data-field-websocket="WebSocketConn;required;WebSocket 连接" data-field-target_id="uuid;required;关联的 BrowserContext ID" data-field-session_id="uuid;required;会话 ID" data-entity-model-type="relational" data-entity="CdpSession" id="cdpsession">;required;已启用的 CDP domain" data-field-breakpoints="Vec<breakpoint>;optional;已设置的断点" data-field-network_intercepts="Vec<networkintercept>;optional;网络拦截规则"&gt;
+<div id="cdpsession" data-entity="CdpSession" data-entity-model-type="relational" data-field-session_id="uuid;required;会话 ID" data-field-target_id="uuid;required;关联的 BrowserContext ID" data-field-websocket="WebSocketConn;required;WebSocket 连接"  data-field-breakpoints="Vec&lt;breakpoint&gt;;optional;已设置的断点" data-field-network_intercepts="Vec&lt;networkintercept&gt;;optional;网络拦截规则"&gt;
 <h3>CdpSession 实体 — CDP 客户端会话</h3>
 <script type="application/ld+json">
 {
@@ -315,19 +342,19 @@
 </script>
 <table data-entity-table="CdpSession">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="session_id" data-required="true" data-type="uuid"><td>session_id</td><td>uuid</td><td>是</td><td></td><td>会话 ID</td></tr>
-<tr data-field="target_id" data-required="true" data-type="uuid"><td>target_id</td><td>uuid</td><td>是</td><td></td><td>关联的 BrowserContext ID</td></tr>
-<tr data-field="websocket" data-required="true" data-type="json"><td>websocket</td><td>WebSocketConn</td><td>是</td><td></td><td>WebSocket 连接</td></tr>
-<tr data-field="enabled_domains" data-required="true" data-type="json"><td>enabled_domains</td><td>Set<string></string></td><td>是</td><td></td><td>已启用的 CDP domain</td></tr>
-<tr data-field="breakpoints">" data-required="false"&gt;<td>breakpoints</td><td>Vec<breakpoint></breakpoint></td><td>否</td><td></td><td>已设置的断点</td></tr>
-<tr data-field="network_intercepts">" data-required="false"&gt;<td>network_intercepts</td><td>Vec<networkintercept></networkintercept></td><td>否</td><td></td><td>网络拦截规则</td></tr>
+<tr data-field="session_id" data-type="uuid" data-required="true"><td>session_id</td><td>uuid</td><td>是</td><td></td><td>会话 ID</td></tr>
+<tr data-field="target_id" data-type="uuid" data-required="true"><td>target_id</td><td>uuid</td><td>是</td><td></td><td>关联的 BrowserContext ID</td></tr>
+<tr data-field="websocket" data-type="json" data-required="true"><td>websocket</td><td>WebSocketConn</td><td>是</td><td></td><td>WebSocket 连接</td></tr>
+<tr data-field="enabled_domains" data-type="json" data-required="true"><td>enabled_domains</td><td>Set<string></td><td>是</td><td></td><td>已启用的 CDP domain</td></tr>
+<tr data-field="breakpoints" data-type="array<Breakpoint>" data-required="false"><td>breakpoints</td><td>array&lt;Breakpoint&gt;</td><td>否</td><td></td><td>已设置的断点</td></tr>
+<tr data-field="network_intercepts" data-type="array<NetworkIntercept>" data-required="false"><td>network_intercepts</td><td>array&lt;NetworkIntercept&gt;</td><td>否</td><td></td><td>网络拦截规则</td></tr>
 </table>
 
 
-<p data-xref-id="CdpSession" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDP-001" data-xref-type="req">REQ-CDP-001</span>
-<span data-xref-id="REQ-CDP-008" data-xref-type="req">REQ-CDP-008</span>, <span data-xref-id="REQ-LIB-003" data-xref-type="req">REQ-LIB-003</span></p></networkintercept></breakpoint></div>
+<p data-xref-type="entity" data-xref-id="CdpSession">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-008">REQ-CDP-008</span>, <span data-xref-type="req" data-xref-id="REQ-LIB-003">REQ-LIB-003</span></p></div>
 
-<div data-field-session_id="string;optional;目标 session" data-field-params="json;optional;方法参数" data-field-method="string;required;Domain.Method 格式" data-field-id="integer;required;消息 ID" data-entity-model-type="relational" data-entity="CdpCommand" id="cdpcommand">
+<div id="cdpcommand" data-entity="CdpCommand" data-entity-model-type="relational" data-field-id="integer;required;消息 ID" data-field-method="string;required;Domain.Method 格式" data-field-params="json;optional;方法参数" data-field-session_id="string;optional;目标 session">
 <h3>CdpCommand 实体 — CDP 命令</h3>
 <script type="application/ld+json">
 {
@@ -344,18 +371,18 @@
 </script>
 <table data-entity-table="CdpCommand">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="id" data-required="true" data-type="integer"><td>id</td><td>integer</td><td>是</td><td></td><td>消息 ID</td></tr>
-<tr data-field="method" data-required="true" data-type="string"><td>method</td><td>string</td><td>是</td><td></td><td>Domain.Method 格式</td></tr>
-<tr data-field="params" data-required="false" data-type="json"><td>params</td><td>json</td><td>否</td><td></td><td>方法参数</td></tr>
-<tr data-field="session_id" data-required="false" data-type="string"><td>session_id</td><td>string</td><td>否</td><td></td><td>目标 session</td></tr>
+<tr data-field="id" data-type="integer" data-required="true"><td>id</td><td>integer</td><td>是</td><td></td><td>消息 ID</td></tr>
+<tr data-field="method" data-type="string" data-required="true"><td>method</td><td>string</td><td>是</td><td></td><td>Domain.Method 格式</td></tr>
+<tr data-field="params" data-type="json" data-required="false"><td>params</td><td>json</td><td>否</td><td></td><td>方法参数</td></tr>
+<tr data-field="session_id" data-type="string" data-required="false"><td>session_id</td><td>string</td><td>否</td><td></td><td>目标 session</td></tr>
 </table>
 
 
-<p data-xref-id="CdpCommand" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDP-002" data-xref-type="req">REQ-CDP-002</span>
-<span data-xref-id="REQ-CDP-003" data-xref-type="req">REQ-CDP-003</span>, <span data-xref-id="REQ-CDP-005" data-xref-type="req">REQ-CDP-005</span>
-<span data-xref-id="REQ-CDP-006" data-xref-type="req">REQ-CDP-006</span>, <span data-xref-id="REQ-CDP-007" data-xref-type="req">REQ-CDP-007</span></p></div>
+<p data-xref-type="entity" data-xref-id="CdpCommand">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDP-002">REQ-CDP-002</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-003">REQ-CDP-003</span>, <span data-xref-type="req" data-xref-id="REQ-CDP-005">REQ-CDP-005</span>
+<span data-xref-type="req" data-xref-id="REQ-CDP-006">REQ-CDP-006</span>, <span data-xref-type="req" data-xref-id="REQ-CDP-007">REQ-CDP-007</span></p></div>
 
-<div data-field-result="json;optional;成功结果" data-field-id="integer;required;对应请求 ID" data-field-error="CdpError;optional;错误信息" data-entity-model-type="relational" data-entity="CdpResponse" id="cdpresponse">
+<div id="cdpresponse" data-entity="CdpResponse" data-entity-model-type="relational" data-field-error="CdpError;optional;错误信息" data-field-id="integer;required;对应请求 ID" data-field-result="json;optional;成功结果">
 <h3>CdpResponse 实体 — CDP 响应</h3>
 <script type="application/ld+json">
 {
@@ -371,15 +398,15 @@
 </script>
 <table data-entity-table="CdpResponse">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="id" data-required="true" data-type="integer"><td>id</td><td>integer</td><td>是</td><td></td><td>对应请求 ID</td></tr>
-<tr data-field="result" data-required="false" data-type="json"><td>result</td><td>json</td><td>否</td><td></td><td>成功结果</td></tr>
-<tr data-field="error" data-required="false" data-type="json"><td>error</td><td>CdpError</td><td>否</td><td></td><td>错误信息</td></tr>
+<tr data-field="id" data-type="integer" data-required="true"><td>id</td><td>integer</td><td>是</td><td></td><td>对应请求 ID</td></tr>
+<tr data-field="result" data-type="json" data-required="false"><td>result</td><td>json</td><td>否</td><td></td><td>成功结果</td></tr>
+<tr data-field="error" data-type="json" data-required="false"><td>error</td><td>CdpError</td><td>否</td><td></td><td>错误信息</td></tr>
 </table>
 
 
-<p data-xref-id="CdpResponse" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDP-002" data-xref-type="req">REQ-CDP-002</span></p></div>
+<p data-xref-type="entity" data-xref-id="CdpResponse">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDP-002">REQ-CDP-002</span></p></div>
 
-<div data-field-message="string;required;错误描述" data-field-code="integer;required;错误码: -32601=MethodNotFound, -32602=InvalidParams, -32603=InternalError" data-entity-model-type="relational" data-entity="CdpError" id="cdperror">
+<div id="cdperror" data-entity="CdpError" data-entity-model-type="relational" data-field-code="integer;required;错误码: -32601=MethodNotFound, -32602=InvalidParams, -32603=InternalError" data-field-message="string;required;错误描述">
 <h3>CdpError 实体 — CDP 错误</h3>
 <script type="application/ld+json">
 {
@@ -393,19 +420,19 @@
 </script>
 <table data-entity-table="CdpError">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="code" data-required="true" data-type="integer"><td>code</td><td>integer</td><td>是</td><td></td><td>错误码: -32601=MethodNotFound, -32602=InvalidParams, -32603=InternalError</td></tr>
-<tr data-field="message" data-required="true" data-type="string"><td>message</td><td>string</td><td>是</td><td></td><td>错误描述</td></tr>
+<tr data-field="code" data-type="integer" data-required="true"><td>code</td><td>integer</td><td>是</td><td></td><td>错误码: -32601=MethodNotFound, -32602=InvalidParams, -32603=InternalError</td></tr>
+<tr data-field="message" data-type="string" data-required="true"><td>message</td><td>string</td><td>是</td><td></td><td>错误描述</td></tr>
 </table>
 
 
-<p data-xref-id="CdpError" data-xref-type="entity">关联需求: <span data-xref-id="REQ-CDP-001" data-xref-type="req">REQ-CDP-001</span></p>
-<p data-xref-id="CdpError" data-xref-type="entity">关联需求: <a href="./10-REQUIREMENTS#REQ-CDP-001" data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</a></p></div>
+<p data-xref-type="entity" data-xref-id="CdpError">关联需求: <span data-xref-type="req" data-xref-id="REQ-CDP-001">REQ-CDP-001</span></p>
+<p data-xref-type="entity" data-xref-id="CdpError">关联需求: <a data-xref-type="req" data-xref-id="REQ-CDP-001" href="./10-REQUIREMENTS#REQ-CDP-001">REQ-CDP-001</a></p></div>
 
 <!-- ============================================================ -->
 <h2>§3 Permission 沙箱数据结构</h2>
 <!-- ============================================================ -->
 
-<div data-entity-model-type="relational" data-entity="Permission" id="permission">&gt;;optional;允许读取的路径白名单。None=全部允许" data-field-write="Option<vec<string>&gt;;optional;允许写入的路径白名单。None=全部允许" data-field-net="Option<vec<string>&gt;;optional;允许网络访问的域名白名单。None=全部允许" data-field-env="Option<bool>;optional;环境变量访问。None=允许" data-field-run="Option<bool>;optional;子进程执行。None=允许" data-field-sys="Option<vec<string>&gt;;optional;系统信息访问类别白名单。None=全部允许"&gt;
+<div id="permission" data-entity="Permission" data-entity-model-type="relational"  data-field-write="array&lt;string&gt;;optional;允许写入的路径白名单。None=全部允许" data-field-net="array&lt;string&gt;;optional;允许网络访问的域名白名单。None=全部允许" data-field-env="boolean;optional;环境变量访问。None=允许" data-field-run="boolean;optional;子进程执行。None=允许" data-field-sys="array&lt;string&gt;;optional;系统信息访问类别白名单。None=全部允许"&gt;
 <h3>Permission 实体 — 权限配置</h3>
 <script type="application/ld+json">
 {
@@ -424,22 +451,31 @@
 </script>
 <table data-entity-table="Permission">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="read">" data-required="false"&gt;<td>read</td><td>Option<vec<string>&gt;</vec<string></td><td>否</td><td></td><td>允许读取的路径白名单。None=全部允许</td></tr>
-<tr data-field="write">" data-required="false"&gt;<td>write</td><td>Option<vec<string>&gt;</vec<string></td><td>否</td><td></td><td>允许写入的路径白名单。None=全部允许</td></tr>
-<tr data-field="net">" data-required="false"&gt;<td>net</td><td>Option<vec<string>&gt;</vec<string></td><td>否</td><td></td><td>允许网络访问的域名白名单。None=全部允许</td></tr>
-<tr data-field="env" data-required="false" data-type="boolean"><td>env</td><td>Option<bool></bool></td><td>否</td><td></td><td>环境变量访问。None=允许</td></tr>
-<tr data-field="run" data-required="false" data-type="boolean"><td>run</td><td>Option<bool></bool></td><td>否</td><td></td><td>子进程执行。None=允许</td></tr>
-<tr data-field="sys">" data-required="false"&gt;<td>sys</td><td>Option<vec<string>&gt;</vec<string></td><td>否</td><td></td><td>系统信息访问类别白名单。None=全部允许</td></tr>
+<tr data-field="read" data-type="array<string>" data-required="false"><td>read</td><td>array&lt;string&gt;</td><td>否</td><td></td><td>允许读取的路径白名单。None=全部允许</td></tr>
+<tr data-field="write" data-type="array<string>" data-required="false"><td>write</td><td>array&lt;string&gt;</td><td>否</td><td></td><td>允许写入的路径白名单。None=全部允许</td></tr>
+<tr data-field="net" data-type="array<string>" data-required="false"><td>net</td><td>array&lt;string&gt;</td><td>否</td><td></td><td>允许网络访问的域名白名单。None=全部允许</td></tr>
+<tr data-field="env" data-type="boolean" data-required="false"><td>env</td><td>Option<bool></td><td>否</td><td></td><td>环境变量访问。None=允许</td></tr>
+<tr data-field="run" data-type="boolean" data-required="false"><td>run</td><td>Option<bool></td><td>否</td><td></td><td>子进程执行。None=允许</td></tr>
+<tr data-field="sys" data-type="array<string>" data-required="false"><td>sys</td><td>array&lt;string&gt;</td><td>否</td><td></td><td>系统信息访问类别白名单。None=全部允许</td></tr>
 </table>
 
 
-<p data-xref-id="Permission" data-xref-type="entity">关联需求: <span data-xref-id="REQ-LIB-004" data-xref-type="req">REQ-LIB-004</span></p></vec<string></bool></bool></vec<string></vec<string></div>
+<p data-xref-type="entity" data-xref-id="Permission">关联需求: <span data-xref-type="req" data-xref-id="REQ-LIB-004">REQ-LIB-004</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§5 Stealth 模块数据结构</h2>
 <!-- ============================================================ -->
 
-<div data-field-tls_profile="TlsProfile;required;TLS 指纹配置" data-field-screen_profile="ScreenProfile;required;屏幕/视口属性" data-field-navigator_profile="NavigatorProfile;required;Navigator 属性" data-field-name="string;required;档案名称" data-field-id="uuid;required;档案 ID" data-field-canvas_noise="CanvasNoiseConfig;required;Canvas 噪声配置" data-field-browser_target="enum[Firefox, Chrome, Safari];required;模拟的目标浏览器" data-field-behavior_config="BehaviorConfig;required;行为模拟配置" data-entity-model-type="relational" data-entity="StealthProfile" id="stealthprofile">
+<div id="stealthprofile" data-entity="StealthProfile"
+  data-entity-model-type="relational"
+  data-field-behavior_config="BehaviorConfig;required;行为模拟配置"
+  data-field-browser_target="enum[Firefox, Chrome, Safari];required;模拟的目标浏览器"
+  data-field-canvas_noise="CanvasNoiseConfig;required;Canvas 噪声配置"
+  data-field-id="uuid;required;档案 ID"
+  data-field-name="string;required;档案名称"
+  data-field-navigator_profile="NavigatorProfile;required;Navigator 属性"
+  data-field-screen_profile="ScreenProfile;required;屏幕/视口属性"
+  data-field-tls_profile="TlsProfile;required;TLS 指纹配置">
 <h3>StealthProfile 实体 — 反指纹配置</h3>
 <script type="application/ld+json">
 {
@@ -460,23 +496,23 @@
 </script>
 <table data-entity-table="StealthProfile">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="id" data-required="true" data-type="uuid"><td>id</td><td>uuid</td><td>是</td><td></td><td>档案 ID</td></tr>
-<tr data-field="name" data-required="true" data-type="string"><td>name</td><td>string</td><td>是</td><td></td><td>档案名称</td></tr>
-<tr data-field="browser_target" data-required="true" data-type="enum"><td>browser_target</td><td>enum[Firefox, Chrome, Safari]</td><td>是</td><td></td><td>模拟的目标浏览器</td></tr>
-<tr data-field="tls_profile" data-required="true" data-type="json"><td>tls_profile</td><td>TlsProfile</td><td>是</td><td></td><td>TLS 指纹配置</td></tr>
-<tr data-field="navigator_profile" data-required="true" data-type="json"><td>navigator_profile</td><td>NavigatorProfile</td><td>是</td><td></td><td>Navigator 属性</td></tr>
-<tr data-field="screen_profile" data-required="true" data-type="json"><td>screen_profile</td><td>ScreenProfile</td><td>是</td><td></td><td>屏幕/视口属性</td></tr>
-<tr data-field="canvas_noise" data-required="true" data-type="json"><td>canvas_noise</td><td>CanvasNoiseConfig</td><td>是</td><td></td><td>Canvas 噪声配置</td></tr>
-<tr data-field="behavior_config" data-required="true" data-type="json"><td>behavior_config</td><td>BehaviorConfig</td><td>是</td><td></td><td>行为模拟配置</td></tr>
+<tr data-field="id" data-type="uuid" data-required="true"><td>id</td><td>uuid</td><td>是</td><td></td><td>档案 ID</td></tr>
+<tr data-field="name" data-type="string" data-required="true"><td>name</td><td>string</td><td>是</td><td></td><td>档案名称</td></tr>
+<tr data-field="browser_target" data-type="enum" data-required="true"><td>browser_target</td><td>enum[Firefox, Chrome, Safari]</td><td>是</td><td></td><td>模拟的目标浏览器</td></tr>
+<tr data-field="tls_profile" data-type="json" data-required="true"><td>tls_profile</td><td>TlsProfile</td><td>是</td><td></td><td>TLS 指纹配置</td></tr>
+<tr data-field="navigator_profile" data-type="json" data-required="true"><td>navigator_profile</td><td>NavigatorProfile</td><td>是</td><td></td><td>Navigator 属性</td></tr>
+<tr data-field="screen_profile" data-type="json" data-required="true"><td>screen_profile</td><td>ScreenProfile</td><td>是</td><td></td><td>屏幕/视口属性</td></tr>
+<tr data-field="canvas_noise" data-type="json" data-required="true"><td>canvas_noise</td><td>CanvasNoiseConfig</td><td>是</td><td></td><td>Canvas 噪声配置</td></tr>
+<tr data-field="behavior_config" data-type="json" data-required="true"><td>behavior_config</td><td>BehaviorConfig</td><td>是</td><td></td><td>行为模拟配置</td></tr>
 </table>
 
 
-<p data-xref-id="StealthProfile" data-xref-type="entity">关联需求: <span data-xref-id="REQ-STL-001" data-xref-type="req">REQ-STL-001</span>
-<span data-xref-id="REQ-STL-002" data-xref-type="req">REQ-STL-002</span>, <span data-xref-id="REQ-STL-003" data-xref-type="req">REQ-STL-003</span>
-<span data-xref-id="REQ-STL-004" data-xref-type="req">REQ-STL-004</span>, <span data-xref-id="REQ-STL-005" data-xref-type="req">REQ-STL-005</span>
-<span data-xref-id="REQ-STL-006" data-xref-type="req">REQ-STL-006</span>, <span data-xref-id="REQ-STL-007" data-xref-type="req">REQ-STL-007</span></p></div>
+<p data-xref-type="entity" data-xref-id="StealthProfile">关联需求: <span data-xref-type="req" data-xref-id="REQ-STL-001">REQ-STL-001</span>
+<span data-xref-type="req" data-xref-id="REQ-STL-002">REQ-STL-002</span>, <span data-xref-type="req" data-xref-id="REQ-STL-003">REQ-STL-003</span>
+<span data-xref-type="req" data-xref-id="REQ-STL-004">REQ-STL-004</span>, <span data-xref-type="req" data-xref-id="REQ-STL-005">REQ-STL-005</span>
+<span data-xref-type="req" data-xref-id="REQ-STL-006">REQ-STL-006</span>, <span data-xref-type="req" data-xref-id="REQ-STL-007">REQ-STL-007</span></p></div>
 
-<div data-field-ja4_hash="string;required;目标 JA4 哈希值" data-field-ja3_hash="string;required;目标 JA3 哈希值" data-entity-model-type="relational" data-entity="TlsProfile" id="tlsprofile">;required;TLS 密码套件列表 (顺序敏感)" data-field-extensions="array<integer>;required;TLS 扩展列表 (顺序敏感)" data-field-supported_groups="array<string>;required;ECDH 组列表" data-field-signature_algorithms="array<string>;required;签名算法列表"&gt;
+<div id="tlsprofile" data-entity="TlsProfile" data-entity-model-type="relational" data-field-ja3_hash="string;required;目标 JA3 哈希值" data-field-ja4_hash="string;required;目标 JA4 哈希值"  data-field-extensions="array&lt;integer&gt;;required;TLS 扩展列表 (顺序敏感)" data-field-supported_groups="array&lt;string&gt;;required;ECDH 组列表" data-field-signature_algorithms="array&lt;string&gt;;required;签名算法列表"&gt;
 <h3>TlsProfile 实体 — TLS 指纹</h3>
 <script type="application/ld+json">
 {
@@ -496,9 +532,13 @@
 
 
 
-<p data-xref-id="TlsProfile" data-xref-type="entity">关联需求: <span data-xref-id="REQ-STL-001" data-xref-type="req">REQ-STL-001</span></p></string></string></integer><table data-entity-table="TlsProfile"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="name"><td>name</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="cipher_list"><td>cipher_list</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="curves_list"><td>curves_list</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="backend"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr></table></div>
+<p data-xref-type="entity" data-xref-id="TlsProfile">关联需求: <span data-xref-type="req" data-xref-id="REQ-STL-001">REQ-STL-001</span></p><table data-entity-table="TlsProfile"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="name" data-type="string" data-required="true"><td>name</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="cipher_list" data-type="string" data-required="true"><td>cipher_list</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="curves_list" data-type="string" data-required="false"><td>curves_list</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="backend" data-type="string" data-required="true"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr></table></div>
 
-<div data-field-user_agent="string;required;User-Agent 字符串" data-field-platform="string;required;navigator.platform" data-field-language="string;required;navigator.language" data-entity-model-type="relational" data-entity="NavigatorProfile" id="navigatorprofile">;required;navigator.languages" data-field-hardware_concurrency="integer;required;" data-field-device_memory="float;required;" data-field-max_touch_points="integer;required;" data-field-webdriver="boolean;required;navigator.webdriver 值 (始终 false)"&gt;
+<div id="navigatorprofile" data-entity="NavigatorProfile" data-entity-model-type="relational" data-field-language="string;required;navigator.language" data-field-platform="string;required;navigator.platform" data-field-user_agent="string;required;User-Agent 字符串"  data-field-hardware_concurrency="integer;required;" data-field-device_memory="float;required;" data-field-max_touch_points="integer;required;" data-field-webdriver="boolean;required;navigator.webdriver 值 (始终 false)"&gt;
 <h3>NavigatorProfile 实体 — Navigator 指纹</h3>
 <script type="application/ld+json">
 {
@@ -518,24 +558,24 @@
 </script>
 <table data-entity-table="NavigatorProfile">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="user_agent" data-required="true" data-type="string"><td>user_agent</td><td>string</td><td>是</td><td></td><td>User-Agent 字符串</td></tr>
-<tr data-field="platform" data-required="true" data-type="string"><td>platform</td><td>string</td><td>是</td><td></td><td>navigator.platform</td></tr>
-<tr data-field="language" data-required="true" data-type="string"><td>language</td><td>string</td><td>是</td><td></td><td>navigator.language</td></tr>
-<tr data-field="languages">" data-required="true"&gt;<td>languages</td><td>array<string></string></td><td>是</td><td></td><td>navigator.languages</td></tr>
-<tr data-field="hardware_concurrency" data-required="true" data-type="integer">= 1"&gt;<td>hardware_concurrency</td><td>integer</td><td>是</td><td>&gt;= 1</td><td></td></tr>
-<tr data-field="device_memory" data-required="true" data-type="float"> 0"&gt;<td>device_memory</td><td>float</td><td>是</td><td>&gt; 0</td><td></td></tr>
-<tr data-field="max_touch_points" data-required="true" data-type="integer">= 0"&gt;<td>max_touch_points</td><td>integer</td><td>是</td><td>&gt;= 0</td><td></td></tr>
-<tr data-field="webdriver" data-required="true" data-type="boolean"><td>webdriver</td><td>boolean</td><td>是</td><td></td><td>navigator.webdriver 值 (始终 false)</td></tr>
+<tr data-field="user_agent" data-type="string" data-required="true"><td>user_agent</td><td>string</td><td>是</td><td></td><td>User-Agent 字符串</td></tr>
+<tr data-field="platform" data-type="string" data-required="true"><td>platform</td><td>string</td><td>是</td><td></td><td>navigator.platform</td></tr>
+<tr data-field="language" data-type="string" data-required="true"><td>language</td><td>string</td><td>是</td><td></td><td>navigator.language</td></tr>
+<tr data-field="languages" data-type="array<string>" data-required="true"><td>languages</td><td>array&lt;string&gt;&lt;/string&gt;</td><td>是</td><td></td><td>navigator.languages</td></tr>
+<tr data-field="hardware_concurrency" data-type="integer" data-required="true">= 1"&gt;<td>hardware_concurrency</td><td>integer</td><td>是</td><td>&gt;= 1</td><td></td></tr>
+<tr data-field="device_memory" data-type="float" data-required="true"> 0"&gt;<td>device_memory</td><td>float</td><td>是</td><td>&gt; 0</td><td></td></tr>
+<tr data-field="max_touch_points" data-type="integer" data-required="true">= 0"&gt;<td>max_touch_points</td><td>integer</td><td>是</td><td>&gt;= 0</td><td></td></tr>
+<tr data-field="webdriver" data-type="boolean" data-required="true"><td>webdriver</td><td>boolean</td><td>是</td><td></td><td>navigator.webdriver 值 (始终 false)</td></tr>
 </table>
 
 
-<p data-xref-id="NavigatorProfile" data-xref-type="entity">关联需求: <span data-xref-id="REQ-STL-004" data-xref-type="req">REQ-STL-004</span></p></div>
+<p data-xref-type="entity" data-xref-id="NavigatorProfile">关联需求: <span data-xref-type="req" data-xref-id="REQ-STL-004">REQ-STL-004</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§6 引擎层数据结构</h2>
 <!-- ============================================================ -->
 
-<div data-entity-model-type="relational" data-entity="JsCallback" id="jscallback">;required;GC 管理的 JS 函数引用" data-field-context="JSContext;required;关联的 JS 上下文" data-field-name="string;optional;调试用函数名"&gt;
+<div id="jscallback" data-entity="JsCallback" data-entity-model-type="relational"  data-field-context="JSContext;required;关联的 JS 上下文" data-field-name="string;optional;调试用函数名"&gt;
 <h3>JsCallback 实体 — JS 回调桥接</h3>
 <script type="application/ld+json">
 {
@@ -551,16 +591,16 @@
 </script>
 <table data-entity-table="JsCallback">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="function" data-required="true" data-type="json"><td>function</td><td>JS::Heap<jsfunction*></jsfunction*></td><td>是</td><td></td><td>GC 管理的 JS 函数引用</td></tr>
-<tr data-field="context" data-required="true" data-type="json"><td>context</td><td>JSContext</td><td>是</td><td></td><td>关联的 JS 上下文</td></tr>
-<tr data-field="name" data-required="false" data-type="string"><td>name</td><td>string</td><td>否</td><td></td><td>调试用函数名</td></tr>
+<tr data-field="function" data-type="json" data-required="true"><td>function</td><td>JS::Heap<jsfunction*></jsfunction*></td><td>是</td><td></td><td>GC 管理的 JS 函数引用</td></tr>
+<tr data-field="context" data-type="json" data-required="true"><td>context</td><td>JSContext</td><td>是</td><td></td><td>关联的 JS 上下文</td></tr>
+<tr data-field="name" data-type="string" data-required="false"><td>name</td><td>string</td><td>否</td><td></td><td>调试用函数名</td></tr>
 </table>
 
 
-<p data-xref-id="JsCallback" data-xref-type="entity">关联需求: <span data-xref-id="REQ-ENG-001" data-xref-type="req">REQ-ENG-001</span>
-<span data-xref-id="REQ-ENG-003" data-xref-type="req">REQ-ENG-003</span></p></div>
+<p data-xref-type="entity" data-xref-id="JsCallback">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-001">REQ-ENG-001</span>
+<span data-xref-type="req" data-xref-id="REQ-ENG-003">REQ-ENG-003</span></p></div>
 
-<div data-field-url="string;required;模块 URL (file:// 或 http://)" data-field-source="string;required;转译后的 JS 源码" data-entity-model-type="relational" data-entity="ModuleSource" id="modulesource">;optional;Source Map JSON" data-field-hash="string;required;源码哈希 (用于缓存验证)" data-field-module_type="enum[ESM, CommonJS, JSON, Wasm];required;模块类型"&gt;
+<div id="modulesource" data-entity="ModuleSource" data-entity-model-type="relational" data-field-source="string;required;转译后的 JS 源码" data-field-url="string;required;模块 URL (file:// 或 http://)"  data-field-hash="string;required;源码哈希 (用于缓存验证)" data-field-module_type="enum[ESM, CommonJS, JSON, Wasm];required;模块类型"&gt;
 <h3>ModuleSource 实体 — 模块源码缓存</h3>
 <script type="application/ld+json">
 {
@@ -578,22 +618,22 @@
 </script>
 <table data-entity-table="ModuleSource">
 <tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
-<tr data-field="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td><td>模块 URL (file:// 或 http://)</td></tr>
-<tr data-field="source" data-required="true" data-type="string"><td>source</td><td>string</td><td>是</td><td></td><td>转译后的 JS 源码</td></tr>
-<tr data-field="source_map" data-required="false" data-type="string"><td>source_map</td><td>Option<string></string></td><td>否</td><td></td><td>Source Map JSON</td></tr>
-<tr data-field="hash" data-required="true" data-type="string"><td>hash</td><td>string</td><td>是</td><td></td><td>源码哈希 (用于缓存验证)</td></tr>
-<tr data-field="module_type" data-required="true" data-type="enum"><td>module_type</td><td>enum[ESM, CommonJS, JSON, Wasm]</td><td>是</td><td></td><td>模块类型</td></tr>
+<tr data-field="url" data-type="string" data-required="true"><td>url</td><td>string</td><td>是</td><td></td><td>模块 URL (file:// 或 http://)</td></tr>
+<tr data-field="source" data-type="string" data-required="true"><td>source</td><td>string</td><td>是</td><td></td><td>转译后的 JS 源码</td></tr>
+<tr data-field="source_map" data-type="string" data-required="false"><td>source_map</td><td>Option<string></td><td>否</td><td></td><td>Source Map JSON</td></tr>
+<tr data-field="hash" data-type="string" data-required="true"><td>hash</td><td>string</td><td>是</td><td></td><td>源码哈希 (用于缓存验证)</td></tr>
+<tr data-field="module_type" data-type="enum" data-required="true"><td>module_type</td><td>enum[ESM, CommonJS, JSON, Wasm]</td><td>是</td><td></td><td>模块类型</td></tr>
 </table>
 
 
-<p data-xref-id="ModuleSource" data-xref-type="entity">关联需求: <span data-xref-id="REQ-ENG-001" data-xref-type="req">REQ-ENG-001</span>
-<span data-xref-id="REQ-ENG-005" data-xref-type="req">REQ-ENG-005</span></p></div>
+<p data-xref-type="entity" data-xref-id="ModuleSource">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-001">REQ-ENG-001</span>
+<span data-xref-type="req" data-xref-id="REQ-ENG-005">REQ-ENG-005</span></p></div>
 
 <!-- ============================================================ -->
 <h2>§7 模型树</h2>
 <!-- ============================================================ -->
 
-<div data-delivery="D10" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
+<div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-delivery="D10">
 <h3>数据模型关系树</h3>
 <pre>
 BaoRuntime (单例根)
@@ -637,7 +677,7 @@ BaoRuntime (单例根)
 <h2>§8 缓存/索引策略</h2>
 <!-- ============================================================ -->
 
-<div data-delivery="D11" data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
+<div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-delivery="D11">
 <h3>缓存策略</h3>
 <table>
 <tr><td>缓存对象</td><td>存储结构</td><td>键</td><td>失效策略</td><td>预估大小</td></tr>
@@ -654,7 +694,7 @@ BaoRuntime (单例根)
 <h2>§9 Crate 数据模型</h2>
 <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
+<div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
 <h3>新增 Crate 与数据流</h3>
 <pre>
 bao_engine/
@@ -682,8 +722,22 @@ bao_stealth/
 </pre>
 </div>
 
-<section data-entity-model-type="relational" data-entity="NodeRealm" id="noderealm"><h3>NodeRealm Node Realm — Bao 可信脚本执行环境</h3><table data-entity-table="NodeRealm"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-field="global" data-required="true" data-type="json"><td>global</td><td>json</td><td>是</td><td></td><td></td></tr><tr data-field="page_id" data-required="true" data-type="string"><td>page_id</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-field="cx" data-required="true" data-type="json"><td>cx</td><td>json</td><td>是</td><td></td><td></td></tr><tr data-field="destroyed" data-required="false" data-type="boolean"><td>destroyed</td><td>boolean</td><td>否</td><td></td><td></td></tr></table><div data-index-strategy=""><table data-index-table=""><tr><th>索引名</th><th>字段</th><th>类型</th><th>唯一</th><th>条件</th></tr><tr><td>idx_node_realm_page_id</td><td>page_id</td><td>B-tree</td><td>是</td><td></td></tr></table></div>
-<p data-xref-id="NodeRealm" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-sec-002" data-xref-type="req" data-xref-id="req-sec-002">REQ-SEC-002</a></p></section><section data-entity-model-type="relational" data-entity="EvaluateResult" id="evaluateresult"><h3>EvaluateResult JS 执行结果实体</h3><table data-entity-table="EvaluateResult"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-field="value" data-required="false" data-type="string"><td>value</td><td>string</td><td>否</td><td></td><td>JS 返回值的 JSON 字符串，undefined/error 时为 None</td></tr><tr data-field="error" data-required="false" data-type="string"><td>error</td><td>string</td><td>否</td><td></td><td>执行失败时的错误信息，成功时为 None</td></tr></table></section><section data-entity-model-type="relational" data-entity="FetchResponse" id="fetchresponse"><h3>FetchResponse HTTP 响应实体</h3><table data-entity-table="FetchResponse"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-field="status_code" data-required="true" data-type="integer"><td>status_code</td><td>integer</td><td>是</td><td></td><td>HTTP 状态码</td></tr><tr data-field="body" data-required="true" data-type="string"><td>body</td><td>string</td><td>是</td><td></td><td>响应体文本</td></tr><tr data-field="headers" data-required="true" data-type="json"><td>headers</td><td>json</td><td>是</td><td></td><td>响应头键值对</td></tr><tr data-field="url" data-required="true" data-type="string"><td>url</td><td>string</td><td>是</td><td></td><td>请求 URL</td></tr><tr data-field="status_text" data-required="true" data-type="string"><td>status_text</td><td>string</td><td>是</td><td></td><td>状态描述文本</td></tr></table></section><section data-artifact-type="model-tree" data-type="document" id="artifact-model-tree"><h3>模型树</h3><div>BaoRuntime (单例根)
+<section id="noderealm" data-entity="NodeRealm" data-entity-model-type="relational"><h3>NodeRealm Node Realm — Bao 可信脚本执行环境</h3><table data-entity-table="NodeRealm"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="global" data-type="json" data-required="true"><td>global</td><td>json</td><td>是</td><td></td><td></td></tr>
+<tr data-field="page_id" data-type="string" data-required="true"><td>page_id</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="cx" data-type="json" data-required="true"><td>cx</td><td>json</td><td>是</td><td></td><td></td></tr>
+<tr data-field="destroyed" data-type="boolean" data-required="false"><td>destroyed</td><td>boolean</td><td>否</td><td></td><td></td></tr></table>
+
+<div data-index-strategy=""><table data-index-table=""><tr><th>索引名</th><th>字段</th><th>类型</th><th>唯一</th><th>条件</th></tr>
+<tr><td>idx_node_realm_page_id</td><td>page_id</td><td>B-tree</td><td>是</td><td></td></tr></table></div>
+<p data-xref-type="entity" data-xref-id="NodeRealm">关联需求: <a data-xref-type="req" data-xref-id="req-sec-002" href="./02-SYSTEM#req-sec-002">REQ-SEC-002</a></p></section><section id="evaluateresult" data-entity="EvaluateResult" data-entity-model-type="relational"><h3>EvaluateResult JS 执行结果实体</h3><table data-entity-table="EvaluateResult"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="value" data-type="string" data-required="false"><td>value</td><td>string</td><td>否</td><td></td><td>JS 返回值的 JSON 字符串，undefined/error 时为 None</td></tr>
+<tr data-field="error" data-type="string" data-required="false"><td>error</td><td>string</td><td>否</td><td></td><td>执行失败时的错误信息，成功时为 None</td></tr></table></section><section id="fetchresponse" data-entity="FetchResponse" data-entity-model-type="relational"><h3>FetchResponse HTTP 响应实体</h3><table data-entity-table="FetchResponse"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="status_code" data-type="integer" data-required="true"><td>status_code</td><td>integer</td><td>是</td><td></td><td>HTTP 状态码</td></tr>
+<tr data-field="body" data-type="string" data-required="true"><td>body</td><td>string</td><td>是</td><td></td><td>响应体文本</td></tr>
+<tr data-field="headers" data-type="json" data-required="true"><td>headers</td><td>json</td><td>是</td><td></td><td>响应头键值对</td></tr>
+<tr data-field="url" data-type="string" data-required="true"><td>url</td><td>string</td><td>是</td><td></td><td>请求 URL</td></tr>
+<tr data-field="status_text" data-type="string" data-required="true"><td>status_text</td><td>string</td><td>是</td><td></td><td>状态描述文本</td></tr></table></section><section id="artifact-model-tree" data-type="document" data-artifact-type="model-tree"><h3>模型树</h3><div>BaoRuntime (单例根)
 ├── JSContext (SpiderMonkey，与 servo 共享)
 │   ├── JsCallback × N
 │   └── ModuleSource × N (缓存)
@@ -698,32 +752,109 @@ bao_stealth/
 ├── PagePool
 │   └── PageHandle × N (空闲池)
 └── Permission
-    └── PermissionRule × N</div></section><section data-artifact-type="cache-index-strategy" data-type="document" id="artifact-cache-index-strategy"><h3>缓存/索引策略</h3><div>| 缓存对象 | 存储结构 | 键 | 失效策略 | 预估大小 |
+    └── PermissionRule × N</div></section><section id="artifact-cache-index-strategy" data-type="document" data-artifact-type="cache-index-strategy"><h3>缓存/索引策略</h3><div>| 缓存对象 | 存储结构 | 键 | 失效策略 | 预估大小 |
 |----------|----------|-----|----------|----------|
 | ModuleSource | HashMap<url, ModuleSource=""> | 文件绝对路径 | hash 不匹配 | ≤ 100MB |
 | PixelBuffer | Option<pixelbuffer> per BrowserContext | 视口尺寸 + 页面状态 | 导航/重排失效 | ≤ 8MB (1080p) |
 | ComputedStyle | libservo 内部管理 | DOM 节点 + CSS 规则 | CSS/DOM 变更失效 | ≤ 50MB |
 | Layout Box | libservo 内部管理 | ComputedStyle + Viewport | 样式/视口变更失效 | ≤ 20MB |
 | HTTP 响应 | Bun HTTP 栈内部缓存 | URL + headers | HTTP 缓存语义 | 可配置 |
-| DNS 查询 | c-ares 缓存 | 域名 | TTL 过期 | ≤ 1MB |</pixelbuffer></url,></div></section><section data-entity-model-type="memory-layout" data-entity="BrotliCompressConfig" id="brotlicompressconfig"><h3>BrotliCompressConfig </h3><table data-entity-table="BrotliCompressConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="integer" data-field="quality"><td>quality</td><td>integer</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="enum" data-field="mode"><td>mode</td><td>enum</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="integer" data-field="window_size"><td>window_size</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="BrotliCompressConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-002" data-xref-type="req" data-xref-id="req-pure-002">REQ-PURE-002</a></p></section><section data-entity-model-type="memory-layout" data-entity="ZstdCompressConfig" id="zstdcompressconfig"><h3>ZstdCompressConfig </h3><table data-entity-table="ZstdCompressConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="integer" data-field="level"><td>level</td><td>integer</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="enum" data-field="strategy"><td>strategy</td><td>enum</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="integer" data-field="window_log"><td>window_log</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="ZstdCompressConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-003" data-xref-type="req" data-xref-id="req-pure-003">REQ-PURE-003</a></p></section><section data-entity-model-type="memory-layout" data-entity="ZlibCompressConfig" id="zlibcompressconfig"><h3>ZlibCompressConfig </h3><table data-entity-table="ZlibCompressConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="integer" data-field="level"><td>level</td><td>integer</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="enum" data-field="strategy"><td>strategy</td><td>enum</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="integer" data-field="window_bits"><td>window_bits</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="ZlibCompressConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-004" data-xref-type="req" data-xref-id="req-pure-004">REQ-PURE-004</a></p></section><section data-entity-model-type="memory-layout" data-entity="AllocatorProfile" id="allocatorprofile"><h3>AllocatorProfile </h3><table data-entity-table="AllocatorProfile"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="enum" data-field="allocator_type"><td>allocator_type</td><td>enum</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="profile"><td>profile</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="boolean" data-field="background_threads"><td>background_threads</td><td>boolean</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="AllocatorProfile" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-005" data-xref-type="req" data-xref-id="req-pure-005">REQ-PURE-005</a></p></section><section data-entity-model-type="memory-layout" data-entity="SimdHashConfig" id="simdhashconfig"><h3>SimdHashConfig </h3><table data-entity-table="SimdHashConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="integer" data-field="simd_width"><td>simd_width</td><td>integer</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="throughput"><td>throughput</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="SimdHashConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-006" data-xref-type="req" data-xref-id="req-pure-006">REQ-PURE-006</a></p></section><section data-entity-model-type="memory-layout" data-entity="QuicSessionConfig" id="quicsessionconfig"><h3>QuicSessionConfig </h3><table data-entity-table="QuicSessionConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="enum" data-field="version"><td>version</td><td>enum</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="congestion_control"><td>congestion_control</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="integer" data-field="stream_id"><td>stream_id</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="QuicSessionConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-007" data-xref-type="req" data-xref-id="req-pure-007">REQ-PURE-007</a></p></section><section data-entity-model-type="memory-layout" data-entity="HtmlRewriterConfig" id="htmlrewriterconfig"><h3>HtmlRewriterConfig </h3><table data-entity-table="HtmlRewriterConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="enum" data-field="mode"><td>mode</td><td>enum</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="json" data-field="selectors"><td>selectors</td><td>json</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="output_encoding"><td>output_encoding</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="HtmlRewriterConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-008" data-xref-type="req" data-xref-id="req-pure-008">REQ-PURE-008</a></p></section><section data-entity-model-type="memory-layout" data-entity="HttpServerConfig" id="httpserverconfig"><h3>HttpServerConfig </h3><table data-entity-table="HttpServerConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="integer" data-field="port"><td>port</td><td>integer</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="hostname"><td>hostname</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="enum" data-field="protocol"><td>protocol</td><td>enum</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="integer" data-field="max_connections"><td>max_connections</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="HttpServerConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-009" data-xref-type="req" data-xref-id="req-pure-009">REQ-PURE-009</a></p></section><section data-entity-model-type="memory-layout" data-entity="BrotliEngine" id="brotliengine"><h3>BrotliEngine </h3><table data-entity-table="BrotliEngine"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="backend"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="vendor_path"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="sys_crate"><td>sys_crate</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="BrotliEngine" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-002" data-xref-type="req" data-xref-id="req-pure-002">REQ-PURE-002</a></p></section><section data-entity-model-type="memory-layout" data-entity="ZstdEngine" id="zstdengine"><h3>ZstdEngine </h3><table data-entity-table="ZstdEngine"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="backend"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="vendor_path"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="sys_crate"><td>sys_crate</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="ZstdEngine" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-003" data-xref-type="req" data-xref-id="req-pure-003">REQ-PURE-003</a></p></section><section data-entity-model-type="memory-layout" data-entity="ZlibEngine" id="zlibengine"><h3>ZlibEngine </h3><table data-entity-table="ZlibEngine"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="backend"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="vendor_path"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="sys_crate"><td>sys_crate</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="ZlibEngine" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-004" data-xref-type="req" data-xref-id="req-pure-004">REQ-PURE-004</a></p></section><section data-entity-model-type="memory-layout" data-entity="AllocatorConfig" id="allocatorconfig"><h3>AllocatorConfig </h3><table data-entity-table="AllocatorConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="allocator"><td>allocator</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="vendor_path"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="sys_crate"><td>sys_crate</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="AllocatorConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-005" data-xref-type="req" data-xref-id="req-pure-005">REQ-PURE-005</a></p></section><section data-entity-model-type="memory-layout" data-entity="SimdHash" id="simdhash"><h3>SimdHash </h3><table data-entity-table="SimdHash"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="algorithm"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="backend"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="vendor_path"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="SimdHash" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-006" data-xref-type="req" data-xref-id="req-pure-006">REQ-PURE-006</a></p></section><section data-entity-model-type="memory-layout" data-entity="QuicConnection" id="quicconnection"><h3>QuicConnection </h3><table data-entity-table="QuicConnection"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="protocol"><td>protocol</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="backend"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="vendor_path"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="QuicConnection" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-007" data-xref-type="req" data-xref-id="req-pure-007">REQ-PURE-007</a></p></section><section data-entity-model-type="memory-layout" data-entity="HtmlRewriter" id="htmlrewriter"><h3>HtmlRewriter </h3><table data-entity-table="HtmlRewriter"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="backend"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="vendor_path"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="HtmlRewriter" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-008" data-xref-type="req" data-xref-id="req-pure-008">REQ-PURE-008</a></p></section><section data-entity-model-type="memory-layout" data-entity="BufferConfig" id="bufferconfig"><h3>BufferConfig </h3><table data-entity-table="BufferConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="enum" data-field="buffer_type"><td>buffer_type</td><td>enum</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="integer" data-field="capacity"><td>capacity</td><td>integer</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="boolean" data-field="zero_copy"><td>zero_copy</td><td>boolean</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="BufferConfig" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-perf-003" data-xref-type="req" data-xref-id="req-perf-003">REQ-PERF-003</a></p></section><section data-entity-model-type="memory-layout" data-entity="HttpServer" id="httpserver"><h3>HttpServer </h3><table data-entity-table="HttpServer"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="backend"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="vendor_path"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr></table>
-<p data-xref-id="HttpServer" data-xref-type="entity">关联需求: <a href="./02-SYSTEM#req-pure-009" data-xref-type="req" data-xref-id="req-pure-009">REQ-PURE-009</a></p></section><section data-entity-model-type="memory-layout" data-entity="DomainHandler" id="domainhandler"><h3>DomainHandler </h3><table data-entity-table="DomainHandler"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="domain"><td>domain</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="state_type"><td>state_type</td><td>string</td><td>是</td><td></td><td></td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="BufferManager" id="buffermanager"><h3>BufferManager </h3><table data-entity-table="BufferManager"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="buffer_type"><td>buffer_type</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="crate_name"><td>crate_name</td><td>string</td><td>是</td><td></td><td></td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="DomainDispatch" id="domaindispatch"><h3>DomainDispatch </h3><table data-entity-table="DomainDispatch"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="variant"><td>variant</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="result_type"><td>result_type</td><td>string</td><td>是</td><td></td><td></td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="CodePattern" id="codepattern"><h3>CodePattern </h3><table data-entity-table="CodePattern"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="pattern_type"><td>pattern_type</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="integer" data-field="occurrence_count"><td>occurrence_count</td><td>integer</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="string" data-field="replacement"><td>replacement</td><td>string</td><td>是</td><td></td><td></td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="TlsConnection" id="tlsconnection"><h3>TlsConnection </h3><table data-entity-table="TlsConnection"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="state"><td>state</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="alpn"><td>alpn</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="sni"><td>sni</td><td>string</td><td>否</td><td></td><td></td></tr><tr data-required="false" data-type="string" data-field="cipher_suite"><td>cipher_suite</td><td>string</td><td>否</td><td></td><td></td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="HttpResponse" id="httpresponse"><h3>HttpResponse </h3><table data-entity-table="HttpResponse"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="status_text"><td>status_text</td><td>string</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="json" data-field="headers_json"><td>headers_json</td><td>json</td><td>是</td><td></td><td></td></tr><tr data-required="true" data-type="blob" data-field="body"><td>body</td><td>blob</td><td>是</td><td></td><td></td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="SqliteDatabase" id="sqlitedatabase"><h3>SqliteDatabase </h3><table data-entity-table="SqliteDatabase"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="path"><td>path</td><td>String</td><td>是</td><td></td><td>Database file path</td></tr><tr data-required="true" data-type="boolean" data-field="isOpen"><td>isOpen</td><td>bool</td><td>是</td><td></td><td>Whether database connection is open</td></tr><tr data-required="false" data-type="string" data-field="lastError"><td>lastError</td><td>String</td><td>否</td><td></td><td>Last error message</td></tr><tr data-required="true" data-type="boolean" data-field="inTransaction"><td>inTransaction</td><td>bool</td><td>是</td><td></td><td>Whether currently in a transaction</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="FfiLibrary" id="ffilibrary"><h3>FfiLibrary </h3><table data-entity-table="FfiLibrary"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="path"><td>path</td><td>String</td><td>是</td><td></td><td>Library file path</td></tr><tr data-required="false" data-type="integer" data-field="handle"><td>handle</td><td>int</td><td>否</td><td></td><td>dlopen handle pointer</td></tr><tr data-required="true" data-type="boolean" data-field="isOpen"><td>isOpen</td><td>bool</td><td>是</td><td></td><td>Whether library is loaded</td></tr><tr data-required="true" data-type="integer" data-field="symbolCount"><td>symbolCount</td><td>int</td><td>是</td><td></td><td>Resolved symbol count</td></tr></table></section>
-<section data-delivery="D10" data-artifact-type="model-tree" data-type="document" id="artifact-model-tree"><h3>模型树</h3><div>Bao 数据模型树:
+| DNS 查询 | c-ares 缓存 | 域名 | TTL 过期 | ≤ 1MB |</div></section><section id="brotlicompressconfig" data-entity="BrotliCompressConfig" data-entity-model-type="memory-layout"><h3>BrotliCompressConfig </h3><table data-entity-table="BrotliCompressConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="quality" data-type="integer" data-required="true"><td>quality</td><td>integer</td><td>是</td><td></td><td></td></tr>
+<tr data-field="mode" data-type="enum" data-required="false"><td>mode</td><td>enum</td><td>否</td><td></td><td></td></tr>
+<tr data-field="window_size" data-type="integer" data-required="false"><td>window_size</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="BrotliCompressConfig">关联需求: <a data-xref-type="req" data-xref-id="req-pure-002" href="./02-SYSTEM#req-pure-002">REQ-PURE-002</a></p></section><section id="zstdcompressconfig" data-entity="ZstdCompressConfig" data-entity-model-type="memory-layout"><h3>ZstdCompressConfig </h3><table data-entity-table="ZstdCompressConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="level" data-type="integer" data-required="true"><td>level</td><td>integer</td><td>是</td><td></td><td></td></tr>
+<tr data-field="strategy" data-type="enum" data-required="false"><td>strategy</td><td>enum</td><td>否</td><td></td><td></td></tr>
+<tr data-field="window_log" data-type="integer" data-required="false"><td>window_log</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="ZstdCompressConfig">关联需求: <a data-xref-type="req" data-xref-id="req-pure-003" href="./02-SYSTEM#req-pure-003">REQ-PURE-003</a></p></section><section id="zlibcompressconfig" data-entity="ZlibCompressConfig" data-entity-model-type="memory-layout"><h3>ZlibCompressConfig </h3><table data-entity-table="ZlibCompressConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="level" data-type="integer" data-required="true"><td>level</td><td>integer</td><td>是</td><td></td><td></td></tr>
+<tr data-field="strategy" data-type="enum" data-required="false"><td>strategy</td><td>enum</td><td>否</td><td></td><td></td></tr>
+<tr data-field="window_bits" data-type="integer" data-required="false"><td>window_bits</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="ZlibCompressConfig">关联需求: <a data-xref-type="req" data-xref-id="req-pure-004" href="./02-SYSTEM#req-pure-004">REQ-PURE-004</a></p></section><section id="allocatorprofile" data-entity="AllocatorProfile" data-entity-model-type="memory-layout"><h3>AllocatorProfile </h3><table data-entity-table="AllocatorProfile"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="allocator_type" data-type="enum" data-required="true"><td>allocator_type</td><td>enum</td><td>是</td><td></td><td></td></tr>
+<tr data-field="profile" data-type="string" data-required="false"><td>profile</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="background_threads" data-type="boolean" data-required="false"><td>background_threads</td><td>boolean</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="AllocatorProfile">关联需求: <a data-xref-type="req" data-xref-id="req-pure-005" href="./02-SYSTEM#req-pure-005">REQ-PURE-005</a></p></section><section id="simdhashconfig" data-entity="SimdHashConfig" data-entity-model-type="memory-layout"><h3>SimdHashConfig </h3><table data-entity-table="SimdHashConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="algorithm" data-type="string" data-required="true"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="simd_width" data-type="integer" data-required="false"><td>simd_width</td><td>integer</td><td>否</td><td></td><td></td></tr>
+<tr data-field="throughput" data-type="string" data-required="false"><td>throughput</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="SimdHashConfig">关联需求: <a data-xref-type="req" data-xref-id="req-pure-006" href="./02-SYSTEM#req-pure-006">REQ-PURE-006</a></p></section><section id="quicsessionconfig" data-entity="QuicSessionConfig" data-entity-model-type="memory-layout"><h3>QuicSessionConfig </h3><table data-entity-table="QuicSessionConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="version" data-type="enum" data-required="true"><td>version</td><td>enum</td><td>是</td><td></td><td></td></tr>
+<tr data-field="congestion_control" data-type="string" data-required="false"><td>congestion_control</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="stream_id" data-type="integer" data-required="false"><td>stream_id</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="QuicSessionConfig">关联需求: <a data-xref-type="req" data-xref-id="req-pure-007" href="./02-SYSTEM#req-pure-007">REQ-PURE-007</a></p></section><section id="htmlrewriterconfig" data-entity="HtmlRewriterConfig" data-entity-model-type="memory-layout"><h3>HtmlRewriterConfig </h3><table data-entity-table="HtmlRewriterConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="mode" data-type="enum" data-required="true"><td>mode</td><td>enum</td><td>是</td><td></td><td></td></tr>
+<tr data-field="selectors" data-type="json" data-required="false"><td>selectors</td><td>json</td><td>否</td><td></td><td></td></tr>
+<tr data-field="output_encoding" data-type="string" data-required="false"><td>output_encoding</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="HtmlRewriterConfig">关联需求: <a data-xref-type="req" data-xref-id="req-pure-008" href="./02-SYSTEM#req-pure-008">REQ-PURE-008</a></p></section><section id="httpserverconfig" data-entity="HttpServerConfig" data-entity-model-type="memory-layout"><h3>HttpServerConfig </h3><table data-entity-table="HttpServerConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="port" data-type="integer" data-required="true"><td>port</td><td>integer</td><td>是</td><td></td><td></td></tr>
+<tr data-field="hostname" data-type="string" data-required="false"><td>hostname</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="protocol" data-type="enum" data-required="false"><td>protocol</td><td>enum</td><td>否</td><td></td><td></td></tr>
+<tr data-field="max_connections" data-type="integer" data-required="false"><td>max_connections</td><td>integer</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="HttpServerConfig">关联需求: <a data-xref-type="req" data-xref-id="req-pure-009" href="./02-SYSTEM#req-pure-009">REQ-PURE-009</a></p></section><section id="brotliengine" data-entity="BrotliEngine" data-entity-model-type="memory-layout"><h3>BrotliEngine </h3><table data-entity-table="BrotliEngine"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="algorithm" data-type="string" data-required="true"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="backend" data-type="string" data-required="true"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="vendor_path" data-type="string" data-required="false"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="sys_crate" data-type="string" data-required="false"><td>sys_crate</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="BrotliEngine">关联需求: <a data-xref-type="req" data-xref-id="req-pure-002" href="./02-SYSTEM#req-pure-002">REQ-PURE-002</a></p></section><section id="zstdengine" data-entity="ZstdEngine" data-entity-model-type="memory-layout"><h3>ZstdEngine </h3><table data-entity-table="ZstdEngine"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="algorithm" data-type="string" data-required="true"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="backend" data-type="string" data-required="true"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="vendor_path" data-type="string" data-required="false"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="sys_crate" data-type="string" data-required="false"><td>sys_crate</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="ZstdEngine">关联需求: <a data-xref-type="req" data-xref-id="req-pure-003" href="./02-SYSTEM#req-pure-003">REQ-PURE-003</a></p></section><section id="zlibengine" data-entity="ZlibEngine" data-entity-model-type="memory-layout"><h3>ZlibEngine </h3><table data-entity-table="ZlibEngine"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="algorithm" data-type="string" data-required="true"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="backend" data-type="string" data-required="true"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="vendor_path" data-type="string" data-required="false"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="sys_crate" data-type="string" data-required="false"><td>sys_crate</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="ZlibEngine">关联需求: <a data-xref-type="req" data-xref-id="req-pure-004" href="./02-SYSTEM#req-pure-004">REQ-PURE-004</a></p></section><section id="allocatorconfig" data-entity="AllocatorConfig" data-entity-model-type="memory-layout"><h3>AllocatorConfig </h3><table data-entity-table="AllocatorConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="allocator" data-type="string" data-required="true"><td>allocator</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="vendor_path" data-type="string" data-required="false"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="sys_crate" data-type="string" data-required="false"><td>sys_crate</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="AllocatorConfig">关联需求: <a data-xref-type="req" data-xref-id="req-pure-005" href="./02-SYSTEM#req-pure-005">REQ-PURE-005</a></p></section><section id="simdhash" data-entity="SimdHash" data-entity-model-type="memory-layout"><h3>SimdHash </h3><table data-entity-table="SimdHash"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="algorithm" data-type="string" data-required="true"><td>algorithm</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="backend" data-type="string" data-required="true"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="vendor_path" data-type="string" data-required="false"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="SimdHash">关联需求: <a data-xref-type="req" data-xref-id="req-pure-006" href="./02-SYSTEM#req-pure-006">REQ-PURE-006</a></p></section><section id="quicconnection" data-entity="QuicConnection" data-entity-model-type="memory-layout"><h3>QuicConnection </h3><table data-entity-table="QuicConnection"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="protocol" data-type="string" data-required="true"><td>protocol</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="backend" data-type="string" data-required="true"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="vendor_path" data-type="string" data-required="false"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="QuicConnection">关联需求: <a data-xref-type="req" data-xref-id="req-pure-007" href="./02-SYSTEM#req-pure-007">REQ-PURE-007</a></p></section><section id="htmlrewriter" data-entity="HtmlRewriter" data-entity-model-type="memory-layout"><h3>HtmlRewriter </h3><table data-entity-table="HtmlRewriter"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="backend" data-type="string" data-required="true"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="vendor_path" data-type="string" data-required="false"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="HtmlRewriter">关联需求: <a data-xref-type="req" data-xref-id="req-pure-008" href="./02-SYSTEM#req-pure-008">REQ-PURE-008</a></p></section><section id="bufferconfig" data-entity="BufferConfig" data-entity-model-type="memory-layout"><h3>BufferConfig </h3><table data-entity-table="BufferConfig"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="buffer_type" data-type="enum" data-required="true"><td>buffer_type</td><td>enum</td><td>是</td><td></td><td></td></tr>
+<tr data-field="capacity" data-type="integer" data-required="false"><td>capacity</td><td>integer</td><td>否</td><td></td><td></td></tr>
+<tr data-field="zero_copy" data-type="boolean" data-required="false"><td>zero_copy</td><td>boolean</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="BufferConfig">关联需求: <a data-xref-type="req" data-xref-id="req-perf-003" href="./02-SYSTEM#req-perf-003">REQ-PERF-003</a></p></section><section id="httpserver" data-entity="HttpServer" data-entity-model-type="memory-layout"><h3>HttpServer </h3><table data-entity-table="HttpServer"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="backend" data-type="string" data-required="true"><td>backend</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="vendor_path" data-type="string" data-required="false"><td>vendor_path</td><td>string</td><td>否</td><td></td><td></td></tr></table>
+<p data-xref-type="entity" data-xref-id="HttpServer">关联需求: <a data-xref-type="req" data-xref-id="req-pure-009" href="./02-SYSTEM#req-pure-009">REQ-PURE-009</a></p></section><section id="domainhandler" data-entity="DomainHandler" data-entity-model-type="memory-layout"><h3>DomainHandler </h3><table data-entity-table="DomainHandler"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="domain" data-type="string" data-required="true"><td>domain</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="state_type" data-type="string" data-required="true"><td>state_type</td><td>string</td><td>是</td><td></td><td></td></tr></table></section><section id="buffermanager" data-entity="BufferManager" data-entity-model-type="memory-layout"><h3>BufferManager </h3><table data-entity-table="BufferManager"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="buffer_type" data-type="string" data-required="true"><td>buffer_type</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="crate_name" data-type="string" data-required="true"><td>crate_name</td><td>string</td><td>是</td><td></td><td></td></tr></table></section><section id="domaindispatch" data-entity="DomainDispatch" data-entity-model-type="memory-layout"><h3>DomainDispatch </h3><table data-entity-table="DomainDispatch"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="variant" data-type="string" data-required="true"><td>variant</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="result_type" data-type="string" data-required="true"><td>result_type</td><td>string</td><td>是</td><td></td><td></td></tr></table></section><section id="codepattern" data-entity="CodePattern" data-entity-model-type="memory-layout"><h3>CodePattern </h3><table data-entity-table="CodePattern"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="pattern_type" data-type="string" data-required="true"><td>pattern_type</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="occurrence_count" data-type="integer" data-required="true"><td>occurrence_count</td><td>integer</td><td>是</td><td></td><td></td></tr>
+<tr data-field="replacement" data-type="string" data-required="true"><td>replacement</td><td>string</td><td>是</td><td></td><td></td></tr></table></section><section id="tlsconnection" data-entity="TlsConnection" data-entity-model-type="memory-layout"><h3>TlsConnection </h3><table data-entity-table="TlsConnection"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="state" data-type="string" data-required="true"><td>state</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="alpn" data-type="string" data-required="false"><td>alpn</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="sni" data-type="string" data-required="false"><td>sni</td><td>string</td><td>否</td><td></td><td></td></tr>
+<tr data-field="cipher_suite" data-type="string" data-required="false"><td>cipher_suite</td><td>string</td><td>否</td><td></td><td></td></tr></table></section><section id="httpresponse" data-entity="HttpResponse" data-entity-model-type="memory-layout"><h3>HttpResponse </h3><table data-entity-table="HttpResponse"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="status_text" data-type="string" data-required="true"><td>status_text</td><td>string</td><td>是</td><td></td><td></td></tr>
+<tr data-field="headers_json" data-type="json" data-required="true"><td>headers_json</td><td>json</td><td>是</td><td></td><td></td></tr>
+<tr data-field="body" data-type="blob" data-required="true"><td>body</td><td>blob</td><td>是</td><td></td><td></td></tr></table></section><section id="sqlitedatabase" data-entity="SqliteDatabase" data-entity-model-type="memory-layout"><h3>SqliteDatabase </h3><table data-entity-table="SqliteDatabase"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="path" data-type="string" data-required="true"><td>path</td><td>String</td><td>是</td><td></td><td>Database file path</td></tr>
+<tr data-field="isOpen" data-type="boolean" data-required="true"><td>isOpen</td><td>bool</td><td>是</td><td></td><td>Whether database connection is open</td></tr>
+<tr data-field="lastError" data-type="string" data-required="false"><td>lastError</td><td>String</td><td>否</td><td></td><td>Last error message</td></tr>
+<tr data-field="inTransaction" data-type="boolean" data-required="true"><td>inTransaction</td><td>bool</td><td>是</td><td></td><td>Whether currently in a transaction</td></tr></table></section><section id="ffilibrary" data-entity="FfiLibrary" data-entity-model-type="memory-layout"><h3>FfiLibrary </h3><table data-entity-table="FfiLibrary"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="path" data-type="string" data-required="true"><td>path</td><td>String</td><td>是</td><td></td><td>Library file path</td></tr>
+<tr data-field="handle" data-type="integer" data-required="false"><td>handle</td><td>int</td><td>否</td><td></td><td>dlopen handle pointer</td></tr>
+<tr data-field="isOpen" data-type="boolean" data-required="true"><td>isOpen</td><td>bool</td><td>是</td><td></td><td>Whether library is loaded</td></tr>
+<tr data-field="symbolCount" data-type="integer" data-required="true"><td>symbolCount</td><td>int</td><td>是</td><td></td><td>Resolved symbol count</td></tr></table></section>
+<section id="artifact-model-tree" data-type="document" data-artifact-type="model-tree" data-delivery="D10"><h3>模型树</h3><div>Bao 数据模型树:
 ├── BaoRuntime (根实体，单例)
 │   ├── PagePool (页面池)
 │   │   └── PageHandle (页面句柄)
@@ -735,7 +866,7 @@ bao_stealth/
 ├── BaoError (错误枚举)
 └── WebViewId (页面标识)</div></section>
 
-<section data-delivery="D11" data-artifact-type="cache-index-strategy" data-type="document" id="artifact-cache-index-strategy"><h3>缓存/索引策略</h3><div>缓存策略:
+<section id="artifact-cache-index-strategy" data-type="document" data-artifact-type="cache-index-strategy" data-delivery="D11"><h3>缓存/索引策略</h3><div>缓存策略:
 1. PagePool: LRU 淘汰 + idle TTL 回收（默认 60s）
 2. CdpSession: Weak 引用，页面关闭自动清理
 3. Module Cache: SpiderMonkey 内置模块缓存（SM 编译缓存）
@@ -746,22 +877,151 @@ bao_stealth/
 2. CdpRouter: DashMap&lt;SessionId, CdpSession&gt; 会话索引
 3. Cdp Domain Registry: 静态注册表（编译时确定）</div></section>
 
-<section data-req-api="POST /cdp-client/subscribe-events" data-req-entity="CdpEventTranslator" data-req-category="data" data-req-domain="bao-api" data-req-status="implemented" data-req="REQ-BAO-API-003" id="req-bao-api-003"><h3>REQ-BAO-API-003 undefined</h3><p>servo 7 大事件类型 → CDP event 完整映射</p><div id="console-事件-log.entryadded-cdp-event" data-criterion="Console 事件 → Log.entryAdded CDP event">Console 事件 → Log.entryAdded CDP event</div><div id="pageerror-事件-runtime.exceptionthrown-cdp-event" data-criterion="PageError 事件 → Runtime.exceptionThrown CDP event">PageError 事件 → Runtime.exceptionThrown CDP event</div><div id="networkevent-事件-network.requestwillbesent-responsereceived-loadingfinished-cdp-events" data-criterion="NetworkEvent 事件 → Network.requestWillBeSent / responseReceived / loadingFinished CDP events">NetworkEvent 事件 → Network.requestWillBeSent / responseReceived / loadingFinished CDP events</div><div id="dommutation-事件-dom.attributemodified-characterdatamodified-cdp-events" data-criterion="DomMutation 事件 → DOM.attributeModified / characterDataModified CDP events">DomMutation 事件 → DOM.attributeModified / characterDataModified CDP events</div><div id="sourceinfo-事件-debugger.scriptparsed-cdp-event" data-criterion="SourceInfo 事件 → Debugger.scriptParsed CDP event">SourceInfo 事件 → Debugger.scriptParsed CDP event</div><div id="frameinfo-事件-page.framenavigated-framestartedloading-cdp-events" data-criterion="FrameInfo 事件 → Page.frameNavigated / frameStartedLoading CDP events">FrameInfo 事件 → Page.frameNavigated / frameStartedLoading CDP events</div><div id="timelinemarker-事件-performance.metrics-cdp-event" data-criterion="TimelineMarker 事件 → Performance.metrics CDP event">TimelineMarker 事件 → Performance.metrics CDP event</div><div id="事件零遗漏-7-类全覆盖" data-criterion="事件零遗漏(7 类全覆盖)">事件零遗漏(7 类全覆盖)</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><section data-entity-model-type="memory-layout" data-entity="BaoCdpBrowser" id="baocdpbrowser"><h3>BaoCdpBrowser 统一 CDP 客户端入口（URL scheme 路由）</h3><table data-entity-table="BaoCdpBrowser"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="string" data-field="url"><td>url</td><td>string</td><td>是</td><td></td><td>连接 URL，scheme ∈ {memory, ws, http}</td></tr><tr data-required="true" data-type="enum" data-field="scheme"><td>scheme</td><td>enum</td><td>是</td><td></td><td>解析出的 scheme：memory | ws | http</td></tr><tr data-required="true" data-type="json" data-field="transport"><td>transport</td><td>json</td><td>是</td><td></td><td>当前激活的 CdpTransport 实现（InMemory 或 WebSocket）</td></tr><tr data-required="true" data-type="uuid" data-field="connection_id"><td>connection_id</td><td>uuid</td><td>是</td><td></td><td>连接实例标识</td></tr><tr data-required="true" data-type="boolean" data-field="is_connected"><td>is_connected</td><td>boolean</td><td>是</td><td></td><td>是否已建立连接</td></tr><tr data-required="false" data-type="json" data-field="default_page"><td>default_page</td><td>json</td><td>否</td><td></td><td>连接后自动创建/绑定的默认 Page 句柄</td></tr><tr data-required="false" data-type="string" data-field="last_error"><td>last_error</td><td>string</td><td>否</td><td></td><td>最近一次错误码（URL scheme 错误、握手失败等）</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="CdpTransport" id="cdptransport"><h3>CdpTransport CDP 传输层抽象（trait + 双实现）</h3><table data-entity-table="CdpTransport"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="enum" data-field="transport_type"><td>transport_type</td><td>enum</td><td>是</td><td></td><td>传输类型：memory | websocket</td></tr><tr data-required="true" data-type="json" data-field="inner"><td>inner</td><td>json</td><td>是</td><td></td><td>底层连接对象（同进程通道 / WS 句柄）</td></tr><tr data-required="true" data-type="integer" data-field="next_command_id"><td>next_command_id</td><td>integer</td><td>是</td><td></td><td>命令 ID 自增器，用于 request/response 配对</td></tr><tr data-required="true" data-type="json" data-field="pending"><td>pending</td><td>json</td><td>是</td><td></td><td>等待响应的 pending command 表（id → oneshot）</td></tr><tr data-required="true" data-type="json" data-field="event_subscribers"><td>event_subscribers</td><td>json</td><td>是</td><td></td><td>事件订阅者列表（domain/method → callbacks）</td></tr><tr data-required="true" data-type="boolean" data-field="is_closed"><td>is_closed</td><td>boolean</td><td>是</td><td></td><td>是否已关闭</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="CdpEventTranslator" id="cdpeventtranslator"><h3>CdpEventTranslator servo 7 事件 → CDP event 映射器</h3><table data-entity-table="CdpEventTranslator"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="mapping_table"><td>mapping_table</td><td>json</td><td>是</td><td></td><td>servo 原生事件 → CDP method 映射表</td></tr><tr data-required="true" data-type="boolean" data-field="enabled"><td>enabled</td><td>boolean</td><td>是</td><td></td><td>是否已启用某一类事件转换</td></tr><tr data-required="false" data-type="string" data-field="last_method"><td>last_method</td><td>string</td><td>否</td><td></td><td>最近一次转换的 CDP method 名</td></tr><tr data-required="true" data-type="integer" data-field="events_translated"><td>events_translated</td><td>integer</td><td>是</td><td></td><td>已转换事件计数</td></tr><tr data-required="true" data-type="integer" data-field="errors"><td>errors</td><td>integer</td><td>是</td><td></td><td>转换失败计数（未知事件、参数缺失）</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="AClassDispatcher" id="aclassdispatcher"><h3>AClassDispatcher A 类 48 个机械映射 method dispatcher</h3><table data-entity-table="AClassDispatcher"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="supported_methods"><td>supported_methods</td><td>json</td><td>是</td><td></td><td>支持的 A 类 method 名集合（48 个）</td></tr><tr data-required="true" data-type="json" data-field="param_schemas"><td>param_schemas</td><td>json</td><td>是</td><td></td><td>method → 参数 schema 映射表</td></tr><tr data-required="true" data-type="json" data-field="result_schemas"><td>result_schemas</td><td>json</td><td>是</td><td></td><td>method → 返回 schema 映射表</td></tr><tr data-required="true" data-type="integer" data-field="calls_handled"><td>calls_handled</td><td>integer</td><td>是</td><td></td><td>已处理 method 调用计数</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="BClassSynthesizer" id="bclasssynthesizer"><h3>BClassSynthesizer B 类 52 个 IIFE Eval 合成器</h3><table data-entity-table="BClassSynthesizer"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="supported_methods"><td>supported_methods</td><td>json</td><td>是</td><td></td><td>支持的 B 类 method 集合（52 个）</td></tr><tr data-required="true" data-type="json" data-field="eval_templates"><td>eval_templates</td><td>json</td><td>是</td><td></td><td>method → IIFE 表达式模板（{params} 占位）</td></tr><tr data-required="true" data-type="json" data-field="result_extractors"><td>result_extractors</td><td>json</td><td>是</td><td></td><td>method → 返回字段抽取路径</td></tr><tr data-required="false" data-type="string" data-field="last_eval"><td>last_eval</td><td>string</td><td>否</td><td></td><td>最近一次合成的表达式</td></tr><tr data-required="true" data-type="integer" data-field="success_count"><td>success_count</td><td>integer</td><td>是</td><td></td><td>合成成功/失败计数</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="DClassState" id="dclassstate"><h3>DClassState D 类 62 个纯状态 method + EventEmitter</h3><table data-entity-table="DClassState"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="supported_methods"><td>supported_methods</td><td>json</td><td>是</td><td></td><td>支持的 D 类 method 集合（62 个）</td></tr><tr data-required="true" data-type="json" data-field="state_store"><td>state_store</td><td>json</td><td>是</td><td></td><td>本地状态存储（key → value）</td></tr><tr data-required="true" data-type="json" data-field="subscribers"><td>subscribers</td><td>json</td><td>是</td><td></td><td>EventEmitter 订阅者列表</td></tr><tr data-required="true" data-type="integer" data-field="mutations"><td>mutations</td><td>integer</td><td>是</td><td></td><td>状态变更计数</td></tr><tr data-required="true" data-type="integer" data-field="events_emitted"><td>events_emitted</td><td>integer</td><td>是</td><td></td><td>事件发射计数</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="EClassNotSupported" id="eclassnotsupported"><h3>EClassNotSupported E 类 31 个未实现 method（-32601）</h3><table data-entity-table="EClassNotSupported"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="unsupported_methods"><td>unsupported_methods</td><td>json</td><td>是</td><td></td><td>返回 -32601 的 method 集合（31 个）</td></tr><tr data-required="true" data-type="integer" data-field="error_code"><td>error_code</td><td>integer</td><td>是</td><td></td><td>标准错误码（恒为 -32601）</td></tr><tr data-required="true" data-type="string" data-field="error_message"><td>error_message</td><td>string</td><td>是</td><td></td><td>错误消息模板</td></tr><tr data-required="true" data-type="integer" data-field="rejected_count"><td>rejected_count</td><td>integer</td><td>是</td><td></td><td>被拒绝调用计数</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="BaoCdpPublicAPI" id="baocdppublicapi"><h3>BaoCdpPublicAPI bao_cdp_client 公共 API + 文档 + JS 全局对象暴露</h3><table data-entity-table="BaoCdpPublicAPI"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="exports"><td>exports</td><td>json</td><td>是</td><td></td><td>导出的公共类/函数表</td></tr><tr data-required="true" data-type="string" data-field="global_mount"><td>global_mount</td><td>string</td><td>是</td><td></td><td>JS 全局对象挂载路径（如 Bao.Browser）</td></tr><tr data-required="true" data-type="string" data-field="api_version"><td>api_version</td><td>string</td><td>是</td><td></td><td>公共 API 版本号</td></tr><tr data-required="false" data-type="string" data-field="docs_ref"><td>docs_ref</td><td>string</td><td>否</td><td></td><td>文档路径/手册索引</td></tr><tr data-required="true" data-type="enum" data-field="stability"><td>stability</td><td>enum</td><td>是</td><td></td><td>稳定性级别：stable | experimental | deprecated</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="H3FetchClient" id="h3fetchclient"><h3>H3FetchClient HTTP/3 (h3) fetch 客户端</h3><table data-entity-table="H3FetchClient"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="quic_conn"><td>quic_conn</td><td>json</td><td>是</td><td></td><td>QUIC 连接句柄</td></tr><tr data-required="true" data-type="string" data-field="host"><td>host</td><td>string</td><td>是</td><td></td><td>目标主机名</td></tr><tr data-required="true" data-type="integer" data-field="port"><td>port</td><td>integer</td><td>是</td><td></td><td>目标端口（默认 443）</td></tr><tr data-required="true" data-type="boolean" data-field="zero_rtt"><td>zero_rtt</td><td>boolean</td><td>是</td><td></td><td>是否启用 0-RTT 恢复</td></tr><tr data-required="true" data-type="json" data-field="active_streams"><td>active_streams</td><td>json</td><td>是</td><td></td><td>当前活跃的请求流 ID 集合</td></tr><tr data-required="false" data-type="json" data-field="last_response"><td>last_response</td><td>json</td><td>否</td><td></td><td>最近一次响应（status/body/headers）</td></tr></table></section><section data-entity-model-type="memory-layout" data-entity="BaoCdpWebSocket" id="baocdpwebsocket"><h3>BaoCdpWebSocket bao_cdp 服务端 bun_uws WebSocket</h3><table data-entity-table="BaoCdpWebSocket"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="ws_server"><td>ws_server</td><td>json</td><td>是</td><td></td><td>uSockets WebSocket 服务句柄</td></tr><tr data-required="true" data-type="string" data-field="listen_addr"><td>listen_addr</td><td>string</td><td>是</td><td></td><td>监听地址（host:port）</td></tr><tr data-required="true" data-type="json" data-field="sessions"><td>sessions</td><td>json</td><td>是</td><td></td><td>活跃 session 映射（fd → CdpSession）</td></tr><tr data-required="true" data-type="boolean" data-field="compress"><td>compress</td><td>boolean</td><td>是</td><td></td><td>是否启用压缩</td></tr><tr data-required="true" data-type="integer" data-field="max_payload"><td>max_payload</td><td>integer</td><td>是</td><td></td><td>最大接收帧大小</td></tr></table></section><section data-entity-model-type="relational" data-entity="FetchTasklet" id="data-fetchtasklet"><h3>FetchTasklet</h3><p>实现状态(architect audit D1/D2/D5/D6): SPEC 定义 14 字段完整,实现侧 FetchTasklet 14 字段 + FetchOutcome.kind(DRY,D12) + FetchResolveTask(D4) + poll_ref 保活(D5) + ConcurrentTask 跨线程投递(D6) 均已就绪。ResolveKind::H2Stream(D3)为 Phase 2 deferred,Phase 1 仅实现 Response+TlsSocket。</p><table data-entity-table="FetchTasklet"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="cx"><td>cx</td><td>json</td><td>是</td><td></td><td>SpiderMonkey JSContext 指针(与 servo 共享 JSContext)</td></tr><tr data-required="true" data-type="json" data-field="promise_val"><td>promise_val</td><td>json</td><td>是</td><td></td><td>pending Promise JSVal(返回给 JS)。堆上 AddRawValueRoot 注册防 SM GC(等价上游 JSPromise.Strong),禁用栈上 rooted!()。终态 RemoveRawValueRoot 释放。</td></tr><tr data-required="true" data-type="boolean" data-field="rooted"><td>rooted</td><td>boolean</td><td>是</td><td></td><td>Promise 是否已 AddRawValueRoot 注册。rooted==true while outcome.is_none()</td></tr><tr data-required="true" data-type="json" data-field="http"><td>http</td><td>json</td><td>是</td><td></td><td>bun_http AsyncHTTP 实例(init+schedule 异步路径,对齐上游 FetchTasklet.http 字段)</td></tr><tr data-required="true" data-type="json" data-field="outcome"><td>outcome</td><td>json</td><td>是</td><td></td><td>跨线程结果 Arc&lt;Mutex&lt;Option&lt;FetchOutcome&gt;&gt;&gt;(HTTPThread 写,JS 线程读)。对齐上游 result+metadata 字段,首期一次性完成,预留增量 has_more 接口</td></tr><tr data-required="true" data-type="json" data-field="response_buffer"><td>response_buffer</td><td>json</td><td>是</td><td></td><td>AsyncHTTP 响应体缓冲 Box&lt;MutableString&gt;(对齐上游 response_buffer+scheduled_response_buffer)</td></tr><tr data-required="true" data-type="json" data-field="mini_loop_ptr"><td>mini_loop_ptr</td><td>json</td><td>是</td><td></td><td>JS 线程 MiniEventLoop 指针,用于 enqueue_task_concurrent + wakeup() 跨线程唤醒</td></tr><tr data-required="true" data-type="json" data-field="task"><td>task</td><td>json</td><td>是</td><td></td><td>ConcurrentTask 多态分发载体 AnyTaskWithExtraContext(对齐上游 concurrent_task 字段),通过 enqueue_task_concurrent_with_extra_ctx 注册 callback</td></tr><tr data-required="true" data-type="json" data-field="poll_ref"><td>poll_ref</td><td>json</td><td>是</td><td></td><td>事件循环保活 KeepAlive(对齐上游 poll_ref: Async.KeepAlive)。start 时 ref,终态 unref</td></tr><tr data-required="true" data-type="json" data-field="mutex"><td>mutex</td><td>json</td><td>是</td><td></td><td>跨线程保护 outcome 的 Mutex(对齐上游 FetchTasklet.mutex)。HTTPThread callback 和 JS 线程 run() 串行化</td></tr><tr data-required="true" data-type="boolean" data-field="has_schedule_callback"><td>has_schedule_callback</td><td>boolean</td><td>是</td><td></td><td>防重复调度 AtomicBool(对齐上游 has_schedule_callback)。cmpxchgStrong(false,true) 确保同一时刻只有一个 onProgressUpdate 被投递</td></tr><tr data-required="true" data-type="enum" data-field="kind"><td>kind</td><td>enum</td><td>是</td><td></td><td>解析类型 ResolveKind: Response / TlsSocket / H2Stream</td></tr><tr data-required="false" data-type="json" data-field="profile"><td>profile</td><td>json</td><td>否</td><td></td><td>反指纹 TLS 配置 Option&lt;StealthProfile&gt;→SSLConfigSharedPtr→Options.tls_props(对齐上游 ssl_config→tls_props 路径,修复 TLS 指纹断链)</td></tr><tr data-required="false" data-type="json" data-field="signal"><td>signal</td><td>json</td><td>否</td><td></td><td>JS AbortSignal Option&lt;AbortSignal&gt;(对齐上游 signal 字段,首期预留)</td></tr></table><p data-xref-id="FetchTasklet" data-xref-type="entity">关联需求: <span data-xref-id="REQ-ENG-010" data-xref-type="req">REQ-ENG-010</span></p><p>关联状态机: <span data-xref-id="FetchTaskletLifecycle" data-xref-type="sm">FetchTaskletLifecycle</span></p><p>关联数据流: <span data-xref-id="DF-FETCH-ASYNC-001" data-xref-type="df">DF-FETCH-ASYNC-001</span></p><p>关联控制流: <span data-xref-id="CF-FETCH-ASYNC-001" data-xref-type="cf">CF-FETCH-ASYNC-001</span></p></section><section data-entity-model-type="relational" data-entity="FetchResolveTask" id="data-fetchresolvetask"><h3>FetchResolveTask JS 线程 Promise 解析任务</h3><p>FetchResolveTask 实现 Taskable trait,由 dispatch::run_task 在 JS 线程执行。当 HTTPThread 的 on_http_done callback 通过 ConcurrentTask 投递结果后,JS 线程下一 tick 的 run_task arm 根据 FetchTasklet TAG 匹配到 FetchResolveTask,执行 build_response_js + ResolvePromise/RejectPromise + RemoveRawValueRoot + poll_ref.unref_concurrently。(DD-4)</p><p>实现状态(architect audit D4): SPEC 已定义 FetchResolveTask struct + Taskable impl,实现侧 fetch_resolve_task.rs 已就绪。</p><table data-entity-table="FetchResolveTask"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="true" data-type="json" data-field="tasklet"><td>tasklet</td><td>Arc&lt;Mutex&lt;FetchTasklet&gt;&gt;</td><td>是</td><td></td><td>关联的 FetchTasklet 引用(持有 cx/promise_val/outcome/poll_ref)</td></tr><tr data-required="true" data-type="json" data-field="outcome"><td>outcome</td><td>FetchOutcome</td><td>是</td><td></td><td>从 HTTPThread 传递的 HTTP 结果(status_code/headers/body/error)</td></tr><tr data-required="true" data-type="enum" data-field="resolve_kind"><td>resolve_kind</td><td>enum[Resolve, Reject]</td><td>是</td><td></td><td>解析类型:成功 Resolve / 失败 Reject</td></tr></table><p data-xref-id="FetchResolveTask" data-xref-type="entity">关联需求: <span data-xref-id="REQ-ENG-010" data-xref-type="req">REQ-ENG-010</span></p><p>关联实体: <span data-xref-id="FetchTasklet" data-xref-type="entity">FetchTasklet</span></p><p>设计决策: DD-4 (FetchResolveTask implements Taskable; dispatch::run_task arm for FetchTasklet tag calls FetchResolveTask::run_from_js_thread)</p></section><section data-entity-model-type="relational" data-entity="FetchOutcome" id="data-fetchoutcome"><h3>FetchOutcome HTTP 请求跨线程结果</h3><p>HTTPThread on_http_done callback 将 HTTPClientResult 提取为 FetchOutcome,通过 ConcurrentTask 跨线程投递到 JS 线程。HTTPThread 侧零 SM API 调用(INV-5)。(DD-3)</p><p>实现状态(architect audit D3/D12): kind 枚举替代 is_tls_socket+is_h2_stream 双 boolean(DRY,D12 已修复)。ResolveKind::H2Stream 为 Phase 2 deferred(D3),Phase 1 仅实现 Response+TlsSocket 两个变体。</p><table data-entity-table="FetchOutcome"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr><tr data-required="false" data-type="integer" data-field="status_code"><td>status_code</td><td>Option&lt;u16&gt;</td><td>否</td><td></td><td>HTTP 状态码(成功时有值)</td></tr><tr data-required="false" data-type="json" data-field="headers"><td>headers</td><td>Option&lt;Vec&lt;(String,String)&gt;&gt;</td><td>否</td><td></td><td>HTTP 响应头(成功时有值)</td></tr><tr data-required="false" data-type="string" data-field="body"><td>body</td><td>Option&lt;String&gt;</td><td>否</td><td></td><td>HTTP 响应体(成功时有值)</td></tr><tr data-required="false" data-type="string" data-field="error"><td>error</td><td>Option&lt;String&gt;</td><td>否</td><td></td><td>错误信息(失败时有值)</td></tr><tr data-required="true" data-type="enum" data-field="kind"><td>kind</td><td>ResolveKind</td><td>是</td><td></td><td>解析类型枚举(DD-3 DRY:替代 is_tls_socket/is_h2_stream 两个 boolean,与 FetchTasklet.kind 统一): Response / TlsSocket / H2Stream(Phase 2 deferred)</td></tr></table><p data-xref-id="FetchOutcome" data-xref-type="entity">关联需求: <span data-xref-id="REQ-ENG-010" data-xref-type="req">REQ-ENG-010</span></p><p>关联实体: <span data-xref-id="FetchTasklet" data-xref-type="entity">FetchTasklet</span> <span data-xref-id="FetchResolveTask" data-xref-type="entity">FetchResolveTask</span></p><p>DRY 注记: kind 枚举替代 is_tls_socket+is_h2_stream 双 boolean(architect audit D12)。ResolveKind 与 FetchTasklet.kind 共享同一枚举类型,单一真相源,禁止信息冗余。</p></section><section data-entity="VmSandboxContext" id="entity-vm-sandbox-context">
-<h3>VmSandboxContext</h3>
-<p>node:vm sandbox 上下文，封装一个独立的 SpiderMonkey Realm/Compartment。</p>
-<table>
-<tr><th>字段</th><th>类型</th><th>说明</th></tr>
-<tr><td>global</td><td>*mut JSObject</td><td>独立 Realm 的全局对象（JS_NewGlobalObject 创建）</td></tr>
-<tr><td>sandbox_proxy</td><td>*mut JSObject</td><td>Sandbox 代理对象（JS_NewProxyObject），拦截属性访问先查 sandbox 再查 global</td></tr>
-<tr><td>contextified_object</td><td>*mut JSObject</td><td>用户传入的 sandbox 对象引用</td></tr>
-<tr><td>code_generation</td><td>CodeGenerationOptions</td><td>eval/function 编译控制</td></tr>
-</table>
-<p>生命周期：由 vm.createContext() 创建，由 GC 回收。VmSandboxContext 通过 RealmPrivate 关联到 SM Realm，AutoRealm 切换时自动恢复。</p>
-<p>关键不变量：</p>
-<ul>
-<li>每个 VmSandboxContext 拥有一个独立 Compartment（与调用者 Realm 物理隔离）</li>
-<li>sandbox_proxy 的 prototype chain 指向独立 Realm 的 Object.prototype</li>
-<li>跨 Realm 对象引用自动通过 CCW（Cross-Compartment Wrapper）包装</li>
-</ul>
-</section></main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-BAO-API-003" data-test="TEST-BAO-API-003" id="test-bao-api-003"><h4>TEST-BAO-API-003: REQ-BAO-API-003 单元测试</h4><p>TODO: 为 REQ-BAO-API-003 编写测试用例</p></div></section></body>
+<section id="req-bao-api-003" data-req="REQ-BAO-API-003" data-req-status="implemented" data-req-domain="bao-api" data-req-category="data" data-req-entity="CdpEventTranslator" data-req-api="POST /cdp-client/subscribe-events"><h3>REQ-BAO-API-003 undefined</h3><p>servo 7 大事件类型 → CDP event 完整映射</p>
+
+<div id="console-事件-→-log.entryadded-cdp-event" data-criterion="Console 事件 → Log.entryAdded CDP event">Console 事件 → Log.entryAdded CDP event</div>
+
+<div id="pageerror-事件-→-runtime.exceptionthrown-cdp-event" data-criterion="PageError 事件 → Runtime.exceptionThrown CDP event">PageError 事件 → Runtime.exceptionThrown CDP event</div>
+
+<div id="networkevent-事件-→-network.requestwillbesent-/-responsereceived-/-loadingfinished-cdp-events" data-criterion="NetworkEvent 事件 → Network.requestWillBeSent / responseReceived / loadingFinished CDP events">NetworkEvent 事件 → Network.requestWillBeSent / responseReceived / loadingFinished CDP events</div>
+
+<div id="dommutation-事件-→-dom.attributemodified-/-characterdatamodified-cdp-events" data-criterion="DomMutation 事件 → DOM.attributeModified / characterDataModified CDP events">DomMutation 事件 → DOM.attributeModified / characterDataModified CDP events</div>
+
+<div id="sourceinfo-事件-→-debugger.scriptparsed-cdp-event" data-criterion="SourceInfo 事件 → Debugger.scriptParsed CDP event">SourceInfo 事件 → Debugger.scriptParsed CDP event</div>
+
+<div id="frameinfo-事件-→-page.framenavigated-/-framestartedloading-cdp-events" data-criterion="FrameInfo 事件 → Page.frameNavigated / frameStartedLoading CDP events">FrameInfo 事件 → Page.frameNavigated / frameStartedLoading CDP events</div>
+
+<div id="timelinemarker-事件-→-performance.metrics-cdp-event" data-criterion="TimelineMarker 事件 → Performance.metrics CDP event">TimelineMarker 事件 → Performance.metrics CDP event</div>
+
+<div id="事件零遗漏(7-类全覆盖)" data-criterion="事件零遗漏(7 类全覆盖)">事件零遗漏(7 类全覆盖)</div>
+<div data-criteria=""><strong>验收标准（客观可验证）：</strong><ol>
+  <li>grep -rn "CdpEventTranslator\|EventTranslationHandler" src/bao_cdp_client/src/ 命中 (servo 事件翻译)</li>
+  <li>cargo test -p bao_cdp_client --test event_translation 通过 (7 大事件类型映射)</li>
+  <li>cargo test -p bao_cdp_client --test event_coverage_full 通过 (事件零遗漏 7 类全覆盖)</li>
+  <li>Console 事件 → Log.entryAdded CDP event 测试通过</li>
+  <li>PageError → Runtime.exceptionThrown 测试通过</li>
+  <li>NetworkEvent → Network.requestWillBeSent/responseReceived/loadingFinished 测试通过</li>
+  <li>DomMutation → DOM.attributeModified/characterDataModified 测试通过</li>
+  <li>SourceInfo → Debugger.scriptParsed 测试通过</li>
+  <li>FrameInfo → Page.frameNavigated/frameStartedLoading 测试通过</li>
+  <li>TimelineMarker → Performance.metrics 测试通过</li>
+</ol>
+</div></section><section id="baocdpbrowser" data-entity="BaoCdpBrowser"
+  data-entity-model-type="memory-layout"><h3>BaoCdpBrowser 统一 CDP 客户端入口（URL scheme 路由）</h3><table
+  data-entity-table="BaoCdpBrowser"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="url" data-type="string" data-required="true"><td>url</td><td>string</td><td>是</td><td></td><td>连接 URL，scheme ∈ {memory, ws, http}</td></tr>
+<tr data-field="scheme" data-type="enum" data-required="true"><td>scheme</td><td>enum</td><td>是</td><td></td><td>解析出的 scheme：memory | ws | http</td></tr>
+<tr data-field="transport" data-type="json" data-required="true"><td>transport</td><td>json</td><td>是</td><td></td><td>当前激活的 CdpTransport 实现（InMemory 或 WebSocket）</td></tr>
+<tr data-field="connection_id" data-type="uuid" data-required="true"><td>connection_id</td><td>uuid</td><td>是</td><td></td><td>连接实例标识</td></tr>
+<tr data-field="is_connected" data-type="boolean" data-required="true"><td>is_connected</td><td>boolean</td><td>是</td><td></td><td>是否已建立连接</td></tr>
+<tr data-field="default_page" data-type="json" data-required="false"><td>default_page</td><td>json</td><td>否</td><td></td><td>连接后自动创建/绑定的默认 Page 句柄</td></tr>
+<tr data-field="last_error" data-type="string" data-required="false"><td>last_error</td><td>string</td><td>否</td><td></td><td>最近一次错误码（URL scheme 错误、握手失败等）</td></tr></table></section><section id="cdptransport" data-entity="CdpTransport" data-entity-model-type="memory-layout"><h3>CdpTransport CDP 传输层抽象（trait + 双实现）</h3><table data-entity-table="CdpTransport"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="transport_type" data-type="enum" data-required="true"><td>transport_type</td><td>enum</td><td>是</td><td></td><td>传输类型：memory | websocket</td></tr>
+<tr data-field="inner" data-type="json" data-required="true"><td>inner</td><td>json</td><td>是</td><td></td><td>底层连接对象（同进程通道 / WS 句柄）</td></tr>
+<tr data-field="next_command_id" data-type="integer" data-required="true"><td>next_command_id</td><td>integer</td><td>是</td><td></td><td>命令 ID 自增器，用于 request/response 配对</td></tr>
+<tr data-field="pending" data-type="json" data-required="true"><td>pending</td><td>json</td><td>是</td><td></td><td>等待响应的 pending command 表（id → oneshot）</td></tr>
+<tr data-field="event_subscribers" data-type="json" data-required="true"><td>event_subscribers</td><td>json</td><td>是</td><td></td><td>事件订阅者列表（domain/method → callbacks）</td></tr>
+<tr data-field="is_closed" data-type="boolean" data-required="true"><td>is_closed</td><td>boolean</td><td>是</td><td></td><td>是否已关闭</td></tr></table></section><section id="cdpeventtranslator" data-entity="CdpEventTranslator" data-entity-model-type="memory-layout"><h3>CdpEventTranslator servo 7 事件 → CDP event 映射器</h3><table data-entity-table="CdpEventTranslator"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="mapping_table" data-type="json" data-required="true"><td>mapping_table</td><td>json</td><td>是</td><td></td><td>servo 原生事件 → CDP method 映射表</td></tr>
+<tr data-field="enabled" data-type="boolean" data-required="true"><td>enabled</td><td>boolean</td><td>是</td><td></td><td>是否已启用某一类事件转换</td></tr>
+<tr data-field="last_method" data-type="string" data-required="false"><td>last_method</td><td>string</td><td>否</td><td></td><td>最近一次转换的 CDP method 名</td></tr>
+<tr data-field="events_translated" data-type="integer" data-required="true"><td>events_translated</td><td>integer</td><td>是</td><td></td><td>已转换事件计数</td></tr>
+<tr data-field="errors" data-type="integer" data-required="true"><td>errors</td><td>integer</td><td>是</td><td></td><td>转换失败计数（未知事件、参数缺失）</td></tr></table></section><section id="aclassdispatcher" data-entity="AClassDispatcher" data-entity-model-type="memory-layout"><h3>AClassDispatcher A 类 48 个机械映射 method dispatcher</h3><table data-entity-table="AClassDispatcher"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="supported_methods" data-type="json" data-required="true"><td>supported_methods</td><td>json</td><td>是</td><td></td><td>支持的 A 类 method 名集合（48 个）</td></tr>
+<tr data-field="param_schemas" data-type="json" data-required="true"><td>param_schemas</td><td>json</td><td>是</td><td></td><td>method → 参数 schema 映射表</td></tr>
+<tr data-field="result_schemas" data-type="json" data-required="true"><td>result_schemas</td><td>json</td><td>是</td><td></td><td>method → 返回 schema 映射表</td></tr>
+<tr data-field="calls_handled" data-type="integer" data-required="true"><td>calls_handled</td><td>integer</td><td>是</td><td></td><td>已处理 method 调用计数</td></tr></table></section><section id="bclasssynthesizer" data-entity="BClassSynthesizer" data-entity-model-type="memory-layout"><h3>BClassSynthesizer B 类 52 个 IIFE Eval 合成器</h3><table data-entity-table="BClassSynthesizer"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="supported_methods" data-type="json" data-required="true"><td>supported_methods</td><td>json</td><td>是</td><td></td><td>支持的 B 类 method 集合（52 个）</td></tr>
+<tr data-field="eval_templates" data-type="json" data-required="true"><td>eval_templates</td><td>json</td><td>是</td><td></td><td>method → IIFE 表达式模板（{params} 占位）</td></tr>
+<tr data-field="result_extractors" data-type="json" data-required="true"><td>result_extractors</td><td>json</td><td>是</td><td></td><td>method → 返回字段抽取路径</td></tr>
+<tr data-field="last_eval" data-type="string" data-required="false"><td>last_eval</td><td>string</td><td>否</td><td></td><td>最近一次合成的表达式</td></tr>
+<tr data-field="success_count" data-type="integer" data-required="true"><td>success_count</td><td>integer</td><td>是</td><td></td><td>合成成功/失败计数</td></tr></table></section><section id="dclassstate" data-entity="DClassState" data-entity-model-type="memory-layout"><h3>DClassState D 类 62 个纯状态 method + EventEmitter</h3><table data-entity-table="DClassState"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="supported_methods" data-type="json" data-required="true"><td>supported_methods</td><td>json</td><td>是</td><td></td><td>支持的 D 类 method 集合（62 个）</td></tr>
+<tr data-field="state_store" data-type="json" data-required="true"><td>state_store</td><td>json</td><td>是</td><td></td><td>本地状态存储（key → value）</td></tr>
+<tr data-field="subscribers" data-type="json" data-required="true"><td>subscribers</td><td>json</td><td>是</td><td></td><td>EventEmitter 订阅者列表</td></tr>
+<tr data-field="mutations" data-type="integer" data-required="true"><td>mutations</td><td>integer</td><td>是</td><td></td><td>状态变更计数</td></tr>
+<tr data-field="events_emitted" data-type="integer" data-required="true"><td>events_emitted</td><td>integer</td><td>是</td><td></td><td>事件发射计数</td></tr></table></section><section id="eclassnotsupported" data-entity="EClassNotSupported" data-entity-model-type="memory-layout"><h3>EClassNotSupported E 类 31 个未实现 method（-32601）</h3><table data-entity-table="EClassNotSupported"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="unsupported_methods" data-type="json" data-required="true"><td>unsupported_methods</td><td>json</td><td>是</td><td></td><td>返回 -32601 的 method 集合（31 个）</td></tr>
+<tr data-field="error_code" data-type="integer" data-required="true"><td>error_code</td><td>integer</td><td>是</td><td></td><td>标准错误码（恒为 -32601）</td></tr>
+<tr data-field="error_message" data-type="string" data-required="true"><td>error_message</td><td>string</td><td>是</td><td></td><td>错误消息模板</td></tr>
+<tr data-field="rejected_count" data-type="integer" data-required="true"><td>rejected_count</td><td>integer</td><td>是</td><td></td><td>被拒绝调用计数</td></tr></table></section><section id="baocdppublicapi" data-entity="BaoCdpPublicAPI" data-entity-model-type="memory-layout"><h3>BaoCdpPublicAPI bao_cdp_client 公共 API + 文档 + JS 全局对象暴露</h3><table data-entity-table="BaoCdpPublicAPI"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="exports" data-type="json" data-required="true"><td>exports</td><td>json</td><td>是</td><td></td><td>导出的公共类/函数表</td></tr>
+<tr data-field="global_mount" data-type="string" data-required="true"><td>global_mount</td><td>string</td><td>是</td><td></td><td>JS 全局对象挂载路径（如 Bao.Browser）</td></tr>
+<tr data-field="api_version" data-type="string" data-required="true"><td>api_version</td><td>string</td><td>是</td><td></td><td>公共 API 版本号</td></tr>
+<tr data-field="docs_ref" data-type="string" data-required="false"><td>docs_ref</td><td>string</td><td>否</td><td></td><td>文档路径/手册索引</td></tr>
+<tr data-field="stability" data-type="enum" data-required="true"><td>stability</td><td>enum</td><td>是</td><td></td><td>稳定性级别：stable | experimental | deprecated</td></tr></table></section><section id="h3fetchclient" data-entity="H3FetchClient" data-entity-model-type="memory-layout"><h3>H3FetchClient HTTP/3 (h3) fetch 客户端</h3><table data-entity-table="H3FetchClient"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="quic_conn" data-type="json" data-required="true"><td>quic_conn</td><td>json</td><td>是</td><td></td><td>QUIC 连接句柄</td></tr>
+<tr data-field="host" data-type="string" data-required="true"><td>host</td><td>string</td><td>是</td><td></td><td>目标主机名</td></tr>
+<tr data-field="port" data-type="integer" data-required="true"><td>port</td><td>integer</td><td>是</td><td></td><td>目标端口（默认 443）</td></tr>
+<tr data-field="zero_rtt" data-type="boolean" data-required="true"><td>zero_rtt</td><td>boolean</td><td>是</td><td></td><td>是否启用 0-RTT 恢复</td></tr>
+<tr data-field="active_streams" data-type="json" data-required="true"><td>active_streams</td><td>json</td><td>是</td><td></td><td>当前活跃的请求流 ID 集合</td></tr>
+<tr data-field="last_response" data-type="json" data-required="false"><td>last_response</td><td>json</td><td>否</td><td></td><td>最近一次响应（status/body/headers）</td></tr></table></section><section id="baocdpwebsocket" data-entity="BaoCdpWebSocket" data-entity-model-type="memory-layout"><h3>BaoCdpWebSocket bao_cdp 服务端 bun_uws WebSocket</h3><table data-entity-table="BaoCdpWebSocket"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="ws_server" data-type="json" data-required="true"><td>ws_server</td><td>json</td><td>是</td><td></td><td>uSockets WebSocket 服务句柄</td></tr>
+<tr data-field="listen_addr" data-type="string" data-required="true"><td>listen_addr</td><td>string</td><td>是</td><td></td><td>监听地址（host:port）</td></tr>
+<tr data-field="sessions" data-type="json" data-required="true"><td>sessions</td><td>json</td><td>是</td><td></td><td>活跃 session 映射（fd → CdpSession）</td></tr>
+<tr data-field="compress" data-type="boolean" data-required="true"><td>compress</td><td>boolean</td><td>是</td><td></td><td>是否启用压缩</td></tr>
+<tr data-field="max_payload" data-type="integer" data-required="true"><td>max_payload</td><td>integer</td><td>是</td><td></td><td>最大接收帧大小</td></tr></table></section><section id="fetchtasklet" data-entity="FetchTasklet"
+  data-entity-model-type="relational"><h3>FetchTasklet FetchTasklet</h3><p>实现状态(architect audit D1/D2/D5/D6): SPEC 定义 14 字段完整,实现侧 FetchTasklet 14 字段 + FetchOutcome.kind(DRY,D12) + FetchResolveTask(D4) + poll_ref 保活(D5) + ConcurrentTask 跨线程投递(D6) 均已就绪。ResolveKind::H2Stream(D3)为 Phase 2 deferred,Phase 1 仅实现 Response+TlsSocket。</p><table
+  data-entity-table="FetchTasklet"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="cx" data-type="json" data-required="true"><td>cx</td><td>json</td><td>是</td><td></td><td>SpiderMonkey JSContext 指针(与 servo 共享 JSContext)</td></tr>
+<tr data-field="promise_val" data-type="json" data-required="true"><td>promise_val</td><td>json</td><td>是</td><td></td><td>pending Promise JSVal(返回给 JS)。堆上 AddRawValueRoot 注册防 SM GC(等价上游 JSPromise.Strong),禁用栈上 rooted!()。终态 RemoveRawValueRoot 释放。</td></tr>
+<tr data-field="rooted" data-type="boolean" data-required="true"><td>rooted</td><td>boolean</td><td>是</td><td></td><td>Promise 是否已 AddRawValueRoot 注册。rooted==true while outcome.is_none()</td></tr>
+<tr data-field="http" data-type="json" data-required="true"><td>http</td><td>json</td><td>是</td><td></td><td>bun_http AsyncHTTP 实例(init+schedule 异步路径,对齐上游 FetchTasklet.http 字段)</td></tr>
+<tr data-field="outcome" data-type="json" data-required="true"><td>outcome</td><td>json</td><td>是</td><td></td><td>跨线程结果 Arc&lt;Mutex&lt;Option&lt;FetchOutcome&gt;&gt;&gt;(HTTPThread 写,JS 线程读)。对齐上游 result+metadata 字段,首期一次性完成,预留增量 has_more 接口</td></tr>
+<tr data-field="response_buffer" data-type="json" data-required="true"><td>response_buffer</td><td>json</td><td>是</td><td></td><td>AsyncHTTP 响应体缓冲 Box&lt;MutableString&gt;(对齐上游 response_buffer+scheduled_response_buffer)</td></tr>
+<tr data-field="mini_loop_ptr" data-type="json" data-required="true"><td>mini_loop_ptr</td><td>json</td><td>是</td><td></td><td>JS 线程 MiniEventLoop 指针,用于 enqueue_task_concurrent + wakeup() 跨线程唤醒</td></tr>
+<tr data-field="task" data-type="json" data-required="true"><td>task</td><td>json</td><td>是</td><td></td><td>ConcurrentTask 多态分发载体 AnyTaskWithExtraContext(对齐上游 concurrent_task 字段),通过 enqueue_task_concurrent_with_extra_ctx 注册 callback</td></tr>
+<tr data-field="poll_ref" data-type="json" data-required="true"><td>poll_ref</td><td>json</td><td>是</td><td></td><td>事件循环保活 KeepAlive(对齐上游 poll_ref: Async.KeepAlive)。start 时 ref,终态 unref</td></tr>
+<tr data-field="mutex" data-type="json" data-required="true"><td>mutex</td><td>json</td><td>是</td><td></td><td>跨线程保护 outcome 的 Mutex(对齐上游 FetchTasklet.mutex)。HTTPThread callback 和 JS 线程 run() 串行化</td></tr>
+<tr data-field="has_schedule_callback" data-type="boolean" data-required="true"><td>has_schedule_callback</td><td>boolean</td><td>是</td><td></td><td>防重复调度 AtomicBool(对齐上游 has_schedule_callback)。cmpxchgStrong(false,true) 确保同一时刻只有一个 onProgressUpdate 被投递</td></tr>
+<tr data-field="kind" data-type="enum" data-required="true"><td>kind</td><td>enum</td><td>是</td><td></td><td>解析类型 ResolveKind: Response / TlsSocket / H2Stream</td></tr>
+<tr data-field="profile" data-type="json" data-required="false"><td>profile</td><td>json</td><td>否</td><td></td><td>反指纹 TLS 配置 Option&lt;StealthProfile&gt;→SSLConfigSharedPtr→Options.tls_props(对齐上游 ssl_config→tls_props 路径,修复 TLS 指纹断链)</td></tr>
+<tr data-field="signal" data-type="json" data-required="false"><td>signal</td><td>json</td><td>否</td><td></td><td>JS AbortSignal Option&lt;AbortSignal&gt;(对齐上游 signal 字段,首期预留)</td></tr></table>
+
+<p data-xref-type="entity" data-xref-id="FetchTasklet">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-010">REQ-ENG-010</span></p>
+<p>关联状态机: <span data-xref-type="sm" data-xref-id="FetchTaskletLifecycle">FetchTaskletLifecycle</span></p>
+<p>关联数据流: <span data-xref-type="df" data-xref-id="DF-FETCH-ASYNC-001">DF-FETCH-ASYNC-001</span></p>
+<p>关联控制流: <span data-xref-type="cf" data-xref-id="CF-FETCH-ASYNC-001">CF-FETCH-ASYNC-001</span></p>
+</section>
+<section id="fetchresolvetask" data-entity="FetchResolveTask"
+  data-entity-model-type="relational"><h3>FetchResolveTask JS 线程 Promise 解析任务</h3><p>FetchResolveTask 实现 Taskable trait,由 dispatch::run_task 在 JS 线程执行。当 HTTPThread 的 on_http_done callback 通过 ConcurrentTask 投递结果后,JS 线程下一 tick 的 run_task arm 根据 FetchTasklet TAG 匹配到 FetchResolveTask,执行 build_response_js + ResolvePromise/RejectPromise + RemoveRawValueRoot + poll_ref.unref_concurrently。(DD-4)</p>
+<p>实现状态(architect audit D4): SPEC 已定义 FetchResolveTask struct + Taskable impl,实现侧 fetch_resolve_task.rs 已就绪。</p><table
+  data-entity-table="FetchResolveTask"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="tasklet" data-type="json" data-required="true"><td>tasklet</td><td>Arc&lt;Mutex&lt;FetchTasklet&gt;&gt;</td><td>是</td><td></td><td>关联的 FetchTasklet 引用(持有 cx/promise_val/outcome/poll_ref)</td></tr>
+<tr data-field="outcome" data-type="json" data-required="true"><td>outcome</td><td>FetchOutcome</td><td>是</td><td></td><td>从 HTTPThread 传递的 HTTP 结果(status_code/headers/body/error)</td></tr>
+<tr data-field="resolve_kind" data-type="enum" data-required="true"><td>resolve_kind</td><td>enum[Resolve, Reject]</td><td>是</td><td></td><td>解析类型:成功 Resolve / 失败 Reject</td></tr></table>
+
+<p data-xref-type="entity" data-xref-id="FetchResolveTask">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-010">REQ-ENG-010</span></p><p>关联实体: <span data-xref-type="entity" data-xref-id="FetchTasklet">FetchTasklet</span></p><p>设计决策: DD-4 (FetchResolveTask implements Taskable; dispatch::run_task arm for FetchTasklet tag calls FetchResolveTask::run_from_js_thread)</p></section><section id="fetchoutcome" data-entity="FetchOutcome"
+  data-entity-model-type="relational"><h3>FetchOutcome HTTP 请求跨线程结果</h3><p>HTTPThread on_http_done callback 将 HTTPClientResult 提取为 FetchOutcome,通过 ConcurrentTask 跨线程投递到 JS 线程。HTTPThread 侧零 SM API 调用(INV-5)。(DD-3)</p><p>实现状态(architect audit D3/D12): kind 枚举替代 is_tls_socket+is_h2_stream 双 boolean(DRY,D12 已修复)。ResolveKind::H2Stream 为 Phase 2 deferred(D3),Phase 1 仅实现 Response+TlsSocket 两个变体。</p><table
+  data-entity-table="FetchOutcome"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="status_code" data-type="integer" data-required="false"><td>status_code</td><td>Option&lt;u16&gt;</td><td>否</td><td></td><td>HTTP 状态码(成功时有值)</td></tr>
+<tr data-field="headers" data-type="json" data-required="false"><td>headers</td><td>Option&lt;Vec&lt;(String,String)&gt;&gt;</td><td>否</td><td></td><td>HTTP 响应头(成功时有值)</td></tr>
+<tr data-field="body" data-type="string" data-required="false"><td>body</td><td>Option&lt;String&gt;</td><td>否</td><td></td><td>HTTP 响应体(成功时有值)</td></tr>
+<tr data-field="error" data-type="string" data-required="false"><td>error</td><td>Option&lt;String&gt;</td><td>否</td><td></td><td>错误信息(失败时有值)</td></tr>
+<tr data-field="kind" data-type="enum" data-required="true"><td>kind</td><td>ResolveKind</td><td>是</td><td></td><td>解析类型枚举(DD-3 DRY:替代 is_tls_socket/is_h2_stream 两个 boolean,与 FetchTasklet.kind 统一): Response / TlsSocket / H2Stream(Phase 2 deferred)</td></tr></table>
+
+<p data-xref-type="entity" data-xref-id="FetchOutcome">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-010">REQ-ENG-010</span></p>
+<p>关联实体: <span data-xref-type="entity" data-xref-id="FetchTasklet">FetchTasklet</span> <span data-xref-type="entity" data-xref-id="FetchResolveTask">FetchResolveTask</span></p>
+<p>DRY 注记: kind 枚举替代 is_tls_socket+is_h2_stream 双 boolean(architect audit D12)。ResolveKind 与 FetchTasklet.kind 共享同一枚举类型,单一真相源,禁止信息冗余。</p>
+</section>
+<section id="vmsandboxcontext" data-entity="VmSandboxContext"
+  data-entity-model-type="relational"><h3>VmSandboxContext node:vm sandbox 独立 Realm/Compartment 上下文</h3><p>node:vm sandbox 上下文，封装一个独立的 SpiderMonkey Realm/Compartment。由 vm.createContext() 创建，由 GC 回收。VmSandboxContext 通过 RealmPrivate 关联到 SM Realm，AutoRealm 切换时自动恢复。关联 BUG-ENG-368（sandbox 语义缺失范式缺陷修复目标），关联 REQ-ENG-011（node:vm 模块）。</p><table
+  data-entity-table="VmSandboxContext"><tr><th>字段</th><th>类型</th><th>必填</th><th>约束</th><th>说明</th></tr>
+<tr data-field="global" data-type="json" data-required="true"><td>global</td><td>*mut JSObject</td><td>是</td><td>nonnull while alive</td><td>独立 Realm 的全局对象句柄（JS_NewGlobalObject 创建，与调用者 Realm 物理隔离）。GC root 由 RealmPrivate 持有，AutoRealm 切换时自动恢复。</td></tr>
+<tr data-field="sandbox_proxy" data-type="json" data-required="true"><td>sandbox_proxy</td><td>*mut JSObject</td><td>是</td><td>JS_NewProxyObject</td><td>Sandbox 代理对象（JS_NewProxyObject），handler 拦截属性访问先查 sandbox 再查 global，实现 sandbox 对象属性注入到新 Realm 全局作用域的 vm 规范语义。</td></tr>
+<tr data-field="contextified_object" data-type="json" data-required="true"><td>contextified_object</td><td>*mut JSObject</td><td>是</td><td>caller-provided</td><td>用户传入的 sandbox 对象引用（contextify 注入源）。sandbox_proxy 的 target，属性读写先命中此对象。</td></tr>
+<tr data-field="realm_handle" data-type="json" data-required="true"><td>realm_handle</td><td>JS::Realm*</td><td>是</td><td>1:1 with global</td><td>SM Realm 句柄（EnterRealm/AutoRealm 切换目标）。与 global 1:1 绑定，JS::SetRealmPrivate 关联 VmSandboxContext 指针。</td></tr>
+<tr data-field="compartment" data-type="json" data-required="true"><td>compartment</td><td>JS::Compartment*</td><td>是</td><td>1:1 with realm</td><td>SM Compartment 句柄（物理隔离边界）。跨 Realm 对象引用自动通过 CCW（Cross-Compartment Wrapper）包装，确保新 Realm 定义的变量不污染调用者 Realm。</td></tr>
+<tr data-field="cx_borrow" data-type="json" data-required="true"><td>cx_borrow</td><td>&amp;JSContext</td><td>是</td><td>borrow, non-owning</td><td>借用语义：共享 servo JSContext 指针（非独占 isolate）。与 bao_engine 共用同一 JSContext，sandbox 不创建独立 Runtime/isolate，仅隔离 Realm/Compartment。</td></tr>
+<tr data-field="code" data-type="json" data-required="true"><td>code</td><td>String</td><td>是</td><td>UTF-8</td><td>待执行的用户代码字符串（vm.runInNewContext 的 code 参数）。AutoRealm 切换后由 JS::Evaluate2 在 sandbox Realm 内编译执行。</td></tr>
+<tr data-field="code_generation" data-type="enum" data-required="true"><td>code_generation</td><td>enum</td><td>是</td><td>Allow | Deny</td><td>eval/function 编译控制选项（对应 SM Realm 的 allowCCW + lazy parsing 策略）。默认 Allow，安全沙箱场景可设 Deny 禁止动态代码生成。</td></tr>
+<tr data-field="timeout_ms" data-type="json" data-required="false"><td>timeout_ms</td><td>Option&lt;u64&gt;</td><td>否</td><td>ms</td><td>可选执行超时（Watchdog interrupt callback），超时触发 UncatchableException。首期预留，Phase 2 实现。</td></tr></table>
+
+<p data-xref-type="entity" data-xref-id="VmSandboxContext">关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-011">REQ-ENG-011</span></p><p>关联缺陷: <span data-xref-type="bug" data-xref-id="BUG-ENG-368">BUG-ENG-368</span></p><p>关键不变量：</p><ul>
+  <li>每个 VmSandboxContext 拥有一个独立 Compartment（与调用者 Realm 物理隔离）</li>
+  <li>sandbox_proxy 的 prototype chain 指向独立 Realm 的 Object.prototype</li>
+  <li>跨 Realm 对象引用自动通过 CCW（Cross-Compartment Wrapper）包装</li>
+  <li>cx_borrow 为借用语义，不持有 JSContext 所有权（servo 拥有生命周期）</li>
+</ul></section></main><section id="testing" data-tests-section=""><h2>测试用例</h2>
+<div id="test-bao-api-003" data-test="TEST-BAO-API-003" data-req-ref="REQ-BAO-API-003" data-test-categories="unit"><h4>TEST-BAO-API-003: REQ-BAO-API-003 单元测试</h4><p>关联真实测试: src/bao_cdp_client/tests/event_translation.rs (servo 7 大事件类型 → CDP event 完整映射: Console/PageError/NetworkEvent/DomMutation/SourceInfo/FrameInfo/TimelineMarker) + src/bao_cdp_client/tests/event_coverage_full.rs</p></div></section></body>
 </html>

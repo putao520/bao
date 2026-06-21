@@ -1,344 +1,1183 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>Bao - 实施路线图</title>
-</head>
-<body><main data-spec-content="">
-<h1>Bao 实施路线图</h1>
-<p>基于 SPEC 测绘的 Bun (105 crate, 13层 DAG) 和 Servo (66 组件) 架构分析结果，制定分阶段实施计划。</p>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Bao - 实施路线图</title>
+  </head>
+  <body>
+    <main data-spec-content="">
+      <h1>Bao 实施路线图</h1>
+      <p>基于 SPEC 测绘的 Bun (105 crate, 13层 DAG) 和 Servo (66 组件) 架构分析结果，制定分阶段实施计划。</p>
 
-<!-- ============================================================ -->
-<h2>§1 总览</h2>
-<!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <h2>§1 总览</h2>
+      <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
-<h3>阶段总览</h3>
-<table>
-<tr><td>阶段</td><td>名称</td><td>核心 REQ</td><td>新建 Crate</td><td>修改范围</td></tr>
-<tr><td>Phase 1</td><td>SpiderMonkey 替换 JSC</td><td>REQ-ENG-001 ~ 007 · REQ-CLI-001</td><td>bao_engine + 12 桥接 crate + bao_runtime</td><td>L11-L13 (13 crate)</td></tr>
-<tr><td>Phase 2</td><td>servo 引擎集成 + 渲染</td><td>REQ-CLI-002 · REQ-BRW-001 · REQ-BRW-002 · REQ-BRW-003</td><td>bao_browser</td><td>新增（servo path dep）</td></tr>
-<tr><td>Phase 3</td><td>CDP Server</td><td>REQ-CDP-001 ~ 008</td><td>bao_cdp</td><td>新增 + bun_http hook</td></tr>
-<tr><td>Phase 4</td><td>Stealth 反指纹</td><td>REQ-STL-001 ~ 007</td><td>bao_stealth</td><td>新增 + bao_engine/bao_browser 注入点</td></tr>
-<tr><td>Phase 5</td><td>集成测试与发布</td><td>NFR</td><td>—</td><td>全局验证</td></tr>
-</table>
-</div>
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+        <h3>阶段总览</h3>
+        <table>
+          <tr>
+            <td>阶段</td>
+            <td>名称</td>
+            <td>核心 REQ</td>
+            <td>新建 Crate</td>
+            <td>修改范围</td>
+          </tr>
+          <tr>
+            <td>Phase 1</td>
+            <td>SpiderMonkey 替换 JSC</td>
+            <td>REQ-ENG-001 ~ 007 · REQ-CLI-001</td>
+            <td>bao_engine + 12 桥接 crate + bao_runtime</td>
+            <td>L11-L13 (13 crate)</td>
+          </tr>
+          <tr>
+            <td>Phase 2</td>
+            <td>servo 引擎集成 + 渲染</td>
+            <td>REQ-CLI-002 · REQ-BRW-001 · REQ-BRW-002 · REQ-BRW-003</td>
+            <td>bao_browser</td>
+            <td>新增（servo path dep）</td>
+          </tr>
+          <tr>
+            <td>Phase 3</td>
+            <td>CDP Server</td>
+            <td>REQ-CDP-001 ~ 008</td>
+            <td>bao_cdp</td>
+            <td>新增 + bun_http hook</td>
+          </tr>
+          <tr>
+            <td>Phase 4</td>
+            <td>Stealth 反指纹</td>
+            <td>REQ-STL-001 ~ 007</td>
+            <td>bao_stealth</td>
+            <td>新增 + bao_engine/bao_browser 注入点</td>
+          </tr>
+          <tr>
+            <td>Phase 5</td>
+            <td>集成测试与发布</td>
+            <td>NFR</td>
+            <td>—</td>
+            <td>全局验证</td>
+          </tr>
+        </table>
+      </div>
 
-<!-- ============================================================ -->
-<h2>§2 Phase 1: SpiderMonkey 替换 JSC</h2>
-<!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <h2>§2 Phase 1: SpiderMonkey 替换 JSC</h2>
+      <!-- ============================================================ -->
 
-<div data-req-api="GET /impl/phase1-status" data-req-entity="BaoRuntime,ModuleSource,JsCallback" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-01" id="req-impl-01">
-<h3>Phase 1 详细任务（已完成）</h3>
+      <div
+        id="req-impl-01"
+        data-req="REQ-IMPL-01"
+        data-req-status="implemented"
+        data-req-domain="IMPL"
+        data-req-category="business"
+        data-req-entity="BaoRuntime,ModuleSource,JsCallback"
+        data-req-api="GET /impl/phase1-status"
+      >
+        <h3>Phase 1 详细任务（已完成）</h3>
 
-<h4>1.1 集成 mozjs crate</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>mozjs git dep 配置</td><td>Cargo.toml 添加 mozjs = { git = "..." } 依赖</td><td>REQ-ENG-001</td></tr>
-<tr><td>JSContext 封装</td><td>bao_engine/context.rs: JSContext 生命周期管理、初始化、销毁</td><td>REQ-ENG-001</td></tr>
-<tr><td>GC Root 管理</td><td>bao_engine/gc.rs: RAII 封装 JS::Rooted/JS::Handle，crown lint 集成</td><td>REQ-ENG-001</td></tr>
-<tr><td>Value 类型桥接</td><td>JS::Value ↔ Rust 类型双向转换 (string/number/bool/object/array/null/undefined)</td><td>REQ-ENG-003</td></tr>
-</table>
+        <h4>1.1 集成 mozjs crate</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>mozjs git dep 配置</td>
+            <td>Cargo.toml 添加 mozjs = { git = "..." } 依赖</td>
+            <td>REQ-ENG-001</td>
+          </tr>
+          <tr>
+            <td>JSContext 封装</td>
+            <td>bao_engine/context.rs: JSContext 生命周期管理、初始化、销毁</td>
+            <td>REQ-ENG-001</td>
+          </tr>
+          <tr>
+            <td>GC Root 管理</td>
+            <td>bao_engine/gc.rs: RAII 封装 JS::Rooted/JS::Handle，crown lint 集成</td>
+            <td>REQ-ENG-001</td>
+          </tr>
+          <tr>
+            <td>Value 类型桥接</td>
+            <td>JS::Value ↔ Rust 类型双向转换 (string/number/bool/object/array/null/undefined)</td>
+            <td>REQ-ENG-003</td>
+          </tr>
+        </table>
 
-<h4>1.2 host_fn 抽象层</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>Safe FFI wrapper</td><td>bao_engine/host_fn.rs: JSNative callback 封装，自动类型转换</td><td>REQ-ENG-003</td></tr>
-<tr><td>异常桥接</td><td>SM JS Exception → Rust Result::Err 自动转换</td><td>REQ-ENG-003</td></tr>
-<tr><td>GC RAII</td><td>JS::Rooted 智能指针封装，编译时检查 rooting</td><td>REQ-ENG-003</td></tr>
-</table>
+        <h4>1.2 host_fn 抽象层</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>Safe FFI wrapper</td>
+            <td>bao_engine/host_fn.rs: JSNative callback 封装，自动类型转换</td>
+            <td>REQ-ENG-003</td>
+          </tr>
+          <tr>
+            <td>异常桥接</td>
+            <td>SM JS Exception → Rust Result::Err 自动转换</td>
+            <td>REQ-ENG-003</td>
+          </tr>
+          <tr>
+            <td>GC RAII</td>
+            <td>JS::Rooted 智能指针封装，编译时检查 rooting</td>
+            <td>REQ-ENG-003</td>
+          </tr>
+        </table>
 
-<h4>1.3 Event Loop 桥接</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>JobQueue 实现</td><td>实现 SM JS::JobQueue trait，每轮 tick drain 微任务</td><td>REQ-ENG-004</td></tr>
-<tr><td>Timer 桥接</td><td>setTimeout/setInterval 委托 Bun Timer (uSockets)</td><td>REQ-ENG-004</td></tr>
-<tr><td>I/O 回调桥接</td><td>epoll/kqueue 事件触发 SM 回调</td><td>REQ-ENG-004</td></tr>
-</table>
+        <h4>1.3 Event Loop 桥接</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>JobQueue 实现</td>
+            <td>实现 SM JS::JobQueue trait，每轮 tick drain 微任务</td>
+            <td>REQ-ENG-004</td>
+          </tr>
+          <tr>
+            <td>Timer 桥接</td>
+            <td>setTimeout/setInterval 委托 Bun Timer (uSockets)</td>
+            <td>REQ-ENG-004</td>
+          </tr>
+          <tr>
+            <td>I/O 回调桥接</td>
+            <td>epoll/kqueue 事件触发 SM 回调</td>
+            <td>REQ-ENG-004</td>
+          </tr>
+        </table>
 
-<h4>1.4 Module Loader 桥接</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>ESM resolve hook</td><td>SM resolve callback → Bun resolver 调用</td><td>REQ-ENG-005</td></tr>
-<tr><td>ESM load hook</td><td>SM load callback → Bun transpiler + FS read</td><td>REQ-ENG-005</td></tr>
-<tr><td>模块缓存</td><td>HashMap&lt;Url, ModuleSource&gt; 缓存已解析模块</td><td>REQ-ENG-005</td></tr>
-<tr><td>动态 import()</td><td>异步模块加载 → Bun resolver + event loop</td><td>REQ-ENG-005</td></tr>
-</table>
+        <h4>1.4 Module Loader 桥接</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>ESM resolve hook</td>
+            <td>SM resolve callback → Bun resolver 调用</td>
+            <td>REQ-ENG-005</td>
+          </tr>
+          <tr>
+            <td>ESM load hook</td>
+            <td>SM load callback → Bun transpiler + FS read</td>
+            <td>REQ-ENG-005</td>
+          </tr>
+          <tr>
+            <td>模块缓存</td>
+            <td>HashMap&lt;Url, ModuleSource&gt; 缓存已解析模块</td>
+            <td>REQ-ENG-005</td>
+          </tr>
+          <tr>
+            <td>动态 import()</td>
+            <td>异步模块加载 → Bun resolver + event loop</td>
+            <td>REQ-ENG-005</td>
+          </tr>
+        </table>
 
-<h4>1.5 Bun API + Node.js 兼容 + 品牌替换</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>Bun 全局对象</td><td>在 SM 全局注册 Bun.* 对象 + Bao.* 别名</td><td>REQ-ENG-006</td></tr>
-<tr><td>Node.js 兼容层</td><td>node:fs/path/http/crypto/os/url/events/net/child_process/util/assert/zlib/dns/https + Buffer/process/TextEncoder/TextDecoder</td><td>REQ-ENG-007</td></tr>
-<tr><td>CLI 入口</td><td>bao run/test/build/install/browser 命令</td><td>REQ-CLI-001</td></tr>
-</table>
+        <h4>1.5 Bun API + Node.js 兼容 + 品牌替换</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>Bun 全局对象</td>
+            <td>在 SM 全局注册 Bun.* 对象 + Bao.* 别名</td>
+            <td>REQ-ENG-006</td>
+          </tr>
+          <tr>
+            <td>Node.js 兼容层</td>
+            <td>
+              node:fs/path/http/crypto/os/url/events/net/child_process/util/assert/zlib/dns/https +
+              Buffer/process/TextEncoder/TextDecoder
+            </td>
+            <td>REQ-ENG-007</td>
+          </tr>
+          <tr>
+            <td>CLI 入口</td>
+            <td>bao run/test/build/install/browser 命令</td>
+            <td>REQ-CLI-001</td>
+          </tr>
+        </table>
 
-<h4>1.6 异步 Fetch/HTTP 事件循环集成(FetchTasklet 事件驱动范式)</h4>
-<p>REQ-ENG-010 任务分解,对应 CF-FETCH-ASYNC-001 控制流 DD-1~DD-7 设计决策 + DEC-ENG-002 执行偏差修正 DD-8~DD-12。改动域限定 bao_runtime。S2审计状态:BLOCKED(Task#50 未完成),存在双重基础设施缺陷,需执行 DD-8~DD-12 修正。</p>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ/DD</td><td>文件域</td><td>依赖</td><td>验证点</td></tr>
-<tr><td>FetchTasklet struct 定义</td><td>定义 FetchTasklet 14 字段(cx/promise_val/rooted/http/outcome/response_buffer/mini_loop_ptr/task/poll_ref/mutex/has_schedule_callback/kind/profile/signal)和 ResolveKind 枚举(Response/TlsSocket/H2Stream)</td><td>REQ-ENG-010 / DD-1</td><td>bao_runtime/src/fetch_tasklet.rs(新文件)</td><td>无</td><td>编译通过+字段完整性</td></tr>
-<tr><td>FetchOutcome struct 定义</td><td>定义 FetchOutcome 5 字段(status_code/headers/body/error/kind),kind 为 ResolveKind 枚举(DRY:替代 is_tls_socket+is_h2_stream 双 boolean)</td><td>REQ-ENG-010 / DD-3</td><td>bao_runtime/src/fetch_tasklet.rs</td><td>FetchTasklet</td><td>kind 枚举统一</td></tr>
-<tr><td>FetchResolveTask + Taskable 实现</td><td>FetchResolveTask{tasklet,outcome,resolve_kind} impl Taskable,dispatch::run_task arm 匹配 FetchTasklet TAG</td><td>REQ-ENG-010 / DD-4</td><td>bao_runtime/src/fetch_resolve_task.rs(新文件)</td><td>FetchTasklet+FetchOutcome</td><td>run_from_js_thread 调用链</td></tr>
-<tr><td>AsyncHTTP::init+schedule 异步路径</td><td>FetchTasklet::start 内调 AsyncHTTP::init(callback,options)+schedule(batch),替代 do_fetch_blocking+send_sync</td><td>REQ-ENG-010-C1/C2 / DD-2</td><td>bao_runtime/src/fetch_api.rs + node_http.rs + node_https.rs + node_tls.rs + stealth_http.rs</td><td>FetchTasklet</td><td>6 个入口零 send_sync 残留</td></tr>
-<tr><td>HTTPThread callback 跨线程投递</td><td>on_http_done callback: HTTPClientResult→FetchOutcome,enqueue_task_concurrent+wakeup()投递到 JS 线程</td><td>REQ-ENG-010-C3 / DD-3</td><td>bao_runtime/src/fetch_api.rs</td><td>FetchTasklet+FetchOutcome</td><td>HTTPThread 零 SM API 调用(INV-5)</td></tr>
-<tr><td>JS 线程 Promise resolve/reject</td><td>FetchResolveTask::run_from_js_thread: build_response_js+ResolvePromise/RejectPromise+RemoveRawValueRoot+poll_ref.unref_concurrently</td><td>REQ-ENG-010-C4/C6 / DD-1/DD-4/DD-5</td><td>bao_runtime/src/fetch_resolve_task.rs</td><td>FetchResolveTask</td><td>AddRawValueRoot/RemoveRawValueRoot 配对</td></tr>
-<tr><td>poll_ref 保活机制</td><td>FetchTasklet::start 调 poll_ref.ref_concurrently();resolve/reject/abort/drop 每条退出路径调 poll_ref.unref_concurrently()</td><td>REQ-ENG-010-C5 / DD-5</td><td>bao_runtime/src/fetch_tasklet.rs + fetch_resolve_task.rs</td><td>FetchTasklet</td><td>每条终态 unref 覆盖</td></tr>
-<tr><td>StealthProfile→SSLConfig 桥接</td><td>stealth_profile_to_ssl_config: bao_stealth::StealthProfile→bun_http::ssl_config::SharedPtr→AsyncHTTP Options.tls_props</td><td>REQ-ENG-010-C9 / DD-7</td><td>bao_stealth/src/bridge.rs + bao_runtime/src/fetch_api.rs</td><td>FetchTasklet+AsyncHTTP</td><td>TLS JA3/JA4 指纹匹配</td></tr>
-<tr><td>timers.rs fetch_api 引用路径迁移</td><td>8 个 call site 从 fetch_api:: 旧路径迁移至 fetch_tasklet:: 新路径</td><td>REQ-ENG-010</td><td>bao_runtime/src/timers.rs</td><td>FetchTasklet</td><td>grep 确认零旧路径引用</td></tr>
-</table>
+        <h4>1.6 异步 Fetch/HTTP 事件循环集成(FetchTasklet 事件驱动范式)</h4>
+        <p>
+          REQ-ENG-010 任务分解,对应 CF-FETCH-ASYNC-001 控制流 DD-1~DD-7 设计决策 + DEC-ENG-002 执行偏差修正
+          DD-8~DD-12。改动域限定 bao_runtime。S2审计状态:BLOCKED(Task#50 未完成),存在双重基础设施缺陷,需执行 DD-8~DD-12
+          修正。
+        </p>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ/DD</td>
+            <td>文件域</td>
+            <td>依赖</td>
+            <td>验证点</td>
+          </tr>
+          <tr>
+            <td>FetchTasklet struct 定义</td>
+            <td>
+              定义 FetchTasklet 14
+              字段(cx/promise_val/rooted/http/outcome/response_buffer/mini_loop_ptr/task/poll_ref/mutex/has_schedule_callback/kind/profile/signal)和
+              ResolveKind 枚举(Response/TlsSocket/H2Stream)
+            </td>
+            <td>REQ-ENG-010 / DD-1</td>
+            <td>bao_runtime/src/fetch_tasklet.rs(新文件)</td>
+            <td>无</td>
+            <td>编译通过+字段完整性</td>
+          </tr>
+          <tr>
+            <td>FetchOutcome struct 定义</td>
+            <td>
+              定义 FetchOutcome 5 字段(status_code/headers/body/error/kind),kind 为 ResolveKind 枚举(DRY:替代
+              is_tls_socket+is_h2_stream 双 boolean)
+            </td>
+            <td>REQ-ENG-010 / DD-3</td>
+            <td>bao_runtime/src/fetch_tasklet.rs</td>
+            <td>FetchTasklet</td>
+            <td>kind 枚举统一</td>
+          </tr>
+          <tr>
+            <td>FetchResolveTask + Taskable 实现</td>
+            <td>
+              FetchResolveTask{tasklet,outcome,resolve_kind} impl Taskable,dispatch::run_task arm 匹配 FetchTasklet TAG
+            </td>
+            <td>REQ-ENG-010 / DD-4</td>
+            <td>bao_runtime/src/fetch_resolve_task.rs(新文件)</td>
+            <td>FetchTasklet+FetchOutcome</td>
+            <td>run_from_js_thread 调用链</td>
+          </tr>
+          <tr>
+            <td>AsyncHTTP::init+schedule 异步路径</td>
+            <td>
+              FetchTasklet::start 内调 AsyncHTTP::init(callback,options)+schedule(batch),替代
+              do_fetch_blocking+send_sync
+            </td>
+            <td>REQ-ENG-010-C1/C2 / DD-2</td>
+            <td>bao_runtime/src/fetch_api.rs + node_http.rs + node_https.rs + node_tls.rs + stealth_http.rs</td>
+            <td>FetchTasklet</td>
+            <td>6 个入口零 send_sync 残留</td>
+          </tr>
+          <tr>
+            <td>HTTPThread callback 跨线程投递</td>
+            <td>on_http_done callback: HTTPClientResult→FetchOutcome,enqueue_task_concurrent+wakeup()投递到 JS 线程</td>
+            <td>REQ-ENG-010-C3 / DD-3</td>
+            <td>bao_runtime/src/fetch_api.rs</td>
+            <td>FetchTasklet+FetchOutcome</td>
+            <td>HTTPThread 零 SM API 调用(INV-5)</td>
+          </tr>
+          <tr>
+            <td>JS 线程 Promise resolve/reject</td>
+            <td>
+              FetchResolveTask::run_from_js_thread:
+              build_response_js+ResolvePromise/RejectPromise+RemoveRawValueRoot+poll_ref.unref_concurrently
+            </td>
+            <td>REQ-ENG-010-C4/C6 / DD-1/DD-4/DD-5</td>
+            <td>bao_runtime/src/fetch_resolve_task.rs</td>
+            <td>FetchResolveTask</td>
+            <td>AddRawValueRoot/RemoveRawValueRoot 配对</td>
+          </tr>
+          <tr>
+            <td>poll_ref 保活机制</td>
+            <td>
+              FetchTasklet::start 调 poll_ref.ref_concurrently();resolve/reject/abort/drop 每条退出路径调
+              poll_ref.unref_concurrently()
+            </td>
+            <td>REQ-ENG-010-C5 / DD-5</td>
+            <td>bao_runtime/src/fetch_tasklet.rs + fetch_resolve_task.rs</td>
+            <td>FetchTasklet</td>
+            <td>每条终态 unref 覆盖</td>
+          </tr>
+          <tr>
+            <td>StealthProfile→SSLConfig 桥接</td>
+            <td>
+              stealth_profile_to_ssl_config: bao_stealth::StealthProfile→bun_http::ssl_config::SharedPtr→AsyncHTTP
+              Options.tls_props
+            </td>
+            <td>REQ-ENG-010-C9 / DD-7</td>
+            <td>bao_stealth/src/bridge.rs + bao_runtime/src/fetch_api.rs</td>
+            <td>FetchTasklet+AsyncHTTP</td>
+            <td>TLS JA3/JA4 指纹匹配</td>
+          </tr>
+          <tr>
+            <td>timers.rs fetch_api 引用路径迁移</td>
+            <td>8 个 call site 从 fetch_api:: 旧路径迁移至 fetch_tasklet:: 新路径</td>
+            <td>REQ-ENG-010</td>
+            <td>bao_runtime/src/timers.rs</td>
+            <td>FetchTasklet</td>
+            <td>grep 确认零旧路径引用</td>
+          </tr>
+        </table>
 
-<h4>验收标准</h4>
-<ul>
-<li id="id-176-176-integration-tests-通过" data-criterion="176/176 integration tests 通过" data-criterion-id="REQ-IMPL-01-C1">176/176 integration tests 通过</li>
-<li id="webassembly-原生支持" data-criterion="WebAssembly 原生支持" data-criterion-id="REQ-IMPL-01-C2">WebAssembly 原生支持</li>
-<li id="bun.build-bun.test-bun.serve-bun.spawn-等-api-正常" data-criterion="Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常" data-criterion-id="REQ-IMPL-01-C3">Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常</li>
-<li id="mozjs-crate-集成且-jscontext-生命周期管理完整" data-criterion="mozjs crate 集成且 JSContext 生命周期管理完整" data-criterion-id="REQ-IMPL-01-C4">mozjs crate 集成且 JSContext 生命周期管理完整</li>
-</ul>
+        <h4>验收标准</h4>
+        <ul>
+          <li
+            id="176/176-integration-tests-通过"
+            data-criterion="176/176 integration tests 通过"
+            data-criterion-id="REQ-IMPL-01-C1"
+          >
+            176/176 integration tests 通过
+          </li>
+          <li id="webassembly-原生支持" data-criterion="WebAssembly 原生支持" data-criterion-id="REQ-IMPL-01-C2">
+            WebAssembly 原生支持
+          </li>
+          <li
+            id="bun.build/bun.test/bun.serve/bun.spawn-等-api-正常"
+            data-criterion="Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常"
+            data-criterion-id="REQ-IMPL-01-C3"
+          >
+            Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常
+          </li>
+          <li
+            id="mozjs-crate-集成且-jscontext-生命周期管理完整"
+            data-criterion="mozjs crate 集成且 JSContext 生命周期管理完整"
+            data-criterion-id="REQ-IMPL-01-C4"
+          >
+            mozjs crate 集成且 JSContext 生命周期管理完整
+          </li>
+        </ul>
 
-<h4>Phase 1 验证</h4>
-<ul>
-<li>176/176 integration tests 通过</li>
-<li>WebAssembly 原生支持</li>
-<li>Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常</li>
-</ul>
-<div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
+        <h4>Phase 1 验证</h4>
+        <ul>
+          <li>176/176 integration tests 通过</li>
+          <li>WebAssembly 原生支持</li>
+          <li>Bun.build/Bun.test/Bun.serve/Bun.spawn 等 API 正常</li>
+        </ul>
+        <div data-criteria="">
+          <strong>验收标准（客观可验证）：</strong>
+          <ol>
+            <li>cargo test -p bao_runtime --lib 通过 (600+ tests passed)</li>
+            <li>cargo test -p bao_engine --test codegen_boundary_tests 通过</li>
+            <li>bao -e "WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0]))" 返回 true (WASM 支持)</li>
+            <li>bao -e "Bun.serve" / "Bun.test" / "Bun.spawn" 均为 function</li>
+            <li>grep -rn "JS_NewContext\|JS_DestroyContext" src/bao_engine/src/ 显示 JSContext 生命周期管理完整</li>
+          </ol>
+        </div>
+      </div>
 
-<!-- ============================================================ -->
-<h2>§3 Phase 2: servo 引擎集成 + 渲染</h2>
-<!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <h2>§3 Phase 2: servo 引擎集成 + 渲染</h2>
+      <!-- ============================================================ -->
 
-<div data-req-api="GET /impl/phase2-status" data-req-entity="BrowserContext,PageHandle,Viewport" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-02" id="req-impl-02">
-<h3>Phase 2 详细任务</h3>
+      <div
+        id="req-impl-02"
+        data-req="REQ-IMPL-02"
+        data-req-status="implemented"
+        data-req-domain="IMPL"
+        data-req-category="business"
+        data-req-entity="BrowserContext,PageHandle,Viewport"
+        data-req-api="GET /impl/phase2-status"
+      >
+        <h3>Phase 2 详细任务</h3>
 
-<h4>2.1 servo path 依赖集成</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>Cargo.toml 配置</td><td>bao_browser/Cargo.toml 添加 servo = { path = "../../servo/components/servo" }，去掉 minreq</td><td>REQ-BRW-001</td></tr>
-<tr><td>编译验证</td><td>cargo build 通过，确认 mozjs 版本统一 (0.15.14)</td><td>REQ-BRW-001</td></tr>
-</table>
+        <h4>2.1 servo path 依赖集成</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>Cargo.toml 配置</td>
+            <td>bao_browser/Cargo.toml 添加 servo = { path = "../../servo/components/servo" }，去掉 minreq</td>
+            <td>REQ-BRW-001</td>
+          </tr>
+          <tr>
+            <td>编译验证</td>
+            <td>cargo build 通过，确认 mozjs 版本统一 (0.15.14)</td>
+            <td>REQ-BRW-001</td>
+          </tr>
+        </table>
 
-<h4>2.2 ServoDelegate + WebViewDelegate 实现</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>BaoServoDelegate</td><td>impl ServoDelegate: notify_error / show_console_message / load_web_resource</td><td>REQ-BRW-001</td></tr>
-<tr><td>BaoWebViewDelegate</td>
-<td>impl WebViewDelegate: screen_geometry(1920×1080) / notify_url_changed /
-notify_page_title_changed / notify_load_status_changed / notify_new_frame_ready</td>
-<td>REQ-BRW-001</td></tr>
-</table>
+        <h4>2.2 ServoDelegate + WebViewDelegate 实现</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>BaoServoDelegate</td>
+            <td>impl ServoDelegate: notify_error / show_console_message / load_web_resource</td>
+            <td>REQ-BRW-001</td>
+          </tr>
+          <tr>
+            <td>BaoWebViewDelegate</td>
+            <td>
+              impl WebViewDelegate: screen_geometry(1920×1080) / notify_url_changed / notify_page_title_changed /
+              notify_load_status_changed / notify_new_frame_ready
+            </td>
+            <td>REQ-BRW-001</td>
+          </tr>
+        </table>
 
-<h4>2.3 BaoBrowser 协调层</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>ServoBuilder 配置</td><td>单进程模式 + opts + event_loop_waker</td><td>REQ-BRW-001</td></tr>
-<tr><td>WebView 创建</td><td>WebViewBuilder + SoftwareRenderingContext(CPU 无头) + BaoWebViewDelegate</td><td>REQ-BRW-001</td></tr>
-<tr><td>导航与加载</td><td>WebView::load(url) + notify_load_status_changed 追踪状态</td><td>REQ-BRW-001</td></tr>
-<tr><td>事件循环</td><td>servo.spin_event_loop() 驱动，webview.paint() 渲染</td><td>REQ-BRW-001</td></tr>
-</table>
+        <h4>2.3 BaoBrowser 协调层</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>ServoBuilder 配置</td>
+            <td>单进程模式 + opts + event_loop_waker</td>
+            <td>REQ-BRW-001</td>
+          </tr>
+          <tr>
+            <td>WebView 创建</td>
+            <td>WebViewBuilder + SoftwareRenderingContext(CPU 无头) + BaoWebViewDelegate</td>
+            <td>REQ-BRW-001</td>
+          </tr>
+          <tr>
+            <td>导航与加载</td>
+            <td>WebView::load(url) + notify_load_status_changed 追踪状态</td>
+            <td>REQ-BRW-001</td>
+          </tr>
+          <tr>
+            <td>事件循环</td>
+            <td>servo.spin_event_loop() 驱动，webview.paint() 渲染</td>
+            <td>REQ-BRW-001</td>
+          </tr>
+        </table>
 
-<h4>2.4 JSContext 融合</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>host functions 注册</td><td>在 servo JSContext 中注册 Bao 的 console/require/fs/path/crypto 等 Node.js 全局对象。Web API + Node.js API 同一上下文共存，零转换。</td><td>REQ-BRW-003</td></tr>
-<tr><td>JSEngine 统一</td><td>servo 和 Bao 共享同一 mozjs JSEngine（进程级唯一），无重复初始化</td><td>REQ-BRW-003</td></tr>
-</table>
+        <h4>2.4 JSContext 融合</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>host functions 注册</td>
+            <td>
+              在 servo JSContext 中注册 Bao 的 console/require/fs/path/crypto 等 Node.js 全局对象。Web API + Node.js API
+              同一上下文共存，零转换。
+            </td>
+            <td>REQ-BRW-003</td>
+          </tr>
+          <tr>
+            <td>JSEngine 统一</td>
+            <td>servo 和 Bao 共享同一 mozjs JSEngine（进程级唯一），无重复初始化</td>
+            <td>REQ-BRW-003</td>
+          </tr>
+        </table>
 
-<h4>2.5 内存渲染 + 截图（servo webrender 内置）</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>take_screenshot</td><td>WebView::take_screenshot() → RgbaImage。servo webrender 内置：Stylo CSS + LayoutThread + 光栅化，零外部渲染库。</td><td>REQ-BRW-002</td></tr>
-<tr><td>PNG/JPEG/WebP 编码</td><td>RgbaImage → image crate 编码输出</td><td>REQ-BRW-002</td></tr>
-</table>
+        <h4>2.5 内存渲染 + 截图（servo webrender 内置）</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>take_screenshot</td>
+            <td>
+              WebView::take_screenshot() → RgbaImage。servo webrender 内置：Stylo CSS + LayoutThread +
+              光栅化，零外部渲染库。
+            </td>
+            <td>REQ-BRW-002</td>
+          </tr>
+          <tr>
+            <td>PNG/JPEG/WebP 编码</td>
+            <td>RgbaImage → image crate 编码输出</td>
+            <td>REQ-BRW-002</td>
+          </tr>
+        </table>
 
-<h4>2.6 CLI 集成</h4>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>bao browser 子命令</td><td>CLI 命令解析 → Bao 初始化（servo + Node.js API 全部就绪）→ CDP 端口输出</td><td>REQ-CLI-002</td></tr>
-</table>
+        <h4>2.6 CLI 集成</h4>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>bao browser 子命令</td>
+            <td>CLI 命令解析 → Bao 初始化（servo + Node.js API 全部就绪）→ CDP 端口输出</td>
+            <td>REQ-CLI-002</td>
+          </tr>
+        </table>
 
-<h4>Phase 2 验证点</h4>
-<ul>
-<h4>验收标准</h4>
-<ul>
-<li id="bao-browser-url-https-example.com-启动正常" data-criterion="bao browser --url=https://example.com 启动正常" data-criterion-id="REQ-IMPL-02-C1">bao browser --url=https://example.com 启动正常</li>
-<li id="页面-html-加载完成-dom-树构建正确" data-criterion="页面 HTML 加载完成，DOM 树构建正确" data-criterion-id="REQ-IMPL-02-C2">页面 HTML 加载完成，DOM 树构建正确（servo Stylo + LayoutThread 内置）</li>
-<li id="截图输出-png-jpeg-webp" data-criterion="截图输出 PNG/JPEG/WebP" data-criterion-id="REQ-IMPL-02-C3">截图输出 PNG/JPEG/WebP（servo webrender 渲染）</li>
-<li id="console-require-等-bao-全局对象在-servo-jscontext-中可用" data-criterion="console/require 等 Bao 全局对象在 servo JSContext 中可用" data-criterion-id="REQ-IMPL-02-C4">console/require 等 Bao 全局对象在 servo JSContext 中可用（融合验证）</li>
-<li id="web-api-node.js-api-同一-jscontext-共存" data-criterion="Web API + Node.js API 同一 JSContext 共存" data-criterion-id="REQ-IMPL-02-C5">Web API + Node.js API 同一 JSContext 共存</li>
-</ul>
+        <h4>Phase 2 验证点</h4>
+        <ul>
+          <h4>验收标准</h4>
+          <ul>
+            <li
+              id="bao-browser---url=https://example.com-启动正常"
+              data-criterion="bao browser --url=https://example.com 启动正常"
+              data-criterion-id="REQ-IMPL-02-C1"
+            >
+              bao browser --url=https://example.com 启动正常
+            </li>
+            <li
+              id="页面-html-加载完成，dom-树构建正确"
+              data-criterion="页面 HTML 加载完成，DOM 树构建正确"
+              data-criterion-id="REQ-IMPL-02-C2"
+            >
+              页面 HTML 加载完成，DOM 树构建正确（servo Stylo + LayoutThread 内置）
+            </li>
+            <li id="截图输出-png/jpeg/webp" data-criterion="截图输出 PNG/JPEG/WebP" data-criterion-id="REQ-IMPL-02-C3">
+              截图输出 PNG/JPEG/WebP（servo webrender 渲染）
+            </li>
+            <li
+              id="console/require-等-bao-全局对象在-servo-jscontext-中可用"
+              data-criterion="console/require 等 Bao 全局对象在 servo JSContext 中可用"
+              data-criterion-id="REQ-IMPL-02-C4"
+            >
+              console/require 等 Bao 全局对象在 servo JSContext 中可用（融合验证）
+            </li>
+            <li
+              id="web-api-+-node.js-api-同一-jscontext-共存"
+              data-criterion="Web API + Node.js API 同一 JSContext 共存"
+              data-criterion-id="REQ-IMPL-02-C5"
+            >
+              Web API + Node.js API 同一 JSContext 共存
+            </li>
+          </ul>
 
-<h4>Phase 2 验证</h4>
-<ul>
-<li>bao browser --url=https://example.com 启动正常</li>
-<li>页面 HTML 加载完成，DOM 树构建正确（servo Stylo + LayoutThread 内置）</li>
-<li>截图输出 PNG/JPEG/WebP（servo webrender 渲染）</li>
-<li>console/require 等 Bao 全局对象在 servo JSContext 中可用（融合验证）</li>
-<li>Web API + Node.js API 同一 JSContext 共存</li>
-</ul>
-</ul><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
+          <h4>Phase 2 验证</h4>
+          <ul>
+            <li>bao browser --url=https://example.com 启动正常</li>
+            <li>页面 HTML 加载完成，DOM 树构建正确（servo Stylo + LayoutThread 内置）</li>
+            <li>截图输出 PNG/JPEG/WebP（servo webrender 渲染）</li>
+            <li>console/require 等 Bao 全局对象在 servo JSContext 中可用（融合验证）</li>
+            <li>Web API + Node.js API 同一 JSContext 共存</li>
+          </ul>
+        </ul>
+        <div data-criteria="">
+          <strong>验收标准（客观可验证）：</strong>
+          <ol>
+            <li>bao browser --url=https://example.com EXIT=0 (启动正常)</li>
+            <li>cargo test -p bao_browser --test rendering_pipeline_tests 通过 (页面 HTML 加载 + DOM 树构建)</li>
+            <li>cargo test -p bao_browser --test page_screenshot_deep_tests 通过 (截图 PNG/JPEG/WebP)</li>
+            <li>
+              cargo test -p bao_engine --test js_context_fusion_tests 通过 (console/require 在 servo JSContext 可用)
+            </li>
+            <li>Web API + Node.js API 同一 JSContext 共存测试通过</li>
+          </ol>
+        </div>
+      </div>
 
-<!-- ============================================================ -->
-<h2>§4 Phase 3: CDP Server</h2>
-<!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <h2>§4 Phase 3: CDP Server</h2>
+      <!-- ============================================================ -->
 
-<div data-req-api="GET /impl/phase3-status" data-req-entity="CdpRouter,CdpSession,CdpServer" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-03" id="req-impl-03">
-<h3>Phase 3 详细任务</h3>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>WebSocket Server</td><td>bao_cdp/server.rs: 监听端口、接受连接、JSON-RPC 2.0</td><td>REQ-CDP-001</td></tr>
-<tr><td>cdp-protocol 集成</td><td>CDP 类型定义引入</td><td>REQ-CDP-001</td></tr>
-<tr><td>Domain 路由框架</td><td>通用 Domain handler trait + 路由表</td><td>REQ-CDP-001</td></tr>
-<tr><td>Runtime Domain</td><td>SM Debugger API (JS层) → CDP Runtime 映射，参考 Firefox remote/cdp/</td><td>REQ-CDP-002</td></tr>
-<tr><td>Debugger Domain</td><td>SM Debugger.Script/Frame API → CDP Debugger 映射</td><td>REQ-CDP-003</td></tr>
-<tr><td>Page Domain</td><td>servo WebView 导航 + take_screenshot → CDP Page</td><td>REQ-CDP-004</td></tr>
-<tr><td>DOM Domain</td><td>servo DOM 树查询 → CDP DOM</td><td>REQ-CDP-005</td></tr>
-<tr><td>Network Domain</td><td>Bun HTTP 栈 hook → CDP Network</td><td>REQ-CDP-006</td></tr>
-<tr><td>CSS/Input/Emulation/Overlay</td><td>辅助 Domain 实现</td><td>REQ-CDP-007</td></tr>
-<tr><td>Target Domain</td><td>Context/Target 发现与管理</td><td>REQ-CDP-008</td></tr>
-<tr><td>Playwright 兼容验证</td><td>Playwright 连接 CDP → 基本操作正常</td><td>NFR-COMPAT-001</td></tr>
-</table>
+      <div
+        id="req-impl-03"
+        data-req="REQ-IMPL-03"
+        data-req-status="implemented"
+        data-req-domain="IMPL"
+        data-req-category="business"
+        data-req-entity="CdpRouter,CdpSession,CdpServer"
+        data-req-api="GET /impl/phase3-status"
+      >
+        <h3>Phase 3 详细任务</h3>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>WebSocket Server</td>
+            <td>bao_cdp/server.rs: 监听端口、接受连接、JSON-RPC 2.0</td>
+            <td>REQ-CDP-001</td>
+          </tr>
+          <tr>
+            <td>cdp-protocol 集成</td>
+            <td>CDP 类型定义引入</td>
+            <td>REQ-CDP-001</td>
+          </tr>
+          <tr>
+            <td>Domain 路由框架</td>
+            <td>通用 Domain handler trait + 路由表</td>
+            <td>REQ-CDP-001</td>
+          </tr>
+          <tr>
+            <td>Runtime Domain</td>
+            <td>SM Debugger API (JS层) → CDP Runtime 映射，参考 Firefox remote/cdp/</td>
+            <td>REQ-CDP-002</td>
+          </tr>
+          <tr>
+            <td>Debugger Domain</td>
+            <td>SM Debugger.Script/Frame API → CDP Debugger 映射</td>
+            <td>REQ-CDP-003</td>
+          </tr>
+          <tr>
+            <td>Page Domain</td>
+            <td>servo WebView 导航 + take_screenshot → CDP Page</td>
+            <td>REQ-CDP-004</td>
+          </tr>
+          <tr>
+            <td>DOM Domain</td>
+            <td>servo DOM 树查询 → CDP DOM</td>
+            <td>REQ-CDP-005</td>
+          </tr>
+          <tr>
+            <td>Network Domain</td>
+            <td>Bun HTTP 栈 hook → CDP Network</td>
+            <td>REQ-CDP-006</td>
+          </tr>
+          <tr>
+            <td>CSS/Input/Emulation/Overlay</td>
+            <td>辅助 Domain 实现</td>
+            <td>REQ-CDP-007</td>
+          </tr>
+          <tr>
+            <td>Target Domain</td>
+            <td>Context/Target 发现与管理</td>
+            <td>REQ-CDP-008</td>
+          </tr>
+          <tr>
+            <td>Playwright 兼容验证</td>
+            <td>Playwright 连接 CDP → 基本操作正常</td>
+            <td>NFR-COMPAT-001</td>
+          </tr>
+        </table>
 
-<h4>验收标准</h4>
-<ul>
-<li id="playwright-成功连接-cdp-websocket" data-criterion="Playwright 成功连接 CDP WebSocket" data-criterion-id="REQ-IMPL-03-C1">Playwright 成功连接 CDP WebSocket</li>
-<li id="page.navigate-导航正常" data-criterion="Page.navigate 导航正常" data-criterion-id="REQ-IMPL-03-C2">Page.navigate 导航正常</li>
-<li id="runtime.evaluate-执行-js-正常" data-criterion="Runtime.evaluate 执行 JS 正常" data-criterion-id="REQ-IMPL-03-C3">Runtime.evaluate 执行 JS 正常</li>
-<li id="dom.queryselector-查询正常" data-criterion="DOM.querySelector 查询正常" data-criterion-id="REQ-IMPL-03-C4">DOM.querySelector 查询正常</li>
-<li id="page.capturescreenshot-截图正常" data-criterion="Page.captureScreenshot 截图正常" data-criterion-id="REQ-IMPL-03-C5">Page.captureScreenshot 截图正常</li>
-<li id="id-11-个-cdp-domain-全部路由正常" data-criterion="11 个 CDP Domain 全部路由正常" data-criterion-id="REQ-IMPL-03-C6">11 个 CDP Domain 全部路由正常</li>
-</ul>
+        <h4>验收标准</h4>
+        <ul>
+          <li
+            id="playwright-成功连接-cdp-websocket"
+            data-criterion="Playwright 成功连接 CDP WebSocket"
+            data-criterion-id="REQ-IMPL-03-C1"
+          >
+            Playwright 成功连接 CDP WebSocket
+          </li>
+          <li id="page.navigate-导航正常" data-criterion="Page.navigate 导航正常" data-criterion-id="REQ-IMPL-03-C2">
+            Page.navigate 导航正常
+          </li>
+          <li
+            id="runtime.evaluate-执行-js-正常"
+            data-criterion="Runtime.evaluate 执行 JS 正常"
+            data-criterion-id="REQ-IMPL-03-C3"
+          >
+            Runtime.evaluate 执行 JS 正常
+          </li>
+          <li
+            id="dom.queryselector-查询正常"
+            data-criterion="DOM.querySelector 查询正常"
+            data-criterion-id="REQ-IMPL-03-C4"
+          >
+            DOM.querySelector 查询正常
+          </li>
+          <li
+            id="page.capturescreenshot-截图正常"
+            data-criterion="Page.captureScreenshot 截图正常"
+            data-criterion-id="REQ-IMPL-03-C5"
+          >
+            Page.captureScreenshot 截图正常
+          </li>
+          <li
+            id="11-个-cdp-domain-全部路由正常"
+            data-criterion="11 个 CDP Domain 全部路由正常"
+            data-criterion-id="REQ-IMPL-03-C6"
+          >
+            11 个 CDP Domain 全部路由正常
+          </li>
+        </ul>
 
-<h4>Phase 3 验证点</h4>
-<ul>
-<li>Playwright 成功连接 CDP WebSocket</li>
-<li>Page.navigate 导航正常</li>
-<li>Runtime.evaluate 执行 JS 正常</li>
-<li>DOM.querySelector 查询正常</li>
-<li>Page.captureScreenshot 截图正常</li>
-<li>Network.requestWillBeSent 网络监控正常</li>
-<li>Debugger.setBreakpoint 断点调试正常</li>
-</ul>
-<div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
+        <h4>Phase 3 验证点</h4>
+        <ul>
+          <li>Playwright 成功连接 CDP WebSocket</li>
+          <li>Page.navigate 导航正常</li>
+          <li>Runtime.evaluate 执行 JS 正常</li>
+          <li>DOM.querySelector 查询正常</li>
+          <li>Page.captureScreenshot 截图正常</li>
+          <li>Network.requestWillBeSent 网络监控正常</li>
+          <li>Debugger.setBreakpoint 断点调试正常</li>
+        </ul>
+        <div data-criteria="">
+          <strong>验收标准（客观可验证）：</strong>
+          <ol>
+            <li>cargo test -p bao_cdp_client --test cdp_conformance 通过 (Playwright 连接)</li>
+            <li>cargo test -p bao_cdp_client --test cdp_conformance -- page_conformance 通过 (Page.navigate)</li>
+            <li>cargo test -p bao_cdp_client --test cdp_conformance -- runtime_conformance 通过 (Runtime.evaluate)</li>
+            <li>cargo test -p bao_cdp_client --test cdp_conformance -- dom_conformance 通过 (DOM.querySelector)</li>
+            <li>11 个 CDP Domain 全部路由测试通过 (grep -c "DomainHandler" src/bao_cdp/src/ ≥ 11)</li>
+          </ol>
+        </div>
+      </div>
 
-<!-- ============================================================ -->
-<h2>§5 Phase 4: Stealth 反指纹</h2>
-<!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <h2>§5 Phase 4: Stealth 反指纹</h2>
+      <!-- ============================================================ -->
 
-<div data-req-api="GET /impl/phase4-status" data-req-entity="TlsProfile,StealthProfile,NavigatorProfile" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-04" id="req-impl-04">
-<h3>Phase 4 详细任务</h3>
-<table>
-<tr><td>任务</td><td>描述</td><td>关联 REQ</td></tr>
-<tr><td>TLS 指纹模拟</td><td>rustls cipher suite + extension 顺序配置匹配 Firefox JA3/JA4</td><td>REQ-STL-001</td></tr>
-<tr><td>HTTP/2 指纹匹配</td><td>hyper SETTINGS/WINDOW_UPDATE/PRIORITY 配置匹配 Firefox</td><td>REQ-STL-002</td></tr>
-<tr><td>Canvas 噪声注入</td><td>servo webrender 渲染层注入确定性随机噪声</td><td>REQ-STL-003</td></tr>
-<tr><td>Navigator 构造</td><td>SM 引擎层返回构造的 navigator 属性</td><td>REQ-STL-004</td></tr>
-<tr><td>Screen 构造</td><td>Servo DOM 层构造 screen 属性</td><td>REQ-STL-004</td></tr>
-<tr><td>WebGL 指纹</td><td>Servo WebGL 层配置 vendor/renderer</td><td>REQ-STL-005</td></tr>
-<tr><td>AudioContext 噪声</td><td>SM Audio API 层浮点运算噪声</td><td>REQ-STL-005</td></tr>
-<tr><td>WebDriver 隐藏</td><td>navigator.webdriver = false (引擎层)</td><td>REQ-STL-007</td></tr>
-<tr><td>CDP 隐蔽性</td><td>CDP 通道不暴露到页面 JS 环境</td><td>REQ-STL-007</td></tr>
-<tr><td>鼠标轨迹模拟</td><td>贝塞尔曲线随机偏移</td><td>REQ-STL-006</td></tr>
-<tr><td>打字节奏模拟</td><td>随机延迟 30-150ms per key</td><td>REQ-STL-006</td></tr>
-<tr><td>滚动模式模拟</td><td>加速-匀速-减速特征</td><td>REQ-STL-006</td></tr>
-</table>
+      <div
+        id="req-impl-04"
+        data-req="REQ-IMPL-04"
+        data-req-status="implemented"
+        data-req-domain="IMPL"
+        data-req-category="business"
+        data-req-entity="TlsProfile,StealthProfile,NavigatorProfile"
+        data-req-api="GET /impl/phase4-status"
+      >
+        <h3>Phase 4 详细任务</h3>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+            <td>关联 REQ</td>
+          </tr>
+          <tr>
+            <td>TLS 指纹模拟</td>
+            <td>rustls cipher suite + extension 顺序配置匹配 Firefox JA3/JA4</td>
+            <td>REQ-STL-001</td>
+          </tr>
+          <tr>
+            <td>HTTP/2 指纹匹配</td>
+            <td>hyper SETTINGS/WINDOW_UPDATE/PRIORITY 配置匹配 Firefox</td>
+            <td>REQ-STL-002</td>
+          </tr>
+          <tr>
+            <td>Canvas 噪声注入</td>
+            <td>servo webrender 渲染层注入确定性随机噪声</td>
+            <td>REQ-STL-003</td>
+          </tr>
+          <tr>
+            <td>Navigator 构造</td>
+            <td>SM 引擎层返回构造的 navigator 属性</td>
+            <td>REQ-STL-004</td>
+          </tr>
+          <tr>
+            <td>Screen 构造</td>
+            <td>Servo DOM 层构造 screen 属性</td>
+            <td>REQ-STL-004</td>
+          </tr>
+          <tr>
+            <td>WebGL 指纹</td>
+            <td>Servo WebGL 层配置 vendor/renderer</td>
+            <td>REQ-STL-005</td>
+          </tr>
+          <tr>
+            <td>AudioContext 噪声</td>
+            <td>SM Audio API 层浮点运算噪声</td>
+            <td>REQ-STL-005</td>
+          </tr>
+          <tr>
+            <td>WebDriver 隐藏</td>
+            <td>navigator.webdriver = false (引擎层)</td>
+            <td>REQ-STL-007</td>
+          </tr>
+          <tr>
+            <td>CDP 隐蔽性</td>
+            <td>CDP 通道不暴露到页面 JS 环境</td>
+            <td>REQ-STL-007</td>
+          </tr>
+          <tr>
+            <td>鼠标轨迹模拟</td>
+            <td>贝塞尔曲线随机偏移</td>
+            <td>REQ-STL-006</td>
+          </tr>
+          <tr>
+            <td>打字节奏模拟</td>
+            <td>随机延迟 30-150ms per key</td>
+            <td>REQ-STL-006</td>
+          </tr>
+          <tr>
+            <td>滚动模式模拟</td>
+            <td>加速-匀速-减速特征</td>
+            <td>REQ-STL-006</td>
+          </tr>
+        </table>
 
-<h4>验收标准</h4>
-    <ul>
-    <li id="tls-ja3-ja4-哈希匹配-firefox" data-criterion="TLS JA3/JA4 哈希匹配 Firefox" data-criterion-id="REQ-IMPL-04-C1">TLS JA3/JA4 哈希匹配 Firefox</li>
-    <li id="http-2-akamai-指纹匹配-firefox" data-criterion="HTTP/2 AKAMAI 指纹匹配 Firefox" data-criterion-id="REQ-IMPL-04-C2">HTTP/2 AKAMAI 指纹匹配 Firefox</li>
-    <li id="canvas-噪声对人类不可见但每次不同" data-criterion="Canvas 噪声对人类不可见但每次不同" data-criterion-id="REQ-IMPL-04-C3">Canvas 噪声对人类不可见但每次不同（确定性种子保证一致性）</li>
-    <li id="navigator.webdriver-false" data-criterion="navigator.webdriver === false" data-criterion-id="REQ-IMPL-04-C4">navigator.webdriver === false（SM 引擎层设置，JS 层无法覆盖）</li>
-    <li id="指纹检测网站识别率-5" data-criterion="指纹检测网站识别率 ≤ 5%" data-criterion-id="REQ-IMPL-04-C5">指纹检测网站识别率 ≤ 5%</li>
-    <li id="行为模拟轨迹自然-贝塞尔鼠标-节奏打字-特征滚动" data-criterion="行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）" data-criterion-id="REQ-IMPL-04-C6">行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）</li>
-    </ul>
+        <h4>验收标准</h4>
+        <ul>
+          <li
+            id="tls-ja3/ja4-哈希匹配-firefox"
+            data-criterion="TLS JA3/JA4 哈希匹配 Firefox"
+            data-criterion-id="REQ-IMPL-04-C1"
+          >
+            TLS JA3/JA4 哈希匹配 Firefox
+          </li>
+          <li
+            id="http/2-akamai-指纹匹配-firefox"
+            data-criterion="HTTP/2 AKAMAI 指纹匹配 Firefox"
+            data-criterion-id="REQ-IMPL-04-C2"
+          >
+            HTTP/2 AKAMAI 指纹匹配 Firefox
+          </li>
+          <li
+            id="canvas-噪声对人类不可见但每次不同"
+            data-criterion="Canvas 噪声对人类不可见但每次不同"
+            data-criterion-id="REQ-IMPL-04-C3"
+          >
+            Canvas 噪声对人类不可见但每次不同（确定性种子保证一致性）
+          </li>
+          <li
+            id="navigator.webdriver-===-false"
+            data-criterion="navigator.webdriver === false"
+            data-criterion-id="REQ-IMPL-04-C4"
+          >
+            navigator.webdriver === false（SM 引擎层设置，JS 层无法覆盖）
+          </li>
+          <li id="指纹检测网站识别率-≤-5%" data-criterion="指纹检测网站识别率 ≤ 5%" data-criterion-id="REQ-IMPL-04-C5">
+            指纹检测网站识别率 ≤ 5%
+          </li>
+          <li
+            id="行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）"
+            data-criterion="行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）"
+            data-criterion-id="REQ-IMPL-04-C6"
+          >
+            行为模拟轨迹自然（贝塞尔鼠标/节奏打字/特征滚动）
+          </li>
+        </ul>
 
-    <h4>Phase 4 验证点</h4>
-<ul>
-<li>TLS JA3/JA4 哈希匹配 Firefox</li>
-<li>HTTP/2 指纹匹配 Firefox</li>
-<li>Canvas 噪声对人类不可见但每次不同</li>
-<li>navigator.webdriver === false</li>
-<li>指纹检测网站识别率 ≤ 5%</li>
-<li>行为模拟轨迹自然</li>
-</ul>
-<div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
+        <h4>Phase 4 验证点</h4>
+        <ul>
+          <li>TLS JA3/JA4 哈希匹配 Firefox</li>
+          <li>HTTP/2 指纹匹配 Firefox</li>
+          <li>Canvas 噪声对人类不可见但每次不同</li>
+          <li>navigator.webdriver === false</li>
+          <li>指纹检测网站识别率 ≤ 5%</li>
+          <li>行为模拟轨迹自然</li>
+        </ul>
+        <div data-criteria="">
+          <strong>验收标准（客观可验证）：</strong>
+          <ol>
+            <li>cargo test -p bao_stealth --test tls_ja3_ja4_suite_deep_tests 通过 (TLS JA3/JA4 匹配 Firefox)</li>
+            <li>cargo test -p bao_stealth --test http2_fingerprint_deep_tests 通过 (HTTP/2 AKAMAI 匹配)</li>
+            <li>cargo test -p bao_stealth --test canvas_noise_deep_tests 通过 (Canvas 噪声)</li>
+            <li>
+              cargo test -p bao_stealth --test headless_fingerprint_hiding_tests 通过 (navigator.webdriver === false)
+            </li>
+            <li>cargo test -p bao_stealth --test real_detection_vectors_tests 通过 (识别率 ≤ 5%)</li>
+            <li>cargo test -p bao_stealth --test behavior_deep_tests 通过 (贝塞尔鼠标/节奏打字/特征滚动)</li>
+          </ol>
+        </div>
+      </div>
 
-<!-- ============================================================ -->
-<h2>§6 Phase 5: 集成测试与发布</h2>
-<!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <h2>§6 Phase 5: 集成测试与发布</h2>
+      <!-- ============================================================ -->
 
-<div data-req-api="GET /impl/phase5-status" data-req-entity="PagePool,CdpRouter,Permission" data-req-category="business" data-req-domain="IMPL" data-req-status="implemented" data-req="REQ-IMPL-05" id="req-impl-05">
-<h3>Phase 5 详细任务</h3>
-<table>
-<tr><td>任务</td><td>描述</td></tr>
-<tr><td>全模块联调</td><td>SpiderMonkey + servo + CDP + Stealth 全能力联合测试</td></tr>
-<tr><td>Bun 测试套件迁移</td><td>Bun 现有测试套件在 Bao 上运行，目标 ≥ 90% 通过</td></tr>
-<tr><td>Playwright 兼容测试</td><td>Playwright 完整 API 兼容性测试</td></tr>
-<tr><td>性能基准测试</td><td>启动延迟、截图延迟、内存开销、JS 执行延迟</td></tr>
-<tr><td>指纹检测测试</td><td>多个指纹检测网站测试，目标识别率 ≤ 5%</td></tr>
-<tr><td>内存泄漏检测</td><td>长时间运行 (24h) 内存增长 &lt; 10%</td></tr>
-<tr><td>跨平台构建</td><td>Linux x64 / macOS x64+aarch64 / Windows x64</td></tr>
-<tr><td>CI/CD 配置</td><td>自动化构建、测试、发布流程</td></tr>
-<tr><td>文档编写</td><td>API 文档、使用指南、架构文档</td></tr>
-<tr><td>首个 Release</td><td>v0.1.0 发布</td></tr>
-</table>
+      <div
+        id="req-impl-05"
+        data-req="REQ-IMPL-05"
+        data-req-status="implemented"
+        data-req-domain="IMPL"
+        data-req-category="business"
+        data-req-entity="PagePool,CdpRouter,Permission"
+        data-req-api="GET /impl/phase5-status"
+      >
+        <h3>Phase 5 详细任务</h3>
+        <table>
+          <tr>
+            <td>任务</td>
+            <td>描述</td>
+          </tr>
+          <tr>
+            <td>全模块联调</td>
+            <td>SpiderMonkey + servo + CDP + Stealth 全能力联合测试</td>
+          </tr>
+          <tr>
+            <td>Bun 测试套件迁移</td>
+            <td>Bun 现有测试套件在 Bao 上运行，目标 ≥ 90% 通过</td>
+          </tr>
+          <tr>
+            <td>Playwright 兼容测试</td>
+            <td>Playwright 完整 API 兼容性测试</td>
+          </tr>
+          <tr>
+            <td>性能基准测试</td>
+            <td>启动延迟、截图延迟、内存开销、JS 执行延迟</td>
+          </tr>
+          <tr>
+            <td>指纹检测测试</td>
+            <td>多个指纹检测网站测试，目标识别率 ≤ 5%</td>
+          </tr>
+          <tr>
+            <td>内存泄漏检测</td>
+            <td>长时间运行 (24h) 内存增长 &lt; 10%</td>
+          </tr>
+          <tr>
+            <td>跨平台构建</td>
+            <td>Linux x64 / macOS x64+aarch64 / Windows x64</td>
+          </tr>
+          <tr>
+            <td>CI/CD 配置</td>
+            <td>自动化构建、测试、发布流程</td>
+          </tr>
+          <tr>
+            <td>文档编写</td>
+            <td>API 文档、使用指南、架构文档</td>
+          </tr>
+          <tr>
+            <td>首个 Release</td>
+            <td>v0.1.0 发布</td>
+          </tr>
+        </table>
 
-<h4>验收标准</h4>
-<ul>
-<li id="spidermonkey-servo-cdp-stealth-全能力联合测试通过" data-criterion="SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过" data-criterion-id="REQ-IMPL-05-C1">SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过</li>
-<li id="bun-测试套件在-bao-上运行-90-通过" data-criterion="Bun 测试套件在 Bao 上运行 ≥ 90% 通过" data-criterion-id="REQ-IMPL-05-C2">Bun 测试套件在 Bao 上运行 ≥ 90% 通过</li>
-<li id="playwright-完整-api-兼容性测试通过" data-criterion="Playwright 完整 API 兼容性测试通过" data-criterion-id="REQ-IMPL-05-C3">Playwright 完整 API 兼容性测试通过</li>
-<li id="性能基准-启动延迟-2s-截图延迟-500ms-内存开销-200mb" data-criterion="性能基准：启动延迟 < 2s、截图延迟 < 500ms、内存开销 < 200MB" data-criterion-id="REQ-IMPL-05-C4">性能基准：启动延迟 &lt; 2s、截图延迟 &lt; 500ms、内存开销 &lt; 200MB</li>
-<li id="长时间运行-24h-内存增长-10" data-criterion="长时间运行 24h 内存增长 < 10%" data-criterion-id="REQ-IMPL-05-C5">长时间运行 24h 内存增长 &lt; 10%</li>
-<li id="跨平台构建通过-linux-x64-macos-x64-aarch64-windows-x64" data-criterion="跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64" data-criterion-id="REQ-IMPL-05-C6">跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64</li>
-</ul>
-<div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
+        <h4>验收标准</h4>
+        <ul>
+          <li
+            id="spidermonkey-+-servo-+-cdp-+-stealth-全能力联合测试通过"
+            data-criterion="SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过"
+            data-criterion-id="REQ-IMPL-05-C1"
+          >
+            SpiderMonkey + servo + CDP + Stealth 全能力联合测试通过
+          </li>
+          <li
+            id="bun-测试套件在-bao-上运行-≥-90%-通过"
+            data-criterion="Bun 测试套件在 Bao 上运行 ≥ 90% 通过"
+            data-criterion-id="REQ-IMPL-05-C2"
+          >
+            Bun 测试套件在 Bao 上运行 ≥ 90% 通过
+          </li>
+          <li
+            id="playwright-完整-api-兼容性测试通过"
+            data-criterion="Playwright 完整 API 兼容性测试通过"
+            data-criterion-id="REQ-IMPL-05-C3"
+          >
+            Playwright 完整 API 兼容性测试通过
+          </li>
+          <li
+            id="性能基准：启动延迟-<-2s、截图延迟-<-500ms、内存开销-<-200mb"
+            data-criterion="性能基准：启动延迟 < 2s、截图延迟 < 500ms、内存开销 < 200MB"
+            data-criterion-id="REQ-IMPL-05-C4"
+          >
+            性能基准：启动延迟 &lt; 2s、截图延迟 &lt; 500ms、内存开销 &lt; 200MB
+          </li>
+          <li
+            id="长时间运行-24h-内存增长-<-10%"
+            data-criterion="长时间运行 24h 内存增长 < 10%"
+            data-criterion-id="REQ-IMPL-05-C5"
+          >
+            长时间运行 24h 内存增长 &lt; 10%
+          </li>
+          <li
+            id="跨平台构建通过：linux-x64-/-macos-x64+aarch64-/-windows-x64"
+            data-criterion="跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64"
+            data-criterion-id="REQ-IMPL-05-C6"
+          >
+            跨平台构建通过：Linux x64 / macOS x64+aarch64 / Windows x64
+          </li>
+        </ul>
+        <div data-criteria="">
+          <strong>验收标准（客观可验证）：</strong>
+          <ol>
+            <li>cargo test --workspace 通过 (SpiderMonkey + servo + CDP + Stealth 全能力联合测试)</li>
+            <li>cargo test -p bao_runtime --lib 通过率 ≥ 90% (Bun 测试套件)</li>
+            <li>cargo test -p bao_cdp_client --test e2e_playwright_compat 通过 (Playwright 兼容)</li>
+            <li>bao browser 启动延迟 &lt; 2s / 截图延迟 &lt; 500ms / 内存开销 &lt; 200MB</li>
+            <li>长时间运行 24h 内存增长 &lt; 10% (valgrind/massif 验证)</li>
+            <li>cargo build --release --target x86_64-unknown-linux-gnu 通过 (Linux x64)</li>
+          </ol>
+        </div>
+      </div>
 
-<!-- ============================================================ -->
-<h2>§7 复用分析</h2>
-<!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <h2>§7 复用分析</h2>
+      <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
-<h3>组件复用矩阵</h3>
-<table>
-<tr><td>组件</td><td>来源</td><td>复用率</td><td>需要的适配工作</td></tr>
-<tr><td>~85 个纯 Rust crate</td><td>Bun (L0-L10)</td><td>100%</td><td>零修改</td></tr>
-<tr><td>.classes.ts 定义 (30 个)</td><td>Bun</td><td>95%</td><td>生成后端重写 (JSC → SM)</td></tr>
-<tr><td>Bun Resolver</td><td>Bun src/resolver/</td><td>100%</td><td>写 SM hook 桥接层</td></tr>
-<tr><td>Bun HTTP 栈</td><td>Bun 现有</td><td>100%</td><td>CDP hook 接入点</td></tr>
-<tr><td>Bun FS/Bundler/Test/Install</td><td>Bun 现有</td><td>100%</td><td>零修改</td></tr>
-<tr><td>SpiderMonkey FFI</td><td>mozjs crate</td><td>100%</td><td>直接使用</td></tr>
-<tr><td>浏览器引擎 (DOM/CSS/Layout/渲染)</td><td>servo crate</td><td>100%</td><td>impl ServoDelegate + WebViewDelegate</td></tr>
-<tr><td>CSS 布局 (Flexbox/Grid)</td><td>servo Stylo + LayoutThread（内置）</td><td>100%</td><td>零额外集成</td></tr>
-<tr><td>2D 渲染 (光栅化)</td><td>servo webrender（内置）</td><td>100%</td><td>SoftwareRenderingContext 配置</td></tr>
-<tr><td>CDP 类型</td><td>cdp-protocol</td><td>100%</td><td>直接使用</td></tr>
-<tr><td>CDP Runtime/Debugger 映射</td><td>Firefox remote/cdp/ 参考</td><td>~60%</td><td>移植+适配</td></tr>
-<tr><td>代码生成后端</td><td>新建</td><td>0%</td><td>全部重写 (JSC C++ → SM C++)</td></tr>
-<tr><td>host_fn 抽象层</td><td>新建</td><td>0%</td><td>全部新建</td></tr>
-<tr><td>Event loop 桥接</td><td>参考 Bun</td><td>~15%</td><td>SM JobQueue → Bun uSockets</td></tr>
-<tr><td>Stealth 模块</td><td>新建</td><td>0%</td><td>全部新建</td></tr>
-<tr><td>StealthProfile → SSLConfig 桥接</td><td>bao_stealth → bun_http</td><td>~80%</td><td>stealth_profile_to_ssl_config 桥接函数,将 bao_stealth::StealthProfile 转换为 bun_http::ssl_config::SharedPtr,传入 AsyncHTTP Options.tls_props (DD-7/REQ-ENG-010-C9)</td></tr>
-</table>
-</div>
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+        <h3>组件复用矩阵</h3>
+        <table>
+          <tr>
+            <td>组件</td>
+            <td>来源</td>
+            <td>复用率</td>
+            <td>需要的适配工作</td>
+          </tr>
+          <tr>
+            <td>~85 个纯 Rust crate</td>
+            <td>Bun (L0-L10)</td>
+            <td>100%</td>
+            <td>零修改</td>
+          </tr>
+          <tr>
+            <td>.classes.ts 定义 (30 个)</td>
+            <td>Bun</td>
+            <td>95%</td>
+            <td>生成后端重写 (JSC → SM)</td>
+          </tr>
+          <tr>
+            <td>Bun Resolver</td>
+            <td>Bun src/resolver/</td>
+            <td>100%</td>
+            <td>写 SM hook 桥接层</td>
+          </tr>
+          <tr>
+            <td>Bun HTTP 栈</td>
+            <td>Bun 现有</td>
+            <td>100%</td>
+            <td>CDP hook 接入点</td>
+          </tr>
+          <tr>
+            <td>Bun FS/Bundler/Test/Install</td>
+            <td>Bun 现有</td>
+            <td>100%</td>
+            <td>零修改</td>
+          </tr>
+          <tr>
+            <td>SpiderMonkey FFI</td>
+            <td>mozjs crate</td>
+            <td>100%</td>
+            <td>直接使用</td>
+          </tr>
+          <tr>
+            <td>浏览器引擎 (DOM/CSS/Layout/渲染)</td>
+            <td>servo crate</td>
+            <td>100%</td>
+            <td>impl ServoDelegate + WebViewDelegate</td>
+          </tr>
+          <tr>
+            <td>CSS 布局 (Flexbox/Grid)</td>
+            <td>servo Stylo + LayoutThread（内置）</td>
+            <td>100%</td>
+            <td>零额外集成</td>
+          </tr>
+          <tr>
+            <td>2D 渲染 (光栅化)</td>
+            <td>servo webrender（内置）</td>
+            <td>100%</td>
+            <td>SoftwareRenderingContext 配置</td>
+          </tr>
+          <tr>
+            <td>CDP 类型</td>
+            <td>cdp-protocol</td>
+            <td>100%</td>
+            <td>直接使用</td>
+          </tr>
+          <tr>
+            <td>CDP Runtime/Debugger 映射</td>
+            <td>Firefox remote/cdp/ 参考</td>
+            <td>~60%</td>
+            <td>移植+适配</td>
+          </tr>
+          <tr>
+            <td>代码生成后端</td>
+            <td>新建</td>
+            <td>0%</td>
+            <td>全部重写 (JSC C++ → SM C++)</td>
+          </tr>
+          <tr>
+            <td>host_fn 抽象层</td>
+            <td>新建</td>
+            <td>0%</td>
+            <td>全部新建</td>
+          </tr>
+          <tr>
+            <td>Event loop 桥接</td>
+            <td>参考 Bun</td>
+            <td>~15%</td>
+            <td>SM JobQueue → Bun uSockets</td>
+          </tr>
+          <tr>
+            <td>Stealth 模块</td>
+            <td>新建</td>
+            <td>0%</td>
+            <td>全部新建</td>
+          </tr>
+          <tr>
+            <td>StealthProfile → SSLConfig 桥接</td>
+            <td>bao_stealth → bun_http</td>
+            <td>~80%</td>
+            <td>
+              stealth_profile_to_ssl_config 桥接函数,将 bao_stealth::StealthProfile 转换为
+              bun_http::ssl_config::SharedPtr,传入 AsyncHTTP Options.tls_props (DD-7/REQ-ENG-010-C9)
+            </td>
+          </tr>
+        </table>
+      </div>
 
-<!-- ============================================================ -->
-<h2>§8 风险矩阵</h2>
-<!-- ============================================================ -->
+      <!-- ============================================================ -->
+      <h2>§8 风险矩阵</h2>
+      <!-- ============================================================ -->
 
-<div data-artifact-type="use-case-diagram" data-type="document" id="artifact-use-case-diagram">
-<h3>风险与缓解措施</h3>
-<table>
-<tr><td>风险</td><td>等级</td><td>缓解措施</td></tr>
-<tr><td>servo JSContext 与 Bao host functions 注册兼容性</td><td>中</td><td>Phase 2 优先验证 host functions 在 servo JSContext 中注册可行；servo 和 Bao 共用 mozjs 0.15.14</td></tr>
-<tr><td>mozjs 缺少 Debugger API 绑定</td><td>低</td><td>Debugger API 是 JS 层的，不需要 Rust 绑定；直接在 SM 内执行 JS Debugger 代码</td></tr>
-<tr><td>Bun 上游合并冲突</td><td>低</td><td>内部保留 bun_* 命名，JSC 层独立维护，diff 最小化</td></tr>
-<tr><td>SpiderMonkey GC 模型差异</td><td>中</td><td>mozjs crown lint 编译时检查 rooting 正确性；RAII 封装自动管理</td></tr>
-<tr><td>servo API 不稳定</td><td>中</td><td>锁定 servo 版本；ServoDelegate/WebViewDelegate 变化时最小化适配</td></tr>
-<tr><td>Playwright CDP 兼容性</td><td>中</td><td>优先实现 Playwright 核心流程所需的 Domain；参考 Firefox CDP 实现</td></tr>
-<tr><td>Canvas 噪声被检测</td><td>低</td><td>噪声在 servo webrender 层注入，JS 层无法检测；确定性种子保证一致性</td></tr>
-</table>
-</div>
-
-</main><section data-tests-section="" id="testing"><h2>测试用例</h2><div data-test-categories="unit" data-req-ref="REQ-IMPL-01" data-test="TEST-IMPL-01" id="test-impl-01"><h4>TEST-IMPL-01: REQ-IMPL-01 单元测试</h4><p>TODO: 为 REQ-IMPL-01 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-IMPL-02" data-test="TEST-IMPL-02" id="test-impl-02"><h4>TEST-IMPL-02: REQ-IMPL-02 单元测试</h4><p>TODO: 为 REQ-IMPL-02 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-IMPL-03" data-test="TEST-IMPL-03" id="test-impl-03"><h4>TEST-IMPL-03: REQ-IMPL-03 单元测试</h4><p>TODO: 为 REQ-IMPL-03 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-IMPL-04" data-test="TEST-IMPL-04" id="test-impl-04"><h4>TEST-IMPL-04: REQ-IMPL-04 单元测试</h4><p>TODO: 为 REQ-IMPL-04 编写测试用例</p></div><div data-test-categories="unit" data-req-ref="REQ-IMPL-05" data-test="TEST-IMPL-05" id="test-impl-05"><h4>TEST-IMPL-05: REQ-IMPL-05 单元测试</h4><p>TODO: 为 REQ-IMPL-05 编写测试用例</p></div></section></body>
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
+        <h3>风险与缓解措施</h3>
+        <table>
+          <tr>
+            <td>风险</td>
+            <td>等级</td>
+            <td>缓解措施</td>
+          </tr>
+          <tr>
+            <td>servo JSContext 与 Bao host functions 注册兼容性</td>
+            <td>中</td>
+            <td>Phase 2 优先验证 host functions 在 servo JSContext 中注册可行；servo 和 Bao 共用 mozjs 0.15.14</td>
+          </tr>
+          <tr>
+            <td>mozjs 缺少 Debugger API 绑定</td>
+            <td>低</td>
+            <td>Debugger API 是 JS 层的，不需要 Rust 绑定；直接在 SM 内执行 JS Debugger 代码</td>
+          </tr>
+          <tr>
+            <td>Bun 上游合并冲突</td>
+            <td>低</td>
+            <td>内部保留 bun_* 命名，JSC 层独立维护，diff 最小化</td>
+          </tr>
+          <tr>
+            <td>SpiderMonkey GC 模型差异</td>
+            <td>中</td>
+            <td>mozjs crown lint 编译时检查 rooting 正确性；RAII 封装自动管理</td>
+          </tr>
+          <tr>
+            <td>servo API 不稳定</td>
+            <td>中</td>
+            <td>锁定 servo 版本；ServoDelegate/WebViewDelegate 变化时最小化适配</td>
+          </tr>
+          <tr>
+            <td>Playwright CDP 兼容性</td>
+            <td>中</td>
+            <td>优先实现 Playwright 核心流程所需的 Domain；参考 Firefox CDP 实现</td>
+          </tr>
+          <tr>
+            <td>Canvas 噪声被检测</td>
+            <td>低</td>
+            <td>噪声在 servo webrender 层注入，JS 层无法检测；确定性种子保证一致性</td>
+          </tr>
+        </table>
+      </div>
+    </main>
+    <section id="testing" data-tests-section="">
+      <h2>测试用例</h2>
+      <div id="test-impl-01" data-test="TEST-IMPL-01" data-req-ref="REQ-IMPL-01" data-test-categories="unit">
+        <h4>TEST-IMPL-01: REQ-IMPL-01 单元测试</h4>
+        <p>
+          关联真实测试: src/bao_engine/tests/codegen_boundary_tests.rs (Phase 1 mozjs 集成 + JSContext 生命周期) +
+          src/bao_runtime/tests/runtime_api_boundary_tests.rs
+        </p>
+      </div>
+      <div id="test-impl-02" data-test="TEST-IMPL-02" data-req-ref="REQ-IMPL-02" data-test-categories="unit">
+        <h4>TEST-IMPL-02: REQ-IMPL-02 单元测试</h4>
+        <p>
+          关联真实测试: src/bao_browser/tests/bao_cli_e2e_tests.rs (Phase 2 bao browser + servo + JSContext 融合 E2E) +
+          src/bao_browser/tests/rendering_pipeline_tests.rs
+        </p>
+      </div>
+      <div id="test-impl-03" data-test="TEST-IMPL-03" data-req-ref="REQ-IMPL-03" data-test-categories="unit">
+        <h4>TEST-IMPL-03: REQ-IMPL-03 单元测试</h4>
+        <p>
+          关联真实测试: src/bao_cdp_client/tests/cdp_conformance/ 全部 11 domain (Phase 3 CDP Server + Playwright 兼容)
+        </p>
+      </div>
+      <div id="test-impl-04" data-test="TEST-IMPL-04" data-req-ref="REQ-IMPL-04" data-test-categories="unit">
+        <h4>TEST-IMPL-04: REQ-IMPL-04 单元测试</h4>
+        <p>
+          关联真实测试: src/bao_stealth/tests/tls_ja3_ja4_suite_deep_tests.rs + http2_fingerprint_deep_tests.rs +
+          canvas_noise_deep_tests.rs + headless_fingerprint_hiding_tests.rs + behavior_deep_tests.rs (Phase 4 Stealth
+          全能力)
+        </p>
+      </div>
+      <div id="test-impl-05" data-test="TEST-IMPL-05" data-req-ref="REQ-IMPL-05" data-test-categories="unit">
+        <h4>TEST-IMPL-05: REQ-IMPL-05 单元测试</h4>
+        <p>
+          关联真实测试: src/bao_browser/tests/realworld_full_stack_tests.rs (Phase 5 全模块联调) +
+          src/bao_cdp_client/tests/e2e_playwright_compat.rs (Playwright 兼容) + 全 workspace cargo test 通过
+        </p>
+      </div>
+    </section>
+  </body>
 </html>
