@@ -120,6 +120,11 @@ pub fn handle_command(
         "Fetch" => handle_fetch(command, params),
         "Storage" => handle_storage(command, target_id, params, bridge),
         "Security" => handle_security(command, target_id, params, bridge),
+        "Profiler" => handle_profiler(command, target_id, params, bridge),
+        "HeapProfiler" => handle_heap_profiler(command, target_id, bridge),
+        "Memory" => handle_memory(command, target_id, bridge),
+        "Performance" => handle_performance(command, target_id, bridge),
+        "SystemInfo" => handle_system_info(command),
         _ => Err(CdpError {
             code: ERR_METHOD_NOT_FOUND,
             message: format!("'{}' wasn't found", msg.method),
@@ -626,6 +631,167 @@ fn handle_fetch(command: &str, params: &Option<Value>) -> HandlerResult {
         }
         _ => Err(CdpError { code: -32601, message: format!("'Fetch.{}' wasn't found", command) }),
     }
+}
+
+fn handle_profiler(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
+    match command {
+        "enable" | "disable" => ok_empty(),
+        "start" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::ProfilerStart { target_id: tid })
+            } else {
+                ok_empty()
+            }
+        }
+        "stop" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::ProfilerStop { target_id: tid })
+            } else {
+                // Stub: return empty profile when no bridge
+                Ok(serde_json::json!({ "profile": {} }))
+            }
+        }
+        "setSamplingInterval" => {
+            let interval = params.as_ref()
+                .and_then(|p| p.get("interval"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1000) as u32;
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::ProfilerSetSamplingInterval { target_id: tid, interval })
+            } else {
+                ok_empty()
+            }
+        }
+        _ => Err(CdpError { code: -32601, message: format!("'Profiler.{}' wasn't found", command) }),
+    }
+}
+
+fn handle_heap_profiler(command: &str, target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
+    match command {
+        "enable" | "disable" => ok_empty(),
+        "takeHeapSnapshot" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::HeapProfilerTakeSnapshot { target_id: tid })
+            } else {
+                // Stub: return empty snapshot when no bridge
+                Ok(serde_json::json!({}))
+            }
+        }
+        "startTrackingHeapObjects" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::HeapProfilerStartTracking { target_id: tid })
+            } else {
+                ok_empty()
+            }
+        }
+        "stopTrackingHeapObjects" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::HeapProfilerStopTracking { target_id: tid })
+            } else {
+                ok_empty()
+            }
+        }
+        "collectGarbage" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::HeapProfilerCollectGarbage { target_id: tid })
+            } else {
+                ok_empty()
+            }
+        }
+        _ => Err(CdpError { code: -32601, message: format!("'HeapProfiler.{}' wasn't found", command) }),
+    }
+}
+
+fn handle_memory(command: &str, target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
+    match command {
+        "getDOMCounters" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::MemoryGetDOMCounters { target_id: tid })
+            } else {
+                // Default zero values when no bridge
+                Ok(serde_json::json!({
+                    "documents": 0,
+                    "nodes": 0,
+                    "jsEventListeners": 0
+                }))
+            }
+        }
+        "prepareForLeakDetection" => ok_empty(),
+        "forciblyPurgeJavaScriptMemory" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::MemoryPurgeJS { target_id: tid })
+            } else {
+                ok_empty()
+            }
+        }
+        _ => Err(CdpError { code: -32601, message: format!("'Memory.{}' wasn't found", command) }),
+    }
+}
+
+fn handle_performance(command: &str, target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
+    match command {
+        "enable" | "disable" => ok_empty(),
+        "getMetrics" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::PerformanceGetMetrics { target_id: tid })
+            } else {
+                // Return empty metrics list when no bridge
+                Ok(serde_json::json!({ "metrics": [] }))
+            }
+        }
+        _ => Err(CdpError { code: -32601, message: format!("'Performance.{}' wasn't found", command) }),
+    }
+}
+
+fn handle_system_info(command: &str) -> HandlerResult {
+    match command {
+        "getInfo" => {
+            let os_name = std::env::consts::OS;
+            let arch = std::env::consts::ARCH;
+            let pid = std::process::id();
+            Ok(serde_json::json!({
+                "gpu": {
+                    "vendorString": "Bao",
+                    "deviceString": "Software Renderer"
+                },
+                "modelName": "Bao",
+                "modelVersion": env!("CARGO_PKG_VERSION"),
+                "commandLine": "",
+                "platform": os_name,
+                "product": "Bao",
+                "cpu": {
+                    "arch": arch,
+                    "processors": num_cpus()
+                },
+                "osName": os_name,
+                "osVersion": "",
+                "pid": pid
+            }))
+        }
+        "getProcessInfo" => {
+            let pid = std::process::id();
+            Ok(serde_json::json!({
+                "processInfo": [{
+                    "id": pid,
+                    "type": "browser",
+                    "name": "Bao"
+                }]
+            }))
+        }
+        _ => Err(CdpError { code: -32601, message: format!("'SystemInfo.{}' wasn't found", command) }),
+    }
+}
+
+/// Return the number of logical CPUs available.
+/// Uses `std::thread::available_parallelism` (stable since Rust 1.59).
+fn num_cpus() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1)
 }
 
 // @trace TEST-CDP-001 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]

@@ -113,6 +113,20 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             with_page(pool, &target_id, |page| cmd_debugger_blackbox(page)),
         BridgeCommand::DebuggerUnblackbox { target_id, .. } =>
             with_page(pool, &target_id, |page| cmd_debugger_unblackbox(page)),
+        // ── Profiler commands ──
+        BridgeCommand::ProfilerStart { .. } => Ok(serde_json::json!({})),
+        BridgeCommand::ProfilerStop { .. } => Ok(serde_json::json!({"profile": {}})),
+        BridgeCommand::ProfilerSetSamplingInterval { .. } => Ok(serde_json::json!({})),
+        // ── HeapProfiler commands ──
+        BridgeCommand::HeapProfilerTakeSnapshot { .. } => Ok(serde_json::json!({"snapshot": {}})),
+        BridgeCommand::HeapProfilerStartTracking { .. } => Ok(serde_json::json!({})),
+        BridgeCommand::HeapProfilerStopTracking { .. } => Ok(serde_json::json!({})),
+        BridgeCommand::HeapProfilerCollectGarbage { .. } => Ok(serde_json::json!({})),
+        // ── Memory commands ──
+        BridgeCommand::MemoryGetDOMCounters { .. } => Ok(serde_json::json!({"documents": 0, "nodes": 0, "jsEventListeners": 0})),
+        BridgeCommand::MemoryPurgeJS { .. } => Ok(serde_json::json!({})),
+        // ── Performance commands ──
+        BridgeCommand::PerformanceGetMetrics { .. } => Ok(serde_json::json!({"metrics": []})),
     };
     BridgeResponse { result }
 }

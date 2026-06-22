@@ -74,6 +74,20 @@ pub enum BridgeCommand {
     SecurityEnable { target_id: String },
     SecurityDisable { target_id: String },
     SecuritySetOverrideCertificateErrors { target_id: String, override_errors: bool },
+    // Profiler domain — JS CPU profiling (stub, awaits SM profiler API bridge)
+    ProfilerStart { target_id: String },
+    ProfilerStop { target_id: String },
+    ProfilerSetSamplingInterval { target_id: String, interval: u32 },
+    // HeapProfiler domain — heap snapshots (stub, awaits SM heap profiler bridge)
+    HeapProfilerTakeSnapshot { target_id: String },
+    HeapProfilerStartTracking { target_id: String },
+    HeapProfilerStopTracking { target_id: String },
+    HeapProfilerCollectGarbage { target_id: String },
+    // Memory domain — memory metrics
+    MemoryGetDOMCounters { target_id: String },
+    MemoryPurgeJS { target_id: String },
+    // Performance domain — performance metrics
+    PerformanceGetMetrics { target_id: String },
 }
 
 /// Response from the main thread back to the CDP server.
