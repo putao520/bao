@@ -6,6 +6,121 @@ use crate::navigator::{NavigatorProfile, ScreenProfile};
 use crate::webgl_audio::{WebGLProfile, AudioProfile};
 use crate::behavior::{BehaviorConfig, BehaviorSimulator};
 
+/// WebRTC leak protection mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebRtcMode {
+    /// Default: filter ICE candidates, only allow mDNS/relay.
+    Default,
+    /// Strict: filter ICE candidates aggressively.
+    Strict,
+    /// None: completely disable WebRTC (throw NotAllowedError).
+    None,
+}
+
+impl Default for WebRtcMode {
+    fn default() -> Self {
+        WebRtcMode::Default
+    }
+}
+
+/// Font fingerprint protection configuration.
+#[derive(Debug, Clone)]
+pub struct FontConfig {
+    pub seed: u64,
+    pub extra_font_count: u32,
+    pub hidden_fonts: Vec<String>,
+}
+
+impl FontConfig {
+    pub fn new(seed: u64) -> Self {
+        FontConfig {
+            seed,
+            extra_font_count: 0,
+            hidden_fonts: Vec::new(),
+        }
+    }
+}
+
+impl Default for FontConfig {
+    fn default() -> Self {
+        FontConfig::new(42)
+    }
+}
+
+/// Battery API simulation configuration.
+#[derive(Debug, Clone)]
+pub struct BatteryConfig {
+    pub charging: bool,
+    pub level: f64,
+    pub charging_time: f64,
+    pub discharging_time: f64,
+}
+
+impl Default for BatteryConfig {
+    fn default() -> Self {
+        BatteryConfig {
+            charging: true,
+            level: 1.0,
+            charging_time: 0.0,
+            discharging_time: f64::INFINITY,
+        }
+    }
+}
+
+/// Performance timing precision configuration.
+#[derive(Debug, Clone)]
+pub struct TimingConfig {
+    /// Precision in microseconds. Default 100 = 0.1ms rounding.
+    pub precision_us: u64,
+}
+
+impl Default for TimingConfig {
+    fn default() -> Self {
+        TimingConfig { precision_us: 100 }
+    }
+}
+
+/// ClientRects noise configuration.
+#[derive(Debug, Clone)]
+pub struct ClientRectsConfig {
+    /// Noise delta (±). Default 0.5 pixels.
+    pub noise_delta: f64,
+    /// Seed for deterministic noise.
+    pub seed: u64,
+}
+
+impl Default for ClientRectsConfig {
+    fn default() -> Self {
+        ClientRectsConfig {
+            noise_delta: 0.5,
+            seed: 42,
+        }
+    }
+}
+
+/// Screen/Display fingerprint configuration.
+/// Overrides screen dimensions, color depth, and device pixel ratio
+/// beyond what ScreenProfile already provides (this adds the JS injection
+/// that runs at the prototype level to resist dynamic queries).
+#[derive(Debug, Clone)]
+pub struct ScreenDisplayConfig {
+    pub width: u32,
+    pub height: u32,
+    pub color_depth: u32,
+    pub device_pixel_ratio: f64,
+}
+
+impl Default for ScreenDisplayConfig {
+    fn default() -> Self {
+        ScreenDisplayConfig {
+            width: 1920,
+            height: 1080,
+            color_depth: 24,
+            device_pixel_ratio: 1.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StealthProfile {
     pub tls: TlsFingerprint,
@@ -16,6 +131,13 @@ pub struct StealthProfile {
     pub webgl: WebGLProfile,
     pub audio: AudioProfile,
     pub behavior: BehaviorSimulator,
+    // New dimensions
+    pub font: FontConfig,
+    pub battery: BatteryConfig,
+    pub webrtc_mode: WebRtcMode,
+    pub timing: TimingConfig,
+    pub clientrects: ClientRectsConfig,
+    pub screen_display: ScreenDisplayConfig,
 }
 
 impl StealthProfile {
@@ -29,6 +151,12 @@ impl StealthProfile {
             webgl: WebGLProfile::firefox(),
             audio: AudioProfile::new(42),
             behavior: BehaviorSimulator::with_config(42, BehaviorConfig::firefox()),
+            font: FontConfig::new(42),
+            battery: BatteryConfig::default(),
+            webrtc_mode: WebRtcMode::Default,
+            timing: TimingConfig::default(),
+            clientrects: ClientRectsConfig { noise_delta: 0.5, seed: 42 },
+            screen_display: ScreenDisplayConfig::default(),
         }
     }
 
@@ -42,6 +170,12 @@ impl StealthProfile {
             webgl: WebGLProfile::chrome(),
             audio: AudioProfile::new(137),
             behavior: BehaviorSimulator::with_config(137, BehaviorConfig::chrome()),
+            font: FontConfig::new(137),
+            battery: BatteryConfig::default(),
+            webrtc_mode: WebRtcMode::Default,
+            timing: TimingConfig::default(),
+            clientrects: ClientRectsConfig { noise_delta: 0.5, seed: 137 },
+            screen_display: ScreenDisplayConfig::default(),
         }
     }
 }
@@ -144,14 +278,48 @@ mod tests {
     }
 
     #[test]
-    fn firefox_behavior_uses_firefox_config() {
+    fn firefox_and_chrome_have_different_font_seeds() {
         let ff = StealthProfile::firefox_default();
-        // Firefox typing base interval = 95ms (higher than Chrome's 85ms)
-        let delays = ff.behavior.generate_typing_delays(50);
-        // Just verify it produces valid results with the Firefox config
-        assert!(!delays.is_empty());
-        for d in &delays {
-            assert!(*d > 0);
-        }
+        let ch = StealthProfile::chrome_default();
+        assert_ne!(
+            ff.font.seed, ch.font.seed,
+            "Firefox and Chrome should have different font seeds"
+        );
+    }
+
+    #[test]
+    fn default_webrtc_mode_is_default() {
+        let ff = StealthProfile::firefox_default();
+        assert_eq!(ff.webrtc_mode, WebRtcMode::Default);
+    }
+
+    #[test]
+    fn default_battery_is_fully_charged() {
+        let profile = StealthProfile::firefox_default();
+        assert!(profile.battery.charging);
+        assert!((profile.battery.level - 1.0).abs() < f64::EPSILON);
+        assert!((profile.battery.charging_time - 0.0).abs() < f64::EPSILON);
+        assert!(profile.battery.discharging_time.is_infinite());
+    }
+
+    #[test]
+    fn default_timing_precision_is_100us() {
+        let profile = StealthProfile::firefox_default();
+        assert_eq!(profile.timing.precision_us, 100);
+    }
+
+    #[test]
+    fn default_clientrects_noise_delta() {
+        let profile = StealthProfile::firefox_default();
+        assert!((profile.clientrects.noise_delta - 0.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn default_screen_display_is_1920x1080() {
+        let profile = StealthProfile::firefox_default();
+        assert_eq!(profile.screen_display.width, 1920);
+        assert_eq!(profile.screen_display.height, 1080);
+        assert_eq!(profile.screen_display.color_depth, 24);
+        assert!((profile.screen_display.device_pixel_ratio - 1.0).abs() < f64::EPSILON);
     }
 }

@@ -133,6 +133,8 @@ pub unsafe fn install_node_apis(
     crate::node_punycode::install(cx);
     crate::node_repl::install(cx);
     crate::node_sys::install(cx);
+    crate::node_test::install(cx);
+    crate::node_wasi::install(cx);
     crate::node_trace_events::install(cx);
     crate::node_dgram::install(cx);
 

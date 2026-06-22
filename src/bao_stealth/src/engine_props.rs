@@ -65,6 +65,22 @@ struct RealmProfile {
     canvas_amplitude: f64,
     audio_seed: u64,
     audio_amplitude: f64,
+    // New dimensions
+    font_seed: u64,
+    font_extra_count: u32,
+    font_hidden_fonts: Vec<String>,
+    battery_charging: bool,
+    battery_level: f64,
+    battery_charging_time: f64,
+    battery_discharging_time: f64,
+    webrtc_mode: u8,
+    timing_precision_us: u64,
+    clientrects_delta: f64,
+    clientrects_seed: u64,
+    screen_display_w: u32,
+    screen_display_h: u32,
+    screen_display_cd: u32,
+    screen_display_dpr: f64,
 }
 
 impl RealmProfile {
@@ -92,6 +108,26 @@ impl RealmProfile {
             canvas_amplitude: p.canvas.noise_amplitude(),
             audio_seed: p.audio.seed(),
             audio_amplitude: p.audio.noise_amplitude(),
+            // New dimensions
+            font_seed: p.font.seed,
+            font_extra_count: p.font.extra_font_count,
+            font_hidden_fonts: p.font.hidden_fonts.clone(),
+            battery_charging: p.battery.charging,
+            battery_level: p.battery.level,
+            battery_charging_time: p.battery.charging_time,
+            battery_discharging_time: p.battery.discharging_time,
+            webrtc_mode: match p.webrtc_mode {
+                crate::WebRtcMode::Default => 0,
+                crate::WebRtcMode::Strict => 1,
+                crate::WebRtcMode::None => 2,
+            },
+            timing_precision_us: p.timing.precision_us,
+            clientrects_delta: p.clientrects.noise_delta,
+            clientrects_seed: p.clientrects.seed,
+            screen_display_w: p.screen_display.width,
+            screen_display_h: p.screen_display.height,
+            screen_display_cd: p.screen_display.color_depth,
+            screen_display_dpr: p.screen_display.device_pixel_ratio,
         }
     }
 }
@@ -215,6 +251,27 @@ thread_local! {
     // Audio noise seed + amplitude for JS-layer hook injection
     static TL_AUDIO_SEED: RefCell<u64> = RefCell::new(42);
     static TL_AUDIO_AMPLITUDE: RefCell<f64> = RefCell::new(1e-7);
+    // Font fingerprint config
+    static TL_FONT_SEED: RefCell<u64> = RefCell::new(42);
+    static TL_FONT_EXTRA_COUNT: RefCell<u32> = RefCell::new(0);
+    static TL_FONT_HIDDEN_FONTS: RefCell<Vec<String>> = RefCell::new(vec![]);
+    // Battery config
+    static TL_BATTERY_CHARGING: RefCell<bool> = RefCell::new(true);
+    static TL_BATTERY_LEVEL: RefCell<f64> = RefCell::new(1.0);
+    static TL_BATTERY_CHARGING_TIME: RefCell<f64> = RefCell::new(0.0);
+    static TL_BATTERY_DISCHARGING_TIME: RefCell<f64> = RefCell::new(f64::INFINITY);
+    // WebRTC mode: 0=Default, 1=Strict, 2=None
+    static TL_WEBRTC_MODE: RefCell<u8> = RefCell::new(0);
+    // Timing precision
+    static TL_TIMING_PRECISION_US: RefCell<u64> = RefCell::new(100);
+    // ClientRects noise
+    static TL_CLIENTRECTS_DELTA: RefCell<f64> = RefCell::new(0.5);
+    static TL_CLIENTRECTS_SEED: RefCell<u64> = RefCell::new(42);
+    // Screen/Display config
+    static TL_SCREEN_DISPLAY_W: RefCell<u32> = RefCell::new(1920);
+    static TL_SCREEN_DISPLAY_H: RefCell<u32> = RefCell::new(1080);
+    static TL_SCREEN_DISPLAY_CD: RefCell<u32> = RefCell::new(24);
+    static TL_SCREEN_DISPLAY_DPR: RefCell<f64> = RefCell::new(1.0);
 }
 
 /// Store all profile values into thread-local before calling install_stealth_props.
@@ -241,6 +298,26 @@ pub fn set_profile(profile: &StealthProfile) {
     TL_CANVAS_AMPLITUDE.with(|v| *v.borrow_mut() = profile.canvas.noise_amplitude());
     TL_AUDIO_SEED.with(|v| *v.borrow_mut() = profile.audio.seed());
     TL_AUDIO_AMPLITUDE.with(|v| *v.borrow_mut() = profile.audio.noise_amplitude());
+    // New dimensions
+    TL_FONT_SEED.with(|v| *v.borrow_mut() = profile.font.seed);
+    TL_FONT_EXTRA_COUNT.with(|v| *v.borrow_mut() = profile.font.extra_font_count);
+    TL_FONT_HIDDEN_FONTS.with(|v| *v.borrow_mut() = profile.font.hidden_fonts.clone());
+    TL_BATTERY_CHARGING.with(|v| *v.borrow_mut() = profile.battery.charging);
+    TL_BATTERY_LEVEL.with(|v| *v.borrow_mut() = profile.battery.level);
+    TL_BATTERY_CHARGING_TIME.with(|v| *v.borrow_mut() = profile.battery.charging_time);
+    TL_BATTERY_DISCHARGING_TIME.with(|v| *v.borrow_mut() = profile.battery.discharging_time);
+    TL_WEBRTC_MODE.with(|v| *v.borrow_mut() = match profile.webrtc_mode {
+        crate::WebRtcMode::Default => 0,
+        crate::WebRtcMode::Strict => 1,
+        crate::WebRtcMode::None => 2,
+    });
+    TL_TIMING_PRECISION_US.with(|v| *v.borrow_mut() = profile.timing.precision_us);
+    TL_CLIENTRECTS_DELTA.with(|v| *v.borrow_mut() = profile.clientrects.noise_delta);
+    TL_CLIENTRECTS_SEED.with(|v| *v.borrow_mut() = profile.clientrects.seed);
+    TL_SCREEN_DISPLAY_W.with(|v| *v.borrow_mut() = profile.screen_display.width);
+    TL_SCREEN_DISPLAY_H.with(|v| *v.borrow_mut() = profile.screen_display.height);
+    TL_SCREEN_DISPLAY_CD.with(|v| *v.borrow_mut() = profile.screen_display.color_depth);
+    TL_SCREEN_DISPLAY_DPR.with(|v| *v.borrow_mut() = profile.screen_display.device_pixel_ratio);
 }
 
 // ---------------------------------------------------------------------------

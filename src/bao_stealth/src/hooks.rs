@@ -2,11 +2,18 @@
 use crate::canvas::CanvasNoise;
 use crate::navigator::{NavigatorProfile, ScreenProfile};
 use crate::webgl_audio::{AudioProfile, WebGLProfile};
+use crate::profile::{FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig, ScreenDisplayConfig};
 
 pub struct StealthHooks {
     canvas_js: String,
     audio_js: String,
     navigator_js: String,
+    font_js: String,
+    battery_js: String,
+    webrtc_js: String,
+    timing_js: String,
+    clientrects_js: String,
+    screen_display_js: String,
 }
 
 impl StealthHooks {
@@ -16,11 +23,23 @@ impl StealthHooks {
         navigator: &NavigatorProfile,
         screen: &ScreenProfile,
         webgl: &WebGLProfile,
+        font: &FontConfig,
+        battery: &BatteryConfig,
+        webrtc_mode: WebRtcMode,
+        timing: &TimingConfig,
+        clientrects: &ClientRectsConfig,
+        screen_display: &ScreenDisplayConfig,
     ) -> Self {
         StealthHooks {
             canvas_js: Self::build_canvas_js(canvas),
             audio_js: Self::build_audio_js(audio),
             navigator_js: Self::build_navigator_js(navigator, screen, webgl),
+            font_js: Self::build_font_js(font),
+            battery_js: Self::build_battery_js(battery),
+            webrtc_js: Self::build_webrtc_js(webrtc_mode),
+            timing_js: Self::build_timing_js(timing),
+            clientrects_js: Self::build_clientrects_js(clientrects),
+            screen_display_js: Self::build_screen_display_js(screen_display),
         }
     }
 
@@ -36,15 +55,60 @@ impl StealthHooks {
         &self.navigator_js
     }
 
+    pub fn font_js(&self) -> &str {
+        &self.font_js
+    }
+
+    pub fn battery_js(&self) -> &str {
+        &self.battery_js
+    }
+
+    pub fn webrtc_js(&self) -> &str {
+        &self.webrtc_js
+    }
+
+    pub fn timing_js(&self) -> &str {
+        &self.timing_js
+    }
+
+    pub fn clientrects_js(&self) -> &str {
+        &self.clientrects_js
+    }
+
+    pub fn screen_display_js(&self) -> &str {
+        &self.screen_display_js
+    }
+
     pub fn combined_js(&self) -> String {
         let mut out = String::with_capacity(
-            self.canvas_js.len() + self.audio_js.len() + self.navigator_js.len() + 2,
+            self.canvas_js.len()
+                + self.audio_js.len()
+                + self.navigator_js.len()
+                + self.font_js.len()
+                + self.battery_js.len()
+                + self.webrtc_js.len()
+                + self.timing_js.len()
+                + self.clientrects_js.len()
+                + self.screen_display_js.len()
+                + 10,
         );
         out.push_str(&self.canvas_js);
         out.push('\n');
         out.push_str(&self.audio_js);
         out.push('\n');
         out.push_str(&self.navigator_js);
+        out.push('\n');
+        out.push_str(&self.font_js);
+        out.push('\n');
+        out.push_str(&self.battery_js);
+        out.push('\n');
+        out.push_str(&self.webrtc_js);
+        out.push('\n');
+        out.push_str(&self.timing_js);
+        out.push('\n');
+        out.push_str(&self.clientrects_js);
+        out.push('\n');
+        out.push_str(&self.screen_display_js);
         out
     }
 
@@ -280,6 +344,371 @@ impl StealthHooks {
             exts = extensions_json,
         )
     }
+
+    // ── Font fingerprint protection ──────────────────────────────
+
+    fn build_font_js(font: &FontConfig) -> String {
+        let seed = font.seed;
+        let extra_count = font.extra_font_count;
+        let hidden_fonts_json = serde_json::to_string(&font.hidden_fonts)
+            .unwrap_or_else(|_| "[]".into());
+
+        format!(
+            r#"(function() {{
+  var SEED = {seed}n;
+  var EXTRA_COUNT = {extra_count};
+  var HIDDEN_FONTS = {hidden_fonts};
+
+  // Deterministic xorshift64 PRNG
+  function xorshift64(state) {{
+    state = BigInt.asUintN(64, state);
+    state ^= state << 13n;
+    state = BigInt.asUintN(64, state);
+    state ^= state >> 7n;
+    state = BigInt.asUintN(64, state);
+    state ^= state << 17n;
+    return BigInt.asUintN(64, state);
+  }}
+
+  function detRand(index) {{
+    var s = SEED ^ (BigInt(index) * 0x2545F4914F6CDD1Dn);
+    s = xorshift64(s);
+    return Number(s) / 18446744073709551615;
+  }}
+
+  if (typeof document !== 'undefined' && document.fonts) {{
+    var origCheck = document.fonts.check.bind(document.fonts);
+    document.fonts.check = function(font, text) {{
+      for (var i = 0; i < HIDDEN_FONTS.length; i++) {{
+        if (font.indexOf(HIDDEN_FONTS[i]) !== -1) return false;
+      }}
+      return origCheck(font, text);
+    }};
+
+    var origSize = Object.getOwnPropertyDescriptor(Document.prototype, 'fonts');
+    if (origSize && origSize.get) {{
+      var origGetter = origSize.get;
+      Object.defineProperty(document, 'fonts', {{
+        get: function() {{
+          var fontsObj = origGetter.call(document);
+          var origFontsSize = Object.getOwnPropertyDescriptor(FontData.prototype, 'size');
+          if (origFontsSize && origFontsSize.get) {{
+            var origSizeGetter = origFontsSize.get;
+            Object.defineProperty(fontsObj, 'size', {{
+              get: function() {{
+                return origSizeGetter.call(fontsObj) + EXTRA_COUNT;
+              }},
+              configurable: true
+            }});
+          }}
+          return fontsObj;
+        }},
+        configurable: true
+      }});
+    }}
+  }}
+}})();"#,
+            seed = seed,
+            extra_count = extra_count,
+            hidden_fonts = hidden_fonts_json,
+        )
+    }
+
+    // ── Battery API simulation ───────────────────────────────────
+
+    fn build_battery_js(battery: &BatteryConfig) -> String {
+        let charging = battery.charging;
+        let level = battery.level;
+        let charging_time = battery.charging_time;
+        let discharging_time = if battery.discharging_time.is_infinite() {
+            "Infinity".to_string()
+        } else {
+            format!("{}", battery.discharging_time)
+        };
+
+        format!(
+            r#"(function() {{
+  var fixedBattery = {{
+    charging: {charging},
+    chargingTime: {charging_time},
+    dischargingTime: {discharging_time},
+    level: {level},
+    addEventListener: function() {{}},
+    removeEventListener: function() {{}},
+    dispatchEvent: function() {{ return true; }},
+    onchargingchange: null,
+    onchargingtimechange: null,
+    ondischargingtimechange: null,
+    onlevelchange: null
+  }};
+
+  if (typeof navigator !== 'undefined' && navigator.getBattery) {{
+    navigator.getBattery = function() {{
+      return Promise.resolve(fixedBattery);
+    }};
+  }}
+}})();"#,
+            charging = charging,
+            charging_time = charging_time,
+            discharging_time = discharging_time,
+            level = level,
+        )
+    }
+
+    // ── WebRTC leak protection ───────────────────────────────────
+
+    fn build_webrtc_js(mode: WebRtcMode) -> String {
+        match mode {
+            WebRtcMode::None => r#"(function() {
+  if (typeof RTCPeerConnection !== 'undefined') {
+    window.RTCPeerConnection = function() {
+      throw new DOMException('WebRTC is disabled', 'NotAllowedError');
+    };
+    Object.defineProperty(window, 'RTCPeerConnection', {
+      value: function() {
+        throw new DOMException('WebRTC is disabled', 'NotAllowedError');
+      },
+      configurable: false,
+      writable: false
+    });
+  }
+  if (typeof webkitRTCPeerConnection !== 'undefined') {
+    window.webkitRTCPeerConnection = function() {
+      throw new DOMException('WebRTC is disabled', 'NotAllowedError');
+    };
+  }
+})();"#.to_string(),
+
+            WebRtcMode::Default => r#"(function() {
+  if (typeof RTCPeerConnection !== 'undefined') {
+    var origAddEventListener = RTCPeerConnection.prototype.addEventListener;
+    RTCPeerConnection.prototype.addEventListener = function(type, listener, options) {
+      if (type === 'icecandidate') {
+        var filteredListener = function(event) {
+          if (event.candidate) {
+            var c = event.candidate.candidate || '';
+            // Allow mDNS candidates (end with .local) and relay candidates
+            if (c.indexOf('.local') !== -1 || c.indexOf('relay') !== -1) {
+              listener.call(this, event);
+            }
+            // Block srflx and host candidates to prevent IP leaks
+          } else {
+            listener.call(this, event);
+          }
+        };
+        return origAddEventListener.call(this, type, filteredListener, options);
+      }
+      return origAddEventListener.call(this, type, listener, options);
+    };
+  }
+})();"#.to_string(),
+
+            WebRtcMode::Strict => r#"(function() {
+  if (typeof RTCPeerConnection !== 'undefined') {
+    var origAddEventListener = RTCPeerConnection.prototype.addEventListener;
+    RTCPeerConnection.prototype.addEventListener = function(type, listener, options) {
+      if (type === 'icecandidate') {
+        var filteredListener = function(event) {
+          if (event.candidate) {
+            var c = event.candidate.candidate || '';
+            // Strict: only allow relay candidates
+            if (c.indexOf('relay') !== -1) {
+              listener.call(this, event);
+            }
+          } else {
+            listener.call(this, event);
+          }
+        };
+        return origAddEventListener.call(this, type, filteredListener, options);
+      }
+      return origAddEventListener.call(this, type, listener, options);
+    };
+
+    // Also override createOffer/createAnswer to strip local IPs from SDP
+    var origCreateOffer = RTCPeerConnection.prototype.createOffer;
+    RTCPeerConnection.prototype.createOffer = function(options) {
+      return origCreateOffer.call(this, options).then(function(desc) {
+        desc.sdp = desc.sdp.replace(/a=candidate:.*typ\s+(srflx|host).*\r?\n/g, '');
+        return desc;
+      });
+    };
+
+    var origCreateAnswer = RTCPeerConnection.prototype.createAnswer;
+    RTCPeerConnection.prototype.createAnswer = function(options) {
+      return origCreateAnswer.call(this, options).then(function(desc) {
+        desc.sdp = desc.sdp.replace(/a=candidate:.*typ\s+(srflx|host).*\r?\n/g, '');
+        return desc;
+      });
+    };
+  }
+})();"#.to_string(),
+        }
+    }
+
+    // ── Performance timing precision ─────────────────────────────
+
+    fn build_timing_js(timing: &TimingConfig) -> String {
+        let precision_us = timing.precision_us;
+        let precision_ms = precision_us as f64 / 1000.0;
+
+        format!(
+            r#"(function() {{
+  var PRECISION_MS = {precision_ms};
+
+  function roundToPrecision(t) {{
+    return Math.round(t / PRECISION_MS) * PRECISION_MS;
+  }}
+
+  if (typeof performance !== 'undefined') {{
+    var origNow = performance.now.bind(performance);
+    performance.now = function() {{
+      return roundToPrecision(origNow());
+    }};
+  }}
+
+  var origDateNow = Date.now;
+  Date.now = function() {{
+    return Math.round(roundToPrecision(origDateNow()));
+  }};
+
+  if (typeof Event !== 'undefined') {{
+    var origTimeStamp = Object.getOwnPropertyDescriptor(Event.prototype, 'timeStamp');
+    if (origTimeStamp && origTimeStamp.get) {{
+      var origGetter = origTimeStamp.get;
+      Object.defineProperty(Event.prototype, 'timeStamp', {{
+        get: function() {{
+          return roundToPrecision(origGetter.call(this));
+        }},
+        configurable: true
+      }});
+    }}
+  }}
+}})();"#,
+            precision_ms = precision_ms,
+        )
+    }
+
+    // ── ClientRects noise ────────────────────────────────────────
+
+    fn build_clientrects_js(config: &ClientRectsConfig) -> String {
+        let delta = config.noise_delta;
+        let seed = config.seed;
+
+        format!(
+            r#"(function() {{
+  var DELTA = {delta};
+  var SEED = {seed}n;
+
+  function xorshift64(state) {{
+    state = BigInt.asUintN(64, state);
+    state ^= state << 13n;
+    state = BigInt.asUintN(64, state);
+    state ^= state >> 7n;
+    state = BigInt.asUintN(64, state);
+    state ^= state << 17n;
+    return BigInt.asUintN(64, state);
+  }}
+
+  function detNoise(element, field) {{
+    var hash = SEED;
+    if (typeof element === 'object' && element !== null) {{
+      var id = element.id || element.tagName || '';
+      for (var i = 0; i < id.length; i++) {{
+        hash ^= BigInt(id.charCodeAt(i)) * BigInt(i + 1 + 0x517CC1B727220A95n);
+        hash = xorshift64(hash);
+      }}
+    }}
+    hash ^= BigInt(field) * 0x6C62272E07BB0142n;
+    hash = xorshift64(hash);
+    return (Number(hash) / 18446744073709551615 - 0.5) * 2 * DELTA;
+  }}
+
+  var cache = new WeakMap();
+  var frameCounter = 0;
+
+  function applyNoiseToRect(rect, element) {{
+    if (!element || DELTA <= 0) return rect;
+    var result = {{
+      x: rect.x + detNoise(element, 0),
+      y: rect.y + detNoise(element, 1),
+      width: rect.width + detNoise(element, 2),
+      height: rect.height + detNoise(element, 3),
+      top: rect.top + detNoise(element, 4),
+      right: rect.right + detNoise(element, 5),
+      bottom: rect.bottom + detNoise(element, 6),
+      left: rect.left + detNoise(element, 7),
+      toJSON: function() {{
+        return {{ x: this.x, y: this.y, width: this.width, height: this.height, top: this.top, right: this.right, bottom: this.bottom, left: this.left }};
+      }}
+    }};
+    return result;
+  }}
+
+  if (typeof Element !== 'undefined') {{
+    var origGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function() {{
+      var rect = origGetBoundingClientRect.call(this);
+      return applyNoiseToRect(rect, this);
+    }};
+
+    var origGetClientRects = Element.prototype.getClientRects;
+    Element.prototype.getClientRects = function() {{
+      var rectList = origGetClientRects.call(this);
+      var result = [];
+      for (var i = 0; i < rectList.length; i++) {{
+        result.push(applyNoiseToRect(rectList[i], this));
+      }}
+      return result;
+    }};
+  }}
+}})();"#,
+            delta = delta,
+            seed = seed,
+        )
+    }
+
+    // ── Screen/Display fingerprint ───────────────────────────────
+
+    fn build_screen_display_js(config: &ScreenDisplayConfig) -> String {
+        let width = config.width;
+        let height = config.height;
+        let color_depth = config.color_depth;
+        let dpr = config.device_pixel_ratio;
+
+        format!(
+            r#"(function() {{
+  var WIDTH = {width};
+  var HEIGHT = {height};
+  var COLOR_DEPTH = {color_depth};
+  var DPR = {dpr};
+
+  if (typeof screen !== 'undefined') {{
+    Object.defineProperty(screen, 'width', {{ get: function() {{ return WIDTH; }}, configurable: true }});
+    Object.defineProperty(screen, 'height', {{ get: function() {{ return HEIGHT; }}, configurable: true }});
+    Object.defineProperty(screen, 'availWidth', {{ get: function() {{ return WIDTH; }}, configurable: true }});
+    Object.defineProperty(screen, 'availHeight', {{ get: function() {{ return HEIGHT - 40; }}, configurable: true }});
+    Object.defineProperty(screen, 'colorDepth', {{ get: function() {{ return COLOR_DEPTH; }}, configurable: true }});
+    Object.defineProperty(screen, 'pixelDepth', {{ get: function() {{ return COLOR_DEPTH; }}, configurable: true }});
+  }}
+
+  if (typeof window !== 'undefined') {{
+    Object.defineProperty(window, 'devicePixelRatio', {{ get: function() {{ return DPR; }}, configurable: true }});
+    Object.defineProperty(window, 'outerWidth', {{ get: function() {{ return WIDTH; }}, configurable: true }});
+    Object.defineProperty(window, 'outerHeight', {{ get: function() {{ return HEIGHT; }}, configurable: true }});
+    Object.defineProperty(window, 'innerWidth', {{ get: function() {{ return WIDTH; }}, configurable: true }});
+    Object.defineProperty(window, 'innerHeight', {{ get: function() {{ return HEIGHT - 80; }}, configurable: true }});
+    Object.defineProperty(window, 'screenX', {{ get: function() {{ return 0; }}, configurable: true }});
+    Object.defineProperty(window, 'screenY', {{ get: function() {{ return 0; }}, configurable: true }});
+    Object.defineProperty(window, 'screenLeft', {{ get: function() {{ return 0; }}, configurable: true }});
+    Object.defineProperty(window, 'screenTop', {{ get: function() {{ return 0; }}, configurable: true }});
+  }}
+}})();"#,
+            width = width,
+            height = height,
+            color_depth = color_depth,
+            dpr = dpr,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -298,6 +727,12 @@ mod tests {
             &profile.navigator,
             &profile.screen,
             &profile.webgl,
+            &profile.font,
+            &profile.battery,
+            profile.webrtc_mode,
+            &profile.timing,
+            &profile.clientrects,
+            &profile.screen_display,
         )
     }
 
@@ -309,6 +744,12 @@ mod tests {
             &profile.navigator,
             &profile.screen,
             &profile.webgl,
+            &profile.font,
+            &profile.battery,
+            profile.webrtc_mode,
+            &profile.timing,
+            &profile.clientrects,
+            &profile.screen_display,
         )
     }
 
@@ -523,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn combined_js_concatenates_all_three() {
+    fn combined_js_concatenates_all() {
         let hooks = firefox_hooks();
         let combined = hooks.combined_js();
         assert!(
@@ -537,6 +978,30 @@ mod tests {
         assert!(
             combined.contains("Object.defineProperty(navigator, 'userAgent'"),
             "combined JS must contain navigator hooks"
+        );
+        assert!(
+            combined.contains("document.fonts.check"),
+            "combined JS must contain font hooks"
+        );
+        assert!(
+            combined.contains("navigator.getBattery"),
+            "combined JS must contain battery hooks"
+        );
+        assert!(
+            combined.contains("RTCPeerConnection"),
+            "combined JS must contain WebRTC hooks"
+        );
+        assert!(
+            combined.contains("performance.now"),
+            "combined JS must contain timing hooks"
+        );
+        assert!(
+            combined.contains("getBoundingClientRect"),
+            "combined JS must contain clientrects hooks"
+        );
+        assert!(
+            combined.contains("screen_display_js") || combined.contains("screen, 'width'"),
+            "combined JS must contain screen/display hooks"
         );
     }
 
@@ -726,7 +1191,12 @@ mod tests {
         let nav = NavigatorProfile::firefox();
         let screen = ScreenProfile::new(800, 600, 2.0);
         let webgl = WebGLProfile::firefox();
-        let hooks = StealthHooks::from_profile(&canvas, &audio, &nav, &screen, &webgl);
+        let font = FontConfig::new(42);
+        let battery = BatteryConfig::default();
+        let timing = TimingConfig::default();
+        let clientrects = ClientRectsConfig::default();
+        let screen_display = ScreenDisplayConfig::default();
+        let hooks = StealthHooks::from_profile(&canvas, &audio, &nav, &screen, &webgl, &font, &battery, WebRtcMode::Default, &timing, &clientrects, &screen_display);
         let js = hooks.navigator_js();
         assert!(
             js.contains("800") && js.contains("600"),
@@ -777,6 +1247,292 @@ mod tests {
         assert!(
             js.ends_with("})();"),
             "Navigator JS must end with IIFE closure"
+        );
+    }
+
+    // ── New dimension tests ──────────────────────────────────────
+
+    #[test]
+    fn font_js_contains_fonts_check_override() {
+        let hooks = firefox_hooks();
+        let js = hooks.font_js();
+        assert!(
+            js.contains("document.fonts.check"),
+            "font JS must override document.fonts.check"
+        );
+    }
+
+    #[test]
+    fn font_js_contains_seed() {
+        let hooks = firefox_hooks();
+        let js = hooks.font_js();
+        assert!(
+            js.contains("42n"),
+            "font JS must contain the seed as BigInt"
+        );
+    }
+
+    #[test]
+    fn font_js_is_valid_iife() {
+        let hooks = firefox_hooks();
+        let js = hooks.font_js();
+        assert!(
+            js.starts_with("(function() {") || js.starts_with("(function(){{"),
+            "Font JS must be an IIFE"
+        );
+        assert!(
+            js.ends_with("})();"),
+            "Font JS must end with IIFE closure"
+        );
+    }
+
+    #[test]
+    fn battery_js_contains_getbattery_override() {
+        let hooks = firefox_hooks();
+        let js = hooks.battery_js();
+        assert!(
+            js.contains("navigator.getBattery"),
+            "battery JS must override navigator.getBattery"
+        );
+        assert!(
+            js.contains("Promise.resolve"),
+            "battery JS must return a resolved Promise"
+        );
+    }
+
+    #[test]
+    fn battery_js_default_values() {
+        let hooks = firefox_hooks();
+        let js = hooks.battery_js();
+        assert!(
+            js.contains("charging: true"),
+            "battery JS must have charging=true by default"
+        );
+        assert!(
+            js.contains("level: 1"),
+            "battery JS must have level=1 by default"
+        );
+        assert!(
+            js.contains("Infinity"),
+            "battery JS must have dischargingTime=Infinity by default"
+        );
+    }
+
+    #[test]
+    fn battery_js_is_valid_iife() {
+        let hooks = firefox_hooks();
+        let js = hooks.battery_js();
+        assert!(
+            js.starts_with("(function() {") || js.starts_with("(function(){{"),
+            "Battery JS must be an IIFE"
+        );
+        assert!(
+            js.ends_with("})();"),
+            "Battery JS must end with IIFE closure"
+        );
+    }
+
+    #[test]
+    fn webrtc_js_default_mode_filters_candidates() {
+        let hooks = firefox_hooks();
+        let js = hooks.webrtc_js();
+        assert!(
+            js.contains("RTCPeerConnection"),
+            "WebRTC JS must reference RTCPeerConnection"
+        );
+        assert!(
+            js.contains("icecandidate"),
+            "WebRTC Default mode must filter ICE candidates"
+        );
+    }
+
+    #[test]
+    fn webrtc_js_none_mode_throws_error() {
+        let js = StealthHooks::build_webrtc_js(WebRtcMode::None);
+        assert!(
+            js.contains("NotAllowedError"),
+            "WebRTC None mode must throw NotAllowedError"
+        );
+        assert!(
+            js.contains("WebRTC is disabled"),
+            "WebRTC None mode must have descriptive error message"
+        );
+    }
+
+    #[test]
+    fn webrtc_js_strict_mode_strips_sdp() {
+        let js = StealthHooks::build_webrtc_js(WebRtcMode::Strict);
+        assert!(
+            js.contains("createOffer"),
+            "WebRTC Strict mode must override createOffer"
+        );
+        assert!(
+            js.contains("createAnswer"),
+            "WebRTC Strict mode must override createAnswer"
+        );
+        assert!(
+            js.contains("srflx"),
+            "WebRTC Strict mode must strip srflx candidates from SDP"
+        );
+    }
+
+    #[test]
+    fn webrtc_js_is_valid_iife() {
+        let hooks = firefox_hooks();
+        let js = hooks.webrtc_js();
+        assert!(
+            js.starts_with("(function() {") || js.starts_with("(function(){{"),
+            "WebRTC JS must be an IIFE"
+        );
+        assert!(
+            js.ends_with("})();"),
+            "WebRTC JS must end with IIFE closure"
+        );
+    }
+
+    #[test]
+    fn timing_js_contains_performance_now_override() {
+        let hooks = firefox_hooks();
+        let js = hooks.timing_js();
+        assert!(
+            js.contains("performance.now"),
+            "timing JS must override performance.now"
+        );
+        assert!(
+            js.contains("Date.now"),
+            "timing JS must override Date.now"
+        );
+        assert!(
+            js.contains("timeStamp"),
+            "timing JS must override Event.timeStamp"
+        );
+    }
+
+    #[test]
+    fn timing_js_default_precision() {
+        let hooks = firefox_hooks();
+        let js = hooks.timing_js();
+        assert!(
+            js.contains("0.1"),
+            "timing JS must contain default precision 0.1ms"
+        );
+    }
+
+    #[test]
+    fn timing_js_is_valid_iife() {
+        let hooks = firefox_hooks();
+        let js = hooks.timing_js();
+        assert!(
+            js.starts_with("(function() {") || js.starts_with("(function(){{"),
+            "Timing JS must be an IIFE"
+        );
+        assert!(
+            js.ends_with("})();"),
+            "Timing JS must end with IIFE closure"
+        );
+    }
+
+    #[test]
+    fn clientrects_js_contains_getboundingclientrect_override() {
+        let hooks = firefox_hooks();
+        let js = hooks.clientrects_js();
+        assert!(
+            js.contains("getBoundingClientRect"),
+            "clientrects JS must override getBoundingClientRect"
+        );
+        assert!(
+            js.contains("getClientRects"),
+            "clientrects JS must override getClientRects"
+        );
+    }
+
+    #[test]
+    fn clientrects_js_contains_noise_delta() {
+        let hooks = firefox_hooks();
+        let js = hooks.clientrects_js();
+        assert!(
+            js.contains("0.5"),
+            "clientrects JS must contain default noise delta 0.5"
+        );
+    }
+
+    #[test]
+    fn clientrects_js_is_valid_iife() {
+        let hooks = firefox_hooks();
+        let js = hooks.clientrects_js();
+        assert!(
+            js.starts_with("(function() {") || js.starts_with("(function(){{"),
+            "ClientRects JS must be an IIFE"
+        );
+        assert!(
+            js.ends_with("})();"),
+            "ClientRects JS must end with IIFE closure"
+        );
+    }
+
+    #[test]
+    fn screen_display_js_contains_screen_overrides() {
+        let hooks = firefox_hooks();
+        let js = hooks.screen_display_js();
+        assert!(
+            js.contains("screen, 'width'"),
+            "screen display JS must override screen.width"
+        );
+        assert!(
+            js.contains("screen, 'height'"),
+            "screen display JS must override screen.height"
+        );
+        assert!(
+            js.contains("devicePixelRatio"),
+            "screen display JS must override devicePixelRatio"
+        );
+    }
+
+    #[test]
+    fn screen_display_js_default_values() {
+        let hooks = firefox_hooks();
+        let js = hooks.screen_display_js();
+        assert!(
+            js.contains("1920") && js.contains("1080"),
+            "screen display JS must contain default 1920x1080"
+        );
+        assert!(
+            js.contains("24"),
+            "screen display JS must contain default colorDepth 24"
+        );
+    }
+
+    #[test]
+    fn screen_display_js_is_valid_iife() {
+        let hooks = firefox_hooks();
+        let js = hooks.screen_display_js();
+        assert!(
+            js.starts_with("(function() {") || js.starts_with("(function(){{"),
+            "Screen display JS must be an IIFE"
+        );
+        assert!(
+            js.ends_with("})();"),
+            "Screen display JS must end with IIFE closure"
+        );
+    }
+
+    #[test]
+    fn different_profiles_produce_different_font_js() {
+        let ff = firefox_hooks();
+        let ch = chrome_hooks();
+        assert_ne!(
+            ff.font_js(), ch.font_js(),
+            "Firefox and Chrome should produce different font JS (different seeds)"
+        );
+    }
+
+    #[test]
+    fn different_profiles_produce_different_clientrects_js() {
+        let ff = firefox_hooks();
+        let ch = chrome_hooks();
+        assert_ne!(
+            ff.clientrects_js(), ch.clientrects_js(),
+            "Firefox and Chrome should produce different clientrects JS (different seeds)"
         );
     }
 }

@@ -203,7 +203,9 @@ fn headless_canvas_todataurl_hook_present() {
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl,
+        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
+        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.screen_display,
     );
     let js = hooks.canvas_js();
 
@@ -343,7 +345,9 @@ fn headless_webdriver_forced_false_in_hooks() {
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl,
+        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
+        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.screen_display,
     );
     let js = hooks.navigator_js();
 
@@ -394,7 +398,9 @@ fn headless_audio_hook_present() {
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl,
+        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
+        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.screen_display,
     );
     let js = hooks.audio_js();
 

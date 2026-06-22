@@ -290,7 +290,9 @@ fn cloudflare_js_challenge_navigator_overrides_present() {
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl,
+        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
+        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.screen_display,
     );
     let js = hooks.navigator_js();
 
@@ -326,7 +328,9 @@ fn cloudflare_js_challenge_screen_overrides_present() {
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl,
+        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
+        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.screen_display,
     );
     let js = hooks.navigator_js();
 
@@ -349,7 +353,9 @@ fn cloudflare_js_challenge_webgl_overrides_present() {
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl,
+        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
+        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.screen_display,
     );
     let js = hooks.navigator_js();
 

@@ -12,6 +12,7 @@ pub mod hooks;
 pub mod stealth_wire;
 
 pub use profile::StealthProfile;
+pub use profile::{FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig, ScreenDisplayConfig};
 pub use tls::TlsFingerprint;
 pub use tls::TlsFingerprintConfig;
 pub use http2::Http2Fingerprint;

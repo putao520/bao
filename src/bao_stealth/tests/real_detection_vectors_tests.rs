@@ -37,7 +37,9 @@ fn sannysoft_webdriver_flag_hidden_in_hooks_js() {
     let profile = StealthProfile::chrome_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl,
+        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
+        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.screen_display,
     );
     let js = hooks.navigator_js();
 
@@ -118,7 +120,9 @@ fn sannysoft_navigator_languages_is_nonempty_array() {
     let profile = StealthProfile::firefox_default();
     let hooks = StealthHooks::from_profile(
         &profile.canvas, &profile.audio, &profile.navigator,
-        &profile.screen, &profile.webgl,
+        &profile.screen, &profile.webgl, &profile.font, &profile.battery,
+        profile.webrtc_mode, &profile.timing, &profile.clientrects,
+        &profile.screen_display,
     );
     let js = hooks.navigator_js();
     assert!(
