@@ -104,6 +104,7 @@ pub unsafe fn install_node_apis(
     crate::node_crypto::install(cx);
     crate::node_http::install(cx);
     crate::node_http2::install(cx);
+    crate::node_http2_upgrade::install(cx);
     crate::node_https::install(cx);
     crate::node_inspector::install(cx);
     crate::node_os::install(cx);

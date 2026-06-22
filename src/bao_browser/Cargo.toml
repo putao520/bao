@@ -21,6 +21,7 @@ bun_core.workspace = true
 bun_sys.workspace = true
 mozjs = { path = "../../vendor/mozjs/mozjs" }
 serde = "1"
+cookie = { package = "cookie", version = "0.18" }
 log = "0.4"
 
 [dev-dependencies]

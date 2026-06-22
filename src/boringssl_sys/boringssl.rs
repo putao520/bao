@@ -970,6 +970,27 @@ unsafe extern "C" {
         rsa: *mut RSA,
         padding: c_int,
     ) -> c_int;
+    pub fn RSA_public_decrypt(
+        flen: usize,
+        from: *const u8,
+        to: *mut u8,
+        rsa: *mut RSA,
+        padding: c_int,
+    ) -> c_int;
+    pub fn RSA_private_encrypt(
+        flen: usize,
+        from: *const u8,
+        to: *mut u8,
+        rsa: *mut RSA,
+        padding: c_int,
+    ) -> c_int;
+    pub fn RSA_private_decrypt(
+        flen: usize,
+        from: *const u8,
+        to: *mut u8,
+        rsa: *mut RSA,
+        padding: c_int,
+    ) -> c_int;
     pub fn PEM_read_bio_RSA_PUBKEY(
         bp: *mut BIO,
         x: *mut *mut RSA,
@@ -1119,6 +1140,13 @@ unsafe extern "C" {
     pub fn BN_num_bits(bn: *const BIGNUM) -> c_int;
     pub fn BN_bn2bin(bn: *const BIGNUM, out: *mut u8) -> c_int;
     pub fn BN_bin2bn(s: *const u8, len: usize, bn: *mut BIGNUM) -> *mut BIGNUM;
+    pub fn BN_is_prime_fasttest_ex(
+        p: *const BIGNUM,
+        nchecks: c_int,
+        ctx: *mut BN_CTX,
+        do_trial_division: c_int,
+        callback: *mut c_void,
+    ) -> c_int;
 
     // ── BN_CTX ───────────────────────────────────────────────────────────
     pub fn BN_CTX_new() -> *mut BN_CTX;
@@ -1294,5 +1322,23 @@ unsafe extern "C" {
         sig_len: usize,
         data: *const u8,
         data_len: usize,
+    ) -> c_int;
+
+    // ── EVP_PKEY encrypt/decrypt (RSA encryption/decryption) ─────────────
+    pub fn EVP_PKEY_encrypt_init(ctx: *mut EVP_PKEY_CTX) -> c_int;
+    pub fn EVP_PKEY_encrypt(
+        ctx: *mut EVP_PKEY_CTX,
+        out: *mut u8,
+        out_len: *mut usize,
+        in_: *const u8,
+        in_len: usize,
+    ) -> c_int;
+    pub fn EVP_PKEY_decrypt_init(ctx: *mut EVP_PKEY_CTX) -> c_int;
+    pub fn EVP_PKEY_decrypt(
+        ctx: *mut EVP_PKEY_CTX,
+        out: *mut u8,
+        out_len: *mut usize,
+        in_: *const u8,
+        in_len: usize,
     ) -> c_int;
 }

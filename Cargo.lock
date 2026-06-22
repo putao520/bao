@@ -466,6 +466,7 @@ dependencies = [
  "bun_runtime",
  "bun_sys",
  "cdp-server",
+ "cookie 0.18.1",
  "dashmap",
  "dpi",
  "image",

@@ -188,17 +188,66 @@ const STREAM_JS: &str = r#"
     };
   };
   Readable.from = function(iterable, opts) {
+    opts = opts || {};
     return new Readable({
-      objectMode: true,
+      objectMode: opts.objectMode !== false,
+      highWaterMark: opts.highWaterMark,
       read: function() {
         var self = this;
         if (Array.isArray(iterable)) {
           for (var i = 0; i < iterable.length; i++) self.push(iterable[i]);
           self.push(null);
+        } else if (iterable && typeof iterable[Symbol.asyncIterator] === 'function') {
+          var ai = iterable[Symbol.asyncIterator]();
+          function pump() {
+            ai.next().then(function(result) {
+              if (result.done) { self.push(null); return; }
+              self.push(result.value);
+              pump();
+            }).catch(function(err) { self.destroy(err); });
+          }
+          pump();
+        } else if (iterable && typeof iterable[Symbol.iterator] === 'function') {
+          var si = iterable[Symbol.iterator]();
+          var item;
+          while (!(item = si.next()).done) {
+            self.push(item.value);
+          }
+          self.push(null);
         } else {
           self.push(null);
         }
       },
+    });
+  };
+
+  Readable.fromWeb = function(readableStream, opts) {
+    opts = opts || {};
+    return new Readable({
+      objectMode: true,
+      highWaterMark: opts.highWaterMark,
+      read: function() {
+        var self = this;
+        var reader = readableStream.getReader();
+        function pump() {
+          reader.read().then(function(result) {
+            if (result.done) { self.push(null); return; }
+            self.push(result.value);
+            pump();
+          }).catch(function(err) { self.destroy(err); });
+        }
+        pump();
+      }
+    });
+  };
+
+  Readable.toWeb = function(readable) {
+    return new ReadableStream({
+      start: function(controller) {
+        readable.on('data', function(chunk) { controller.enqueue(chunk); });
+        readable.on('end', function() { controller.close(); });
+        readable.on('error', function(err) { controller.error(err); });
+      }
     });
   };
 
@@ -282,6 +331,46 @@ const STREAM_JS: &str = r#"
   };
   Writable.prototype._destroy = function(err, cb) { cb(err); };
 
+  Writable.fromWeb = function(writableStream, opts) {
+    opts = opts || {};
+    return new Writable({
+      highWaterMark: opts.highWaterMark,
+      decodeStrings: opts.decodeStrings,
+      write: function(chunk, enc, cb) {
+        var result = writableStream.getWriter().write(chunk);
+        if (result && typeof result.then === 'function') {
+          result.then(function() { cb(); }, function(err) { cb(err); });
+        } else {
+          cb();
+        }
+      }
+    });
+  };
+
+  Writable.toWeb = function(writable) {
+    return new WritableStream({
+      write: function(chunk) {
+        return new Promise(function(resolve, reject) {
+          var ok = writable.write(chunk);
+          if (ok === false) {
+            writable.once('drain', resolve);
+          } else {
+            resolve();
+          }
+        });
+      },
+      close: function() {
+        return new Promise(function(resolve) {
+          writable.end(resolve);
+        });
+      },
+      abort: function(reason) {
+        writable.destroy(reason);
+        return Promise.resolve();
+      }
+    });
+  };
+
   function Duplex(opts) {
     if (!(this instanceof Duplex)) return new Duplex(opts);
     Readable.call(this, opts);
@@ -298,6 +387,48 @@ const STREAM_JS: &str = r#"
     if (!skip[k]) Duplex.prototype[k] = Writable.prototype[k];
   }
   Duplex.prototype.constructor = Duplex;
+
+  Duplex.from = function(webStreams) {
+    if (webStreams && webStreams.readable && webStreams.writable) {
+      var readable = webStreams.readable;
+      var writable = webStreams.writable;
+      return new Duplex({
+        read: function() {
+          var self = this;
+          var reader = (typeof ReadableStream !== 'undefined' && readable instanceof ReadableStream)
+            ? readable.getReader() : null;
+          if (reader) {
+            function pump() {
+              reader.read().then(function(result) {
+                if (result.done) { self.push(null); return; }
+                self.push(result.value);
+                pump();
+              }).catch(function(err) { self.destroy(err); });
+            }
+            pump();
+          } else {
+            readable.on('data', function(chunk) { self.push(chunk); });
+            readable.on('end', function() { self.push(null); });
+            readable.on('error', function(err) { self.destroy(err); });
+          }
+        },
+        write: function(chunk, enc, cb) {
+          if (typeof writable.write === 'function') {
+            var result = writable.write(chunk);
+            if (result && typeof result.then === 'function') {
+              result.then(function() { cb(); }, function(err) { cb(err); });
+            } else {
+              cb();
+            }
+          } else { cb(); }
+        }
+      });
+    }
+    return new Duplex({
+      read: function() {},
+      write: function(chunk, enc, cb) { cb(); }
+    });
+  };
 
   function Transform(opts) {
     if (!(this instanceof Transform)) return new Transform(opts);
@@ -410,6 +541,35 @@ const STREAM_JS: &str = r#"
     return pipeline.apply(null, streams);
   }
 
+  function addAbortSignal(signal, stream) {
+    if (signal && typeof signal.addEventListener === 'function') {
+      signal.addEventListener('abort', function() {
+        stream.destroy(new Error('The operation was aborted'));
+      }, { once: true });
+    }
+    return stream;
+  }
+
+  var promises = {
+    pipeline: function() {
+      var streams = Array.prototype.slice.call(arguments);
+      return new Promise(function(resolve, reject) {
+        pipeline.apply(null, streams.concat([function(err) {
+          if (err) reject(err);
+          else resolve();
+        }]));
+      });
+    },
+    finished: function(stream, opts) {
+      return new Promise(function(resolve, reject) {
+        finished(stream, opts, function(err) {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+  };
+
   return {
     Readable: Readable,
     Writable: Writable,
@@ -421,6 +581,8 @@ const STREAM_JS: &str = r#"
     finished: finished,
     pipeline: pipeline,
     compose: compose,
+    addAbortSignal: addAbortSignal,
+    promises: promises,
   };
 })();
 "#;
@@ -452,7 +614,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         let exports_obj = rval.to_object();
         rooted!(&in(cx) let exports_rooted = exports_obj);
 
-        for name in &["Readable", "Writable", "Duplex", "Transform", "PassThrough", "EventEmitter", "Stream", "finished", "pipeline"] {
+        for name in &["Readable", "Writable", "Duplex", "Transform", "PassThrough", "EventEmitter", "Stream", "finished", "pipeline", "compose", "addAbortSignal", "promises"] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
             JS_GetProperty(cx_raw, exports_rooted.handle().into(), cname.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });

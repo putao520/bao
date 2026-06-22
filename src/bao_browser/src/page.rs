@@ -397,6 +397,12 @@ impl PageHandle {
         self.with_inner_opt(|inner| inner.current_url())
     }
 
+    /// Access the Servo instance for this page (e.g. SiteDataManager, NetworkManager).
+    /// Used by CDP domain handlers to access cookie/cache/network APIs.
+    pub fn servo(&self) -> &Rc<Servo> {
+        &self.servo
+    }
+
     pub fn get_state(&self) -> PageState {
         self.inner
             .borrow()

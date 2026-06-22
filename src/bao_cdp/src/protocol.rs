@@ -110,7 +110,7 @@ pub fn handle_command(
         "Page" => handle_page(command, target_id, params, bridge),
         "Runtime" => handle_runtime(command, target_id, params, bridge),
         "DOM" => handle_dom(command, target_id, params, bridge),
-        "Network" => handle_network(command),
+        "Network" => handle_network(command, target_id, params, bridge),
         "CSS" => handle_css(command),
         "Emulation" => handle_emulation(command, target_id, params, bridge),
         "Input" => handle_input(command, target_id, params, bridge),
@@ -118,6 +118,8 @@ pub fn handle_command(
         "Debugger" => handle_debugger(command),
         "Log" => handle_log(command),
         "Fetch" => handle_fetch(command, params),
+        "Storage" => handle_storage(command, target_id, params, bridge),
+        "Security" => handle_security(command, target_id, params, bridge),
         _ => Err(CdpError {
             code: ERR_METHOD_NOT_FOUND,
             message: format!("'{}' wasn't found", msg.method),
@@ -372,16 +374,97 @@ fn handle_dom(command: &str, target_id: &str, params: &Option<Value>, bridge: Op
     }
 }
 
-fn handle_network(command: &str) -> HandlerResult {
+fn handle_network(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
-        "enable" | "disable" => ok_empty(),
-        "getResponseBody" => Ok(serde_json::json!({ "body": "", "base64Encoded": false })),
-        "setCacheDisabled" | "setExtraHTTPHeaders" => ok_empty(),
-        "emulateNetworkConditions" | "setRequestInterception" => ok_empty(),
-        "continueInterceptedRequest" => ok_empty(),
-        "getCookies" | "getAllCookies" => Ok(serde_json::json!({ "cookies": [] })),
-        "deleteCookies" | "setCookie" => ok_empty(),
+        "enable" => bridge_send(bridge, BridgeCommand::NetworkEnable { target_id: tid }),
+        "disable" => bridge_send(bridge, BridgeCommand::NetworkDisable { target_id: tid }),
+        "getCookies" => {
+            let urls: Vec<String> = params.as_ref()
+                .and_then(|p| p.get("urls"))
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            bridge_send(bridge, BridgeCommand::GetCookies { target_id: tid, urls })
+        }
+        "getAllCookies" => bridge_send(bridge, BridgeCommand::GetAllCookies { target_id: tid }),
+        "setCookie" => {
+            let name = params_str(params, "name");
+            let value = params_str(params, "value");
+            let url = params.as_ref().and_then(|p| p.get("url")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let domain = params.as_ref().and_then(|p| p.get("domain")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            bridge_send(bridge, BridgeCommand::SetCookie { target_id: tid, name, value, url, domain })
+        }
+        "deleteCookies" => {
+            let name = params_str(params, "name");
+            let url = params.as_ref().and_then(|p| p.get("url")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            bridge_send(bridge, BridgeCommand::DeleteCookie { target_id: tid, name, url })
+        }
+        "getResponseBody" => {
+            let request_id = params_str(params, "requestId");
+            bridge_send(bridge, BridgeCommand::GetResponseBody { target_id: tid, request_id })
+        }
+        "setCacheDisabled" => {
+            let cache_disabled = params.as_ref()
+                .and_then(|p| p.get("cacheDisabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            bridge_send(bridge, BridgeCommand::NetworkSetCacheDisabled { target_id: tid, cache_disabled })
+        }
+        "setExtraHTTPHeaders" => {
+            let headers = params.as_ref()
+                .and_then(|p| p.get("headers"))
+                .cloned()
+                .unwrap_or(serde_json::json!({}));
+            bridge_send(bridge, BridgeCommand::NetworkSetExtraHTTPHeaders { target_id: tid, headers })
+        }
+        "clearBrowserCache" => bridge_send(bridge, BridgeCommand::NetworkClearBrowserCache { target_id: tid }),
+        "clearBrowserCookies" => bridge_send(bridge, BridgeCommand::NetworkClearBrowserCookies { target_id: tid }),
+        "emulateNetworkConditions" | "setRequestInterception" | "continueInterceptedRequest" => ok_empty(),
         _ => Err(CdpError { code: -32601, message: format!("'Network.{}' wasn't found", command) }),
+    }
+}
+
+fn handle_storage(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
+    match command {
+        "getStorageItemsForOrigin" => {
+            let origin = params_str(params, "origin");
+            let storage_type = params_str(params, "storageType");
+            bridge_send(bridge, BridgeCommand::StorageGetStorageItemsForOrigin { target_id: tid, origin, storage_type })
+        }
+        "clearDataForOrigin" => {
+            let origin = params_str(params, "origin");
+            let storage_type = params_str(params, "storageType");
+            bridge_send(bridge, BridgeCommand::StorageClearDataForOrigin { target_id: tid, origin, storage_type })
+        }
+        "getCookies" => {
+            // Storage.getCookies is an alias for Network.getCookies
+            let urls: Vec<String> = params.as_ref()
+                .and_then(|p| p.get("urls"))
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            bridge_send(bridge, BridgeCommand::GetCookies { target_id: tid, urls })
+        }
+        _ => Err(CdpError { code: -32601, message: format!("'Storage.{}' wasn't found", command) }),
+    }
+}
+
+fn handle_security(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
+    match command {
+        "enable" => bridge_send(bridge, BridgeCommand::SecurityEnable { target_id: tid }),
+        "disable" => bridge_send(bridge, BridgeCommand::SecurityDisable { target_id: tid }),
+        "setOverrideCertificateErrors" => {
+            let override_errors = params.as_ref()
+                .and_then(|p| p.get("override"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            bridge_send(bridge, BridgeCommand::SecuritySetOverrideCertificateErrors { target_id: tid, override_errors })
+        }
+        "handleCertificateError" | "certificateError" => ok_empty(),
+        _ => Err(CdpError { code: -32601, message: format!("'Security.{}' wasn't found", command) }),
     }
 }
 

@@ -38,6 +38,7 @@ pub mod node_events;
 pub mod node_fs;
 pub mod node_http;
 pub mod node_http2;
+pub mod node_http2_upgrade;
 pub mod node_https;
 pub mod node_inspector;
 pub mod node_inspector_promises;

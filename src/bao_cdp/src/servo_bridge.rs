@@ -60,6 +60,20 @@ pub enum BridgeCommand {
     DebuggerGetScriptSource { target_id: String, script_id: u32 },
     DebuggerBlackbox { target_id: String, script_id: u32 },
     DebuggerUnblackbox { target_id: String, script_id: u32 },
+    // Network domain — cache control + browser cache/cookies clearing
+    NetworkEnable { target_id: String },
+    NetworkDisable { target_id: String },
+    NetworkSetCacheDisabled { target_id: String, cache_disabled: bool },
+    NetworkSetExtraHTTPHeaders { target_id: String, headers: Value },
+    NetworkClearBrowserCache { target_id: String },
+    NetworkClearBrowserCookies { target_id: String },
+    // Storage domain — origin-scoped storage queries and clearing
+    StorageGetStorageItemsForOrigin { target_id: String, origin: String, storage_type: String },
+    StorageClearDataForOrigin { target_id: String, origin: String, storage_type: String },
+    // Security domain — certificate error handling
+    SecurityEnable { target_id: String },
+    SecurityDisable { target_id: String },
+    SecuritySetOverrideCertificateErrors { target_id: String, override_errors: bool },
 }
 
 /// Response from the main thread back to the CDP server.

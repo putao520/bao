@@ -4,6 +4,8 @@
 use bao_cdp::servo_bridge::{BridgeCommand, BridgeResponse};
 use base64::Engine;
 use serde_json::Value;
+use servo::{CookieSource, StorageType};
+use std::collections::HashSet;
 
 use crate::config::PageConfig;
 use crate::error::BrowserError;
@@ -53,12 +55,35 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
                 None => Err(format!("invalid target_id: {target_id}")),
             }
         }
-        // Cookie commands — stub responses until full cookie routing is implemented
-        BridgeCommand::GetCookies { .. } => Ok(serde_json::json!({ "cookies": [] })),
-        BridgeCommand::GetAllCookies { .. } => Ok(serde_json::json!({ "cookies": [] })),
-        BridgeCommand::DeleteCookie { .. } => Ok(serde_json::json!({})),
-        BridgeCommand::SetCookie { .. } => Ok(serde_json::json!({})),
+        // Cookie commands — bridge to servo SiteDataManager
+        BridgeCommand::GetCookies { target_id, urls } => with_page(pool, &target_id, |page| cmd_get_cookies(page, &urls)),
+        BridgeCommand::GetAllCookies { target_id } => with_page(pool, &target_id, cmd_get_all_cookies),
+        BridgeCommand::DeleteCookie { target_id, name, url } => with_page(pool, &target_id, |page| cmd_delete_cookie(page, &name, url.as_deref())),
+        BridgeCommand::SetCookie { target_id, name, value, url, domain } =>
+            with_page(pool, &target_id, |page| cmd_set_cookie(page, &name, &value, url.as_deref(), domain.as_deref())),
         BridgeCommand::GetResponseBody { .. } => Ok(serde_json::json!({ "body": "", "base64Encoded": false })),
+
+        // Network domain — cache/cookies clearing, enable/disable
+        BridgeCommand::NetworkEnable { .. } => ok_empty(),
+        BridgeCommand::NetworkDisable { .. } => ok_empty(),
+        BridgeCommand::NetworkSetCacheDisabled { target_id, cache_disabled } =>
+            with_page(pool, &target_id, |page| cmd_network_set_cache_disabled(page, cache_disabled)),
+        BridgeCommand::NetworkSetExtraHTTPHeaders { .. } => ok_empty(),
+        BridgeCommand::NetworkClearBrowserCache { target_id } =>
+            with_page(pool, &target_id, cmd_network_clear_browser_cache),
+        BridgeCommand::NetworkClearBrowserCookies { target_id } =>
+            with_page(pool, &target_id, cmd_network_clear_browser_cookies),
+
+        // Storage domain — origin-scoped storage queries and clearing
+        BridgeCommand::StorageGetStorageItemsForOrigin { target_id, origin, storage_type } =>
+            with_page(pool, &target_id, |page| cmd_storage_get_items(page, origin, storage_type)),
+        BridgeCommand::StorageClearDataForOrigin { target_id, origin, storage_type } =>
+            with_page(pool, &target_id, |page| cmd_storage_clear_data(page, origin, storage_type)),
+
+        // Security domain — enable/disable/certificate override
+        BridgeCommand::SecurityEnable { .. } => ok_empty(),
+        BridgeCommand::SecurityDisable { .. } => ok_empty(),
+        BridgeCommand::SecuritySetOverrideCertificateErrors { .. } => ok_empty(),
 
         // Debugger domain — route through EvaluateJs to servo's debugger.js
         // These BridgeCommands are typed (no JS string injection from CDP layer).
@@ -463,6 +488,250 @@ fn json_type_string(s: &str) -> &'static str {
     } else {
         "string"
     }
+}
+
+// ─── Network / Cookie / Storage / Security domain handlers ──────────────
+// Bridge servo's SiteDataManager and NetworkManager to CDP protocol.
+
+/// Convert a servo `Cookie<'static>` to CDP Cookie JSON object.
+/// CDP Cookie spec: https://chromedevtools.github.io/devtools-protocol/tot/Network/#type-Cookie
+fn cookie_to_cdp(c: &cookie::Cookie) -> Value {
+    let same_site = match c.same_site() {
+        Some(cookie::SameSite::Strict) => "Strict",
+        Some(cookie::SameSite::Lax) => "Lax",
+        Some(cookie::SameSite::None) => "None",
+        None => "None",
+    };
+    let expires = c.expires_datetime()
+        .map(|dt| dt.unix_timestamp() as f64)
+        .unwrap_or(-1.0);
+    serde_json::json!({
+        "name": c.name(),
+        "value": c.value(),
+        "domain": c.domain().unwrap_or(""),
+        "path": c.path().unwrap_or("/"),
+        "expires": expires,
+        "size": c.name().len() + c.value().len(),
+        "httpOnly": c.http_only().unwrap_or(false),
+        "secure": c.secure().unwrap_or(false),
+        "sameSite": same_site,
+        "session": expires == -1.0,
+    })
+}
+
+/// Build a `cookie::Cookie<'static>` from CDP setCookie parameters.
+fn cdp_params_to_cookie(name: &str, value: &str, _url: Option<&str>, domain: Option<&str>) -> cookie::Cookie<'static> {
+    let mut builder = cookie::Cookie::build((name.to_string(), value.to_string()));
+    if let Some(d) = domain {
+        if d.starts_with('.') {
+            builder = builder.domain(d.to_string());
+        } else {
+            builder = builder.domain(format!(".{d}"));
+        }
+    }
+    builder = builder.path("/");
+    builder.build()
+}
+
+/// Network.getCookies — retrieve cookies for the given URLs (or current page URL).
+fn cmd_get_cookies(page: &PageHandle, urls: &[String]) -> Result<Value, String> {
+    let servo = page.servo();
+    let sdm = servo.site_data_manager();
+    let cookies: Vec<Value> = if urls.is_empty() {
+        // No URLs specified — use the current page URL
+        let current_url = page.current_url().unwrap_or_default();
+        if current_url.is_empty() || current_url == "about:blank" {
+            Vec::new()
+        } else {
+            match url::Url::parse(&current_url) {
+                Ok(parsed) => {
+                    let servo_cookies = sdm.cookies_for_url(parsed, CookieSource::HTTP);
+                    servo_cookies.iter().map(cookie_to_cdp).collect()
+                }
+                Err(_) => Vec::new(),
+            }
+        }
+    } else {
+        // Collect cookies for each URL, deduplicating by (name, domain, path)
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+        for url_str in urls {
+            if let Ok(parsed) = url::Url::parse(url_str) {
+                for c in sdm.cookies_for_url(parsed, CookieSource::HTTP) {
+                    let key = (c.name().to_string(), c.domain().unwrap_or("").to_string(), c.path().unwrap_or("").to_string());
+                    if seen.insert(key) {
+                        result.push(cookie_to_cdp(&c));
+                    }
+                }
+            }
+        }
+        result
+    };
+    Ok(serde_json::json!({ "cookies": cookies }))
+}
+
+/// Network.getAllCookies — retrieve all cookies from the cookie jar.
+fn cmd_get_all_cookies(page: &PageHandle) -> Result<Value, String> {
+    let servo = page.servo();
+    let sdm = servo.site_data_manager();
+    // Get all sites that have cookies, then collect cookies for each
+    let site_data = sdm.site_data(StorageType::Cookies);
+    let mut cookies: Vec<Value> = Vec::new();
+    let mut seen = HashSet::new();
+    for sd in site_data {
+        let site_name = sd.name();
+        // Construct a URL from the site name to query cookies
+        let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://") {
+            site_name.clone()
+        } else {
+            format!("https://{site_name}")
+        };
+        if let Ok(parsed) = url::Url::parse(&url_str) {
+            for c in sdm.cookies_for_url(parsed, CookieSource::HTTP) {
+                let key = (c.name().to_string(), c.domain().unwrap_or("").to_string(), c.path().unwrap_or("").to_string());
+                if seen.insert(key) {
+                    cookies.push(cookie_to_cdp(&c));
+                }
+            }
+        }
+    }
+    Ok(serde_json::json!({ "cookies": cookies }))
+}
+
+/// Network.setCookie — set a cookie via servo's SiteDataManager.
+fn cmd_set_cookie(page: &PageHandle, name: &str, value: &str, url: Option<&str>, domain: Option<&str>) -> Result<Value, String> {
+    let servo = page.servo();
+    let sdm = servo.site_data_manager();
+    let cookie = cdp_params_to_cookie(name, value, url, domain);
+    // Determine the URL to associate the cookie with
+    let fallback_url = page.current_url().unwrap_or_default();
+    let url_str = url.unwrap_or_else(|| {
+        if fallback_url.is_empty() || fallback_url == "about:blank" { "https://localhost/" } else { fallback_url.as_str() }
+    });
+    let parsed = url::Url::parse(url_str)
+        .map_err(|e| format!("invalid URL for setCookie: {e}"))?;
+    sdm.set_cookie_for_url(parsed, cookie, None);
+    Ok(serde_json::json!({ "success": true }))
+}
+
+/// Network.deleteCookies — delete cookies matching name (and optionally url/domain).
+fn cmd_delete_cookie(page: &PageHandle, name: &str, url: Option<&str>) -> Result<Value, String> {
+    let servo = page.servo();
+    let sdm = servo.site_data_manager();
+    if let Some(url_str) = url {
+        let parsed = url::Url::parse(url_str)
+            .map_err(|e| format!("invalid URL for deleteCookies: {e}"))?;
+        // Get current cookies for this URL
+        let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
+        // Clear all cookies for this site, then re-set the ones that don't match the name
+        let site = parsed.host_str().unwrap_or("");
+        sdm.clear_site_data(&[site], StorageType::Cookies);
+        // Re-set cookies that don't match the name to delete
+        for c in current {
+            if c.name() != name {
+                sdm.set_cookie_for_url(parsed.clone(), c, None);
+            }
+        }
+    } else {
+        // No URL — clear cookies for all sites matching the name
+        let site_data = sdm.site_data(StorageType::Cookies);
+        for sd in site_data {
+            let site_name = sd.name();
+            let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://") {
+                site_name.clone()
+            } else {
+                format!("https://{site_name}")
+            };
+            if let Ok(parsed) = url::Url::parse(&url_str) {
+                let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
+                let has_match = current.iter().any(|c| c.name() == name);
+                if has_match {
+                    sdm.clear_site_data(&[&site_name], StorageType::Cookies);
+                    for c in current {
+                        if c.name() != name {
+                            sdm.set_cookie_for_url(parsed.clone(), c, None);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(serde_json::json!({}))
+}
+
+/// Network.setCacheDisabled — clear cache when cache_disabled is true.
+fn cmd_network_set_cache_disabled(page: &PageHandle, cache_disabled: bool) -> Result<Value, String> {
+    if cache_disabled {
+        let servo = page.servo();
+        let nm = servo.network_manager();
+        nm.clear_cache();
+    }
+    Ok(serde_json::json!({}))
+}
+
+/// Network.clearBrowserCache — clear the HTTP cache via servo's NetworkManager.
+fn cmd_network_clear_browser_cache(page: &PageHandle) -> Result<Value, String> {
+    let servo = page.servo();
+    let nm = servo.network_manager();
+    nm.clear_cache();
+    Ok(serde_json::json!({}))
+}
+
+/// Network.clearBrowserCookies — clear all cookies via servo's SiteDataManager.
+fn cmd_network_clear_browser_cookies(page: &PageHandle) -> Result<Value, String> {
+    let servo = page.servo();
+    let sdm = servo.site_data_manager();
+    sdm.clear_cookies(None);
+    Ok(serde_json::json!({}))
+}
+
+/// Storage.getStorageItemsForOrigin — list storage data for an origin.
+fn cmd_storage_get_items(page: &PageHandle, origin: String, storage_type: String) -> Result<Value, String> {
+    let servo = page.servo();
+    let sdm = servo.site_data_manager();
+    let st = parse_storage_type(&storage_type);
+    let site_data = sdm.site_data(st);
+    let items: Vec<Value> = site_data.iter()
+        .filter(|sd| {
+            let site_name = sd.name();
+            origin.is_empty() || site_name == origin || site_name.ends_with(&format!(".{origin}")) || origin.ends_with(&format!(".{site_name}"))
+        })
+        .map(|sd| {
+            serde_json::json!({
+                "origin": sd.name(),
+                "storageType": storage_type,
+            })
+        })
+        .collect();
+    Ok(serde_json::json!({ "storageItems": items }))
+}
+
+/// Storage.clearDataForOrigin — clear storage data for a specific origin.
+fn cmd_storage_clear_data(page: &PageHandle, origin: String, storage_type: String) -> Result<Value, String> {
+    let servo = page.servo();
+    let sdm = servo.site_data_manager();
+    let st = parse_storage_type(&storage_type);
+    if origin.is_empty() {
+        sdm.clear_cookies(None);
+    } else {
+        sdm.clear_site_data(&[&origin], st);
+    }
+    Ok(serde_json::json!({}))
+}
+
+/// Parse CDP storage type string to servo StorageType bitflags.
+fn parse_storage_type(storage_type: &str) -> StorageType {
+    match storage_type {
+        "cookies" | "cookie" => StorageType::Cookies,
+        "local_storage" | "local" => StorageType::Local,
+        "session_storage" | "session" => StorageType::Session,
+        "all" => StorageType::Cookies | StorageType::Local | StorageType::Session,
+        _ => StorageType::Cookies | StorageType::Local | StorageType::Session,
+    }
+}
+
+fn ok_empty() -> Result<Value, String> {
+    Ok(serde_json::json!({}))
 }
 
 #[cfg(test)]
