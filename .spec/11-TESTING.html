@@ -2152,7 +2152,7 @@
         <ul>
           <li>navigator.webdriver 必须 === false (硬失败 — stealth property 回归)</li>
           <li>Chrome page UA 含 "Chrome", Firefox page UA 含 "Firefox"</li>
-          <li>sannysoft 检测项 pass_rate >= 0.6 (网络可用时)</li>
+          <li>sannysoft 检测项 pass_rate &gt;= 0.6 (网络可用时)</li>
           <li>creepjs trust score 元素可读 (网络可用时)</li>
           <li>目标识别率 ≤ 5% (SPEC 01-BUSINESS 指标)</li>
         </ul>
@@ -2170,7 +2170,7 @@
         </p>
         <ul>
           <li>轨迹非直线 (有曲率 — 三点叉积判定非共线)</li>
-          <li>符合贝塞尔特征 (ease-in-out 速度变化: 中段速度 > 起末段平均)</li>
+          <li>符合贝塞尔特征 (ease-in-out 速度变化: 中段速度 &gt; 起末段平均)</li>
           <li>端点精确到达 (起点/终点 dx,dy &lt; 10px)</li>
           <li>短距离 (&lt; 1px) 单点不崩溃</li>
         </ul>
@@ -2187,7 +2187,7 @@
           抓取页面 mousedown→mouseup 时序 (press duration), 断言:
         </p>
         <ul>
-          <li>多次 click 的 press duration 有 human-like 方差 (非固定值, range > 0ms)</li>
+          <li>多次 click 的 press duration 有 human-like 方差 (非固定值, range &gt; 0ms)</li>
           <li>press duration 落在 [40, 200]ms 配置范围 (BUG-STL-008 regression guard)</li>
           <li>click 数量正确记录</li>
           <li>double-click 序列 ≥ 7 events 且含 dblclick 事件</li>

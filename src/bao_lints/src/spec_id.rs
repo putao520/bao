@@ -91,7 +91,7 @@ pub fn scan_html(file_path: &Path, src: &str) -> Vec<SpecIdFinding> {
 
 /// 判定一个 id 是否违规;返回 `Some(reason)` 表示违规,`None` 表示合规或豁免。
 pub fn classify_id(id: &str) -> Option<Reason> {
-    // 合规:API-{DOMAIN}-{N},DOMAIN ∈ 项目认可的 9 个子域。
+    // 合规:API-{DOMAIN}-{N},DOMAIN ∈ 项目认可的 10 个子域。
     if is_valid_api_id(id) {
         return None;
     }
@@ -118,13 +118,13 @@ pub fn classify_id(id: &str) -> Option<Reason> {
     Some(Reason::Other)
 }
 
-/// 校验 `API-{DOMAIN}-{N}` 格式;DOMAIN 必须是项目认可的 9 个子域之一。
+/// 校验 `API-{DOMAIN}-{N}` 格式;DOMAIN 必须是项目认可的 10 个子域之一。
 ///
-/// 9 个子域:ENG / CDP / STL / CLI / BRW / LIB / BAO-API / PERF / IMPL
-/// (与 REQ-SPEC-001 定义一致)。注意 `BAO-API` 含连字符。
+/// 10 个子域:ENG / CDP / STL / CLI / BRW / LIB / BAO-API / PERF / IMPL / CDP-UWS
+/// (与 REQ-SPEC-001 定义一致)。注意 `BAO-API` 和 `CDP-UWS` 含连字符。
 pub fn is_valid_api_id(id: &str) -> bool {
     let valid_domains: &[&str] = &[
-        "ENG", "CDP", "STL", "CLI", "BRW", "LIB", "BAO-API", "PERF", "IMPL",
+        "ENG", "CDP", "STL", "CLI", "BRW", "LIB", "BAO-API", "PERF", "IMPL", "CDP-UWS",
     ];
     // API-<DOMAIN>-<N>,其中 DOMAIN 可能含连字符(BAO-API),N 为整数。
     let rest = match id.strip_prefix("API-") {
@@ -230,6 +230,12 @@ fn collect_html_files(path: &Path) -> Vec<PathBuf> {
 pub struct ScanResult {
     pub findings: Vec<SpecIdFinding>,
     pub files_scanned: usize,
+    /// baseline 文件中的总条目数（含注释和空行以外的有效行）。
+    pub baseline_total: usize,
+    /// baseline 中实际命中（抑制了 findings）的条目数。
+    pub baseline_matched: usize,
+    /// baseline 中未命中任何 finding 的条目数（幻影/死条目）。
+    pub baseline_unmatched: usize,
 }
 
 /// 扫描一个路径下所有 `.html` 文件,返回违规清单。
@@ -241,8 +247,10 @@ pub fn scan_path(path: &Path, baseline_path: Option<&Path>) -> std::io::Result<S
         Some(p) => load_baseline(p)?,
         None => HashSet::new(),
     };
+    let baseline_total = baseline.len();
     let files = collect_html_files(path);
     let mut findings = Vec::new();
+    let mut matched_ids: HashSet<String> = HashSet::new();
     for file in &files {
         let src = match std::fs::read_to_string(file) {
             Ok(s) => s,
@@ -250,6 +258,7 @@ pub fn scan_path(path: &Path, baseline_path: Option<&Path>) -> std::io::Result<S
         };
         for f in scan_html(file, &src) {
             if baseline.contains(&f.id) {
+                matched_ids.insert(f.id.clone());
                 continue;
             }
             findings.push(f);
@@ -258,6 +267,9 @@ pub fn scan_path(path: &Path, baseline_path: Option<&Path>) -> std::io::Result<S
     Ok(ScanResult {
         findings,
         files_scanned: files.len(),
+        baseline_total,
+        baseline_matched: matched_ids.len(),
+        baseline_unmatched: baseline_total - matched_ids.len(),
     })
 }
 
@@ -416,5 +428,28 @@ mod tests {
         // baseline.txt 故意不在这里创建——由调用方写。
         let _ = std::fs::remove_file(p.join("baseline.txt"));
         p
+    }
+
+    #[test]
+    fn valid_cdp_uws_domain_is_accepted() {
+        assert_eq!(classify("API-CDP-UWS-001"), None, "CDP-UWS 含连字符");
+        assert_eq!(classify("API-CDP-UWS-005"), None);
+        assert!(is_valid_api_id("API-CDP-UWS-42"));
+    }
+
+    #[test]
+    fn scan_path_baseline_stats() {
+        let dir = tempdir_with("baseline_stats", &[
+            ("a.html", r#"<section data-api="POST /old" id="post-/old"></section>"#),
+            ("b.html", r#"<section data-api="POST /new" id="post-/new"></section>"#),
+        ]);
+        let baseline = dir.join("baseline.txt");
+        std::fs::write(&baseline, "# historical\npost-/old\nphantom-entry\n").unwrap();
+
+        let result = scan_path(&dir, Some(&baseline)).unwrap();
+        assert_eq!(result.baseline_total, 2, "baseline has 2 effective entries");
+        assert_eq!(result.baseline_matched, 1, "post-/old matched");
+        assert_eq!(result.baseline_unmatched, 1, "phantom-entry did not match");
+        assert_eq!(result.findings.len(), 1, "only post-/new is reported");
     }
 }

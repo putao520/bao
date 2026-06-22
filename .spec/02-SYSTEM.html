@@ -1,7 +1,7 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
-    <meta charset="UTF-8" />
+    <meta charset="UTF-8">
     <title>Bao - 系统架构</title>
   </head>
   <body>
@@ -46,20 +46,14 @@
 │  │  HTTP栈 · Resolver · FS · Bundler · uSockets · Timer│  │
 │  └────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────┘
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
       <h2>§1.1 BaoRuntime 公共 API</h2>
       <!-- ============================================================ -->
 
-      <div
-        id="artifact-interface-protocol"
-        data-type="document"
-        data-api="GET /api/bao-runtime"
-        data-artifact-type="interface-protocol"
-      >
+      <div id="artifact-interface-protocol" data-type="document" data-api="GET /api/bao-runtime" data-artifact-type="interface-protocol">
         <p>
           关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>,
           <span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>,
@@ -181,8 +175,7 @@ pub struct Permission {
     pub env: Option&lt;bool&gt;,            // None = 允许
     pub run: Option&lt;bool&gt;,            // None = 允许
 }
-</pre
-        >
+</pre>
 
         <p data-xref-type="api" data-xref-id="api-bao-runtime">
           关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-001">REQ-ENG-001</span>
@@ -200,12 +193,7 @@ pub struct Permission {
         </table>
       </div>
 
-      <div
-        id="artifact-interface-protocol"
-        data-type="document"
-        data-api="GET /api/bao-runtime-js"
-        data-artifact-type="interface-protocol"
-      >
+      <div id="artifact-interface-protocol" data-type="document" data-api="GET /api/bao-runtime-js" data-artifact-type="interface-protocol">
         <h3>JS 公共 API 接口</h3>
         <pre>
 // ── Bao 全局对象 ──────────────────────────────────────────
@@ -257,8 +245,7 @@ const perm = new Bao.Permission({
   run: false,
 });
 const restrictedPage = runtime.createPage({ permission: perm });
-</pre
-        >
+</pre>
 
         <p data-xref-type="api" data-xref-id="api-bao-runtime-js">
           关联需求: <span data-xref-type="req" data-xref-id="REQ-ENG-006">REQ-ENG-006</span>
@@ -277,12 +264,7 @@ const restrictedPage = runtime.createPage({ permission: perm });
       <h2>§1.2 库模式 (In-Process) API 契约 — 零配置路径</h2>
       <!-- ============================================================ -->
 
-      <div
-        id="artifact-interface-protocol"
-        data-type="document"
-        data-api="GET /api/bao-library-mode"
-        data-artifact-type="interface-protocol"
-      >
+      <div id="artifact-interface-protocol" data-type="document" data-api="GET /api/bao-library-mode" data-artifact-type="interface-protocol">
         <p>
           Bao 是<strong>库优先</strong>的设计：CLI (<code>bao run</code>) 只是库的一个消费者。 所有能力（SpiderMonkey
           JSContext、Node.js/Bun API、Web API、Stealth 反指纹、CDP、浏览器引擎）均可
@@ -340,8 +322,7 @@ page.close()?;
 //
 let cdp = runtime.cdp_router().connect_external("ws://127.0.0.1:9222").await?;
 let ext_page = cdp.new_page().await?;
-</pre
-        >
+</pre>
 
         <h3>Stealth 反指纹 — 默认启用契约</h3>
         <table data-api-table="stealth-default">
@@ -376,10 +357,8 @@ let ext_page = cdp.new_page().await?;
           </tr>
           <tr>
             <td>
-              <code
-                >stealth_profile_to_ssl_config(profile: Option&lt;StealthProfile&gt;) →
-                Option&lt;SSLConfigSharedPtr&gt;</code
-              >
+              <code>stealth_profile_to_ssl_config(profile: Option&lt;StealthProfile&gt;) →
+                Option&lt;SSLConfigSharedPtr&gt;</code>
             </td>
             <td>
               桥接函数：将 bao_stealth::StealthProfile 转换为 bun_http::ssl_config::SharedPtr， 传入 AsyncHTTP
@@ -488,8 +467,7 @@ L12 *_JSC 桥接层 (全部依赖 bun_jsc)
 
 L13 bun_runtime ← 应用层 (~75 个依赖)
     bun_bin (staticlib → libbun_rust.a)
-</pre
-        >
+</pre>
       </div>
 
       <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
@@ -638,8 +616,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 │  WEBGPU | WEBXR | BLUETOOTH | STORAGE | GEOMETRY        │
 │  URL | TIMERS | SHARED | CONFIG | METRICS | PROFILE     │
 └─────────────────────────────────────────────────────────┘
-</pre
-        >
+</pre>
       </div>
 
       <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
@@ -824,18 +801,10 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
 │  └───────────────────────────────────────────────────┘  │
 │                                                         │
 └────────────────────────────────────────────────────────┘
-</pre
-        >
+</pre>
       </div>
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-integration="SpiderMonkey"
-        data-integration-protocol="ffi"
-        data-integration-auth="none"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-integration="SpiderMonkey" data-integration-protocol="ffi" data-integration-auth="none">
         <h3>§4.2 引擎集成: SpiderMonkey via mozjs</h3>
         <script type="application/ld+json">
           {
@@ -860,14 +829,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
         </script>
       </div>
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-integration="libservo"
-        data-integration-protocol="embed"
-        data-integration-auth="none"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-integration="libservo" data-integration-protocol="embed" data-integration-auth="none">
         <h3>§4.3 浏览器引擎集成: libservo</h3>
         <script type="application/ld+json">
           {
@@ -890,14 +852,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
         </script>
       </div>
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-integration="servo_webrender"
-        data-integration-protocol="embed"
-        data-integration-auth="none"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-integration="servo_webrender" data-integration-protocol="embed" data-integration-auth="none">
         <h3>§4.4 渲染集成: servo webrender</h3>
         <script type="application/ld+json">
           {
@@ -920,14 +875,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
         </script>
       </div>
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-integration="CDPProtocol"
-        data-integration-protocol="ws"
-        data-integration-auth="none"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-integration="CDPProtocol" data-integration-protocol="ws" data-integration-auth="none">
         <h3>§4.5 CDP 协议集成</h3>
         <script type="application/ld+json">
           {
@@ -992,8 +940,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
     backend: "internal"  → 内部模式 (默认)
     endpoint: "ws://..." → 外部模式 (自动推断)
     无参数              → 内部模式
-</pre
-        >
+</pre>
         <p>
           关联实体: <span data-xref-type="entity" data-xref-id="CdpRouter">CdpRouter</span>,
           <span data-xref-type="entity" data-xref-id="CdpBackendInternal">CdpBackendInternal</span>,
@@ -1036,8 +983,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
   - 独立模块缓存 (import 不跨 Page 污染)
   - 独立异常处理
   - GC 在同一 JSContext 内统一管理
-</pre
-        >
+</pre>
         <p>
           关联实体: <span data-xref-type="entity" data-xref-id="BaoRuntime">BaoRuntime</span>,
           <span data-xref-type="entity" data-xref-id="PagePool">PagePool</span>,
@@ -1049,12 +995,7 @@ L13 bun_runtime ← 应用层 (~75 个依赖)
         </p>
       </div>
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-state-machine="PageLifecycle"
-        data-artifact-type="use-case-diagram"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-state-machine="PageLifecycle" data-artifact-type="use-case-diagram">
         <h3>Page 生命周期状态机</h3>
         <script type="application/ld+json">
           {
@@ -1097,8 +1038,7 @@ Created ──navigate──→ Navigating ──load_complete──→ Interact
     3. SM Realm GC 回收
     4. PixelBuffer 释放
     5. 从 PagePool 移除
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
@@ -1229,21 +1169,14 @@ ShuttingDown:
   4. 销毁 libservo 实例
   5. 销毁 JSContext
   6. 释放所有资源
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
       <h2>§8 数据管道</h2>
       <!-- ============================================================ -->
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-pipeline="JSExecutionPipeline"
-        data-pipeline-type="execution"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-pipeline="JSExecutionPipeline" data-pipeline-type="execution">
         <h3>PIPE-SYS-001: JS 执行管道 (概要)</h3>
         <script type="application/ld+json">
           {
@@ -1262,13 +1195,7 @@ ShuttingDown:
         </script>
       </div>
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-pipeline="RenderPipelineSummary"
-        data-pipeline-type="render"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-pipeline="RenderPipelineSummary" data-pipeline-type="render">
         <h3>PIPE-SYS-002: 渲染管道 (概要)</h3>
         <script type="application/ld+json">
           {
@@ -1319,8 +1246,7 @@ ShuttingDown:
 │ WebView       │   WebViewDelegate │ WebViewBuilder │
 │ Delegate      │                    │ RenderingCtx   │
 └───────────────┘                    └────────────────┘
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
@@ -1467,21 +1393,14 @@ Permission 配置:
   - 浏览器页面和 Bun 脚本共享同一 Permission trait
   - 不修改现有 bao_runtime 的任何 host function 实现
     只在 host_fn 入口统一检查
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
       <h2>§10 非功能需求</h2>
       <!-- ============================================================ -->
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-nfr="StartupPerformance"
-        data-nfr-category="performance"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-nfr="StartupPerformance" data-nfr-category="performance">
         <h3>NFR-SYS-PERF-001: 启动性能</h3>
         <script type="application/ld+json">
           {
@@ -1498,13 +1417,7 @@ Permission 配置:
         </script>
       </div>
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-nfr="BunAPICompatibility"
-        data-nfr-category="compatibility"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-nfr="BunAPICompatibility" data-nfr-category="compatibility">
         <h3>NFR-SYS-COMPAT-001: 兼容性</h3>
         <script type="application/ld+json">
           {
@@ -1520,13 +1433,7 @@ Permission 配置:
         </script>
       </div>
 
-      <div
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-nfr="SecurityRequirements"
-        data-nfr-category="security"
-      >
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-nfr="SecurityRequirements" data-nfr-category="security">
         <h3>NFR-SYS-SEC-001: 安全</h3>
         <script type="application/ld+json">
           {
@@ -1593,38 +1500,20 @@ Permission 配置:
         </ul>
       </div>
 
-      <section
-        id="req-sec-001"
-        data-req="REQ-SEC-001"
-        data-req-status="implemented"
-        data-req-domain="sec"
-        data-req-category="security"
-        data-req-entity="FetchResponse"
-        data-req-api="POST /fetch"
-        data-req-priority="P0"
-      >
+      <section id="req-sec-001" data-req="REQ-SEC-001" data-req-status="implemented" data-req-domain="sec" data-req-category="security" data-req-entity="FetchResponse" data-req-api="POST /fetch" data-req-priority="P0">
         <h3>REQ-SEC-001 CORS 安全策略禁用</h3>
         <p>
           bao 内置浏览器的所有 HTTP 请求不受 CORS（跨域资源共享）限制。修改 servo net 模块的 CORS 检查逻辑，使其在 bao
           模式下跳过 CORS 验证。效果等同 Chromium --disable-web-security。页面 JS 和可信脚本的 fetch/XMLHttpRequest
           均可自由访问任意域名的响应体。
         </p>
-        <div
-          id="页面-js-中-fetch('https://任意域名/api')-能直接读取-response.json()，不触发-cors-preflight-也不报错"
-          data-criterion="页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错"
-        >
+        <div id="页面-js-中-fetch('https://任意域名/api')-能直接读取-response.json()，不触发-cors-preflight-也不报错" data-criterion="页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错">
           页面 JS 中 fetch('https://任意域名/api') 能直接读取 response.json()，不触发 CORS preflight 也不报错
         </div>
-        <div
-          id="xmlhttprequest-跨域请求返回完整响应（非-opaque-response）"
-          data-criterion="XMLHttpRequest 跨域请求返回完整响应（非 opaque response）"
-        >
+        <div id="xmlhttprequest-跨域请求返回完整响应（非-opaque-response）" data-criterion="XMLHttpRequest 跨域请求返回完整响应（非 opaque response）">
           XMLHttpRequest 跨域请求返回完整响应（非 opaque response）
         </div>
-        <div
-          id="servo-net-模块的-cors-check()-在-bao-模式下返回-ok(())-跳过所有-cors-验证"
-          data-criterion="servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证"
-        >
+        <div id="servo-net-模块的-cors-check()-在-bao-模式下返回-ok(())-跳过所有-cors-验证" data-criterion="servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证">
           servo net 模块的 cors_check() 在 bao 模式下返回 Ok(()) 跳过所有 CORS 验证
         </div>
         <div id="cors-preflight-(options)-请求不再发送" data-criterion="CORS preflight (OPTIONS) 请求不再发送">
@@ -1633,10 +1522,7 @@ Permission 配置:
         <div id="cors-缓存-(corscache)-不再生效" data-criterion="CORS 缓存 (CorsCache) 不再生效">
           CORS 缓存 (CorsCache) 不再生效
         </div>
-        <div
-          id="修改仅限于-servo/components/net/-的-cors-相关函数，不影响-servo-其他模块"
-          data-criterion="修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块"
-        >
+        <div id="修改仅限于-servo/components/net/-的-cors-相关函数，不影响-servo-其他模块" data-criterion="修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块">
           修改仅限于 servo/components/net/ 的 CORS 相关函数，不影响 servo 其他模块
         </div>
         <div data-criteria="">
@@ -1653,16 +1539,7 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-sec-002"
-        data-req="REQ-SEC-002"
-        data-req-status="implemented"
-        data-req-domain="sec"
-        data-req-category="security"
-        data-req-entity="BaoRuntime, EvaluateResult, NodeRealm"
-        data-req-api="POST /evaluate-js,POST /evaluate-js-web"
-        data-req-priority="P0"
-      >
+      <section id="req-sec-002" data-req="REQ-SEC-002" data-req-status="implemented" data-req-domain="sec" data-req-category="security" data-req-entity="BaoRuntime, EvaluateResult, NodeRealm" data-req-api="POST /evaluate-js,POST /evaluate-js-web" data-req-priority="P0">
         <h3>REQ-SEC-002 双层 JS 执行模型 — 双 Realm 架构级隔离</h3>
         <p data-req-description="">
           bao 的 evaluate_js 支持两种执行模式： 1. 页面模式（受限）：网页自身的 JS 运行在 servo 原生 Window Realm（Page
@@ -1687,63 +1564,36 @@ Permission 配置:
           process, Buffer, __filename, __dirname){ &lt;user_script&gt; })，通过 JS_CallFunction 传入预先创建的 Node API
           JSValue 作为实参。Node API 从不写入 Window global，页面 JS 物理上无法访问。
         </p>
-        <div
-          id="页面-js-中-typeof-require-===-'undefined'，无论使用任何手段（reflect.ownkeys/proxy/getownpropertynames/for...in-等）都无法发现或访问-node.js-api"
-          data-criterion="页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API"
-        >
+        <div id="页面-js-中-typeof-require-===-'undefined'，无论使用任何手段（reflect.ownkeys/proxy/getownpropertynames/for...in-等）都无法发现或访问-node.js-api" data-criterion="页面 JS 中 typeof require === 'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js API">
           页面 JS 中 typeof require ===
           'undefined'，无论使用任何手段（Reflect.ownKeys/Proxy/getOwnPropertyNames/for...in 等）都无法发现或访问 Node.js
           API
         </div>
-        <div
-          id="页面-js-中-typeof-bun-===-'undefined'，无法访问-bun-运行时"
-          data-criterion="页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时"
-        >
+        <div id="页面-js-中-typeof-bun-===-'undefined'，无法访问-bun-运行时" data-criterion="页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时">
           页面 JS 中 typeof Bun === 'undefined'，无法访问 Bun 运行时
         </div>
         <div id="可信脚本中-require('fs')-可正常读写文件" data-criterion="可信脚本中 require('fs') 可正常读写文件">
           可信脚本中 require('fs') 可正常读写文件
         </div>
-        <div
-          id="可信脚本中-bun.file()-/-bun.write()-可正常工作"
-          data-criterion="可信脚本中 Bun.file() / Bun.write() 可正常工作"
-        >
+        <div id="可信脚本中-bun.file()-/-bun.write()-可正常工作" data-criterion="可信脚本中 Bun.file() / Bun.write() 可正常工作">
           可信脚本中 Bun.file() / Bun.write() 可正常工作
         </div>
-        <div
-          id="可信脚本中-window-/-document-/-navigator-可正常访问-dom（通过-js-wrapobject-跨-realm-proxy）"
-          data-criterion="可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）"
-        >
+        <div id="可信脚本中-window-/-document-/-navigator-可正常访问-dom（通过-js-wrapobject-跨-realm-proxy）" data-criterion="可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）">
           可信脚本中 window / document / navigator 可正常访问 DOM（通过 JS_WrapObject 跨 Realm proxy）
         </div>
-        <div
-          id="可信脚本中-fetch()-可正常发请求（结合-req-sec-001-无-cors-限制）"
-          data-criterion="可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）"
-        >
+        <div id="可信脚本中-fetch()-可正常发请求（结合-req-sec-001-无-cors-限制）" data-criterion="可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）">
           可信脚本中 fetch() 可正常发请求（结合 REQ-SEC-001 无 CORS 限制）
         </div>
-        <div
-          id="可信脚本的-promise-可正常-await，与页面-js-的微任务队列兼容"
-          data-criterion="可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容"
-        >
+        <div id="可信脚本的-promise-可正常-await，与页面-js-的微任务队列兼容" data-criterion="可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容">
           可信脚本的 Promise 可正常 await，与页面 JS 的微任务队列兼容
         </div>
-        <div
-          id="node-realm-与-page-realm-处于不同-spidermonkey-compartment，物理隔离而非逻辑隔离"
-          data-criterion="Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离"
-        >
+        <div id="node-realm-与-page-realm-处于不同-spidermonkey-compartment，物理隔离而非逻辑隔离" data-criterion="Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离">
           Node Realm 与 Page Realm 处于不同 SpiderMonkey Compartment，物理隔离而非逻辑隔离
         </div>
-        <div
-          id="evaluate-js()-执行流程：enterrealm(node)-→-执行-→-leaverealm-→-回到-page-realm"
-          data-criterion="evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm"
-        >
+        <div id="evaluate-js()-执行流程：enterrealm(node)-→-执行-→-leaverealm-→-回到-page-realm" data-criterion="evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm">
           evaluate_js() 执行流程：EnterRealm(Node) → 执行 → LeaveRealm → 回到 Page Realm
         </div>
-        <div
-          id="evaluate-js-web()-直接在-page-realm-执行，无-realm-切换"
-          data-criterion="evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换"
-        >
+        <div id="evaluate-js-web()-直接在-page-realm-执行，无-realm-切换" data-criterion="evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换">
           evaluate_js_web() 直接在 Page Realm 执行，无 Realm 切换
         </div>
         <div data-criteria="">
@@ -1760,16 +1610,7 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-sec-003"
-        data-req="REQ-SEC-003"
-        data-req-status="implemented"
-        data-req-domain="sec"
-        data-req-category="security"
-        data-req-entity="PageHandle"
-        data-req-api="GET /sandbox-status"
-        data-req-priority="P0"
-      >
+      <section id="req-sec-003" data-req="REQ-SEC-003" data-req-status="implemented" data-req-domain="sec" data-req-category="security" data-req-entity="PageHandle" data-req-api="GET /sandbox-status" data-req-priority="P0">
         <h3>REQ-SEC-003 Node API 沙箱隔离 — 移除页面全局注入</h3>
         <p data-req-description="">
           在双 Realm 架构下，Node.js API 的隔离是架构级保证而非代码逻辑保证。 修复原有安全漏洞：runtime_bridge.rs 中
@@ -1787,16 +1628,10 @@ Permission 配置:
           包裹函数使用 3. 页面 JS 仅保留标准 Web API（console/fetch/URL/URLSearchParams/WebSocket 等） 4. 保留 console
           注入（页面 JS 需要 console.log） 5. 保留 Web 标准 API（fetch/Headers/Request/Response/URL/URLSearchParams）
         </p>
-        <div
-          id="runtime-bridge.rs-不再调用-install-all-native()-将-node.js-api-挂在-window-global"
-          data-criterion="runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global"
-        >
+        <div id="runtime-bridge.rs-不再调用-install-all-native()-将-node.js-api-挂在-window-global" data-criterion="runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global">
           runtime_bridge.rs 不再调用 install_all_native() 将 Node.js API 挂在 Window global
         </div>
-        <div
-          id="页面-js-中-typeof-require-===-'undefined'，reflect.ownkeys(globalthis)-中无任何-node-api"
-          data-criterion="页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API"
-        >
+        <div id="页面-js-中-typeof-require-===-'undefined'，reflect.ownkeys(globalthis)-中无任何-node-api" data-criterion="页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API">
           页面 JS 中 typeof require === 'undefined'，Reflect.ownKeys(globalThis) 中无任何 Node API
         </div>
         <div id="页面-js-中-typeof-process-===-'undefined'" data-criterion="页面 JS 中 typeof process === 'undefined'">
@@ -1808,31 +1643,19 @@ Permission 配置:
         <div id="页面-js-中-typeof-bun-===-'undefined'" data-criterion="页面 JS 中 typeof Bun === 'undefined'">
           页面 JS 中 typeof Bun === 'undefined'
         </div>
-        <div
-          id="页面-js-中-console.log()-正常工作（console-保留在-global）"
-          data-criterion="页面 JS 中 console.log() 正常工作（console 保留在 global）"
-        >
+        <div id="页面-js-中-console.log()-正常工作（console-保留在-global）" data-criterion="页面 JS 中 console.log() 正常工作（console 保留在 global）">
           页面 JS 中 console.log() 正常工作（console 保留在 global）
         </div>
-        <div
-          id="页面-js-中-fetch()-正常工作（web-api-保留在-global）"
-          data-criterion="页面 JS 中 fetch() 正常工作（Web API 保留在 global）"
-        >
+        <div id="页面-js-中-fetch()-正常工作（web-api-保留在-global）" data-criterion="页面 JS 中 fetch() 正常工作（Web API 保留在 global）">
           页面 JS 中 fetch() 正常工作（Web API 保留在 global）
         </div>
         <div id="页面-js-中-url/urlsearchparams-正常工作" data-criterion="页面 JS 中 URL/URLSearchParams 正常工作">
           页面 JS 中 URL/URLSearchParams 正常工作
         </div>
-        <div
-          id="node-api-只存在于-node-realm-的-global-上，不在-page-realm-的-window-global-上存在任何痕迹"
-          data-criterion="Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹"
-        >
+        <div id="node-api-只存在于-node-realm-的-global-上，不在-page-realm-的-window-global-上存在任何痕迹" data-criterion="Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹">
           Node API 只存在于 Node Realm 的 global 上，不在 Page Realm 的 Window global 上存在任何痕迹
         </div>
-        <div
-          id="install-all-native()-重构为-create-node-api-scope-values()-创建-node-realm-global-上的属性"
-          data-criterion="install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性"
-        >
+        <div id="install-all-native()-重构为-create-node-api-scope-values()-创建-node-realm-global-上的属性" data-criterion="install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性">
           install_all_native() 重构为 create_node_api_scope_values() 创建 Node Realm global 上的属性
         </div>
         <div data-criteria="">
@@ -1849,12 +1672,7 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="API-ENG-003"
-        data-api="POST /evaluate-js"
-        data-api-request='{"code":{"type":"string","required":true},"args":{"type":"json"}}'
-        data-api-response='{"fields":{"value":{"type":"string"},"error":{"type":"string"}},"type":"EvaluateResult"}'
-      >
+      <section id="post-/evaluate-js" data-api="POST /evaluate-js" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}">
         <h4>POST /evaluate-js — 可信脚本执行 — Node Realm (全权限)</h4>
         <table data-api-params="">
           <tr>
@@ -1933,12 +1751,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-ENG-004"
-        data-api="POST /evaluate-js-web"
-        data-api-request='{"code":{"type":"string","required":true}}'
-        data-api-response='{"fields":{"value":{"type":"string"},"error":{"type":"string"}},"type":"EvaluateResult"}'
-      >
+      <section id="post-/evaluate-js-web" data-api="POST /evaluate-js-web" data-api-request="{&quot;code&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}">
         <h4>POST /evaluate-js-web — 页面脚本执行 — Page Realm (仅 Web API)</h4>
         <table data-api-params="">
           <tr>
@@ -2008,11 +1821,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-ENG-001"
-        data-api="GET /sandbox-status"
-        data-api-response='{"fields":{"node_api_visible":{"type":"boolean"},"page_realm_isolated":{"type":"boolean"},"require_available":{"type":"boolean"}},"type":"object"}'
-      >
+      <section id="get-/sandbox-status" data-api="GET /sandbox-status" data-api-response="{&quot;fields&quot;:{&quot;node_api_visible&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm_isolated&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;require_available&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /sandbox-status — 安全沙箱状态查询</h4>
         <script type="application/ld+json">
           {
@@ -2056,12 +1865,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-ENG-008"
-        data-api="POST /runtime/eval"
-        data-api-request='{"script":{"type":"string","required":true},"filename":{"type":"string","required":true}}'
-        data-api-response='{"fields":{"value":{"type":"string"},"error":{"type":"string"}},"type":"EvaluateResult"}'
-      >
+      <section id="post-/runtime/eval" data-api="POST /runtime/eval" data-api-request="{&quot;script&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;filename&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}">
         <h4>POST /runtime/eval — SpiderMonkey 引擎集成 — JS 执行 API</h4>
         <table data-api-params="">
           <tr>
@@ -2140,12 +1944,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-ENG-002"
-        data-api="POST /codegen/generate"
-        data-api-request='{"classes_file":{"type":"string","required":true},"output_dir":{"type":"string","required":true}}'
-        data-api-response='{"fields":{"generated_files":{"type":"integer"},"success":{"type":"boolean"}},"type":"object"}'
-      >
+      <section id="post-/codegen/generate" data-api="POST /codegen/generate" data-api-request="{&quot;classes_file&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;output_dir&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;generated_files&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;success&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /codegen/generate — 代码生成后端 — SpiderMonkey 绑定生成</h4>
         <table data-api-params="">
           <tr>
@@ -2224,12 +2023,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-ENG-007"
-        data-api="POST /host-fn/call"
-        data-api-request='{"name":{"type":"string","required":true},"callback":{"type":"json","required":true},"args":{"type":"json"}}'
-        data-api-response='{"fields":{"value":{"type":"string"},"error":{"type":"string"}},"type":"EvaluateResult"}'
-      >
+      <section id="post-/host-fn/call" data-api="POST /host-fn/call" data-api-request="{&quot;name&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;callback&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;value&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;EvaluateResult&quot;}">
         <h4>POST /host-fn/call — host_fn 抽象层 — Rust 安全 JS 调用</h4>
         <table data-api-params="">
           <tr>
@@ -2314,12 +2108,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-ENG-005"
-        data-api="POST /event-loop/drain"
-        data-api-request='{"tick":{"type":"integer"}}'
-        data-api-response='{"fields":{"microtask_count":{"type":"integer"},"macrotask_count":{"type":"integer"}},"type":"object"}'
-      >
+      <section id="post-/event-loop/drain" data-api="POST /event-loop/drain" data-api-request="{&quot;tick&quot;:{&quot;type&quot;:&quot;integer&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;microtask_count&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;macrotask_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /event-loop/drain — Event Loop 桥接 — 事件循环 tick</h4>
         <table data-api-params="">
           <tr>
@@ -2391,13 +2180,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="artifact-module"
-        data-api="POST /module/resolve"
-        data-artifact-type="module"
-        data-api-request='{"specifier":{"type":"string","required":true},"referrer":{"type":"string"}}'
-        data-api-response='{"fields":{"url":{"type":"string"},"source":{"type":"string"}},"type":"object"}'
-      >
+      <section id="artifact-module" data-api="POST /module/resolve" data-artifact-type="module" data-api-request="{&quot;specifier&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;referrer&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;source&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /module/resolve — Module Loader 桥接 — ESM/CJS 模块解析</h4>
         <table data-api-params="">
           <tr>
@@ -2476,11 +2259,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-BAO-API-001"
-        data-api="GET /api/bun-compat"
-        data-api-response='{"fields":{"available":{"type":"boolean"},"api_count":{"type":"integer"}},"type":"object"}'
-      >
+      <section id="get-/api/bun-compat" data-api="GET /api/bun-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /api/bun-compat — Bun API 适配 — Bun.* 别名兼容</h4>
         <script type="application/ld+json">
           {
@@ -2518,11 +2297,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-BAO-API-002"
-        data-api="GET /api/node-compat"
-        data-api-response='{"fields":{"available":{"type":"boolean"},"api_count":{"type":"integer"}},"type":"object"}'
-      >
+      <section id="get-/api/node-compat" data-api="GET /api/node-compat" data-api-response="{&quot;fields&quot;:{&quot;available&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;api_count&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /api/node-compat — Node.js 兼容层 — require/fs/crypto 适配</h4>
         <script type="application/ld+json">
           {
@@ -2560,12 +2335,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-CLI-002"
-        data-api="POST /cli/exec"
-        data-api-request='{"command":{"type":"string","required":true},"args":{"type":"json"}}'
-        data-api-response='{"fields":{"exit_code":{"type":"integer"},"stdout":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/cli/exec" data-api="POST /cli/exec" data-api-request="{&quot;command&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;args&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;exit_code&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stdout&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /cli/exec — bao CLI 品牌替换 — bao run/test/build/browser</h4>
         <table data-api-params="">
           <tr>
@@ -2650,12 +2420,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-CLI-001"
-        data-api="POST /cli/browser"
-        data-api-request='{"url":{"type":"string","required":true},"cdp_port":{"type":"integer"},"stealth":{"type":"boolean"}}'
-        data-api-response='{"fields":{"pid":{"type":"integer"},"cdp_url":{"type":"string"},"page_id":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/cli/browser" data-api="POST /cli/browser" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;cdp_port&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;stealth&quot;:{&quot;type&quot;:&quot;boolean&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;pid&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;cdp_url&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /cli/browser — bao browser 子命令 — 启动浏览器模式</h4>
         <table data-api-params="">
           <tr>
@@ -2742,12 +2507,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-BRW-001"
-        data-api="POST /browser/create-page"
-        data-api-request='{"url":{"type":"string","required":true},"viewport":{"type":"json"}}'
-        data-api-response='{"fields":{"page_id":{"type":"string"},"state":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/browser/create-page" data-api="POST /browser/create-page" data-api-request="{&quot;url&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;viewport&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;state&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /browser/create-page — libservo 集成 — 创建 WebView 页面</h4>
         <table data-api-params="">
           <tr>
@@ -2828,12 +2588,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-BRW-003"
-        data-api="POST /browser/screenshot"
-        data-api-request='{"page_id":{"type":"string","required":true},"format":{"type":"string"}}'
-        data-api-response='{"fields":{"data":{"type":"string"},"width":{"type":"integer"},"height":{"type":"integer"}},"type":"object"}'
-      >
+      <section id="post-/browser/screenshot" data-api="POST /browser/screenshot" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;format&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;data&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;width&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;height&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /browser/screenshot — 内存渲染 — 截图输出</h4>
         <table data-api-params="">
           <tr>
@@ -2926,12 +2681,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-BRW-002"
-        data-api="POST /browser/jscontext-fuse"
-        data-api-request='{"page_id":{"type":"string","required":true}}'
-        data-api-response='{"fields":{"fused":{"type":"boolean"},"page_realm":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/browser/jscontext-fuse" data-api="POST /browser/jscontext-fuse" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;fused&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;page_realm&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /browser/jscontext-fuse — SpiderMonkey JSContext 融合 — Page/Node 双 Realm</h4>
         <table data-api-params="">
           <tr>
@@ -3001,12 +2751,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-CDP-016"
-        data-api="POST /cdp/runtime"
-        data-api-request='{"session_id":{"type":"string","required":true},"method":{"type":"string","required":true},"params":{"type":"json"}}'
-        data-api-response='{"fields":{"result":{"type":"json"},"error":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/cdp/runtime" data-api="POST /cdp/runtime" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /cdp/runtime — Runtime Domain — JS 执行/控制/Console</h4>
         <table data-api-params="">
           <tr>
@@ -3091,12 +2836,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-CDP-011"
-        data-api="POST /cdp/debugger"
-        data-api-request='{"session_id":{"type":"string","required":true},"method":{"type":"string","required":true},"params":{"type":"json"}}'
-        data-api-response='{"fields":{"result":{"type":"json"},"error":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/cdp/debugger" data-api="POST /cdp/debugger" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /cdp/debugger — Debugger Domain — 断点/源码/单步调试</h4>
         <table data-api-params="">
           <tr>
@@ -3181,12 +2921,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-CDP-015"
-        data-api="POST /cdp/page"
-        data-api-request='{"session_id":{"type":"string","required":true},"method":{"type":"string","required":true},"params":{"type":"json"}}'
-        data-api-response='{"fields":{"result":{"type":"json"},"error":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/cdp/page" data-api="POST /cdp/page" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /cdp/page — Page Domain — 导航/截图/事件</h4>
         <table data-api-params="">
           <tr>
@@ -3271,12 +3006,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-CDP-012"
-        data-api="POST /cdp/dom"
-        data-api-request='{"session_id":{"type":"string","required":true},"method":{"type":"string","required":true},"params":{"type":"json"}}'
-        data-api-response='{"fields":{"result":{"type":"json"},"error":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/cdp/dom" data-api="POST /cdp/dom" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /cdp/dom — DOM Domain — 节点查询/修改/事件</h4>
         <table data-api-params="">
           <tr>
@@ -3361,12 +3091,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-CDP-014"
-        data-api="POST /cdp/network"
-        data-api-request='{"session_id":{"type":"string","required":true},"method":{"type":"string","required":true},"params":{"type":"json"}}'
-        data-api-response='{"fields":{"result":{"type":"json"},"error":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/cdp/network" data-api="POST /cdp/network" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /cdp/network — Network Domain — 请求/响应拦截/Cookie</h4>
         <table data-api-params="">
           <tr>
@@ -3451,12 +3176,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-CDP-013"
-        data-api="POST /cdp/emulation"
-        data-api-request='{"session_id":{"type":"string","required":true},"method":{"type":"string","required":true},"params":{"type":"json"}}'
-        data-api-response='{"fields":{"result":{"type":"json"},"error":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/cdp/emulation" data-api="POST /cdp/emulation" data-api-request="{&quot;session_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;method&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;result&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;error&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /cdp/emulation — CSS/Input/Emulation/Overlay Domain — 设备模拟</h4>
         <table data-api-params="">
           <tr>
@@ -3541,12 +3261,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-STL-006"
-        data-api="POST /stealth/tls"
-        data-api-request='{"profile_name":{"type":"string"}}'
-        data-api-response='{"fields":{"ja3_hash":{"type":"string"},"tls_version":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/stealth/tls" data-api="POST /stealth/tls" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;ja3_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;tls_version&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /stealth/tls — TLS 指纹模拟 — JA3/JA4 伪造</h4>
         <table data-api-params="">
           <tr>
@@ -3618,12 +3333,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-STL-004"
-        data-api="POST /stealth/http2"
-        data-api-request='{"profile_name":{"type":"string"}}'
-        data-api-response='{"fields":{"akamai_fingerprint":{"type":"string"},"settings_frame":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/stealth/http2" data-api="POST /stealth/http2" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;akamai_fingerprint&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;settings_frame&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /stealth/http2 — HTTP/2 指纹匹配 — Akamai 规避</h4>
         <table data-api-params="">
           <tr>
@@ -3695,12 +3405,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-STL-003"
-        data-api="POST /stealth/canvas"
-        data-api-request='{"seed":{"type":"integer"},"intensity":{"type":"string"}}'
-        data-api-response='{"fields":{"noise_applied":{"type":"boolean"}},"type":"object"}'
-      >
+      <section id="post-/stealth/canvas" data-api="POST /stealth/canvas" data-api-request="{&quot;seed&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;intensity&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;noise_applied&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /stealth/canvas — Canvas 指纹防护 — 像素噪声注入</h4>
         <table data-api-params="">
           <tr>
@@ -3778,12 +3483,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-STL-005"
-        data-api="POST /stealth/navigator"
-        data-api-request='{"ua":{"type":"string"},"screen":{"type":"json"}}'
-        data-api-response='{"fields":{"navigator":{"type":"json"},"screen":{"type":"json"}},"type":"object"}'
-      >
+      <section id="post-/stealth/navigator" data-api="POST /stealth/navigator" data-api-request="{&quot;ua&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;navigator&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;screen&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /stealth/navigator — Navigator/Screen 构造 — UA/屏幕模拟</h4>
         <table data-api-params="">
           <tr>
@@ -3870,12 +3570,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-STL-007"
-        data-api="POST /stealth/webgl-audio"
-        data-api-request='{"profile_name":{"type":"string"}}'
-        data-api-response='{"fields":{"webgl_hash":{"type":"string"},"audio_hash":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/stealth/webgl-audio" data-api="POST /stealth/webgl-audio" data-api-request="{&quot;profile_name&quot;:{&quot;type&quot;:&quot;string&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;webgl_hash&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;audio_hash&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /stealth/webgl-audio — WebGL/Audio 指纹防护 — 渲染器/音频指纹伪造</h4>
         <table data-api-params="">
           <tr>
@@ -3947,12 +3642,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-STL-002"
-        data-api="POST /stealth/behavior"
-        data-api-request='{"action_type":{"type":"string","required":true},"params":{"type":"json"}}'
-        data-api-response='{"fields":{"path":{"type":"json"},"delays":{"type":"json"}},"type":"object"}'
-      >
+      <section id="post-/stealth/behavior" data-api="POST /stealth/behavior" data-api-request="{&quot;action_type&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;params&quot;:{&quot;type&quot;:&quot;json&quot;}}" data-api-response="{&quot;fields&quot;:{&quot;path&quot;:{&quot;type&quot;:&quot;json&quot;},&quot;delays&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /stealth/behavior — 行为模拟 — 鼠标轨迹/打字延迟/滚动</h4>
         <table data-api-params="">
           <tr>
@@ -4030,11 +3720,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-STL-001"
-        data-api="GET /stealth/cdp-stealth"
-        data-api-response='{"fields":{"stealth_active":{"type":"boolean"},"patches_applied":{"type":"integer"}},"type":"object"}'
-      >
+      <section id="get-/stealth/cdp-stealth" data-api="GET /stealth/cdp-stealth" data-api-response="{&quot;fields&quot;:{&quot;stealth_active&quot;:{&quot;type&quot;:&quot;boolean&quot;},&quot;patches_applied&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /stealth/cdp-stealth — CDP 隐蔽性 — 反检测补丁</h4>
         <script type="application/ld+json">
           {
@@ -4072,12 +3758,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-LIB-002"
-        data-api="POST /pagepool/create"
-        data-api-request='{"config":{"type":"json","required":true}}'
-        data-api-response='{"fields":{"page_id":{"type":"string"}},"type":"object"}'
-      >
+      <section id="post-/pagepool/create" data-api="POST /pagepool/create" data-api-request="{&quot;config&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /pagepool/create — 多页面管理 — PagePool 创建/销毁/复用</h4>
         <table data-api-params="">
           <tr>
@@ -4149,11 +3830,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-LIB-001"
-        data-api="GET /pagepool/stats"
-        data-api-response='{"fields":{"active":{"type":"integer"},"idle":{"type":"integer"},"max_total":{"type":"integer"}},"type":"object"}'
-      >
+      <section id="get-/pagepool/stats" data-api="GET /pagepool/stats" data-api-response="{&quot;fields&quot;:{&quot;active&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;idle&quot;:{&quot;type&quot;:&quot;integer&quot;},&quot;max_total&quot;:{&quot;type&quot;:&quot;integer&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /pagepool/stats — PagePool 资源管理 — 统计/回收/限制</h4>
         <script type="application/ld+json">
           {
@@ -4197,12 +3874,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-LIB-003"
-        data-api="POST /permission/set"
-        data-api-request='{"page_id":{"type":"string","required":true},"permissions":{"type":"json","required":true}}'
-        data-api-response='{"fields":{"granted":{"type":"json"}},"type":"object"}'
-      >
+      <section id="post-/permission/set" data-api="POST /permission/set" data-api-request="{&quot;page_id&quot;:{&quot;type&quot;:&quot;string&quot;,&quot;required&quot;:true},&quot;permissions&quot;:{&quot;type&quot;:&quot;json&quot;,&quot;required&quot;:true}}" data-api-response="{&quot;fields&quot;:{&quot;granted&quot;:{&quot;type&quot;:&quot;json&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>POST /permission/set — Permission 可选沙箱 — 权限配置与执行</h4>
         <table data-api-params="">
           <tr>
@@ -4281,11 +3953,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-IMPL-001"
-        data-api="GET /impl/phase1-status"
-        data-api-response='{"fields":{"phase":{"type":"string"},"completed":{"type":"boolean"}},"type":"object"}'
-      >
+      <section id="get-/impl/phase1-status" data-api="GET /impl/phase1-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /impl/phase1-status — Phase 1 SpiderMonkey 替换 JSC — 实施状态</h4>
         <script type="application/ld+json">
           {
@@ -4329,11 +3997,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-IMPL-002"
-        data-api="GET /impl/phase2-status"
-        data-api-response='{"fields":{"phase":{"type":"string"},"completed":{"type":"boolean"}},"type":"object"}'
-      >
+      <section id="get-/impl/phase2-status" data-api="GET /impl/phase2-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /impl/phase2-status — Phase 2 servo 引擎集成 — 实施状态</h4>
         <script type="application/ld+json">
           {
@@ -4377,11 +4041,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-IMPL-003"
-        data-api="GET /impl/phase3-status"
-        data-api-response='{"fields":{"phase":{"type":"string"},"completed":{"type":"boolean"}},"type":"object"}'
-      >
+      <section id="get-/impl/phase3-status" data-api="GET /impl/phase3-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /impl/phase3-status — Phase 3 CDP Server — 实施状态</h4>
         <script type="application/ld+json">
           {
@@ -4425,11 +4085,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-IMPL-004"
-        data-api="GET /impl/phase4-status"
-        data-api-response='{"fields":{"phase":{"type":"string"},"completed":{"type":"boolean"}},"type":"object"}'
-      >
+      <section id="get-/impl/phase4-status" data-api="GET /impl/phase4-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /impl/phase4-status — Phase 4 Stealth 反指纹 — 实施状态</h4>
         <script type="application/ld+json">
           {
@@ -4473,11 +4129,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="API-IMPL-005"
-        data-api="GET /impl/phase5-status"
-        data-api-response='{"fields":{"phase":{"type":"string"},"completed":{"type":"boolean"}},"type":"object"}'
-      >
+      <section id="get-/impl/phase5-status" data-api="GET /impl/phase5-status" data-api-response="{&quot;fields&quot;:{&quot;phase&quot;:{&quot;type&quot;:&quot;string&quot;},&quot;completed&quot;:{&quot;type&quot;:&quot;boolean&quot;}},&quot;type&quot;:&quot;object&quot;}">
         <h4>GET /impl/phase5-status — Phase 5 Headless 多页面库 — 实施状态</h4>
         <script type="application/ld+json">
           {
@@ -4521,7 +4173,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-010" data-api="POST /fetch">
+      <section id="post-/fetch" data-api="POST /fetch">
         <h4>POST /fetch — POST /fetch — CORS 安全策略禁用 — 直接 HTTP 请求</h4>
         <table data-api-params="">
           <tr>
@@ -4636,15 +4288,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="req-pure-001"
-        data-req="REQ-PURE-001"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="TlsProfile,TlsConnection"
-        data-req-api="POST /stealth/tls"
-      >
+      <section id="req-pure-001" data-req="REQ-PURE-001" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="TlsProfile,TlsConnection" data-req-api="POST /stealth/tls">
         <h3>REQ-PURE-001 REQ-PURE-001: boringssl → rustls 纯 Rust TLS</h3>
         <p data-req-description="">
           Phase 5 已完成 TLS 栈统一：删除 bao_tls (rustls)，新建 bao_boringssl_bridge (BoringSSL)。BoringSSL 成为唯一
@@ -4660,30 +4304,16 @@ Permission 配置:
             <li>cargo build -p bao_boringssl_bridge 编译通过</li>
           </ol>
         </div>
-        <div
-          id="bao-boringssl-bridge-crate-提供-boringssl-backed-tls-1.2/1.3"
-          data-criterion="bao_boringssl_bridge crate 提供 BoringSSL-backed TLS 1.2/1.3"
-        >
+        <div id="bao-boringssl-bridge-crate-提供-boringssl-backed-tls-1.2/1.3" data-criterion="bao_boringssl_bridge crate 提供 BoringSSL-backed TLS 1.2/1.3">
           bao_boringssl_bridge crate 提供 BoringSSL-backed TLS 1.2/1.3
         </div>
         <div id="bao-tls-(rustls)-已删除" data-criterion="bao_tls (rustls) 已删除">bao_tls (rustls) 已删除</div>
-        <div
-          id="ja3/ja4-指纹模拟通过-boringssl-原生-cipher-suite-配置实现"
-          data-criterion="JA3/JA4 指纹模拟通过 BoringSSL 原生 cipher suite 配置实现"
-        >
+        <div id="ja3/ja4-指纹模拟通过-boringssl-原生-cipher-suite-配置实现" data-criterion="JA3/JA4 指纹模拟通过 BoringSSL 原生 cipher suite 配置实现">
           JA3/JA4 指纹模拟通过 BoringSSL 原生 cipher suite 配置实现
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-002"
-        data-req="REQ-PURE-002"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="BrotliEngine, BrotliCompressConfig"
-        data-req-api="POST /compress/brotli"
-      >
+      <section id="req-pure-002" data-req="REQ-PURE-002" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="BrotliEngine, BrotliCompressConfig" data-req-api="POST /compress/brotli">
         <h3>REQ-PURE-002 REQ-PURE-002: brotli → rust-brotli 纯 Rust 压缩</h3>
         <p data-req-description="">
           已实现：bun_brotli (src/brotli/) 已使用 brotli = "8" 纯 Rust crate（crates.io brotli.org 官方纯 Rust 实现，非
@@ -4699,16 +4329,10 @@ Permission 配置:
             <li>grep -rn "brotli_pure_rust_sys" src/ 命中数 = 0 (C wrapper 不存在)</li>
           </ol>
         </div>
-        <div
-          id="rust-brotli-crate-替代-vendor/brotli/-c-库"
-          data-criterion="rust-brotli crate 替代 vendor/brotli/ C 库"
-        >
+        <div id="rust-brotli-crate-替代-vendor/brotli/-c-库" data-criterion="rust-brotli crate 替代 vendor/brotli/ C 库">
           rust-brotli crate 替代 vendor/brotli/ C 库
         </div>
-        <div
-          id="http-content-encoding-brotli-压缩/解压缩正常"
-          data-criterion="HTTP content-encoding brotli 压缩/解压缩正常"
-        >
+        <div id="http-content-encoding-brotli-压缩/解压缩正常" data-criterion="HTTP content-encoding brotli 压缩/解压缩正常">
           HTTP content-encoding brotli 压缩/解压缩正常
         </div>
         <div id="bun.compress-api-brotli-模式正常" data-criterion="Bun.compress API brotli 模式正常">
@@ -4716,15 +4340,7 @@ Permission 配置:
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-003"
-        data-req="REQ-PURE-003"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="ZstdEngine, ZstdCompressConfig"
-        data-req-api="POST /compress/zstd"
-      >
+      <section id="req-pure-003" data-req="REQ-PURE-003" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="ZstdEngine, ZstdCompressConfig" data-req-api="POST /compress/zstd">
         <h3>REQ-PURE-003 REQ-PURE-003: zstd → zstd-rs 纯 Rust Zstandard</h3>
         <p data-req-description="">
           已实现：bun_zstd (src/zstd/) 已使用 zstd-pure-rs = "0.1" 纯 Rust crate（非 zstd-sys C 绑定）。9 个
@@ -4750,15 +4366,7 @@ Permission 配置:
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-004"
-        data-req="REQ-PURE-004"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="ZlibEngine, ZlibCompressConfig"
-        data-req-api="POST /compress/zlib"
-      >
+      <section id="req-pure-004" data-req="REQ-PURE-004" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="ZlibEngine, ZlibCompressConfig" data-req-api="POST /compress/zlib">
         <h3>REQ-PURE-004 REQ-PURE-004: zlib/libdeflate → miniz_oxide/flate2 纯 Rust</h3>
         <p data-req-description="">
           已实现：bun_zlib (src/zlib/) 已使用 flate2 = { version = "1", default-features = false, features =
@@ -4773,10 +4381,7 @@ Permission 配置:
             <li>grep -rn "libdeflate" src/zlib/ 命中数 = 0 (libdeflate 已替换)</li>
           </ol>
         </div>
-        <div
-          id="miniz-oxide/flate2-替代-vendor/zlib/-vendor/libdeflate/-c-库"
-          data-criterion="miniz_oxide/flate2 替代 vendor/zlib/ vendor/libdeflate/ C 库"
-        >
+        <div id="miniz-oxide/flate2-替代-vendor/zlib/-vendor/libdeflate/-c-库" data-criterion="miniz_oxide/flate2 替代 vendor/zlib/ vendor/libdeflate/ C 库">
           miniz_oxide/flate2 替代 vendor/zlib/ vendor/libdeflate/ C 库
         </div>
         <div id="http-gzip-content-encoding-正常" data-criterion="HTTP gzip content-encoding 正常">
@@ -4786,15 +4391,7 @@ Permission 配置:
         <div id="node.js-zlib-模块正常" data-criterion="Node.js zlib 模块正常">Node.js zlib 模块正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-005"
-        data-req="REQ-PURE-005"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="AllocatorConfig, AllocatorProfile"
-        data-req-api="GET /config/allocator"
-      >
+      <section id="req-pure-005" data-req="REQ-PURE-005" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="AllocatorConfig, AllocatorProfile" data-req-api="GET /config/allocator">
         <h3>REQ-PURE-005 REQ-PURE-005: mimalloc → jemallocator/Rust 默认 allocator</h3>
         <p data-req-description="">
           [已推翻 SPEC] mimalloc 保留:per-heap isolation API(mi_heap_t)被 AST/bundler/shell_parser/safety 共 387
@@ -4814,10 +4411,7 @@ Permission 配置:
         <div id="删除-vendor/mimalloc/-及-bun-mimalloc-sys" data-criterion="删除 vendor/mimalloc/ 及 bun_mimalloc_sys">
           删除 vendor/mimalloc/ 及 bun_mimalloc_sys
         </div>
-        <div
-          id="切换到-tikv-jemallocator-或-rust-默认-allocator"
-          data-criterion="切换到 tikv-jemallocator 或 Rust 默认 allocator"
-        >
+        <div id="切换到-tikv-jemallocator-或-rust-默认-allocator" data-criterion="切换到 tikv-jemallocator 或 Rust 默认 allocator">
           切换到 tikv-jemallocator 或 Rust 默认 allocator
         </div>
         <div id="cargo.toml-[profile]-配置正确" data-criterion="Cargo.toml [profile] 配置正确">
@@ -4825,15 +4419,7 @@ Permission 配置:
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-006"
-        data-req="REQ-PURE-006"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="SimdHash, SimdHashConfig"
-        data-req-api="POST /hash/simd"
-      >
+      <section id="req-pure-006" data-req="REQ-PURE-006" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="SimdHash, SimdHashConfig" data-req-api="POST /hash/simd">
         <h3>REQ-PURE-006 REQ-PURE-006: highway → wide/std::simd 纯 Rust SIMD</h3>
         <p data-req-description="">
           已实现：bun_highway (src/highway/) 完全重写为纯 Rust。删除 vendor/highway/（270 files）+ src/highway/build.rs
@@ -4852,10 +4438,7 @@ Permission 配置:
             <li>grep -rn "memchr\|char-class" src/highway/src/lib.rs 命中 (pure Rust + 自带 SSE2/AVX2/NEON kernel)</li>
           </ol>
         </div>
-        <div
-          id="wide-crate-或-std::simd-替代-vendor/highway/-c-库"
-          data-criterion="wide crate 或 std::simd 替代 vendor/highway/ C 库"
-        >
+        <div id="wide-crate-或-std::simd-替代-vendor/highway/-c-库" data-criterion="wide crate 或 std::simd 替代 vendor/highway/ C 库">
           wide crate 或 std::simd 替代 vendor/highway/ C 库
         </div>
         <div id="bao-hash/bun-hash-simd-哈希正常" data-criterion="bao_hash/bun_hash SIMD 哈希正常">
@@ -4864,15 +4447,7 @@ Permission 配置:
         <div id="哈希/校验和-simd-加速正常" data-criterion="哈希/校验和 SIMD 加速正常">哈希/校验和 SIMD 加速正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-007"
-        data-req="REQ-PURE-007"
-        data-req-status="deprecated"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="QuicConnection, QuicSessionConfig"
-        data-req-api="POST /network/quic"
-      >
+      <section id="req-pure-007" data-req="REQ-PURE-007" data-req-status="deprecated" data-req-domain="pure" data-req-category="architecture" data-req-entity="QuicConnection, QuicSessionConfig" data-req-api="POST /network/quic">
         <h3>REQ-PURE-007 REQ-PURE-007: lsquic → quinn 纯 Rust QUIC/HTTP3</h3>
         <p data-req-description="">
           [已推翻 SPEC] lsquic 保留:bun_http h3_client(callback 驱动架构,8 文件 ~3k LOC)深度绑定 lsquic C
@@ -4889,25 +4464,14 @@ Permission 配置:
             </li>
           </ol>
         </div>
-        <div
-          id="quinn-crate-替代-vendor/lsquic/-vendor/lsqpack/-vendor/lshpack/-c-库"
-          data-criterion="quinn crate 替代 vendor/lsquic/ vendor/lsqpack/ vendor/lshpack/ C 库"
-        >
+        <div id="quinn-crate-替代-vendor/lsquic/-vendor/lsqpack/-vendor/lshpack/-c-库" data-criterion="quinn crate 替代 vendor/lsquic/ vendor/lsqpack/ vendor/lshpack/ C 库">
           quinn crate 替代 vendor/lsquic/ vendor/lsqpack/ vendor/lshpack/ C 库
         </div>
         <div id="quic/http3-连接正常" data-criterion="QUIC/HTTP3 连接正常">QUIC/HTTP3 连接正常</div>
         <div id="h3-crate-提供-http/3-层" data-criterion="h3 crate 提供 HTTP/3 层">h3 crate 提供 HTTP/3 层</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-008"
-        data-req="REQ-PURE-008"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="HtmlRewriter, HtmlRewriterConfig"
-        data-req-api="POST /transform/html"
-      >
+      <section id="req-pure-008" data-req="REQ-PURE-008" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="HtmlRewriter, HtmlRewriterConfig" data-req-api="POST /transform/html">
         <h3>REQ-PURE-008 REQ-PURE-008: lolhtml → html5ever (servo 内置) 纯 Rust HTML 重写</h3>
         <p data-req-description="">
           已实现（SPEC 描述订正）：Cloudflare 的 lol-html 本身就是 pure Rust 项目（不是 C 库），crates.io 上的 lol_html
@@ -4925,10 +4489,7 @@ Permission 配置:
             <li>cargo build -p bun_lolhtml_sys 通过 (thin 兼容层 over lol_html crate)</li>
           </ol>
         </div>
-        <div
-          id="html5ever-(servo-内置)-替代-vendor/lolhtml/-c-库"
-          data-criterion="html5ever (servo 内置) 替代 vendor/lolhtml/ C 库"
-        >
+        <div id="html5ever-(servo-内置)-替代-vendor/lolhtml/-c-库" data-criterion="html5ever (servo 内置) 替代 vendor/lolhtml/ C 库">
           html5ever (servo 内置) 替代 vendor/lolhtml/ C 库
         </div>
         <div id="bun.transform-api-html-重写正常" data-criterion="Bun.transform API HTML 重写正常">
@@ -4937,15 +4498,7 @@ Permission 配置:
         <div id="html5-解析-+-序列化正常" data-criterion="HTML5 解析 + 序列化正常">HTML5 解析 + 序列化正常</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-009"
-        data-req="REQ-PURE-009"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="HttpServer, HttpServerConfig"
-        data-req-api="POST /http/serve"
-      >
+      <section id="req-pure-009" data-req="REQ-PURE-009" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="HttpServer, HttpServerConfig" data-req-api="POST /http/serve">
         <h3>REQ-PURE-009 REQ-PURE-009: uWS C++ → hyper 纯 Rust HTTP server/client</h3>
         <p data-req-description="">
           [已推翻 SPEC] uWS 保留:bun_uws(C++ uSockets)深度集成于 bao_runtime 5 个文件(bun_api.rs Bun.serve() 1300+
@@ -4963,10 +4516,7 @@ Permission 配置:
             <li>grep -rn "bun_uws::App\|uws_App" src/bao_runtime/src/ 命中 (链接复用 C++ 二进制)</li>
           </ol>
         </div>
-        <div
-          id="hyper-替代-src/uws/-c++-usockets/uws-二进制"
-          data-criterion="hyper 替代 src/uws/ C++ uSockets/uWS 二进制"
-        >
+        <div id="hyper-替代-src/uws/-c++-usockets/uws-二进制" data-criterion="hyper 替代 src/uws/ C++ uSockets/uWS 二进制">
           hyper 替代 src/uws/ C++ uSockets/uWS 二进制
         </div>
         <div id="bun.serve()-api-用-hyper-实现-http-server" data-criterion="Bun.serve() API 用 hyper 实现 HTTP server">
@@ -4978,15 +4528,7 @@ Permission 配置:
         <div id="零-c++-编译依赖" data-criterion="零 C++ 编译依赖">零 C++ 编译依赖</div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-pure-010"
-        data-req="REQ-PURE-010"
-        data-req-status="implemented"
-        data-req-domain="pure"
-        data-req-category="architecture"
-        data-req-entity="BaoRuntime"
-        data-req-api="GET /api/bun-compat"
-      >
+      <section id="req-pure-010" data-req="REQ-PURE-010" data-req-status="implemented" data-req-domain="pure" data-req-category="architecture" data-req-entity="BaoRuntime" data-req-api="GET /api/bun-compat">
         <h3>REQ-PURE-010 REQ-PURE-010: 删除 bun_runtime — 零 Zig/零 JSC</h3>
         <p data-req-description="">
           Phase 1 已完成：删除 src/runtime/ (bun_runtime) 全部 Zig 文件和 JSC 残留代码。bao_runtime (Rust)
@@ -5009,10 +4551,7 @@ Permission 配置:
         <div id="src/runtime/-(bun-runtime-zig)-已删除" data-criterion="src/runtime/ (bun_runtime Zig) 已删除">
           src/runtime/ (bun_runtime Zig) 已删除
         </div>
-        <div
-          id="bao-runtime-(rust)-完整替代所有-node.js/bun/web-api"
-          data-criterion="bao_runtime (Rust) 完整替代所有 Node.js/Bun/Web API"
-        >
+        <div id="bao-runtime-(rust)-完整替代所有-node.js/bun/web-api" data-criterion="bao_runtime (Rust) 完整替代所有 Node.js/Bun/Web API">
           bao_runtime (Rust) 完整替代所有 Node.js/Bun/Web API
         </div>
         <div id="零-zig-依赖" data-criterion="零 Zig 依赖">零 Zig 依赖</div>
@@ -5049,16 +4588,7 @@ Permission 配置:
           }
         </script>
       </section>
-      <section
-        id="req-perf-001"
-        data-req="REQ-PERF-001"
-        data-req-status="implemented"
-        data-req-domain="ENG"
-        data-req-category="architecture"
-        data-req-entity="HttpResponse"
-        data-req-api="GET /perf/http-response"
-        data-req-priority="P0"
-      >
+      <section id="req-perf-001" data-req="REQ-PERF-001" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="HttpResponse" data-req-api="GET /perf/http-response" data-req-priority="P0">
         <h3>REQ-PERF-001 HTTP 响应路径零拷贝</h3>
         <p>
           ## 问题 HTTP 响应路径上 HttpResponse 结构体使用 String/Vec&lt;u8&gt; clone()，每次响应至少 3 次堆分配： 1.
@@ -5079,22 +4609,13 @@ Permission 配置:
             <li>cargo bench HTTP 响应路径 堆分配次数较改造前减少 ≥ 50%</li>
           </ol>
         </div>
-        <div
-          id="httpresponse.status-text-改为-compactstring-或-&'static-str"
-          data-criterion="HttpResponse.status_text 改为 CompactString 或 &'static str"
-        >
+        <div id="httpresponse.status-text-改为-compactstring-或-&'static-str" data-criterion="HttpResponse.status_text 改为 CompactString 或 &'static str">
           HttpResponse.status_text 改为 CompactString 或 &amp;'static str
         </div>
-        <div
-          id="httpresponse.headers-改为-smallvec<[(compactstring,-compactstring);-8]>"
-          data-criterion="HttpResponse.headers 改为 SmallVec<[(CompactString, CompactString); 8]>"
-        >
+        <div id="httpresponse.headers-改为-smallvec<[(compactstring,-compactstring);-8]>" data-criterion="HttpResponse.headers 改为 SmallVec<[(CompactString, CompactString); 8]>">
           HttpResponse.headers 改为 SmallVec&lt;[(CompactString, CompactString); 8]&gt;
         </div>
-        <div
-          id="httpresponse.body-通过-mutablestring::take()-零拷贝获取，消除-clone()"
-          data-criterion="HttpResponse.body 通过 MutableString::take() 零拷贝获取，消除 clone()"
-        >
+        <div id="httpresponse.body-通过-mutablestring::take()-零拷贝获取，消除-clone()" data-criterion="HttpResponse.body 通过 MutableString::take() 零拷贝获取，消除 clone()">
           HttpResponse.body 通过 MutableString::take() 零拷贝获取，消除 clone()
         </div>
         <div id="http-响应路径零-mb-级内存拷贝" data-criterion="HTTP 响应路径零 MB 级内存拷贝">
@@ -5102,16 +4623,7 @@ Permission 配置:
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-perf-002"
-        data-req="REQ-PERF-002"
-        data-req-status="implemented"
-        data-req-domain="ENG"
-        data-req-category="architecture"
-        data-req-entity="DomainHandler"
-        data-req-api="GET /perf/cdp-handler"
-        data-req-priority="P0"
-      >
+      <section id="req-perf-002" data-req="REQ-PERF-002" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="DomainHandler" data-req-api="GET /perf/cdp-handler" data-req-priority="P0">
         <h3>REQ-PERF-002 CDP Domain Handler 去锁化 — Mutex&lt;bool&gt;/Mutex&lt;f64&gt; → Cell</h3>
         <p>
           ## 问题 CDP Domain Handler 使用 std::sync::Mutex
@@ -5140,35 +4652,20 @@ Permission 配置:
         <div id="emulation.rs:-3-个-mutex-→-cell" data-criterion="emulation.rs: 3 个 Mutex → Cell">
           emulation.rs: 3 个 Mutex → Cell
         </div>
-        <div
-          id="network.rs:-cache-disabled/extra-headers/network-conditions-改为单-refcell-或-cell"
-          data-criterion="network.rs: cache_disabled/extra_headers/network_conditions 改为单 RefCell 或 Cell"
-        >
+        <div id="network.rs:-cache-disabled/extra-headers/network-conditions-改为单-refcell-或-cell" data-criterion="network.rs: cache_disabled/extra_headers/network_conditions 改为单 RefCell 或 Cell">
           network.rs: cache_disabled/extra_headers/network_conditions 改为单 RefCell 或 Cell
         </div>
         <div id="debugger.rs:-mutex<u64>-→-cell<u64>" data-criterion="debugger.rs: Mutex<u64> → Cell<u64>">
           debugger.rs: Mutex&lt;u64&gt; → Cell&lt;u64&gt;
         </div>
-        <div
-          id="所有-domainhandler-可变状态用-cell/refcell-替代-mutex"
-          data-criterion="所有 DomainHandler 可变状态用 Cell/RefCell 替代 Mutex"
-        >
+        <div id="所有-domainhandler-可变状态用-cell/refcell-替代-mutex" data-criterion="所有 DomainHandler 可变状态用 Cell/RefCell 替代 Mutex">
           所有 DomainHandler 可变状态用 Cell/RefCell 替代 Mutex
         </div>
         <div id="cargo-test--p-bao-cdp-全部通过" data-criterion="cargo test -p bao_cdp 全部通过">
           cargo test -p bao_cdp 全部通过
         </div>
       </section>
-      <section
-        id="req-perf-003"
-        data-req="REQ-PERF-003"
-        data-req-status="implemented"
-        data-req-domain="ENG"
-        data-req-category="architecture"
-        data-req-entity="BufferManager, BufferConfig"
-        data-req-api="GET /perf/buffer"
-        data-req-priority="P1"
-      >
+      <section id="req-perf-003" data-req="REQ-PERF-003" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="BufferManager, BufferConfig" data-req-api="GET /perf/buffer" data-req-priority="P1">
         <h3>REQ-PERF-003 引入 bytes/compact_str/smallvec/dashmap 成熟库</h3>
         <p>
           ## 问题 项目没有使用 bytes crate，所有 HTTP buffer 都是手动 Vec&lt;u8&gt; + clone() 管理。bytes::Bytes
@@ -5192,42 +4689,21 @@ Permission 配置:
             <li>cargo test -p bao_cdp --test perf_refactor_integration_tests 通过</li>
           </ol>
         </div>
-        <div
-          id="bytes:-httpresponse.body-改为-bytes，http-request-buffer-用-bytesmut"
-          data-criterion="bytes: HttpResponse.body 改为 Bytes，HTTP request buffer 用 BytesMut"
-        >
+        <div id="bytes:-httpresponse.body-改为-bytes，http-request-buffer-用-bytesmut" data-criterion="bytes: HttpResponse.body 改为 Bytes，HTTP request buffer 用 BytesMut">
           bytes: HttpResponse.body 改为 Bytes，HTTP request buffer 用 BytesMut
         </div>
-        <div
-          id="compact-str:-cdp-session-id-/-http-header-name-/-url-pathname-改为-compactstring"
-          data-criterion="compact_str: CDP session ID / HTTP header name / URL pathname 改为 CompactString"
-        >
+        <div id="compact-str:-cdp-session-id-/-http-header-name-/-url-pathname-改为-compactstring" data-criterion="compact_str: CDP session ID / HTTP header name / URL pathname 改为 CompactString">
           compact_str: CDP session ID / HTTP header name / URL pathname 改为 CompactString
         </div>
-        <div
-          id="smallvec:-http-headers-改为-smallvec<[(compactstring,-compactstring);-8]>"
-          data-criterion="smallvec: HTTP headers 改为 SmallVec<[(CompactString, CompactString); 8]>"
-        >
+        <div id="smallvec:-http-headers-改为-smallvec<[(compactstring,-compactstring);-8]>" data-criterion="smallvec: HTTP headers 改为 SmallVec<[(CompactString, CompactString); 8]>">
           smallvec: HTTP headers 改为 SmallVec&lt;[(CompactString, CompactString); 8]&gt;
         </div>
-        <div
-          id="dashmap:-runtime-bridge-node-realms/page-globals-改为-dashmap"
-          data-criterion="dashmap: runtime_bridge NODE_REALMS/PAGE_GLOBALS 改为 DashMap"
-        >
+        <div id="dashmap:-runtime-bridge-node-realms/page-globals-改为-dashmap" data-criterion="dashmap: runtime_bridge NODE_REALMS/PAGE_GLOBALS 改为 DashMap">
           dashmap: runtime_bridge NODE_REALMS/PAGE_GLOBALS 改为 DashMap
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
       </section>
-      <section
-        id="req-perf-004"
-        data-req="REQ-PERF-004"
-        data-req-status="implemented"
-        data-req-domain="ENG"
-        data-req-category="architecture"
-        data-req-entity="DomainDispatch"
-        data-req-api="GET /perf/cdp-dispatch"
-        data-req-priority="P1"
-      >
+      <section id="req-perf-004" data-req="REQ-PERF-004" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="DomainDispatch" data-req-api="GET /perf/cdp-dispatch" data-req-priority="P1">
         <h3>REQ-PERF-004 CDP enum dispatch + OnceLock 替代 Arc&lt;Mutex&lt;&gt;&gt;</h3>
         <p>
           ## 问题 CDP Domain Handler 使用 Box&lt;dyn DomainHandler&gt; 动态分发（11 个 vtable 调用 + 堆分配），这是 Go
@@ -5247,38 +4723,20 @@ Permission 配置:
             <li>cargo test -p bao_cdp --test perf_refactor_integration_tests 通过</li>
           </ol>
         </div>
-        <div
-          id="domainhandler-trait-→-enum-domaindispatch-{-page(pagehandler),-...-}-消除-vtable"
-          data-criterion="DomainHandler trait → enum DomainDispatch { Page(PageHandler), ... } 消除 vtable"
-        >
+        <div id="domainhandler-trait-→-enum-domaindispatch-{-page(pagehandler),-...-}-消除-vtable" data-criterion="DomainHandler trait → enum DomainDispatch { Page(PageHandler), ... } 消除 vtable">
           DomainHandler trait → enum DomainDispatch { Page(PageHandler), ... } 消除 vtable
         </div>
-        <div
-          id="registry-改为-vec<domaindispatch>-或固定数组"
-          data-criterion="Registry 改为 Vec<DomainDispatch> 或固定数组"
-        >
+        <div id="registry-改为-vec<domaindispatch>-或固定数组" data-criterion="Registry 改为 Vec<DomainDispatch> 或固定数组">
           Registry 改为 Vec&lt;DomainDispatch&gt; 或固定数组
         </div>
-        <div
-          id="arc<mutex<evaluateresult>>-→-arc<oncelock<evaluateresult>>"
-          data-criterion="Arc<Mutex<EvaluateResult>> → Arc<OnceLock<EvaluateResult>>"
-        >
+        <div id="arc<mutex<evaluateresult>>-→-arc<oncelock<evaluateresult>>" data-criterion="Arc<Mutex<EvaluateResult>> → Arc<OnceLock<EvaluateResult>>">
           Arc&lt;Mutex&lt;EvaluateResult&gt;&gt; → Arc&lt;OnceLock&lt;EvaluateResult&gt;&gt;
         </div>
         <div id="cargo-test--p-bao-cdp-通过" data-criterion="cargo test -p bao_cdp 通过">
           cargo test -p bao_cdp 通过
         </div>
       </section>
-      <section
-        id="req-perf-005"
-        data-req="REQ-PERF-005"
-        data-req-status="implemented"
-        data-req-domain="ENG"
-        data-req-category="architecture"
-        data-req-entity="CodePattern"
-        data-req-api="GET /perf/code-pattern"
-        data-req-priority="P2"
-      >
+      <section id="req-perf-005" data-req="REQ-PERF-005" data-req-status="implemented" data-req-domain="ENG" data-req-category="architecture" data-req-entity="CodePattern" data-req-api="GET /perf/code-pattern" data-req-priority="P2">
         <h3>REQ-PERF-005 消除 Bun 翻译残留反模式</h3>
         <p>
           ## 问题 Bun 翻译代码中大量反模式： 1. Box::new([]) 空数组（Go nil slice 翻译）— 12 处，应改为 Vec::new() 或
@@ -5301,31 +4759,19 @@ Permission 配置:
             <li>cargo test -p bao_cdp --test domain_handler_response_field_boundary_tests 通过</li>
           </ol>
         </div>
-        <div
-          id="12-处-box::new([])-→-vec::new()-或-option<vec>"
-          data-criterion="12 处 Box::new([]) → Vec::new() 或 Option<Vec>"
-        >
+        <div id="12-处-box::new([])-→-vec::new()-或-option<vec>" data-criterion="12 处 Box::new([]) → Vec::new() 或 Option<Vec>">
           12 处 Box::new([]) → Vec::new() 或 Option&lt;Vec&gt;
         </div>
-        <div
-          id="4+-处-option<box<t>>-→-option<t>（urlstate-等小型结构体）"
-          data-criterion="4+ 处 Option<Box<T>> → Option<T>（UrlState 等小型结构体）"
-        >
+        <div id="4+-处-option<box<t>>-→-option<t>（urlstate-等小型结构体）" data-criterion="4+ 处 Option<Box<T>> → Option<T>（UrlState 等小型结构体）">
           4+ 处 Option&lt;Box&lt;T&gt;&gt; → Option&lt;T&gt;（UrlState 等小型结构体）
         </div>
         <div id="15+-处-c-风格索引循环-→-迭代器适配器" data-criterion="15+ 处 C 风格索引循环 → 迭代器适配器">
           15+ 处 C 风格索引循环 → 迭代器适配器
         </div>
-        <div
-          id="node-crypto-5-处-thread-local-clone-→-take()/replace()-零拷贝"
-          data-criterion="node_crypto 5 处 thread_local clone → take()/replace() 零拷贝"
-        >
+        <div id="node-crypto-5-处-thread-local-clone-→-take()/replace()-零拷贝" data-criterion="node_crypto 5 处 thread_local clone → take()/replace() 零拷贝">
           node_crypto 5 处 thread_local clone → take()/replace() 零拷贝
         </div>
-        <div
-          id="module-loader-current-dir-clone-→-就地带引用"
-          data-criterion="module_loader CURRENT_DIR clone → 就地带引用"
-        >
+        <div id="module-loader-current-dir-clone-→-就地带引用" data-criterion="module_loader CURRENT_DIR clone → 就地带引用">
           module_loader CURRENT_DIR clone → 就地带引用
         </div>
         <div id="cargo-test-通过" data-criterion="cargo test 通过">cargo test 通过</div>
@@ -5363,8 +4809,7 @@ Permission 配置:
         <div>
           JS 层错误 → SpiderMonkey Exception → JS 可捕获 Rust 层错误 → Result<t,e>
             → 上抛到 JS 层或日志 CDP 错误 → CdpError{code, message} → JSON-RPC error response Servo 错误 → ServoDelegate
-            callback → 日志 + 事件 OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e
-          >
+            callback → 日志 + 事件 OOM → 紧急 GC → 仍然不足: 进程退出码 134</t,e>
         </div>
       </section>
       <section id="artifact-dependency-matrix" data-type="document" data-artifact-type="dependency-matrix">
@@ -5379,7 +4824,7 @@ Permission 配置:
           | 100% 复用 |
         </div>
       </section>
-      <section id="API-PERF-007" data-api="POST /compress/brotli">
+      <section id="post-/compress/brotli" data-api="POST /compress/brotli">
         <h4>POST /compress/brotli</h4>
         <table data-api-params="">
           <tr>
@@ -5439,7 +4884,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-009" data-api="POST /compress/zstd">
+      <section id="post-/compress/zstd" data-api="POST /compress/zstd">
         <h4>POST /compress/zstd</h4>
         <table data-api-params="">
           <tr>
@@ -5499,7 +4944,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-008" data-api="POST /compress/zlib">
+      <section id="post-/compress/zlib" data-api="POST /compress/zlib">
         <h4>POST /compress/zlib</h4>
         <table data-api-params="">
           <tr>
@@ -5559,7 +5004,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-001" data-api="GET /config/allocator">
+      <section id="get-/config/allocator" data-api="GET /config/allocator">
         <h4>GET /config/allocator</h4>
         <script type="application/ld+json">
           {
@@ -5588,7 +5033,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-013" data-api="POST /hash/simd">
+      <section id="post-/hash/simd" data-api="POST /hash/simd">
         <h4>POST /hash/simd</h4>
         <table data-api-params="">
           <tr>
@@ -5649,7 +5094,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-015" data-api="POST /network/quic">
+      <section id="post-/network/quic" data-api="POST /network/quic">
         <h4>POST /network/quic</h4>
         <table data-api-params="">
           <tr>
@@ -5709,7 +5154,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-016" data-api="POST /transform/html">
+      <section id="post-/transform/html" data-api="POST /transform/html">
         <h4>POST /transform/html</h4>
         <table data-api-params="">
           <tr>
@@ -5775,7 +5220,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-014" data-api="POST /http/serve">
+      <section id="post-/http/serve" data-api="POST /http/serve">
         <h4>POST /http/serve</h4>
         <table data-api-params="">
           <tr>
@@ -5841,7 +5286,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-006" data-api="GET /perf/http-response">
+      <section id="get-/perf/http-response" data-api="GET /perf/http-response">
         <h4>GET /perf/http-response</h4>
         <script type="application/ld+json">
           {
@@ -5870,7 +5315,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-004" data-api="GET /perf/cdp-handler">
+      <section id="get-/perf/cdp-handler" data-api="GET /perf/cdp-handler">
         <h4>GET /perf/cdp-handler</h4>
         <script type="application/ld+json">
           {
@@ -5899,7 +5344,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-002" data-api="GET /perf/buffer">
+      <section id="get-/perf/buffer" data-api="GET /perf/buffer">
         <h4>GET /perf/buffer</h4>
         <script type="application/ld+json">
           {
@@ -5928,7 +5373,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-003" data-api="GET /perf/cdp-dispatch">
+      <section id="get-/perf/cdp-dispatch" data-api="GET /perf/cdp-dispatch">
         <h4>GET /perf/cdp-dispatch</h4>
         <script type="application/ld+json">
           {
@@ -5957,7 +5402,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-005" data-api="GET /perf/code-pattern">
+      <section id="get-/perf/code-pattern" data-api="GET /perf/code-pattern">
         <h4>GET /perf/code-pattern</h4>
         <script type="application/ld+json">
           {
@@ -6000,12 +5445,7 @@ Permission 配置:
         </script>
       </section>
 
-      <section
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-delivery="D4"
-      >
+      <section id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-delivery="D4">
         <h3>运行时状态图</h3>
         <div>
           BaoRuntime 状态机: Uninitialized → Initialized → Running → Suspended → Shutdown Uninitialized:
@@ -6014,12 +5454,7 @@ Permission 配置:
         </div>
       </section>
 
-      <section
-        id="artifact-interface-protocol"
-        data-type="document"
-        data-artifact-type="interface-protocol"
-        data-delivery="D5"
-      >
+      <section id="artifact-interface-protocol" data-type="document" data-artifact-type="interface-protocol" data-delivery="D5">
         <h3>接口协议图</h3>
         <div>
           核心接口协议: 1. BaoRuntime ↔ SpiderMonkey: JSContext 生命周期管理（mozjs FFI） 2. BaoRuntime ↔ servo:
@@ -6029,12 +5464,7 @@ Permission 配置:
         </div>
       </section>
 
-      <section
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-delivery="D6"
-      >
+      <section id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-delivery="D6">
         <h3>事件/消息目录</h3>
         <div>
           核心事件/消息: 1. ServoEvent::LoadComplete → 页面加载完成 2. ServoEvent::DocumentReady → DOM 可操作 3.
@@ -6044,29 +5474,17 @@ Permission 配置:
         </div>
       </section>
 
-      <section
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-delivery="D7"
-      >
+      <section id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-delivery="D7">
         <h3>错误处理策略</h3>
         <div>
           错误分层策略: 1. BaoError: 顶层错误枚举，统一错误传播 2. EngineError: SpiderMonkey 执行错误（编译/运行时/GC）
           3. BrowserError: servo 渲染错误（加载/布局/渲染） 4. CdpError: CDP 协议错误（解析/域/命令） 5. StealthError:
-          反指纹模块错误（TLS/Canvas/配置） 错误传播: Result<t, BaoError=""
-            >，底层错误通过 From/Into 自动转换 不可恢复错误: panic! 仅用于逻辑不变量违反 日志策略: tracing crate，分级别
-            log（ERROR/WARN/INFO/DEBUG/TRACE）</t,
-          >
+          反指纹模块错误（TLS/Canvas/配置） 错误传播: Result<t, BaoError="">，底层错误通过 From/Into 自动转换 不可恢复错误: panic! 仅用于逻辑不变量违反 日志策略: tracing crate，分级别
+            log（ERROR/WARN/INFO/DEBUG/TRACE）</t,>
         </div>
       </section>
 
-      <section
-        id="artifact-use-case-diagram"
-        data-type="document"
-        data-artifact-type="use-case-diagram"
-        data-delivery="D8"
-      >
+      <section id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram" data-delivery="D8">
         <h3>外部依赖矩阵</h3>
         <div>
           | 依赖 | 版本 | 许可证 | 用途 | 可替代 | |------|------|--------|------|--------| | mozjs/mozjs-sys | latest |
@@ -6092,7 +5510,7 @@ Permission 配置:
           }
         </script>
       </section>
-      <section id="API-CDP-002" data-module="bao_cdp_client::transport" data-module-kind="module">
+      <section id="bao-cdp-client::transport" data-module="bao_cdp_client::transport" data-module-kind="module">
         <script type="application/ld+json">
           {
             "@type": "Module",
@@ -6128,7 +5546,7 @@ Permission 配置:
           }
         </script>
       </section>
-      <section id="API-CDP-001" data-module="bao_cdp_client::api" data-module-kind="module">
+      <section id="bao-cdp-client::api" data-module="bao_cdp_client::api" data-module-kind="module">
         <script type="application/ld+json">
           {
             "@type": "Module",
@@ -6335,33 +5753,16 @@ Permission 配置:
           }
         </script>
       </section>
-      <section
-        id="req-bao-api-001"
-        data-req="REQ-BAO-API-001"
-        data-req-status="implemented"
-        data-req-domain="bao-api"
-        data-req-category="api"
-        data-req-entity="BaoCdpBrowser"
-        data-req-api="POST /cdp-client/connect"
-      >
+      <section id="req-bao-api-001" data-req="REQ-BAO-API-001" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-req-entity="BaoCdpBrowser" data-req-api="POST /cdp-client/connect">
         <h3>REQ-BAO-API-001 undefined</h3>
         <p>实现统一 Browser::connect API,通过 URL scheme 路由到 InMemoryTransport 或 WebSocketTransport</p>
-        <div
-          id="browser::connect('memory://bao')-初始化-inmemorytransport-并返回可用-browser-实例"
-          data-criterion="Browser::connect('memory://bao') 初始化 InMemoryTransport 并返回可用 Browser 实例"
-        >
+        <div id="browser::connect('memory://bao')-初始化-inmemorytransport-并返回可用-browser-实例" data-criterion="Browser::connect('memory://bao') 初始化 InMemoryTransport 并返回可用 Browser 实例">
           Browser::connect('memory://bao') 初始化 InMemoryTransport 并返回可用 Browser 实例
         </div>
-        <div
-          id="browser::connect('ws://127.0.0.1:9222')-通过-websocket-连接外部-chrome"
-          data-criterion="Browser::connect('ws://127.0.0.1:9222') 通过 WebSocket 连接外部 Chrome"
-        >
+        <div id="browser::connect('ws://127.0.0.1:9222')-通过-websocket-连接外部-chrome" data-criterion="Browser::connect('ws://127.0.0.1:9222') 通过 WebSocket 连接外部 Chrome">
           Browser::connect('ws://127.0.0.1:9222') 通过 WebSocket 连接外部 Chrome
         </div>
-        <div
-          id="browser::connect('http://127.0.0.1:9222')-自动发现并连接-chrome-ws://-endpoint"
-          data-criterion="Browser::connect('http://127.0.0.1:9222') 自动发现并连接 Chrome ws:// endpoint"
-        >
+        <div id="browser::connect('http://127.0.0.1:9222')-自动发现并连接-chrome-ws://-endpoint" data-criterion="Browser::connect('http://127.0.0.1:9222') 自动发现并连接 Chrome ws:// endpoint">
           Browser::connect('http://127.0.0.1:9222') 自动发现并连接 Chrome ws:// endpoint
         </div>
         <div id="url-scheme-错误时返回明确错误码" data-criterion="URL scheme 错误时返回明确错误码">
@@ -6376,39 +5777,19 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-bao-api-002"
-        data-req="REQ-BAO-API-002"
-        data-req-status="implemented"
-        data-req-domain="bao-api"
-        data-req-category="architecture"
-        data-req-entity="CdpTransport"
-        data-req-api="POST /cdp-client/transport"
-      >
+      <section id="req-bao-api-002" data-req="REQ-BAO-API-002" data-req-status="implemented" data-req-domain="bao-api" data-req-category="architecture" data-req-entity="CdpTransport" data-req-api="POST /cdp-client/transport">
         <h3>REQ-BAO-API-002 undefined</h3>
         <p>Transport trait + 双实现</p>
-        <div
-          id="transport-trait-抽象-send-command/recv-event/close-三方法"
-          data-criterion="Transport trait 抽象 send_command/recv_event/close 三方法"
-        >
+        <div id="transport-trait-抽象-send-command/recv-event/close-三方法" data-criterion="Transport trait 抽象 send_command/recv_event/close 三方法">
           Transport trait 抽象 send_command/recv_event/close 三方法
         </div>
-        <div
-          id="inmemorytransport-包裹-cdprdpbridge-直调-servo"
-          data-criterion="InMemoryTransport 包裹 CDPRdpBridge 直调 servo"
-        >
+        <div id="inmemorytransport-包裹-cdprdpbridge-直调-servo" data-criterion="InMemoryTransport 包裹 CDPRdpBridge 直调 servo">
           InMemoryTransport 包裹 CDPRdpBridge 直调 servo
         </div>
-        <div
-          id="websockettransport-复用-bao-cdp::ws-codec-+-bun-uws"
-          data-criterion="WebSocketTransport 复用 bao_cdp::ws_codec + bun_uws"
-        >
+        <div id="websockettransport-复用-bao-cdp::ws-codec-+-bun-uws" data-criterion="WebSocketTransport 复用 bao_cdp::ws_codec + bun_uws">
           WebSocketTransport 复用 bao_cdp::ws_codec + bun_uws
         </div>
-        <div
-          id="transport-错误码完整(timeouterror/connectionclosed/transporterror)"
-          data-criterion="Transport 错误码完整(TimeoutError/ConnectionClosed/TransportError)"
-        >
+        <div id="transport-错误码完整(timeouterror/connectionclosed/transporterror)" data-criterion="Transport 错误码完整(TimeoutError/ConnectionClosed/TransportError)">
           Transport 错误码完整(TimeoutError/ConnectionClosed/TransportError)
         </div>
         <div data-criteria="">
@@ -6420,21 +5801,10 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-bao-api-004"
-        data-req="REQ-BAO-API-004"
-        data-req-status="implemented"
-        data-req-domain="bao-api"
-        data-req-category="api"
-        data-req-entity="AClassDispatcher"
-        data-req-api="POST /cdp-client/a-class"
-      >
+      <section id="req-bao-api-004" data-req="REQ-BAO-API-004" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-req-entity="AClassDispatcher" data-req-api="POST /cdp-client/a-class">
         <h3>REQ-BAO-API-004 undefined</h3>
         <p>A 类机械映射 48 method 实现</p>
-        <div
-          id="a-类机械映射-48-method-全部实现(page.navigate/reload/capturescreenshot/runtime.evaluate/dom.queryselector-等)"
-          data-criterion="A 类机械映射 48 method 全部实现(Page.navigate/reload/captureScreenshot/Runtime.evaluate/DOM.querySelector 等)"
-        >
+        <div id="a-类机械映射-48-method-全部实现(page.navigate/reload/capturescreenshot/runtime.evaluate/dom.queryselector-等)" data-criterion="A 类机械映射 48 method 全部实现(Page.navigate/reload/captureScreenshot/Runtime.evaluate/DOM.querySelector 等)">
           A 类机械映射 48 method 全部实现(Page.navigate/reload/captureScreenshot/Runtime.evaluate/DOM.querySelector 等)
         </div>
         <div id="1:1-参数/结果映射,无-eval-注入" data-criterion="1:1 参数/结果映射,无 Eval 注入">
@@ -6448,36 +5818,19 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-bao-api-005"
-        data-req="REQ-BAO-API-005"
-        data-req-status="implemented"
-        data-req-domain="bao-api"
-        data-req-category="api"
-        data-req-entity="BClassSynthesizer"
-        data-req-api="POST /cdp-client/b-class"
-      >
+      <section id="req-bao-api-005" data-req="REQ-BAO-API-005" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-req-entity="BClassSynthesizer" data-req-api="POST /cdp-client/b-class">
         <h3>REQ-BAO-API-005 undefined</h3>
         <p>B 类 Eval 合成 52 method 实现(IIFE 安全封装)</p>
-        <div
-          id="b-类-eval-合成-52-method-全部实现(page.title/url/content,-el.click/type/press/hover/select-等)"
-          data-criterion="B 类 Eval 合成 52 method 全部实现(page.title/url/content, el.click/type/press/hover/select 等)"
-        >
+        <div id="b-类-eval-合成-52-method-全部实现(page.title/url/content,-el.click/type/press/hover/select-等)" data-criterion="B 类 Eval 合成 52 method 全部实现(page.title/url/content, el.click/type/press/hover/select 等)">
           B 类 Eval 合成 52 method 全部实现(page.title/url/content, el.click/type/press/hover/select 等)
         </div>
         <div id="所有-eval-使用-iife-安全封装" data-criterion="所有 Eval 使用 IIFE 安全封装">
           所有 Eval 使用 IIFE 安全封装
         </div>
-        <div
-          id="参数序列化使用-json.stringify-禁止字符串拼接"
-          data-criterion="参数序列化使用 JSON.stringify 禁止字符串拼接"
-        >
+        <div id="参数序列化使用-json.stringify-禁止字符串拼接" data-criterion="参数序列化使用 JSON.stringify 禁止字符串拼接">
           参数序列化使用 JSON.stringify 禁止字符串拼接
         </div>
-        <div
-          id="每个-b-类-method-的-tdd-含-js-注入测试用例"
-          data-criterion="每个 B 类 method 的 TDD 含 JS 注入测试用例"
-        >
+        <div id="每个-b-类-method-的-tdd-含-js-注入测试用例" data-criterion="每个 B 类 method 的 TDD 含 JS 注入测试用例">
           每个 B 类 method 的 TDD 含 JS 注入测试用例
         </div>
         <div data-criteria="">
@@ -6488,30 +5841,16 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-bao-api-006"
-        data-req="REQ-BAO-API-006"
-        data-req-status="implemented"
-        data-req-domain="bao-api"
-        data-req-category="api"
-        data-req-entity="DClassState"
-        data-req-api="POST /cdp-client/d-class"
-      >
+      <section id="req-bao-api-006" data-req="REQ-BAO-API-006" data-req-status="implemented" data-req-domain="bao-api" data-req-category="api" data-req-entity="DClassState" data-req-api="POST /cdp-client/d-class">
         <h3>REQ-BAO-API-006 undefined</h3>
         <p>D 类纯状态管理 62 method 实现</p>
-        <div
-          id="d-类纯状态管理-62-method-全部实现(browser/browsercontext/page/frame/request/response/dialog-本地状态)"
-          data-criterion="D 类纯状态管理 62 method 全部实现(browser/browserContext/page/frame/request/response/dialog 本地状态)"
-        >
+        <div id="d-类纯状态管理-62-method-全部实现(browser/browsercontext/page/frame/request/response/dialog-本地状态)" data-criterion="D 类纯状态管理 62 method 全部实现(browser/browserContext/page/frame/request/response/dialog 本地状态)">
           D 类纯状态管理 62 method 全部实现(browser/browserContext/page/frame/request/response/dialog 本地状态)
         </div>
         <div id="本地状态无外部-cdp-命令往返" data-criterion="本地状态无外部 CDP 命令往返">
           本地状态无外部 CDP 命令往返
         </div>
-        <div
-          id="eventemitter-模式实现-on/off/once/removealllisteners/listenercount"
-          data-criterion="EventEmitter 模式实现 on/off/once/removeAllListeners/listenerCount"
-        >
+        <div id="eventemitter-模式实现-on/off/once/removealllisteners/listenercount" data-criterion="EventEmitter 模式实现 on/off/once/removeAllListeners/listenerCount">
           EventEmitter 模式实现 on/off/once/removeAllListeners/listenerCount
         </div>
         <div data-criteria="">
@@ -6522,36 +5861,19 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-bao-api-007"
-        data-req="REQ-BAO-API-007"
-        data-req-status="implemented"
-        data-req-domain="bao-api"
-        data-req-category="operations"
-        data-req-entity="EClassNotSupported"
-        data-req-api="POST /cdp-client/e-class"
-      >
+      <section id="req-bao-api-007" data-req="REQ-BAO-API-007" data-req-status="implemented" data-req-domain="bao-api" data-req-category="operations" data-req-entity="EClassNotSupported" data-req-api="POST /cdp-client/e-class">
         <h3>REQ-BAO-API-007 undefined</h3>
         <p>E 类 servo 不支持 31 method 兼容处理(-32601 错误码)</p>
-        <div
-          id="e-类-servo-不支持-31-method-在-internal-模式返回标准--32601-错误码"
-          data-criterion="E 类 servo 不支持 31 method 在 Internal 模式返回标准 -32601 错误码"
-        >
+        <div id="e-类-servo-不支持-31-method-在-internal-模式返回标准--32601-错误码" data-criterion="E 类 servo 不支持 31 method 在 Internal 模式返回标准 -32601 错误码">
           E 类 servo 不支持 31 method 在 Internal 模式返回标准 -32601 错误码
         </div>
         <div id="external-模式透传给外部-chrome" data-criterion="External 模式透传给外部 Chrome">
           External 模式透传给外部 Chrome
         </div>
-        <div
-          id="playwright-客户端能正常-fallback,不阻塞主流程"
-          data-criterion="Playwright 客户端能正常 fallback,不阻塞主流程"
-        >
+        <div id="playwright-客户端能正常-fallback,不阻塞主流程" data-criterion="Playwright 客户端能正常 fallback,不阻塞主流程">
           Playwright 客户端能正常 fallback,不阻塞主流程
         </div>
-        <div
-          id="e2e-测试:-playwright-连接-bao-完成完整导航+截图流程"
-          data-criterion="E2E 测试: Playwright 连接 bao 完成完整导航+截图流程"
-        >
+        <div id="e2e-测试:-playwright-连接-bao-完成完整导航+截图流程" data-criterion="E2E 测试: Playwright 连接 bao 完成完整导航+截图流程">
           E2E 测试: Playwright 连接 bao 完成完整导航+截图流程
         </div>
         <div data-criteria="">
@@ -6562,45 +5884,22 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-bao-api-008"
-        data-req="REQ-BAO-API-008"
-        data-req-status="implemented"
-        data-req-domain="bao-api"
-        data-req-category="deployment"
-        data-req-entity="BaoCdpPublicAPI"
-        data-req-api="GET /cdp-client/public-api"
-      >
+      <section id="req-bao-api-008" data-req="REQ-BAO-API-008" data-req-status="implemented" data-req-domain="bao-api" data-req-category="deployment" data-req-entity="BaoCdpPublicAPI" data-req-api="GET /cdp-client/public-api">
         <h3>REQ-BAO-API-008 undefined</h3>
         <p>其他 Rust 程序通过 bao = '0.1' 当库使用,完整公共 API + 文档</p>
-        <div
-          id="bao-=-'0.1'-在-crates.io-或-git-path-可被其他-rust-程序-cargo-add"
-          data-criterion="bao = '0.1' 在 crates.io 或 git path 可被其他 Rust 程序 cargo add"
-        >
+        <div id="bao-=-'0.1'-在-crates.io-或-git-path-可被其他-rust-程序-cargo-add" data-criterion="bao = '0.1' 在 crates.io 或 git path 可被其他 Rust 程序 cargo add">
           bao = '0.1' 在 crates.io 或 git path 可被其他 Rust 程序 cargo add
         </div>
-        <div
-          id="公开-trait:-browser/page/element/frame/cookie/network/dialog/consolemessage"
-          data-criterion="公开 trait: Browser/Page/Element/Frame/Cookie/Network/Dialog/ConsoleMessage"
-        >
+        <div id="公开-trait:-browser/page/element/frame/cookie/network/dialog/consolemessage" data-criterion="公开 trait: Browser/Page/Element/Frame/Cookie/Network/Dialog/ConsoleMessage">
           公开 trait: Browser/Page/Element/Frame/Cookie/Network/Dialog/ConsoleMessage
         </div>
-        <div
-          id="公开结构:-browsercontext/httprequest/httpresponse/jshandle/elementhandle"
-          data-criterion="公开结构: BrowserContext/HTTPRequest/HTTPResponse/JSHandle/ElementHandle"
-        >
+        <div id="公开结构:-browsercontext/httprequest/httpresponse/jshandle/elementhandle" data-criterion="公开结构: BrowserContext/HTTPRequest/HTTPResponse/JSHandle/ElementHandle">
           公开结构: BrowserContext/HTTPRequest/HTTPResponse/JSHandle/ElementHandle
         </div>
-        <div
-          id="公开枚举:-screenshotformat/waituntilstate/devicedescriptor"
-          data-criterion="公开枚举: ScreenshotFormat/WaitUntilState/DeviceDescriptor"
-        >
+        <div id="公开枚举:-screenshotformat/waituntilstate/devicedescriptor" data-criterion="公开枚举: ScreenshotFormat/WaitUntilState/DeviceDescriptor">
           公开枚举: ScreenshotFormat/WaitUntilState/DeviceDescriptor
         </div>
-        <div
-          id="完整文档:-每个-method-有-doc-comment-+-示例"
-          data-criterion="完整文档: 每个 method 有 doc comment + 示例"
-        >
+        <div id="完整文档:-每个-method-有-doc-comment-+-示例" data-criterion="完整文档: 每个 method 有 doc comment + 示例">
           完整文档: 每个 method 有 doc comment + 示例
         </div>
         <div data-criteria="">
@@ -6612,15 +5911,7 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-h3-001"
-        data-req="REQ-H3-001"
-        data-req-status="implemented"
-        data-req-domain="h3"
-        data-req-category="api"
-        data-req-entity="H3FetchClient"
-        data-req-api="POST /fetch/h3"
-      >
+      <section id="req-h3-001" data-req="REQ-H3-001" data-req-status="implemented" data-req-domain="h3" data-req-category="api" data-req-entity="H3FetchClient" data-req-api="POST /fetch/h3">
         <h3>REQ-H3-001 undefined</h3>
         <p>
           BAO 作为正常 BUN(BUN 用了 BAO 就应该有 h3 能力),必须暴露 h3/HTTP3 fetch 能力。当前 bun_http crate 已有
@@ -6631,22 +5922,13 @@ Permission 配置:
         <div id="bao-runtime-fetch-支持-http/3-(h3)-协议" data-criterion="bao_runtime fetch 支持 HTTP/3 (h3) 协议">
           bao_runtime fetch 支持 HTTP/3 (h3) 协议
         </div>
-        <div
-          id="集成-bun-http-h3-client(lsquic)到-fetch-api-调用路径"
-          data-criterion="集成 bun_http h3_client(lsquic)到 fetch_api 调用路径"
-        >
+        <div id="集成-bun-http-h3-client(lsquic)到-fetch-api-调用路径" data-criterion="集成 bun_http h3_client(lsquic)到 fetch_api 调用路径">
           集成 bun_http h3_client(lsquic)到 fetch_api 调用路径
         </div>
-        <div
-          id="fetch('https://http3.example')-自动协商-http/3(alt-svc-/-known-h3-host)"
-          data-criterion="fetch('https://http3.example') 自动协商 HTTP/3(Alt-Svc / known h3 host)"
-        >
+        <div id="fetch('https://http3.example')-自动协商-http/3(alt-svc-/-known-h3-host)" data-criterion="fetch('https://http3.example') 自动协商 HTTP/3(Alt-Svc / known h3 host)">
           fetch('https://http3.example') 自动协商 HTTP/3(Alt-Svc / known h3 host)
         </div>
-        <div
-          id="h3-连接复用(0-rtt/1-rtt,quic-connection-pooling)"
-          data-criterion="h3 连接复用(0-RTT/1-RTT,QUIC connection pooling)"
-        >
+        <div id="h3-连接复用(0-rtt/1-rtt,quic-connection-pooling)" data-criterion="h3 连接复用(0-RTT/1-RTT,QUIC connection pooling)">
           h3 连接复用(0-RTT/1-RTT,QUIC connection pooling)
         </div>
         <div id="h3-流多路复用(单连接多并发请求)" data-criterion="h3 流多路复用(单连接多并发请求)">
@@ -6655,10 +5937,7 @@ Permission 配置:
         <div id="保持-http/1.1-/-http/2-fallback-行为不变" data-criterion="保持 HTTP/1.1 / HTTP/2 fallback 行为不变">
           保持 HTTP/1.1 / HTTP/2 fallback 行为不变
         </div>
-        <div
-          id="fetch()-response-api-兼容(同步语义通过-事件循环-驱动-h3-client-callback)"
-          data-criterion="fetch() Response API 兼容(同步语义通过 事件循环 驱动 h3_client callback)"
-        >
+        <div id="fetch()-response-api-兼容(同步语义通过-事件循环-驱动-h3-client-callback)" data-criterion="fetch() Response API 兼容(同步语义通过 事件循环 驱动 h3_client callback)">
           fetch() Response API 兼容(同步语义通过 事件循环 驱动 h3_client callback)
         </div>
         <div data-criteria="">
@@ -6671,15 +5950,7 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-cdp-uws-001"
-        data-req="REQ-CDP-UWS-001"
-        data-req-status="implemented"
-        data-req-domain="cdp-uws"
-        data-req-category="architecture"
-        data-req-entity="BaoCdpWebSocket"
-        data-req-api="POST /cdp/ws"
-      >
+      <section id="req-cdp-uws-001" data-req="REQ-CDP-UWS-001" data-req-status="implemented" data-req-domain="cdp-uws" data-req-category="architecture" data-req-entity="BaoCdpWebSocket" data-req-api="POST /cdp/ws">
         <h3>REQ-CDP-UWS-001 undefined</h3>
         <p>
           bao_cdp 必须使用 bun_uws 替换自写的 ws_codec/ws_handshake,符合 CLAUDE.md 链接复用铁律。当前 bao_cdp 自写 RFC
@@ -6687,46 +5958,25 @@ Permission 配置:
           已使用 bun_uws,bao_cdp 应统一使用相同后端,消除重复实现并保证行为一致性。注:REQ-PURE-009 已推翻(uWS 保留),本
           REQ 是 uWS 推翻后的正向应用——bao_cdp 补全 bun_uws 集成。
         </p>
-        <div
-          id="bao-cdp-websocket-实现使用-bun-uws(链接-c++-uws-二进制),不再自写-rfc-6455-解析"
-          data-criterion="bao_cdp WebSocket 实现使用 bun_uws(链接 C++ uWS 二进制),不再自写 RFC 6455 解析"
-        >
+        <div id="bao-cdp-websocket-实现使用-bun-uws(链接-c++-uws-二进制),不再自写-rfc-6455-解析" data-criterion="bao_cdp WebSocket 实现使用 bun_uws(链接 C++ uWS 二进制),不再自写 RFC 6455 解析">
           bao_cdp WebSocket 实现使用 bun_uws(链接 C++ uWS 二进制),不再自写 RFC 6455 解析
         </div>
-        <div
-          id="删除-bao-cdp-自写的-ws-codec.rs-/-ws-handshake.rs(约-730-行手写帧编解码)"
-          data-criterion="删除 bao_cdp 自写的 ws_codec.rs / ws_handshake.rs(约 730 行手写帧编解码)"
-        >
+        <div id="删除-bao-cdp-自写的-ws-codec.rs-/-ws-handshake.rs(约-730-行手写帧编解码)" data-criterion="删除 bao_cdp 自写的 ws_codec.rs / ws_handshake.rs(约 730 行手写帧编解码)">
           删除 bao_cdp 自写的 ws_codec.rs / ws_handshake.rs(约 730 行手写帧编解码)
         </div>
-        <div
-          id="bao-cdp-client-的-websockettransport-基于-bun-uws-app/upgrade-api"
-          data-criterion="bao_cdp_client 的 WebSocketTransport 基于 bun_uws App/Upgrade API"
-        >
+        <div id="bao-cdp-client-的-websockettransport-基于-bun-uws-app/upgrade-api" data-criterion="bao_cdp_client 的 WebSocketTransport 基于 bun_uws App/Upgrade API">
           bao_cdp_client 的 WebSocketTransport 基于 bun_uws App/Upgrade API
         </div>
-        <div
-          id="符合-claude.md-铁律「uws-链接复用-c++-二进制」"
-          data-criterion="符合 CLAUDE.md 铁律「uWS 链接复用 C++ 二进制」"
-        >
+        <div id="符合-claude.md-铁律「uws-链接复用-c++-二进制」" data-criterion="符合 CLAUDE.md 铁律「uWS 链接复用 C++ 二进制」">
           符合 CLAUDE.md 铁律「uWS 链接复用 C++ 二进制」
         </div>
-        <div
-          id="rfc-6455-行为(帧分片、掩码、close、ping/pong、continuation)由-uws-保证"
-          data-criterion="RFC 6455 行为(帧分片、掩码、close、ping/pong、continuation)由 uWS 保证"
-        >
+        <div id="rfc-6455-行为(帧分片、掩码、close、ping/pong、continuation)由-uws-保证" data-criterion="RFC 6455 行为(帧分片、掩码、close、ping/pong、continuation)由 uWS 保证">
           RFC 6455 行为(帧分片、掩码、close、ping/pong、continuation)由 uWS 保证
         </div>
-        <div
-          id="bao-cdp-的-cargo.toml-依赖-bun-uws-workspace-crate(不再-standalone)"
-          data-criterion="bao_cdp 的 Cargo.toml 依赖 bun_uws workspace crate(不再 standalone)"
-        >
+        <div id="bao-cdp-的-cargo.toml-依赖-bun-uws-workspace-crate(不再-standalone)" data-criterion="bao_cdp 的 Cargo.toml 依赖 bun_uws workspace crate(不再 standalone)">
           bao_cdp 的 Cargo.toml 依赖 bun_uws workspace crate(不再 standalone)
         </div>
-        <div
-          id="cargo-test-全部通过(含现有-cdp-事件/e2e-测试)"
-          data-criterion="cargo test 全部通过(含现有 CDP 事件/E2E 测试)"
-        >
+        <div id="cargo-test-全部通过(含现有-cdp-事件/e2e-测试)" data-criterion="cargo test 全部通过(含现有 CDP 事件/E2E 测试)">
           cargo test 全部通过(含现有 CDP 事件/E2E 测试)
         </div>
         <div data-criteria="">
@@ -6739,7 +5989,7 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section id="API-CDP-006" data-api="POST /cdp-client/connect">
+      <section id="post-/cdp-client/connect" data-api="POST /cdp-client/connect">
         <h4>POST /cdp-client/connect — bao_cdp_client Browser::connect — 统一连接入口</h4>
         <table data-api-params="">
           <tr>
@@ -6748,23 +5998,13 @@ Permission 配置:
             <th>必填</th>
             <th>说明</th>
           </tr>
-          <tr
-            data-type="string"
-            data-required="true"
-            data-param="url"
-            data-desc="连接 URL，scheme ∈ {memory, ws, http}"
-          >
+          <tr data-type="string" data-required="true" data-param="url" data-desc="连接 URL，scheme ∈ {memory, ws, http}">
             <td>url</td>
             <td>string</td>
             <td>是</td>
             <td>连接 URL，scheme ∈ {memory, ws, http}</td>
           </tr>
-          <tr
-            data-type="integer"
-            data-required="false"
-            data-param="timeout_ms"
-            data-desc="连接超时（毫秒），默认 30000"
-          >
+          <tr data-type="integer" data-required="false" data-param="timeout_ms" data-desc="连接超时（毫秒），默认 30000">
             <td>timeout_ms</td>
             <td>integer</td>
             <td>否</td>
@@ -6826,7 +6066,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-CDP-010" data-api="POST /cdp-client/transport">
+      <section id="post-/cdp-client/transport" data-api="POST /cdp-client/transport">
         <h4>POST /cdp-client/transport — bao_cdp_client transport.send_command</h4>
         <table data-api-params="">
           <tr>
@@ -6841,12 +6081,7 @@ Permission 配置:
             <td>是</td>
             <td>连接实例 ID</td>
           </tr>
-          <tr
-            data-type="string"
-            data-required="true"
-            data-param="method"
-            data-desc="CDP method 名（如 Runtime.evaluate）"
-          >
+          <tr data-type="string" data-required="true" data-param="method" data-desc="CDP method 名（如 Runtime.evaluate）">
             <td>method</td>
             <td>string</td>
             <td>是</td>
@@ -6920,7 +6155,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-CDP-009" data-api="POST /cdp-client/subscribe-events">
+      <section id="post-/cdp-client/subscribe-events" data-api="POST /cdp-client/subscribe-events">
         <h4>POST /cdp-client/subscribe-events — bao_cdp_client 事件订阅（servo 7 事件映射）</h4>
         <table data-api-params="">
           <tr>
@@ -6935,12 +6170,7 @@ Permission 配置:
             <td>是</td>
             <td>连接实例 ID</td>
           </tr>
-          <tr
-            data-type="string"
-            data-required="false"
-            data-param="event_filter"
-            data-desc="CDP event method 过滤器（如 Page.frameNavigated），为空订阅全部"
-          >
+          <tr data-type="string" data-required="false" data-param="event_filter" data-desc="CDP event method 过滤器（如 Page.frameNavigated），为空订阅全部">
             <td>event_filter</td>
             <td>string</td>
             <td>否</td>
@@ -6996,7 +6226,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-CDP-004" data-api="POST /cdp-client/a-class">
+      <section id="post-/cdp-client/a-class" data-api="POST /cdp-client/a-class">
         <h4>POST /cdp-client/a-class — A 类 48 个机械映射 method 调用</h4>
         <table data-api-params="">
           <tr>
@@ -7073,7 +6303,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-CDP-005" data-api="POST /cdp-client/b-class">
+      <section id="post-/cdp-client/b-class" data-api="POST /cdp-client/b-class">
         <h4>POST /cdp-client/b-class — B 类 52 个 IIFE Eval 合成 method 调用</h4>
         <table data-api-params="">
           <tr>
@@ -7150,7 +6380,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-CDP-007" data-api="POST /cdp-client/d-class">
+      <section id="post-/cdp-client/d-class" data-api="POST /cdp-client/d-class">
         <h4>POST /cdp-client/d-class — D 类 62 个纯状态 method + EventEmitter</h4>
         <table data-api-params="">
           <tr>
@@ -7227,7 +6457,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-CDP-008" data-api="POST /cdp-client/e-class">
+      <section id="post-/cdp-client/e-class" data-api="POST /cdp-client/e-class">
         <h4>POST /cdp-client/e-class — E 类 31 个未实现 method（-32601）</h4>
         <table data-api-params="">
           <tr>
@@ -7306,7 +6536,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-CDP-003" data-api="GET /cdp-client/public-api">
+      <section id="get-/cdp-client/public-api" data-api="GET /cdp-client/public-api">
         <h4>GET /cdp-client/public-api — bao_cdp_client 公共 API + 文档元信息</h4>
         <script type="application/ld+json">
           {
@@ -7357,7 +6587,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-012" data-api="POST /fetch/h3">
+      <section id="post-/fetch/h3" data-api="POST /fetch/h3">
         <h4>POST /fetch/h3 — HTTP/3 fetch（h3/quiche）</h4>
         <table data-api-params="">
           <tr>
@@ -7464,7 +6694,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-CDP-017" data-api="POST /cdp/ws">
+      <section id="post-/cdp/ws" data-api="POST /cdp/ws">
         <h4>POST /cdp/ws — bao_cdp 服务端 bun_uws WebSocket 启动</h4>
         <table data-api-params="">
           <tr>
@@ -7541,7 +6771,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-ENG-009" data-api="POST /sqlite/open">
+      <section id="post-/sqlite/open" data-api="POST /sqlite/open">
         <h4>POST /sqlite/open — bun:sqlite 数据库打开</h4>
         <table data-api-params="">
           <tr>
@@ -7556,12 +6786,7 @@ Permission 配置:
             <td>是</td>
             <td>数据库文件路径（或 :memory:）</td>
           </tr>
-          <tr
-            data-type="string"
-            data-required="false"
-            data-param="open_flags"
-            data-desc="打开模式（readwrite/create 等）"
-          >
+          <tr data-type="string" data-required="false" data-param="open_flags" data-desc="打开模式（readwrite/create 等）">
             <td>open_flags</td>
             <td>string</td>
             <td>否</td>
@@ -7623,7 +6848,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-ENG-006" data-api="POST /ffi/load">
+      <section id="post-/ffi/load" data-api="POST /ffi/load">
         <h4>POST /ffi/load — bun:ffi 动态库加载</h4>
         <table data-api-params="">
           <tr>
@@ -7700,7 +6925,7 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section id="API-PERF-011" data-api="POST /fetch/async-tasklet">
+      <section id="post-/fetch/async-tasklet" data-api="POST /fetch/async-tasklet">
         <h4>POST /fetch/async-tasklet</h4>
         <script type="application/ld+json">
           {
@@ -7779,7 +7004,7 @@ Permission 配置:
           }
         </script>
       </section>
-      <section id="API-ENG-010" data-api="/vm/sandbox">
+      <section id="/vm/sandbox" data-api="/vm/sandbox">
         <h3>vm-sandbox-api — node:vm Sandbox API</h3>
         <p>SpiderMonkey Realm 隔离的 node:vm sandbox 实现。</p>
         <table>
@@ -7833,14 +7058,13 @@ Permission 配置:
           </tr>
         </table>
       </section>
-      <section
-        id="req-spec-001"
-        data-req="REQ-SPEC-001"
-        data-req-status="approved"
-        data-req-domain="SPEC"
-        data-req-category="architecture"
-      >
-        <h3>REQ-SPEC-001 API 元素 id 必须用 API-{DOMAIN}-{N} 格式(禁 method-path)</h3>
+      <section id="req-spec-001" data-req="REQ-SPEC-001" data-req-status="approved" data-req-domain="SPEC" data-req-category="architecture">
+        <h3>REQ-SPEC-001 API 元素 id 必须用 API-{DOMAIN}-{N} 格式(禁 method-path)</h3><p data-req-description="">SPEC 中所有 API 元素(&lt;section data-api=...&gt;)的 id 属性必须严格遵守 API-{DOMAIN}-{N} 格式(N 为
+          id-registry 分配的顺序整数),禁止使用 method-path 形式(即 id 属性值以 HTTP 方法 + 路径开头,如
+          post-xxx、get-xxx、纯路径 /vm/xxx)。method-path 形式违反 SPEC ID 规范,导致 validate 失败、id-registry
+          无法追踪、跨文件 xref 断链。DOMAIN 必须是项目认可的 10 个 API
+          子域之一:ENG/CDP/STL/CLI/BRW/LIB/BAO-API/PERF/IMPL/CDP-UWS。例外:bao-cdp-client(子系统 section)和
+          bao-cdp-client-的-...(criterion div)不属于 API 元素,不在本 REQ 约束范围。</p>
         <p>
           SPEC 中所有 API 元素(&lt;section data-api=...&gt;)的 id 属性必须严格遵守 API-{DOMAIN}-{N} 格式(N 为
           id-registry 分配的顺序整数),禁止使用 method-path 形式(即 id 属性值以 HTTP 方法 + 路径开头,如
@@ -7849,28 +7073,16 @@ Permission 配置:
           子域之一:ENG/CDP/STL/CLI/BRW/LIB/BAO-API/PERF/IMPL。例外:bao-cdp-client(子系统 section)和
           bao-cdp-client-的-...(criterion div)不属于 API 元素,不在本 REQ 约束范围。
         </p>
-        <div
-          id='grep-&apos;^id="post-\|^id="get-\|^id="/vm/sandbox\|^id="bao-cdp-client::&apos;-.spec/02-system.html-返回-0-行'
-          data-criterion='grep &apos;^id="post-\|^id="get-\|^id="/vm/sandbox\|^id="bao-cdp-client::&apos; .spec/02-SYSTEM.html 返回 0 行'
-        >
+        <div id="grep-'^id=&quot;post-\|^id=&quot;get-\|^id=&quot;/vm/sandbox\|^id=&quot;bao-cdp-client::'-.spec/02-system.html-返回-0-行" data-criterion="grep '^id=&quot;post-\|^id=&quot;get-\|^id=&quot;/vm/sandbox\|^id=&quot;bao-cdp-client::' .spec/02-SYSTEM.html 返回 0 行">
           SPEC validate 零 "Invalid ID" 错误(所有 API section id 符合 API-{DOMAIN}-{N} 正则,无 method-path 残留)
         </div>
-        <div
-          id="grep--oe-'id=&quot;api-[a-z-]+-[0-9]+&quot;'-.spec/02-system.html-|-sort--u-|-wc--l-等于实际-api-section-总数"
-          data-criterion="grep -oE 'id=&quot;API-[A-Z-]+-[0-9]+&quot;' .spec/02-SYSTEM.html | sort -u | wc -l 等于实际 API section 总数"
-        >
+        <div id="grep--oe-'id=&quot;api-[a-z-]+-[0-9]+&quot;'-.spec/02-system.html-|-sort--u-|-wc--l-等于实际-api-section-总数" data-criterion="grep -oE 'id=&quot;API-[A-Z-]+-[0-9]+&quot;' .spec/02-SYSTEM.html | sort -u | wc -l 等于实际 API section 总数">
           grep -oE 'id="API-[A-Z-]+-[0-9]+"' .spec/02-SYSTEM.html | sort -u | wc -l 等于实际 API section 总数
         </div>
-        <div
-          id="spec-govern(action=check,-auditaction=health)-返回-0-errors"
-          data-criterion="spec_govern(action=check, auditAction=health) 返回 0 errors"
-        >
+        <div id="spec-govern(action=check,-auditaction=health)-返回-0-errors" data-criterion="spec_govern(action=check, auditAction=health) 返回 0 errors">
           spec_govern(action=check, auditAction=health) 返回 0 errors
         </div>
-        <div
-          id="任何新增-api-section-必须先调-spec-write(elementtype='api')-让-id-registry-分配-api-{domain}-{n},禁止手写-method-path-id"
-          data-criterion="任何新增 API section 必须先调 spec_write(elementType='api') 让 id-registry 分配 API-{DOMAIN}-{N},禁止手写 method-path id"
-        >
+        <div id="任何新增-api-section-必须先调-spec-write(elementtype='api')-让-id-registry-分配-api-{domain}-{n},禁止手写-method-path-id" data-criterion="任何新增 API section 必须先调 spec_write(elementType='api') 让 id-registry 分配 API-{DOMAIN}-{N},禁止手写 method-path id">
           任何新增 API section 必须先调 spec_write(elementType='api') 让 id-registry 分配 API-{DOMAIN}-{N},禁止手写
           method-path id
         </div>
@@ -7884,13 +7096,7 @@ Permission 配置:
           </ol>
         </div>
       </section>
-      <section
-        id="req-spec-002"
-        data-req="REQ-SPEC-002"
-        data-req-status="approved"
-        data-req-domain="SPEC"
-        data-req-category="operations"
-      >
+      <section id="req-spec-002" data-req="REQ-SPEC-002" data-req-status="approved" data-req-domain="SPEC" data-req-category="operations">
         <h3>REQ-SPEC-002 确定性批量任务(如 id 迁移)禁用 six-node-dev 多 epoch loop,用 dom_modify batch 一次性完成</h3>
         <p>
           对于确定性批量任务(如 SPEC id 迁移、属性重排、xref 修复等纯机械化、无架构决策的工作),禁止动用 six-node-dev.js
@@ -7899,28 +7105,16 @@ Permission 配置:
           配额、触发回跳矩阵、延迟交付。本 REQ 沉淀了 BCE-20260621-ID-FORMAT 的防复发教训:原始 id
           迁移任务被错误地当成需要多 epoch loop 的复杂任务处理,实际上它是一次性批量替换。
         </p>
-        <div
-          id="确定性批量-id-迁移任务必须用-dom-modify-batch-或-python-脚本一次性完成"
-          data-criterion="确定性批量 id 迁移任务必须用 dom_modify batch 或 Python 脚本一次性完成"
-        >
+        <div id="确定性批量-id-迁移任务必须用-dom-modify-batch-或-python-脚本一次性完成" data-criterion="确定性批量 id 迁移任务必须用 dom_modify batch 或 Python 脚本一次性完成">
           确定性批量 id 迁移任务必须用 dom_modify batch 或 Python 脚本一次性完成
         </div>
-        <div
-          id="禁止为-id-重命名这类机械化任务启动-six-node-dev.js-多-epoch-循环"
-          data-criterion="禁止为 id 重命名这类机械化任务启动 six-node-dev.js 多 epoch 循环"
-        >
+        <div id="禁止为-id-重命名这类机械化任务启动-six-node-dev.js-多-epoch-循环" data-criterion="禁止为 id 重命名这类机械化任务启动 six-node-dev.js 多 epoch 循环">
           禁止为 id 重命名这类机械化任务启动 six-node-dev.js 多 epoch 循环
         </div>
-        <div
-          id="同类型回跳-≤-3-轮,跨-2+-节点回跳须-commander-书面确认"
-          data-criterion="同类型回跳 ≤ 3 轮,跨 2+ 节点回跳须 Commander 书面确认"
-        >
+        <div id="同类型回跳-≤-3-轮,跨-2+-节点回跳须-commander-书面确认" data-criterion="同类型回跳 ≤ 3 轮,跨 2+ 节点回跳须 Commander 书面确认">
           同类型回跳 ≤ 3 轮,跨 2+ 节点回跳须 Commander 书面确认
         </div>
-        <div
-          id="批量任务执行前必须先做文件域冲突分析(见-c-e.1),有交集即升级到-worker-dispatch/batch-execute"
-          data-criterion="批量任务执行前必须先做文件域冲突分析(见 C-E.1),有交集即升级到 worker_dispatch/batch-execute"
-        >
+        <div id="批量任务执行前必须先做文件域冲突分析(见-c-e.1),有交集即升级到-worker-dispatch/batch-execute" data-criterion="批量任务执行前必须先做文件域冲突分析(见 C-E.1),有交集即升级到 worker_dispatch/batch-execute">
           批量任务执行前必须先做文件域冲突分析(见 C-E.1),有交集即升级到 worker_dispatch/batch-execute
         </div>
         <div data-criteria="">
@@ -8080,84 +7274,44 @@ Permission 配置:
           Option&lt;Box&lt;T&gt;&gt; / C 风格 for i in 0..argc / thread_local RefCell)
         </p>
       </div>
-      <div
-        id="test-bao-api-001"
-        data-test="TEST-BAO-API-001"
-        data-req-ref="REQ-BAO-API-001"
-        data-test-categories="unit"
-      >
+      <div id="test-bao-api-001" data-test="TEST-BAO-API-001" data-req-ref="REQ-BAO-API-001" data-test-categories="unit">
         <h4>TEST-BAO-API-001: REQ-BAO-API-001 单元测试</h4>
         <p>
           关联真实测试: src/bao_cdp_client/tests/url_scheme_routing.rs (Browser::connect URL scheme 路由 bao:// →
           InMemoryTransport, ws:// → WebSocketTransport)
         </p>
       </div>
-      <div
-        id="test-bao-api-002"
-        data-test="TEST-BAO-API-002"
-        data-req-ref="REQ-BAO-API-002"
-        data-test-categories="unit"
-      >
+      <div id="test-bao-api-002" data-test="TEST-BAO-API-002" data-req-ref="REQ-BAO-API-002" data-test-categories="unit">
         <h4>TEST-BAO-API-002: REQ-BAO-API-002 单元测试</h4>
         <p>
           关联真实测试: src/bao_cdp_client/tests/transport_in_memory.rs (InMemoryTransport) +
           src/bao_cdp_client/tests/transport_ws_handshake.rs (WebSocketTransport)
         </p>
       </div>
-      <div
-        id="test-bao-api-004"
-        data-test="TEST-BAO-API-004"
-        data-req-ref="REQ-BAO-API-004"
-        data-test-categories="unit"
-      >
+      <div id="test-bao-api-004" data-test="TEST-BAO-API-004" data-req-ref="REQ-BAO-API-004" data-test-categories="unit">
         <h4>TEST-BAO-API-004: REQ-BAO-API-004 单元测试</h4>
         <p>关联真实测试: src/bao_cdp_client/tests/bridge_a_class.rs (A 类 48 method 机械映射)</p>
       </div>
-      <div
-        id="test-bao-api-005"
-        data-test="TEST-BAO-API-005"
-        data-req-ref="REQ-BAO-API-005"
-        data-test-categories="unit"
-      >
+      <div id="test-bao-api-005" data-test="TEST-BAO-API-005" data-req-ref="REQ-BAO-API-005" data-test-categories="unit">
         <h4>TEST-BAO-API-005: REQ-BAO-API-005 单元测试</h4>
         <p>
           关联真实测试: src/bao_cdp_client/tests/bridge_dispatcher.rs +
           src/bao_cdp_client/tests/b_class_injection_defense.rs (B 类 52 method Eval 合成 + IIFE 安全封装)
         </p>
       </div>
-      <div
-        id="test-bao-api-006"
-        data-test="TEST-BAO-API-006"
-        data-req-ref="REQ-BAO-API-006"
-        data-test-categories="unit"
-      >
+      <div id="test-bao-api-006" data-test="TEST-BAO-API-006" data-req-ref="REQ-BAO-API-006" data-test-categories="unit">
         <h4>TEST-BAO-API-006: REQ-BAO-API-006 单元测试</h4>
         <p>关联真实测试: src/bao_cdp_client/tests/d_class_local_state.rs (D 类 62 method 纯状态管理)</p>
       </div>
-      <div
-        id="test-bao-api-007"
-        data-test="TEST-BAO-API-007"
-        data-req-ref="REQ-BAO-API-007"
-        data-test-categories="unit"
-      >
+      <div id="test-bao-api-007" data-test="TEST-BAO-API-007" data-req-ref="REQ-BAO-API-007" data-test-categories="unit">
         <h4>TEST-BAO-API-007: REQ-BAO-API-007 单元测试</h4>
         <p>关联真实测试: src/bao_cdp_client/tests/bridge_e_class.rs (E 类 31 method servo 不支持 -32601 错误码)</p>
       </div>
-      <div
-        id="test-bao-api-008"
-        data-test="TEST-BAO-API-008"
-        data-req-ref="REQ-BAO-API-008"
-        data-test-categories="unit"
-      >
+      <div id="test-bao-api-008" data-test="TEST-BAO-API-008" data-req-ref="REQ-BAO-API-008" data-test-categories="unit">
         <h4>TEST-BAO-API-008: REQ-BAO-API-008 单元测试</h4>
         <p>关联真实测试: src/bao_cdp_client/tests/public_api_complete.rs (完整公共 API + 文档)</p>
       </div>
-      <div
-        id="test-cdp-uws-001"
-        data-test="TEST-CDP-UWS-001"
-        data-req-ref="REQ-CDP-UWS-001"
-        data-test-categories="unit"
-      >
+      <div id="test-cdp-uws-001" data-test="TEST-CDP-UWS-001" data-req-ref="REQ-CDP-UWS-001" data-test-categories="unit">
         <h4>TEST-CDP-UWS-001: REQ-CDP-UWS-001 单元测试</h4>
         <p>
           关联真实测试: src/bao_cdp/tests/protocol_all_domains_internal_backend_tests.rs (bao_cdp 使用 bun_uws 替换自写
@@ -8211,14 +7365,7 @@ Permission 配置:
     <!-- ============================================================ -->
     <h2 data-delivery="D40">§10 架构模块</h2>
     <!-- ============================================================ -->
-    <div
-      id="bao-engine"
-      data-module="bao-engine"
-      data-module-kind="module"
-      data-module-layer="L0"
-      data-module-deps="mozjs,bun_resolver,bun_event_loop,bun_io"
-      data-delivery="D40"
-    >
+    <div id="bao-engine" data-module="bao-engine" data-module-kind="module" data-module-layer="L0" data-module-deps="mozjs,bun_resolver,bun_event_loop,bun_io" data-delivery="D40">
       <h3>bao-engine — SpiderMonkey 引擎封装</h3>
       <table>
         <tr>
@@ -8240,14 +7387,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="bao-browser"
-      data-module="bao-browser"
-      data-module-kind="module"
-      data-module-layer="L1"
-      data-module-deps="servo,bao_engine,bao_cdp"
-      data-delivery="D40"
-    >
+    <div id="bao-browser" data-module="bao-browser" data-module-kind="module" data-module-layer="L1" data-module-deps="servo,bao_engine,bao_cdp" data-delivery="D40">
       <h3>bao-browser — servo 引擎封装</h3>
       <table>
         <tr>
@@ -8269,14 +7409,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="bao-cdp"
-      data-module="bao-cdp"
-      data-module-kind="module"
-      data-module-layer="L1"
-      data-module-deps="cdp-protocol,bao_browser"
-      data-delivery="D40"
-    >
+    <div id="bao-cdp" data-module="bao-cdp" data-module-kind="module" data-module-layer="L1" data-module-deps="cdp-protocol,bao_browser" data-delivery="D40">
       <h3>bao-cdp — CDP 协议服务</h3>
       <table>
         <tr>
@@ -8298,14 +7431,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="bao-stealth"
-      data-module="bao-stealth"
-      data-module-kind="module"
-      data-module-layer="L2"
-      data-module-deps="bao_cdp,bun_http,rustls"
-      data-delivery="D40"
-    >
+    <div id="bao-stealth" data-module="bao-stealth" data-module-kind="module" data-module-layer="L2" data-module-deps="bao_cdp,bun_http,rustls" data-delivery="D40">
       <h3>bao-stealth — 反指纹模块</h3>
       <table>
         <tr>
@@ -8327,14 +7453,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="bao-runtime"
-      data-module="bao-runtime"
-      data-module-kind="module"
-      data-module-layer="L1"
-      data-module-deps="bao_engine,bun_resolver,bun_event_loop,bun_io,bun_http,bun_base64"
-      data-delivery="D40"
-    >
+    <div id="bao-runtime" data-module="bao-runtime" data-module-kind="module" data-module-layer="L1" data-module-deps="bao_engine,bun_resolver,bun_event_loop,bun_io,bun_http,bun_base64" data-delivery="D40">
       <h3>bao-runtime — Bun API + Node.js polyfill</h3>
       <table>
         <tr>
@@ -8360,14 +7479,7 @@ Permission 配置:
     <!-- ============================================================ -->
     <h2 data-delivery="D41">§11 接口契约</h2>
     <!-- ============================================================ -->
-    <div
-      id="if-engine-sm"
-      data-interface="IF-ENGINE-SM"
-      data-interface-kind="component"
-      data-interface-protocol="FFI"
-      data-interface-direction="bao-engine → mozjs"
-      data-delivery="D41"
-    >
+    <div id="if-engine-sm" data-interface="IF-ENGINE-SM" data-interface-kind="component" data-interface-protocol="FFI" data-interface-direction="bao-engine → mozjs" data-delivery="D41">
       <h3>IF-ENGINE-SM: bao-engine ↔ SpiderMonkey FFI</h3>
       <table>
         <tr>
@@ -8399,14 +7511,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="if-browser-servo"
-      data-interface="IF-BROWSER-SERVO"
-      data-interface-kind="component"
-      data-interface-protocol="Rust trait impl"
-      data-interface-direction="bao-browser → servo"
-      data-delivery="D41"
-    >
+    <div id="if-browser-servo" data-interface="IF-BROWSER-SERVO" data-interface-kind="component" data-interface-protocol="Rust trait impl" data-interface-direction="bao-browser → servo" data-delivery="D41">
       <h3>IF-BROWSER-SERVO: bao-browser ↔ servo</h3>
       <table>
         <tr>
@@ -8438,14 +7543,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="if-cdp-browser"
-      data-interface="IF-CDP-BROWSER"
-      data-interface-kind="component"
-      data-interface-protocol="mpsc channel"
-      data-interface-direction="bao-cdp → bao-browser"
-      data-delivery="D41"
-    >
+    <div id="if-cdp-browser" data-interface="IF-CDP-BROWSER" data-interface-kind="component" data-interface-protocol="mpsc channel" data-interface-direction="bao-cdp → bao-browser" data-delivery="D41">
       <h3>IF-CDP-BROWSER: bao-cdp ↔ bao-browser</h3>
       <table>
         <tr>
@@ -8476,14 +7574,7 @@ Permission 配置:
     <!-- ============================================================ -->
     <h2 data-delivery="D42">§12 架构决策</h2>
     <!-- ============================================================ -->
-    <div
-      id="dec-001"
-      data-decision="DEC-001"
-      data-decision-dimension="technical"
-      data-decision-status="accepted"
-      data-decision-context="JSC replacement"
-      data-delivery="D42"
-    >
+    <div id="dec-001" data-decision="DEC-001" data-decision-dimension="technical" data-decision-status="accepted" data-decision-context="JSC replacement" data-delivery="D42">
       <h3>DEC-001: SpiderMonkey 替代 JavaScriptCore</h3>
       <table>
         <tr>
@@ -8505,14 +7596,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="dec-002"
-      data-decision="DEC-002"
-      data-decision-dimension="technical"
-      data-decision-status="accepted"
-      data-decision-context="Architecture"
-      data-delivery="D42"
-    >
+    <div id="dec-002" data-decision="DEC-002" data-decision-dimension="technical" data-decision-status="accepted" data-decision-context="Architecture" data-delivery="D42">
       <h3>DEC-002: 单进程多线程（共享 JSContext）</h3>
       <table>
         <tr>
@@ -8534,14 +7618,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="dec-003"
-      data-decision="DEC-003"
-      data-decision-dimension="technical"
-      data-decision-status="accepted"
-      data-decision-context="CDP bridge"
-      data-delivery="D42"
-    >
+    <div id="dec-003" data-decision="DEC-003" data-decision-dimension="technical" data-decision-status="accepted" data-decision-context="CDP bridge" data-delivery="D42">
       <h3>DEC-003: BaoEvent 枚举替代 __BAO_ 前缀</h3>
       <table>
         <tr>
@@ -8563,14 +7640,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="dec-004"
-      data-decision="DEC-004"
-      data-decision-dimension="technical"
-      data-decision-status="accepted"
-      data-decision-context="Bun reuse"
-      data-delivery="D42"
-    >
+    <div id="dec-004" data-decision="DEC-004" data-decision-dimension="technical" data-decision-status="accepted" data-decision-context="Bun reuse" data-delivery="D42">
       <h3>DEC-004: 100% 复用 Bun 纯 Rust crate</h3>
       <table>
         <tr>
@@ -8592,14 +7662,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="dec-eng-001"
-      data-decision="DEC-ENG-001"
-      data-decision-dimension="technical"
-      data-decision-status="accepted"
-      data-decision-context="FetchTasklet async event-driven"
-      data-delivery="D42"
-    >
+    <div id="dec-eng-001" data-decision="DEC-ENG-001" data-decision-dimension="technical" data-decision-status="accepted" data-decision-context="FetchTasklet async event-driven" data-delivery="D42">
       <h3>DEC-ENG-001: FetchTasklet 事件驱动范式(BCE-007根治)</h3>
       <p>
         BCE-20260618-007 architect consult 收敛的 7 项设计决策,覆盖 FetchTasklet
@@ -8698,14 +7761,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="dec-eng-002"
-      data-decision="DEC-ENG-002"
-      data-decision-dimension="technical"
-      data-decision-status="accepted"
-      data-decision-context="S2审计双重基础设施缺陷修正"
-      data-delivery="D50"
-    >
+    <div id="dec-eng-002" data-decision="DEC-ENG-002" data-decision-dimension="technical" data-decision-status="accepted" data-decision-context="S2审计双重基础设施缺陷修正" data-delivery="D50">
       <h3>DEC-ENG-002: 双重 fetch 基础设施合并(DEC-ENG-001 执行偏差修正)</h3>
       <p>
         S2审计发现 DEC-ENG-001 DD-1~DD-7 设计决策已写入 SPEC 但代码未执行:fetch_api.rs
@@ -8783,14 +7839,7 @@ Permission 配置:
         }
       </script>
     </div>
-    <div
-      id="dec-eng-003"
-      data-decision="DEC-ENG-003"
-      data-decision-dimension="technical"
-      data-decision-status="accepted"
-      data-decision-context="node:vm sandbox Realm 隔离"
-      data-delivery="D42"
-    >
+    <div id="dec-eng-003" data-decision="DEC-ENG-003" data-decision-dimension="technical" data-decision-status="accepted" data-decision-context="node:vm sandbox Realm 隔离" data-delivery="D42">
       <h3>DEC-ENG-003: vm Sandbox 用 SM Realm 而非 SM ShadowRealm</h3>
       <p><strong>决策</strong>：使用 JS_NewGlobalObject + AutoRealm 实现 vm sandbox，不使用 SM 的 ShadowRealm API。</p>
       <p><strong>理由</strong>：</p>

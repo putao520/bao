@@ -252,6 +252,13 @@ fn run_spec_id_check(
         );
     }
 
+    if baseline.is_some() {
+        eprintln!(
+            "baseline: {} listed, {} matched, {} phantom",
+            result.baseline_total, result.baseline_matched, result.baseline_unmatched
+        );
+    }
+
     if result.findings.is_empty() {
         ExitCode::from(0)
     } else {
