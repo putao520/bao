@@ -3,9 +3,11 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 #![deny(unsafe_code)]
-
-pub mod async_runtime;
+// BoringSSL FFI integration requires unsafe blocks for SSL_* calls.
+// All unsafe blocks have SAFETY comments explaining the invariants.
+#[allow(unsafe_code)]
 pub mod connector;
+pub mod async_runtime;
 pub mod cookie;
 pub mod cookie_storage;
 mod decoder;

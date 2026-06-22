@@ -24,7 +24,6 @@ use profile_traits::mem::ReportsChan;
 use rand::{RngCore, rng};
 use request::RequestId;
 use rustc_hash::FxHashMap;
-use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{
     self, CallbackSetter, GenericCallback, GenericOneshotSender, GenericSend, GenericSender,
@@ -1242,7 +1241,7 @@ impl NetworkError {
         )
     }
 
-    pub fn from_hyper_error(error: &HyperError, certificate: Option<CertificateDer>) -> Self {
+    pub fn from_hyper_error(error: &HyperError, certificate: Option<Vec<u8>>) -> Self {
         let error_string = error.to_string();
         match certificate {
             Some(certificate) => NetworkError::SslValidation(error_string, certificate.to_vec()),

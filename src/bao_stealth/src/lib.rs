@@ -9,6 +9,7 @@ mod webgl_audio;
 mod behavior;
 pub mod engine_props;
 pub mod hooks;
+pub mod stealth_wire;
 
 pub use profile::StealthProfile;
 pub use tls::TlsFingerprint;
@@ -20,6 +21,7 @@ pub use navigator::{NavigatorProfile, ScreenProfile};
 pub use webgl_audio::{WebGLProfile, AudioProfile};
 pub use behavior::{BehaviorConfig, BehaviorSimulator, ClickEventType, ClickEvent, TypingEvent};
 pub use hooks::StealthHooks;
+pub use stealth_wire::StealthTlsWireConfig;
 
 pub struct StealthEngine {
     profile: StealthProfile,

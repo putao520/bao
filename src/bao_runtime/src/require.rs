@@ -185,7 +185,7 @@ unsafe extern "C" fn require_resolve_fn(
         "tls", "process", "vm", "tty", "worker_threads", "module",
         "bun:test", "bun:sqlite", "bun:ffi", "bun:wrap", "harness", "test",
         // Stubbed builtins (registered by node_stubs::install).
-        "async_hooks", "cluster", "console", "constants", "dgram",
+        "async_hooks", "cluster", "constants", "dgram",
         "diagnostics_channel", "domain", "http2", "inspector", "punycode",
         "repl", "trace_events", "v8", "sys",
         "_http_agent", "_http_client", "_http_common", "_http_incoming",

@@ -38,7 +38,6 @@ pixels = { workspace = true }
 profile_traits = { workspace = true }
 rand = { workspace = true }
 rustc-hash = { workspace = true }
-rustls-pki-types = { workspace = true }
 serde = { workspace = true }
 servo-base = { workspace = true }
 servo-config = { workspace = true }

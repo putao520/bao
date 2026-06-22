@@ -96,11 +96,16 @@ pub unsafe fn install_node_apis(
 
     // Node.js built-in module registrations
     crate::node_events::install(cx);
+    crate::node_console::install(cx);
+    crate::node_constants::install(cx);
+    crate::node_domain::install(cx);
     crate::node_path::install(cx);
     crate::node_fs::install(cx);
     crate::node_crypto::install(cx);
     crate::node_http::install(cx);
+    crate::node_http2::install(cx);
     crate::node_https::install(cx);
+    crate::node_inspector::install(cx);
     crate::node_os::install(cx);
     crate::node_url::install(cx, global);
     crate::node_util::install_util(cx);
@@ -120,6 +125,15 @@ pub unsafe fn install_node_apis(
     crate::node_timers_module::install(cx);
     crate::node_readline::install(cx);
     crate::node_tls::install(cx);
+    crate::node_worker_threads::install(cx);
+    crate::node_async_hooks::install(cx);
+    crate::node_diagnostics_channel::install(cx);
+    crate::node_cluster::install(cx);
+    crate::node_punycode::install(cx);
+    crate::node_repl::install(cx);
+    crate::node_sys::install(cx);
+    crate::node_trace_events::install(cx);
+    crate::node_dgram::install(cx);
 
     // CLI/engine-specific
     install_assert_strict(cx);
@@ -128,9 +142,23 @@ pub unsafe fn install_node_apis(
     crate::bun_builtins::install(cx);
     crate::s3_api::install(cx);
     // @trace REQ-ENG-006: stub registrations for unimplemented Node.js builtins
-    // (async_hooks, cluster, console, dgram, domain, http2, inspector, etc.).
+    // (v8, domain, inspector, _http_*, _stream_*, _tls_*, sub-path modules, etc.).
     // Required so `require("X")` / `import "X"` succeed instead of throwing
     // `Cannot find module 'X'`.
+
+    // Real implementations for internal/sub-path Node.js modules
+    // (installed before stubs so stubs' guard check sees these and skips)
+    crate::node_internal_streams::install(cx);
+    crate::node_internal_http::install(cx);
+    crate::node_tls_common::install(cx);
+    crate::node_tls_wrap::install(cx);
+    crate::node_subpath_aliases::install(cx);
+    crate::node_stream_consumers::install(cx);
+    crate::node_stream_web::install(cx);
+    crate::node_util_types::install(cx);
+    crate::node_inspector_promises::install(cx);
+
+    // Remaining stubs (modules not yet natively implemented)
     crate::node_stubs::install(cx);
 }
 
@@ -5545,6 +5573,7 @@ mod tests {
             "node_fs::install",
             "node_crypto::install",
             "node_http::install",
+            "node_http2::install",
             "node_https::install",
             "node_os::install",
             "node_child_process::install",

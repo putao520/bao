@@ -9,14 +9,18 @@
 // implemented natively — fs/path/buffer/crypto/etc. live in their own
 // `node_*` modules):
 //
-//   - `async_hooks`, `cluster`, `console`, `constants`, `dgram`,
-//     `diagnostics_channel`, `domain`, `http2`, `inspector`,
-//     `inspector/promises`, `punycode`, `repl`, `trace_events`, `v8`,
-//     `worker_threads`, `sys`, `_http_*`, `_stream_*`, `_tls_*`
-//   - Sub-path modules: `assert/strict`, `dns/promises`, `fs/promises`,
-//     `path/posix`, `path/win32`, `readline/promises`, `stream/consumers`,
-//     `stream/promises`, `stream/web`, `timers/promises`, `util/types`,
-//     `inspector/promises`
+//   - `v8` (has real getHeapStatistics + cachedDataVersionTag methods)
+//
+// Internal/sub-path modules now have real implementations in:
+//   - node_internal_streams.rs  (_stream_duplex/passthrough/readable/transform/writable/wrap)
+//   - node_internal_http.rs     (_http_agent/client/common/incoming/outgoing/server)
+//   - node_tls_common.rs        (_tls_common)
+//   - node_subpath_aliases.rs   (dns/promises, path/posix, path/win32, readline/promises, stream/promises)
+//   - node_stream_consumers.rs  (stream/consumers)
+//   - node_stream_web.rs        (stream/web)
+//   - node_util_types.rs        (util/types)
+//   - node_inspector_promises.rs (inspector/promises)
+//   - node_util.rs              (assert/strict — already cached by install_assert)
 //
 // Each registered object carries a `__stub: true` marker for debugging
 // (non-enumerable). Real implementations replace the stub when they ship.
@@ -31,50 +35,12 @@ use crate::require::cache_builtin;
 
 /// All stubbed module specifiers (bare name; `node:` prefix is added
 /// automatically by `cache_builtin` consumers via strip_prefix).
+/// Internal/sub-path modules with real implementations are NOT listed here
+/// (they are installed by their respective node_* modules before this
+/// stub pass runs; the guard check in register_stub also prevents clobbering).
 const STUB_MODULES: &[&str] = &[
     // Top-level Node.js builtins not natively implemented
-    "async_hooks",
-    "cluster",
-    "console",
-    "constants",
-    "dgram",
-    "diagnostics_channel",
-    "domain",
-    "http2",
-    "inspector",
-    "punycode",
-    "repl",
-    "trace_events",
     "v8",
-    "worker_threads",
-    "sys",
-    // Internal underscore-prefixed (Node.js internal modules exposed as builtins)
-    "_http_agent",
-    "_http_client",
-    "_http_common",
-    "_http_incoming",
-    "_http_outgoing",
-    "_http_server",
-    "_stream_duplex",
-    "_stream_passthrough",
-    "_stream_readable",
-    "_stream_transform",
-    "_stream_wrap",
-    "_stream_writable",
-    "_tls_common",
-    "_tls_wrap",
-    // Sub-path modules
-    "assert/strict",
-    "dns/promises",
-    "fs/promises",
-    "path/posix",
-    "path/win32",
-    "readline/promises",
-    "stream/consumers",
-    "stream/promises",
-    "stream/web",
-    "util/types",
-    "inspector/promises",
 ];
 
 /// Register a single empty stub object under the given builtin key.

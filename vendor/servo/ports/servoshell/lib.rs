@@ -42,9 +42,7 @@ pub fn main() {
 }
 
 pub fn init_crypto() {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("Error initializing crypto provider");
+    bun_boringssl::load();
 }
 
 pub fn init_tracing(filter_directives: Option<&str>) {

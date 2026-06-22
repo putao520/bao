@@ -869,8 +869,28 @@ unsafe fn install_all_native(
             bao_stealth::engine_props::canvas_seed(),
             bao_stealth::engine_props::canvas_amplitude(),
         );
+        // Set stealth TLS/HTTP2 config at servo network layer (REQ-STL-001, REQ-STL-002).
+        // This makes servo's BoringSSL+hyper connections use the profile's cipher suites,
+        // curves, signature algorithms, ALPN, and HTTP/2 settings. BoringSSL supports full
+        // JA3/JA4 fingerprint configuration including cipher suite reordering.
+        // Convert bao_stealth config to servo net connector config (two identical structs
+        // in different crates — servo net cannot depend on bao_stealth).
+        let stc = bao_stealth::StealthTlsWireConfig::from_profile(profile);
+        servo::set_stealth_tls_config(Some(servo::StealthTlsWireConfig {
+            tls12_cipher_suites: stc.tls12_cipher_suites,
+            tls13_cipher_suites: stc.tls13_cipher_suites,
+            signature_algorithms: stc.signature_algorithms,
+            supported_groups: stc.supported_groups,
+            alpn_protocols: stc.alpn_protocols,
+            h2_settings_payload: stc.h2_settings_payload,
+            h2_initial_stream_size: stc.h2_initial_stream_size,
+            h2_initial_connection_window_size: stc.h2_initial_connection_window_size,
+            h2_max_frame_size: stc.h2_max_frame_size,
+            h2_max_header_list_size: stc.h2_max_header_list_size,
+        }));
     } else {
         bun_runtime::fetch_api::set_fetch_stealth_profile(None);
+        servo::set_stealth_tls_config(None);
     }
 
     // Install stealth properties using raw JSAPI (no Handle wrapper needed)

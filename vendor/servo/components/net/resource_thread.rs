@@ -6,8 +6,7 @@
 
 use std::borrow::ToOwned;
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufReader};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::thread;
@@ -38,8 +37,6 @@ use profile_traits::mem::{
 use profile_traits::path;
 use profile_traits::time::ProfilerChan;
 use rustc_hash::FxHashMap;
-use rustls_pki_types::CertificateDer;
-use rustls_pki_types::pem::PemObject;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::{
     self, CallbackSetter, GenericCallback, GenericReceiver, GenericReceiverSet,
@@ -71,17 +68,10 @@ use crate::protocols::ProtocolRegistry;
 use crate::request_interceptor::RequestInterceptor;
 use crate::websocket_loader::create_handshake_request;
 
-/// Load a file with CA certificate and produce a RootCertStore with the results.
-fn load_root_cert_store_from_file(file_path: String) -> io::Result<Vec<CertificateDer<'static>>> {
-    let mut pem = BufReader::new(File::open(file_path)?);
-
-    let certs = CertificateDer::pem_reader_iter(&mut pem)
-        .filter_map(|cert| {
-            cert.inspect_err(|e| log::error!("Could not load certificate ({e}). Ignoring it."))
-                .ok()
-        })
-        .collect();
-    Ok(certs)
+/// Load a file with CA certificate and produce DER-encoded certificate bytes.
+fn load_root_cert_store_from_file(file_path: String) -> io::Result<Vec<Vec<u8>>> {
+    let pem = std::fs::read_to_string(&file_path)?;
+    Ok(bao_boringssl_bridge::pem_parse_certs(&pem))
 }
 
 /// Returns a tuple of (public, private) senders to the new threads.
@@ -101,9 +91,8 @@ pub fn new_resource_threads(
 
     let ca_certificates = certificate_path
         .and_then(|path| {
-            Some(CACertificates::Override(
-                load_root_cert_store_from_file(path).ok()?,
-            ))
+            let certs = load_root_cert_store_from_file(path).ok()?;
+            Some(CACertificates::Override(certs))
         })
         .unwrap_or_default();
 
@@ -132,7 +121,7 @@ pub fn new_core_resource_thread(
     mem_profiler_chan: MemProfilerChan,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
     config_dir: Option<PathBuf>,
-    ca_certificates: CACertificates<'static>,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     protocols: Arc<ProtocolRegistry>,
 ) -> (CoreResourceThread, CoreResourceThread) {
@@ -191,7 +180,7 @@ pub fn new_core_resource_thread(
 struct ResourceChannelManager {
     resource_manager: CoreResourceManager,
     config_dir: Option<PathBuf>,
-    ca_certificates: CACertificates<'static>,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     cancellation_listeners: FxHashMap<RequestId, Weak<CancellationListener>>,
     cookie_listeners: FxHashMap<CookieStoreId, GenericCallback<CookieAsyncResponse>>,
@@ -200,7 +189,7 @@ struct ResourceChannelManager {
 /// This returns a tuple HttpState and a private HttpState.
 fn create_http_states(
     config_dir: Option<&Path>,
-    ca_certificates: CACertificates<'static>,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
 ) -> (Arc<HttpState>, Arc<HttpState>) {
@@ -716,7 +705,7 @@ pub struct CoreResourceManager {
     sw_managers: HashMap<ImmutableOrigin, IpcSender<CustomResponseMediator>>,
     filemanager: FileManager,
     request_interceptor: RequestInterceptor,
-    ca_certificates: CACertificates<'static>,
+    ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
     preloaded_resources: SharedPreloadedResources,
     /// <https://fetch.spec.whatwg.org/#concept-fetch-record>
@@ -728,7 +717,7 @@ impl CoreResourceManager {
         devtools_sender: Option<Sender<DevtoolsControlMsg>>,
         _profiler_chan: ProfilerChan,
         embedder_proxy: GenericEmbedderProxy<NetToEmbedderMsg>,
-        ca_certificates: CACertificates<'static>,
+        ca_certificates: CACertificates,
         ignore_certificate_errors: bool,
         blob_token_communicator: Arc<Mutex<BlobTokenCommunicator>>,
     ) -> CoreResourceManager {

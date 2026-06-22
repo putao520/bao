@@ -115,6 +115,22 @@ pub fn set_canvas_noise_seed(seed: u64, noise_amplitude: f64) {
     servo_canvas::canvas_noise::set_global_canvas_noise(seed, noise_amplitude);
 }
 
+/// Set anti-fingerprinting TLS/HTTP2 configuration for servo's network layer.
+///
+/// Called from Bao's runtime bridge during stealth profile initialization,
+/// following the same pattern as `set_canvas_noise_seed()`. When set, servo's
+/// HTTP client uses these values for TLS cipher suite/curves/signature algorithm
+/// reordering and ALPN negotiation, plus HTTP/2 connection parameters
+/// (SETTINGS frame, window sizes).
+///
+/// BoringSSL supports full JA3/JA4 fingerprint configuration including cipher
+/// suite reordering, curves/groups ordering, and signature algorithm ordering.
+pub use net::connector::StealthTlsWireConfig;
+
+pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
+    net::connector::set_stealth_tls_config(config);
+}
+
 #[cfg(feature = "webxr")]
 pub mod webxr {
     #[cfg(not(any(target_os = "android", target_env = "ohos")))]

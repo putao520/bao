@@ -53,6 +53,13 @@ impl Drop for TlsClient {
     }
 }
 
+impl Clone for TlsClient {
+    fn clone(&self) -> Self {
+        unsafe { SSL_CTX_up_ref(self.ctx) };
+        Self { ctx: self.ctx }
+    }
+}
+
 // Safety: SSL_CTX is thread-safe in BoringSSL after creation.
 unsafe impl Send for TlsClient {}
 unsafe impl Sync for TlsClient {}

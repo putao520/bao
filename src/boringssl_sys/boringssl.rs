@@ -214,6 +214,18 @@ opaque!(
     /// `struct evp_cipher_st` (`typedef ... EVP_CIPHER`).
     EVP_CIPHER
 );
+opaque!(
+    /// `struct ssl_cipher_st` (`typedef ... SSL_CIPHER`).
+    SSL_CIPHER
+);
+opaque!(
+    /// `struct crypto_buffer_st` (`typedef ... CRYPTO_BUFFER`).
+    CRYPTO_BUFFER
+);
+opaque!(
+    /// `STACK_OF(CRYPTO_BUFFER)` — opaque stack handle.
+    struct_stack_st_CRYPTO_BUFFER
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // EVP digest context (by-value layout — stored inline by callers)
@@ -570,6 +582,19 @@ pub unsafe fn sk_GENERAL_NAME_value(
 }
 
 #[inline]
+pub unsafe fn sk_CRYPTO_BUFFER_num(sk: *const struct_stack_st_CRYPTO_BUFFER) -> usize {
+    unsafe { sk_num(sk.cast::<OPENSSL_STACK>()) }
+}
+
+#[inline]
+pub unsafe fn sk_CRYPTO_BUFFER_value(
+    sk: *const struct_stack_st_CRYPTO_BUFFER,
+    i: usize,
+) -> *mut CRYPTO_BUFFER {
+    unsafe { sk_value(sk.cast::<OPENSSL_STACK>(), i).cast::<CRYPTO_BUFFER>() }
+}
+
+#[inline]
 pub unsafe extern "C" fn sk_GENERAL_NAME_free(sk: *mut struct_stack_st_GENERAL_NAME) {
     // SAFETY: mut→mut cast between opaque aliases of the same allocation.
     // Caller's `unsafe` contract guarantees `sk` is NULL or an owned
@@ -797,6 +822,12 @@ unsafe extern "C" {
     /// Signature algorithms (colon-separated, e.g. "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256")
     pub fn SSL_set1_sigalgs_list(ssl: *mut SSL, str: *const c_char) -> c_int;
     pub fn SSL_get0_alpn_selected(ssl: *const SSL, out_data: *mut *const u8, out_len: *mut c_uint);
+    pub fn SSL_get_version(ssl: *const SSL) -> *const c_char;
+    pub fn SSL_get_current_cipher(ssl: *const SSL) -> *const SSL_CIPHER;
+    pub fn SSL_CIPHER_get_name(cipher: *const SSL_CIPHER) -> *const c_char;
+    pub fn SSL_get0_peer_certificates(ssl: *const SSL) -> *const struct_stack_st_CRYPTO_BUFFER;
+    pub fn CRYPTO_BUFFER_data(buf: *const CRYPTO_BUFFER) -> *const u8;
+    pub fn CRYPTO_BUFFER_len(buf: *const CRYPTO_BUFFER) -> usize;
     pub fn SSL_set_options(ssl: *mut SSL, options: u32) -> u32;
     pub fn SSL_clear_options(ssl: *mut SSL, options: u32) -> u32;
     pub fn SSL_enable_signed_cert_timestamps(ssl: *mut SSL);

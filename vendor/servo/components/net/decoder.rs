@@ -286,9 +286,9 @@ impl Stream for BodyStream {
                 Poll::Ready(Some(Ok(bytes)))
             },
             Some(Err(err)) => {
-                // To prevent truncation attacks rustls treats close connection without a close_notify as
-                // an error of type std::io::Error with ErrorKind::UnexpectedEof.
-                // https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof
+                // TLS implementations (including BoringSSL) may treat close-notify violations
+                // as std::io::Error with ErrorKind::UnexpectedEof to prevent truncation attacks.
+                // https://www.rfc-editor.org/rfc/rfc8446#section-6.1
                 //
                 // The error can be safely ignored if we known that all content was received or is explicitly
                 // set in preferences.

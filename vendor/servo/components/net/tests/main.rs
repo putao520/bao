@@ -106,7 +106,8 @@ fn receive_credential_prompt_msgs(
 }
 
 fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> HttpState {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    // Initialize BoringSSL (replaces rustls crypto provider initialization)
+    bun_boringssl::load();
 
     let override_manager = net::connector::CertificateErrorOverrideManager::new();
     HttpState {

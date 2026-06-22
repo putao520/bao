@@ -207,6 +207,24 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     }
 
     cache_builtin(cx, "fs", fs_obj.get());
+
+    // Register fs/promises sub-path — reuses the same promise-based methods
+    // already defined on fs.promises. The sub-path module `require("fs/promises")`
+    // gets its own top-level builtin with the promise methods directly on it.
+    unsafe {
+        rooted!(&in(cx) let fsp_obj = w2::JS_NewPlainObject(cx));
+        if !fsp_obj.get().is_null() {
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"readFile".as_ptr(), Some(fs_promises_read_file), 1, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"writeFile".as_ptr(), Some(fs_promises_write_file), 2, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"stat".as_ptr(), Some(fs_promises_stat), 1, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"readdir".as_ptr(), Some(fs_promises_readdir), 1, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"mkdir".as_ptr(), Some(fs_promises_mkdir), 1, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"unlink".as_ptr(), Some(fs_promises_unlink), 1, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"rename".as_ptr(), Some(fs_promises_rename), 2, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"copyFile".as_ptr(), Some(fs_promises_copy_file), 2, JSPROP_ENUMERATE as u32);
+            cache_builtin(cx, "fs/promises", fsp_obj.get());
+        }
+    }
 }
 
 // --- Argument helpers ---

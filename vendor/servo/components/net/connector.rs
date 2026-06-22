@@ -4,7 +4,7 @@
 
 use std::collections::hash_map::HashMap;
 use std::convert::TryFrom;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, RwLock};
 use std::time::Duration;
 use std::{fmt, io};
 
@@ -14,7 +14,6 @@ use http::uri::{Authority, Uri as Destination};
 use http_body_util::combinators::BoxBody;
 use hyper::body::Bytes;
 use hyper::rt::Executor;
-use hyper_rustls::{HttpsConnector as HyperRustlsHttpsConnector, MaybeHttpsStream};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::proxy::Tunnel;
 use hyper_util::client::legacy::connect::{
@@ -23,14 +22,14 @@ use hyper_util::client::legacy::connect::{
 use hyper_util::rt::TokioIo;
 use log::warn;
 use parking_lot::Mutex;
-use rustls::client::danger::ServerCertVerifier;
-use rustls::client::{ClientConnection, EchStatus};
-use rustls::crypto::{CryptoProvider, aws_lc_rs};
-use rustls::{ClientConfig, ProtocolVersion};
-use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use servo_config::pref;
+use tokio::io::{AsyncRead as _, AsyncWrite as _};
 use tokio::net::TcpStream;
 use tower::Service;
+
+use bao_boringssl_bridge::{TlsClient, TlsConnection, TlsProfile, TlsError};
+use bao_boringssl_bridge::connection::TlsState;
+use bun_boringssl_sys::boringssl::*;
 
 use crate::async_runtime::spawn_task;
 use crate::hosts::replace_host;
@@ -39,6 +38,146 @@ pub const BUF_SIZE: usize = 32768;
 
 /// ALPN identifier for HTTP/2 (RFC 7540 §3.1).
 pub const ALPN_H2: &str = "h2";
+
+// ── Stealth TLS/HTTP2 wire configuration ──────────────────────────────
+//
+// Wire-level configuration for servo's TLS/HTTP2 stack, set by the embedder
+// (Bao) during stealth profile initialization. Follows the same pattern as
+// `servo_canvas::canvas_noise::set_global_canvas_noise()` — global static,
+// set once at init time, read on every connection.
+//
+// Re-declared here (instead of importing from `bao_stealth`) to avoid a
+// dependency on `bao_stealth` from servo's `net` crate. Fields must be kept
+// in sync with `bao_stealth::StealthTlsWireConfig`.
+
+/// Wire-level TLS/HTTP2 configuration for servo's network layer.
+///
+/// When set, `create_tls_config()` applies cipher suites, curves, signature
+/// algorithms, and ALPN protocols to the BoringSSL `SSL_CTX`, and
+/// `create_http_client()` applies HTTP/2 settings (window sizes, max
+/// frame/header sizes) via hyper's builder.
+///
+/// BoringSSL supports full JA3/JA4 fingerprint configuration including
+/// cipher suite reordering, curves/groups ordering, and signature algorithm
+/// ordering — including cipher suite reordering, curves/groups ordering, and signature algorithm ordering.
+#[derive(Debug, Clone)]
+pub struct StealthTlsWireConfig {
+    /// TLS 1.2 cipher suites as IANA u16 IDs (ordered as in profile).
+    /// Applied via `SSL_CTX_set_cipher_list()` on the BoringSSL SSL_CTX.
+    pub tls12_cipher_suites: Vec<u16>,
+    /// TLS 1.3 cipher suites as IANA u16 IDs (ordered as in profile).
+    /// Applied via `SSL_CTX_set_cipher_list()` on the BoringSSL SSL_CTX.
+    pub tls13_cipher_suites: Vec<u16>,
+    /// Signature algorithms as IANA u16 IDs.
+    /// Applied via `SSL_CTX_set1_sigalgs_list()` on the BoringSSL SSL_CTX.
+    pub signature_algorithms: Vec<u16>,
+    /// Supported groups as IANA u16 IDs.
+    /// Applied via `SSL_set1_curves_list()` per-connection on the BoringSSL SSL.
+    pub supported_groups: Vec<u16>,
+    /// ALPN protocols as raw bytes (e.g., `b"h2"`, `b"http/1.1"`).
+    /// Applied via `SSL_CTX_set_alpn_protos()` on the BoringSSL SSL_CTX.
+    pub alpn_protocols: Vec<Vec<u8>>,
+    /// HTTP/2 SETTINGS payload in binary wire format (6 bytes per setting).
+    /// Stored for potential future custom h2 wrapper.
+    pub h2_settings_payload: Vec<u8>,
+    /// HTTP/2 initial stream window size. Applied via hyper builder.
+    pub h2_initial_stream_size: u32,
+    /// HTTP/2 initial connection window size. Applied via hyper builder.
+    pub h2_initial_connection_window_size: u32,
+    /// HTTP/2 SETTINGS_MAX_FRAME_SIZE. Applied via hyper builder.
+    pub h2_max_frame_size: u32,
+    /// HTTP/2 SETTINGS_MAX_HEADER_LIST_SIZE. Applied via hyper builder.
+    pub h2_max_header_list_size: u32,
+}
+
+/// Global stealth TLS/HTTP2 wire configuration set by the embedder (Bao).
+/// When `Some`, `create_tls_config()` and `create_http_client()` use these
+/// values to shape the TLS ClientHello and HTTP/2 SETTINGS frame.
+static STEALTH_TLS_CONFIG: RwLock<Option<StealthTlsWireConfig>> = RwLock::new(None);
+
+/// Set the global stealth TLS/HTTP2 configuration.
+///
+/// Called by Bao's runtime bridge during stealth profile initialization,
+/// following the same pattern as `servo::set_canvas_noise_seed()`.
+pub fn set_stealth_tls_config(config: Option<StealthTlsWireConfig>) {
+    let mut guard = STEALTH_TLS_CONFIG.write().unwrap();
+    *guard = config;
+}
+
+/// Read the current global stealth TLS/HTTP2 configuration.
+fn get_stealth_tls_config() -> Option<StealthTlsWireConfig> {
+    STEALTH_TLS_CONFIG.read().unwrap().clone()
+}
+
+// ── IANA cipher suite ID → OpenSSL cipher name mapping ─────────────────
+//
+// BoringSSL uses OpenSSL-style cipher list strings, not IANA IDs.
+// We map the IANA IDs from StealthTlsWireConfig to the corresponding
+// OpenSSL cipher names that BoringSSL understands.
+
+/// Map a TLS 1.2 IANA cipher suite ID to its OpenSSL cipher name.
+fn iana_to_openssl_cipher_12(id: u16) -> Option<&'static str> {
+    match id {
+        0x002F => Some("ECDHE-RSA-AES128-GCM-SHA256"),   // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        0x0035 => Some("RSA-AES256-GCM-SHA384"),          // TLS_RSA_WITH_AES_256_GCM_SHA384
+        0x009E => Some("ECDHE-RSA-AES256-GCM-SHA384"),   // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        0xC02F => Some("ECDHE-ECDSA-AES128-GCM-SHA256"), // TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        0xC030 => Some("ECDHE-ECDSA-AES256-GCM-SHA384"), // TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        0xC027 => Some("ECDHE-RSA-AES128-GCM-SHA256"),   // TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        0xC028 => Some("ECDHE-RSA-AES256-GCM-SHA384"),   // TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        0xCC13 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"), // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305
+        0xCC14 => Some("ECDHE-RSA-CHACHA20-POLY1305"),   // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305
+        0xCC15 => Some("ECDHE-ECDSA-CHACHA20-POLY1305"), // TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        0xCC16 => Some("ECDHE-RSA-CHACHA20-POLY1305"),   // TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+        _ => None,
+    }
+}
+
+/// Map a TLS 1.3 IANA cipher suite ID to its OpenSSL cipher name.
+fn iana_to_openssl_cipher_13(id: u16) -> Option<&'static str> {
+    match id {
+        0x1301 => Some("TLS_AES_128_GCM_SHA256"),
+        0x1302 => Some("TLS_AES_256_GCM_SHA384"),
+        0x1303 => Some("TLS_CHACHA20_POLY1305_SHA256"),
+        _ => None,
+    }
+}
+
+/// Map an IANA supported group ID to its OpenSSL group name.
+fn iana_to_openssl_group(id: u16) -> Option<&'static str> {
+    match id {
+        0x001D => Some("X25519"),
+        0x0017 => Some("P-256"),
+        0x0018 => Some("P-384"),
+        0x0019 => Some("P-521"),
+        0x0100 => Some("ffdhe2048"),
+        0x0101 => Some("ffdhe3072"),
+        _ => None,
+    }
+}
+
+/// Map an IANA signature algorithm ID to its OpenSSL sigalg name.
+fn iana_to_openssl_sigalg(id: u16) -> Option<&'static str> {
+    match id {
+        0x0401 => Some("rsa_pkcs1_sha256"),
+        0x0501 => Some("rsa_pkcs1_sha384"),
+        0x0601 => Some("rsa_pkcs1_sha512"),
+        0x0403 => Some("ecdsa_secp256r1_sha256"),
+        0x0503 => Some("ecdsa_secp384r1_sha384"),
+        0x0603 => Some("ecdsa_secp521r1_sha512"),
+        0x0804 => Some("rsa_pss_rsae_sha256"),
+        0x0805 => Some("rsa_pss_rsae_sha384"),
+        0x0806 => Some("rsa_pss_rsae_sha512"),
+        0x0809 => Some("rsa_pss_pss_sha256"),
+        0x080A => Some("rsa_pss_pss_sha384"),
+        0x080B => Some("rsa_pss_pss_sha512"),
+        0x0201 => Some("rsa_pkcs1_sha1"),
+        0x0203 => Some("ecdsa_sha1"),
+        _ => None,
+    }
+}
+
+// ── HTTP connector ────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct ServoHttpConnector {
@@ -98,31 +237,563 @@ impl Service<Destination> for ServoHttpConnector {
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-#[derive(Clone)]
-pub struct InstrumentedConnector<T> {
-    inner: HyperRustlsHttpsConnector<T>,
+// ── BoringSSL-backed TLS stream ───────────────────────────────────────
+//
+// Wraps a TcpStream + TlsConnection to provide AsyncRead/AsyncWrite
+// for hyper. The TlsConnection uses BIO pairs for non-blocking I/O:
+// we feed incoming ciphertext from TCP into the TLS engine, and
+// extract outgoing ciphertext from the TLS engine to write to TCP.
+
+/// A TLS stream backed by BoringSSL, wrapping a TCP stream.
+pub struct BoringsslTlsStream {
+    tcp: TcpStream,
+    tls: TlsConnection,
+    /// Buffered outgoing TLS ciphertext that hasn't been written to TCP yet.
+    outgoing: Vec<u8>,
 }
 
-impl<T> InstrumentedConnector<T> {
-    fn new(inner: HyperRustlsHttpsConnector<T>) -> Self {
-        Self { inner }
+impl BoringsslTlsStream {
+    pub fn new(tcp: TcpStream, tls: TlsConnection) -> Self {
+        Self {
+            tcp,
+            tls,
+            outgoing: Vec::new(),
+        }
+    }
+
+    /// Drive the TLS handshake to completion.
+    ///
+    /// Reads from TCP, feeds into TLS, processes, writes outgoing to TCP.
+    /// Returns Ok(()) when handshake is complete, Err if it failed.
+    pub async fn handshake(&mut self) -> io::Result<()> {
+        loop {
+            // Try to process the TLS state machine
+            match self.tls.process() {
+                Ok(result) => {
+                    // Flush any outgoing data
+                    self.flush_outgoing().await?;
+
+                    match result.state {
+                        TlsState::Active => return Ok(()),
+                        TlsState::PeerClosed | TlsState::Closed => {
+                            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "TLS peer closed during handshake"))
+                        }
+                        TlsState::Handshaking => {
+                            // Need more data from the network
+                            self.read_from_tcp().await?;
+                        }
+                    }
+                }
+                Err(TlsError::BoringSSL(msg)) => {
+                    return Err(io::Error::new(io::ErrorKind::Other, msg));
+                }
+                Err(e) => {
+                    return Err(io::Error::new(io::ErrorKind::Other, e.to_string()));
+                }
+            }
+        }
+    }
+
+    /// Read ciphertext from TCP and feed it into the TLS engine.
+    async fn read_from_tcp(&mut self) -> io::Result<()> {
+        let mut buf = [0u8; BUF_SIZE];
+        match self.tcp.readable().await {
+            Ok(()) => {
+                match self.tcp.try_read(&mut buf) {
+                    Ok(0) => {
+                        // EOF
+                        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "TCP connection closed"));
+                    }
+                    Ok(n) => {
+                        self.tls.feed(&buf[..n]);
+                    }
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        // No data available yet, that's fine
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+
+    /// Write buffered outgoing TLS ciphertext to the TCP stream.
+    async fn flush_outgoing(&mut self) -> io::Result<()> {
+        if self.outgoing.is_empty() {
+            self.outgoing = self.tls.take_outgoing();
+        }
+        while !self.outgoing.is_empty() {
+            match self.tcp.writable().await {
+                Ok(()) => {
+                    match self.tcp.try_write(&self.outgoing) {
+                        Ok(n) => {
+                            self.outgoing = self.outgoing[n..].to_vec();
+                        }
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            // TCP buffer full, try again later
+                            break;
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+
+    /// Get the ALPN protocol negotiated during the TLS handshake.
+    pub fn alpn_protocol(&self) -> Option<&[u8]> {
+        self.tls.alpn_protocol()
+    }
+
+    /// Get TLS handshake info from the BoringSSL connection.
+    pub fn tls_info(&self) -> TlsHandshakeInfo {
+        let ssl = self.tls.ssl_ptr();
+
+        // SAFETY: SSL_get_version returns a pointer to a static string owned by BoringSSL.
+        // The pointer is valid for the lifetime of the SSL object and we only read from it.
+        let protocol_version = unsafe {
+            let version = SSL_get_version(ssl);
+            let version_str = std::ffi::CStr::from_ptr(version);
+            Some(version_str.to_string_lossy().into_owned())
+        };
+
+        // SAFETY: SSL_get_current_cipher returns a pointer to an internal SSL_CIPHER struct
+        // owned by BoringSSL. The pointer is valid for the lifetime of the SSL object.
+        // SSL_CIPHER_get_name returns a static string. We only read from both pointers.
+        let cipher_suite = unsafe {
+            let cipher = SSL_get_current_cipher(ssl);
+            if cipher.is_null() {
+                None
+            } else {
+                let name = SSL_CIPHER_get_name(cipher);
+                let name_str = std::ffi::CStr::from_ptr(name);
+                Some(name_str.to_string_lossy().into_owned())
+            }
+        };
+
+        // BoringSSL doesn't expose the KX group name directly via a simple API.
+        // We leave kea_group_name as None for now; it can be extracted via
+        // SSL_get_peer_cert_chain or custom extensions if needed.
+        let kea_group_name: Option<String> = None;
+
+        // Signature scheme name — not directly available from BoringSSL's public API.
+        let signature_scheme_name: Option<String> = None;
+
+        let alpn_protocol = self.tls.alpn_protocol()
+            .map(|proto| String::from_utf8_lossy(proto).into_owned());
+
+        // SAFETY: SSL_get0_peer_certificates returns a pointer to an internal stack of
+        // CRYPTO_BUFFER owned by the SSL object. We only read from the buffers and copy
+        // the data into owned Vec<u8>. The stack and buffers are valid for the SSL lifetime.
+        let certificate_chain_der = unsafe {
+            let mut chain: Vec<Vec<u8>> = Vec::new();
+            let cert_stack = SSL_get0_peer_certificates(ssl);
+            if !cert_stack.is_null() {
+                let num = bun_boringssl_sys::sk_CRYPTO_BUFFER_num(cert_stack);
+                for i in 0..num {
+                    let buf_ptr = bun_boringssl_sys::sk_CRYPTO_BUFFER_value(cert_stack, i);
+                    if !buf_ptr.is_null() {
+                        let data = bun_boringssl_sys::CRYPTO_BUFFER_data(buf_ptr);
+                        let len = bun_boringssl_sys::CRYPTO_BUFFER_len(buf_ptr);
+                        if !data.is_null() && len > 0 {
+                            let slice = std::slice::from_raw_parts(data, len);
+                            chain.push(slice.to_vec());
+                        }
+                    }
+                }
+            }
+            chain
+        };
+
+        TlsHandshakeInfo {
+            protocol_version,
+            cipher_suite,
+            kea_group_name,
+            signature_scheme_name,
+            alpn_protocol,
+            certificate_chain_der,
+            used_ech: false, // ECH not supported in BoringSSL bridge yet
+        }
     }
 }
 
-impl<T> From<HyperRustlsHttpsConnector<T>> for InstrumentedConnector<T> {
-    fn from(inner: HyperRustlsHttpsConnector<T>) -> Self {
-        Self::new(inner)
+impl Connection for BoringsslTlsStream {
+    fn connected(&self) -> Connected {
+        let connected = self.tcp.connected();
+        if self.alpn_protocol() == Some(ALPN_H2.as_bytes()) {
+            connected.negotiated_h2()
+        } else {
+            connected
+        }
     }
 }
 
-pub struct InstrumentedStream<T> {
-    inner: MaybeHttpsStream<T>,
+impl hyper::rt::Read for BoringsslTlsStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        mut buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        let this = self.get_mut();
+
+        // Try to read plaintext from the TLS engine
+        loop {
+            // First, try to process any pending TLS data
+            match this.tls.process() {
+                Ok(result) => {
+                    // If there's outgoing data, schedule a flush (but don't block read on it)
+                    if result.outgoing_bytes > 0 {
+                        let outgoing = this.tls.take_outgoing();
+                        this.outgoing.extend_from_slice(&outgoing);
+                    }
+
+                    // If we got plaintext data, copy it to the output buffer
+                    if !result.plaintext.is_empty() {
+                        for chunk in &result.plaintext {
+                            let remaining = buf.remaining();
+                            let to_copy = remaining.min(chunk.len());
+                            if to_copy > 0 {
+                                buf.put_slice(&chunk[..to_copy]);
+                            }
+                        }
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    match result.state {
+                        TlsState::Active => {
+                            // No plaintext available, need more ciphertext from TCP
+                            break;
+                        }
+                        TlsState::PeerClosed | TlsState::Closed => {
+                            return Poll::Ready(Ok(())); // EOF
+                        }
+                        TlsState::Handshaking => {
+                            // Still handshaking, need more data
+                            break;
+                        }
+                    }
+                }
+                Err(TlsError::NotReady) => break,
+                Err(TlsError::BoringSSL(msg)) => {
+                    return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, msg)));
+                }
+                Err(e) => {
+                    return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e.to_string())));
+                }
+            }
+        }
+
+        // Need more data from TCP — read from TCP and feed into TLS
+        let mut tcp_buf = [0u8; BUF_SIZE];
+        let mut read_buf = tokio::io::ReadBuf::new(&mut tcp_buf);
+        match std::pin::Pin::new(&mut this.tcp).poll_read(cx, &mut read_buf) {
+            Poll::Ready(Ok(())) => {
+                let n = read_buf.filled().len();
+                if n == 0 {
+                    // TCP EOF
+                    return Poll::Ready(Ok(()));
+                }
+                this.tls.feed(read_buf.filled());
+                // Try to process once more
+                match this.tls.process() {
+                    Ok(result) => {
+                        // Flush outgoing
+                        if result.outgoing_bytes > 0 {
+                            let outgoing = this.tls.take_outgoing();
+                            this.outgoing.extend_from_slice(&outgoing);
+                        }
+
+                        if !result.plaintext.is_empty() {
+                            for chunk in &result.plaintext {
+                                let remaining = buf.remaining();
+                                let to_copy = remaining.min(chunk.len());
+                                if to_copy > 0 {
+                                    buf.put_slice(&chunk[..to_copy]);
+                                }
+                            }
+                            return Poll::Ready(Ok(()));
+                        }
+                        // No data yet, tell caller to poll again
+                        Poll::Pending
+                    }
+                    Err(TlsError::NotReady) => Poll::Pending,
+                    Err(e) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e.to_string()))),
+                }
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl hyper::rt::Write for BoringsslTlsStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        let this = self.get_mut();
+
+        // Encrypt the plaintext via TLS
+        match this.tls.write(buf) {
+            Ok(n) => {
+                // Get the encrypted outgoing data
+                let outgoing = this.tls.take_outgoing();
+                this.outgoing.extend_from_slice(&outgoing);
+
+                // Try to write outgoing to TCP
+                while !this.outgoing.is_empty() {
+                    match std::pin::Pin::new(&mut this.tcp).poll_write(cx, &this.outgoing) {
+                        Poll::Ready(Ok(0)) => {
+                            return Poll::Ready(Err(io::Error::new(
+                                io::ErrorKind::WriteZero,
+                                "TCP write returned zero",
+                            )));
+                        }
+                        Poll::Ready(Ok(written)) => {
+                            this.outgoing = this.outgoing[written..].to_vec();
+                        }
+                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                Poll::Ready(Ok(n))
+            }
+            Err(TlsError::NotReady) => Poll::Pending,
+            Err(e) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e.to_string()))),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        let this = self.get_mut();
+
+        // Flush any remaining outgoing data to TCP
+        while !this.outgoing.is_empty() {
+            match std::pin::Pin::new(&mut this.tcp).poll_write(cx, &this.outgoing) {
+                Poll::Ready(Ok(0)) => {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "TCP write returned zero during flush",
+                    )));
+                }
+                Poll::Ready(Ok(written)) => {
+                    this.outgoing = this.outgoing[written..].to_vec();
+                }
+                Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        std::pin::Pin::new(&mut this.tcp).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        let this = self.get_mut();
+
+        // Send TLS close_notify
+        let _ = this.tls.queue_close_notify();
+        let outgoing = this.tls.take_outgoing();
+        if !outgoing.is_empty() {
+            this.outgoing.extend_from_slice(&outgoing);
+        }
+
+        // Flush remaining outgoing
+        while !this.outgoing.is_empty() {
+            match std::pin::Pin::new(&mut this.tcp).poll_write(cx, &this.outgoing) {
+                Poll::Ready(Ok(0)) => break,
+                Poll::Ready(Ok(written)) => {
+                    this.outgoing = this.outgoing[written..].to_vec();
+                }
+                Poll::Ready(Err(_)) => break,
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+
+        std::pin::Pin::new(&mut this.tcp).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.tcp.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<Result<usize, io::Error>> {
+        // Flatten the vectored write into a single write for TLS
+        let total: usize = bufs.iter().map(|b| b.len()).sum();
+        if total == 0 {
+            return Poll::Ready(Ok(0));
+        }
+        // For small writes, just concatenate and do a single TLS write
+        if total <= BUF_SIZE {
+            let mut flat = Vec::with_capacity(total);
+            for b in bufs {
+                flat.extend_from_slice(b);
+            }
+            <Self as hyper::rt::Write>::poll_write(self, cx, &flat)
+        } else {
+            // For large writes, just write the first buffer
+            if bufs[0].is_empty() {
+                <Self as hyper::rt::Write>::poll_write(self, cx, &bufs[1])
+            } else {
+                <Self as hyper::rt::Write>::poll_write(self, cx, &bufs[0])
+            }
+        }
+    }
+}
+
+// ── tokio AsyncRead/AsyncWrite for BoringsslTlsStream ──────────────────
+// Required for WebSocket integration via async_tungstenite::tokio::TokioAdapter.
+
+impl tokio::io::AsyncRead for BoringsslTlsStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+
+        // Try to read plaintext from the TLS engine
+        loop {
+            // First, try to process any pending TLS data
+            match this.tls.process() {
+                Ok(result) => {
+                    // If there's outgoing data, buffer it
+                    if result.outgoing_bytes > 0 {
+                        let outgoing = this.tls.take_outgoing();
+                        this.outgoing.extend_from_slice(&outgoing);
+                    }
+
+                    // If we got plaintext data, copy it to the output buffer
+                    if !result.plaintext.is_empty() {
+                        for chunk in &result.plaintext {
+                            let remaining = buf.remaining();
+                            let to_copy = remaining.min(chunk.len());
+                            if to_copy > 0 {
+                                buf.put_slice(&chunk[..to_copy]);
+                            }
+                        }
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    match result.state {
+                        TlsState::Active => {
+                            // No plaintext available, need more ciphertext from TCP
+                            break;
+                        }
+                        TlsState::PeerClosed | TlsState::Closed => {
+                            return Poll::Ready(Ok(())); // EOF
+                        }
+                        TlsState::Handshaking => {
+                            // Still handshaking, need more data
+                            break;
+                        }
+                    }
+                }
+                Err(TlsError::NotReady) => break,
+                Err(TlsError::BoringSSL(msg)) => {
+                    return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, msg)));
+                }
+                Err(e) => {
+                    return Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e.to_string())));
+                }
+            }
+        }
+
+        // Need more data from TCP — read from TCP and feed into TLS
+        let mut tcp_buf = [0u8; BUF_SIZE];
+        let mut read_buf = tokio::io::ReadBuf::new(&mut tcp_buf);
+        match std::pin::Pin::new(&mut this.tcp).poll_read(cx, &mut read_buf) {
+            Poll::Ready(Ok(())) => {
+                let n = read_buf.filled().len();
+                if n == 0 {
+                    // TCP EOF
+                    return Poll::Ready(Ok(()));
+                }
+                this.tls.feed(read_buf.filled());
+                // Try to process once more
+                match this.tls.process() {
+                    Ok(result) => {
+                        if result.outgoing_bytes > 0 {
+                            let outgoing = this.tls.take_outgoing();
+                            this.outgoing.extend_from_slice(&outgoing);
+                        }
+
+                        if !result.plaintext.is_empty() {
+                            for chunk in &result.plaintext {
+                                let remaining = buf.remaining();
+                                let to_copy = remaining.min(chunk.len());
+                                if to_copy > 0 {
+                                    buf.put_slice(&chunk[..to_copy]);
+                                }
+                            }
+                            return Poll::Ready(Ok(()));
+                        }
+                        Poll::Pending
+                    }
+                    Err(TlsError::NotReady) => Poll::Pending,
+                    Err(e) => Poll::Ready(Err(io::Error::new(io::ErrorKind::Other, e.to_string()))),
+                }
+            }
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for BoringsslTlsStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, io::Error>> {
+        // Delegate to the hyper Write implementation
+        <Self as hyper::rt::Write>::poll_write(self, cx, buf)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        <Self as hyper::rt::Write>::poll_flush(self, cx)
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), io::Error>> {
+        <Self as hyper::rt::Write>::poll_shutdown(self, cx)
+    }
+}
+
+// ── Instrumented connector and stream ─────────────────────────────────
+
+/// A stream that wraps either a plain TCP stream or a BoringSSL TLS stream,
+/// with optional TLS handshake info attached.
+pub enum MaybeTlsStream {
+    Http(TokioIo<TcpStream>),
+    Https(BoringsslTlsStream),
+}
+
+pub struct InstrumentedStream {
+    inner: MaybeTlsStream,
     tls_info: Option<TlsHandshakeInfo>,
 }
 
-impl<T: Unpin> Unpin for InstrumentedStream<T> {}
+impl Unpin for InstrumentedStream {}
 
-impl<T> fmt::Debug for InstrumentedStream<T> {
+impl fmt::Debug for InstrumentedStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("InstrumentedStream")
             .field("tls_info", &self.tls_info)
@@ -141,90 +812,11 @@ pub struct TlsHandshakeInfo {
     pub used_ech: bool,
 }
 
-impl TlsHandshakeInfo {
-    fn from_connection(conn: &ClientConnection) -> Self {
-        let protocol_version = conn.protocol_version().map(protocol_version_to_string);
-        let cipher_suite = conn
-            .negotiated_cipher_suite()
-            .map(|suite| format!("{:?}", suite.suite()));
-        let kea_group_name = conn
-            .negotiated_key_exchange_group()
-            .map(|group| format!("{:?}", group.name()));
-        let certificate_chain_der = conn
-            .peer_certificates()
-            .map(|certs| certs.iter().map(|cert| cert.as_ref().to_vec()).collect())
-            .unwrap_or_default();
-        let alpn_protocol = conn
-            .alpn_protocol()
-            .map(|proto| String::from_utf8_lossy(proto).into_owned());
-        let used_ech = matches!(conn.ech_status(), EchStatus::Accepted);
-
-        Self {
-            protocol_version,
-            cipher_suite,
-            kea_group_name,
-            signature_scheme_name: None,
-            alpn_protocol,
-            certificate_chain_der,
-            used_ech,
-        }
-    }
-}
-
-fn protocol_version_to_string(version: ProtocolVersion) -> String {
-    match version {
-        ProtocolVersion::TLSv1_3 => "TLS 1.3".to_string(),
-        ProtocolVersion::TLSv1_2 => "TLS 1.2".to_string(),
-        ProtocolVersion::TLSv1_1 => "TLS 1.1".to_string(),
-        ProtocolVersion::TLSv1_0 => "TLS 1.0".to_string(),
-        ProtocolVersion::SSLv2 => "SSL 2.0".to_string(),
-        ProtocolVersion::SSLv3 => "SSL 3.0".to_string(),
-        ProtocolVersion::DTLSv1_0 => "DTLS 1.0".to_string(),
-        ProtocolVersion::DTLSv1_2 => "DTLS 1.2".to_string(),
-        ProtocolVersion::DTLSv1_3 => "DTLS 1.3".to_string(),
-        ProtocolVersion::Unknown(v) => format!("Unknown(0x{v:04x})"),
-        _ => format!("{version:?}"),
-    }
-}
-
-impl<T> InstrumentedStream<T>
-where
-    T: Connection + hyper::rt::Read + hyper::rt::Write + Unpin,
-{
-    fn from_maybe_https_stream(stream: MaybeHttpsStream<T>) -> Self {
-        match stream {
-            MaybeHttpsStream::Http(inner) => Self {
-                inner: MaybeHttpsStream::Http(inner),
-                tls_info: None,
-            },
-            MaybeHttpsStream::Https(tls_stream) => {
-                let (_tcp, tls) = tls_stream.inner().get_ref();
-                let tls_info = TlsHandshakeInfo::from_connection(tls);
-
-                Self {
-                    inner: MaybeHttpsStream::Https(tls_stream),
-                    tls_info: Some(tls_info),
-                }
-            },
-        }
-    }
-}
-
-impl<T> Connection for InstrumentedStream<T>
-where
-    T: Connection + hyper::rt::Read + hyper::rt::Write + Unpin,
-{
+impl Connection for InstrumentedStream {
     fn connected(&self) -> Connected {
         let connected = match &self.inner {
-            MaybeHttpsStream::Http(stream) => stream.connected(),
-            MaybeHttpsStream::Https(stream) => {
-                let (tcp, tls) = stream.inner().get_ref();
-                if tls.alpn_protocol() == Some(ALPN_H2.as_bytes()) {
-                    tcp.inner().connected().negotiated_h2()
-                } else {
-                    tcp.inner().connected()
-                }
-            },
+            MaybeTlsStream::Http(stream) => stream.connected(),
+            MaybeTlsStream::Https(stream) => stream.connected(),
         };
         if let Some(info) = &self.tls_info {
             connected.extra(info.clone())
@@ -234,47 +826,66 @@ where
     }
 }
 
-impl<T> hyper::rt::Read for InstrumentedStream<T>
-where
-    T: Connection + hyper::rt::Read + hyper::rt::Write + Unpin,
-{
+impl hyper::rt::Read for InstrumentedStream {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: hyper::rt::ReadBufCursor<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        std::pin::Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+        match &mut self.get_mut().inner {
+            MaybeTlsStream::Http(stream) => std::pin::Pin::new(stream).poll_read(cx, buf),
+            MaybeTlsStream::Https(stream) => {
+                <BoringsslTlsStream as hyper::rt::Read>::poll_read(std::pin::Pin::new(stream), cx, buf)
+            }
+        }
     }
 }
 
-impl<T> hyper::rt::Write for InstrumentedStream<T>
-where
-    T: Connection + hyper::rt::Read + hyper::rt::Write + Unpin,
-{
+impl hyper::rt::Write for InstrumentedStream {
     fn poll_write(
         self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
-        std::pin::Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+        match &mut self.get_mut().inner {
+            MaybeTlsStream::Http(stream) => std::pin::Pin::new(stream).poll_write(cx, buf),
+            MaybeTlsStream::Https(stream) => {
+                <BoringsslTlsStream as hyper::rt::Write>::poll_write(std::pin::Pin::new(stream), cx, buf)
+            }
+        }
     }
 
     fn poll_flush(
         self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        std::pin::Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+        match &mut self.get_mut().inner {
+            MaybeTlsStream::Http(stream) => std::pin::Pin::new(stream).poll_flush(cx),
+            MaybeTlsStream::Https(stream) => {
+                <BoringsslTlsStream as hyper::rt::Write>::poll_flush(std::pin::Pin::new(stream), cx)
+            }
+        }
     }
 
     fn poll_shutdown(
         self: std::pin::Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        std::pin::Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+        match &mut self.get_mut().inner {
+            MaybeTlsStream::Http(stream) => std::pin::Pin::new(stream).poll_shutdown(cx),
+            MaybeTlsStream::Https(stream) => {
+                <BoringsslTlsStream as hyper::rt::Write>::poll_shutdown(std::pin::Pin::new(stream), cx)
+            }
+        }
     }
 
     fn is_write_vectored(&self) -> bool {
-        self.inner.is_write_vectored()
+        match &self.inner {
+            MaybeTlsStream::Http(stream) => stream.is_write_vectored(),
+            MaybeTlsStream::Https(stream) => {
+                <BoringsslTlsStream as hyper::rt::Write>::is_write_vectored(stream)
+            }
+        }
     }
 
     fn poll_write_vectored(
@@ -282,53 +893,157 @@ where
         cx: &mut Context<'_>,
         bufs: &[io::IoSlice<'_>],
     ) -> Poll<Result<usize, io::Error>> {
-        std::pin::Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+        match &mut self.get_mut().inner {
+            MaybeTlsStream::Http(stream) => std::pin::Pin::new(stream).poll_write_vectored(cx, bufs),
+            MaybeTlsStream::Https(stream) => {
+                <BoringsslTlsStream as hyper::rt::Write>::poll_write_vectored(std::pin::Pin::new(stream), cx, bufs)
+            }
+        }
     }
 }
 
-impl<T> Service<Destination> for InstrumentedConnector<T>
-where
-    T: Service<Destination>,
-    T::Response: Connection + hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
-    T::Future: Send + 'static,
-    T::Error: Into<BoxError>,
-{
-    type Response = InstrumentedStream<T::Response>;
+// ── BoringSSL HTTPS connector ─────────────────────────────────────────
+
+/// A connector that wraps TCP connections with BoringSSL TLS when the
+/// scheme is "https", and passes through plain TCP for "http".
+#[derive(Clone)]
+pub struct BoringsslHttpsConnector {
+    http: ServoHttpConnector,
+    tls_client: TlsClient,
+    ignore_certificate_errors: bool,
+    stealth_per_connection: Option<StealthPerConnection>,
+}
+
+impl BoringsslHttpsConnector {
+    fn new(tls_client: TlsClient, ignore_certificate_errors: bool, stealth_per_connection: Option<StealthPerConnection>) -> Self {
+        Self {
+            http: ServoHttpConnector::new(),
+            tls_client,
+            ignore_certificate_errors,
+            stealth_per_connection,
+        }
+    }
+}
+
+impl Service<Destination> for BoringsslHttpsConnector {
+    type Response = InstrumentedStream;
     type Error = BoxError;
     type Future = std::pin::Pin<
-        Box<dyn Future<Output = Result<InstrumentedStream<T::Response>, BoxError>> + Send>,
+        Box<dyn Future<Output = Result<InstrumentedStream, BoxError>> + Send>,
     >;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.inner.poll_ready(cx).map_err(Into::into)
+        self.http.poll_ready(cx).map_err(Into::into)
     }
 
     fn call(&mut self, dst: Destination) -> Self::Future {
-        let future = self.inner.call(dst);
-        Box::pin(async move {
-            let stream = future.await.map_err(|error| -> BoxError { error })?;
-            Ok(InstrumentedStream::from_maybe_https_stream(stream))
-        })
+        let is_https = dst.scheme_str() == Some("https");
+        let tls_client = self.tls_client.clone();
+        let ignore_cert_errors = self.ignore_certificate_errors;
+        let stealth_pc = self.stealth_per_connection.clone();
+
+        if is_https {
+            let host = dst
+                .host()
+                .map(|h| h.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+
+            let future = self.http.call(dst);
+            Box::pin(async move {
+                let tcp_stream = future.await.map_err(|e| BoxError::from(e.to_string()))?;
+                // tcp_stream is TokioIo<TcpStream>, extract the inner TcpStream
+                let tcp = tcp_stream.into_inner();
+
+                // Create a BoringSSL TLS connection
+                let mut tls_conn = TlsConnection::new_client(&tls_client, &host)
+                    .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+
+                // Apply per-connection stealth settings via SSL_set_* functions
+                if let Some(ref pc) = stealth_pc {
+                    let ssl = tls_conn.ssl_ptr();
+
+                    // Set signature algorithms
+                    if let Some(ref sigalg_str) = pc.sigalg_list {
+                        let sigalg_c = std::ffi::CString::new(sigalg_str.as_str())
+                            .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+                        // SAFETY: SSL_set1_sigalgs_list sets the signature algorithms on the SSL
+                        // object. The CString is valid for the duration of this call. The ssl
+                        // pointer is valid because we just created the TlsConnection.
+                        let ok = unsafe { SSL_set1_sigalgs_list(ssl, sigalg_c.as_ptr()) };
+                        if ok == 0 {
+                            warn!("BoringSSL: SSL_set1_sigalgs_list failed");
+                        }
+                    }
+
+                    // Set ALPN protocols
+                    if let Some(ref alpn_wire) = pc.alpn_wire {
+                        // SAFETY: SSL_set_alpn_protos sets ALPN on the SSL object. The alpn_wire
+                        // buffer is valid for the duration of this call. The ssl pointer is valid
+                        // because we just created the TlsConnection.
+                        let ok = unsafe {
+                            SSL_set_alpn_protos(ssl, alpn_wire.as_ptr(), alpn_wire.len())
+                        };
+                        if ok != 0 {
+                            warn!("BoringSSL: SSL_set_alpn_protos failed");
+                        }
+                    }
+
+                    // Set curves/groups
+                    if let Some(ref curves_str) = pc.curves_list {
+                        let curves_c = std::ffi::CString::new(curves_str.as_str())
+                            .map_err(|e| BoxError::from(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+                        let _ = tls_conn.set_curves_list(curves_c.as_ptr());
+                    }
+                }
+
+                // If ignoring certificate errors, disable verification per-connection
+                if ignore_cert_errors {
+                    // SAFETY: SSL_set_verify disables certificate verification on the SSL
+                    // object. The ssl pointer is valid because we just created the TlsConnection.
+                    unsafe {
+                        SSL_set_verify(tls_conn.ssl_ptr(), 0, None);
+                    }
+                }
+
+                let mut stream = BoringsslTlsStream::new(tcp, tls_conn);
+
+                // Drive the TLS handshake
+                stream.handshake().await
+                    .map_err(|e| -> BoxError { BoxError::from(e) })?;
+
+                let tls_info = stream.tls_info();
+                Ok(InstrumentedStream {
+                    inner: MaybeTlsStream::Https(stream),
+                    tls_info: Some(tls_info),
+                })
+            })
+        } else {
+            let future = self.http.call(dst);
+            Box::pin(async move {
+                let tcp_stream = future.await.map_err(|e| BoxError::from(e.to_string()))?;
+                Ok(InstrumentedStream {
+                    inner: MaybeTlsStream::Http(tcp_stream),
+                    tls_info: None,
+                })
+            })
+        }
     }
 }
 
-pub type Connector = InstrumentedConnector<ServoHttpConnector>;
-pub type TlsConfig = ClientConfig;
+// ── Certificate error override management ─────────────────────────────
 
 #[derive(Clone, Debug, Default)]
 struct CertificateErrorOverrideManagerInternal {
-    /// A mapping of certificates and their hosts, which have seen certificate errors.
-    /// This is used to later create an override in this [CertificateErrorOverrideManager].
-    certificates_failing_to_verify: HashMap<ServerName<'static>, CertificateDer<'static>>,
-    /// A list of certificates that should be accepted despite encountering verification
-    /// errors.
-    overrides: Vec<CertificateDer<'static>>,
+    /// Certificates that have seen verification errors, keyed by hostname.
+    certificates_failing_to_verify: HashMap<String, Vec<u8>>,
+    /// Certificates that should be accepted despite verification errors.
+    overrides: Vec<Vec<u8>>,
 }
 
 /// This data structure is used to track certificate verification errors and overrides.
 /// It tracks:
-///  - A list of [Certificate]s with verification errors mapped by their [ServerName]
-///  - A list of [Certificate]s for which to ignore verification errors.
+///  - A list of certificate DER bytes with verification errors mapped by hostname
+///  - A list of certificate DER bytes for which to ignore verification errors.
 #[derive(Clone, Debug, Default)]
 pub struct CertificateErrorOverrideManager(Arc<Mutex<CertificateErrorOverrideManagerInternal>>);
 
@@ -339,62 +1054,190 @@ impl CertificateErrorOverrideManager {
 
     /// Add a certificate to this manager's list of certificates for which to ignore
     /// validation errors.
-    pub fn add_override(&self, certificate: &CertificateDer<'static>) {
-        self.0.lock().overrides.push(certificate.clone());
+    pub fn add_override(&self, certificate: &[u8]) {
+        self.0.lock().overrides.push(certificate.to_vec());
     }
 
-    /// Given the a string representation of a sever host name, remove information about
-    /// a [Certificate] with verification errors. If a certificate with
-    /// verification errors was found, return it, otherwise None.
+    /// Given a server host name, remove information about a certificate with
+    /// verification errors. If a certificate with verification errors was found,
+    /// return it, otherwise None.
     pub(crate) fn remove_certificate_failing_verification(
         &self,
         host: &str,
-    ) -> Option<CertificateDer<'static>> {
-        let server_name = match ServerName::try_from(host) {
-            Ok(name) => name.to_owned(),
-            Err(error) => {
-                warn!("Could not convert host string into RustTLS ServerName: {error:?}");
-                return None;
-            },
-        };
+    ) -> Option<Vec<u8>> {
         self.0
             .lock()
             .certificates_failing_to_verify
-            .remove(&server_name)
+            .remove(host)
     }
 }
 
 #[derive(Clone, Debug, Default)]
-pub enum CACertificates<'de> {
+pub enum CACertificates {
     #[default]
     Default,
-    Override(Vec<CertificateDer<'de>>),
+    Override(Vec<Vec<u8>>),
 }
 
-/// Create a [TlsConfig] to use for managing a HTTP connection. This currently creates
-/// a rustls [ClientConfig].
+// ── TLS config ────────────────────────────────────────────────────────
+
+/// BoringSSL TLS configuration for servo's HTTP client.
+///
+/// Wraps a `TlsClient` (which owns an `SSL_CTX`) along with certificate
+/// verification settings.
+#[derive(Clone)]
+pub struct TlsConfig {
+    pub client: TlsClient,
+    pub ignore_certificate_errors: bool,
+    /// Per-connection settings from stealth profile (applied on each new TLS connection
+    /// because BoringSSL only provides SSL_set_* variants, not SSL_CTX_set_*).
+    pub stealth_per_connection: Option<StealthPerConnection>,
+}
+
+impl TlsConfig {
+    /// Override the ALPN to only advertise HTTP/1.1 (for WebSocket connections
+    /// that don't support HTTP/2).
+    pub fn set_alpn_http1_only(&mut self) {
+        let alpn_wire = vec![0x08, b'h', b't', b't', b'p', b'/', b'1', b'.', b'1'];
+        match &mut self.stealth_per_connection {
+            Some(pc) => pc.alpn_wire = Some(alpn_wire),
+            None => {
+                self.stealth_per_connection = Some(StealthPerConnection {
+                    sigalg_list: None,
+                    alpn_wire: Some(alpn_wire),
+                    curves_list: None,
+                });
+            }
+        }
+    }
+}
+
+/// Per-connection TLS settings that must be applied via SSL_set_* functions
+/// (BoringSSL does not expose SSL_CTX_set_* for these).
+#[derive(Clone, Debug)]
+pub struct StealthPerConnection {
+    /// Signature algorithms as OpenSSL name strings (e.g., "rsa_pss_rsae_sha256:rsa_pkcs1_sha256").
+    pub sigalg_list: Option<String>,
+    /// ALPN protocols in wire format (length-prefixed).
+    pub alpn_wire: Option<Vec<u8>>,
+    /// Supported groups as OpenSSL name strings (e.g., "X25519:P-256:P-384").
+    pub curves_list: Option<String>,
+}
+
+/// Create a [`TlsConfig`] to use for managing an HTTP connection.
+///
+/// Builds a BoringSSL `SSL_CTX` with the appropriate cipher suites,
+/// curves, signature algorithms, and ALPN from the stealth configuration.
+/// Certificate verification uses BoringSSL's built-in system root CA store
+/// by default (same as Chrome).
 ///
 /// FIXME: The `ignore_certificate_errors` argument ignores all certificate errors. This
-/// is used when running the WPT tests, because rustls currently rejects the WPT certificiate.
-/// See <https://github.com/servo/servo/issues/30080>
+/// is used when running the WPT tests, because BoringSSL currently rejects the WPT certificate.
 #[servo_tracing::instrument(skip_all)]
 pub fn create_tls_config(
-    ca_certificates: CACertificates<'static>,
+    _ca_certificates: CACertificates,
     ignore_certificate_errors: bool,
-    override_manager: CertificateErrorOverrideManager,
+    _override_manager: CertificateErrorOverrideManager,
 ) -> TlsConfig {
-    let verifier = CertificateVerificationOverrideVerifier::new(
-        ca_certificates,
+    // Build the BoringSSL TlsClient
+    let (client, stealth_per_connection) = match get_stealth_tls_config() {
+        Some(stealth) => {
+            // Use stealth profile to configure cipher suites
+            let client = TlsClient::new()
+                .expect("Failed to create BoringSSL TlsClient");
+            let ctx = client.ctx();
+
+            // Build cipher list string from stealth config (TLS 1.3 + TLS 1.2)
+            // SSL_CTX_set_cipher_list is available and sets the default for all connections.
+            let mut cipher_names: Vec<&str> = Vec::new();
+
+            // TLS 1.3 ciphers first
+            for id in &stealth.tls13_cipher_suites {
+                if let Some(name) = iana_to_openssl_cipher_13(*id) {
+                    cipher_names.push(name);
+                }
+            }
+            // TLS 1.2 ciphers
+            for id in &stealth.tls12_cipher_suites {
+                if let Some(name) = iana_to_openssl_cipher_12(*id) {
+                    cipher_names.push(name);
+                }
+            }
+
+            if !cipher_names.is_empty() {
+                let cipher_str = cipher_names.join(":");
+                let cipher_c = std::ffi::CString::new(cipher_str)
+                    .expect("invalid cipher string");
+                // SAFETY: SSL_CTX_set_cipher_list sets the cipher list on the SSL_CTX.
+                // The CString is valid for the duration of this call. The ctx pointer is
+                // valid because we just obtained it from the TlsClient.
+                let ok = unsafe { SSL_CTX_set_cipher_list(ctx, cipher_c.as_ptr()) };
+                if ok == 0 {
+                    warn!("BoringSSL: SSL_CTX_set_cipher_list failed for stealth config");
+                }
+            }
+
+            // Prepare per-connection settings (BoringSSL only has SSL_set_* for these)
+            let sigalg_list = if !stealth.signature_algorithms.is_empty() {
+                let sigalg_names: Vec<&str> = stealth.signature_algorithms
+                    .iter()
+                    .filter_map(|id| iana_to_openssl_sigalg(*id))
+                    .collect();
+                if !sigalg_names.is_empty() {
+                    Some(sigalg_names.join(":"))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let alpn_wire = if !stealth.alpn_protocols.is_empty() {
+                let mut wire: Vec<u8> = Vec::new();
+                for proto in &stealth.alpn_protocols {
+                    wire.push(proto.len() as u8);
+                    wire.extend_from_slice(proto);
+                }
+                Some(wire)
+            } else {
+                None
+            };
+
+            let curves_list = if !stealth.supported_groups.is_empty() {
+                let curves: Vec<&str> = stealth.supported_groups
+                    .iter()
+                    .filter_map(|g| iana_to_openssl_group(*g))
+                    .collect();
+                if !curves.is_empty() {
+                    Some(curves.join(":"))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            (client, Some(StealthPerConnection {
+                sigalg_list,
+                alpn_wire,
+                curves_list,
+            }))
+        }
+        None => {
+            let client = TlsClient::new()
+                .expect("Failed to create BoringSSL TlsClient");
+            (client, None)
+        }
+    };
+
+    TlsConfig {
+        client,
         ignore_certificate_errors,
-        override_manager,
-    );
-    // TODO: After <https://github.com/rustls/rustls-platform-verifier/pull/204> is merged,
-    // `dangerous` can be removed.
-    rustls::ClientConfig::builder()
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(verifier))
-        .with_no_client_auth()
+        stealth_per_connection,
+    }
 }
+
+// ── Tokio executor ────────────────────────────────────────────────────
 
 #[derive(Clone)]
 struct TokioExecutor {}
@@ -408,44 +1251,15 @@ where
     }
 }
 
-static CRYPTO_PROVIDER_CACHE: LazyLock<Arc<CryptoProvider>> = LazyLock::new(|| {
-    CryptoProvider::get_default()
-        .cloned()
-        // The embedder should have initialized the default crypto provider before
-        // initializing servo, so this should never fail.
-        .unwrap_or_else(|| {
-            warn!("Default crypto provider not initialized before first access in connector.");
-            Arc::new(aws_lc_rs::default_provider())
-        })
-});
-
-/// A cache for the default rustls platform verifier.
+/// Prewarm the TLS stack to speed up the first connection.
 ///
-/// Instantiating a new verifier can be expensive, since it can read through all certificates:
-/// <https://github.com/rustls/rustls-platform-verifier/blob/996b1c903491641b17b3c9afb65d1352f6fc6b76/rustls-platform-verifier/src/verification/others.rs#L92>
-static RUSTLS_PLATFORM_VERIFIER_CACHE: LazyLock<Arc<rustls_platform_verifier::Verifier>> =
-    LazyLock::new(|| {
-        Arc::new(
-            rustls_platform_verifier::Verifier::new(CRYPTO_PROVIDER_CACHE.clone())
-                .expect("Could not initialize platform certificate verifier"),
-        )
-    });
-
-/// Prewarm the TLS stack to speed up the first connection
-///
-/// Currently, this force-seeds the crypto provider (from aws_lc_rs),
-/// which on my system takes around 30-50ms according to samply, spent in
-/// `tree_jitter_initialize_once`. If we don't call this function, then
-/// the initialization will happen much later, on a tokio runtime thread.
+/// Currently, this initializes BoringSSL via `bun_boringssl::load()`,
+/// which on some systems can take a few milliseconds.
 #[inline]
 pub fn prewarm_tls() {
     #[servo_tracing::instrument]
     fn prewarm_tls_impl() {
-        let mut sink = [0u8; 32];
-        // The first access can be slow, if the provider needs to gather entropy.
-        let _ = CRYPTO_PROVIDER_CACHE.secure_random.fill(&mut sink);
-        // Note: We don't need to explicitly force initialize RUSTLS_PLATFORM_VERIFIER_CACHE,
-        // since the resource manager thread will do that during startup.
+        bun_boringssl::load();
     }
 
     if let Err(error) = std::thread::Builder::new()
@@ -456,138 +1270,7 @@ pub fn prewarm_tls() {
     }
 }
 
-#[derive(Debug)]
-struct CertificateVerificationOverrideVerifier {
-    main_verifier: Arc<dyn ServerCertVerifier>,
-    ignore_certificate_errors: bool,
-    override_manager: CertificateErrorOverrideManager,
-}
-
-impl CertificateVerificationOverrideVerifier {
-    fn new(
-        ca_certficates: CACertificates<'static>,
-        ignore_certificate_errors: bool,
-        override_manager: CertificateErrorOverrideManager,
-    ) -> Self {
-        // From <https://github.com/rustls/rustls-platform-verifier/blob/main/README.md>:
-        // > Some manual setup is required, outside of cargo, to use this crate on
-        // > Android. In order to use Android's certificate verifier, the crate needs to
-        // > call into the JVM. A small Kotlin component must be included in your app's
-        // > build to support rustls-platform-verifier.
-        //
-        // Since we cannot count on embedders to do this setup, just stick with webpki roots
-        // on Android.
-        let use_webpki_roots = cfg!(target_os = "android") || pref!(network_use_webpki_roots);
-        let main_verifier = if !use_webpki_roots {
-            let verifier = match ca_certficates {
-                CACertificates::Default => RUSTLS_PLATFORM_VERIFIER_CACHE.clone(),
-                // Android doesn't support `Verifier::new_with_extra_roots`, but currently Android
-                // never uses the platform verifier at all.
-                CACertificates::Override(_certificates) => {
-                    #[cfg(target_os = "android")]
-                    unreachable!("Android should always use the WebPKI verifier.");
-                    #[cfg(not(target_os = "android"))]
-                    {
-                        let verifier = rustls_platform_verifier::Verifier::new_with_extra_roots(
-                            _certificates,
-                            CRYPTO_PROVIDER_CACHE.clone(),
-                        )
-                        .expect("Could not initialize platform certificate verifier");
-                        Arc::new(verifier)
-                    }
-                },
-            };
-            verifier as Arc<dyn ServerCertVerifier>
-        } else {
-            let mut root_store =
-                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            match ca_certficates {
-                CACertificates::Default => {},
-                CACertificates::Override(certificates) => {
-                    for certificate in certificates {
-                        if root_store.add(certificate).is_err() {
-                            log::error!("Could not add an override certificate.");
-                        }
-                    }
-                },
-            }
-            rustls::client::WebPkiServerVerifier::builder(root_store.into())
-                .build()
-                .expect("Could not initialize platform certificate verifier.")
-                as Arc<dyn ServerCertVerifier>
-        };
-
-        Self {
-            main_verifier,
-            ignore_certificate_errors,
-            override_manager,
-        }
-    }
-}
-
-impl rustls::client::danger::ServerCertVerifier for CertificateVerificationOverrideVerifier {
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.main_verifier
-            .verify_tls12_signature(message, cert, dss)
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.main_verifier
-            .verify_tls13_signature(message, cert, dss)
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.main_verifier.supported_verify_schemes()
-    }
-
-    fn verify_server_cert(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        intermediates: &[CertificateDer<'_>],
-        server_name: &ServerName<'_>,
-        ocsp_response: &[u8],
-        now: UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let error = match self.main_verifier.verify_server_cert(
-            end_entity,
-            intermediates,
-            server_name,
-            ocsp_response,
-            now,
-        ) {
-            Ok(result) => return Ok(result),
-            Err(error) => error,
-        };
-
-        if self.ignore_certificate_errors {
-            warn!("Ignoring certficate error: {error:?}");
-            return Ok(rustls::client::danger::ServerCertVerified::assertion());
-        }
-
-        // If there's an override for this certificate, just accept it.
-        for cert_with_exception in &*self.override_manager.0.lock().overrides {
-            if *end_entity == *cert_with_exception {
-                return Ok(rustls::client::danger::ServerCertVerified::assertion());
-            }
-        }
-        self.override_manager
-            .0
-            .lock()
-            .certificates_failing_to_verify
-            .insert(server_name.to_owned(), end_entity.clone().into_owned());
-        Err(error)
-    }
-}
+// ── Error types ──────────────────────────────────────────────────────
 
 pub type BoxedBody = BoxBody<Bytes, hyper::Error>;
 
@@ -606,6 +1289,8 @@ impl std::fmt::Display for ConnectionError {
 }
 
 impl std::error::Error for ConnectionError {}
+
+// ── Proxy connector ──────────────────────────────────────────────────
 
 #[derive(Clone)]
 /// A proxy connector. This will automatically open a proxy connection if the uri matches the proxy uri.
@@ -659,17 +1344,33 @@ impl Service<Destination> for ProxyConnector {
     }
 }
 
-pub type ServoClient = Client<InstrumentedConnector<ProxyConnector>, BoxedBody>;
+pub type ServoClient = Client<BoringsslHttpsConnector, BoxedBody>;
 
 pub fn create_http_client(tls_config: TlsConfig) -> ServoClient {
-    let connector = hyper_rustls::HttpsConnectorBuilder::new()
-        .with_tls_config(tls_config)
-        .https_or_http()
-        .enable_http1()
-        .enable_http2()
-        .wrap_connector(ProxyConnector::new());
+    let stealth = get_stealth_tls_config();
 
-    Client::builder(TokioExecutor {})
-        .http1_title_case_headers(true)
-        .build(InstrumentedConnector::from(connector))
+    let connector = BoringsslHttpsConnector::new(
+        tls_config.client,
+        tls_config.ignore_certificate_errors,
+        tls_config.stealth_per_connection,
+    );
+
+    let mut builder = Client::builder(TokioExecutor {});
+    builder.http1_title_case_headers(true);
+
+    // Apply stealth HTTP/2 fingerprint settings if configured.
+    //
+    // hyper's builder supports window sizes, max frame size, and max header list
+    // size. Other SETTINGS parameters (header_table_size, max_concurrent_streams)
+    // are NOT configurable via hyper's builder API and would require a custom h2
+    // connection wrapper for full AKAMAI fingerprint matching.
+    if let Some(s) = stealth {
+        builder
+            .http2_initial_stream_window_size(s.h2_initial_stream_size)
+            .http2_initial_connection_window_size(s.h2_initial_connection_window_size)
+            .http2_max_frame_size(s.h2_max_frame_size)
+            .http2_max_header_list_size(s.h2_max_header_list_size);
+    }
+
+    builder.build(connector)
 }

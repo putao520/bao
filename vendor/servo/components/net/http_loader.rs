@@ -373,8 +373,8 @@ fn set_cookies_from_headers(
 
 fn build_tls_security_info(handshake: &TlsHandshakeInfo, hsts_enabled: bool) -> TlsSecurityInfo {
     // Simplified security state determination:
-    // Servo uses rustls, which only supports TLS 1.2+ and secure cipher suites (GCM, ChaCha20-Poly1305).
-    // rustls does NOT support TLS 1.0, TLS 1.1, SSL, or weak ciphers (RC4, 3DES, CBC, etc).
+    // Servo uses BoringSSL, which supports TLS 1.2+ and secure cipher suites (GCM, ChaCha20-Poly1305).
+    // BoringSSL does NOT support TLS 1.0, TLS 1.1, SSL, or weak ciphers (RC4, 3DES, etc).
     // Therefore, any successful TLS connection is secure by design.
     //
     // We only check for missing handshake information as a defensive measure.
@@ -383,13 +383,13 @@ fn build_tls_security_info(handshake: &TlsHandshakeInfo, hsts_enabled: bool) -> 
         // Missing handshake information indicates an incomplete or failed connection
         TlsSecurityState::Insecure
     } else {
-        // rustls guarantees TLS 1.2+ with secure ciphers
+        // BoringSSL guarantees TLS 1.2+ with secure ciphers
         TlsSecurityState::Secure
     };
 
     TlsSecurityInfo {
         state,
-        weakness_reasons: Vec::new(), // rustls never negotiates weak crypto
+        weakness_reasons: Vec::new(), // BoringSSL never negotiates weak crypto
         protocol_version: handshake.protocol_version.clone(),
         cipher_suite: handshake.cipher_suite.clone(),
         kea_group_name: handshake.kea_group_name.clone(),
@@ -2016,7 +2016,7 @@ async fn http_network_fetch(
                 context.ignore_certificate_errors,
                 context.state.override_manager.clone(),
             );
-            tls_config.alpn_protocols = vec!["http/1.1".to_string().into()];
+            tls_config.set_alpn_http1_only();
 
             let response = match start_websocket(
                 context.state.clone(),

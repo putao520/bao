@@ -317,9 +317,9 @@ pub struct Preferences {
     /// Notice that this is not equal to the number of different urls in the cache.
     pub network_http_cache_size: u64,
     pub network_local_directory_listing_enabled: bool,
-    /// Force the use of `rust-webpki` verification for CA roots. If this is false (the
-    /// default), then `rustls-platform-verifier` will be used, except on Android where
-    /// `rust-webpki` is always used.
+    /// Force the use of BoringSSL's built-in root store for CA verification. If this is false (the
+    /// default), then BoringSSL will use the system root store, except on Android where
+    /// the built-in roots are always used.
     pub network_use_webpki_roots: bool,
     /// The length of the session history, in navigations, for each `WebView. Back-forward
     /// cache entries that are more than `session_history_max_length` steps in the future or

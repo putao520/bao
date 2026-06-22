@@ -37,7 +37,6 @@ use net_traits::{
 };
 use parking_lot::Mutex;
 use rustc_hash::FxHashMap;
-use rustls_pki_types::CertificateDer;
 use serde::{Deserialize, Serialize};
 use servo_base::generic_channel::CallbackSetter;
 use servo_base::id::PipelineId;
@@ -106,7 +105,7 @@ pub struct FetchContext {
     pub timing: ResourceFetchTimingContainer,
     pub protocols: Arc<ProtocolRegistry>,
     pub websocket_chan: Option<Arc<Mutex<WebSocketChannel>>>,
-    pub ca_certificates: CACertificates<'static>,
+    pub ca_certificates: CACertificates,
     pub ignore_certificate_errors: bool,
     pub preloaded_resources: SharedPreloadedResources,
     pub in_flight_keep_alive_records: SharedInflightKeepAliveRecords,
@@ -1047,7 +1046,7 @@ fn handle_allowcert_request(request: &mut Request, context: &FetchContext) -> io
     context
         .state
         .override_manager
-        .add_override(&CertificateDer::from_slice(&cert_bytes).into_owned());
+        .add_override(&cert_bytes);
     Ok(())
 }
 

@@ -22,9 +22,7 @@ use winit::raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::window::Window;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("Failed to install crypto provider");
+    bun_boringssl::load();
 
     let event_loop = EventLoop::with_user_event()
         .build()
