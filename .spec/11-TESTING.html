@@ -212,12 +212,7 @@
       <h2>§2 Engine Tests (REQ-ENG-001~007)</h2>
       <!-- ============================================================ -->
 
-      <div id="test-eng-12" data-test="TEST-ENG-12" data-req-ref="REQ-ENG-001" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
-        <h3>TEST-ENG-12: SpiderMonkey 引擎初始化与 JS 执行</h3>
-        <p><strong>关联需求</strong>: REQ-ENG-001 <span data-xref-type="req" data-xref-id="REQ-ENG-001"></span></p>
-        <p><strong>测试类型</strong>: 正向测试</p>
-        <p>验证 SpiderMonkey JSContext 创建、脚本执行、异常捕获。覆盖于 phase1_integration.js。</p>
-      </div>
+      
 
       <div id="test-eng-12" data-test="TEST-ENG-12" data-req-ref="REQ-ENG-002" data-test-categories="unit,positive,integration,acceptance" data-test-env="local" data-test-level="integration">
         <h3>TEST-ENG-12: 代码生成后端验证</h3>
@@ -2129,7 +2124,7 @@
       <!-- 真实网页 E2E 测试 (Real-World Web E2E) — drives real bao browser (servo) -->
       <!-- ═════════════════════════════════════════════════════════════════ -->
 
-      <section id="test-stl-e2e-web-fingerprint" data-test="TEST-STL-E2E-WEB-FINGERPRINT" data-req-ref="REQ-STL-001,REQ-STL-002,REQ-STL-003,REQ-STL-004,REQ-STL-005,REQ-STL-006,REQ-STL-007" data-test-categories="e2e,integration,positive,negative" data-test-env="local,network" data-test-level="e2e">
+      <section id="test-stl-e2e-web-fingerprint" data-test="TEST-STL-E2E-WEB-FINGERPRINT" data-req-ref="REQ-STL-001 REQ-STL-002 REQ-STL-003 REQ-STL-004 REQ-STL-005 REQ-STL-006 REQ-STL-007" data-test-categories="e2e,integration,positive,negative" data-test-env="local,network" data-test-level="e2e">
         <h4>TEST-STL-E2E-WEB-FINGERPRINT: 真实指纹网站评估 E2E (真实 bao browser 访问网页)</h4>
         <p>
           启动 <code>BaoRuntime</code> + <code>StealthProfile</code> (chrome_default / firefox_default),
@@ -2196,7 +2191,7 @@
         <p><strong>Graceful skip:</strong> BAO_TEST_REAL_SERVO != 1 / 无 DISPLAY / BaoRuntime::new 失败 → skip</p>
       </section>
 
-      <section id="test-brw-e2e-multipage-sec" data-test="TEST-BRW-E2E-MULTIPAGE-SEC" data-req-ref="REQ-BRW-003,REQ-LIB-001" data-test-categories="e2e,integration,security,positive,negative" data-test-env="local" data-test-level="e2e">
+      <section id="test-brw-e2e-multipage-sec" data-test="TEST-BRW-E2E-MULTIPAGE-SEC" data-req-ref="REQ-BRW-003 REQ-LIB-001" data-test-categories="e2e,integration,security,positive,negative" data-test-env="local" data-test-level="e2e">
         <h4>TEST-BRW-E2E-MULTIPAGE-SEC: 多页面多上下文安全 E2E (Realm 隔离验证)</h4>
         <p>
           <code>BaoRuntime</code> 创建多 page (chrome + firefox + none 三种 StealthProfile),
