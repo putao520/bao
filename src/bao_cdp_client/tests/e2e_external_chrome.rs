@@ -7,12 +7,12 @@
 //! 3. **event_subscription**: subscribe event → mock push → 接收
 //! 4. **multi_command_sequence**: 多个命令按序往返
 //! 5. **error_recovery**: JSON-RPC error / 超时
-//! 6. **real_chrome**: 真实 Chrome (`ws://127.0.0.1:9222`),`#[ignore]` + 环境变量
+//! 6. **real_chrome**: 真实 Chrome (`ws://127.0.0.1:9222`),graceful skip + 环境变量
 //!
 //! ## 策略
 //!
 //! - **Mock 路径**: 启动 in-process mini ws server(bao_cdp::ws_handshake::server_handshake)
-//! - **真 Chrome 路径**: 检查 `BAO_TEST_CHROME_URL` 环境变量,有则跑,无则 `#[ignore]` 跳过
+//! - **真 Chrome 路径**: 检查 `BAO_TEST_CHROME_URL` 环境变量,有则跑,无则 graceful skip(eprintln + return)
 //!
 //! @trace REQ-BAO-API-002 [interface:Transport]
 //! @trace TEST-BAO-API-E2E-EXTERNAL
@@ -432,66 +432,168 @@ fn e2e_external_close_then_send_returns_connection_closed() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §5 真 Chrome E2E — `#[ignore]` + BAO_TEST_CHROME_URL 环境变量
+// §5 真 Chrome E2E — graceful skip + BAO_TEST_CHROME_URL 环境变量
 // ════════════════════════════════════════════════════════════════════
 
 /// 真实 Chrome 完整 E2E 测试。启用方式:
 /// ```sh
-/// BAO_TEST_CHROME_URL=ws://127.0.0.1:9222 cargo test -- --ignored
+/// BAO_TEST_CHROME_URL=ws://127.0.0.1:9222 cargo test e2e_real_chrome_navigation_and_screenshot
 /// ```
+/// 默认(无 BAO_TEST_CHROME_URL)graceful skip(eprintln + return)。
+///
+/// ## CDP 流程说明
+/// Runtime / Page 都是 **page-domain**,不能在 browser-level session(无 sessionId)
+/// 调用,必须先 `Target.createTarget` → `Target.attachToTarget(flatten:true)` 拿到
+/// page sessionId,然后在该 session 上调用 page-domain method。
+///
+/// flatten 模式下所有命令必须显式传 `sessionId` 字段(已通过 send_command 第 3 参实现)。
 #[test]
-#[ignore = "real chrome requires BAO_TEST_CHROME_URL=ws://127.0.0.1:9222"]
 fn e2e_real_chrome_navigation_and_screenshot() {
-    // Arrange
+    // Arrange — 必须显式启用(real chrome 测试)
     let url = match std::env::var("BAO_TEST_CHROME_URL") {
-        // Act
         Ok(v) => v,
-        Err(_) => return,
+        Err(_) => {
+            eprintln!("[skip] 环境不可用: BAO_TEST_CHROME_URL not set (real chrome E2E)");
+            return;
+        }
     };
     let mut t = WebSocketTransport::connect(&url).expect("ws connect to real chrome");
+    t.set_command_timeout(Duration::from_secs(10));
 
-    // Target.createTarget
+    // Act — Step 1: Target.createTarget(browser-level,创建新 page)
     let r = t
         .send_command("Target.createTarget", json!({"url":"about:blank"}), None)
         .expect("createTarget");
-    let target_id = r["targetId"].as_str().expect("targetId").to_string();
+    let target_id = r["targetId"]
+        .as_str()
+        .expect("targetId in createTarget response")
+        .to_string();
 
-    // Target.attachToTarget — 获取 sessionId
+    // Act — Step 2: Target.attachToTarget(flatten:true)拿到 page sessionId
     let r = t
-        .send_command("Target.attachToTarget", json!({"targetId": target_id, "flatten": true}), None)
+        .send_command(
+            "Target.attachToTarget",
+            json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
         .expect("attachToTarget");
-    let session_id = r["sessionId"].as_str().expect("sessionId").to_string();
+    let session_id = r["sessionId"]
+        .as_str()
+        .expect("sessionId in attachToTarget response")
+        .to_string();
 
-    // Page.navigate
-    let _ = t
-        .send_command("Page.navigate", json!({"url":"https://example.com"}), Some(&session_id))
+    // Act — Step 3: Page.navigate(在 page session 上)
+    let nav = t
+        .send_command(
+            "Page.navigate",
+            json!({"url":"https://example.com"}),
+            Some(&session_id),
+        )
         .expect("navigate");
+    assert!(nav["frameId"].is_string(), "navigate returns frameId");
 
-    // Page.captureScreenshot
+    // Act — Step 4: 等待 page load ready
+    // 真实 Chrome 异步加载页面,navigate 返回时 DOM 可能尚未 ready。
+    // 轮询 Page.getFrameTree 直到 main frame url 已切换 + 不再 loading,
+    // 最多等 5 秒(避免无网络环境永久阻塞)。
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let mut ready = false;
+    while std::time::Instant::now() < deadline {
+        let tree = match t.send_command("Page.getFrameTree", json!({}), Some(&session_id)) {
+            Ok(v) => v,
+            Err(_) => {
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+        };
+        let main_url = tree["frameTree"]["frame"]["url"]
+            .as_str()
+            .unwrap_or("");
+        if main_url.contains("example.com") {
+            ready = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    // 即使 ready=false(网络限制无法加载)也继续尝试 screenshot—about:blank 至少可截图
+    let _ = ready;
+
+    // Act — Step 5: Page.captureScreenshot(在同一个 page session 上)
+    // flatten 模式下 sessionId 必传(传 step 2 拿到的 session_id)
     let r = t
-        .send_command("Page.captureScreenshot", json!({"format":"png"}), Some(&session_id))
+        .send_command(
+            "Page.captureScreenshot",
+            json!({"format":"png"}),
+            Some(&session_id),
+        )
         .expect("screenshot");
-    // Assert
-    assert!(r["data"].is_string(), "screenshot must return base64");
+    // Assert — 必须返回非空 base64 data
+    assert!(
+        r["data"].is_string(),
+        "screenshot must return base64 data, got: {r}"
+    );
+    let data = r["data"].as_str().expect("data as str");
+    assert!(!data.is_empty(), "screenshot base64 must be non-empty");
+
+    // Cleanup — 关闭 target
+    let _ = t.send_command(
+        "Target.closeTarget",
+        json!({"targetId": target_id}),
+        None,
+    );
 }
 
 #[test]
-#[ignore = "real chrome requires BAO_TEST_CHROME_URL"]
 fn e2e_real_chrome_runtime_evaluate() {
-    // Arrange
+    // Arrange — 必须显式启用(real chrome 测试)
     let url = match std::env::var("BAO_TEST_CHROME_URL") {
-        // Act
         Ok(v) => v,
-        Err(_) => return,
+        Err(_) => {
+            eprintln!("[skip] 环境不可用: BAO_TEST_CHROME_URL not set (real chrome E2E)");
+            return;
+        }
     };
     let mut t = WebSocketTransport::connect(&url).expect("ws connect");
+    t.set_command_timeout(Duration::from_secs(10));
+
+    // Act — Step 1: Target.createTarget(browser-level,创建新 page)
+    let r = t
+        .send_command("Target.createTarget", json!({"url":"about:blank"}), None)
+        .expect("createTarget");
+    let target_id = r["targetId"]
+        .as_str()
+        .expect("targetId in createTarget response")
+        .to_string();
+
+    // Act — Step 2: Target.attachToTarget(flatten:true)拿到 page sessionId
+    // Runtime 是 page-domain,必须在 page session 上调用,不能在 browser session。
+    let r = t
+        .send_command(
+            "Target.attachToTarget",
+            json!({"targetId": target_id, "flatten": true}),
+            None,
+        )
+        .expect("attachToTarget");
+    let session_id = r["sessionId"]
+        .as_str()
+        .expect("sessionId in attachToTarget response")
+        .to_string();
+
+    // Act — Step 3: Runtime.evaluate(在 page session 上,sessionId 必传)
     let r = t
         .send_command(
             "Runtime.evaluate",
             json!({"expression": "1 + 1"}),
-            None,
+            Some(&session_id),
         )
         .expect("evaluate");
-    // Assert
-    assert_eq!(r["result"]["value"], 2);
+    // Assert — Chrome 返回 {result:{type:"number", value:2, ...}}
+    assert_eq!(r["result"]["value"], 2, "1+1 must equal 2, got: {r}");
+
+    // Cleanup — 关闭 target
+    let _ = t.send_command(
+        "Target.closeTarget",
+        json!({"targetId": target_id}),
+        None,
+    );
 }

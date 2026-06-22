@@ -1,7 +1,7 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
   <head>
-    <meta charset="UTF-8" />
+    <meta charset="UTF-8">
     <title>Bao - 核心流程</title>
   </head>
   <body>
@@ -12,35 +12,45 @@
       <h2>§1 JS 执行管线</h2>
       <!-- ============================================================ -->
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
-        <h3>数据流图: JS 文件执行</h3>
-        <pre>
-用户代码 (index.ts)
+      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram"><h3>线程间数据流</h3>
+<pre>
+servo ScriptThread (JSContext 唯一所有者 + JS 求值唯一消费者)
   │
-  ├─ [bun_transpiler] TS → JS 转译 (100% 复用 Bun)
-  │     输入: .ts/.tsx/.jsx 源码
-  │     输出: JS 字节码字符串
+  ├─ 单线程访问 SpiderMonkey JSContext (servo 创建, bao_engine 通过 RustRuntime::get() 复用同一指针)
+  ├─ 单线程访问 libservo DOM (script 组件)
+  ├─ Node/Bun host functions 在 ScriptThread 初始化期注册到 global
   │
-  ├─ [bun_resolver] 模块解析 (100% 复用 Bun)
-  │     输入: import 路径
-  │     输出: 绝对文件路径
+Main Thread / Bao 控制线程 (bao_browser, bao_cdp 路由, PagePool, CLI)
   │
-  ├─ [bao_engine] SpiderMonkey 编译 + 执行
-  │     输入: JS 源码字符串
-  │     处理: SM frontend parser → Bytecode → Interpreter/JIT
-  │     输出: JS Value (result)
+  ├─ 禁止直接调用 SM API (*mut JSContext / *mut JSObject / JS::*)
+  ├─ JS 求值: 经 servo::register_script_thread_callback 投递到 ScriptThread 串行执行
+  ├─ 结果取回: drain_callbacks 轮询 Arc OnceLock EvaluateResult (满足 SM 单线程约束)
   │
-  ├─ [bao_engine] JobQueue 桥接
-  │     输入: SM Promise microtask
-  │     处理: 注入 Bun event loop tick
-  │     输出: 回调执行
+  ├─→ CDP Thread (WebSocket 服务)
+  │     ├─ 接受 CDP 客户端连接
+  │     ├─ JSON-RPC 解析/编码
+  │     └─→ Main Thread: 命令通过 channel 发送
   │
-  └─ [bun event loop] I/O 处理 (100% 复用 Bun)
-        输入: epoll/kqueue 事件
-        输出: 回调触发 → SM JobQueue
-</pre
-        >
-      </div>
+  ├─→ Render Thread (servo webrender)
+  │     ├─ 接收 Display List
+  │     ├─ webrender 光栅化
+  │     └─→ Main Thread: 返回像素缓冲
+  │
+  ├─→ HTTP Thread (AsyncHTTP + ConcurrentTask 事件驱动)
+  │     ├─ Bun HTTP 栈处理 (O(1) 线程支撑 N 并发 fetch, 复用 FetchTasklet 范式)
+  │     └─→ Main Thread / ScriptThread: ConcurrentTask 经 enqueue_task_concurrent + wakeup 投递回 JS 线程 (零 SM API 跨线程调用)
+  │
+  └─→ Worker Threads (Web Workers)
+        ├─ 每个线程独立 JSContext
+        └─→ Main Thread: postMessage 通过 channel
+
+线程安全约束 (SM 单线程串行化契约):
+- JSContext: 仅 servo ScriptThread 访问; Main Thread 通过 register_script_thread_callback 投递 JS 任务到 ScriptThread 串行执行, drain_callbacks 轮询取回结果. 禁止跨 OS 线程调用 SM API.
+- DOM: 仅 ScriptThread / Main Thread 访问 (libservo script 组件单线程)
+- 渲染: Display List 生成后传递给 Render Thread
+- 网络: AsyncHTTP 单 HTTP 线程 epoll, ConcurrentTask 投递结果回 JS 线程 (INV-5 泛化: 跨线程 JS 指针必须封成 ConcurrentTask)
+- CDP: 命令路由到 Main Thread, 响应路由回 CDP Thread
+</pre></div>
 
       <!-- ============================================================ -->
       <h2>§2 渲染管线</h2>
@@ -108,8 +118,7 @@ CDP: Page.navigate(url)
   │   └─ RgbaImage → PNG (或 JPEG/WebP) via image crate
   │
   └─ CDP: 返回 base64 编码截图
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
@@ -190,8 +199,7 @@ WebSocket Client (Playwright)
       │
       └─ Target.* → 进程管理
           └─ Target.getTargets → Context/Target 发现
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
@@ -273,8 +281,7 @@ WebSocket Client (Playwright)
 - 宏任务 (setTimeout) 由 Bun Timer 管理
 - 微任务 (Promise.then) 由 SM JobQueue 管理
 - 两者共享同一线程 (Main Thread), 无需同步
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
@@ -314,30 +321,14 @@ WebSocket Client (Playwright)
 - Bun resolver 是同步的, SM hook 必须也是同步的
 - 文件读取可以异步, 但 module source 返回必须同步
 - 缓存机制: resolved URL → transpiled source 映射表
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
       <h2>§7 时序约束</h2>
       <!-- ============================================================ -->
 
-      <div
-        id="cdpresponsetime"
-        data-req="REQ-CDP-001"
-        data-req-status="approved"
-        data-req-domain="CDP"
-        data-req-category="business"
-        data-req-entity="CdpRouter"
-        data-req-api="GET /json/version"
-        data-test="TEST-CDP-TIMING-001"
-        data-req-ref="REQ-CDP-001"
-        data-api-ref="CDP.*"
-        data-test-categories="unit"
-        data-timing="CDPResponseTime"
-        data-timing-constraint="max_latency_ms"
-        data-delivery="D34"
-      >
+      <div id="cdpresponsetime" data-req="REQ-CDP-001" data-req-status="approved" data-req-domain="CDP" data-req-category="business" data-req-entity="CdpRouter" data-req-api="GET /json/version" data-test="TEST-CDP-TIMING-001" data-req-ref="REQ-CDP-001" data-api-ref="CDP.*" data-test-categories="unit" data-timing="CDPResponseTime" data-timing-constraint="max_latency_ms" data-delivery="D34">
         <h3>TMG-CDP-001: CDP 命令响应时序</h3>
         <script type="application/ld+json">
           {
@@ -396,21 +387,7 @@ WebSocket Client (Playwright)
         <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-CDP-001@PROCESS"></span></p>
       </div>
 
-      <div
-        id="eventlooptick"
-        data-req="REQ-ENG-004"
-        data-req-status="approved"
-        data-req-domain="ENG"
-        data-req-category="business"
-        data-req-entity="BaoRuntime"
-        data-req-api="POST /event-loop/drain"
-        data-test="TEST-ENG-LOOP-TIMING-001"
-        data-req-ref="REQ-ENG-004"
-        data-api-ref="POST /event-loop/drain"
-        data-test-categories="unit"
-        data-timing="EventLoopTick"
-        data-timing-constraint="max_interval_ms"
-      >
+      <div id="eventlooptick" data-req="REQ-ENG-004" data-req-status="approved" data-req-domain="ENG" data-req-category="business" data-req-entity="BaoRuntime" data-req-api="POST /event-loop/drain" data-test="TEST-ENG-LOOP-TIMING-001" data-req-ref="REQ-ENG-004" data-api-ref="POST /event-loop/drain" data-test-categories="unit" data-timing="EventLoopTick" data-timing-constraint="max_interval_ms">
         <h3>TMG-LOOP-001: Event Loop Tick 时序</h3>
         <script type="application/ld+json">
           {
@@ -475,41 +452,23 @@ WebSocket Client (Playwright)
       <h2>§8 线程模型与数据流</h2>
       <!-- ============================================================ -->
 
-      <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
-        <h3>线程间数据流</h3>
+      <div data-type="document" data-artifact-type="use-case-diagram" data-artifact-alias="thread-model-summary">
+        <h3>线程模型摘要 (与 §8 主线程模型一致)</h3>
         <pre>
-Main Thread (事件循环 + JSContext + DOM)
-  │
-  ├─ 单线程访问 SpiderMonkey JSContext
-  ├─ 单线程访问 libservo DOM (script 组件)
-  ├─ CDP 命令通过 crossbeam channel 接收
-  │
-  ├─→ CDP Thread (WebSocket 服务)
-  │     ├─ 接受 CDP 客户端连接
-  │     ├─ JSON-RPC 解析/编码
-  │     └─→ Main Thread: 命令通过 channel 发送
-  │
-  ├─→ Render Thread (servo webrender)
-  │     ├─ 接收 Display List
-  │     ├─ webrender 光栅化
-  │     └─→ Main Thread: 返回像素缓冲
-  │
-  ├─→ Network Thread Pool (HTTP 请求)
-  │     ├─ Bun HTTP 栈处理
-  │     └─→ Main Thread: 回调通过 event loop
-  │
-  └─→ Worker Threads (Web Workers)
-        ├─ 每个线程独立 JSContext
-        └─→ Main Thread: postMessage 通过 channel
+servo ScriptThread (JSContext 唯一所有者)
+  ├─ 单线程访问 SpiderMonkey JSContext (servo 创建, bao_engine 通过 RustRuntime::get() 复用)
+  ├─ Node/Bun host functions 在 ScriptThread 初始化期注册
+Main Thread / Bao 控制线程 (PagePool, CDP 路由, CLI)
+  ├─ 禁止直接调用 SM API, 经 register_script_thread_callback 投递 + drain_callbacks 取回
+  ├─→ CDP Thread / Render Thread / HTTP Thread (AsyncHTTP+ConcurrentTask) / Worker Threads
 
-线程安全约束:
-- JSContext: 仅 Main Thread 访问
-- DOM: 仅 Main Thread 访问 (libservo script 组件单线程)
+线程安全约束 (SM 单线程串行化契约, 详见 §8 / NFR-MEMSAF-001):
+- JSContext: 仅 servo ScriptThread 访问; 跨线程 JS 操作封 ConcurrentTask 投递回 JS 线程
+- DOM: 仅 ScriptThread / Main Thread 访问 (libservo script 组件单线程)
 - 渲染: Display List 生成后传递给 Render Thread
-- 网络: Bun HTTP 栈内部处理线程安全
+- 网络: AsyncHTTP 单 HTTP 线程 epoll + ConcurrentTask 投递
 - CDP: 命令路由到 Main Thread, 响应路由回 CDP Thread
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
@@ -552,8 +511,7 @@ Main Thread (事件循环 + JSContext + DOM)
   │   └─ StealthEngine::inject_navigator_js() → webview.evaluate_javascript()
   │
   └─ 返回 Ok(Rc&lt;PageHandle&gt;)
-</pre
-        >
+</pre>
       </div>
 
       <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
@@ -583,8 +541,7 @@ Main Thread (事件循环 + JSContext + DOM)
   │       └─ 反序列化并返回
   │
   └─ 返回 CdpResponse / CdpError
-</pre
-        >
+</pre>
       </div>
 
       <div id="artifact-use-case-diagram" data-type="document" data-artifact-type="use-case-diagram">
@@ -614,8 +571,7 @@ Main Thread (事件循环 + JSContext + DOM)
   │   └─ 返回 (回收的页面数)
   │
   └─ 继续事件循环其他 tick 任务
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
@@ -661,25 +617,13 @@ SpiderMonkey GC OOM:
     → 触发紧急 GC
     → 仍然不足: 抛出 OOM Error
     → 进程退出码 134 (SIGABRT)
-</pre
-        >
+</pre>
       </div>
 
       <!-- ============================================================ -->
       <h2 data-delivery="D43">§9 数据流</h2>
       <!-- ============================================================ -->
-      <div
-        id="df-001"
-        data-flow-from="bao-engine"
-        data-flow-to="bao-browser"
-        data-dataflow="DF-001"
-        data-dataflow-dimension="business"
-        data-dimension="business"
-        data-dataflow-direction="forward"
-        data-dataflow-target="bao-browser"
-        data-dataflow-source="bao-engine"
-        data-delivery="D43"
-      >
+      <div id="df-001" data-flow-from="bao-engine" data-flow-to="bao-browser" data-dataflow="DF-001" data-dataflow-dimension="business" data-dimension="business" data-dataflow-direction="forward" data-dataflow-target="bao-browser" data-dataflow-source="bao-engine" data-delivery="D43">
         <h3>DF-001: JS 执行结果 → 页面渲染数据流</h3>
         <table>
           <tr>
@@ -703,18 +647,7 @@ SpiderMonkey GC OOM:
           }
         </script>
       </div>
-      <div
-        id="df-002"
-        data-flow-from="bao-browser"
-        data-flow-to="bao-cdp"
-        data-dataflow="DF-002"
-        data-dataflow-dimension="technical"
-        data-dimension="technical"
-        data-dataflow-direction="forward"
-        data-dataflow-target="bao-cdp"
-        data-dataflow-source="bao-browser"
-        data-delivery="D43"
-      >
+      <div id="df-002" data-flow-from="bao-browser" data-flow-to="bao-cdp" data-dataflow="DF-002" data-dataflow-dimension="technical" data-dimension="technical" data-dataflow-direction="forward" data-dataflow-target="bao-cdp" data-dataflow-source="bao-browser" data-delivery="D43">
         <h3>DF-002: 浏览器事件 → CDP 客户端数据流</h3>
         <table>
           <tr>
@@ -738,18 +671,7 @@ SpiderMonkey GC OOM:
           }
         </script>
       </div>
-      <div
-        id="df-003"
-        data-flow-from="bao-cdp"
-        data-flow-to="bao-browser"
-        data-dataflow="DF-003"
-        data-dataflow-dimension="technical"
-        data-dimension="technical"
-        data-dataflow-direction="sync"
-        data-dataflow-target="bao-browser"
-        data-dataflow-source="bao-cdp"
-        data-delivery="D43"
-      >
+      <div id="df-003" data-flow-from="bao-cdp" data-flow-to="bao-browser" data-dataflow="DF-003" data-dataflow-dimension="technical" data-dimension="technical" data-dataflow-direction="sync" data-dataflow-target="bao-browser" data-dataflow-source="bao-cdp" data-delivery="D43">
         <h3>DF-003: CDP 命令 → 浏览器操作数据流</h3>
         <table>
           <tr>
@@ -773,18 +695,7 @@ SpiderMonkey GC OOM:
           }
         </script>
       </div>
-      <div
-        id="df-004"
-        data-flow-from="bao-runtime"
-        data-flow-to="bao-engine"
-        data-dataflow="DF-004"
-        data-dataflow-dimension="technical"
-        data-dimension="data"
-        data-dataflow-direction="forward"
-        data-dataflow-target="bao-engine"
-        data-dataflow-source="bao-runtime"
-        data-delivery="D43"
-      >
+      <div id="df-004" data-flow-from="bao-runtime" data-flow-to="bao-engine" data-dataflow="DF-004" data-dataflow-dimension="technical" data-dimension="data" data-dataflow-direction="forward" data-dataflow-target="bao-engine" data-dataflow-source="bao-runtime" data-delivery="D43">
         <h3>DF-004: 模块解析 → JS 执行数据流</h3>
         <table>
           <tr>
@@ -812,18 +723,7 @@ SpiderMonkey GC OOM:
       <!-- ============================================================ -->
       <h2 data-delivery="D44">§10 控制流</h2>
       <!-- ============================================================ -->
-      <div
-        id="cf-001"
-        data-controlflow="CF-001"
-        data-controlflow-relation="precedes"
-        data-controlflow-dimension="technical"
-        data-controlflow-to="bao-engine"
-        data-controlflow-from="bao-runtime"
-        data-controlflow-guard="context initialized"
-        data-controlflow-action="execute + GC"
-        data-controlflow-trigger="JS evaluate call"
-        data-delivery="D44"
-      >
+      <div id="cf-001" data-controlflow="CF-001" data-controlflow-relation="precedes" data-controlflow-dimension="technical" data-controlflow-to="bao-engine" data-controlflow-from="bao-runtime" data-controlflow-guard="context initialized" data-controlflow-action="execute + GC" data-controlflow-trigger="JS evaluate call" data-delivery="D44">
         <h3>CF-001: JS 执行控制流</h3>
         <table>
           <tr>
@@ -847,18 +747,7 @@ SpiderMonkey GC OOM:
           }
         </script>
       </div>
-      <div
-        id="cf-002"
-        data-controlflow="CF-002"
-        data-controlflow-relation="precedes"
-        data-controlflow-dimension="technical"
-        data-controlflow-to="bao-cdp"
-        data-controlflow-from="bao-cdp"
-        data-controlflow-guard="session active"
-        data-controlflow-action="route + dispatch + respond"
-        data-controlflow-trigger="CDP WebSocket message"
-        data-delivery="D44"
-      >
+      <div id="cf-002" data-controlflow="CF-002" data-controlflow-relation="precedes" data-controlflow-dimension="technical" data-controlflow-to="bao-cdp" data-controlflow-from="bao-cdp" data-controlflow-guard="session active" data-controlflow-action="route + dispatch + respond" data-controlflow-trigger="CDP WebSocket message" data-delivery="D44">
         <h3>CF-002: CDP 命令路由控制流</h3>
         <table>
           <tr>
@@ -882,18 +771,7 @@ SpiderMonkey GC OOM:
           }
         </script>
       </div>
-      <div
-        id="cf-003"
-        data-controlflow="CF-003"
-        data-controlflow-relation="precedes"
-        data-controlflow-dimension="technical"
-        data-controlflow-to="bao-cdp"
-        data-controlflow-from="bao-browser"
-        data-controlflow-guard="__BAO_EVT__ prefix"
-        data-controlflow-action="parse → broadcast"
-        data-controlflow-trigger="console.log marker"
-        data-delivery="D44"
-      >
+      <div id="cf-003" data-controlflow="CF-003" data-controlflow-relation="precedes" data-controlflow-dimension="technical" data-controlflow-to="bao-cdp" data-controlflow-from="bao-browser" data-controlflow-guard="__BAO_EVT__ prefix" data-controlflow-action="parse → broadcast" data-controlflow-trigger="console.log marker" data-delivery="D44">
         <h3>CF-003: 浏览器事件桥接控制流</h3>
         <table>
           <tr>
@@ -917,18 +795,7 @@ SpiderMonkey GC OOM:
           }
         </script>
       </div>
-      <div
-        id="cf-004"
-        data-controlflow="CF-004"
-        data-controlflow-relation="precedes"
-        data-controlflow-dimension="technical"
-        data-controlflow-to="bao-engine"
-        data-controlflow-from="bao-browser"
-        data-controlflow-guard="PagePool slot available"
-        data-controlflow-action="create context → load → render"
-        data-controlflow-trigger="page navigation"
-        data-delivery="D44"
-      >
+      <div id="cf-004" data-controlflow="CF-004" data-controlflow-relation="precedes" data-controlflow-dimension="technical" data-controlflow-to="bao-engine" data-controlflow-from="bao-browser" data-controlflow-guard="PagePool slot available" data-controlflow-action="create context → load → render" data-controlflow-trigger="page navigation" data-delivery="D44">
         <h3>CF-004: Page 生命周期控制流</h3>
         <table>
           <tr>
@@ -952,16 +819,7 @@ SpiderMonkey GC OOM:
           }
         </script>
       </div>
-      <section
-        id="cf-fetch-async-001"
-        data-artifact-type="controlflow"
-        data-controlflow="CF-FETCH-ASYNC-001"
-        data-controlflow-relation="precedes"
-        data-controlflow-dimension="technical"
-        data-controlflow-guard="JSContext initialized + MiniEventLoop running"
-        data-controlflow-action="FetchTasklet 创建 → AsyncHTTP::schedule → on_http_done → ConcurrentTask → FetchResolveTask → ResolvePromise/RejectPromise"
-        data-controlflow-trigger="fetch_fn / http_request / https_request / tls_connect / stealth_http_request JS native call"
-      >
+      <section id="cf-fetch-async-001" data-artifact-type="controlflow" data-controlflow="CF-FETCH-ASYNC-001" data-controlflow-relation="precedes" data-controlflow-dimension="technical" data-controlflow-guard="JSContext initialized + MiniEventLoop running" data-controlflow-action="FetchTasklet 创建 → AsyncHTTP::schedule → on_http_done → ConcurrentTask → FetchResolveTask → ResolvePromise/RejectPromise" data-controlflow-trigger="fetch_fn / http_request / https_request / tls_connect / stealth_http_request JS native call">
         <h3>CF-FETCH-ASYNC-001: FetchTasklet 异步 fetch 控制流</h3>
         <p>
           实现状态(S2审计回退·BLOCKED): fetch_api.rs 旧 spawn_worker+send_sync 范式未替换(INV-2/INV-7 未实现)。fetch_fn
@@ -1066,8 +924,7 @@ States:
   Active:       已 setContextifiedObject，可供 runInContext 使用
   Executing:    AutoRealm 已切换，代码正在执行
   GC_Ready:     无外部引用，等待 GC 回收 Realm
-</pre
-        >
+</pre>
         <p>状态转换：</p>
         <ul>
           <li>createContext(sandbox) → Created: JS_NewGlobalObject + JS_InitStandardClasses + RealmPrivate 绑定</li>
@@ -1105,18 +962,9 @@ JS调用 vm.runInNewContext(code, sandbox, opts)
      │  (AutoRealm drop 自动切回)
      ▼
 JS 获得 return value
-</pre
-        >
+</pre>
       </section>
-      <section
-        id="df-fetch-async-001"
-        data-flow-from="FetchTasklet"
-        data-flow-to="FetchResolveTask"
-        data-flow-direction="event"
-        data-flow-transform="堆分配所有权：JS 线程 Box::new 堆分配 AsyncHTTP + into_raw 释放所有权 → HTTPThread core::ptr::read 从堆地址拷贝（非回收栈帧）→ on_http_done 完成后 Box::from_raw 释放。对齐上游 src/http/AsyncHTTP.rs:442 Preconnect 堆分配模式。关联 BUG-ENG-369 (BCE-007-R5)。"
-        data-dataflow="DF-FETCH-ASYNC-001"
-        data-dataflow-dimension="data"
-      >
+      <section id="df-fetch-async-001" data-flow-from="FetchTasklet" data-flow-to="FetchResolveTask" data-flow-direction="event" data-flow-transform="堆分配所有权：JS 线程 Box::new 堆分配 AsyncHTTP + into_raw 释放所有权 → HTTPThread core::ptr::read 从堆地址拷贝（非回收栈帧）→ on_http_done 完成后 Box::from_raw 释放。对齐上游 src/http/AsyncHTTP.rs:442 Preconnect 堆分配模式。关联 BUG-ENG-369 (BCE-007-R5)。" data-dataflow="DF-FETCH-ASYNC-001" data-dataflow-dimension="data">
         <script type="application/ld+json">
           {
             "@type": "Dataflow",
@@ -1134,11 +982,7 @@ JS 获得 return value
           }
         </script>
       </section>
-      <section
-        id="artifact-state-machine"
-        data-state-machine="FetchTaskletLifecycle"
-        data-artifact-type="state-machine"
-      >
+      <section id="artifact-state-machine" data-state-machine="FetchTaskletLifecycle" data-artifact-type="state-machine">
         <h3>FetchTaskletLifecycle 状态机</h3>
         <script type="application/ld+json">
           {

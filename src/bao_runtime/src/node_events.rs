@@ -90,6 +90,41 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             );
             w2::JS_DefineFunction(cx, ctor.handle(), c"listenerCount".as_ptr(), Some(events_static_listener_count), 2, JSPROP_ENUMERATE as u32);
             w2::JS_DefineFunction(cx, ctor.handle(), c"getEventListeners".as_ptr(), Some(events_static_get_event_listeners), 2, JSPROP_ENUMERATE as u32);
+
+            // Node.js ships `EventEmitter.defaultMaxListeners` (number, default 10)
+            // and `EventEmitter.captureRejections` (boolean, default false) as
+            // writable constructor properties. Mirror those on the ctor so
+            // `require('events').EventEmitter.defaultMaxListeners === 10`.
+            let default_max = Int32Value(10);
+            rooted!(&in(cx) let dmv = default_max);
+            JS_DefineProperty(
+                cx.raw_cx(), ctor.handle().into(), c"defaultMaxListeners".as_ptr(),
+                dmv.handle().into(),
+                (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+            );
+            let capture_rejections = BooleanValue(false);
+            rooted!(&in(cx) let crv = capture_rejections);
+            JS_DefineProperty(
+                cx.raw_cx(), ctor.handle().into(), c"captureRejections".as_ptr(),
+                crv.handle().into(),
+                (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+            );
+
+            // EventEmitter.errorMonitor — Symbol.for('events.errorMonitor').
+            // Reuses Bun's events.ts semantics (Bun: `kErrorMonitor = SymbolFor("events.errorMonitor")`).
+            let key_c = ZBox::from_bytes("events.errorMonitor\0".as_bytes());
+            let key_str = JS_NewStringCopyZ(cx.raw_cx(), key_c.as_ptr());
+            if !key_str.is_null() {
+                rooted!(&in(cx) let key_root = key_str);
+                let sym_for = JS::GetSymbolFor(cx.raw_cx(), key_root.handle().into());
+                if !sym_for.is_null() {
+                    rooted!(&in(cx) let sf = mozjs::jsval::SymbolValue(&*sym_for));
+                    JS_DefineProperty(
+                        cx.raw_cx(), ctor.handle().into(), c"errorMonitor".as_ptr(),
+                        sf.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32,
+                    );
+                }
+            }
         }
 
         let default_max = Int32Value(10);

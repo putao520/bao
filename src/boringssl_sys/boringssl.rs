@@ -53,6 +53,10 @@ pub const EVP_PKEY_EC: c_int = 408;
 pub const EVP_PKEY_ED25519: c_int = 1087;
 pub const EVP_PKEY_X25519: c_int = 1035;
 
+/// DH generator constants (`#define DH_GENERATOR_2 2`, `DH_GENERATOR_5 5`).
+pub const DH_GENERATOR_2: c_int = 2;
+pub const DH_GENERATOR_5: c_int = 5;
+
 /// RSA padding modes
 pub const RSA_PKCS1_PADDING: c_int = 1;
 pub const RSA_PKCS1_PSS_PADDING: c_int = 6;
@@ -201,6 +205,10 @@ opaque!(
 opaque!(
     /// `struct bn_ctx_st` (`typedef ... BN_CTX`).
     BN_CTX
+);
+opaque!(
+    /// `struct dh_st` (`typedef ... DH`). Used by `crypto.createDiffieHellman`.
+    DH
 );
 opaque!(
     /// `struct evp_cipher_st` (`typedef ... EVP_CIPHER`).
@@ -1111,6 +1119,31 @@ unsafe extern "C" {
         pub_key: *const EC_POINT,
         eckey: *mut EC_KEY,
         kdf: Option<unsafe extern "C" fn(*const c_void, usize, *mut c_void) -> c_int>,
+    ) -> c_int;
+
+    // ── DH (MODP Diffie-Hellman) ────────────────────────────────────────
+    // Backs `crypto.createDiffieHellman`. Symbols exported by libboringssl.a.
+    pub fn DH_new() -> *mut DH;
+    pub fn DH_free(dh: *mut DH);
+    pub fn DH_bits(dh: *const DH) -> c_uint;
+    pub fn DH_size(dh: *const DH) -> c_int;
+    pub fn DH_set0_pqg(dh: *mut DH, p: *mut BIGNUM, q: *mut BIGNUM, g: *mut BIGNUM) -> c_int;
+    pub fn DH_set0_key(dh: *mut DH, pub_key: *mut BIGNUM, priv_key: *mut BIGNUM) -> c_int;
+    pub fn DH_get0_p(dh: *const DH) -> *const BIGNUM;
+    pub fn DH_get0_g(dh: *const DH) -> *const BIGNUM;
+    pub fn DH_get0_pub_key(dh: *const DH) -> *const BIGNUM;
+    pub fn DH_get0_priv_key(dh: *const DH) -> *const BIGNUM;
+    pub fn DH_generate_parameters_ex(
+        dh: *mut DH,
+        prime_bits: c_int,
+        generator: c_int,
+        cb: *mut BN_GENCB,
+    ) -> c_int;
+    pub fn DH_generate_key(dh: *mut DH) -> c_int;
+    pub fn DH_compute_key_padded(
+        out: *mut u8,
+        peers_key: *const BIGNUM,
+        dh: *mut DH,
     ) -> c_int;
 
     // ── EC_KEY ───────────────────────────────────────────────────────────

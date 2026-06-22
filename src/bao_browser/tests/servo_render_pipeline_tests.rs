@@ -22,7 +22,7 @@
 //   5. **screenshot**: page.take_screenshot() → servo SoftwareRendering → PNG
 //
 // **运行约束**: servo Opts 是 per-process 单例,所有断言合并到单个 #[test]。
-// 网络 navigate(https://example.com)用 #[ignore] + BAO_TEST_NETWORK=1 启用。
+// 网络 navigate(https://example.com)用 graceful skip + BAO_TEST_NETWORK=1 启用。
 
 use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PageHandle, PagePool, PageState, ScreenshotFormat};
 use std::time::{Duration, Instant};
@@ -235,14 +235,13 @@ fn servo_render_pipeline_data_url_default_run() {
     );
 }
 
-// ─── 网络 E2E — #[ignore] + BAO_TEST_NETWORK=1 启用 ──────────────────────────
+// ─── 网络 E2E — graceful skip + BAO_TEST_NETWORK=1 启用 ─────────────────────
 
 #[test]
-#[ignore = "network E2E — set BAO_TEST_NETWORK=1 to enable"]
 // @trace REQ-BRW-001 [level:e2e]
 fn servo_render_pipeline_network_example_com() {
     if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("skipping network E2E — set BAO_TEST_NETWORK=1 to enable");
+        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK=1 not set (network E2E)");
         return;
     }
 

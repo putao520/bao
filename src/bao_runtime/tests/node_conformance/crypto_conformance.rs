@@ -65,11 +65,11 @@ fn test_crypto_conformance_suite() {
             var h = crypto.createHmac("sha1", "key").update("hello").digest("hex");
             return typeof h === "string" && h.length === 40;
         }});
-        check("hmac_md5_unsupported_deviation", function() {{
-            // bao_runtime: HMAC-MD5 not supported (Node.js supports it).
-            // Documented in GAP_REPORT. We just verify it throws cleanly.
-            try {{ crypto.createHmac("md5", "key").update("hello").digest("hex"); return false; }}
-            catch(e) {{ return true; }}
+        check("hmac_md5_deviation_now_supported", function() {{
+            // HMAC-MD5 now supported via BoringSSL EVP_md5 (REQ-ENG-007).
+            // MD5 digest is 16 bytes → 32 hex chars.
+            var h = crypto.createHmac("md5", "key").update("hello").digest("hex");
+            return typeof h === "string" && h.length === 32;
         }});
         check("hmac_deterministic", function() {{
             var a = crypto.createHmac("sha256", "key").update("hello").digest("hex");
@@ -207,8 +207,13 @@ fn test_crypto_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: crypto.createECDH not implemented. See GAP_REPORT.md"]
 fn test_crypto_conformance_ecdh() {
+    // @trace REQ-ENG-007 [api:node:crypto createECDH]
+    // Real ECDH via bao_crypto::key_exchange (BoringSSL EC_KEY/ECDH_compute_key
+    // for P-256/P-384, EVP_PKEY for X25519). Verifies: constructor is callable,
+    // getPublicKey returns non-empty bytes, and two instances on the same curve
+    // derive identical shared secrets via computeSecret (the actual ECDH
+    // contract — not just a typeof check).
     let mut ctx = make_ctx();
     let src = format!(
         r##"
@@ -216,6 +221,27 @@ fn test_crypto_conformance_ecdh() {
         var crypto = require('crypto');
         check("createECDH_is_function", function() {{
             return typeof crypto.createECDH === "function";
+        }});
+        check("createECDH_prime256v1_constructs", function() {{
+            var alice = crypto.createECDH("prime256v1");
+            return typeof alice === "object" && alice !== null;
+        }});
+        check("ecdh_getPublicKey_returns_bytes", function() {{
+            var alice = crypto.createECDH("prime256v1");
+            var pub = alice.getPublicKey();
+            return !!pub && typeof pub.length === "number" && pub.length > 0;
+        }});
+        check("ecdh_computeSecret_roundtrip_matches", function() {{
+            var alice = crypto.createECDH("prime256v1");
+            var bob = crypto.createECDH("prime256v1");
+            var alicePub = alice.getPublicKey();
+            var bobPub = bob.getPublicKey();
+            var s1 = alice.computeSecret(bobPub);
+            var s2 = bob.computeSecret(alicePub);
+            // Shared secrets must be equal-length byte buffers and bit-identical.
+            if (!s1 || !s2 || s1.length !== s2.length || s1.length === 0) return false;
+            for (var i = 0; i < s1.length; i++) {{ if (s1[i] !== s2[i]) return false; }}
+            return true;
         }});
         results.join("|")
         "##,
@@ -226,7 +252,6 @@ fn test_crypto_conformance_ecdh() {
 }
 
 #[test]
-#[ignore = "bao_runtime: crypto.X509 not implemented. See GAP_REPORT.md"]
 fn test_crypto_conformance_x509() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -245,7 +270,6 @@ fn test_crypto_conformance_x509() {
 }
 
 #[test]
-#[ignore = "bao_runtime: crypto.hkdf / hkdfSync not implemented. See GAP_REPORT.md"]
 fn test_crypto_conformance_hkdf() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -264,7 +288,6 @@ fn test_crypto_conformance_hkdf() {
 }
 
 #[test]
-#[ignore = "bao_runtime: crypto.createDiffieHellman not implemented. See GAP_REPORT.md"]
 fn test_crypto_conformance_dh() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -297,7 +320,6 @@ fn test_crypto_conformance_randombytes_is_buffer() {
 }
 
 #[test]
-#[ignore = "bao_runtime: crypto.createHmac('md5', ...) unsupported (Node.js supports it). See GAP_REPORT.md"]
 fn test_crypto_conformance_hmac_md5_deviation() {
     let mut ctx = make_ctx();
     use common::eval_string;

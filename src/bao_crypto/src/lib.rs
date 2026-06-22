@@ -58,3 +58,4 @@ pub mod keypair;
 pub mod certificate;
 pub mod kdf;
 pub mod random;
+pub mod dh;

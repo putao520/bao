@@ -1266,3 +1266,460 @@ confirmReport:
 - 回归测试：`src/bao_cdp/tests/protocol_subcommand_full_coverage_tests.rs::test_page_navigate_empty_url_uses_default`（触发空串签名 → fail → 现已 pass）。
 - 修正测试：`src/bao_cdp/tests/protocol_message_deep_tests.rs::test_page_navigate_empty_url_defaults_to_about_blank`（断言从错误的 loaderId=0 改为正确的 0x0b）。
 - 知识库：本条目。
+
+---
+
+## BCE-20260621-001: 跨线程 JSObject 裸指针传递（PagePool 混沌 SIGSEGV）
+
+```yaml
+patternId: BCE-20260621-001
+title: 跨线程 JSObject 裸指针传递破坏 SM activation 栈
+layer: 范式缺陷
+codePattern:
+  - 「进程级 static（DashMap<usize,usize> / AtomicUsize / AtomicPtr）持有 *mut JSObject 裸指针跨线程共享」
+  - 「主线程从全局 static 取出另一 ScriptThread 创建的 *mut JSObject,传给 AutoRealm/evaluate_script」
+  - 「全局 LAST_PAGE_GLOBAL = AtomicUsize 最后写入者获胜,导致 PageInner 捕获错误页指针」
+triggerCondition:
+  - 多 WebView 并发存在（force_isolate_event_loops=true ⇒ 每页独立 ScriptThread）
+  - evaluate_js_via_node_realm 或 inject_node_apis_with_stealth 跨线程查 NODE_REALMS/PAGE_GLOBALS/LAST_PAGE_GLOBAL
+detectionSignatures:
+  structural:
+    - "ItemStatic with type DashMap<usize, usize> or AtomicUsize holding JSObject address as usize"
+    - "CallExpression AutoRealm::new(_, get_node_realm(<raw ptr>)) — raw ptr pulled from cross-thread map"
+  literal:
+    - "static NODE_REALMS:"
+    - "static PAGE_GLOBALS:"
+    - "static LAST_PAGE_GLOBAL:"
+    - "fn get_last_page_global"
+    - "fn set_last_page_global"
+  antipattern:
+    - "cross-thread-jsobject-raw-ptr"
+sameClassCriterion:
+  - 「任何进程级 static 持有 *mut JSObject 跨线程共享」
+  - 「主线程从全局取另一线程创建的 JSObject 裸指针 + SM API」
+fixTemplate:
+  - 「跨线程存储改 WebViewId(Copy+Hash+Eq) 作 key,值仍 *mut JSObject 但仅 owning ScriptThread 解引用」
+  - 「lazy DOM getter 改 thread_local! PER_THREAD_PAGE_GLOBAL(ScriptThread-local)」
+  - 「消除进程级 LAST_PAGE_GLOBAL AtomicUsize,改 per-WebViewId 参数传递或 OnceLock」
+  - 「PageInner 的 page_global/node_realm_global 字段仅作不透明 address 流转,主线程禁止直接 SM API」
+regressionAssertion:
+  - 「grep src/bao_browser/ 'static NODE_REALMS:|static PAGE_GLOBALS:|static LAST_PAGE_GLOBAL:|fn get_last_page_global|fn set_last_page_global' 必须返回 0 行」
+  - 「runtime_bridge_has_per_page_node_realm_storage / no_cross_thread_raw_jsobject_storage_residual 结构性扫描测试 pass」
+```
+
+### 归因时间
+2026-06-21。
+
+### 关键文件
+
+- `src/bao_browser/src/runtime_bridge.rs` — NODE_REALMS/PAGE_GLOBALS/LAST_PAGE_GLOBAL 原 static 已删除,改 NODE_REALM_BY_WEBVIEW / PAGE_GLOBAL_BY_WEBVIEW / PER_THREAD_PAGE_GLOBAL(thread_local!)。
+- `src/bao_browser/src/page.rs` — `evaluate_js` 改 WebViewId 查找,`close()` 用 `remove_node_realm_by_id(webview_id)`。
+
+### 防复发
+
+- SPEC criterion: REQ-BRW-003 C10。
+- SPEC NFR: NFR-THREAD-SAFETY（专门禁止跨线程 *mut JSObject static）。
+- 回归测试: `runtime_bridge::tests::runtime_bridge_has_per_page_node_realm_storage` + `runtime_bridge::tests::no_cross_thread_raw_jsobject_storage_residual` + `runtime_bridge::tests::storage_is_webview_id_keyed_dashmap`（结构性扫描 + 残留=0 强制）。
+- 知识库: 本条目。
+
+### 备注
+
+任务归因确定此模式为 PagePool 混沌测试 SIGSEGV 触发因素。BCE 根治消除了该模式（残留=0,通过结构性扫描测试）。混沌测试在 baseline 与根治后均在 Script#21 的 `js::jit::BaselineFrame::initForOsr` 崩溃于同一地址,表明存在另一独立潜在 BUG 未被本次 BCE 范围覆盖（疑似 servo 上游 nested-AutoRealm + JIT OSR 在多 ScriptThread 场景下的 activation 链问题,或 bao 在 servo handle_evaluate_javascript drain 期间嵌套 evaluate_script 触发的 JIT OSR 竞争）。该独立 BUG 需另立 BCE 条目归因。
+
+
+---
+
+## BCE-20260621-003 — stub 模块 keys 敏感 check（Object.keys(stub).length>=N 不宽容 `__stub`）
+
+### 现象
+
+深度测试对**设计内 stub 模块**（`node_stubs.rs::STUB_MODULES`，如 `async_hooks`/`worker_threads`/`diagnostics_channel`）做 `Object.keys(mod).length >= N` 断言。stub 是合法空对象（`__stub: true` 标记，非枚举），`Object.keys()` 返回 `[]`，length=0 < N → check fail。
+
+实际触发案例：
+- `node_async_hooks_deep_tests.rs::ah_keys_count`：`Object.keys(require('async_hooks')).length >= 3` → fail（async_hooks 是 stub）
+- `node_diagnostics_channel_deep_tests.rs::dc_keys_count`：`Object.keys(require('diagnostics_channel')).length >= 1` → fail（diagnostics_channel 是 stub）
+- `node_worker_threads_deep_tests.rs::wt_keys_count`：`Object.keys(require('worker_threads')).length >= 3` → fail（worker_threads 是 stub）
+
+### 根因
+
+测试层断言**误把 stub 当真实实现**做 keys 覆盖度断言。SPEC（`node_stubs.rs` 顶部注释）明确：async_hooks/worker_threads/diagnostics_channel 等 ~40 个 Node 内置是**设计内合法空 stub**，仅保证 `require()` 不抛 `Cannot find module`，**不保证 keys 有内容**。测试断言与 SPEC 设计冲突。
+
+缺陷分层：**表层缺陷**（局部断言误用），但同类实例多处（async_hooks/worker_threads/diagnostics_channel），需泛化横扫根治。
+
+### BUG 模式签名
+
+```yaml
+patternId: BCE-20260621-003
+title: stub 模块 keys 敏感 check 不宽容 __stub 标记
+layer: 表层
+codePattern:
+  - "对 STUB_MODULES 列表中的模块做 require() 后 Object.keys(x).length >= N 断言"
+  - "未先检查 x.__stub === true 直接 length 比较导致 stub 空对象 fail"
+triggerCondition:
+  - "require 目标 ∈ {async_hooks, cluster, console, constants, dgram, diagnostics_channel, domain, http2, inspector, punycode, repl, trace_events, v8, worker_threads, sys, _http_*, _stream_*, _tls_*, assert/strict, dns/promises, fs/promises, path/posix, path/win32, readline/promises, stream/consumers, stream/promises, stream/web, util/types, inspector/promises}"
+  - "断言形态：Object.keys(mod).length >= N (N>=1)"
+detectionSignatures:
+  structural:
+    - "CallExpression[callee.member.object.callee.name=require][callee.property=keys].property[name=length] BinaryOp >= Literal(N>=1)"
+  literal:
+    - "require\\('(async_hooks|cluster|console|constants|dgram|diagnostics_channel|domain|http2|inspector|punycode|repl|trace_events|v8|worker_threads|sys|...)\\).*Object\\.keys.*\\.length.*>="
+  antipattern:
+    - "stub-keys-coverage-without-tolerance"
+sameClassCriterion:
+  - "对 STUB_MODULES 中的模块做 keys 计数断言，且不检查 __stub === true 直接宽容"
+fixTemplate:
+  - "统一 __stub 宽容模式：先 typeof+null 守卫，再 __stub===true 宽容，最后真实 keys 比较保留未来真实实现仍 pass"
+  - "示例：var m = require('mod'); if (typeof m !== 'object' || m === null) return false; if (m.__stub === true) return true; return Object.keys(m).length >= N;"
+regressionAssertion:
+  - "构造 require(stub_module) 后 Object.keys().length >= N 而不含 __stub 宽容的代码 → 横扫必须 0 命中"
+  - "stub keys check 含 __stub === true 守卫 → 未来真实实现（keys 有内容）仍 pass"
+```
+
+### 同类实例（横扫结果）
+
+| 文件 | check 名 | 目标模块 | 修复 |
+|------|---------|---------|------|
+| `src/bao_runtime/tests/node_async_hooks_deep_tests.rs:194` | ah_keys_count | async_hooks (stub) | ✅ __stub 宽容（参考模板，#2 已修） |
+| `src/bao_runtime/tests/node_diagnostics_channel_deep_tests.rs:174` | dc_keys_count | diagnostics_channel (stub) | ✅ __stub 宽容（本次修） |
+| `src/bao_runtime/tests/node_worker_threads_deep_tests.rs:160` | wt_keys_count | worker_threads (stub) | ✅ __stub 宽容（本次修） |
+
+误报（甄别排除，非 BUG）：
+- `node_worker_threads_deep_tests.rs:239 wt_exports_are_object_keys`：双 typeof check（`typeof wt === 'object' && typeof Object.keys === 'function'`），stub 对象 typeof 恒为 'object'，**永远 pass**，非 keys 计数断言。
+
+### 真实模块 keys check（确认未动）
+
+下列 keys check 的目标模块是**真实实现**（不在 STUB_MODULES），keys 有内容，fail 是另一回事（不归本 BCE），全部**不动**：
+- `url_module_keys`(url) / `util_module_keys`(util) / `os_module_keys`(os)
+- `perf_hooks_module_keys`(perf_hooks) / `readline_module_keys`(readline) / `tty_module_keys`+`tty_module_keys_count`(tty)
+- `http_module_keys`(http) / `https_module_keys`(https)
+- `module_keys_min`(perf_hooks × 1, readline × 2)
+- `process_versions_keys`(process.versions) / `object_keys`(es 字面量)
+- `zlib_module_keys`(zlib) / `events_module_keys`(events) / `path_module_keys`(path)
+- `stream_module_keys`(stream) / `fs_keys_count`(fs) / `crypto_module_keys`(crypto) / `tls_module_keys`(tls)
+- `url_search_params_keys`(URLSearchParams 实例) / `readline_keys_count`(readline) / `net_module_keys`(net) / `Module_keys_count`(Module)
+
+### 残留=0 客观证据（阶段 5）
+
+```yaml
+confirmReport:
+  patternId: BCE-20260621-003
+  sweepScope: "src/bao_runtime/tests/ 全量"
+  layersScanned: [literal, structural-grep, manual]
+  instancesFound: 3            # ah/dc/wt keys_count
+  truePositives: 3             # 全为 stub 模块 keys 断言
+  falsePositives: 1            # wt_exports_are_object_keys（typeof check 非 keys 计数）
+  instancesFixed: 3
+  residual: 0
+  residualEvidence:
+    - "横扫 stub_top 模块 require + Object.keys().length>=N 不含 __stub: 仅 wt_exports_are_object_keys 命中（已甄别为 typeof check 误报）"
+    - "3 个已修 stub keys check 均 __stub 出现次数 >= 1（line 194/174/160）"
+    - "真实模块 keys check 共 21 项，全部不在 STUB_MODULES 内，不动"
+    - "cargo check -p bun_runtime: 0 error"
+    - "cargo test -p bun_runtime: 812 passed / 0 failed / 37 ignored（不回归，远超基线 684）"
+    - "node_async_hooks/diagnostics_channel/worker_threads_deep_tests 各自测试 1 passed 0 failed"
+  releaseGateImpact: pass
+```
+
+### 归因时间
+
+2026-06-21。
+
+### 关键文件
+
+- `src/bao_runtime/src/node_stubs.rs` — STUB_MODULES 单一真相源（**未修改**，仅作为 stub 判定依据）。
+- `src/bao_runtime/tests/node_async_hooks_deep_tests.rs:194` — `ah_keys_count` 已 __stub 宽容（参考模板，#2 修复）。
+- `src/bao_runtime/tests/node_diagnostics_channel_deep_tests.rs:174` — `dc_keys_count` 本次加 __stub 宽容。
+- `src/bao_runtime/tests/node_worker_threads_deep_tests.rs:160` — `wt_keys_count` 本次加 __stub 宽容。
+
+### 防复发
+
+- SPEC criterion: `__stub: true` 标记（`node_stubs.rs` 顶部注释已声明 stub 设计意图）。
+- 回归断言：未来新增 stub 模块 keys check 必须含 `if (m.__stub === true) return true;` 守卫，横扫脚本应能命中漏修实例。
+- 知识库: 本条目。
+
+### 备注
+
+本 BCE 由 `ah_keys_count`（#2）修复触发，泛化横扫发现 `dc_keys_count`/`wt_keys_count` 两个同类残留。统一 `__stub` 宽容模式（DRY）确保未来真实实现上线后 keys check 仍 pass（`__stub === true` 短路 vs `Object.keys().length >= N` 真实断言二选一）。BCE 铁律：修一个根除一类，残留=0。
+
+---
+
+## BCE-20260621-002: servo/SpiderMonkey OSR `initForOsr` NULL activation 解引用（范式缺陷，上游 patch）
+
+```yaml
+patternId: BCE-20260621-002
+title: "SpiderMonkey `BaselineFrame::initForOsr` 在无 interpreter activation 链时解引用 NULL"
+layer: 范式缺陷（servo + mozjs 上游）
+
+codePattern:
+  - "SpiderMonkey `initForOsr(cx, fp, numStackValues)` 在 OSR 入口直接调用 `cx->activation()->prev()->asInterpreter()->regs().pc`，假设 `cx->activation()` 非空且其 `prev()` 是 interpreter activation。"
+  - "servo `ScriptThread::load` 无条件调用 `debugger_global.fire_add_debuggee(...)` → `Realm::setIsDebuggee` → `BaselineInterpreter::toggleDebuggerInstrumentation` 修改 JIT code，触发后续 OSR 路径。"
+
+triggerCondition:
+  - "多 page 并发 + 循环 navigate + 后续 C++ 驱动的 `evaluate`（chaos / real-servo 场景）"
+  - "OSR 从 C++ 调用栈进入，`cx->activation_` 为 NULL 或 `prev()` 无 interpreter activation"
+  - "servo ScriptThread 默认给每个新 realm 装 `JS::Debugger`（bao 不用 servo devtools，纯负担 + 致命）"
+
+detectionSignatures:
+  structural:
+    - "CallExpression[callee.name='fire_add_debuggee'] without devtools-connected guard"
+    - "MemberExpression `cx->activation()->prev()->asInterpreter()` without NULL check"
+  literal:
+    - "initForOsr.*Activation.*prev"
+    - "fire_add_debuggee"
+  antipattern:
+    - "null-deref-on-activation-chain"
+    - "unconditional-debuggee-registration"
+
+sameClassCriterion:
+  - "任何从 C++ 入口触发的 SpiderMonkey JIT OSR 路径在 `cx->activation()` 链为空时发生 NULL 解引用"
+  - "servo ScriptThread 无条件 `fire_add_debuggee` 注册每个 realm 为 debuggee"
+
+fixTemplate:
+  - "servo 侧：新增 `opts.disable_script_debugger` flag（默认 false 不破坏正常 devtools），bao 初始化 servo 时设为 true 跳过 `fire_add_debuggee`（BAO PATCH 标注）"
+  - "mozjs 侧：`BaselineFrame::initForOsr` 在 `cx->activation()` 或 `prev()` 为 NULL、或 prev 非 interpreter activation 时 `return false`（OSR 失败回退解释器），而非崩溃（BAO PATCH 标注）"
+
+regressionAssertion:
+  - "BAO_TEST_REAL_SERVO=1 cargo test -p bao_browser --test pagepool_chaos_memory_safety_tests -- --ignored 必须 PASS（186s 运行零 SIGSEGV）"
+  - "BAO_TEST_REAL_SERVO=1 cargo test -p bao_browser --test realworld_anti_scraping_e2e_tests -- --ignored 必须 PASS"
+  - "servo-config 默认 `disable_script_debugger=false` 保持 servo 正常 devtools 行为"
+
+authorizationRecord:
+  date: "2026-06-21"
+  scope: "BCE-20260621-002（仅限本条目）"
+  grant: "用户书面授权'直接改上游，禁令在此问题上取消'，破 servo/mozjs 上游不可改铁律"
+  limitation: "授权仅限本 BCE；其他 servo/mozjs 上游修改仍受原铁律约束"
+
+confirmReport:
+  patternId: BCE-20260621-002
+  sweepScope: "bao src/ 全量 + ~/code/rust/servo + ~/code/rust/mozjs 上游"
+  layersScanned: [patterns, structural, literal]
+  instancesFound: 3      # 1 servo fire_add_debuggee + 2 mozjs initForOsr（activation NULL + prev NULL）
+  truePositives: 3
+  falsePositives: 0
+  instancesFixed: 3
+  residual: 0
+  residualEvidence:
+    - "BAO_TEST_REAL_SERVO=1 chaos test: 1 passed / 0 failed / 186s 无 SIGSEGV（之前确定性 SIGSEGV）"
+    - "BAO_TEST_REAL_SERVO=1 realworld e2e: 1 passed / 0 failed"
+    - "bao_browser 默认: 289 passed / 1 failed（唯一失败 runtime_bridge_evaluate_in_node_realm_uses_auto_realm 是 BCE-012 断言滞后，与本 BCE 无关）"
+    - "bao_cdp + bao_cdp_client + bao_engine: 全部 0 failed"
+    - "servo-config: 2 passed / 0 failed（默认 Opts 不破坏 servo 正常 devtools）"
+  releaseGateImpact: pass
+```
+
+### 归因根因（客观证据）
+
+gdb 完整调用栈（patch 前，确定性 SIGSEGV）：
+```
+Thread "Script#21" received SIGSEGV
+#0 js::jit::BaselineFrame::initForOsr (this=..., fp=..., numStackValues=2) at BaselineFrame.cpp:153
+   → jsbytecode* pc = interpActivation->asInterpreter()->regs().pc;
+     其中 interpActivation = cx->activation()->prev() 为 NULL（或 cx->activation() 为 NULL）
+```
+
+触发链：
+1. servo `ScriptThread::load`（`~/code/rust/servo/components/script/script_thread.rs:3523`）**无条件**调用 `self.debugger_global.fire_add_debuggee(cx, window.upcast(), pipeline_id, None)`
+2. → `JS::Debugger::addDebuggee` → `Realm::setIsDebuggee` → `JSRuntime::incrementNumDebuggeeRealms` → `BaselineInterpreter::toggleDebuggerInstrumentation`（修改 JIT code）
+3. → bao 后续 `evaluate`（C++ 驱动）触发 JIT OSR → `initForOsr` 取 `cx->activation()->prev()`，当 activation 链不完整时 NULL deref → SIGSEGV
+
+bao 层 4 缓解（禁 JIT / force_isolate:false / 移 wasm_check / 单 ScriptThread）实测全失败——根因在 servo + mozjs 上游，必须上游 patch。
+
+### 根治策略（双 patch，最小侵入）
+
+**1. servo patch（`disable_script_debugger` flag）—— 防止 setIsDebuggee 被触发**
+
+`~/code/rust/servo/components/config/opts.rs`：
+- `Opts` 结构新增 `pub disable_script_debugger: bool` 字段（紧邻已有的 `force_isolate_event_loops`，模式一致）
+- `Default::default()` 设为 `false`（servo 正常 devtools 用户不设 flag 仍工作）
+
+`~/code/rust/servo/components/script/script_thread.rs:3523`：
+- `if !opts::get().disable_script_debugger { self.debugger_global.fire_add_debuggee(...); }`（包住原无条件调用）
+
+`~/code/rust/bao/src/bao_browser/src/lib.rs::BaoRuntime::new`：
+- 初始化 servo opts 时设 `disable_script_debugger: true`（bao 用 bao_cdp，不需 servo devtools）
+
+**2. mozjs patch（`initForOsr` activation 链 NULL 守卫）—— 即使 setIsDebuggee 已触发也不崩**
+
+`~/code/rust/mozjs/mozjs-sys/mozjs/js/src/jit/BaselineFrame.cpp:152-170`：
+- 守 1：`Activation* currentActivation = cx->activation(); if (!currentActivation) return false;`
+- 守 2：`Activation* interpActivation = currentActivation->prev(); if (!interpActivation || !interpActivation->isInterpreter()) return false;`
+- `return false` 是 SpiderMonkey 既定约定：OSR 失败 → 调用者回退解释器，不崩
+
+**为什么需要双 patch**：servo patch 阻断主路径（`fire_add_debuggee`），但 bao 历史进程 / 其他 JIT 路径仍可能触发 `initForOsr` 的 activation 链问题，mozjs patch 作为防御性兜底（defense-in-depth）确保任何 `initForOsr` 调用都不会 NULL deref。
+
+### 改动文件清单
+
+| 文件 | 行 | 改动 | 标注 |
+|------|----|------|------|
+| `~/code/rust/servo/components/config/opts.rs` | 49 | 新增 `disable_script_debugger: bool` 字段 + 注释 | `BAO PATCH (BCE-20260621-002)` |
+| `~/code/rust/servo/components/config/opts.rs` | 255 | `disable_script_debugger: false` 默认值 | `BAO PATCH (BCE-20260621-002)` |
+| `~/code/rust/servo/components/script/script_thread.rs` | 3523 | `fire_add_debuggee` 包条件守卫 | `BAO PATCH (BCE-20260621-002)` |
+| `~/code/rust/mozjs/mozjs-sys/mozjs/js/src/jit/BaselineFrame.cpp` | 152 | `cx->activation()` + `prev()` 双 NULL 守卫 | `BAO PATCH (BCE-20260621-002)` |
+| `~/code/rust/bao/src/bao_browser/src/lib.rs` | 68 | `Opts { disable_script_debugger: true, .. }` | `BAO PATCH (BCE-20260621-002)` |
+
+### 用户破例授权记录
+
+**2026-06-21 用户书面授权**："直接改上游，禁令在此问题上取消"。
+
+- **范围**：BCE-20260621-002（仅限本条目）。
+- **被破铁律**：宪法"禁改 servo/mozjs 上游"+ CLAUDE.md "Servo 代码是上游真源，禁止修改 servo 上游代码"。
+- **限制**：授权仅对本 BCE 的 servo `opts.disable_script_debugger` / `script_thread.rs fire_add_debuggee` 守卫 / mozjs `initForOsr` activation NULL 守卫三处生效；其他 servo/mozjs 上游修改仍受原铁律约束。
+- **维护提示**：servo/mozjs 上游升级时，本三处 `BAO PATCH (BCE-20260621-002)` 注释标注的 patch 需手工 rebase 保留。
+
+### 防复发
+
+- SPEC criterion：建议在 `.spec/10-REQUIREMENTS.html` REQ-BRW-003 追加 criterion "bao 初始化 servo 时必须设 `disable_script_debugger: true`"（已注记，待用户确认正式写入）。
+- 回归断言：`BAO_TEST_REAL_SERVO=1 cargo test -p bao_browser --test pagepool_chaos_memory_safety_tests -- --ignored` 必须持续 PASS（确定性 SIGSEGV 复现 → 确定性 SIGSEGV=0 验证）。
+- 知识库：本条目。
+
+### 归因时间
+
+2026-06-21。
+
+---
+
+## BCE-20260622-004 — `DebugAPI::onNewScript` / `RememberSourceURL` 在多 Realm 生命周期下解引用已释放的 atom 缓存（范式缺陷，mozjs 触发器 + bao 层根治）
+
+```yaml
+patternId: BCE-20260622-004
+title: "SpiderMonkey `DebugAPI::onNewScript` → `RememberSourceURL` → `AtomCacheHashTable::lookupForAdd` 在多 Realm 生命周期下解引用 GC'd JSString chars → SIGSEGV"
+layer: 范式缺陷（SM atom cache use-after-free；bao 层在触发器处根治）
+status: 已根治（残留=0）
+
+codePattern:
+  - "SpiderMonkey `BytecodeCompiler::FireOnNewScript` 在每次新脚本编译时无条件调用 `DebugAPI::onNewScript(cx, script)`。"
+  - "`onNewScript` 对非 debuggee、非 system Realm 仍调用 `RememberSourceURL(cx, script)`。"
+  - "`RememberSourceURL` 调用 `AtomizeUTF8Chars(cx, filename, len)`，进而 `AtomCacheHashTable::lookupForAdd` 遍历 Zone 的 atom 缓存。"
+  - "在 bao 多页面（每页独立 Node Realm + Zone）+ 创建/关闭循环下，缓存累积陈旧条目（chars 指向已 GC 的 JSString，可见为 jemalloc freed-memory poison 0x4b4b4b4b4b4b4b4b），后续 lookupForAdd 解引用 → SIGSEGV。"
+
+triggerCondition:
+  - "BaoRuntime（单进程）下多次外部导航 + 多页 Node Realm 创建/关闭循环 + 后续 evaluate_js（Node Realm 路径）"
+  - "确定触发：fingerprint_website_eval_e2e_tests 父进程直接多站点导航（移除原 BCE-002-residual 子进程规避）→ 第二次及之后 evaluate_js 在 Script#N 的 `InflateUTF8ToUTF16` 解引用 0x4b4b4b4b... → SIGSEGV"
+  - "与 BCE-20260621-002 不同：BCE-002 修了首次导航 SIGSEGV（`initForOsr` NULL activation deref，路径：fire_add_debuggee → setIsDebuggee → JIT OSR）。BCE-004 是独立 BUG：`onNewScript` → `RememberSourceURL` → atom cache UAF，不依赖 debuggee 状态。"
+
+detectionSignatures:
+  structural:
+    - "JS::Compile / mozjs::rust::evaluate_script 调用未设 `hideScriptFromDebugger=true`，导致 FireOnNewScript 触发"
+    - "在 servo ScriptThread callback 内调用 evaluate_script 编译新脚本（触发跨 Realm atom cache 查询）"
+  literal:
+    - "InflateUTF8ToUTF16.*0x4b4b4b4b4b4b4b4b.*SIGSEGV"
+    - "RememberSourceURL.*AtomizeUTF8Chars.*chars=0x4b4b"
+  antipattern:
+    - "BytecodeCompiler FireOnNewScript non-guarded"
+
+sameClassCriterion:
+  - "在 bao_browser 的 servo ScriptThread 上下文中（runtime_bridge.rs 任何由 servo callback 调用、且最终经 mozjs::rust::evaluate_script / JS::Compile 编译脚本的路径）未设 `hideScriptFromDebugger=true`。"
+  - "bao_runtime / bao_engine 内的编译路径不在本类范围（它们运行在 bao 独立 JSContext，不与 servo ScriptThread 的 atom 缓存交互）。"
+
+fixTemplate:
+  - "对 bao_browser 中所有 servo-ScriptThread-side 的脚本编译，统一在 CompileOptionsWrapper 上调用 `options.set_hide_script_from_debugger(true)`，使 `BytecodeCompiler::FireOnNewScript` 的 `if (!options.hideFromNewScriptInitial())` 守卫不通过，整体跳过 `onNewScript`/`RememberSourceURL`/atom-cache-lookup 路径。"
+  - "mozjs 侧补丁：在 `CompileOptionsWrapper` 上新增 `set_hide_script_from_debugger(bool)` 方法，直接写 `TransitiveCompileOptions::hideScriptFromDebugger_` 字段（struct 为 `__attribute__((packed))`，偏移确定）。"
+
+regressionAssertion:
+  - "fingerprint_website_eval_e2e_tests 父进程直接多站点导航（无子进程规避）必须全 PASS、退出码 0、无 SIGSEGV。"
+  - "bce004_repro_tests（3 次连续导航）+ bce004_stress_tests（10 次连续导航 + pre/post inject_stealth_js）必须全 PASS。"
+  - "gdb 下重跑 fingerprint_website_eval_e2e_tests：不出现 `Thread .*Script#.*received signal SIGSEGV`。"
+```
+
+### 归因（阶段1，客观 gdb 证据）
+
+- **复现命令**：`DISPLAY=:99 BAO_TEST_NETWORK=1 gdb -batch -ex 'run --test-threads=1 --nocapture' <fingerprint_website_eval_e2e_tests binary>`
+- **SIGSEGV 位置**（gdb 客观）：
+  ```
+  Thread 82 "Script#9" received signal SIGSEGV, Segmentation fault.
+  #0 InflateUTF8ToUTF16<...>(cx=..., dst=..., src=...)
+      at vm/CharacterEncoding.cpp:285
+  #1 UTF8EqualsChars<char16_t>(utfChars=..., chars=0x4b4b4b4b4b4b4b4b)
+      at vm/CharacterEncoding.cpp:556
+  #2 js::AtomHasher::Lookup::StringsMatch
+      at vm/JSAtomUtils.cpp:84
+  #3 js::AtomCacheHashTable::lookupForAdd
+      at gc/Zone.h:275
+  #4 AtomizeAndCopyCharsNonStaticValidLengthFromLookup
+      at vm/JSAtomUtils.cpp:388
+  #5 js::AtomizeUTF8Chars(cx, utf8Chars=0x...d60 "bao_evaluate_js", ...)
+      at vm/JSAtomUtils.cpp:897
+  #6 RememberSourceURL(cx, script) at debugger/Debugger.cpp:2519
+  #7 js::DebugAPI::onNewScript(cx, script) at debugger/Debugger.cpp:2535
+  #8 FireOnNewScript at frontend/BytecodeCompiler.cpp:466
+  ...
+  #19 bao_browser::runtime_bridge::evaluate_in_node_realm
+      at src/bao_browser/src/runtime_bridge.rs:353
+  ```
+- **根因**：`0x4b4b4b4b4b4b4b4b` 是 jemalloc freed-memory poison（'K' = 0x4b）。`AtomCacheHashTable::lookupForAdd` 遍历的 Zone atom 缓存中存在 chars 指向已 GC 的 JSString 条目（多 Realm 创建/销毁循环下未及时失效）。`RememberSourceURL` 无条件运行（Realm 非 debuggee 非 system），触发 lookupForAdd → StringsMatch → UTF8EqualsChars → 解引用已释放 chars → SIGSEGV。
+- **缺陷分层**：范式缺陷。SM atom cache 在 Realm/Zone 销毁时未完全失效条目，是上游 SM 的潜在 BUG。bao 层无法修 SM 深层 UAF；只能（且应该）在触发器处根治（跳过 `onNewScript`）。
+- **归因时间**：2026-06-22。
+
+### 根治方案（阶段4，bao 层 + mozjs Rust 绑定补丁）
+
+**统一策略**：所有 bao_browser 中运行在 servo ScriptThread 上下文下的脚本编译，必须设 `hideScriptFromDebugger=true`。这使 `BytecodeCompiler::FireOnNewScript` 的 `if (!options.hideFromNewScriptInitial())` 守卫不通过，整体跳过 `onNewScript`/`RememberSourceURL`/atom-cache 路径。
+
+正确性证明：
+- bao 使用 `bao_cdp`（自有 CDP），从不连接 servo 的 `JS::Debugger` devtools。
+- 对这些脚本的 `onNewScript` 事件没有合法消费者。
+- 因此跳过 `onNewScript` 不损失任何功能。
+
+**改动清单**（全部标注 `BAO PATCH (BCE-20260622-004)`）：
+
+| 文件 | 行 | 改动 | 标注 |
+|------|----|------|------|
+| `~/code/rust/mozjs/mozjs/src/rust.rs` | CompileOptionsWrapper impl | 新增 `set_hide_script_from_debugger(bool)` 方法（写 `TransitiveCompileOptions::hideScriptFromDebugger_`） | `BAO PATCH (BCE-20260622-004)` |
+| `~/code/rust/bao/src/bao_browser/src/runtime_bridge.rs` | evaluate_in_node_realm (filename=`bao_evaluate_js`) | `options.set_hide_script_from_debugger(true)` | `BAO PATCH (BCE-20260622-004)` |
+| `~/code/rust/bao/src/bao_browser/src/runtime_bridge.rs` | create_node_realm_native 内 wasm-init 探针 (filename=`<wasm-init>`) | `options.set_hide_script_from_debugger(true)` | `BAO PATCH (BCE-20260622-004)` |
+| `~/code/rust/bao/src/bao_browser/tests/fingerprint_website_eval_e2e_tests.rs` | Phase 2 | 移除 BCE-002-residual 子进程规避，改为父进程直接多站点导航（生产模式一致） | `BCE-20260622-004` 注释 |
+
+### 全量确认报告（阶段5）
+
+```yaml
+confirmReport:
+  patternId: BCE-20260622-004
+  sweepScope: "src/bao_browser/ + src/bao_cdp/ 全量（bao_runtime/bao_engine 不在范围 — 运行在 bao 独立 JSContext，无 servo ScriptThread atom 缓存交互）"
+  layersScanned: [literal, structural]
+  instancesFound: 3            # 2 CompileOptionsWrapper (evaluate_in_node_realm + wasm-init) + 1 subprocess workaround in test
+  truePositives: 3
+  falsePositives: 0
+  instancesFixed: 3            # 2 set_hide_script_from_debugger + 1 test rewrite
+  residual: 0
+  residualEvidence:
+    - "gdb 重跑 fingerprint_website_eval_e2e_tests（父进程多站点直接导航）：0 SIGSEGV，11 PASS / 0 SKIP / 0 FAIL，退出码 0"
+    - "bce004_repro_tests（3 连续导航）：PASS（之前已 pass，复测不回归）"
+    - "bce004_stress_tests（10 连续导航 + pre/post inject_stealth_js）：PASS"
+    - "bce004_isolate_tests（4 维度隔离测试）：全 PASS"
+    - "bce004_parent_multinav_tests（父进程多页多导航 + inject）：PASS"
+    - "bao_browser --lib：290 PASS / 0 FAIL"
+    - "runtime_bridge_deep_tests / browser_core_unit_tests / page_lifecycle_tests / compartment_isolation_tests：全 PASS（无回归）"
+  releaseGateImpact: pass
+```
+
+### 防复发（阶段6）
+
+- 回归测试：
+  - `src/bao_browser/tests/fingerprint_website_eval_e2e_tests.rs`（父进程直接多站点导航 — 主回归断言）
+  - `src/bao_browser/tests/bce004_repro_tests.rs`（3 连续外部导航）
+  - `src/bao_browser/tests/bce004_stress_tests.rs`（10 连续导航 + pre/post inject）
+  - `src/bao_browser/tests/bce004_isolate_tests.rs`（4 维度隔离 — eval/nav/close-cycle）
+  - `src/bao_browser/tests/bce004_parent_multinav_tests.rs`（多页 + 多导航 + inject）
+- SPEC criterion：建议在 `.spec/10-REQUIREMENTS.html` REQ-BRW-003 追加 criterion "bao_browser 中所有 servo ScriptThread 上下文下的脚本编译必须设 `hideScriptFromDebugger=true`"（待用户确认写入）。
+- 知识库：本条目。
+
+### 用户破例授权记录（BCE-002 延伸）
+
+**2026-06-22**：BCE-20260622-004 任务描述中明确"用户已授权改 servo/mozjs 上游（BCE-002 破例，可延伸 BCE-004）"。
+
+- **范围**：BCE-20260622-004（仅限本条目）。
+- **被破铁律**：宪法"禁改 servo/mozjs 上游"（仅对 mozjs Rust 绑定 `~/code/rust/mozjs/mozjs/src/rust.rs` 新增一个方法 `set_hide_script_from_debugger`；servo 上游零改动）。
+- **限制**：授权仅对本 BCE 的 mozjs Rust 绑定新增方法生效。
+- **维护提示**：mozjs 上游升级时，`BAO PATCH (BCE-20260622-004)` 注释标注的 patch 需手工 rebase 保留。
+
+### 与 BCE-002 的关系
+
+BCE-20260621-002 和 BCE-20260622-004 是**两个独立的 SIGSEGV BUG**，都发生在 bao + servo + mozjs 多 Realm/多导航场景下，但根因和触发路径不同：
+
+| 维度 | BCE-002 | BCE-004 |
+|------|---------|---------|
+| SIGSEGV 位置 | `js::jit::BaselineFrame::initForOsr` (BaselineFrame.cpp:153) | `InflateUTF8ToUTF16` (CharacterEncoding.cpp:285) |
+| 根因 | servo `fire_add_debuggee` 标记 Realm 为 debuggee → JIT 调试插桩 → `initForOsr` NULL activation deref | SM `onNewScript` → `RememberSourceURL` → atom cache UAF（与 debuggee 状态无关） |
+| 触发条件 | 首次外部导航 + 后续 JIT OSR | 多 Realm 生命周期下任何新脚本编译 |
+| 根治层 | servo（`disable_script_debugger` flag）+ mozjs（`initForOsr` 守卫）| bao（`hideScriptFromDebugger=true`）+ mozjs Rust 绑定（新增 setter） |
+| 是否需破例改上游 | 是（servo + mozjs C++） | 是（mozjs Rust 绑定，仅新增方法） |
+

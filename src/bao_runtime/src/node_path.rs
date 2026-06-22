@@ -4,7 +4,7 @@ use ::std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue};
+use mozjs::jsval::{JSVal, UndefinedValue, ObjectValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -46,10 +46,161 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         }
     }
 
-    // path.posix / path.win32 — self-references to the path module
+    // path.posix — self-reference to the path module (host-platform impl).
     unsafe {
         w2::JS_DefineProperty3(cx, path_obj.handle(), c"posix".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
-        w2::JS_DefineProperty3(cx, path_obj.handle(), c"win32".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
+    }
+
+    // path.win32 — Node.js ships a real Windows-flavoured path object on all
+    // platforms so `path.win32.sep === "\\"` even on Linux. We expose a thin
+    // JS wrapper that mirrors the host's path API but overrides `sep` /
+    // `delimiter` to the Windows values. (See ~/code/rust/bun/src/js/node/
+    // path.ts — Bun likewise ships both `posix` and `win32`.)
+    unsafe {
+        rooted!(&in(cx) let win32_obj = w2::JS_NewPlainObject(cx));
+        if !win32_obj.get().is_null() {
+            // Reuse the host path functions; only the separator/delimiter
+            // constants differ. Methods are forwarded by assigning the same
+            // function references the host module already exposes.
+            for fn_name in &[
+                "join", "resolve", "dirname", "basename", "extname", "normalize",
+                "isAbsolute", "relative", "parse", "format", "toNamespaced",
+            ] {
+                let c_name = ZBox::from_bytes(fn_name.as_bytes());
+                let mut fn_val = UndefinedValue();
+                JS_GetProperty(
+                    cx.raw_cx(),
+                    path_obj.handle().into(),
+                    c_name.as_ptr(),
+                    MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData,
+                        ptr: &mut fn_val,
+                    },
+                );
+                if fn_val.is_object() {
+                    rooted!(&in(cx) let fv = fn_val);
+                    JS_DefineProperty(
+                        cx.raw_cx(),
+                        win32_obj.handle().into(),
+                        c_name.as_ptr(),
+                        fv.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+            // win32.sep = "\\" / win32.delimiter = ";"
+            let winsep_cstr = ZBox::from_bytes(b"\\");
+            let winsep_str = JS_NewStringCopyZ(cx.raw_cx(), winsep_cstr.as_ptr());
+            if !winsep_str.is_null() {
+                let v = mozjs::jsval::StringValue(&*winsep_str);
+                rooted!(&in(cx) let vr = v);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    win32_obj.handle().into(),
+                    c"sep".as_ptr(),
+                    vr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            let wdlm_cstr = ZBox::from_bytes(b";");
+            let wdlm_str = JS_NewStringCopyZ(cx.raw_cx(), wdlm_cstr.as_ptr());
+            if !wdlm_str.is_null() {
+                let v = mozjs::jsval::StringValue(&*wdlm_str);
+                rooted!(&in(cx) let vr = v);
+                JS_DefineProperty(
+                    cx.raw_cx(),
+                    win32_obj.handle().into(),
+                    c"delimiter".as_ptr(),
+                    vr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
+            }
+            // win32.win32 / win32.posix self-refs (matches Node.js shape)
+            w2::JS_DefineProperty3(cx, win32_obj.handle(), c"win32".as_ptr(), win32_obj.handle(), JSPROP_ENUMERATE as u32);
+            w2::JS_DefineProperty3(cx, win32_obj.handle(), c"posix".as_ptr(), path_obj.handle(), JSPROP_ENUMERATE as u32);
+
+            w2::JS_DefineProperty3(cx, path_obj.handle(), c"win32".as_ptr(), win32_obj.handle(), JSPROP_ENUMERATE as u32);
+        }
+    }
+
+    // path.matchesGlob(path, pattern) — pure JS glob matcher. Bun's
+    // implementation (~/code/rust/bun/src/js/node/path.ts:matchesGlob) uses
+    // `Bun.Glob` (native); here we express the same boolean result with a
+    // minimal regex-based glob translator covering the standard wildcard
+    // syntax (`*`, `?`, `**`, character classes) so behaviour matches Node.
+    unsafe {
+        let matches_src = r#"(function(p){
+  function globToRegExp(pattern) {
+    // Anchor the pattern; translate `**` → `.*`, `*` → `.*`, `?` → `.`,
+    // and escape regex metacharacters in literals. Mirrors Bun.Glob's
+    // full-path glob semantics (a single `*` matches across path segments),
+    // which is what Node.js' path.matchesGlob surfaces.
+    var s = '^';
+    for (var i = 0; i < pattern.length; i++) {
+      var c = pattern.charAt(i);
+      if (c === '*') {
+        if (pattern.charAt(i + 1) === '*') {
+          s += '.*';
+          i++;
+        } else {
+          s += '.*';
+        }
+      } else if (c === '?') {
+        s += '.';
+      } else if ('.+^${}()|[]\\'.indexOf(c) >= 0) {
+        s += '\\' + c;
+      } else {
+        s += c;
+      }
+    }
+    return new RegExp(s + '$');
+  }
+  p.matchesGlob = function matchesGlob(path, pattern) {
+    if (typeof path !== 'string') {
+      throw new TypeError('The "path" argument must be of type string.');
+    }
+    if (typeof pattern !== 'string') {
+      throw new TypeError('The "pattern" argument must be of type string.');
+    }
+    return globToRegExp(pattern).test(path);
+  };
+})"#;
+        let mut msrc = mozjs::rust::transform_str_to_source_text(matches_src);
+        let mut mval = UndefinedValue();
+        let mh = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut mval,
+        };
+        let mopts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<path-matchesGlob>".as_ptr(), 1);
+        if !mopts.is_null() {
+            let global = CurrentGlobalOrNull(cx.raw_cx());
+            if !global.is_null()
+                && JS::Evaluate2(cx.raw_cx(), mopts, &mut msrc, mh)
+                && mval.is_object() {
+                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                rooted!(&in(wrapped_cx) let global_root = global);
+                rooted!(&in(wrapped_cx) let path_val_root = ObjectValue(path_obj.get()));
+                let args_arr = HandleValueArray {
+                    length_: 1,
+                    elements_: &path_val_root.get() as *const Value,
+                };
+                let mut call_rval = UndefinedValue();
+                let call_rval_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut call_rval,
+                };
+                rooted!(&in(wrapped_cx) let factory_obj = mval.to_object());
+                rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
+                JS_CallFunctionValue(
+                    cx.raw_cx(),
+                    global_root.handle().into(),
+                    factory_obj_h.handle().into(),
+                    &args_arr,
+                    call_rval_h,
+                );
+            }
+            libc::free(mopts as *mut _);
+        }
     }
 
     cache_builtin(cx, "path", path_obj.get());

@@ -41,15 +41,16 @@ use super::servo_backend::ServoBackend;
 ///
 /// # 使用
 ///
-/// ```ignore
-/// use bao_cdp_client::bridge::{CDPRdpBridge, ServoBackend};
+/// ```
+/// use bao_cdp_client::bridge::{CDPRdpBridge, MockServoBackend, ServoBackend};
+/// use bao_cdp_client::transport::InMemoryBridge;
 /// use bao_cdp_client::transport::InMemoryTransport;
 /// use std::sync::Arc;
 ///
-/// let backend: Arc<dyn ServoBackend> = /* ... */;
+/// let backend: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
 /// let bridge = CDPRdpBridge::new(backend);
-/// let transport_bridge: Arc<dyn InMemoryBridge> = bridge.into_bridge();
-/// let transport = InMemoryTransport::new(transport_bridge);
+/// let transport_bridge: Arc<dyn InMemoryBridge> = bridge.into_in_memory_bridge();
+/// let _transport = InMemoryTransport::new(transport_bridge);
 /// ```
 ///
 /// @trace REQ-BAO-API-004 [level:library]

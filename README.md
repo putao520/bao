@@ -1,124 +1,201 @@
-# Bao (包子) — Node.js + 浏览器 + 反指纹，一个运行时全搞定
+# Bao (包子) — Bun + SpiderMonkey + Servo 高性能反指纹浏览器运行时
 
-Bun 的 SpiderMonkey 引擎分支，融合 Servo 浏览器引擎。Node.js API 始终在线，浏览器始终可用，反指纹内置。
+一个 Rust 二进制,把 **SpiderMonkey JS 引擎** + **servo 全功能浏览器** + **Node.js/Bun API** + **Stealth 反指纹** 统一到同一运行时:
 
-## 核心差异化
+- 反指纹浏览器(默认对抗 TLS / HTTP2 / Canvas / Navigator / WebGL / Audio / 行为指纹)
+- Bun 兼容运行时(`require` / `fs` / `http` / `crypto` / `bun:sqlite` 始终在线,与 Web API 同一 JSContext 共存)
+- Headless 多页面库(`PagePool` + `PageHandle` Rust API)
+- CDP 自动化(内置 CDP Server,Playwright/Puppeteer 可直连)
+
+## 核心特性
 
 | 特性 | 说明 |
 |------|------|
-| **SpiderMonkey 引擎** | 替代 JSC，与 Servo 共享同一 JSContext。DOM 对象和 Node.js 对象原生互操作 |
-| **全功能浏览器** | DOM + CSS + 布局 + 渲染 + 截图，Servo 真实渲染引擎，非 headless 模拟 |
-| **Node.js/Bun API 始终在线** | require/fs/crypto/http/process 与 Web API 同一上下文共存，无需切换运行时 |
-| **反指纹内置** | TLS JA3/JA4 + HTTP/2 Akamai + Canvas 噪声 + Navigator/Screen/WebGL/Audio + 行为模拟，开箱即用 |
+| **SpiderMonkey 引擎** | 替代 JSC(mozjs crate,MPL-2.0)。全局唯一 JSEngine + 每个 ScriptThread 线程局部 JSContext(servo 上游模型) |
+| **servo 全功能浏览器** | DOM + CSS + Layout + webrender 渲染 + 截图,真实渲染引擎而非 headless 模拟 |
+| **Node.js/Bun API 始终在线** | `require` / `fs` / `path` / `crypto` / `http` / `process` / `bun:sqlite` / `bun:ffi` 与 Web API 同一 JSContext 共存,无需切换运行时 |
+| **Stealth 反指纹内置** | TLS JA3/JA4(匹配 Firefox/Chrome) · HTTP/2 AKAMAI fingerprint · Canvas/WebGL/Audio 噪声 · Navigator/Screen override · 行为模拟(贝塞尔鼠标路径 + 拟人点击/打字) |
+| **Headless 多页面库** | `PagePool` 多页面管理 + idle 回收;`PageHandle` 高层 API(navigate / evaluate / screenshot) |
+| **CDP 自动化** | 内置 CDP Server,12 个域(Page/Runtime/DOM/Network/Debugger/Input/Emulation/CSS/Overlay/Log/Fetch/Target),Playwright/Puppeteer 兼容 |
+| **Bun crate 100% 复用** | ~85 个 Bun 纯 Rust crate 零修改复用(HTTP/Resolver/Bundler/DNS/Base64/...) |
 
-## CLI 快速开始
+## 构建安装
 
 ```bash
-# 运行 JS 脚本（Node.js API 可用）
+# 克隆
+git clone <repo-url> bao && cd bao
+
+# 构建(首次构建 mozjs 从源码编译 SpiderMonkey,耗时较长)
+cargo build
+
+# 构建二进制
+cargo build -p bao_bin
+# 产物:target/debug/bao
+
+# 运行测试
+cargo test
+```
+
+> **mozjs 首次编译**:从源码编译 SpiderMonkey,需要 C++ 编译器 + 较长时间。已内置 EBUSY patch,`cargo test` 默认多线程零 SIGSEGV。
+
+## 快速开始
+
+### 例 1:运行 JS 脚本(Bun 兼容)
+
+```bash
+# 运行文件(Node.js API 可用)
 bao run index.js
+bao run index.mjs           # ESM
+bao run --module index.mjs  # 强制 ESM
+
+# 内联代码(-e / --eval)
 bao run -e "console.log(require('fs').readFileSync('/etc/hostname', 'utf8'))"
-
-# 启动浏览器（带 CDP + 反指纹）
-bao browser --url https://example.com --cdp-port 9222 --stealth
-
-# 打包
-bao build src/index.ts --target bundle --minify
-
-# 测试
-bao test
-
-# 安装依赖
-bao install lodash
+bao -e "console.log(Bun.version)"   # 顶层 -e 等价于 bao run -e
 ```
 
-## Rust 库使用方案
-
-### 场景 A：纯 Node.js 运行时（无浏览器）
-
-```rust
-use bao_engine::BaoRuntime;
-
-let mut rt = BaoRuntime::new()?;
-rt.eval("const fs = require('fs'); console.log(fs.readdirSync('.').length)", "<eval>")?;
-```
-
-### 场景 B：浏览器 + Node.js 双层 JS 模型（核心场景）
-
-```rust
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, PagePool, ScreenshotFormat};
-use bao_stealth::StealthProfile;
-
-let runtime = BaoRuntime::new(BaoConfig::default())?;
-let pool = runtime.page_pool();
-
-// 创建页面（可选 stealth profile）
-let page = pool.create_page(&PageConfig {
-    url: Some("https://example.com".into()),
-    stealth_profile: Some(StealthProfile::firefox_default()),
-    ..Default::default()
-})?;
-
-// 可信脚本 — Node.js + DOM 全权限
-let title = page.evaluate_js("document.querySelector('h1').textContent")?;
-let files = page.evaluate_js("require('fs').readdirSync('.').join(',')")?;
-
-// 页面脚本 — 仅 Web API，Node.js 不可见
-let ua = page.evaluate_js_web("navigator.userAgent")?;
-
-// 截图
-let png: Vec<u8> = page.take_screenshot(ScreenshotFormat::Png)?;
-
-page.close()?;
-```
-
-**双层 JS 安全模型**：
-
-| 方法 | 可用 API | 机制 |
-|------|---------|------|
-| `evaluate_js()` | Node.js + Web API + DOM | CommonJS 参数注入（IIFE），scope 执行后自动清理 |
-| `evaluate_js_web()` | 仅 Web API + DOM | 标准 web 沙箱，`typeof require === 'undefined'` |
-| 页面 JS | 仅 Web API + DOM | Node.js API 不写入 Window global |
-
-`evaluate_js()` 将脚本包装为：
+`index.js` 示例:
 
 ```js
-(function() {
-  var __scope = globalThis.__bao_privileged_apis;
-  delete globalThis.__bao_privileged_apis;
-  delete globalThis.__bao_setEnv;
-  delete globalThis.__bao_delEnv;
-  delete globalThis.Buffer;
-  if (!__scope) throw new Error('Bao: privileged API scope not available');
-  (function(require, module, exports, Bun, process, Buffer, __filename, __dirname) {
-    <your_script>
-  })(__scope.require, __scope.module, __scope.module.exports, __scope.Bun, __scope.process, __scope.Buffer, __scope.__filename, __scope.__dirname);
-})();
+// Node.js API 始终可用
+const fs = require('fs');
+const zlib = require('zlib');
+console.log('cwd files:', fs.readdirSync('.').length);
+console.log('platform:', process.platform);
+console.log('node version:', process.version);
+
+// Bun.* / Bao.* 是同一对象别名(Bun.version 已桥接)
+console.log('Bun version:', Bun.version);
+
+// node:zlib 在线
+const bytes = zlib.deflateSync(Buffer.from('hello bao'));
+console.log('deflated bytes:', bytes.length);
 ```
 
-Node API 作为函数参数传入，执行后不残留 globalThis。servo script thread 单线程，无时序攻击窗口。
+### 例 2:启动浏览器(交互 / 反指纹访问)
 
-### 场景 C：浏览器 + CDP 调试
+```bash
+# 启动浏览器(默认 headless + CDP on 9222)
+bao browser
+
+# 指定 URL + 反指纹(Firefox profile)
+bao browser --url https://bot.sannysoft.com --stealth
+
+# 自定义 CDP 端口
+bao browser --url https://example.com --cdp-port 9333 --stealth
+```
+
+`bao browser` flags:
+
+| flag | 默认 | 说明 |
+|------|------|------|
+| `--url <URL>` | — | 启动后导航到的 URL |
+| `--cdp-port <PORT>` | `9222` | CDP Server 监听端口(Playwright/Puppeteer 连此) |
+| `--headless` / `--no-headless` | `true` | 是否无头 |
+| `--stealth` | `false` | 启用 Firefox StealthProfile(TLS/HTTP2/Canvas/Navigator/WebGL/Audio/行为模拟) |
+
+> `--stealth` 当前在 CLI 上使用 `StealthProfile::firefox_default()`。要在 Rust 侧用 Chrome profile,见例 4。
+
+### 例 3:反指纹访问指纹检测网站
+
+```bash
+# 用 Firefox 反指纹 profile 访问经典指纹检测站
+bao browser --url https://bot.sannysoft.com --stealth
+
+# 另一个窗口用 Playwright 连上 CDP 抓截图
+npx playwright-cli screenshot --cdp-endpoint http://127.0.0.1:9222 \
+  --output sannysoft.png --full-page
+```
+
+Stealth 各维度(都由 `StealthProfile::firefox_default()` 自动启用):
+
+| 维度 | 实测目标 |
+|------|---------|
+| TLS | JA3 / JA4 匹配 Firefox |
+| HTTP/2 | AKAMAI fingerprint(SETTINGS + PRIORITY frame 模式) |
+| Canvas | per-pixel 噪声注入(每 profile seed 不同) |
+| WebGL | vendor / renderer override(VENDOR/RENDERING 时 `UNMASKED_`) |
+| Audio | AudioContext fingerprint 噪声 |
+| Navigator | userAgent / vendor / platform / hardwareConcurrency / deviceMemory |
+| Screen | width / height / colorDepth |
+| Behavior | 贝塞尔曲线鼠标路径 + 拟人点击/打字延迟 |
+
+### 例 4:Headless 多页面库(Rust API)
 
 ```rust
-use bao_browser::{BaoConfig, BaoRuntime, BrowserConfig, run_browser};
+use bao_browser::{BaoConfig, BaoRuntime, PageConfig, ScreenshotFormat};
 use bao_stealth::StealthProfile;
 
-// 方式 1：BaoConfig 设置 cdp_port
-let runtime = BaoRuntime::new(BaoConfig {
-    cdp_port: Some(9222),
-    ..Default::default()
-})?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 浏览器运行时(全局唯一 servo + 每页一线程)
+    let runtime = BaoRuntime::new(BaoConfig::default())?;
+    let pool = runtime.page_pool();
 
-// 方式 2：run_browser 便捷函数（阻塞运行）
-run_browser(BrowserConfig {
-    url: Some("https://example.com".into()),
-    cdp_port: 9222,
-    stealth_profile: Some(StealthProfile::firefox_default()),
-    ..Default::default()
-})?;
+    // 创建 Firefox 反指纹页面
+    let page = pool.create_page(&PageConfig {
+        url: Some("https://example.com".into()),
+        stealth_profile: Some(StealthProfile::firefox_default()),
+        ..Default::default()
+    })?;
+
+    // 可信脚本 — Node.js + Web API + DOM 全权限(Node Realm 注入)
+    let title = page.evaluate_js("document.querySelector('h1').textContent")?;
+    let files = page.evaluate_js(
+        "require('fs').readdirSync('.').slice(0,5).join(',')"
+    )?;
+    println!("title={title}, files={files}");
+
+    // 页面脚本 — 仅 Web API + DOM(Page Realm,typeof require === 'undefined')
+    let ua = page.evaluate_js_web("navigator.userAgent")?;
+    println!("ua={ua}");
+
+    // 截图
+    let png: Vec<u8> = page.take_screenshot(ScreenshotFormat::Png)?;
+    std::fs::write("example.png", png)?;
+
+    page.close()?;
+    Ok(())
+}
 ```
 
-CDP 端点：
+**双层 JS 安全模型**(Node Realm + Page Realm 隔离):
+
+| 方法 | 可用 API | Realm |
+|------|---------|-------|
+| `evaluate_js()` | Node.js + Web API + DOM | Node Realm(独立 Compartment,脚本通过 Node global 执行) |
+| `evaluate_js_web()` | 仅 Web API + DOM | Page Realm(Window global,`typeof require === 'undefined'`) |
+| 页面 JS | 仅 Web API + DOM | Page Realm(Node.js API 不写入 Window global) |
+
+**多页面管理**:
+
+```rust
+let pool = runtime.page_pool();
+
+let page_a = pool.create_page(&PageConfig {
+    url: Some("https://a.com".into()),
+    ..Default::default()
+})?;
+let page_b = pool.create_page(&PageConfig {
+    url: Some("https://b.com".into()),
+    stealth_profile: Some(StealthProfile::chrome_default()),
+    ..Default::default()
+})?;
+
+let stats = pool.stats();
+println!("active={}, idle={}, total_created={}",
+    stats.active, stats.idle, stats.total_created);
+
+pool.check_idle_pages();   // 回收 idle_ttl(默认 60s)超时的空闲页
+pool.close_all();
+```
+
+### 例 5:CDP 自动化(Playwright / Puppeteer 连接)
+
+```bash
+# 启动带 CDP 的浏览器
+bao browser --url https://example.com --cdp-port 9222 --stealth
+```
+
+CDP 端点:
 
 | 端点 | 用途 |
 |------|------|
@@ -126,101 +203,149 @@ CDP 端点：
 | `http://127.0.0.1:9222/json/list` | 目标列表 |
 | `ws://127.0.0.1:9222/devtools/page/{targetId}` | WebSocket 调试协议 |
 
-支持 12 个 CDP 域：Page, Runtime, DOM, Network, Debugger, Input, Emulation, CSS, Overlay, Log, Fetch, Target。
+Playwright 连接(Node.js):
 
-## 反指纹 API
+```js
+const { chromium } = require('playwright');
+
+(async () => {
+  // 连接 Bao 内置 servo 的 CDP
+  const browser = await chromium.connectOverCDP('http://127.0.0.1:9222');
+  const context = browser.contexts()[0];
+  const page = await context.newPage();
+  await page.goto('https://example.com');
+  console.log(await page.title());
+  await page.screenshot({ path: 'cdp.png', fullPage: true });
+  await browser.close();
+})();
+```
+
+**Rust 侧用 `bao_cdp_client`**(Playwright 风格高层 API,按 URL scheme 路由):
+
+```rust
+use bao_cdp_client::Browser;
+
+// 同进程 servo(memory:// scheme → InMemoryTransport,零网络往返)
+let browser = Browser::connect("memory://bao")?;
+assert!(browser.is_in_memory());
+
+// 或连外部 Chrome / Chromium(ws:// / http://)
+let browser = Browser::connect("ws://127.0.0.1:9222")?;
+assert!(browser.is_websocket());
+```
+
+支持 12 个 CDP 域:Page · Runtime · DOM · Network · Debugger · Input · Emulation · CSS · Overlay · Log · Fetch · Target。
+
+## Stealth 反指纹 API
 
 ```rust
 use bao_stealth::{StealthEngine, StealthProfile};
 
-// Firefox 指纹（默认）
-let profile = StealthProfile::firefox_default();
-let engine = StealthEngine::new(profile);
+// 预置 profile
+let ff = StealthProfile::firefox_default();   // Firefox ESR 指纹
+let ch = StealthProfile::chrome_default();    // Chrome 指纹
 
 // 各维度访问
-engine.navigator();     // UA string, vendor, platform, hardwareConcurrency
-engine.screen();        // width, height, colorDepth
-engine.tls_config();    // JA3/JA4 hash, cipher suites, extensions
-engine.http2_config();  // Akamai HTTP/2 fingerprint, SETTINGS frame
+let engine = StealthEngine::new(ff);
+engine.tls_config();    // JA3/JA4 hash + cipher suites + extensions
+engine.http2_config();  // AKAMAI HTTP/2 fingerprint + SETTINGS frame
 engine.canvas_noise();  // per-pixel noise injection
+engine.navigator();     // UA + vendor + platform + hardwareConcurrency
+engine.screen();        // width + height + colorDepth
 engine.webgl();         // vendor/renderer override
 engine.audio();         // AudioContext fingerprint
-engine.behavior();      // mouse path, typing delays, scroll patterns
+engine.behavior();      // 鼠标路径 + 打字延迟 + 滚动模式
 ```
 
-预置两种 profile：
-
-- `StealthProfile::firefox_default()` — Firefox ESR 指纹
-- `StealthProfile::chrome_default()` — Chrome 指纹
-
-## PagePool 多页面管理
-
-```rust
-let pool = runtime.page_pool();
-
-let page1 = pool.create_page(&PageConfig {
-    url: Some("https://a.com".into()),
-    ..Default::default()
-})?;
-let page2 = pool.create_page(&PageConfig {
-    url: Some("https://b.com".into()),
-    stealth_profile: Some(StealthProfile::firefox_default()),
-    ..Default::default()
-})?;
-
-// 池统计
-let stats = pool.stats();
-println!("active: {}, idle: {}, total created: {}",
-    stats.active, stats.idle, stats.total_created);
-
-// 空闲页面回收（idle_ttl 默认 60s）
-pool.check_idle_pages();
-
-// 全部关闭
-pool.close_all();
-```
+`StealthProfile` 是 `Clone + Debug` 的纯数据结构,可直接构造自定义 profile。每个 profile 的 Canvas/Audio/Behavior 用不同 seed 生成不同噪声。
 
 ## PageHandle API 速查
 
 | 方法 | 返回 | 说明 |
 |------|------|------|
 | `navigate(url)` | `Result<(), BrowserError>` | 导航到新 URL |
-| `evaluate_js(script)` | `Result<String, BrowserError>` | 可信脚本执行（Node.js + DOM） |
-| `evaluate_js_web(script)` | `Result<String, BrowserError>` | 页面脚本执行（仅 Web API） |
-| `take_screenshot(format)` | `Result<Vec<u8>, BrowserError>` | 截图（PNG/JPEG） |
+| `evaluate_js(script)` | `Result<String, BrowserError>` | 可信脚本(Node.js + DOM,Node Realm) |
+| `evaluate_js_web(script)` | `Result<String, BrowserError>` | 页面脚本(仅 Web API,Page Realm) |
+| `take_screenshot(format)` | `Result<Vec<u8>, BrowserError>` | 截图(PNG / JPEG) |
 | `page_title()` | `Option<String>` | 页面标题 |
 | `current_url()` | `Option<String>` | 当前 URL |
-| `get_state()` | `PageState` | 页面状态（Created/Navigating/Interactive/Idle/Closed） |
+| `get_state()` | `PageState` | 状态(Created / Navigating / Interactive / Idle / Closed) |
+| `permission()` | `PermissionGuard` | 权限守卫 |
+| `stealth_profile()` | `Option<StealthProfile>` | 当前 profile |
 | `close()` | `Result<(), BrowserError>` | 关闭页面 |
 
-## 架构
+## CLI 命令总览
 
 ```
-┌─────────────────────────────────────────────┐
-│                  bao (CLI)                   │
-├──────────┬──────────┬──────────┬────────────┤
-│ bao_engine│bao_browser│ bao_cdp │ bao_stealth│
-│ SpiderMonkey│  Servo   │ CDP WS  │ 反指纹    │
-│ Node.js API│ DOM/CSS  │ 12域    │ TLS/H2/   │
-│ require/fs │ 渲染/截图│ Router  │ Canvas/   │
-│ crypto/http│ PagePool │ Session │ Navigator │
-├──────────┴──────────┴──────────┴────────────┤
-│           Bun ~85 Rust crates (复用)          │
-└─────────────────────────────────────────────┘
+bao                              # 必须带子命令(--help 查看)
+bao -e, --eval <CODE>            # 顶层 eval(等价 bao run -e)
+bao run [-e <CODE> | <FILE>]     # 运行 JS(--module 强制 ESM)
+bao build <ENTRYPOINT>           # 打包(--target bun|node|browser|macro --format esm|cjs|iife --minify --sourcemap --outdir <DIR>)
+bao test [FILES...]              # 测试运行器(默认扫 test/ tests/ __tests__/)
+bao install [ARGS...]            # 安装依赖(转发给 bun_install)
+bao browser [--url URL]          # 启动浏览器
+        [--cdp-port PORT]        #   默认 9222
+        [--headless | --no-headless]  # 默认 headless
+        [--stealth]              #   启用 Firefox StealthProfile
 ```
 
-**单 JSContext 融合**：servo 创建 JSContext，bao_engine 寄生同一指针。所有模式（CLI/browser/CDP）共享唯一 JSContext，DOM 对象和 Node.js 对象原生互操作，零序列化开销。
+## 架构概览
 
-## Cargo 依赖
+```
+┌──────────────────────────────────────────────────────────┐
+│                     bao (CLI binary)                      │
+│            bao_bin → bao_cli (clap subcommands)           │
+├────────────┬────────────┬──────────┬─────────────────────┤
+│ bao_engine │ bao_browser│ bao_cdp  │ bao_stealth         │
+│ SpiderMonkey│  Servo 桥  │ CDP WS   │ 反指纹              │
+│ JSC→SM 桥  │ PagePool   │ Router   │ TLS JA3/JA4         │
+│ context/   │ PageHandle │ 12 域    │ HTTP2 AKAMAI        │
+│ job_queue  │ evaluate   │ Session  │ Canvas/WebGL/Audio  │
+├────────────┴────────────┴──────────┴─────────────────────┤
+│ bao_cdp_client  Playwright 风格高层 API(Browser/Page/...) │
+├──────────────────────────────────────────────────────────┤
+│ bao_runtime  Node.js/Bun 兼容(fs/http/crypto/sqlite/ffi) │
+├──────────────────────────────────────────────────────────┤
+│ bao_uloop  事件循环(epoll tick,共享 FilePoll fd)         │
+├──────────────────────────────────────────────────────────┤
+│          Bun ~85 个纯 Rust crate(零修改复用)             │
+├──────────────────────────────────────────────────────────┤
+│ mozjs(SpiderMonkey FFI) · libservo · boringssl · cdp-protocol │
+└──────────────────────────────────────────────────────────┘
+```
+
+| crate | 职责 |
+|-------|------|
+| `bao_engine` | SpiderMonkey 引擎封装(re-export `bun_sm` 核心类型 + `context` + `job_queue`) |
+| `bao_runtime` | Node.js/Bun API 兼容层;`BaoRuntime`(Node.js 运行时入口) |
+| `bao_browser` | servo 集成桥;`BaoRuntime`(浏览器) + `PagePool` + `PageHandle` |
+| `bao_cdp` | CDP Server + servo 桥 |
+| `bao_cdp_client` | Playwright 风格高层 API(`Browser::connect`) |
+| `bao_stealth` | 反指纹(`StealthProfile` + `StealthEngine`) |
+| `bao_uloop` | 事件循环(epoll tick) |
+| `bao_cli` / `bao_bin` | CLI(`bao` binary) |
+
+## 文档
+
+- [CLAUDE.md](./CLAUDE.md) — 项目指令(架构原则、铁律、复用映射、SPEC 索引)
+- [.spec/](./.spec/) — SPEC(单一真相来源):
+  - `10-REQUIREMENTS.html` — 31 REQ(ENG/CLI/BRW/CDP/STL/LIB 六域)
+  - `02-SYSTEM.html` — 系统架构(Bun Crate DAG + Servo 组件 + 融合映射)
+  - `03-PROCESS.html` — 核心流程(JS 执行管线 · 渲染管线 · CDP 路由)
+  - `05-IMPLEMENTATION.html` — 实施路线图(5 阶段)
+
+## Cargo 依赖(嵌入到自己项目)
 
 ```toml
 [dependencies]
-bao_browser = { path = "src/bao_browser" }
-bao_stealth = { path = "src/bao_stealth" }
-bao_cdp     = { path = "src/bao_cdp" }
-bao_engine  = { path = "src/bao_engine" }
+bao_browser     = { path = "src/bao_browser" }     # 浏览器运行时 + PagePool
+bao_engine      = { path = "src/bao_engine" }      # SpiderMonkey 引擎封装
+bao_stealth     = { path = "src/bao_stealth" }     # 反指纹
+bao_cdp         = { path = "src/bao_cdp" }         # CDP Server
+bao_cdp_client  = { path = "src/bao_cdp_client" }  # 高层 CDP 客户端
+bao_runtime     = { path = "src/bao_runtime" }     # Node.js 兼容(crate 名 bun_runtime)
 ```
 
 ## 许可证
 
-MPL-2.0 (SpiderMonkey + Servo) + MIT (Bun crates)
+MPL-2.0(SpiderMonkey + Servo) + MIT(Bun crates)

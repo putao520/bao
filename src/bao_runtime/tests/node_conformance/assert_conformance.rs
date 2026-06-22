@@ -182,7 +182,6 @@ fn test_assert_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: assert.match / assert.doesNotMatch not exposed on assert object. See GAP_REPORT.md"]
 fn test_assert_conformance_match() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -204,7 +203,6 @@ fn test_assert_conformance_match() {
 }
 
 #[test]
-#[ignore = "bao_runtime: assert.rejects (async) not implemented. See GAP_REPORT.md"]
 fn test_assert_conformance_rejects() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -226,7 +224,6 @@ fn test_assert_conformance_rejects() {
 }
 
 #[test]
-#[ignore = "bao_runtime: assert.CallTracker not implemented. See GAP_REPORT.md"]
 fn test_assert_conformance_call_tracker() {
     let mut ctx = make_ctx();
     let src = format!(

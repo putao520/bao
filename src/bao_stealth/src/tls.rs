@@ -272,9 +272,21 @@ fn sigalg_openssl_name(id: u16) -> Option<&'static str> {
 /// `SSLConfig` fields before TLS handshake.
 ///
 /// Usage:
-/// ```ignore
-/// let config = TlsFingerprintConfig::from_fingerprint(&stealth_profile.tls);
-/// // Then in bao_runtime, write config.tls12_cipher_list into SSLConfig
+/// ```no_run
+/// use bao_stealth::{TlsFingerprint, TlsFingerprintConfig};
+///
+/// // Pick a browser TLS fingerprint (Firefox/Chrome), then derive the
+/// // BoringSSL configuration strings (cipher lists / curves / sigalgs).
+/// let fp = TlsFingerprint::firefox();
+/// let config = TlsFingerprintConfig::from_fingerprint(&fp);
+///
+/// // The derived config carries non-empty OpenSSL/BoringSSL name strings.
+/// assert!(config.has_fingerprint());
+/// assert!(!config.tls12_cipher_list.is_empty());
+/// assert!(!config.tls13_cipher_suites.is_empty());
+/// assert!(!config.curves_list.is_empty());
+/// assert!(!config.sigalgs_list.is_empty());
+/// // Then in bao_runtime, write config.tls12_cipher_list into SSLConfig.
 /// ```
 #[derive(Debug, Clone)]
 pub struct TlsFingerprintConfig {

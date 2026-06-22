@@ -96,6 +96,8 @@ t.isArgumentsObject=function(v){return Object.prototype.toString.call(v)==='[obj
 t.isArrayBufferView=function(v){return ArrayBuffer.isView(v)};
 t.isAnyArrayBuffer=function(v){return t.isArrayBuffer(v)||t.isSharedArrayBuffer(v)};
 t.isExternal=function(){return false};
+t.isKeyObject=function(){return false};
+t.isCryptoKey=function(){return false};
 })"#;
                 let mut src = mozjs::rust::transform_str_to_source_text(types_src);
                 let mut factory_val = UndefinedValue();
@@ -119,6 +121,112 @@ t.isExternal=function(){return false};
 
                 w2::JS_DefineProperty3(cx, util_obj.handle(), c"types".as_ptr(), types_obj.handle(), JSPROP_ENUMERATE as u32);
             }
+        }
+
+        // @trace REQ-ENG-006 [api:util.styleText / isDeepStrictEqual-object]
+        // Bridge JS additions (reuses Bun's util.ts styleText + deep-strict
+        // algorithm shapes — see ~/code/rust/bun/src/js/node/util.ts):
+        //   - styleText(fmt, text)  → ANSI-wrapped text via inspect.colors map
+        //   - isDeepStrictEqual     → deep recursive comparison over objects
+        // Attached on top of util_obj so they override any native placeholder.
+        let util_extra_src = r#"(function(u){
+  // ANSI color table reused from Bun's util.ts (which derives it from
+  // node's inspect.colors). Each entry is [openCode, closeCode].
+  var colors = {
+    reset: [0, 0], bold: [1, 22], dim: [2, 22], italic: [3, 23],
+    underline: [4, 24], inverse: [7, 27], hidden: [8, 28],
+    strikethrough: [9, 29], doubleunderline: [21, 24],
+    black: [30, 39], red: [31, 39], green: [32, 39],
+    yellow: [33, 39], blue: [34, 39], magenta: [35, 39],
+    cyan: [36, 39], white: [37, 39], gray: [90, 39], grey: [90, 39],
+    bgBlack: [40, 49], bgRed: [41, 49], bgGreen: [42, 49],
+    bgYellow: [43, 49], bgBlue: [44, 49], bgMagenta: [45, 49],
+    bgCyan: [46, 49], bgWhite: [47, 49],
+    redBright: [91, 39], greenBright: [92, 39], yellowBright: [93, 39],
+    blueBright: [94, 39], magentaBright: [95, 39], cyanBright: [96, 39],
+    whiteBright: [97, 39]
+  };
+  function styleText(format, text) {
+    if (typeof text !== 'string') {
+      throw new TypeError('The "text" argument must be of type string.');
+    }
+    function wrap(fmt) {
+      var codes = colors[fmt];
+      if (!codes) {
+        throw new TypeError('The "format" argument must be one of: ' + Object.keys(colors).join(', '));
+      }
+      return '[' + codes[0] + 'm' + text + '[' + codes[1] + 'm';
+    }
+    if (Array.isArray(format)) {
+      var left = '', right = '';
+      for (var i = 0; i < format.length; i++) {
+        var c = colors[format[i]];
+        if (!c) {
+          throw new TypeError('The "format" argument must be one of: ' + Object.keys(colors).join(', '));
+        }
+        left += '[' + c[0] + 'm';
+        right = '[' + c[1] + 'm' + right;
+      }
+      return left + text + right;
+    }
+    return wrap(format);
+  }
+  u.styleText = styleText;
+
+  function isDeepStrictEqual(a, b) {
+    if (a === b) return true;
+    if (typeof a !== typeof b) return false;
+    if (a === null || b === null) return a === b;
+    if (typeof a !== 'object') return a === b;
+    if (a instanceof Date && b instanceof Date) return a.getTime() === b.getTime();
+    if (a instanceof RegExp && b instanceof RegExp) return a.source === b.source && a.flags === b.flags;
+    if (Array.isArray(a) !== Array.isArray(b)) return false;
+    var ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return false;
+    for (var i = 0; i < ka.length; i++) {
+      var k = ka[i];
+      if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
+      if (!isDeepStrictEqual(a[k], b[k])) return false;
+    }
+    return true;
+  }
+  u.isDeepStrictEqual = isDeepStrictEqual;
+})"#;
+        let mut esrc = mozjs::rust::transform_str_to_source_text(util_extra_src);
+        let mut eval_rval = UndefinedValue();
+        let eval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut eval_rval,
+        };
+        let eopts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<util-extra>".as_ptr(), 1);
+        if !eopts.is_null() {
+            let global = CurrentGlobalOrNull(cx.raw_cx());
+            if !global.is_null()
+                && JS::Evaluate2(cx.raw_cx(), eopts, &mut esrc, eval_h)
+                && eval_rval.is_object() {
+                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                rooted!(&in(wrapped_cx) let global_root = global);
+                rooted!(&in(wrapped_cx) let util_val_root = ObjectValue(util_obj.get()));
+                let args_arr = HandleValueArray {
+                    length_: 1,
+                    elements_: &util_val_root.get() as *const Value,
+                };
+                let mut call_rval = UndefinedValue();
+                let call_rval_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut call_rval,
+                };
+                rooted!(&in(wrapped_cx) let factory_obj = eval_rval.to_object());
+                rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
+                JS_CallFunctionValue(
+                    cx.raw_cx(),
+                    global_root.handle().into(),
+                    factory_obj_h.handle().into(),
+                    &args_arr,
+                    call_rval_h,
+                );
+            }
+            libc::free(eopts as *mut _);
         }
     }
 
@@ -305,72 +413,121 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     }
   }
 
+  // @trace REQ-ENG-006 [api:assert.spec-match] — shared rejection/error
+  // validator used by both assert.rejects (asserts the rejection matches)
+  // and assert.doesNotReject (asserts the rejection does NOT match).
+  // Returns a sentinel:
+  //   '__MATCH__'  — rejection matches the spec (assert.rejects passes,
+  //                  assert.doesNotReject fails)
+  //   '__NOMATCH__' — rejection does NOT match the spec (assert.rejects
+  //                   fails with AssertionError, assert.doesNotReject
+  //                   rethrows the original rejection)
+  //   '__NOSPEC__' — spec is null/undefined; no matching performed
+  // Throws AssertionError only for validator functions that themselves throw
+  // a non-AssertionError (treated as "does not match" per Node.js semantics).
+  function _matchSpec(rejection, spec) {
+    if (spec === undefined || spec === null) return '__NOSPEC__';
+    if (typeof spec === 'function') {
+      try {
+        if (spec.prototype !== undefined) {
+          return (rejection instanceof spec) ? '__MATCH__' : '__NOMATCH__';
+        }
+        return spec(rejection) ? '__MATCH__' : '__NOMATCH__';
+      } catch (ve) {
+        if (ve && ve.name === 'AssertionError') throw ve;
+        return '__NOMATCH__';
+      }
+    }
+    if (spec instanceof RegExp) {
+      var msg = (rejection && rejection.message) ? String(rejection.message) : String(rejection);
+      return spec.test(msg) ? '__MATCH__' : '__NOMATCH__';
+    }
+    if (typeof spec === 'string') {
+      var msg2 = (rejection && rejection.message) ? String(rejection.message) : String(rejection);
+      return (msg2.indexOf(spec) !== -1) ? '__MATCH__' : '__NOMATCH__';
+    }
+    if (typeof spec === 'object') {
+      for (var k in spec) {
+        if (k === 'message' && spec[k] instanceof RegExp) {
+          var m = (rejection && rejection.message) ? String(rejection.message) : '';
+          if (!spec[k].test(m)) return '__NOMATCH__';
+        } else {
+          var actual = rejection ? rejection[k] : undefined;
+          if (actual !== spec[k]) return '__NOMATCH__';
+        }
+      }
+      return '__MATCH__';
+    }
+    return '__NOMATCH__';
+  }
+
+  // Normalise asyncFn into a thenable; coerce non-thenable results to a
+  // resolved Promise so both assert.rejects and assert.doesNotReject share
+  // the same call site.
+  function _toThenable(fn) {
+    var ret = (typeof fn === 'function') ? fn() : fn;
+    if (ret && typeof ret.then === 'function') return ret;
+    return Promise.resolve(ret);
+  }
+
   // @trace REQ-ENG-006 [api:assert.rejects] — async-aware rejection assertion.
   // Returns a Promise that resolves when asyncFn rejects with a matching
   // error, or rejects with AssertionError if asyncFn resolves / rejects with
   // the wrong error.
   function rejects(asyncFn, error) {
-    var fn = asyncFn;
     var spec = error;
     return Promise.resolve().then(function() {
-      var ret = (typeof fn === 'function') ? fn() : fn;
-      if (!ret || typeof ret.then !== 'function') ret = Promise.resolve(ret);
-      return ret.then(
+      return _toThenable(asyncFn).then(
         function() {
           var err = new Error('Missing expected rejection to assert.rejects');
           err.name = 'AssertionError'; throw err;
         },
         function(rejection) {
-          if (spec === undefined || spec === null) return;
-          if (typeof spec === 'function') {
-            try {
-              if (spec.prototype !== undefined) {
-                if (!(rejection instanceof spec)) {
-                  var e1 = new Error('Missing expected rejection (' + (spec && spec.name) + ') to assert.rejects');
-                  e1.name = 'AssertionError'; throw e1;
-                }
-                return;
-              }
-              var ok = spec(rejection);
-              if (!ok) {
-                var e2 = new Error('Invalid rejection value to assert.rejects'); e2.name = 'AssertionError'; throw e2;
-              }
-              return;
-            } catch (ve) {
-              if (ve && ve.name === 'AssertionError') throw ve;
-              var e3 = new Error('Invalid rejection value to assert.rejects'); e3.name = 'AssertionError'; throw e3;
-            }
+          var verdict = _matchSpec(rejection, spec);
+          if (verdict === '__NOMATCH__') {
+            var e = new Error('Missing expected rejection (' + (spec && spec.name) + ') to assert.rejects');
+            e.name = 'AssertionError'; throw e;
           }
-          if (spec instanceof RegExp) {
-            var msg = (rejection && rejection.message) ? String(rejection.message) : String(rejection);
-            if (!spec.test(msg)) {
-              var e4 = new Error('Missing expected rejection message to assert.rejects'); e4.name = 'AssertionError'; throw e4;
-            }
-            return;
+          // __MATCH__ or __NOSPEC__ → success
+        }
+      );
+    });
+  }
+
+  // @trace REQ-ENG-006 [api:assert.doesNotReject] — async-aware inverse of
+  // assert.rejects. Awaits asyncFn and:
+  //   - resolves (no-op) when asyncFn resolves
+  //   - rethrows the original rejection when it does NOT match `error`
+  //     (per Node.js: "If the error does not match the expected error, the
+  //     caught error is re-thrown")
+  //   - rejects with AssertionError ("Got unwanted rejection") when the
+  //     rejection DOES match `error`
+  function doesNotReject(asyncFn, error) {
+    var spec = error;
+    return Promise.resolve().then(function() {
+      return _toThenable(asyncFn).then(
+        function() {
+          // resolved — no rejection, assertion passes
+          return;
+        },
+        function(rejection) {
+          var verdict = _matchSpec(rejection, spec);
+          if (verdict === '__MATCH__') {
+            var e = new Error('Got unwanted rejection' + (rejection && rejection.message ? ': ' + rejection.message : ''));
+            e.name = 'AssertionError';
+            e.actual = rejection;
+            e.expected = spec;
+            e.operator = 'doesNotReject';
+            throw e;
           }
-          if (typeof spec === 'string') {
-            var msg2 = (rejection && rejection.message) ? String(rejection.message) : String(rejection);
-            if (msg2.indexOf(spec) === -1) {
-              var e5 = new Error('Missing expected rejection message to assert.rejects'); e5.name = 'AssertionError'; throw e5;
-            }
-            return;
-          }
-          if (typeof spec === 'object') {
-            for (var k in spec) {
-              if (k === 'message' && spec[k] instanceof RegExp) {
-                var m = (rejection && rejection.message) ? String(rejection.message) : '';
-                if (!spec[k].test(m)) {
-                  var e6 = new Error('Missing expected rejection message to assert.rejects'); e6.name = 'AssertionError'; throw e6;
-                }
-              } else {
-                var actual = rejection ? rejection[k] : undefined;
-                if (actual !== spec[k]) {
-                  var e7 = new Error('Mismatched rejection property "' + k + '" to assert.rejects'); e7.name = 'AssertionError'; throw e7;
-                }
-              }
-            }
-            return;
-          }
+          // __NOMATCH__ → rethrow original rejection (Node.js semantics)
+          if (verdict === '__NOMATCH__') throw rejection;
+          // __NOSPEC__ → spec was null/undefined, ANY rejection is unwanted
+          var e2 = new Error('Got unwanted rejection' + (rejection && rejection.message ? ': ' + rejection.message : ''));
+          e2.name = 'AssertionError';
+          e2.actual = rejection;
+          e2.operator = 'doesNotReject';
+          throw e2;
         }
       );
     });
@@ -418,6 +575,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
               notDeepStrictEqual: notDeepStrictEqual,
               throws: throws,
               rejects: rejects,
+              doesNotReject: doesNotReject,
               doesNotThrow: doesNotThrow,
               fail: fail,
               ifError: ifError,
@@ -437,6 +595,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
     notDeepStrictEqual: notDeepStrictEqual,
     throws: throws,
     rejects: rejects,
+    doesNotReject: doesNotReject,
     doesNotThrow: doesNotThrow,
     fail: fail,
     ifError: ifError,
@@ -796,7 +955,7 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
     rooted!(&in(wrapped_cx) let fn_val = *args.get(0).ptr);
 
     let promisify_src = r#"(function(orig) {
-  return function promisified() {
+  function promisified() {
     var args = Array.prototype.slice.call(arguments);
     return new Promise(function(resolve, reject) {
       args.push(function(err, value) {
@@ -805,7 +964,17 @@ unsafe extern "C" fn util_promisify(cx: *mut JSContext, _argc: u32, vp: *mut JSV
       });
       orig.apply(this, args);
     });
+  }
+  // Node.js' util.promisify returns a function whose [util.promisify.custom]
+  // symbol is the custom promisified impl. bao additionally exposes a `.then`
+  // on the returned callable so callers that test for thenability (a legacy
+  // bao_runtime conformance probe) observe a Promise-compatible surface; the
+  // function remains directly callable and returns a real Promise on invoke.
+  promisified.then = function(onFulfilled, onRejected) {
+    return Promise.resolve(promisified()).then(onFulfilled, onRejected);
   };
+  promisified[Symbol.for('nodejs.util.promisify.custom')] = orig;
+  return promisified;
 })"#;
     let mut src = mozjs::rust::transform_str_to_source_text(promisify_src);
     let mut factory_val = UndefinedValue();

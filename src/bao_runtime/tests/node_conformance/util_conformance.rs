@@ -181,7 +181,6 @@ fn test_util_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: util.types.isExternal / isKeyObject / isCryptoKey not implemented. See GAP_REPORT.md"]
 fn test_util_conformance_types_extras() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -200,7 +199,6 @@ fn test_util_conformance_types_extras() {
 }
 
 #[test]
-#[ignore = "bao_runtime: util.styleText not implemented. See GAP_REPORT.md"]
 fn test_util_conformance_style_text() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -231,7 +229,6 @@ fn test_util_conformance_inspect_object_properties() {
 }
 
 #[test]
-#[ignore = "bao_runtime: util.promisify returns a function, not a thenable/Promise (Node.js returns Promise). See GAP_REPORT.md"]
 fn test_util_conformance_promisify_deviation() {
     let mut ctx = make_ctx();
     use common::eval_string;
@@ -247,7 +244,6 @@ fn test_util_conformance_promisify_deviation() {
 }
 
 #[test]
-#[ignore = "bao_runtime: util.isDeepStrictEqual only works for primitives, not objects (Node.js deep-compares). See GAP_REPORT.md"]
 fn test_util_conformance_deep_strict_equal_object_deviation() {
     let mut ctx = make_ctx();
     use common::eval_string;

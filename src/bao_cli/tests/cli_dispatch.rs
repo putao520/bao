@@ -277,7 +277,7 @@ fn install_delegates_to_bun_runtime_not_renamed() {
 /// @trace REQ-CLI-001 [test:TEST-CLI-001]
 /// 对抗: 固化 bao_bin → bao_cli::cli::run 转发契约。
 /// bao_bin/src/main.rs 的全部内容是:
-///   ```ignore
+///   ```text
 ///   fn main() {
 ///       if let Err(code) = bao_cli::cli::run() {
 ///           std::process::exit(code);

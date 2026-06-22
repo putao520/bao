@@ -150,7 +150,6 @@ fn test_http_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: http.maxRedirects / auto-redirect handling not exposed. See GAP_REPORT.md"]
 fn test_http_conformance_max_redirects() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -169,7 +168,6 @@ fn test_http_conformance_max_redirects() {
 }
 
 #[test]
-#[ignore = "bao_runtime: http.validateHeaderName / validateHeaderValue not exposed. See GAP_REPORT.md"]
 fn test_http_conformance_validate_header() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -191,7 +189,6 @@ fn test_http_conformance_validate_header() {
 }
 
 #[test]
-#[ignore = "bao_runtime: http.globalAgent not exposed. See GAP_REPORT.md"]
 fn test_http_conformance_global_agent() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -210,7 +207,6 @@ fn test_http_conformance_global_agent() {
 }
 
 #[test]
-#[ignore = "bao_runtime: http.METHODS is a comma-separated string, not an array (Node.js: array). See GAP_REPORT.md"]
 fn test_http_conformance_methods_deviation() {
     let mut ctx = make_ctx();
     use common::eval_string;
@@ -238,7 +234,6 @@ fn test_http_conformance_server_is_emitter() {
 }
 
 #[test]
-#[ignore = "bao_runtime: http.ClientRequest/IncomingMessage/OutgoingMessage not exposed as named classes (Node.js exposes them). See GAP_REPORT.md"]
 fn test_http_conformance_classes_deviation() {
     let mut ctx = make_ctx();
     use common::eval_string;

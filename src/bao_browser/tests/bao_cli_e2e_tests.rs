@@ -303,15 +303,14 @@ fn bao_cli_e2e_full_lifecycle() {
 // ─── 网络 E2E — bao browser 子命令(需要 servo Opts 单例 + 网络) ──────────────
 //
 // bao browser --cdp-port 启动 servo + CDP server,长时间运行。
-// 此测试默认 #[ignore],因为它会启动一个长时间运行的进程。
-// 启用方式:BAO_TEST_NETWORK=1 cargo test bao_cli_browser_subcommand -- --ignored
+// 此测试默认 graceful skip(避免启动长时间运行的进程占资源)。
+// 启用方式:BAO_TEST_NETWORK=1 cargo test bao_cli_browser_subcommand
 
 #[test]
-#[ignore = "long-running server — set BAO_TEST_NETWORK=1 to enable"]
 // @trace REQ-CLI-002 [level:e2e]
 fn bao_cli_browser_subcommand_starts() {
     if std::env::var("BAO_TEST_NETWORK").as_deref() != Ok("1") {
-        eprintln!("skipping bao browser subcommand E2E — set BAO_TEST_NETWORK=1 to enable");
+        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK=1 not set (bao browser subcommand E2E)");
         return;
     }
     let bao = bao_path().expect("bao binary not found");

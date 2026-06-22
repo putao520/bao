@@ -146,15 +146,15 @@ fn inject_stealth_js(page: &bao_browser::PageHandle, profile: &StealthProfile) -
 // ---------------------------------------------------------------------------
 
 /// E2E test requiring servo headless environment.
-/// Marked #[ignore] because BaoRuntime::new() SIGSEGVs in environments
+/// Graceful skip: BaoRuntime::new() SIGSEGVs in environments
 /// without a display server (no X11/Wayland/virtual framebuffer).
-/// Run with `cargo test -- --ignored` when a display is available.
+/// Run with `cargo test realworld_anti_scraping_e2e` when a display is available;
+/// otherwise the test detects the missing display and skips (eprintln + return).
 #[test]
-#[ignore]
 fn realworld_anti_scraping_e2e() {
     // Guard: skip if no DISPLAY environment (headless CI without Xvfb)
     if std::env::var("DISPLAY").is_err() && std::env::var("WAYLAND_DISPLAY").is_err() {
-        eprintln!("SKIP: no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
+        eprintln!("[skip] 环境不可用: no DISPLAY or WAYLAND_DISPLAY — servo requires a display server");
         return;
     }
 

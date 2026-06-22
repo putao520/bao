@@ -15,7 +15,7 @@
 //!
 //! - **Mock 路径**: 用 MockServoBackend 模拟 servo,验证完整 dispatch 链路
 //!   (InMemoryTransport → CDPRdpBridge → command_dispatcher → backend)
-//! - **真 servo 路径**: 用 `#[ignore]` 标记,CI 环境(有 servo 实例)启用
+//! - **真 servo 路径**: 用 graceful skip 标记,CI 环境(有 servo 实例)启用(eprintln + return)
 //!
 //! @trace REQ-BAO-API-001 [level:integration]
 //! @trace REQ-BAO-API-002 [interface:Transport]
@@ -772,18 +772,19 @@ fn e2e_internal_injection_defense_newline_in_payload() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §8 真 servo 实例 E2E — #[ignore] 标记,CI 启用
+// §8 真 servo 实例 E2E — graceful skip,CI 启用
 // ════════════════════════════════════════════════════════════════════
 
 /// 真 servo E2E:需要 PagePool + servo 实例。
 /// 当前 MockServoBackend 是 mock,真 servo 集成在 bao_browser 实现。
 /// CI 环境跑这个测试时设置 `BAO_TEST_REAL_SERVO=1`。
+/// 默认(无 BAO_TEST_REAL_SERVO)graceful skip(eprintln + return)。
 #[test]
-#[ignore = "real servo requires BAO_TEST_REAL_SERVO=1 + PagePool backend"]
 fn e2e_real_servo_full_navigation() {
     // Arrange — @trace REQ-BAO-API-001 [level:system] 占位测试
     // Act
     if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
+        eprintln!("[skip] 环境不可用: BAO_TEST_REAL_SERVO=1 not set + PagePool backend (real servo E2E)");
         return;
     }
     // Assert — 占位:真 servo 集成需 bao_browser::PagePoolBackend。
@@ -792,11 +793,11 @@ fn e2e_real_servo_full_navigation() {
 }
 
 #[test]
-#[ignore = "real servo requires BAO_TEST_REAL_SERVO=1"]
 fn e2e_real_servo_dom_queryselector() {
     // Arrange — @trace REQ-BAO-API-001 [level:system] 占位测试
     // Act
     if std::env::var("BAO_TEST_REAL_SERVO").as_deref() != Ok("1") {
+        eprintln!("[skip] 环境不可用: BAO_TEST_REAL_SERVO=1 not set (real servo DOM querySelector E2E)");
         return;
     }
     // Assert — 占位:真 servo 上 querySelector DOM 操作

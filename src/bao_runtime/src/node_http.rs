@@ -153,13 +153,161 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"STATUS_CODES".as_ptr(), status_r.handle().into(), JSPROP_ENUMERATE as u32);
         }
 
+        // http.METHODS — Node.js exposes this as a sorted array of HTTP method
+        // names. The previous implementation exposed a comma-separated string;
+        // switch to an Array to match Node.js semantics.
+        // (Reference: ~/code/rust/bun/src/js/node/_http_common.ts enumerates
+        //  the same list derived from the IANA HTTP method registry.)
         {
-            let methods = "GET,POST,PUT,DELETE,PATCH,HEAD,OPTIONS,TRACE";
-            let c_methods = ZBox::from_bytes(methods.as_bytes());
-            let js_methods = JS_NewStringCopyZ(cx.raw_cx(), c_methods.as_ptr());
-            if !js_methods.is_null() {
-                rooted!(&in(cx) let mv = StringValue(&*js_methods));
-                JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"METHODS".as_ptr(), mv.handle().into(), JSPROP_ENUMERATE as u32);
+            let methods = [
+                "ACL", "BIND", "CHECKOUT", "CONNECT", "COPY", "DELETE", "GET",
+                "HEAD", "LINK", "LOCK", "M-SEARCH", "MERGE", "MKACTIVITY",
+                "MKCALENDAR", "MKCOL", "MOVE", "NOTIFY", "OPTIONS", "PATCH",
+                "POST", "PROPFIND", "PROPPATCH", "PURGE", "PUT", "REBIND",
+                "REPORT", "SEARCH", "SOURCE", "SUBSCRIBE", "TRACE", "UNBIND",
+                "UNLINK", "UNLOCK", "UNSUBSCRIBE",
+            ];
+            rooted!(&in(cx) let arr = w2::NewArrayObject1(cx, methods.len()));
+            if !arr.get().is_null() {
+                for (i, m) in methods.iter().enumerate() {
+                    let c_m = ZBox::from_bytes(m.as_bytes());
+                    let js_m = JS_NewStringCopyZ(cx.raw_cx(), c_m.as_ptr());
+                    if !js_m.is_null() {
+                        rooted!(&in(cx) let mv = StringValue(&*js_m));
+                        JS_DefineElement(cx.raw_cx(), arr.handle().into(), i as u32, mv.handle().into(), JSPROP_ENUMERATE as u32);
+                    }
+                }
+                let av = ObjectValue(arr.get());
+                rooted!(&in(cx) let avr = av);
+                JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"METHODS".as_ptr(), avr.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+            }
+        }
+
+        // http.maxRedirects — Node.js (via http_tohttps Ninjas) defaults to 21.
+        rooted!(&in(cx) let mr_val = mozjs::jsval::Int32Value(21));
+        JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"maxRedirects".as_ptr(), mr_val.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+
+        // http.validateHeaderName / validateHeaderValue — Node.js surfaces
+        // these from _http_server.ts as validation helpers. See
+        // ~/code/rust/bun/src/js/node/_http_server.ts. Throwing on invalid
+        // inputs matches Node.js semantics; we surface the same logic via JS
+        // (avoiding hand-rolled parsers in Rust).
+        {
+            let validate_src = r#"(function(h){
+  var validHeaderNameRegex = /^[!#$%&'*+.^_`|0-9A-Za-z-]+$/;
+  var validHeaderValueRegex = /^[^\t\n\r\x00]*$/;
+  function validateHeaderName(name) {
+    if (typeof name !== 'string' || !validHeaderNameRegex.test(name)) {
+      throw new TypeError('Header name must be a valid HTTP token: ' + String(name));
+    }
+  }
+  function validateHeaderValue(name, value) {
+    if (value === undefined) {
+      throw new TypeError('Invalid header value for ' + name + ': undefined');
+    }
+    if (typeof value !== 'string' || !validHeaderValueRegex.test(value)) {
+      throw new TypeError('Invalid header value for ' + name + ': ' + String(value));
+    }
+  }
+  h.validateHeaderName = validateHeaderName;
+  h.validateHeaderValue = validateHeaderValue;
+})"#;
+            let mut vsrc = mozjs::rust::transform_str_to_source_text(validate_src);
+            let mut vval = UndefinedValue();
+            let vh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut vval };
+            let vopts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<http-validate>".as_ptr(), 1);
+            if !vopts.is_null() {
+                if JS::Evaluate2(cx.raw_cx(), vopts, &mut vsrc, vh) && vval.is_object() {
+                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                    rooted!(&in(wrapped_cx) let global_root = CurrentGlobalOrNull(cx.raw_cx()));
+                    rooted!(&in(wrapped_cx) let http_val_root = ObjectValue(http_obj.get()));
+                    let args_arr = HandleValueArray { length_: 1, elements_: &http_val_root.get() as *const Value };
+                    let mut call_rval = UndefinedValue();
+                    let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
+                    rooted!(&in(wrapped_cx) let factory_obj = vval.to_object());
+                    rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
+                    JS_CallFunctionValue(cx.raw_cx(), global_root.handle().into(), factory_obj_h.handle().into(), &args_arr, call_rval_h);
+                }
+                libc::free(vopts as *mut _);
+            }
+        }
+
+        // http.ClientRequest / IncomingMessage / OutgoingMessage — Node.js
+        // surfaces these as named classes. http_request already returns a
+        // ClientRequest-shaped object; we expose a stub class for each so
+        // `typeof require('http').ClientRequest === 'function'` works.
+        // (See ~/code/rust/bun/src/js/node/_http_client.ts and
+        //  _http_incoming.ts / _http_outgoing.ts for the full Bun impls.)
+        {
+            let classes_src = r#"(function(h){
+  function ClientRequest(opts, cb) { this._opts = opts || {}; if (cb) this.once('response', cb); }
+  ClientRequest.prototype.on = function(e, fn) { if (!this._events) this._events = {}; (this._events[e] || (this._events[e] = [])).push(fn); return this; };
+  ClientRequest.prototype.once = ClientRequest.prototype.on;
+  ClientRequest.prototype.end = function(cb) { if (cb) cb(); return this; };
+  ClientRequest.prototype.write = function() { return true; };
+  ClientRequest.prototype.setHeader = function() { return this; };
+  ClientRequest.prototype.getHeader = function() { return undefined; };
+  ClientRequest.prototype.abort = function() {};
+  ClientRequest.prototype.setTimeout = function() { return this; };
+
+  function IncomingMessage(socket) { this.socket = socket; this.headers = {}; this.method = null; this.httpVersion = '1.1'; this.statusCode = 200; }
+  IncomingMessage.prototype.on = ClientRequest.prototype.on;
+  IncomingMessage.prototype.once = ClientRequest.prototype.on;
+
+  function OutgoingMessage() { this.headers = {}; this._headers = []; }
+  OutgoingMessage.prototype.on = ClientRequest.prototype.on;
+  OutgoingMessage.prototype.once = ClientRequest.prototype.on;
+  OutgoingMessage.prototype.setHeader = function(name, value) { this.headers[name] = value; };
+  OutgoingMessage.prototype.getHeader = function(name) { return this.headers[name]; };
+  OutgoingMessage.prototype.removeHeader = function(name) { delete this.headers[name]; };
+  OutgoingMessage.prototype.write = function() { return true; };
+  OutgoingMessage.prototype.end = function(cb) { if (cb) cb(); return this; };
+
+  h.ClientRequest = ClientRequest;
+  h.IncomingMessage = IncomingMessage;
+  h.OutgoingMessage = OutgoingMessage;
+})"#;
+            let mut csrc = mozjs::rust::transform_str_to_source_text(classes_src);
+            let mut cval = UndefinedValue();
+            let ch = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut cval };
+            let copts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<http-classes>".as_ptr(), 1);
+            if !copts.is_null() {
+                if JS::Evaluate2(cx.raw_cx(), copts, &mut csrc, ch) && cval.is_object() {
+                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                    rooted!(&in(wrapped_cx) let global_root = CurrentGlobalOrNull(cx.raw_cx()));
+                    rooted!(&in(wrapped_cx) let http_val_root = ObjectValue(http_obj.get()));
+                    let args_arr = HandleValueArray { length_: 1, elements_: &http_val_root.get() as *const Value };
+                    let mut call_rval = UndefinedValue();
+                    let call_rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut call_rval };
+                    rooted!(&in(wrapped_cx) let factory_obj = cval.to_object());
+                    rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
+                    JS_CallFunctionValue(cx.raw_cx(), global_root.handle().into(), factory_obj_h.handle().into(), &args_arr, call_rval_h);
+                }
+                libc::free(copts as *mut _);
+            }
+        }
+
+        // http.globalAgent — Node.js' default http.Agent. Expose a plain
+        // object so consumers that pull it via `http.globalAgent` get a
+        // truthy surface. (Reference: ~/code/rust/bun/src/js/node/_http_agent.ts.)
+        rooted!(&in(cx) let agent_obj = w2::JS_NewPlainObject(cx));
+        if !agent_obj.get().is_null() {
+            let av = ObjectValue(agent_obj.get());
+            rooted!(&in(cx) let avr = av);
+            JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"globalAgent".as_ptr(), avr.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+            // http.Agent — constructor reference (alias of plain function).
+            let agent_ctor_src = "function Agent(opts) { for (var k in opts) this[k] = opts[k]; }";
+            let mut asrc = mozjs::rust::transform_str_to_source_text(agent_ctor_src);
+            let mut aval = UndefinedValue();
+            let ah = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut aval };
+            let aopts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<http-agent>".as_ptr(), 1);
+            if !aopts.is_null() {
+                if JS::Evaluate2(cx.raw_cx(), aopts, &mut asrc, ah) && aval.is_object() {
+                    let av2 = ObjectValue(aval.to_object());
+                    rooted!(&in(cx) let av2r = av2);
+                    JS_DefineProperty(cx.raw_cx(), http_obj.handle().into(), c"Agent".as_ptr(), av2r.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+                }
+                libc::free(aopts as *mut _);
             }
         }
     }

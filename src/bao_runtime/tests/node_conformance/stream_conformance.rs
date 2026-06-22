@@ -114,7 +114,6 @@ fn test_stream_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: stream.Readable.from async iterator not implemented. See GAP_REPORT.md"]
 fn test_stream_conformance_readable_from() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -133,7 +132,6 @@ fn test_stream_conformance_readable_from() {
 }
 
 #[test]
-#[ignore = "bao_runtime: stream web API (ReadableStream/WritableStream) not exposed on stream module. See GAP_REPORT.md"]
 fn test_stream_conformance_web_api() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -151,3 +149,4 @@ fn test_stream_conformance_web_api() {
     run_checks(&mut ctx, &src);
     bun_runtime::shutdown_thread_sm();
 }
+

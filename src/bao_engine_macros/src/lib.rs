@@ -67,7 +67,7 @@ impl syn::parse::Parse for HostFnArgs {
 /// exceptions.
 ///
 /// Usage:
-/// ```ignore
+/// ```text
 /// #[host_fn]
 /// fn my_function(global: &JsGlobal, argc: u32, args: &[JsValue]) -> Result<JsValue, JsError> { ... }
 ///
@@ -508,7 +508,7 @@ pub fn jsc_abi(input: TokenStream) -> TokenStream {
 /// - `HostObject` impl for reserved slot pointer storage
 ///
 /// Usage:
-/// ```ignore
+/// ```text
 /// #[bao_engine_macros::JsClass]
 /// pub struct MyClass { field1: String }
 ///

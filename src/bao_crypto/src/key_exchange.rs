@@ -492,3 +492,109 @@ impl EcdhKeyPair {
         self.private_bytes.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Real ECDH round-trip tests (BCE regression class for createECDH).
+    //! Prove that two independently-generated keypairs on the same curve
+    //! derive bit-identical shared secrets via compute_shared_secret — the
+    //! actual ECDH contract. Anything weaker (typeof check, empty-object
+    //! stub) would not catch a broken or stubbed crypto_create_ecdh.
+
+    use super::*;
+
+    #[test]
+    fn ecdh_p256_shared_secret_roundtrip() {
+        let alice = EcdhKeyPair::generate(EcCurve::P256).expect("alice P256 generate");
+        let bob = EcdhKeyPair::generate(EcCurve::P256).expect("bob P256 generate");
+        let alice_pub = alice.public_key_bytes();
+        let bob_pub = bob.public_key_bytes();
+        assert!(!alice_pub.is_empty(), "P256 public key must be non-empty");
+        assert!(!bob_pub.is_empty(), "P256 public key must be non-empty");
+        let s_a = alice
+            .compute_shared_secret(&bob_pub)
+            .expect("alice computeSecret");
+        let s_b = bob
+            .compute_shared_secret(&alice_pub)
+            .expect("bob computeSecret");
+        assert_eq!(s_a.len(), 32, "P256 shared secret must be 32 bytes");
+        assert_eq!(s_a.len(), s_b.len());
+        assert_eq!(s_a, s_b, "P256 shared secrets must be bit-identical");
+    }
+
+    #[test]
+    fn ecdh_p384_shared_secret_roundtrip() {
+        let alice = EcdhKeyPair::generate(EcCurve::P384).expect("alice P384 generate");
+        let bob = EcdhKeyPair::generate(EcCurve::P384).expect("bob P384 generate");
+        let alice_pub = alice.public_key_bytes();
+        let bob_pub = bob.public_key_bytes();
+        assert!(!alice_pub.is_empty());
+        let s_a = alice
+            .compute_shared_secret(&bob_pub)
+            .expect("alice P384 computeSecret");
+        let s_b = bob
+            .compute_shared_secret(&alice_pub)
+            .expect("bob P384 computeSecret");
+        assert_eq!(s_a.len(), 48, "P384 shared secret must be 48 bytes");
+        assert_eq!(s_a, s_b, "P384 shared secrets must be bit-identical");
+    }
+
+    #[test]
+    fn ecdh_x25519_shared_secret_roundtrip() {
+        let alice = EcdhKeyPair::generate(EcCurve::X25519).expect("alice X25519 generate");
+        let bob = EcdhKeyPair::generate(EcCurve::X25519).expect("bob X25519 generate");
+        let alice_pub = alice.public_key_bytes();
+        let bob_pub = bob.public_key_bytes();
+        assert_eq!(alice_pub.len(), 32, "X25519 public key must be 32 bytes");
+        assert_eq!(bob_pub.len(), 32);
+        let s_a = alice
+            .compute_shared_secret(&bob_pub)
+            .expect("alice X25519 computeSecret");
+        let s_b = bob
+            .compute_shared_secret(&alice_pub)
+            .expect("bob X25519 computeSecret");
+        assert_eq!(s_a.len(), 32, "X25519 shared secret must be 32 bytes");
+        assert_eq!(s_a, s_b, "X25519 shared secrets must be bit-identical");
+    }
+
+    #[test]
+    fn ecdh_public_keys_differ_per_party() {
+        // Two keypairs on the same curve must produce distinct public keys
+        // (else the cipher would be degenerate). This catches a stub that
+        // returns a constant buffer.
+        let a = EcdhKeyPair::generate(EcCurve::P256).expect("a P256");
+        let b = EcdhKeyPair::generate(EcCurve::P256).expect("b P256");
+        assert_ne!(
+            a.public_key_bytes(),
+            b.public_key_bytes(),
+            "distinct keypairs must have distinct public keys"
+        );
+        assert_ne!(
+            a.private_key_bytes(),
+            b.private_key_bytes(),
+            "distinct keypairs must have distinct private keys"
+        );
+    }
+
+    #[test]
+    fn ecdh_curve_rejects_unknown_name() {
+        assert!(parse_curve("not-a-curve").is_err());
+        assert!(parse_curve("P-256").is_err(), "Node-style P-256 not supported");
+        assert!(parse_curve("prime256v1").is_ok());
+        assert!(parse_curve("secp256r1").is_ok());
+        assert!(parse_curve("p256").is_ok());
+    }
+
+    #[test]
+    fn ecdh_cross_curve_secret_does_not_match() {
+        // Sanity: a P256 peer public key fed to an X25519 keypair must NOT
+        // silently produce a secret (it must error — different curves).
+        let alice_p256 = EcdhKeyPair::generate(EcCurve::P256).expect("alice P256");
+        let bob_x = EcdhKeyPair::generate(EcCurve::X25519).expect("bob X25519");
+        let result = bob_x.compute_shared_secret(&alice_p256.public_key_bytes());
+        assert!(
+            result.is_err(),
+            "cross-curve computeSecret must fail, not silently succeed"
+        );
+    }
+}

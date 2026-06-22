@@ -27,7 +27,7 @@
 //   5. **多 target**: 两个 target 并发命令,验证 target_id 隔离
 //   6. **Backend 调用日志**: 验证 backend 真的被调用(不是空响应)
 //
-// 网络模式(连真 Chrome)用 #[ignore] + BAO_TEST_NETWORK=1 启用。
+// 网络模式(连真 Chrome)用 graceful skip + BAO_TEST_CHROME_URL 启用(见 e2e_external_chrome.rs)。
 
 use std::sync::Arc;
 

@@ -160,7 +160,6 @@ fn test_url_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: url.pathToFileURL / fileURLToPath not implemented. See GAP_REPORT.md"]
 fn test_url_conformance_path_to_file_url() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -179,7 +178,6 @@ fn test_url_conformance_path_to_file_url() {
 }
 
 #[test]
-#[ignore = "bao_runtime: url.domainToASCII / domainToUnicode not implemented. See GAP_REPORT.md"]
 fn test_url_conformance_domain_conv() {
     let mut ctx = make_ctx();
     let src = format!(

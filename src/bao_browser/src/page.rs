@@ -53,6 +53,13 @@ impl PageInner {
         *self.last_active_at.borrow_mut() = Instant::now();
     }
 
+    /// WebViewId of this page's servo WebView. Stable across navigation
+    /// (servo ties the WebViewId to the WebView, not the pipeline).
+    /// Used for all WebViewId-keyed runtime_bridge lookups (BCE-20260621-001).
+    pub fn webview_id_opt(&self) -> Option<servo::WebViewId> {
+        Some(self.webview.id())
+    }
+
     pub fn navigate(&self, url: &str) -> Result<(), BrowserError> {
         let parsed = url::Url::parse(url)
             .map_err(|e| BrowserError::Navigation(format!("invalid URL: {e}")))?;
@@ -117,36 +124,33 @@ impl PageInner {
     /// on its global. The Page Realm physically cannot see the Node Realm.
     ///
     /// Flow: register callback → drain_callbacks → read EvaluateResult
+    //
+    // @trace REQ-BRW-003 [req:REQ-BRW-003] [criterion:C2,C4,C10]
+    // BCE-20260621-001: page_global/node_realm_global are no longer looked up
+    // by raw *mut JSObject — they are looked up by WebViewId. PageInner's
+    // stored fields remain as opaque addresses for close()/cleanup, but the
+    // evaluate path uses WebViewId-keyed access exclusively.
     pub fn evaluate_js(&self, script: &str) -> Result<String, BrowserError> {
         let webview_id = self.webview.id();
 
         // Refresh stale DOM proxies after navigation (REQ-SEC-002 safety).
-        // servo replaces Window/Document/Navigator on navigation; Node Realm's
-        // cross-Compartment proxies must be refreshed to avoid use-after-free.
+        // servo replaces Window/Document/Navigator on navigation; the per-WebViewId
+        // page_global mapping must be updated so lazy getters find the new
+        // Page Realm. The Node Realm itself survives navigation (same WebViewId).
         if self.webview_state.borrow().dom_proxies_dirty {
             let old_pg = *self.page_global.borrow();
-            if !old_pg.is_null() {
-                crate::runtime_bridge::register_refresh_dom_proxies(webview_id, old_pg);
-                self.drain_callbacks()?;
-                // After drain, LAST_PAGE_GLOBAL holds the new page_global
-                let new_pg = crate::runtime_bridge::get_last_page_global();
-                if !new_pg.is_null() {
-                    let new_node = crate::runtime_bridge::get_node_realm_global(new_pg);
-                    *self.page_global.borrow_mut() = new_pg;
-                    *self.node_realm_global.borrow_mut() = new_node;
-                }
-            }
+            crate::runtime_bridge::register_refresh_dom_proxies(webview_id, old_pg);
+            self.drain_callbacks()?;
+            // After drain, read the refreshed pointers via WebViewId.
+            let new_pg = crate::runtime_bridge::get_page_global(webview_id);
+            let new_node = crate::runtime_bridge::get_node_realm_global(webview_id);
+            *self.page_global.borrow_mut() = new_pg;
+            *self.node_realm_global.borrow_mut() = new_node;
             self.webview_state.borrow_mut().dom_proxies_dirty = false;
         }
 
-        // Look up Node Realm for THIS page (per-page HashMap, REQ-SEC-002)
-        let pg = *self.page_global.borrow();
-        let node_global = if pg.is_null() {
-            *self.node_realm_global.borrow()
-        } else {
-            crate::runtime_bridge::get_node_realm_global(pg)
-        };
-
+        // Verify Node Realm exists for THIS page (via WebViewId, REQ-SEC-002).
+        let node_global = crate::runtime_bridge::get_node_realm_global(webview_id);
         if node_global.is_null() {
             // Node Realm must be initialized at page creation (PagePool::create_page).
             // If we reach here, it's a programming error, not a lazy-init scenario.
@@ -155,7 +159,8 @@ impl PageInner {
             ));
         }
 
-        // Execute via Node Realm
+        // Execute via Node Realm (servo routes the callback by WebViewId →
+        // this page's ScriptThread, where node_global was created).
         let result = crate::runtime_bridge::evaluate_js_via_node_realm(webview_id, script);
         self.drain_callbacks()?;
 
@@ -424,8 +429,13 @@ impl PageHandle {
         if let Some(inner) = borrow.take() {
             let pg = *inner.page_global.borrow();
             let ng = *inner.node_realm_global.borrow();
+            // BCE-20260621-001: remove per-page Node Realm entries via WebViewId
+            // (NOT raw *mut JSObject). The raw pointers are kept locally only to
+            // drop the stealth profile mappings.
+            if let Some(wid) = inner.webview_id_opt() {
+                crate::runtime_bridge::remove_node_realm_by_id(wid);
+            }
             if !pg.is_null() {
-                crate::runtime_bridge::remove_node_realm(pg);
                 // BUG-ENG-366: drop the per-Realm stealth profiles so the next
                 // page reusing the same global address does not inherit a stale
                 // fingerprint. @trace REQ-SEC-002 [req:REQ-SEC-002] [req:BUG-ENG-366]
@@ -756,28 +766,40 @@ mod tests {
     #[test]
     fn evaluate_in_node_realm_uses_auto_realm() {
         let source = include_str!("runtime_bridge.rs");
+
+        // Locate the evaluate_in_node_realm function body specifically.
+        let func_start = source.find("pub unsafe fn evaluate_in_node_realm")
+            .expect("evaluate_in_node_realm function not found");
+        let func_body_start = source[func_start..].find("{")
+            .expect("function body start not found");
+        let search_limit = source[func_start + func_body_start..]
+            .find("unsafe fn create_node_realm_native")
+            .unwrap_or(3000)
+            .min(3000);
+        let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
+
         assert!(
-            source.contains("AutoRealm::new_from_handle"),
+            func_body.contains("AutoRealm::new"),
             "REQ-SEC-002 REGRESSION: evaluate_in_node_realm must use AutoRealm"
         );
     }
 
     /// Verify per-page Node Realm storage exists (REQ-SEC-002).
-    /// Node Realm globals are stored in thread_local HashMap keyed by page_global.
+    /// BCE-20260621-001: WebViewId-keyed storage (NOT *mut JSObject-keyed).
     #[test]
     fn node_realm_global_stored_per_page() {
         let source = include_str!("runtime_bridge.rs");
         assert!(
-            source.contains("NODE_REALMS"),
-            "REQ-SEC-002 REGRESSION: must have NODE_REALMS per-page storage"
+            source.contains("NODE_REALM_BY_WEBVIEW"),
+            "REQ-SEC-002 REGRESSION: must have NODE_REALM_BY_WEBVIEW per-page storage"
         );
         assert!(
             source.contains("store_node_realm"),
             "REQ-SEC-002 REGRESSION: must have store_node_realm accessor"
         );
         assert!(
-            source.contains("get_node_realm"),
-            "REQ-SEC-002 REGRESSION: must have get_node_realm accessor"
+            source.contains("get_node_realm_by_id"),
+            "REQ-SEC-002 REGRESSION: must have get_node_realm_by_id accessor"
         );
         assert!(
             source.contains("get_node_realm_global"),

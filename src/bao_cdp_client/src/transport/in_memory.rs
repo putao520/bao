@@ -150,16 +150,19 @@ impl InMemoryTransport {
     /// 无 servo 事件时 fallback 到普通 `event_rx`(供测试直接 push CDP event)。
     ///
     /// 通常与 [`crate::bridge::EventSubscriber::new`] 配合使用:
-    /// ```ignore
-    /// use bao_cdp_client::bridge::EventSubscriber;
-    /// use bao_cdp_client::transport::{InMemoryTransport, InMemoryBridge};
+    /// ```
+    /// use bao_cdp_client::bridge::{CDPRdpBridge, EventSubscriber, MockServoBackend, ServoBackend};
+    /// use bao_cdp_client::transport::{InMemoryBridge, InMemoryTransport};
     /// use std::sync::Arc;
     ///
-    /// let bridge: Arc<dyn InMemoryBridge> = /* ... */;
-    /// let mut transport = InMemoryTransport::new(bridge);
+    /// let backend: Arc<dyn ServoBackend> = Arc::new(MockServoBackend::new());
+    /// let bridge = CDPRdpBridge::new(backend);
+    /// let bridge_dyn: Arc<dyn InMemoryBridge> = bridge.into_in_memory_bridge();
+    /// let mut transport = InMemoryTransport::new(bridge_dyn);
     /// let (subscriber, rx) = EventSubscriber::new();
     /// transport.attach_servo_event_receiver(rx);
     /// // 把 subscriber 注册到 servo delegate...
+    /// let _ = subscriber;
     /// ```
     ///
     /// @trace REQ-BAO-API-003 [interface:Transport]

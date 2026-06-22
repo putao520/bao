@@ -19,7 +19,7 @@
 //
 // 注意:这是 sync 调用路径的时序(dispatch_command 直接走 servo backend),
 // 不测 WebSocket transport 链路(那属于 TMG-CDP-001 的 network 路径,
-// 需要 #[ignore] + 真实 Chrome ws:// endpoint)。
+// 真实 Chrome ws:// endpoint 由 e2e_external_chrome.rs 用 graceful skip + BAO_TEST_CHROME_URL 覆盖)。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

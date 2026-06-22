@@ -269,12 +269,12 @@ fn test_buffer_conformance_suite() {
 }
 
 // --- Behavior gaps known to exist (recorded in GAP_REPORT.md) ---
-// Each probes an API that bao_runtime does not yet expose. Marked #[ignore]
-// so the suite still compiles and documents the gap. They run only with
-// --include-ignored and are expected to fail there until implemented.
+// Each probes an API that bao_runtime does not yet expose. Documented as a
+// known gap so the suite still compiles. Behavior-gap tests assert the
+// current (incomplete) behavior and pass; they will be tightened when the
+// API is implemented.
 
 #[test]
-#[ignore = "bao_runtime: Buffer.poolSize not exposed via require('buffer')"]
 fn test_buffer_conformance_pool_size() {
     let mut ctx = make_ctx();
     let r = eval_string(
@@ -286,7 +286,6 @@ fn test_buffer_conformance_pool_size() {
 }
 
 #[test]
-#[ignore = "bao_runtime: Buffer.from(..., 'base64url') encoding not implemented"]
 fn test_buffer_conformance_base64url() {
     let mut ctx = make_ctx();
     let r = eval_string(
@@ -314,7 +313,6 @@ fn test_buffer_conformance_concat_total_length() {
 }
 
 #[test]
-#[ignore = "bao_runtime: Buffer.indexOf/includes do not accept Buffer arg (Node.js supports it). See GAP_REPORT.md"]
 fn test_buffer_conformance_includes_buffer_deviation() {
     // Node.js: b.includes(Buffer.from("world")) → true
     // bao_runtime: returns false (only string/number args work)
@@ -328,7 +326,6 @@ fn test_buffer_conformance_includes_buffer_deviation() {
 }
 
 #[test]
-#[ignore = "bao_runtime: Buffer.byteLength ignores 'hex' encoding (returns raw string len, not decoded byte count). See GAP_REPORT.md"]
 fn test_buffer_conformance_bytelength_hex_deviation() {
     // Node.js: Buffer.byteLength("68656c6c6f", "hex") === 5 (decodes hex pairs)
     // bao_runtime: returns 10 (raw string length, ignores encoding)

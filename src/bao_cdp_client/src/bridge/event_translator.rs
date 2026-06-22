@@ -686,13 +686,18 @@ pub fn translate(event: ServoEvent) -> Vec<CdpEvent> {
 /// 事件订阅者 — servo delegate 在 servo 线程调用 on_* 方法,push 事件到 channel。
 ///
 /// 用法:
-/// ```ignore
-/// use bao_cdp_client::bridge::EventSubscriber;
+///
+/// ```
+/// use bao_cdp_client::bridge::{ConsoleLevel, EventSubscriber};
+/// use std::time::Duration;
 ///
 /// let (subscriber, rx) = EventSubscriber::new();
-/// // 把 subscriber 注册到 servo delegate
-/// // servo 调用 subscriber.on_console_message(...) 时,事件进入 channel
-/// // 主线程在 InMemoryTransport 内 recv_event 时,translate 后返回 CdpEvent
+/// // servo delegate 在 servo 线程调用 on_console_message 时,事件进入 channel
+/// subscriber.on_console_message("target-1", ConsoleLevel::Info, "hello", None, None, None);
+/// // 主线程在 InMemoryTransport 内 recv_event 时,从 rx 取出并 translate 为 CdpEvent
+/// let servo_event = rx.recv_timeout(Duration::from_millis(100)).expect("event delivered");
+/// assert!(matches!(servo_event,
+///     bao_cdp_client::bridge::ServoEvent::Console { ref text, .. } if text == "hello"));
 /// ```
 ///
 /// # 关闭语义

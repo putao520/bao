@@ -32,6 +32,21 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         rooted!(&in(cx) let kmax = mozjs::jsval::DoubleValue(4294967296.0_f64));
         JS_DefineProperty(cx_raw, mod_obj.handle().into(), c"kMaxLength".as_ptr(), kmax.handle().into(), JSPROP_ENUMERATE as u32);
 
+        // @trace REQ-ENG-007 [api:buffer.poolSize] — Node.js Buffer pool size
+        // constant (default 8192). Exposed on BOTH the `buffer` module object
+        // (`require('buffer').poolSize`) and the `Buffer` constructor
+        // (`Buffer.poolSize`) — Node.js keeps the canonical binding on
+        // Buffer.poolSize and re-exports it on the module. Writable data
+        // property (user code may reassign to grow/shrink the alloc pool).
+        rooted!(&in(cx) let pool_size = Int32Value(8192));
+        JS_DefineProperty(
+            cx_raw,
+            mod_obj.handle().into(),
+            c"poolSize".as_ptr(),
+            pool_size.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+
         // @trace REQ-ENG-005 [entity:Buffer] — Node.js module-level constants.
         // `INSPECT_MAX_BYTES` is the visible-buffer cap used by util.inspect
         // when stringifying a Buffer (default 512 in Node.js). Upstream tests
@@ -48,7 +63,10 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // Also expose on the Buffer constructor itself (Node.js keeps the
         // canonical binding on Buffer.INSPECT_MAX_BYTES; node:buffer.INSPECT_MAX_BYTES
         // is the same value re-exported). Use the same writable data descriptor
-        // shape so test assignments propagate.
+        // shape so test assignments propagate. The same Buffer constructor
+        // lookup is reused to bind Buffer.poolSize (REQ-ENG-007) — Node.js
+        // keeps the canonical binding on Buffer.poolSize and re-exports it
+        // on the buffer module object.
         let mut buf_val = UndefinedValue();
         JS_GetProperty(cx_raw, global.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
             _phantom_0: ::std::marker::PhantomData,
@@ -61,6 +79,13 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
                 buf_obj.handle().into(),
                 c"INSPECT_MAX_BYTES".as_ptr(),
                 inspect_max.handle().into(),
+                JSPROP_ENUMERATE as u32,
+            );
+            JS_DefineProperty(
+                cx_raw,
+                buf_obj.handle().into(),
+                c"poolSize".as_ptr(),
+                pool_size.handle().into(),
                 JSPROP_ENUMERATE as u32,
             );
         }

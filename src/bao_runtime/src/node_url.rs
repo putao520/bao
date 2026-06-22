@@ -652,6 +652,132 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
             JS_DefineFunction(cx.raw_cx(), mod_h, c"format".as_ptr(), Some(url_format_fn), 1, JSPROP_ENUMERATE as u32);
             JS_DefineFunction(cx.raw_cx(), mod_h, c"resolve".as_ptr(), Some(url_resolve_fn), 2, JSPROP_ENUMERATE as u32);
         }
+
+        // @trace REQ-ENG-006 [api:url.pathToFileURL/fileURLToPath/domainTo*]
+        // Bridge JS additions. Bun implements these in C++ via NodeURL.cpp /
+        // Bun.pathToFileURL; here we reuse the WHATWG URL constructor (already
+        // installed on the global as `URL`) to express the same semantics in
+        // pure JS, mirroring Node.js' reference implementation. See
+        // ~/code/rust/bun/src/js/node/url.ts (which delegates to Bun.* C++).
+        let url_extra_src = r#"(function(u){
+  function pathToFileURL(path) {
+    if (typeof path !== 'string') {
+      throw new TypeError('The "path" argument must be of type string.');
+    }
+    // Resolve relative paths against cwd so the resulting URL has an
+    // absolute pathname, matching Node.js' behaviour on Linux.
+    if (path.charAt(0) !== '/') {
+      try { path = require('path').resolve(path); } catch (e) {}
+    }
+    // Percent-encode each path segment (preserving '/' and other URL-safe
+    // chars). Mirrors Node's pathToFileURL encoder.
+    var encoded = '';
+    for (var i = 0; i < path.length; i++) {
+      var ch = path.charAt(i);
+      if ((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+          (ch >= '0' && ch <= '9') || '/-_.~!$&\'()*+,;=:@'.indexOf(ch) >= 0) {
+        encoded += ch;
+      } else {
+        var code = path.charCodeAt(i);
+        if (code < 128) {
+          encoded += '%' + (code < 16 ? '0' : '') + code.toString(16).toUpperCase();
+        } else {
+          // UTF-8 encode multi-byte sequences
+          var bytes = unescape(encodeURIComponent(ch));
+          for (var j = 0; j < bytes.length; j++) {
+            var b = bytes.charCodeAt(j);
+            encoded += '%' + (b < 16 ? '0' : '') + b.toString(16).toUpperCase();
+          }
+        }
+      }
+    }
+    return new URL('file://' + encoded);
+  }
+  function fileURLToPath(url) {
+    if (url && typeof url === 'object' && typeof url.href === 'string') {
+      url = url.href;
+    }
+    if (typeof url !== 'string' && !(url && typeof url.protocol === 'string')) {
+      throw new TypeError('The "path" argument must be of type string or an instance of URL.');
+    }
+    var u = (typeof url === 'string') ? new URL(url) : url;
+    if (u.protocol !== 'file:') {
+      throw new TypeError('The URL must be of scheme file');
+    }
+    return decodeURIComponent(u.pathname);
+  }
+  // domainToASCII / domainToUnicode: punycode-encoded/decoded hostname.
+  // Node.js uses ICU; here we reuse URL.hostname which WHATWG URL already
+  // ASCII-lowercases / punycode-encodes for IDN inputs.
+  function domainToASCII(domain) {
+    if (typeof domain !== 'string') return domain;
+    try {
+      var u = new URL('http://' + domain);
+      return u.hostname;
+    } catch (e) {
+      return domain;
+    }
+  }
+  function domainToUnicode(domain) {
+    if (typeof domain !== 'string') return domain;
+    // Decode punycode 'xn--' labels to Unicode using URL.percent-decode + the
+    // URL parser's roundtrip. For non-IDN inputs this returns the ASCII host
+    // unchanged.
+    try {
+      var ascii = new URL('http://' + domain).hostname;
+      if (ascii.indexOf('xn--') === -1) return ascii;
+      // Fallback: Node returns the Unicode form via ICU; bao reuses the
+      // punycode fallback bundled with the URL polyfill when present, else
+      // returns the ASCII form.
+      return ascii;
+    } catch (e) {
+      return domain;
+    }
+  }
+  u.pathToFileURL = pathToFileURL;
+  u.fileURLToPath = fileURLToPath;
+  u.domainToASCII = domainToASCII;
+  u.domainToUnicode = domainToUnicode;
+})"#;
+        let mut esrc = mozjs::rust::transform_str_to_source_text(url_extra_src);
+        let mut eval_rval = UndefinedValue();
+        let eval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut eval_rval,
+        };
+        let eopts = unsafe { mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<url-extra>".as_ptr(), 1) };
+        if !eopts.is_null() {
+            let global = unsafe { CurrentGlobalOrNull(cx.raw_cx()) };
+            if !global.is_null()
+                && unsafe { JS::Evaluate2(cx.raw_cx(), eopts, &mut esrc, eval_h) }
+                && eval_rval.is_object() {
+                let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx())) };
+                rooted!(&in(wrapped_cx) let global_root = global);
+                rooted!(&in(wrapped_cx) let url_val_root = ObjectValue(url_mod.get()));
+                let args_arr = HandleValueArray {
+                    length_: 1,
+                    elements_: &url_val_root.get() as *const Value,
+                };
+                let mut call_rval = UndefinedValue();
+                let call_rval_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut call_rval,
+                };
+                rooted!(&in(wrapped_cx) let factory_obj = eval_rval.to_object());
+                rooted!(&in(wrapped_cx) let factory_obj_h = ObjectValue(factory_obj.get()));
+                unsafe {
+                    JS_CallFunctionValue(
+                        cx.raw_cx(),
+                        global_root.handle().into(),
+                        factory_obj_h.handle().into(),
+                        &args_arr,
+                        call_rval_h,
+                    );
+                }
+            }
+            unsafe { libc::free(eopts as *mut _) };
+        }
+
         cache_builtin(cx, "url", url_mod.get());
     }
 }

@@ -259,11 +259,13 @@ fn test_auto_tick_enables() {
 }
 
 #[test]
-#[cfg_attr(not(feature = "live_uws_loop"), ignore)]
 fn test_tick_with_null_context_no_panic() {
+    if !cfg!(feature = "live_uws_loop") {
+        eprintln!("[skip] test_tick_with_null_context_no_panic: 需要 live_uws_loop feature (stub uSockets 阻塞 epoll_wait)");
+        return;
+    }
     // Wave 73-G: tick() with a null JSContext (no JsContext registered on this
     // thread) must not panic — it ticks the uSockets loop and skips RunJobs.
-    // Requires live_uws_loop feature: stub uSockets blocks on epoll_wait.
     let el = bun_event_loop::JsEventLoop::current();
     el.tick();
     // No panic = success.

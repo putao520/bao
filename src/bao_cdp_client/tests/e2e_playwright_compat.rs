@@ -15,7 +15,7 @@
 //! ## 测试策略
 //!
 //! - **Mock 路径**: 每个测试启动一个"一次性" mini HTTP/WS server(只服务一个请求然后退出)
-//! - **真实 Playwright 路径**: `#[ignore]` 标记,CI 启用 `BAO_TEST_PLAYWRIGHT=1`
+//! - **真实 Playwright 路径**: graceful skip,CI 启用 `BAO_TEST_PLAYWRIGHT=1`(eprintln + return)
 //!
 //! @trace REQ-BAO-API-002 [interface:Transport]
 //! @trace REQ-BAO-API-008 [level:integration]
@@ -452,17 +452,18 @@ fn e2e_playwright_set_auto_attach_receives_attached_events() {
 }
 
 // ════════════════════════════════════════════════════════════════════
-// §4 真实 Playwright E2E — `#[ignore]` + BAO_TEST_PLAYWRIGHT=1
+// §4 真实 Playwright E2E — graceful skip + BAO_TEST_PLAYWRIGHT=1
 // ════════════════════════════════════════════════════════════════════
 
 /// 真实 Playwright(Node.js)E2E 测试。
 /// 启用方式:BAO_TEST_PLAYWRIGHT=1 + bao_cdp_server 在 9222 端口监听。
+/// 默认(无 BAO_TEST_PLAYWRIGHT)graceful skip(eprintln + return)。
 #[test]
-#[ignore = "real playwright requires BAO_TEST_PLAYWRIGHT=1 + CDP server on 9222"]
 fn e2e_real_playwright_full_flow() {
     // Arrange
     // Act
     if std::env::var("BAO_TEST_PLAYWRIGHT").as_deref() != Ok("1") {
+        eprintln!("[skip] 环境不可用: BAO_TEST_PLAYWRIGHT=1 not set + CDP server on 9222 (real playwright E2E)");
         return;
     }
     // 占位:真实 Playwright(Node.js)流程测试。
@@ -475,11 +476,11 @@ fn e2e_real_playwright_full_flow() {
 }
 
 #[test]
-#[ignore = "real playwright requires BAO_TEST_PLAYWRIGHT=1"]
 fn e2e_real_playwright_browser_context_isolation() {
     // Arrange
     // Act
     if std::env::var("BAO_TEST_PLAYWRIGHT").as_deref() != Ok("1") {
+        eprintln!("[skip] 环境不可用: BAO_TEST_PLAYWRIGHT=1 not set (real playwright BrowserContext isolation E2E)");
         return;
     }
     // 占位:验证两个 BrowserContext cookie 隔离

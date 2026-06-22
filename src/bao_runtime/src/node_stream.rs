@@ -462,6 +462,188 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             }
         }
 
+        // Web Streams API exposure on node:stream — Node.js re-exports the
+        // global Web Streams constructors (ReadableStream, WritableStream,
+        // TransformStream) as named properties of `require('stream')`. We
+        // first try to forward whatever the global already provides (servo
+        // installs the real WHATWG streams); if missing (CLI mode), we attach
+        // a minimal pure-JS polyfill so downstream code that uses streams has
+        // a working surface. See ~/code/rust/bun/src/js/node/stream.ts (Bun
+        // forwards the same way).
+        let global = CurrentGlobalOrNull(cx_raw);
+        if !global.is_null() {
+            rooted!(&in(cx) let global_root = global);
+            let mut has_readable = false;
+            for name in &["ReadableStream", "WritableStream", "TransformStream", "ByteLengthQueuingStrategy", "CountQueuingStrategy"] {
+                let cname = ZBox::from_bytes(name.as_bytes());
+                let mut val = UndefinedValue();
+                JS_GetProperty(cx_raw, global_root.handle().into(), cname.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
+                if val.is_object() {
+                    if name == &"ReadableStream" { has_readable = true; }
+                    rooted!(&in(cx) let val_root = val);
+                    JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+            }
+            // If no global ReadableStream was found (CLI mode), install a
+            // pure-JS WHATWG-flavoured polyfill directly on the stream module
+            // and re-export it as a global so subsequent code (e.g. Blob's
+            // `stream()` method in globals.rs) sees the same constructor.
+            if !has_readable {
+                let web_streams_src = r#"(function(){
+  function ReadableStream(underlyingSource, strategy) {
+    this._state = 'readable';
+    this._disturbed = false;
+    this._reader = undefined;
+    this._storedError = undefined;
+    this._chunks = [];
+    this._closed = false;
+    this._started = false;
+    var self = this;
+    var controller = {
+      desiredSize: (strategy && typeof strategy.highWaterMark === 'number') ? strategy.highWaterMark : 1,
+      enqueue: function(chunk) { if (!self._closed) self._chunks.push(chunk); },
+      close: function() { self._closed = true; self._state = 'closed'; },
+      error: function(e) { self._storedError = e; self._state = 'errored'; }
+    };
+    this._controller = controller;
+    if (underlyingSource && typeof underlyingSource.start === 'function') {
+      try { var r = underlyingSource.start(controller); if (r && typeof r.then === 'function') r.then(function(){ self._started = true; }); else self._started = true; } catch(e) { controller.error(e); }
+    } else { self._started = true; }
+  }
+  ReadableStream.prototype.getReader = function() {
+    var stream = this;
+    return {
+      get closed() {
+        return stream._closed ? Promise.resolve() : new Promise(function(_, rej){ stream._rejectClose = rej; });
+      },
+      read: function() {
+        stream._disturbed = true;
+        return new Promise(function(resolve, reject) {
+          function tick() {
+            if (stream._chunks.length > 0) resolve({ value: stream._chunks.shift(), done: false });
+            else if (stream._closed) resolve({ value: undefined, done: true });
+            else if (stream._state === 'errored') reject(stream._storedError);
+            else setTimeout(tick, 0);
+          }
+          tick();
+        });
+      },
+      cancel: function(reason) { stream._closed = true; return Promise.resolve(); },
+      releaseLock: function() {}
+    };
+  };
+  ReadableStream.prototype.cancel = function(reason) { this._closed = true; return Promise.resolve(); };
+  ReadableStream.prototype.pipeTo = function(dest) {
+    var reader = this.getReader();
+    var self = this;
+    function pump() {
+      return reader.read().then(function(r) {
+        if (r.done) { if (typeof dest.close === 'function') dest.close(); return; }
+        if (typeof dest.write === 'function') dest.write(r.value);
+        return pump();
+      });
+    }
+    return pump();
+  };
+  ReadableStream.prototype.pipeThrough = function(transform) {
+    this.pipeTo(transform.writable);
+    return transform.readable;
+  };
+  ReadableStream.prototype.tee = function() {
+    return [this, this];
+  };
+  Object.defineProperty(ReadableStream.prototype, 'locked', { get: function() { return !!this._reader; } });
+
+  function WritableStream(underlyingSink, strategy) {
+    this._state = 'writable';
+    this._written = [];
+    this._closed = false;
+    this._sink = underlyingSink || {};
+    var self = this;
+    var controller = {
+      error: function(e) { self._state = 'errored'; self._storedError = e; }
+    };
+    this._controller = controller;
+  }
+  WritableStream.prototype.write = function(chunk) {
+    var self = this;
+    return new Promise(function(resolve, reject) {
+      try {
+        if (typeof self._sink.write === 'function') {
+          var r = self._sink.write(chunk, controller);
+          if (r && typeof r.then === 'function') r.then(resolve, reject);
+          else { self._written.push(chunk); resolve(); }
+        } else { self._written.push(chunk); resolve(); }
+      } catch(e) { reject(e); }
+    });
+  };
+  WritableStream.prototype.close = function() { this._closed = true; this._state = 'closed'; return Promise.resolve(); };
+  WritableStream.prototype.abort = function(reason) { this._state = 'errored'; return Promise.resolve(); };
+  Object.defineProperty(WritableStream.prototype, 'locked', { get: function() { return false; } });
+  WritableStream.prototype.getWriter = function() {
+    var stream = this;
+    return {
+      get closed() { return stream._closed ? Promise.resolve() : new Promise(function(){}); },
+      write: function(chunk) { return stream.write(chunk); },
+      close: function() { return stream.close(); },
+      releaseLock: function() {},
+      abort: function(r) { return stream.abort(r); }
+    };
+  };
+
+  function TransformStream(transformer, strategy) {
+    var self = this;
+    this._transformer = transformer || {};
+    this.readable = new ReadableStream();
+    this.writable = new WritableStream({
+      write: function(chunk) {
+        if (typeof self._transformer.transform === 'function') {
+          self._transformer.transform(chunk, {
+            enqueue: function(c) { self.readable._controller.enqueue(c); },
+            error: function(e) { self.readable._controller.error(e); }
+          });
+        } else {
+          self.readable._controller.enqueue(chunk);
+        }
+      }
+    });
+  }
+
+  return { ReadableStream: ReadableStream, WritableStream: WritableStream, TransformStream: TransformStream };
+})()"#;
+                let mut wsrc = mozjs::rust::transform_str_to_source_text(web_streams_src);
+                let mut wval = UndefinedValue();
+                let wh = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut wval };
+                let wopts = NewCompileOptions(cx_raw, c"<web-streams>".as_ptr(), 1);
+                if !wopts.is_null() {
+                    if JS::Evaluate2(cx_raw, wopts, &mut wsrc, wh) && wval.is_object() {
+                        let exports = wval.to_object();
+                        rooted!(&in(cx) let exports_root = exports);
+                        for name in &["ReadableStream", "WritableStream", "TransformStream"] {
+                            let cname = ZBox::from_bytes(name.as_bytes());
+                            let mut v = UndefinedValue();
+                            JS_GetProperty(cx_raw, exports_root.handle().into(), cname.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut v });
+                            if v.is_object() {
+                                rooted!(&in(cx) let vr = v);
+                                JS_DefineProperty(cx_raw, mod_obj.handle().into(), cname.as_ptr(), vr.handle().into(), JSPROP_ENUMERATE as u32);
+                                JS_DefineProperty(cx_raw, global_root.handle().into(), cname.as_ptr(), vr.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+                            }
+                        }
+                    }
+                    libc::free(wopts as *mut _);
+                }
+            }
+            // WebStream alias (Node.js sometimes uses this name).
+            let ws_cname = ZBox::from_bytes("WebStream\0".as_bytes());
+            let rs_cname = ZBox::from_bytes("ReadableStream\0".as_bytes());
+            let mut rs_val = UndefinedValue();
+            JS_GetProperty(cx_raw, mod_obj.handle().into(), rs_cname.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rs_val });
+            if rs_val.is_object() {
+                rooted!(&in(cx) let rs_root = rs_val);
+                JS_DefineProperty(cx_raw, mod_obj.handle().into(), ws_cname.as_ptr(), rs_root.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+        }
+
         cache_builtin(cx, "stream", mod_obj.get());
     }
 }

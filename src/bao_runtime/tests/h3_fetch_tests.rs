@@ -8,15 +8,16 @@
 // 1. **单元测试（默认运行）**：验证 h3 默认启用、Alt-Svc 解析、错误处理。
 //    这些测试不需要网络，已在 `src/bao_runtime/src/h3_fetch.rs` 内联完成。
 //
-// 2. **真网络测试（#[ignore] + BAO_TEST_NETWORK=1）**：验证实际 h3 请求、
+// 2. **真网络测试（graceful 环境检测 + BAO_TEST_NETWORK=1）**：验证实际 h3 请求、
 //    连接复用、流多路复用、HTTP/1.1 fallback。运行命令：
 //    ```
-//    BAO_TEST_NETWORK=1 cargo test -p bun_runtime --test h3_fetch_tests -- --ignored
+//    BAO_TEST_NETWORK=1 cargo test -p bun_runtime --test h3_fetch_tests
 //    ```
 //
-// ## BAO_TEST_NETWORK 门控
+// ## BAO_TEST_NETWORK 门控（graceful skip 模式）
 //
-// 真网络测试默认 `#[ignore]`，必须显式设置 `BAO_TEST_NETWORK=1` 才运行。
+// 真网络测试默认 graceful skip：函数开头检测 `BAO_TEST_NETWORK=1` + 网络可达性，
+// 无环境时 `eprintln!("[skip] ...") + return`（不算 fail），有环境时真实跑 + assert。
 // 这避免 CI 在沙箱（无外网）环境失败，同时允许开发者按需验证 h3 行为。
 
 use std::time::Duration;
@@ -115,9 +116,10 @@ fn http1_fallback_path_preserved() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
-// 真网络测试（#[ignore] + BAO_TEST_NETWORK=1）
+// 真网络测试（graceful skip + BAO_TEST_NETWORK=1）
 //
-// 运行：BAO_TEST_NETWORK=1 cargo test -p bun_runtime --test h3_fetch_tests -- --ignored
+// 运行：BAO_TEST_NETWORK=1 cargo test -p bun_runtime --test h3_fetch_tests
+// 默认（无 BAO_TEST_NETWORK）每项测试 graceful skip（eprintln + return）。
 // ═══════════════════════════════════════════════════════════════════════
 
 /// REQ-H3-001: h3 真网络请求（force_http3 via fetch options）。
@@ -127,14 +129,13 @@ fn http1_fallback_path_preserved() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
-#[ignore = "requires BAO_TEST_NETWORK=1 and external HTTP/3 endpoint"]
 fn h3_real_request_force_http3() {
     if !network_test_enabled() {
-        eprintln!("skipping: BAO_TEST_NETWORK not set");
+        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
         return;
     }
     if !is_reachable("cloudflare-quic.com", 443) {
-        eprintln!("skipping: cloudflare-quic.com:443 unreachable");
+        eprintln!("[skip] 环境不可用: cloudflare-quic.com:443 unreachable");
         return;
     }
 
@@ -191,14 +192,13 @@ fn h3_real_request_force_http3() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
-#[ignore = "requires BAO_TEST_NETWORK=1 and external HTTP/3 endpoint"]
 fn h3_connection_reuse_multiple_requests() {
     if !network_test_enabled() {
-        eprintln!("skipping: BAO_TEST_NETWORK not set");
+        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
         return;
     }
     if !is_reachable("cloudflare-quic.com", 443) {
-        eprintln!("skipping: cloudflare-quic.com:443 unreachable");
+        eprintln!("[skip] 环境不可用: cloudflare-quic.com:443 unreachable");
         return;
     }
 
@@ -236,10 +236,9 @@ fn h3_connection_reuse_multiple_requests() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
-#[ignore = "requires BAO_TEST_NETWORK=1"]
 fn h3_error_handling_connection_refused() {
     if !network_test_enabled() {
-        eprintln!("skipping: BAO_TEST_NETWORK not set");
+        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
         return;
     }
 
@@ -272,14 +271,13 @@ fn h3_error_handling_connection_refused() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
-#[ignore = "requires BAO_TEST_NETWORK=1"]
 fn h3_fallback_to_http1_when_unsupported() {
     if !network_test_enabled() {
-        eprintln!("skipping: BAO_TEST_NETWORK not set");
+        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
         return;
     }
     if !is_reachable("example.com", 443) {
-        eprintln!("skipping: example.com:443 unreachable");
+        eprintln!("[skip] 环境不可用: example.com:443 unreachable");
         return;
     }
 
@@ -316,14 +314,13 @@ fn h3_fallback_to_http1_when_unsupported() {
 ///
 // @trace REQ-H3-001 [req:REQ-H3-001] [level:system]
 #[test]
-#[ignore = "requires BAO_TEST_NETWORK=1 and external HTTP/3 endpoint"]
 fn h3_stream_multiplexing_stability() {
     if !network_test_enabled() {
-        eprintln!("skipping: BAO_TEST_NETWORK not set");
+        eprintln!("[skip] 环境不可用: BAO_TEST_NETWORK not set");
         return;
     }
     if !is_reachable("cloudflare-quic.com", 443) {
-        eprintln!("skipping: cloudflare-quic.com:443 unreachable");
+        eprintln!("[skip] 环境不可用: cloudflare-quic.com:443 unreachable");
         return;
     }
 

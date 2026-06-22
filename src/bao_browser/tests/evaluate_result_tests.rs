@@ -261,7 +261,7 @@ fn evaluate_in_node_realm_does_not_discard_result() {
     let search_limit = source[func_start + func_body_start..]
         .find("unsafe fn create_node_realm_native")
         .unwrap_or(2000)
-        .min(2000);
+        .min(4000);
     let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
     // Verify there is no "let _result" or "let _ =" discarding the evaluate_script return value
@@ -290,7 +290,7 @@ fn evaluate_in_node_realm_reports_null_node_global_error() {
     let search_limit = source[func_start + func_body_start..]
         .find("unsafe fn create_node_realm_native")
         .unwrap_or(2000)
-        .min(2000);
+        .min(4000);
     let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
     assert!(
@@ -314,7 +314,7 @@ fn evaluate_in_node_realm_reports_null_context_error() {
     let search_limit = source[func_start + func_body_start..]
         .find("unsafe fn create_node_realm_native")
         .unwrap_or(2000)
-        .min(2000);
+        .min(4000);
     let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
     assert!(
@@ -334,7 +334,7 @@ fn evaluate_in_node_realm_serializes_value_types() {
     let search_limit = source[func_start + func_body_start..]
         .find("/// Bridge callback: create Node Realm")
         .unwrap_or(3000)
-        .min(3000);
+        .min(5000);
     let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
     // Must handle: string, number, boolean, null, undefined, object

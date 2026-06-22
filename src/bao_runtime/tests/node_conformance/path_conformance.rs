@@ -187,7 +187,6 @@ fn test_path_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: path.matchesGlob not implemented"]
 fn test_path_conformance_matches_glob() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -206,7 +205,6 @@ fn test_path_conformance_matches_glob() {
 }
 
 #[test]
-#[ignore = "bao_runtime: path.win32 aliases path on Linux (win32.sep returns '/' instead of '\\\\'). See GAP_REPORT.md"]
 fn test_path_conformance_win32_deviation() {
     // Node.js: path.win32.sep === "\\" on all platforms
     // bao_runtime: path.win32 === path (self-ref), so win32.sep is host-platform

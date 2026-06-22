@@ -268,7 +268,6 @@ fn test_fs_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: fs.createReadStream / ReadStream not implemented. See GAP_REPORT.md"]
 fn test_fs_conformance_create_read_stream() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -287,7 +286,6 @@ fn test_fs_conformance_create_read_stream() {
 }
 
 #[test]
-#[ignore = "bao_runtime: fs.watch / fs.watchFile not implemented. See GAP_REPORT.md"]
 fn test_fs_conformance_watch() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -306,7 +304,6 @@ fn test_fs_conformance_watch() {
 }
 
 #[test]
-#[ignore = "bao_runtime: fs.cp / cpSync recursive copy not implemented. See GAP_REPORT.md"]
 fn test_fs_conformance_cp_recursive() {
     let mut ctx = make_ctx();
     let src = format!(

@@ -122,11 +122,11 @@ fn test_http_client_deep() {
         typeof server === 'object' && server !== null
     "#), "http.createServer should return server object");
 
-    // === http.METHODS ===
+    // === http.METHODS — Node.js exposes this as a sorted Array of method names.
     assert!(eval_bool(&mut ctx, r#"
         var http = require('http');
-        typeof http.METHODS === 'string' && http.METHODS.includes('GET')
-    "#), "http.METHODS should be string containing GET");
+        Array.isArray(http.METHODS) && http.METHODS.indexOf('GET') >= 0
+    "#), "http.METHODS should be an Array containing GET");
 
     // === http.Server constructor ===
     assert!(eval_bool(&mut ctx, r#"

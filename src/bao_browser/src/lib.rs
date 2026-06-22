@@ -67,6 +67,23 @@ impl BaoRuntime {
             ServoBuilder::default()
                 .opts(Opts {
                     force_isolate_event_loops: true,
+                    // BAO PATCH (BCE-20260621-002): Skip servo's
+                    // `JS::Debugger::addDebuggee` path entirely. Bao embeds
+                    // servo but uses `bao_cdp` (its own CDP) and never connects
+                    // to servo's devtools server, so the servo Debugger is pure
+                    // overhead and a SIGSEGV source: `fire_add_debuggee` marks
+                    // every page's Realm as a debuggee
+                    // (`Realm::setIsDebuggee`), which toggles
+                    // BaselineInterpreter debugger instrumentation. Under bao's
+                    // multi-page + navigate + later-`evaluate` workload, a
+                    // subsequent JIT OSR dereferences
+                    // `cx->activation_->prev()->asInterpreter()` as NULL and
+                    // SIGSEGVs deterministically. Setting this flag bypasses
+                    // `fire_add_debuggee` (gated upstream in
+                    // `script_thread.rs`), so `setIsDebuggee` is never called
+                    // and the JIT toggle never happens. Servo's default `false`
+                    // keeps devtools working for normal servo embedders.
+                    disable_script_debugger: true,
                     ..Opts::default()
                 })
                 .build(),

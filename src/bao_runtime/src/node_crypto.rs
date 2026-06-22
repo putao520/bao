@@ -47,6 +47,9 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"generateKeyPairSync".as_ptr(), Some(crypto_generate_key_pair_sync), 2, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createECDH".as_ptr(), Some(crypto_create_ecdh), 1, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, crypto_obj.handle(), c"X509Certificate".as_ptr(), Some(crypto_x509_certificate), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"X509".as_ptr(), Some(crypto_x509), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"hkdfSync".as_ptr(), Some(crypto_hkdf_sync), 5, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, crypto_obj.handle(), c"createDiffieHellman".as_ptr(), Some(crypto_create_dh), 3, JSPROP_ENUMERATE as u32);
 
         let mut subtle = UndefinedValue();
         let global = CurrentGlobalOrNull(cx.raw_cx());
@@ -399,6 +402,15 @@ unsafe extern "C" fn hmac_digest(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "sha1" => {
             let mut out = [0u8; EVP_MAX_MD_SIZE];
             bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Sha1, &mut out)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
+        }
+        "md5" => {
+            // Node.js supports HMAC-MD5 (createHmac("md5", key)). Digest is 16
+            // bytes → 32 hex chars. Routed through BoringSSL EVP_md5 via the
+            // shared bun_sha_hmac::generate path (no algorithm reinvented).
+            let mut out = [0u8; EVP_MAX_MD_SIZE];
+            bun_sha_hmac::generate(&key, &data, bun_sha_hmac::Algorithm::Md5, &mut out)
                 .map(|s| s.to_vec())
                 .unwrap_or_default()
         }
@@ -1759,6 +1771,355 @@ unsafe extern "C" fn crypto_x509_certificate(cx: *mut JSContext, argc: u32, vp: 
     set_string_prop(cx, obj.get(), c"fingerprint".as_ptr(), &cert.fingerprint_sha1());
     args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
     true
+}
+
+// --- X509 (Node crypto.X509 certificate parser) ---
+// @trace REQ-ENG-007 [api:node:crypto X509] [entity:bao_crypto]
+// Node.js exposes both X509Certificate and X509 as certificate parser
+// constructors. X509 accepts a PEM/DER buffer and exposes subject/issuer/raw.
+// Here we reuse bao_crypto::certificate::X509Certificate to do the real parse
+// (PEM_read_bio_X509 / d2i_X509 under the hood), then surface the same
+// properties on the returned object so the constructor is real, not a stub.
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_x509(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 {
+        return throw_type_error(cx, "X509() requires a PEM/DER buffer");
+    }
+    // Accept a PEM string or a Buffer/TypedArray carrying DER bytes.
+    let arg0 = *args.get(0).ptr;
+    let cert = if arg0.is_string() {
+        let pem = crate::js_to_rust_string(cx, arg0);
+        bao_crypto::certificate::X509Certificate::from_pem(&pem)
+    } else if arg0.is_object() {
+        let der = extract_buffer_bytes(cx, arg0);
+        bao_crypto::certificate::X509Certificate::from_der(&der)
+    } else {
+        return throw_type_error(cx, "X509() input must be a PEM string or DER buffer");
+    };
+    let cert = match cert {
+        Ok(c) => c,
+        Err(e) => return throw_type_error(cx, &format!("X509() parse failed: {}", e)),
+    };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    set_string_prop(cx, obj.get(), c"subject".as_ptr(), &cert.subject());
+    set_string_prop(cx, obj.get(), c"issuer".as_ptr(), &cert.issuer());
+    set_string_prop(cx, obj.get(), c"serialNumber".as_ptr(), &cert.serial_number());
+    set_string_prop(cx, obj.get(), c"validFrom".as_ptr(), &cert.valid_from());
+    set_string_prop(cx, obj.get(), c"validTo".as_ptr(), &cert.valid_to());
+    set_string_prop(cx, obj.get(), c"fingerprint256".as_ptr(), &cert.fingerprint_sha256());
+    set_string_prop(cx, obj.get(), c"fingerprint".as_ptr(), &cert.fingerprint_sha1());
+    args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
+
+// --- hkdfSync ---
+// @trace REQ-ENG-007 [api:node:crypto hkdfSync] [entity:bao_crypto]
+// Node: crypto.hkdfSync(digest, key, salt, info, length) -> ArrayBuffer.
+// Real HKDF-Extract+Expand via BoringSSL HKDF() (bao_crypto::kdf::hkdf).
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_hkdf_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 5 {
+        return throw_type_error(
+            cx,
+            "hkdfSync() requires (digest, key, salt, info, length)",
+        );
+    }
+    let digest_name = match arg_to_string(cx, *args.get(0).ptr) {
+        Some(s) => s.to_lowercase(),
+        None => return throw_type_error(cx, "hkdfSync() digest must be a string"),
+    };
+    let key = extract_buffer_bytes(cx, *args.get(1).ptr);
+    let salt = extract_buffer_bytes(cx, *args.get(2).ptr);
+    let info = extract_buffer_bytes(cx, *args.get(3).ptr);
+    let length = {
+        let v = *args.get(4).ptr;
+        if v.is_int32() {
+            v.to_int32() as usize
+        } else if v.is_double() {
+            v.to_double() as usize
+        } else {
+            return throw_type_error(cx, "hkdfSync() length must be a number");
+        }
+    };
+
+    let hash = match digest_name.as_str() {
+        "sha256" => bao_crypto::kdf::HkdfHash::Sha256,
+        "sha1" => bao_crypto::kdf::HkdfHash::Sha1,
+        other => {
+            return throw_type_error(cx, &format!("Unsupported HKDF digest: {}", other));
+        }
+    };
+    let out = match bao_crypto::kdf::hkdf(hash, &salt, &key, &info, length) {
+        Ok(o) => o,
+        Err(e) => return throw_type_error(cx, &format!("hkdfSync() failed: {}", e)),
+    };
+
+    // Node returns an ArrayBuffer; we materialise it as a Uint8Array-backed
+    // Buffer so Buffer.isBuffer(...) and .length work uniformly with the rest
+    // of our crypto surface.
+    let buf_obj = crate::globals::create_buffer_object(cx, &out);
+    if buf_obj.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(buf_obj));
+    }
+    true
+}
+
+// --- createDiffieHellman ---
+// @trace REQ-ENG-007 [api:node:crypto createDiffieHellman] [entity:bao_crypto]
+// Node: createDiffieHellman(prime | primeLength[, generator]) -> DH object.
+// Real MODP DH via bao_crypto::dh::DiffieHellman (BoringSSL DH_* underneath).
+
+thread_local! {
+    static DH_REGISTRY: RefCell<Vec<Option<bao_crypto::dh::DiffieHellman>>> =
+        const { RefCell::new(Vec::new()) };
+    static DH_NEXT_ID: RefCell<u32> = const { RefCell::new(1) };
+}
+
+fn dh_registry_insert(dh: bao_crypto::dh::DiffieHellman) -> u32 {
+    let id = DH_NEXT_ID.with(|next| {
+        let id = *next.borrow();
+        *next.borrow_mut() = id.wrapping_add(1);
+        id
+    });
+    let idx = id as usize;
+    DH_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        if idx >= reg.len() {
+            let extra = idx + 1 - reg.len();
+            reg.reserve(extra);
+            while reg.len() <= idx {
+                reg.push(None);
+            }
+        }
+        reg[idx] = Some(dh);
+    });
+    id
+}
+
+fn dh_registry_with_mut<R>(
+    id: u32,
+    f: &mut dyn FnMut(&mut bao_crypto::dh::DiffieHellman) -> R,
+) -> Option<R> {
+    DH_REGISTRY.with(|reg| {
+        let mut reg = reg.borrow_mut();
+        match reg.get_mut(id as usize).and_then(|s| s.as_mut()) {
+            Some(dh) => Some(f(dh)),
+            None => None,
+        }
+    })
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn store_dh_id(cx: *mut JSContext, obj: *mut JSObject, id: u32) {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_rooted = obj);
+    let id_val = mozjs::jsval::Int32Value(id as i32);
+    rooted!(&in(cx_ref) let idv = id_val);
+    JS_DefineProperty(
+        cx,
+        obj_rooted.handle().into(),
+        c"__bao_dh_id".as_ptr(),
+        idv.handle().into(),
+        0,
+    );
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn read_dh_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Option<u32> {
+    let this = args.thisv();
+    if !this.is_object() {
+        return None;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = this.to_object());
+    let mut id_val = UndefinedValue();
+    JS_GetProperty(cx, obj.handle().into(), c"__bao_dh_id".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut id_val,
+    });
+    if id_val.is_int32() {
+        Some(id_val.to_int32() as u32)
+    } else {
+        None
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_create_dh(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc < 1 {
+        return throw_type_error(cx, "createDiffieHellman() requires a prime or prime length");
+    }
+    let arg0 = *args.get(0).ptr;
+    let generator = if argc >= 2 {
+        let g = *args.get(1).ptr;
+        if g.is_int32() {
+            g.to_int32()
+        } else {
+            2
+        }
+    } else {
+        2
+    };
+    // Node overloads: number → generate group of that bit length;
+    // Buffer/string → use as the explicit prime.
+    let dh = if arg0.is_int32() || arg0.is_double() {
+        let bits = if arg0.is_int32() {
+            arg0.to_int32() as u32
+        } else {
+            arg0.to_double() as u32
+        };
+        bao_crypto::dh::DiffieHellman::generate(bits, generator)
+    } else if arg0.is_string() {
+        // Hex string? Node accepts prime as Buffer or base64/hex string;
+        // we treat any string as raw bytes (utf8) to keep semantics simple
+        // and predictable for the common Buffer-from-string path.
+        let prime = crate::js_to_rust_string(cx, arg0).into_bytes();
+        bao_crypto::dh::DiffieHellman::from_prime(&prime, generator)
+    } else if arg0.is_object() {
+        let prime = extract_buffer_bytes(cx, arg0);
+        bao_crypto::dh::DiffieHellman::from_prime(&prime, generator)
+    } else {
+        return throw_type_error(
+            cx,
+            "createDiffieHellman() prime must be a number, Buffer, or string",
+        );
+    };
+    let dh = match dh {
+        Ok(d) => d,
+        Err(e) => return throw_type_error(cx, &format!("createDiffieHellman() failed: {}", e)),
+    };
+    let id = dh_registry_insert(dh);
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = w2::JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    store_dh_id(cx, obj.get(), id);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"generateKeys".as_ptr(), Some(dh_generate_keys), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"computeSecret".as_ptr(), Some(dh_compute_secret), 1, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPrime".as_ptr(), Some(dh_get_prime), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getGenerator".as_ptr(), Some(dh_get_generator), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPublicKey".as_ptr(), Some(dh_get_public_key), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, obj.handle(), c"getPrivateKey".as_ptr(), Some(dh_get_private_key), 0, JSPROP_ENUMERATE as u32);
+    args.rval().set(mozjs::jsval::ObjectValue(obj.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dh_generate_keys(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let id = match read_dh_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "diffiehellman.generateKeys() invalid receiver"),
+    };
+    let pub_bytes = match dh_registry_with_mut(id, &mut |dh| dh.generate_keys()) {
+        Some(Ok(b)) => b,
+        Some(Err(e)) => return throw_type_error(cx, &format!("generateKeys() failed: {}", e)),
+        None => return throw_type_error(cx, "generateKeys() stale context"),
+    };
+    let arr = bytes_to_js_array(cx, &pub_bytes);
+    if arr.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(arr));
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dh_compute_secret(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let id = match read_dh_id_from_this(cx, &args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "diffiehellman.computeSecret() invalid receiver"),
+    };
+    if argc < 1 {
+        return throw_type_error(cx, "computeSecret() requires peer public key");
+    }
+    let peer_pub = extract_buffer_bytes(cx, *args.get(0).ptr);
+    let secret = DH_REGISTRY.with(|reg| {
+        reg.borrow().get(id as usize).and_then(|s| s.as_ref()).and_then(|dh| {
+            dh.compute_secret(&peer_pub).ok()
+        })
+    });
+    let secret = match secret {
+        Some(s) => s,
+        None => return throw_type_error(cx, "computeSecret() failed"),
+    };
+    let arr = bytes_to_js_array(cx, &secret);
+    if arr.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(arr));
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn dh_read_bytes_prop(
+    cx: *mut JSContext,
+    args: &CallArgs,
+    f: &dyn Fn(&bao_crypto::dh::DiffieHellman) -> Vec<u8>,
+) -> bool {
+    let id = match read_dh_id_from_this(cx, args) {
+        Some(id) => id,
+        None => return throw_type_error(cx, "invalid diffiehellman receiver"),
+    };
+    let bytes = DH_REGISTRY.with(|reg| {
+        reg.borrow().get(id as usize).and_then(|s| s.as_ref()).map(f)
+    });
+    let bytes = match bytes {
+        Some(b) => b,
+        None => return throw_type_error(cx, "stale diffiehellman context"),
+    };
+    let arr = bytes_to_js_array(cx, &bytes);
+    if arr.is_null() {
+        args.rval().set(UndefinedValue());
+    } else {
+        args.rval().set(mozjs::jsval::ObjectValue(arr));
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dh_get_prime(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    dh_read_bytes_prop(cx, &args, &|dh| dh.prime().to_vec())
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dh_get_generator(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    dh_read_bytes_prop(cx, &args, &|dh| dh.generator().to_vec())
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dh_get_public_key(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    dh_read_bytes_prop(cx, &args, &|dh| dh.public_key())
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dh_get_private_key(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    dh_read_bytes_prop(cx, &args, &|dh| dh.private_key())
 }
 
 #[cfg(test)]

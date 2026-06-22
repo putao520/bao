@@ -4,7 +4,7 @@
 // Tier 1: Rust unit-level — StealthProfile data integrity (no Servo required)
 // Tier 2: StealthEngine integration — cross-module wiring verification
 // Tier 3: TLS/HTTP2 fingerprint data verification
-// Tier 4: Browser integration (#[ignore], requires Servo display server)
+// Tier 4: Browser integration (graceful skip, requires Servo display server)
 
 use bao_stealth::{StealthProfile, StealthEngine, TlsFingerprintConfig};
 

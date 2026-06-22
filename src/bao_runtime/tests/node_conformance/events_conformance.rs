@@ -223,7 +223,6 @@ fn test_events_conformance_suite() {
 }
 
 #[test]
-#[ignore = "bao_runtime: EventEmitter.captureRejections option not implemented. See GAP_REPORT.md"]
 fn test_events_conformance_capture_rejections() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -243,7 +242,6 @@ fn test_events_conformance_capture_rejections() {
 }
 
 #[test]
-#[ignore = "bao_runtime: EventEmitter.errorMonitor symbol not implemented. See GAP_REPORT.md"]
 fn test_events_conformance_error_monitor() {
     let mut ctx = make_ctx();
     let src = format!(
@@ -262,7 +260,6 @@ fn test_events_conformance_error_monitor() {
 }
 
 #[test]
-#[ignore = "bao_runtime: EventEmitter.defaultMaxListeners not exposed on constructor (Node.js: number). See GAP_REPORT.md"]
 fn test_events_conformance_default_max_listeners_deviation() {
     let mut ctx = make_ctx();
     use common::eval_string;
