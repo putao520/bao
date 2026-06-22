@@ -374,8 +374,4 @@ unnecessary_cast = "allow"
 new_ret_no_self = "allow"
 map_identity = "allow"
 
-# ─── Patch: unify mozjs across Bao + servo ─────────────────────────────────
-[patch.crates-io]
-mozjs = { path = "vendor/mozjs/mozjs" }
-mozjs_sys = { path = "vendor/mozjs/mozjs-sys" }
 
