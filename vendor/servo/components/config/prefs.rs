@@ -1,0 +1,613 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+
+//! Preferences are the global configuration options that can be changed at runtime.
+
+use std::env::consts::ARCH;
+use std::sync::{RwLock, RwLockReadGuard};
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use servo_config_macro::ServoPreferences;
+
+pub use crate::pref_util::PrefValue;
+
+static PREFERENCES: RwLock<Preferences> = RwLock::new(Preferences::const_default());
+
+/// A trait to be implemented by components that wish to be notified about runtime changes to the
+/// global preferences for the current process.
+pub trait PreferencesObserver: Send + Sync {
+    /// This method is called when the global preferences have been updated. The argument to the
+    /// method is an array of tuples where the first component is the name of the preference and
+    /// the second component is the new value of the preference.
+    fn prefs_changed(&self, _changes: &[(&'static str, PrefValue)]) {}
+}
+
+static OBSERVERS: RwLock<Vec<Box<dyn PreferencesObserver>>> = RwLock::new(Vec::new());
+
+#[inline]
+/// Get the current set of global preferences for Servo.
+pub fn get() -> RwLockReadGuard<'static, Preferences> {
+    PREFERENCES.read().unwrap()
+}
+
+/// Subscribe to notifications about changes to the global preferences for the current process.
+pub fn add_observer(observer: Box<dyn PreferencesObserver>) {
+    OBSERVERS.write().unwrap().push(observer);
+}
+
+/// Update the values of the global preferences for the current process. This also notifies the
+/// observers previously added using [`add_observer`].
+pub fn set(preferences: Preferences) {
+    // Map between Stylo preference names and Servo preference names as the This should be
+    // kept in sync with components/script/dom/bindings/codegen/run.py which generates the
+    // DOM CSS style accessors.
+    stylo_static_prefs::set_pref!("layout.unimplemented", preferences.layout_unimplemented);
+    stylo_static_prefs::set_pref!("layout.threads", preferences.layout_threads as i32);
+    stylo_static_prefs::set_pref!("layout.columns.enabled", preferences.layout_columns_enabled);
+    stylo_static_prefs::set_pref!("layout.grid.enabled", preferences.layout_grid_enabled);
+    stylo_static_prefs::set_pref!(
+        "layout.css.attr.enabled",
+        preferences.layout_css_attr_enabled
+    );
+    stylo_static_prefs::set_pref!(
+        "layout.writing-mode.enabled",
+        preferences.layout_writing_mode_enabled
+    );
+    stylo_static_prefs::set_pref!(
+        "layout.container-queries.enabled",
+        preferences.layout_container_queries_enabled
+    );
+    stylo_static_prefs::set_pref!(
+        "layout.variable_fonts.enabled",
+        preferences.layout_variable_fonts_enabled
+    );
+
+    let changed = preferences.diff(&PREFERENCES.read().unwrap());
+
+    *PREFERENCES.write().unwrap() = preferences;
+
+    for observer in &*OBSERVERS.read().unwrap() {
+        observer.prefs_changed(&changed);
+    }
+}
+
+/// A convenience macro for accessing a preference value using its static path.
+/// Passing an invalid path is a compile-time error.
+#[macro_export]
+macro_rules! pref {
+    ($name: ident) => {
+        $crate::prefs::get().$name.clone()
+    };
+}
+
+/// The set of global preferences supported by Servo.
+///
+/// Each preference has a default value that determines its initial state. These defaults
+/// fall into roughly three categories:
+/// - **Stable**: enabled by default.
+/// - **Experimental**: disabled by default, but intended to be enabled for experimental use.
+/// - **Unstable**: disabled by default.
+///
+/// For a full overview of which preferences are experimental, see the
+/// [experimental features documentation](https://book.servo.org/design-documentation/experimental-features.html).
+#[derive(Clone, Deserialize, Serialize, ServoPreferences)]
+pub struct Preferences {
+    pub fonts_default: String,
+    pub fonts_serif: String,
+    pub fonts_sans_serif: String,
+    pub fonts_monospace: String,
+    pub fonts_default_size: i64,
+    pub fonts_default_monospace_size: i64,
+    /// The amount of time that a half cycle of a text caret blink takes in milliseconds.
+    /// If this value is less than or equal to zero, then caret blink is disabled.
+    pub editing_caret_blink_time: i64,
+    pub css_animations_testing_enabled: bool,
+    /// Start the devtools server at startup
+    pub devtools_server_enabled: bool,
+    /// The address:port the devtools server listens to, default to 127.0.0.1:7000.
+    pub devtools_server_listen_address: String,
+    // feature: WebGPU | #24706 | Web/API/WebGPU_API
+    pub dom_webgpu_enabled: bool,
+    /// List of comma-separated backends to be used by wgpu.
+    pub dom_webgpu_wgpu_backend: String,
+    // feature: AbortController | #34866 | Web/API/AbortController
+    pub dom_abort_controller_enabled: bool,
+    // feature: Adopted Stylesheet | #38132 | Web/API/Document/adoptedStyleSheets
+    pub dom_adoptedstylesheet_enabled: bool,
+    pub dom_allow_preloading_module_descendants: bool,
+    // feature: Clipboard API | #36084 | Web/API/Clipboard_API
+    pub dom_async_clipboard_enabled: bool,
+    pub dom_bluetooth_enabled: bool,
+    pub dom_bluetooth_testing_enabled: bool,
+    pub dom_allow_scripts_to_close_windows: bool,
+    // feature: Media Capture and Streams API | #26861 | Web/API/Media_Capture_and_Streams_API
+    pub dom_canvas_capture_enabled: bool,
+    pub dom_canvas_text_enabled: bool,
+    /// Selects canvas backend
+    ///
+    /// Available values:
+    /// - ` `/`auto`
+    /// - vello
+    /// - vello_cpu
+    pub dom_canvas_backend: String,
+    pub dom_clipboardevent_enabled: bool,
+    pub dom_composition_event_enabled: bool,
+    // feature: CookieStore | #37674 | Web/API/CookieStore
+    pub dom_cookiestore_enabled: bool,
+    // feature: Credential Management API | #38788 | Web/API/Credential_Management_API
+    pub dom_credential_management_enabled: bool,
+    // feature: WebCrypto API | #40687 | Web/API/Web_Crypto_API
+    pub dom_crypto_subtle_enabled: bool,
+    pub dom_document_dblclick_timeout: i64,
+    pub dom_document_dblclick_dist: i64,
+    // feature: Document.execCommand | #25005 | Web/API/Document/execCommand
+    pub dom_exec_command_enabled: bool,
+    // feature: CSS Font Loading API | #29376 | Web/API/CSS_Font_Loading_API
+    pub dom_fontface_enabled: bool,
+    pub dom_fullscreen_test: bool,
+    // feature: Gamepad API | #10977 | Web/API/Gamepad_API
+    pub dom_gamepad_enabled: bool,
+    // feature: Geolocation API | #38903 | Web/API/Geolocation_API
+    pub dom_geolocation_enabled: bool,
+    // feature: Screen Wake Lock API | #43615 | Web/API/Screen_Wake_Lock_API
+    pub dom_wakelock_enabled: bool,
+    // feature: IndexedDB | #6963 | Web/API/IndexedDB_API
+    pub dom_indexeddb_enabled: bool,
+    // feature: IntersectionObserver | #35767 | Web/API/Intersection_Observer_API
+    pub dom_intersection_observer_enabled: bool,
+    pub dom_microdata_testing_enabled: bool,
+    pub dom_uievent_which_enabled: bool,
+    // feature: MutationObserver | #6633 | Web/API/MutationObserver
+    pub dom_mutation_observer_enabled: bool,
+    // feature: Navigator.registerProtocolHandler() | #40615 | Web/API/Navigator/registerProtocolHandler
+    pub dom_navigator_protocol_handlers_enabled: bool,
+    // feature: Notification API | #34841 | Web/API/Notifications_API
+    pub dom_notification_enabled: bool,
+    // feature: OffscreenCanvas | #34111 | Web/API/OffscreenCanvas
+    pub dom_offscreen_canvas_enabled: bool,
+    pub dom_parallel_css_parsing_enabled: bool,
+    // feature: Permissions API | #31235 | Web/API/Permissions_API
+    pub dom_permissions_enabled: bool,
+    pub dom_permissions_testing_allowed_in_nonsecure_contexts: bool,
+    // feature: ResizeObserver | #39790 | Web/API/ResizeObserver
+    pub dom_resize_observer_enabled: bool,
+    // feature: Sanitizer API | #43948 | Web/API/HTML_Sanitizer_API
+    pub dom_sanitizer_enabled: bool,
+    pub dom_script_asynch: bool,
+    // feature: Storage API | #43976 | Web/API/Storage_API
+    pub dom_storage_manager_api_enabled: bool,
+    // feature: ServiceWorker | #36538 | Web/API/Service_Worker_API
+    pub dom_serviceworker_enabled: bool,
+    pub dom_serviceworker_timeout_seconds: i64,
+    // feature: SharedWorker | #7458 | Web/API/SharedWorker
+    pub dom_sharedworker_enabled: bool,
+    pub dom_servo_helpers_enabled: bool,
+    pub dom_servoparser_async_html_tokenizer_enabled: bool,
+    pub dom_testbinding_enabled: bool,
+    pub dom_testbinding_prefcontrolled_enabled: bool,
+    pub dom_testbinding_prefcontrolled2_enabled: bool,
+    pub dom_testbinding_preference_value_falsy: bool,
+    pub dom_testbinding_preference_value_quote_string_test: String,
+    pub dom_testbinding_preference_value_space_string_test: String,
+    pub dom_testbinding_preference_value_string_empty: String,
+    pub dom_testbinding_preference_value_string_test: String,
+    pub dom_testbinding_preference_value_truthy: bool,
+    pub dom_testing_element_activation_enabled: bool,
+    pub dom_testing_html_input_element_select_files_enabled: bool,
+    pub dom_testperf_enabled: bool,
+    // https://testutils.spec.whatwg.org#availability
+    pub dom_testutils_enabled: bool,
+    /// <https://html.spec.whatwg.org/multipage/#transient-activation-duration>
+    pub dom_transient_activation_duration_ms: i64,
+    /// Enable WebGL2 APIs.
+    // feature: WebGL2 | #41394 | Web/API/WebGL2RenderingContext
+    pub dom_webgl2_enabled: bool,
+    // feature: WebRTC | #41396 | Web/API/WebRTC_API
+    pub dom_webrtc_enabled: bool,
+    // feature: WebRTC Transceiver | #41396 | Web/API/RTCRtpTransceiver
+    pub dom_webrtc_transceiver_enabled: bool,
+    // feature: WebVTT | #22312 | Web/API/WebVTT_API
+    pub dom_webvtt_enabled: bool,
+    pub dom_webxr_enabled: bool,
+    pub dom_webxr_test: bool,
+    pub dom_webxr_first_person_observer_view: bool,
+    pub dom_webxr_glwindow_enabled: bool,
+    pub dom_webxr_glwindow_left_right: bool,
+    pub dom_webxr_glwindow_red_cyan: bool,
+    pub dom_webxr_glwindow_spherical: bool,
+    pub dom_webxr_glwindow_cubemap: bool,
+    pub dom_webxr_hands_enabled: bool,
+    // feature: WebXR Layers | #27468 | Web/API/XRCompositionLayer
+    pub dom_webxr_layers_enabled: bool,
+    pub dom_webxr_openxr_enabled: bool,
+    pub dom_webxr_sessionavailable: bool,
+    pub dom_webxr_unsafe_assume_user_intent: bool,
+    pub dom_worklet_enabled: bool,
+    pub dom_worklet_blockingsleep_enabled: bool,
+    pub dom_worklet_testing_enabled: bool,
+    pub dom_worklet_timeout_ms: i64,
+    /// <https://drafts.csswg.org/cssom-view/#the-visualviewport-interface>
+    // feature: VisualViewport | #41341 | Web/API/VisualViewport
+    pub dom_visual_viewport_enabled: bool,
+    /// True to compile all WebRender shaders when Servo initializes. This is mostly
+    /// useful when modifying the shaders, to ensure they all compile after each change is
+    /// made.
+    pub gfx_precache_shaders: bool,
+    /// Whether or not antialiasing is enabled for text rendering.
+    pub gfx_text_antialiasing_enabled: bool,
+    /// Whether or not subpixel antialiasing is enabled for text rendering.
+    pub gfx_subpixel_text_antialiasing_enabled: bool,
+    pub gfx_texture_swizzling_enabled: bool,
+    /// The amount of image keys we request per batch for the image cache.
+    pub image_key_batch_size: i64,
+    /// Whether or not the DOM inspector should show shadow roots of user-agent shadow trees
+    pub inspector_show_servo_internal_shadow_roots: bool,
+    /// A locale tag (eg. es-ES) to use for language negotiation instead of the system locale.
+    /// An empty string represents no override.
+    /// TODO: Option<> support in PrefValue
+    pub intl_locale_override: String,
+    pub js_asmjs_enabled: bool,
+    pub js_baseline_interpreter_enabled: bool,
+    /// Whether to disable the jit within SpiderMonkey
+    pub js_disable_jit: bool,
+    pub js_baseline_jit_enabled: bool,
+    pub js_baseline_jit_unsafe_eager_compilation_enabled: bool,
+    pub js_ion_enabled: bool,
+    pub js_ion_unsafe_eager_compilation_enabled: bool,
+    pub js_mem_gc_compacting_enabled: bool,
+    pub js_mem_gc_empty_chunk_count_min: i64,
+    pub js_mem_gc_high_frequency_heap_growth_max: i64,
+    pub js_mem_gc_high_frequency_heap_growth_min: i64,
+    pub js_mem_gc_high_frequency_high_limit_mb: i64,
+    pub js_mem_gc_high_frequency_low_limit_mb: i64,
+    pub js_mem_gc_high_frequency_time_limit_ms: i64,
+    pub js_mem_gc_incremental_enabled: bool,
+    pub js_mem_gc_incremental_slice_ms: i64,
+    pub js_mem_gc_low_frequency_heap_growth: i64,
+    pub js_mem_gc_per_zone_enabled: bool,
+    pub js_mem_gc_zeal_frequency: i64,
+    pub js_mem_gc_zeal_level: i64,
+    pub js_mem_max: i64,
+    pub js_native_regex_enabled: bool,
+    pub js_offthread_compilation_enabled: bool,
+    pub js_timers_minimum_duration: i64,
+    pub js_wasm_baseline_enabled: bool,
+    pub js_wasm_enabled: bool,
+    pub js_wasm_ion_enabled: bool,
+    // feature: Largest Contentful Paint | #42000 | Web/API/LargestContentfulPaint
+    pub largest_contentful_paint_enabled: bool,
+    pub layout_animations_test_enabled: bool,
+    // feature: CSS Multicol | #22397 | Web/CSS/Guides/Multicol_layout
+    pub layout_columns_enabled: bool,
+    // feature: CSS Grid | #34479 | Web/CSS/Guides/Grid_layout
+    pub layout_grid_enabled: bool,
+    pub layout_container_queries_enabled: bool,
+    pub layout_css_attr_enabled: bool,
+    pub layout_style_sharing_cache_enabled: bool,
+    pub layout_threads: i64,
+    pub layout_unimplemented: bool,
+    // feature: Variable fonts | #38800 | Web/CSS/Guides/Fonts/Variable_fonts
+    pub layout_variable_fonts_enabled: bool,
+    // feature: CSS writing modes | #2560 | Web/CSS/Guides/Writing_modes
+    pub layout_writing_mode_enabled: bool,
+    /// Enable hardware acceleration for video playback.
+    pub media_glvideo_enabled: bool,
+    /// Enable a non-standard event handler for verifying behavior of media elements during tests.
+    pub media_testing_enabled: bool,
+    /// The default timeout set for establishing a network connection in seconds. This amount
+    /// if for the entire process of connecting to an address. For instance, if a particular host is
+    /// associated with multiple IP addresses, this timeout will be divided equally among
+    /// each IP address.
+    pub network_connection_timeout: u64,
+    pub network_enforce_tls_enabled: bool,
+    pub network_enforce_tls_localhost: bool,
+    pub network_enforce_tls_onion: bool,
+    pub network_http_cache_disabled: bool,
+    /// A url for a http proxy. We treat an empty string as no proxy.
+    pub network_http_proxy_uri: String,
+    /// A url for a https proxy. We treat an empty string as no proxy.
+    pub network_https_proxy_uri: String,
+    /// The domains for which we will not have a proxy. No effect if `network_http_proxy_uri` is not set.
+    /// The exact behavior is given by
+    /// <https://docs.rs/hyper-util/latest/hyper_util/client/proxy/matcher/struct.Builder.html#method.no>
+    pub network_http_no_proxy: String,
+    /// The weight of the http memory cache
+    /// Notice that this is not equal to the number of different urls in the cache.
+    pub network_http_cache_size: u64,
+    pub network_local_directory_listing_enabled: bool,
+    /// Force the use of `rust-webpki` verification for CA roots. If this is false (the
+    /// default), then `rustls-platform-verifier` will be used, except on Android where
+    /// `rust-webpki` is always used.
+    pub network_use_webpki_roots: bool,
+    /// The length of the session history, in navigations, for each `WebView. Back-forward
+    /// cache entries that are more than `session_history_max_length` steps in the future or
+    /// `session_history_max_length` steps in the past will be discarded. Navigating forward
+    /// or backward to that entry will cause the entire page to be reloaded.
+    pub session_history_max_length: i64,
+    /// The background color of shell's viewport. This will be used by OpenGL's `glClearColor`.
+    pub shell_background_color_rgba: [f64; 4],
+    pub webgl_testing_context_creation_error: bool,
+    /// Maximum number of workers for the main thread pool
+    pub thread_pool_workers_max: u64,
+    /// Number of workers per thread pool, if we fail to detect how much
+    /// parallelism is available at runtime.
+    pub thread_pool_fallback_workers: u64,
+    /// Maximum number of workers for the asynchronous networking runtime thread pool
+    pub thread_pool_async_runtime_workers_max: u64,
+    /// Maximum number of workers for WebRender
+    pub thread_pool_webrender_workers_max: u64,
+    /// The user-agent to use for Servo. This can also be set via [`UserAgentPlatform`] in
+    /// order to set the value to the default value for the given platform.
+    pub user_agent: String,
+    /// Whether or not the viewport meta tag is enabled.
+    pub viewport_meta_enabled: bool,
+    pub log_filter: String,
+    /// Whether the accessibility code is enabled.
+    pub accessibility_enabled: bool,
+    /// Whether to run accessibility tree integrity checks, and any other expensive checks.
+    /// This should only be true in tests.
+    pub expensive_accessibility_test_assertions_enabled: bool,
+}
+
+impl Preferences {
+    const fn const_default() -> Self {
+        Self {
+            css_animations_testing_enabled: false,
+            editing_caret_blink_time: 600,
+            devtools_server_enabled: false,
+            devtools_server_listen_address: String::new(),
+            dom_abort_controller_enabled: true,
+            dom_adoptedstylesheet_enabled: false,
+            dom_allow_preloading_module_descendants: false,
+            dom_allow_scripts_to_close_windows: false,
+            dom_async_clipboard_enabled: false,
+            dom_bluetooth_enabled: false,
+            dom_bluetooth_testing_enabled: false,
+            dom_canvas_capture_enabled: false,
+            dom_canvas_text_enabled: true,
+            dom_canvas_backend: String::new(),
+            dom_clipboardevent_enabled: true,
+            dom_composition_event_enabled: false,
+            dom_cookiestore_enabled: false,
+            dom_credential_management_enabled: false,
+            dom_crypto_subtle_enabled: true,
+            dom_document_dblclick_dist: 1,
+            dom_document_dblclick_timeout: 300,
+            dom_exec_command_enabled: false,
+            dom_fontface_enabled: false,
+            dom_fullscreen_test: false,
+            dom_gamepad_enabled: true,
+            dom_geolocation_enabled: false,
+            dom_wakelock_enabled: false,
+            dom_indexeddb_enabled: false,
+            dom_intersection_observer_enabled: false,
+            dom_microdata_testing_enabled: false,
+            dom_uievent_which_enabled: true,
+            dom_mutation_observer_enabled: true,
+            dom_navigator_protocol_handlers_enabled: false,
+            dom_notification_enabled: false,
+            dom_parallel_css_parsing_enabled: true,
+            dom_offscreen_canvas_enabled: false,
+            dom_permissions_enabled: false,
+            dom_permissions_testing_allowed_in_nonsecure_contexts: false,
+            dom_resize_observer_enabled: true,
+            dom_sanitizer_enabled: false,
+            dom_script_asynch: true,
+            dom_storage_manager_api_enabled: false,
+            dom_serviceworker_enabled: false,
+            dom_serviceworker_timeout_seconds: 60,
+            dom_sharedworker_enabled: false,
+            dom_servo_helpers_enabled: false,
+            dom_servoparser_async_html_tokenizer_enabled: false,
+            dom_testbinding_enabled: false,
+            dom_testbinding_prefcontrolled2_enabled: false,
+            dom_testbinding_prefcontrolled_enabled: false,
+            dom_testbinding_preference_value_falsy: false,
+            dom_testbinding_preference_value_quote_string_test: String::new(),
+            dom_testbinding_preference_value_space_string_test: String::new(),
+            dom_testbinding_preference_value_string_empty: String::new(),
+            dom_testbinding_preference_value_string_test: String::new(),
+            dom_testbinding_preference_value_truthy: false,
+            dom_testing_element_activation_enabled: false,
+            dom_testing_html_input_element_select_files_enabled: false,
+            dom_testperf_enabled: false,
+            dom_testutils_enabled: false,
+            dom_transient_activation_duration_ms: 5000,
+            dom_webgl2_enabled: false,
+            dom_webgpu_enabled: false,
+            dom_webgpu_wgpu_backend: String::new(),
+            dom_webrtc_enabled: false,
+            dom_webrtc_transceiver_enabled: false,
+            dom_webvtt_enabled: false,
+            dom_webxr_enabled: true,
+            dom_webxr_first_person_observer_view: false,
+            dom_webxr_glwindow_cubemap: false,
+            dom_webxr_glwindow_enabled: true,
+            dom_webxr_glwindow_left_right: false,
+            dom_webxr_glwindow_red_cyan: false,
+            dom_webxr_glwindow_spherical: false,
+            dom_webxr_hands_enabled: true,
+            dom_webxr_layers_enabled: false,
+            dom_webxr_openxr_enabled: true,
+            dom_webxr_sessionavailable: false,
+            dom_webxr_test: false,
+            dom_webxr_unsafe_assume_user_intent: false,
+            dom_worklet_blockingsleep_enabled: false,
+            dom_worklet_enabled: false,
+            dom_worklet_testing_enabled: false,
+            dom_worklet_timeout_ms: 10,
+            dom_visual_viewport_enabled: false,
+            accessibility_enabled: false,
+            expensive_accessibility_test_assertions_enabled: false,
+            fonts_default: String::new(),
+            fonts_default_monospace_size: 13,
+            fonts_default_size: 16,
+            fonts_monospace: String::new(),
+            fonts_sans_serif: String::new(),
+            fonts_serif: String::new(),
+            gfx_precache_shaders: false,
+            gfx_text_antialiasing_enabled: true,
+            gfx_subpixel_text_antialiasing_enabled: true,
+            gfx_texture_swizzling_enabled: true,
+            image_key_batch_size: 10,
+            inspector_show_servo_internal_shadow_roots: false,
+            intl_locale_override: String::new(),
+            js_asmjs_enabled: true,
+            js_baseline_interpreter_enabled: true,
+            js_baseline_jit_enabled: true,
+            js_baseline_jit_unsafe_eager_compilation_enabled: false,
+            js_disable_jit: false,
+            js_ion_enabled: true,
+            js_ion_unsafe_eager_compilation_enabled: false,
+            js_mem_gc_compacting_enabled: true,
+            js_mem_gc_empty_chunk_count_min: 1,
+            js_mem_gc_high_frequency_heap_growth_max: 300,
+            js_mem_gc_high_frequency_heap_growth_min: 150,
+            js_mem_gc_high_frequency_high_limit_mb: 500,
+            js_mem_gc_high_frequency_low_limit_mb: 100,
+            js_mem_gc_high_frequency_time_limit_ms: 1000,
+            js_mem_gc_incremental_enabled: true,
+            js_mem_gc_incremental_slice_ms: 10,
+            js_mem_gc_low_frequency_heap_growth: 150,
+            js_mem_gc_per_zone_enabled: false,
+            js_mem_gc_zeal_frequency: 100,
+            js_mem_gc_zeal_level: 0,
+            js_mem_max: -1,
+            js_native_regex_enabled: true,
+            js_offthread_compilation_enabled: true,
+            js_timers_minimum_duration: 1000,
+            js_wasm_baseline_enabled: true,
+            js_wasm_enabled: true,
+            js_wasm_ion_enabled: true,
+            largest_contentful_paint_enabled: false,
+            layout_animations_test_enabled: false,
+            layout_columns_enabled: false,
+            layout_container_queries_enabled: false,
+            layout_css_attr_enabled: false,
+            layout_grid_enabled: false,
+            layout_style_sharing_cache_enabled: true,
+            // TODO(mrobinson): This should likely be based on the number of processors.
+            layout_threads: 3,
+            layout_unimplemented: false,
+            layout_variable_fonts_enabled: false,
+            layout_writing_mode_enabled: false,
+            media_glvideo_enabled: false,
+            media_testing_enabled: false,
+            network_connection_timeout: 15,
+            network_enforce_tls_enabled: false,
+            network_enforce_tls_localhost: false,
+            network_enforce_tls_onion: false,
+            network_http_cache_disabled: false,
+            network_http_proxy_uri: String::new(),
+            network_https_proxy_uri: String::new(),
+            network_http_no_proxy: String::new(),
+            network_http_cache_size: 5000,
+            network_local_directory_listing_enabled: true,
+            network_use_webpki_roots: false,
+            session_history_max_length: 20,
+            shell_background_color_rgba: [1.0, 1.0, 1.0, 1.0],
+            log_filter: String::new(),
+            thread_pool_workers_max: 4,
+            thread_pool_async_runtime_workers_max: 6,
+            thread_pool_fallback_workers: 3,
+            thread_pool_webrender_workers_max: 4,
+            webgl_testing_context_creation_error: false,
+            user_agent: String::new(),
+            viewport_meta_enabled: false,
+        }
+    }
+
+    /// The amount of time that a half cycle of a text caret blink takes. If blinking is disabled
+    /// this returns `None`.
+    pub fn editing_caret_blink_time(&self) -> Option<Duration> {
+        if self.editing_caret_blink_time > 0 {
+            Some(Duration::from_millis(self.editing_caret_blink_time as u64))
+        } else {
+            None
+        }
+    }
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        let mut preferences = Self::const_default();
+        preferences.user_agent = UserAgentPlatform::default().to_user_agent_string();
+        if let Ok(proxy_uri) = std::env::var("http_proxy").or_else(|_| std::env::var("HTTP_PROXY"))
+        {
+            preferences.network_http_proxy_uri = proxy_uri;
+        }
+        if let Ok(proxy_uri) =
+            std::env::var("https_proxy").or_else(|_| std::env::var("HTTPS_PROXY"))
+        {
+            preferences.network_https_proxy_uri = proxy_uri;
+        }
+        if let Ok(no_proxy) = std::env::var("no_proxy").or_else(|_| std::env::var("NO_PROXY")) {
+            preferences.network_http_no_proxy = no_proxy
+        }
+
+        preferences
+    }
+}
+
+pub enum UserAgentPlatform {
+    Desktop,
+    Android,
+    OpenHarmony,
+    Ios,
+}
+
+impl UserAgentPlatform {
+    /// Return the default `UserAgentPlatform` for this platform. This is
+    /// not an implementation of `Default` so that it can be `const`.
+    pub const fn default() -> Self {
+        if cfg!(target_os = "android") {
+            Self::Android
+        } else if cfg!(target_env = "ohos") {
+            Self::OpenHarmony
+        } else if cfg!(target_os = "ios") {
+            Self::Ios
+        } else {
+            Self::Desktop
+        }
+    }
+}
+
+impl UserAgentPlatform {
+    /// Convert this [`UserAgentPlatform`] into its corresponding `String` value, ie the
+    /// default user-agent to use for this platform.
+    pub fn to_user_agent_string(&self) -> String {
+        const SERVO_VERSION: &str = env!("CARGO_PKG_VERSION");
+        match self {
+            UserAgentPlatform::Desktop
+                if cfg!(all(target_os = "windows", target_arch = "x86_64")) =>
+            {
+                format!(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; {ARCH}rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+                )
+            },
+            UserAgentPlatform::Desktop if cfg!(target_os = "macos") => {
+                format!(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+                )
+            },
+            UserAgentPlatform::Desktop => {
+                format!(
+                    "Mozilla/5.0 (X11; Linux {ARCH}; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+                )
+            },
+            UserAgentPlatform::Android => {
+                format!(
+                    "Mozilla/5.0 (Android 10; Mobile; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+                )
+            },
+            UserAgentPlatform::OpenHarmony => format!(
+                "Mozilla/5.0 (OpenHarmony; Mobile; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+            ),
+            UserAgentPlatform::Ios => format!(
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X; rv:140.0) Servo/{SERVO_VERSION} Firefox/140.0"
+            ),
+        }
+    }
+}

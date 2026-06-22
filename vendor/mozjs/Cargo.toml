@@ -1,0 +1,15 @@
+[workspace]
+members = ["mozjs-sys", "mozjs"]
+resolver = "2"
+
+[workspace.package]
+repository = "https://github.com/servo/mozjs/"
+license = "MPL-2.0"
+edition = "2021"
+
+[workspace.dependencies]
+cc = "1"
+libc = "0.2"
+bindgen = { version = "0.72.1", default-features = false, features = [
+    "runtime",
+] }

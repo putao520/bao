@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-servo = { path = "../../../servo/components/servo", default-features = false, features = ["baked-in-resources"] }
-servo-url = { path = "../../../servo/components/url" }
+servo = { path = "../../vendor/servo/components/servo", default-features = false, features = ["baked-in-resources"] }
+servo-url = { path = "../../vendor/servo/components/url" }
 dpi = "0.1"
 url = "2"
 dashmap.workspace = true
@@ -19,7 +19,7 @@ bao_native_stubs = { path = "../bao_native_stubs" }
 cdp-server = { path = "../cdp-server" }
 bun_core.workspace = true
 bun_sys.workspace = true
-mozjs = { path = "../../../mozjs/mozjs" }
+mozjs = { path = "../../vendor/mozjs/mozjs" }
 serde = "1"
 log = "0.4"
 

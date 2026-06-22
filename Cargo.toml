@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/servo", "vendor/mozjs"]
 members = [
     "src/bao_engine",
     "src/bao_engine_macros",
@@ -87,8 +88,8 @@ license = "MIT OR MPL-2.0"
 repository = "https://github.com/user/bao"
 
 [workspace.dependencies]
-mozjs = { path = "../mozjs/mozjs" }
-mozjs_sys = { path = "../mozjs/mozjs-sys" }
+mozjs = { path = "vendor/mozjs/mozjs" }
+mozjs_sys = { path = "vendor/mozjs/mozjs-sys" }
 bao_crypto = { path = "src/bao_crypto" }
 bao_boringssl_bridge = { path = "src/bao_boringssl_bridge" }
 bao_native_stubs = { path = "src/bao_native_stubs" }
@@ -375,6 +376,6 @@ map_identity = "allow"
 
 # ─── Patch: unify mozjs across Bao + servo ─────────────────────────────────
 [patch.crates-io]
-mozjs = { path = "../mozjs/mozjs" }
-mozjs_sys = { path = "../mozjs/mozjs-sys" }
+mozjs = { path = "vendor/mozjs/mozjs" }
+mozjs_sys = { path = "vendor/mozjs/mozjs-sys" }
 

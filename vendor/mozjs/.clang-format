@@ -1,0 +1,10 @@
+# Adapted from https://hg.mozilla.org/mozilla-central/file/12bd668f66103e727d3198e600cb25aa4ea8b6dc/.clang-format
+
+BasedOnStyle: Google
+ColumnLimit: 80
+
+IndentPPDirectives: AfterHash
+StatementMacros: [MARKUPMAP, ASSERT_TRUE, ASSERT_FALSE, TEST, CHECK]
+
+DerivePointerAlignment: false
+PointerAlignment: Left

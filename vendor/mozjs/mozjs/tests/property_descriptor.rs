@@ -1,0 +1,111 @@
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+use std::ptr;
+
+use mozjs::jsapi::JSObject;
+use mozjs::jsapi::{OnNewGlobalHookOption, PropertyDescriptor};
+use mozjs::jsapi::{JSPROP_ENUMERATE, JSPROP_PERMANENT, JSPROP_READONLY};
+use mozjs::jsval::{Int32Value, NullValue};
+use mozjs::realm::AutoRealm;
+use mozjs::rooted;
+use mozjs::rust::wrappers2::{
+    FromPropertyDescriptor, JS_DefineProperty, JS_GetProperty, JS_GetPropertyDescriptor,
+    JS_NewGlobalObject, JS_NewPlainObject,
+};
+use mozjs::rust::{JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS};
+
+#[test]
+fn property_descriptor() {
+    let engine = JSEngine::init().unwrap();
+    let mut runtime = Runtime::new(engine.handle());
+    let context = runtime.cx();
+
+    #[cfg(feature = "debugmozjs")]
+    unsafe {
+        mozjs::jsapi::SetGCZeal(context.raw_cx(), 2, 1);
+    }
+
+    let h_option = OnNewGlobalHookOption::FireOnNewGlobalHook;
+    let c_option = RealmOptions::default();
+
+    unsafe {
+        rooted!(&in(context) let global = JS_NewGlobalObject(
+            context,
+            &SIMPLE_GLOBAL_CLASS,
+            ptr::null_mut(),
+            h_option,
+            &*c_option,
+        ));
+        let mut realm = AutoRealm::new_from_handle(context, global.handle());
+        let context = &mut realm;
+
+        rooted!(&in(context) let object = JS_NewPlainObject(context));
+        rooted!(&in(context) let property = Int32Value(32));
+
+        let attrs = (JSPROP_ENUMERATE | JSPROP_PERMANENT | JSPROP_READONLY) as u32;
+        assert!(JS_DefineProperty(
+            context,
+            object.handle().into(),
+            c"property".as_ptr(),
+            property.handle().into(),
+            attrs
+        ));
+
+        rooted!(&in(context) let mut descriptor: PropertyDescriptor);
+
+        rooted!(&in(context) let mut holder: *mut JSObject = ptr::null_mut());
+        let mut is_none = true;
+        assert!(JS_GetPropertyDescriptor(
+            context,
+            object.handle().into(),
+            c"property".as_ptr(),
+            descriptor.handle_mut().into(),
+            holder.handle_mut().into(),
+            &mut is_none
+        ));
+        assert!(descriptor.get().enumerable_());
+        assert!(!descriptor.get().configurable_());
+        assert!(!descriptor.get().writable_());
+        assert_eq!(descriptor.get().value_.to_int32(), 32);
+
+        rooted!(&in(context) let mut desc = NullValue());
+        assert!(FromPropertyDescriptor(
+            context,
+            descriptor.handle().into(),
+            desc.handle_mut().into()
+        ));
+        rooted!(&in(context) let desc_object = desc.to_object());
+
+        rooted!(&in(context) let mut rval = NullValue());
+        assert!(JS_GetProperty(
+            context,
+            desc_object.handle().into(),
+            c"value".as_ptr(),
+            rval.handle_mut().into()
+        ));
+        assert_eq!(rval.get().to_int32(), 32);
+        assert!(JS_GetProperty(
+            context,
+            desc_object.handle().into(),
+            c"configurable".as_ptr(),
+            rval.handle_mut().into()
+        ));
+        assert!(!rval.get().to_boolean());
+        assert!(JS_GetProperty(
+            context,
+            desc_object.handle().into(),
+            c"enumerable".as_ptr(),
+            rval.handle_mut().into()
+        ));
+        assert!(rval.get().to_boolean());
+        assert!(JS_GetProperty(
+            context,
+            desc_object.handle().into(),
+            c"writable".as_ptr(),
+            rval.handle_mut().into()
+        ));
+        assert!(!rval.get().to_boolean());
+    }
+}
