@@ -159,7 +159,14 @@ thread_local! {
 /// The first thread to call this initializes the JSEngine (stored in ENGINE_TLS
 /// on that thread for lifetime), and stores a cloned handle in ENGINE_HANDLE
 /// (process-wide OnceLock). Subsequent threads just clone the handle.
-fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
+/// Get or initialize the per-process JSEngine, returning a handle.
+/// The first thread to call this initializes the JSEngine (stored in ENGINE_TLS
+/// on that thread for lifetime), and stores a cloned handle in ENGINE_HANDLE
+/// (process-wide OnceLock). Subsequent threads just clone the handle.
+///
+/// Worker threads call this to obtain the process-global JSEngine handle,
+/// then create their own `Runtime::new(handle)` on the worker thread.
+pub fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
     // Fast path: engine already initialized, just clone the handle.
     if let Some(handle) = ENGINE_HANDLE.get() {
         return Ok(handle.clone());

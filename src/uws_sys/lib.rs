@@ -420,7 +420,7 @@ pub use socket_context::BunSocketContextOptions;
 pub use socket_group::ConnectResult;
 pub use socket_group::SocketGroup;
 pub use us_socket::{CloseCode, us_socket_stream_buffer_t, us_socket_t};
-pub use web_socket::{AnyWebSocket, RawWebSocket, WebSocketBehavior};
+pub use web_socket::{AnyWebSocket, NewWebSocket, RawWebSocket, WebSocketBehavior};
 
 /// Zig `NewApp(ssl)` / `NewApp(ssl).Response` aliases.
 pub type NewApp<const SSL: bool> = app::App<SSL>;

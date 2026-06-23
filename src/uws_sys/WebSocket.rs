@@ -750,7 +750,7 @@ pub mod c {
             id: usize,
             behavior: *const WebSocketBehavior,
         );
-        pub(crate) safe fn uws_ws_get_user_data(ssl: i32, ws: &mut RawWebSocket) -> *mut c_void;
+        pub safe fn uws_ws_get_user_data(ssl: i32, ws: &mut RawWebSocket) -> *mut c_void;
         pub(crate) safe fn uws_ws_close(ssl: i32, ws: &mut RawWebSocket);
         pub(crate) fn uws_ws_send(
             ssl: i32,

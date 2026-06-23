@@ -5313,6 +5313,185 @@ if (typeof _g.DOMException === 'undefined') {
   DOMException.DATA_CLONE_ERR = 25;
   _g.DOMException = DOMException;
 }
+
+// DOMParser — lightweight HTML parser for CLI mode.
+// Browser mode: servo provides window.DOMParser natively (no override needed).
+// CLI mode: parses HTML via native __dom_parse(html, mimeType) if available,
+// otherwise falls back to a minimal document object with querySelector etc.
+if (typeof _g.DOMParser === 'undefined') {
+  function DOMParser() {}
+  DOMParser.prototype.parseFromString = function(html, mimeType) {
+    mimeType = mimeType || 'text/html';
+    // Try native Rust binding (html5ever-based) if available.
+    if (typeof __dom_parse === 'function') {
+      var result = __dom_parse(html, mimeType);
+      if (result != null) return result;
+    }
+    // Fallback: return a minimal document object.
+    // Supports text/html and application/xhtml+xml.
+    if (mimeType === 'text/xml' || mimeType === 'application/xml') {
+      // XML parsing not supported in fallback — return empty document.
+      return {
+        nodeType: 9,
+        documentElement: null,
+        body: { innerHTML: '', children: [], childNodes: [] },
+        head: { children: [], childNodes: [] },
+        querySelector: function() { return null; },
+        querySelectorAll: function() { return []; },
+        getElementsByTagName: function() { return []; },
+        getElementById: function() { return null; },
+        getElementsByClassName: function() { return []; },
+        childNodes: [],
+        createElement: function(tag) {
+          return {
+            nodeType: 1, tagName: tag.toUpperCase(), children: [], childNodes: [],
+            attributes: {}, innerHTML: '', textContent: '',
+            appendChild: function(c) { this.children.push(c); this.childNodes.push(c); return c; },
+            setAttribute: function(n, v) { this.attributes[n] = v; },
+            getAttribute: function(n) { return this.attributes.hasOwnProperty(n) ? this.attributes[n] : null; },
+            querySelector: function() { return null; },
+            querySelectorAll: function() { return []; }
+          };
+        },
+        createTextNode: function(t) { return { nodeType: 3, textContent: t }; }
+      };
+    }
+    // HTML fallback: parse basic structure with regex-based extraction.
+    var titleMatch = (typeof html === 'string') ? html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) : null;
+    var title = titleMatch ? titleMatch[1] : '';
+    var bodyMatch = (typeof html === 'string') ? html.match(/<body[^>]*>([\s\S]*?)<\/body>/i) : null;
+    var bodyHTML = bodyMatch ? bodyMatch[1] : (typeof html === 'string' ? html : '');
+    var headMatch = (typeof html === 'string') ? html.match(/<head[^>]*>([\s\S]*?)<\/head>/i) : null;
+    var headHTML = headMatch ? headMatch[1] : '';
+    function _makeElement(tag, inner) {
+      return {
+        nodeType: 1, tagName: tag.toUpperCase(), children: [], childNodes: [],
+        attributes: {}, innerHTML: inner || '', textContent: (inner || '').replace(/<[^>]*>/g, ''),
+        appendChild: function(c) { this.children.push(c); this.childNodes.push(c); return c; },
+        setAttribute: function(n, v) { this.attributes[n] = v; },
+        getAttribute: function(n) { return this.attributes.hasOwnProperty(n) ? this.attributes[n] : null; },
+        querySelector: function() { return null; },
+        querySelectorAll: function() { return []; }
+      };
+    }
+    var bodyEl = _makeElement('body', bodyHTML);
+    var headEl = _makeElement('head', headHTML);
+    if (title) {
+      var titleEl = _makeElement('title', title);
+      titleEl.textContent = title;
+      headEl.children.push(titleEl);
+      headEl.childNodes.push(titleEl);
+    }
+    var htmlEl = _makeElement('html', '');
+    htmlEl.children = [headEl, bodyEl];
+    htmlEl.childNodes = [headEl, bodyEl];
+    return {
+      nodeType: 9,
+      documentElement: htmlEl,
+      body: bodyEl,
+      head: headEl,
+      title: title,
+      querySelector: function(sel) {
+        // Minimal: support 'body', 'head', 'title', 'html' tag selectors.
+        var s = (sel || '').toLowerCase();
+        if (s === 'html') return htmlEl;
+        if (s === 'head') return headEl;
+        if (s === 'body') return bodyEl;
+        if (s === 'title') { return title ? headEl.querySelector('title') || null : null; }
+        return null;
+      },
+      querySelectorAll: function(sel) {
+        var r = this.querySelector(sel);
+        return r ? [r] : [];
+      },
+      getElementsByTagName: function(tag) {
+        var t = (tag || '').toUpperCase();
+        if (t === 'HTML') return [htmlEl];
+        if (t === 'HEAD') return [headEl];
+        if (t === 'BODY') return [bodyEl];
+        if (t === 'TITLE' && title) return headEl.children.filter(function(c) { return c.tagName === 'TITLE'; });
+        return [];
+      },
+      getElementById: function() { return null; },
+      getElementsByClassName: function() { return []; },
+      childNodes: [htmlEl],
+      createElement: function(tag) { return _makeElement(tag, ''); },
+      createTextNode: function(t) { return { nodeType: 3, textContent: t }; }
+    };
+  };
+  _g.DOMParser = DOMParser;
+}
+
+// History API — session history management.
+// Browser mode: servo provides window.history natively (no override needed).
+// CLI mode: implements pushState/replaceState/back/forward/go with in-memory stack.
+if (typeof _g.History === 'undefined') {
+  function History() {
+    this._states = [null];
+    this._urls = [(typeof location !== 'undefined' && location.href) ? location.href : ''];
+    this._index = 0;
+  }
+  Object.defineProperty(History.prototype, 'length', {
+    get: function() { return this._states.length; },
+    configurable: true, enumerable: true
+  });
+  Object.defineProperty(History.prototype, 'state', {
+    get: function() { return this._states[this._index]; },
+    configurable: true, enumerable: true
+  });
+  Object.defineProperty(History.prototype, 'scrollRestoration', {
+    get: function() { return 'auto'; },
+    set: function() {},
+    configurable: true, enumerable: true
+  });
+  History.prototype.pushState = function(state, title, url) {
+    this._states = this._states.slice(0, this._index + 1);
+    this._urls = this._urls.slice(0, this._index + 1);
+    this._states.push(state);
+    this._urls.push(url || '');
+    this._index = this._states.length - 1;
+  };
+  History.prototype.replaceState = function(state, title, url) {
+    this._states[this._index] = state;
+    if (url) this._urls[this._index] = url;
+  };
+  History.prototype.back = function() {
+    if (this._index > 0) { this._index--; this._dispatchPopState(); }
+  };
+  History.prototype.forward = function() {
+    if (this._index < this._states.length - 1) { this._index++; this._dispatchPopState(); }
+  };
+  History.prototype.go = function(delta) {
+    var i = this._index + (delta || 0);
+    if (i >= 0 && i < this._states.length) { this._index = i; this._dispatchPopState(); }
+  };
+  History.prototype._dispatchPopState = function() {
+    if (typeof this.dispatchEvent === 'function') {
+      var PopStateEvent = (typeof _g.PopStateEvent !== 'undefined') ? _g.PopStateEvent : Event;
+      this.dispatchEvent(new PopStateEvent('popstate', { state: this.state }));
+    } else if (typeof _g.dispatchEvent === 'function') {
+      var PopStateEvent2 = (typeof _g.PopStateEvent !== 'undefined') ? _g.PopStateEvent : Event;
+      _g.dispatchEvent(new PopStateEvent2('popstate', { state: this.state }));
+    }
+  };
+  _g.History = History;
+}
+if (typeof _g.history === 'undefined') {
+  _g.history = new _g.History();
+}
+
+// PopStateEvent — required by History._dispatchPopState.
+if (typeof _g.PopStateEvent === 'undefined') {
+  function PopStateEvent(type, options) {
+    this.type = type;
+    this.state = (options && options.state !== undefined) ? options.state : null;
+    this.bubbles = !!(options && options.bubbles);
+    this.cancelable = !!(options && options.cancelable);
+  }
+  PopStateEvent.prototype = Object.create(Event.prototype);
+  PopStateEvent.prototype.constructor = PopStateEvent;
+  _g.PopStateEvent = PopStateEvent;
+}
 "#;
     unsafe {
         let raw = cx.raw_cx();

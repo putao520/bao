@@ -23,6 +23,11 @@ pub fn cache_builtin(cx: &mut mozjs::context::JSContext, name: &str, obj: *mut J
     gc_store::gc_store_insert(unsafe { cx.raw_cx() }, &cache_key, obj);
 }
 
+pub fn get_builtin(cx: *mut JSContext, name: &str) -> Option<*mut JSObject> {
+    let cache_key = format!("builtin:{}", name);
+    gc_store::gc_store_get(cx, &cache_key).filter(|p| !p.is_null())
+}
+
 pub fn cache_assert_strict(cx: &mut mozjs::context::JSContext) {
     use mozjs::jsval::{ObjectValue, UndefinedValue};
     use mozjs::rooted;

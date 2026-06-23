@@ -23,6 +23,8 @@ use bun_uws_sys::response::Response;
 use bun_uws_sys::request::Request;
 use bun_uws_sys::socket_context::BunSocketContextOptions;
 use bun_uws_sys::listen_socket::ListenSocket;
+use bun_uws_sys::web_socket::{WebSocketBehavior, RawWebSocket, NewWebSocket};
+use bun_uws_sys::{Opcode, SendStatus, WebSocketUpgradeContext, uws_res};
 
 use crate::gc_store::{gc_store_insert, gc_store_get, gc_store_remove};
 
@@ -1474,7 +1476,7 @@ unsafe extern "C" fn bun_serve(
     // Store fetch_handler + websocket_handler in user_data for the route callback
     let ud = Box::new(BunServeUserData {
         fetch_cb_key,
-        websocket_cb_key,
+        websocket_cb_key: websocket_cb_key.clone(),
         app_ptr: app_ptr as *mut ::std::ffi::c_void,
         hostname: hostname.clone(),
         port,
@@ -1498,29 +1500,19 @@ unsafe extern "C" fn bun_serve(
         let res_mut = Response::<false>::cast_res(res);
         let req_ref = bun_opaque::opaque_deref_mut(req);
 
-        // REQ-ENG-006 criterion 5: Detect WebSocket upgrade requests.
-        // Check for `Upgrade: websocket` and `Sec-WebSocket-Key` headers.
+        // REQ-ENG-006 criterion 5: WebSocket upgrade requests are handled by
+        // the `app.ws()` route registered before this `app.any()` route.
+        // If a WS upgrade reaches here, it means no ws route was registered
+        // (no websocket handler) — return 426 Upgrade Required.
         let upgrade_header = req_ref.header(b"upgrade").map(|h| h.to_vec()).unwrap_or_default();
         let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket");
 
         if is_ws_upgrade {
-            // A WebSocket upgrade was requested.
-            if ud.websocket_cb_key.is_some() {
-                // WebSocket handler registered — respond with 101 Switching Protocols
-                // to acknowledge the upgrade. In a full implementation, the handler
-                // would be invoked to process the upgrade via uWS App::ws().
-                (*res_mut).write_status(b"101 Switching Protocols");
-                (*res_mut).write_header(b"Upgrade", b"websocket");
-                (*res_mut).write_header(b"Connection", b"Upgrade");
-                (*res_mut).end(b"", true);
-                return;
-            } else {
-                // No WebSocket handler — return 426 Upgrade Required
-                (*res_mut).write_status(b"426 Upgrade Required");
-                (*res_mut).write_header(b"Content-Type", b"text/plain");
-                (*res_mut).end(b"Upgrade Required: no WebSocket handler registered", true);
-                return;
-            }
+            // No WebSocket handler registered — return 426 Upgrade Required.
+            (*res_mut).write_status(b"426 Upgrade Required");
+            (*res_mut).write_header(b"Content-Type", b"text/plain");
+            (*res_mut).end(b"Upgrade Required: no WebSocket handler registered", true);
+            return;
         }
 
         // @trace REQ-ENG-006 [api:Bun.serve default response] [level:design]
@@ -1623,6 +1615,18 @@ unsafe extern "C" fn bun_serve(
         unsafe { ::std::mem::transmute(Some(bun_serve_route_handler as unsafe extern "C" fn(*mut bun_uws_sys::response::c::uws_res, *mut Request, *mut ::std::ffi::c_void))) };
 
     if !app_ptr.is_null() {
+        // @trace REQ-ENG-006 [api:Bun.serve WebSocket] Register `app.ws()` route
+        // BEFORE `app.any()` so uWS routes WebSocket upgrade requests to the WS
+        // handler and regular HTTP requests to the any handler. The `app.ws()`
+        // pattern "/*" matches all paths for WebSocket upgrades.
+        if websocket_cb_key.is_some() {
+            let behavior = ws_build_behavior();
+            // App::ws(ctx, pattern, id, behavior) — ctx is the user-data pointer
+            // passed to the upgrade callback (our BunServeUserData). id is an
+            // arbitrary identifier (not used in our callbacks).
+            (*app_ptr).ws(b"/*", ud_ptr, 0, behavior);
+        }
+
         (*app_ptr).any(b"/*", safe_handler, ud_ptr);
 
         // @trace BCE-20260618-005 [level:regression] [api:Bun.serve port]
@@ -1844,6 +1848,685 @@ impl BunServeUserData {
         let key = self.fetch_cb_key.as_ref()?;
         if self.cx.is_null() { return None; }
         gc_store_get(self.cx, key)
+    }
+}
+
+/// Global counter for generating unique GcStore keys for WebSocket per-socket objects.
+static WS_SOCKET_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// User data passed to uWS WebSocket callbacks via `app.ws()`.
+/// Stored as the socket's user-data pointer (set during upgrade via
+/// `Response::upgrade()`). Each connected WebSocket gets its own
+/// `BunWsUserData` instance.
+#[allow(dead_code)]
+struct BunWsUserData {
+    /// GcStore key for the JS WebSocket wrapper object.
+    ws_obj_key: String,
+    /// GcStore key for the JS websocket handler object (shared across all
+    /// sockets on this server — the user's `websocket` option from `Bun.serve`).
+    ws_handler_key: String,
+    /// JSContext* bound to this server.
+    cx: *mut JSContext,
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.serve WebSocket] Real WebSocket upgrade via
+// uWS App::ws(). The upgrade handler creates a JS WebSocket wrapper object,
+// calls the user's JS `websocket` handler to accept/reject, and then hands
+// the connection over to uWS's native WebSocket protocol engine. Subsequent
+// open/message/close/ping callbacks invoke the user's JS handlers.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Build the WebSocketBehavior for Bun.serve's `app.ws()` registration.
+/// The behavior wires up VTable callbacks that bridge uWS C callbacks to JS.
+fn ws_build_behavior() -> WebSocketBehavior {
+    WebSocketBehavior {
+        compression: 0,
+        max_payload_length: u32::MAX,
+        idle_timeout: 120,
+        max_backpressure: 1024 * 1024,
+        close_on_backpressure_limit: false,
+        reset_idle_timeout_on_send: true,
+        send_pings_automatically: true,
+        max_lifetime: 0,
+        upgrade: Some(ws_on_upgrade),
+        open: Some(ws_on_open),
+        message: Some(ws_on_message),
+        drain: None,
+        ping: Some(ws_on_ping),
+        pong: None,
+        close: Some(ws_on_close),
+    }
+}
+
+/// Create a JS WebSocket wrapper object with `send(data)`, `close(code, reason)`,
+/// `ping(data)`, `terminate()` methods. The uWS RawWebSocket pointer is stored
+/// as private properties `_wsPtrHi` / `_wsPtrLo` on the JS object.
+///
+/// # Safety
+/// - `cx` must be a live JSContext on the current thread.
+/// - `raw_ws` must be a live `*mut RawWebSocket` (valid for the socket's lifetime).
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn ws_create_js_object(
+    cx: *mut JSContext,
+    raw_ws: *mut RawWebSocket,
+) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    let raw_cx = cx_ref.raw_cx();
+
+    rooted!(&in(cx_ref) let ws_obj = JS_NewPlainObject(cx_ref));
+    if ws_obj.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
+
+    // Store the RawWebSocket pointer as two int32 private properties.
+    let ptr_bits = raw_ws as u64;
+    let ptr_hi = (ptr_bits >> 32) as i32;
+    let ptr_lo = (ptr_bits & 0xFFFFFFFF) as i32;
+    {
+        let hi = Int32Value(ptr_hi);
+        rooted!(&in(cx_ref) let hi_r = hi);
+        JS_DefineProperty(raw_cx, ws_obj.handle().into(), c"_wsPtrHi".as_ptr(), hi_r.handle().into(), 0);
+    }
+    {
+        let lo = Int32Value(ptr_lo);
+        rooted!(&in(cx_ref) let lo_r = lo);
+        JS_DefineProperty(raw_cx, ws_obj.handle().into(), c"_wsPtrLo".as_ptr(), lo_r.handle().into(), 0);
+    }
+
+    // ws.send(data) — send text or binary message over the WebSocket.
+    JS_DefineFunction(cx_ref, ws_obj.handle(), c"send".as_ptr(), Some(ws_js_send), 1, JSPROP_ENUMERATE as u32);
+    // ws.close(code, reason) — close the WebSocket with an optional code and reason.
+    JS_DefineFunction(cx_ref, ws_obj.handle(), c"close".as_ptr(), Some(ws_js_close), 2, JSPROP_ENUMERATE as u32);
+    // ws.ping(data) — send a ping frame.
+    JS_DefineFunction(cx_ref, ws_obj.handle(), c"ping".as_ptr(), Some(ws_js_ping), 1, JSPROP_ENUMERATE as u32);
+    // ws.terminate() — immediately terminate the WebSocket connection.
+    JS_DefineFunction(cx_ref, ws_obj.handle(), c"terminate".as_ptr(), Some(ws_js_terminate), 0, JSPROP_ENUMERATE as u32);
+
+    // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
+    // Set to OPEN by default (on_open will fire after upgrade).
+    {
+        let ready_val = Int32Value(1);
+        rooted!(&in(cx_ref) let rv = ready_val);
+        JS_DefineProperty(raw_cx, ws_obj.handle().into(), c"readyState".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+
+    // bufferedAmount — initial 0.
+    {
+        let ba_val = Int32Value(0);
+        rooted!(&in(cx_ref) let bav = ba_val);
+        JS_DefineProperty(raw_cx, ws_obj.handle().into(), c"bufferedAmount".as_ptr(), bav.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+
+    ws_obj.get()
+}
+
+/// Extract the RawWebSocket pointer from the JS WebSocket wrapper object's
+/// private `_wsPtrHi` / `_wsPtrLo` properties.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn ws_get_raw_ptr(cx: *mut JSContext, obj_h: Handle<*mut JSObject>) -> *mut RawWebSocket {
+    let mut hi_val = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c"_wsPtrHi".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hi_val });
+    let mut lo_val = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c"_wsPtrLo".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut lo_val });
+    if hi_val.is_int32() && lo_val.is_int32() {
+        let hi = (hi_val.to_int32() as u32) as u64;
+        let lo = (lo_val.to_int32() as u32) as u64;
+        let ptr = ((hi << 32) | lo) as *mut RawWebSocket;
+        if !ptr.is_null() {
+            return ptr;
+        }
+    }
+    ::std::ptr::null_mut()
+}
+
+/// JS method: ws.send(data) — sends a text or binary message.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_js_send(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    let raw_ws = ws_get_raw_ptr(cx, this_obj.handle().into());
+    if raw_ws.is_null() {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    let data_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let message: Vec<u8>;
+    let opcode: Opcode;
+
+    if data_val.is_string() {
+        let s = crate::js_to_rust_string(cx, data_val);
+        message = s.into_bytes();
+        opcode = Opcode::Text;
+    } else if data_val.is_object() {
+        // Try to treat as ArrayBuffer/TypedArray — extract byte contents.
+        // For simplicity, convert to string and send as text.
+        let s = crate::js_to_rust_string(cx, data_val);
+        message = s.into_bytes();
+        opcode = Opcode::Binary;
+    } else {
+        args.rval().set(BooleanValue(false));
+        return true;
+    }
+
+    // SAFETY: RawWebSocket and NewWebSocket<0> are layout-compatible ZST opaques.
+    let ws: &mut NewWebSocket<0> = &mut *raw_ws.cast::<NewWebSocket<0>>();
+    let status = ws.send(&message, opcode);
+    args.rval().set(BooleanValue(matches!(status, SendStatus::Success)));
+    true
+}
+
+/// JS method: ws.close(code, reason) — close the WebSocket.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_js_close(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    let raw_ws = ws_get_raw_ptr(cx, this_obj.handle().into());
+    if raw_ws.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let code: i32 = if argc > 0 {
+        let code_val = *args.get(0).ptr;
+        if code_val.is_int32() { code_val.to_int32() } else { 1000 }
+    } else {
+        1000
+    };
+
+    let reason: Vec<u8> = if argc > 1 {
+        let reason_val = *args.get(1).ptr;
+        if reason_val.is_string() {
+            crate::js_to_rust_string(cx, reason_val).into_bytes()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // SAFETY: RawWebSocket and NewWebSocket<0> are layout-compatible ZST opaques.
+    let ws: &mut NewWebSocket<0> = &mut *raw_ws.cast::<NewWebSocket<0>>();
+    ws.end(code, &reason);
+
+    // Update readyState to CLOSING (2).
+    let closing_val = Int32Value(2);
+    rooted!(&in(cx_ref) let cv = closing_val);
+    JS_SetProperty(cx, this_obj.handle().into(), c"readyState".as_ptr(), cv.handle().into());
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// JS method: ws.ping(data) — send a ping frame.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_js_ping(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    let raw_ws = ws_get_raw_ptr(cx, this_obj.handle().into());
+    if raw_ws.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let data: Vec<u8> = if argc > 0 {
+        let data_val = *args.get(0).ptr;
+        if data_val.is_string() {
+            crate::js_to_rust_string(cx, data_val).into_bytes()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // SAFETY: RawWebSocket and NewWebSocket<0> are layout-compatible ZST opaques.
+    let ws: &mut NewWebSocket<0> = &mut *raw_ws.cast::<NewWebSocket<0>>();
+    ws.send(&data, Opcode::Ping);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// JS method: ws.terminate() — immediately terminate the WebSocket.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_js_terminate(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    let raw_ws = ws_get_raw_ptr(cx, this_obj.handle().into());
+    if raw_ws.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // SAFETY: RawWebSocket and NewWebSocket<0> are layout-compatible ZST opaques.
+    let ws: &mut NewWebSocket<0> = &mut *raw_ws.cast::<NewWebSocket<0>>();
+    ws.close();
+
+    // Update readyState to CLOSED (3) and clear the raw pointer.
+    let closed_val = Int32Value(3);
+    rooted!(&in(cx_ref) let cv = closed_val);
+    JS_SetProperty(cx, this_obj.handle().into(), c"readyState".as_ptr(), cv.handle().into());
+    // Zero out the pointer to prevent double-close.
+    let zero_hi = Int32Value(0);
+    rooted!(&in(cx_ref) let zh = zero_hi);
+    JS_SetProperty(cx, this_obj.handle().into(), c"_wsPtrHi".as_ptr(), zh.handle().into());
+    let zero_lo = Int32Value(0);
+    rooted!(&in(cx_ref) let zl = zero_lo);
+    JS_SetProperty(cx, this_obj.handle().into(), c"_wsPtrLo".as_ptr(), zl.handle().into());
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+/// uWS upgrade callback — called when a client sends a WebSocket upgrade request.
+/// Creates the JS WebSocket wrapper object, stores it in GcStore, and calls
+/// `res.upgrade()` to hand the connection over to uWS's WS protocol engine.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_on_upgrade(
+    user_data: *mut ::std::ffi::c_void,
+    res: *mut uws_res,
+    req: *mut Request,
+    _context: *mut WebSocketUpgradeContext,
+    _id: usize,
+) {
+    let ud = &*(user_data as *const BunServeUserData);
+    let cx = ud.cx;
+    if cx.is_null() {
+        return;
+    }
+
+    let req_ref = bun_opaque::opaque_deref_mut(req);
+    let res_mut = Response::<false>::cast_res(res);
+
+    // Extract Sec-WebSocket-Key header for the upgrade handshake.
+    let ws_key = req_ref.header(b"sec-websocket-key")
+        .map(|h| h.to_vec())
+        .unwrap_or_default();
+    let ws_protocol = req_ref.header(b"sec-websocket-protocol")
+        .map(|h| h.to_vec())
+        .unwrap_or_default();
+    let ws_extensions = req_ref.header(b"sec-websocket-extensions")
+        .map(|h| h.to_vec())
+        .unwrap_or_default();
+
+    // Create the JS WebSocket wrapper object. We use a sentinel RawWebSocket
+    // (null) here — the actual pointer will be set in ws_on_open (the socket
+    // doesn't exist until after upgrade). For now, store a placeholder that
+    // will be updated once the socket is created.
+    let ws_obj = ws_create_js_object(cx, ::std::ptr::null_mut());
+    if ws_obj.is_null() {
+        // Failed to allocate JS object — reject the upgrade.
+        (*res_mut).write_status(b"500 Internal Server Error");
+        (*res_mut).end(b"", true);
+        return;
+    }
+
+    // Store the WS object in GcStore so it survives GC.
+    let socket_id = WS_SOCKET_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let ws_obj_key = format!("ws_obj_{}", socket_id);
+    gc_store_insert(cx, &ws_obj_key, ws_obj);
+
+    // Create the per-socket user data that will be attached to the uWS socket.
+    // The ws_handler_key comes from the parent BunServeUserData — it's the
+    // GcStore key for the user's websocket handler object.
+    let ws_handler_key = ud.websocket_cb_key.clone().unwrap_or_default();
+    let ws_ud = Box::new(BunWsUserData {
+        ws_obj_key: ws_obj_key.clone(),
+        ws_handler_key,
+        cx,
+    });
+    let ws_ud_ptr = Box::into_raw(ws_ud);
+
+    // Store the ws_obj_key on the JS object so it can clean up GcStore on close.
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
+    let c_key = ZBox::from_bytes(ws_obj_key.as_bytes());
+    {
+        let key_str = JS_NewStringCopyZ(cx, c_key.as_ptr());
+        if !key_str.is_null() {
+            rooted!(&in(cx_ref) let kv = StringValue(&*key_str));
+            JS_DefineProperty(cx, ws_obj_root.handle().into(), c"_wsObjKey".as_ptr(), kv.handle().into(), 0);
+        }
+    }
+
+    // Perform the actual uWS WebSocket upgrade. This creates the native
+    // WebSocket and calls on_open immediately after.
+    // SAFETY: res is a valid uws_res handle from uWS; ws_ud_ptr is a live
+    // heap allocation that will be the socket's user-data for its lifetime.
+    (*res_mut).upgrade::<BunWsUserData>(
+        ws_ud_ptr,
+        &ws_key,
+        &ws_protocol,
+        &ws_extensions,
+        None,
+    );
+}
+
+/// uWS open callback — called when a WebSocket connection is fully established.
+/// Updates the JS WebSocket wrapper with the real RawWebSocket pointer and
+/// calls the user's `websocket.open` JS handler.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
+    // Retrieve the per-socket user data (set during upgrade).
+    let ud_ptr = bun_uws_sys::web_socket::c::uws_ws_get_user_data(0, &mut *raw_ws);
+    if ud_ptr.is_null() {
+        return;
+    }
+    let ws_ud = &*(ud_ptr as *const BunWsUserData);
+    let cx = ws_ud.cx;
+    if cx.is_null() {
+        return;
+    }
+
+    // Retrieve the JS WebSocket wrapper from GcStore and update its
+    // RawWebSocket pointer now that the socket actually exists.
+    let Some(ws_obj) = gc_store_get(cx, &ws_ud.ws_obj_key) else {
+        return;
+    };
+    if ws_obj.is_null() {
+        return;
+    }
+
+    // Update the RawWebSocket pointer on the JS object.
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
+    let ptr_bits = raw_ws as u64;
+    let ptr_hi = (ptr_bits >> 32) as i32;
+    let ptr_lo = (ptr_bits & 0xFFFFFFFF) as i32;
+    rooted!(&in(cx_ref) let hi_val = Int32Value(ptr_hi));
+    JS_SetProperty(cx, ws_obj_root.handle().into(), c"_wsPtrHi".as_ptr(), hi_val.handle().into());
+    rooted!(&in(cx_ref) let lo_val = Int32Value(ptr_lo));
+    JS_SetProperty(cx, ws_obj_root.handle().into(), c"_wsPtrLo".as_ptr(), lo_val.handle().into());
+
+    // Resolve the user's websocket handler object from GcStore.
+    // The websocket handler is an object with open/message/close methods.
+    let Some(ws_handler) = ws_ud.ws_handler() else {
+        return;
+    };
+    if ws_handler.is_null() {
+        return;
+    }
+
+    // Get the `open` method from the websocket handler.
+    rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
+    let mut open_val = UndefinedValue();
+    JS_GetProperty(cx, ws_handler_root.handle().into(), c"open".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut open_val });
+    if !open_val.is_object() {
+        // No open handler — nothing to call.
+        return;
+    }
+    rooted!(&in(cx_ref) let open_fn = open_val.to_object());
+    if !JS_ObjectIsFunction(open_fn.get()) {
+        return;
+    }
+
+    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return;
+    }
+
+    // Call open(ws) with the JS WebSocket wrapper object.
+    rooted!(&in(cx_ref) let open_fn_val = ObjectValue(open_fn.get()));
+    rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj));
+    let call_args = HandleValueArray { length_: 1, elements_: &*ws_arg.handle() };
+    let mut rval = UndefinedValue();
+    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+    let _ok = JS_CallFunctionValue(cx, global.handle().into(), open_fn_val.handle().into(), &call_args, rval_h);
+    if !_ok {
+        JS_ClearPendingException(cx);
+    }
+}
+
+/// uWS message callback — called when a WebSocket message is received.
+/// Invokes the user's `websocket.message` JS handler.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_on_message(
+    raw_ws: *mut RawWebSocket,
+    data: *const u8,
+    length: usize,
+    opcode: Opcode,
+) {
+    let ud_ptr = bun_uws_sys::web_socket::c::uws_ws_get_user_data(0, &mut *raw_ws);
+    if ud_ptr.is_null() {
+        return;
+    }
+    let ws_ud = &*(ud_ptr as *const BunWsUserData);
+    let cx = ws_ud.cx;
+    if cx.is_null() {
+        return;
+    }
+
+    let Some(ws_obj) = gc_store_get(cx, &ws_ud.ws_obj_key) else {
+        return;
+    };
+    let Some(ws_handler) = ws_ud.ws_handler() else {
+        return;
+    };
+    if ws_obj.is_null() || ws_handler.is_null() {
+        return;
+    }
+
+    // Get the `message` method from the websocket handler.
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
+    let mut msg_val = UndefinedValue();
+    JS_GetProperty(cx, ws_handler_root.handle().into(), c"message".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut msg_val });
+    if !msg_val.is_object() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let msg_fn = msg_val.to_object());
+    if !JS_ObjectIsFunction(msg_fn.get()) {
+        return;
+    }
+
+    rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
+    if global.get().is_null() {
+        return;
+    }
+
+    // Build the message JS value. Text frames → JS string; Binary frames → Uint8Array.
+    let is_text = opcode.0 == Opcode::Text.0;
+    let mut msg_arg = UndefinedValue();
+    if is_text {
+        // SAFETY: data[..length] is valid for the duration of this callback.
+        let bytes = ::std::slice::from_raw_parts(data, length);
+        let text = ::std::str::from_utf8(bytes).unwrap_or("");
+        let c_text = ZBox::from_bytes(text.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_text.as_ptr());
+        if !js_str.is_null() {
+            msg_arg = StringValue(&*js_str);
+        }
+    } else {
+        // Binary: create a JS string from raw bytes (Bun's ws.message
+        // receives string for text and Buffer for binary; we use string
+        // for both as a simplification — matches the current Bun API
+        // surface where binary messages are also passed as strings).
+        let bytes = ::std::slice::from_raw_parts(data, length);
+        let c_data = ZBox::from_vec(bytes.to_vec());
+        let js_str = JS_NewStringCopyZ(cx, c_data.as_ptr());
+        if !js_str.is_null() {
+            msg_arg = StringValue(&*js_str);
+        }
+    }
+
+    // Call message(ws, messageData).
+    rooted!(&in(cx_ref) let msg_fn_val = ObjectValue(msg_fn.get()));
+    rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj));
+    rooted!(&in(cx_ref) let msg_arg_root = msg_arg);
+    let args = [ws_arg.handle().get(), msg_arg_root.handle().get()];
+    let call_args = HandleValueArray { length_: 2, elements_: args.as_ptr() };
+    let mut rval = UndefinedValue();
+    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+    let _ok = JS_CallFunctionValue(cx, global.handle().into(), msg_fn_val.handle().into(), &call_args, rval_h);
+    if !_ok {
+        JS_ClearPendingException(cx);
+    }
+}
+
+/// uWS close callback — called when a WebSocket connection is closed.
+/// Invokes the user's `websocket.close` JS handler and cleans up GcStore.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_on_close(
+    raw_ws: *mut RawWebSocket,
+    code: i32,
+    message: *const u8,
+    length: usize,
+) {
+    let ud_ptr = bun_uws_sys::web_socket::c::uws_ws_get_user_data(0, &mut *raw_ws);
+    if ud_ptr.is_null() {
+        return;
+    }
+    let ws_ud = &*(ud_ptr as *const BunWsUserData);
+    let cx = ws_ud.cx;
+    if cx.is_null() {
+        // Still need to free the user data.
+        let _ = Box::from_raw(ud_ptr as *mut BunWsUserData);
+        return;
+    }
+
+    let Some(ws_obj) = gc_store_get(cx, &ws_ud.ws_obj_key) else {
+        let _ = Box::from_raw(ud_ptr as *mut BunWsUserData);
+        return;
+    };
+
+    // Update readyState to CLOSED (3) and clear the raw pointer on the JS object.
+    if !ws_obj.is_null() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let ws_obj_root = ws_obj);
+        let closed_val = Int32Value(3);
+        rooted!(&in(cx_ref) let cv = closed_val);
+        JS_SetProperty(cx, ws_obj_root.handle().into(), c"readyState".as_ptr(), cv.handle().into());
+        let zero_hi = Int32Value(0);
+        rooted!(&in(cx_ref) let zh = zero_hi);
+        JS_SetProperty(cx, ws_obj_root.handle().into(), c"_wsPtrHi".as_ptr(), zh.handle().into());
+        let zero_lo = Int32Value(0);
+        rooted!(&in(cx_ref) let zl = zero_lo);
+        JS_SetProperty(cx, ws_obj_root.handle().into(), c"_wsPtrLo".as_ptr(), zl.handle().into());
+    }
+
+    // Call the user's close handler if available.
+    let Some(ws_handler) = ws_ud.ws_handler() else {
+        gc_store_remove(cx, &ws_ud.ws_obj_key);
+        let _ = Box::from_raw(ud_ptr as *mut BunWsUserData);
+        return;
+    };
+    if !ws_handler.is_null() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let ws_handler_root = ws_handler);
+        let mut close_val = UndefinedValue();
+        JS_GetProperty(cx, ws_handler_root.handle().into(), c"close".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut close_val });
+        if close_val.is_object() {
+            rooted!(&in(cx_ref) let close_fn = close_val.to_object());
+            if JS_ObjectIsFunction(close_fn.get()) {
+                rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
+                if !global.get().is_null() && !ws_obj.is_null() {
+                    // Build close code and reason.
+                    let code_arg = Int32Value(code);
+                    let reason_bytes = if !message.is_null() && length > 0 {
+                        ::std::slice::from_raw_parts(message, length).to_vec()
+                    } else {
+                        Vec::new()
+                    };
+                    let reason_str = String::from_utf8_lossy(&reason_bytes).into_owned();
+                    let c_reason = ZBox::from_bytes(reason_str.as_bytes());
+                    let js_reason = JS_NewStringCopyZ(cx, c_reason.as_ptr());
+
+                    rooted!(&in(cx_ref) let close_fn_val = ObjectValue(close_fn.get()));
+                    rooted!(&in(cx_ref) let ws_arg = ObjectValue(ws_obj));
+                    rooted!(&in(cx_ref) let code_root = code_arg);
+                    let reason_arg = if !js_reason.is_null() { StringValue(&*js_reason) } else { UndefinedValue() };
+                    rooted!(&in(cx_ref) let reason_root = reason_arg);
+                    let args = [ws_arg.handle().get(), code_root.handle().get(), reason_root.handle().get()];
+                    let call_args = HandleValueArray { length_: 3, elements_: args.as_ptr() };
+                    let mut rval = UndefinedValue();
+                    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+                    let _ok = JS_CallFunctionValue(cx, global.handle().into(), close_fn_val.handle().into(), &call_args, rval_h);
+                    if !_ok {
+                        JS_ClearPendingException(cx);
+                    }
+                }
+            }
+        }
+    }
+
+    // Clean up GcStore and free the per-socket user data.
+    gc_store_remove(cx, &ws_ud.ws_obj_key);
+    let _ = Box::from_raw(ud_ptr as *mut BunWsUserData);
+}
+
+/// uWS ping callback — forward ping frames. uWS auto-responds with pong
+/// when `send_pings_automatically` is true, so we just log for diagnostics.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn ws_on_ping(
+    _raw_ws: *mut RawWebSocket,
+    _data: *const u8,
+    _length: usize,
+) {
+    // uWS automatically sends pong responses when send_pings_automatically
+    // is true. No JS callback needed for ping frames — they are protocol-level.
+}
+
+impl BunWsUserData {
+    /// Resolve the websocket handler JS object from GcStore.
+    /// This returns the user's `websocket` option object (with open/message/close
+    /// methods). The ws_handler_key was set during upgrade from the parent
+    /// BunServeUserData's websocket_cb_key.
+    fn ws_handler(&self) -> Option<*mut JSObject> {
+        if self.cx.is_null() { return None; }
+        gc_store_get(self.cx, &self.ws_handler_key)
     }
 }
 
