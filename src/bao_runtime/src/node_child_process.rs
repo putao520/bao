@@ -132,6 +132,15 @@ fn status_to_exit_code(status: &Status) -> i32 {
     }
 }
 
+/// Extract signal number from bun_spawn::Status, if killed by signal.
+fn status_to_signal(status: &Status) -> Option<i32> {
+    match status {
+        Status::Exited(Exited { signal: s, .. }) if *s != 0 => Some(*s as i32),
+        Status::Signaled(sig) => Some(*sig as i32),
+        _ => None,
+    }
+}
+
 /// Build sync::Options for a shell command (exec/execSync).
 fn shell_sync_opts(command: &str) -> spawn_sync::Options {
     let shell = if cfg!(target_family = "unix") { "/bin/sh" } else { "cmd.exe" };
@@ -270,7 +279,7 @@ unsafe extern "C" fn cp_spawn(
     };
 
     let exit_code = status_to_exit_code(&spawn_result.status);
-    let pid = unsafe { libc::getpid() };
+    let pid = spawn_result.pid;
 
     let pid_v = Int32Value(pid as i32);
     rooted!(&in(cx_ref) let pv = pid_v);
@@ -389,6 +398,11 @@ unsafe extern "C" fn cp_exec(
     rooted!(&in(cx_ref) let ec = Int32Value(exit_code));
     JS_DefineProperty(cx, child_h, c"exitCode".as_ptr(), ec.handle().into(), JSPROP_ENUMERATE as u32);
 
+    // pid
+    let pid_v = Int32Value(spawn_result.pid as i32);
+    rooted!(&in(cx_ref) let pv = pid_v);
+    JS_DefineProperty(cx, child_h, c"pid".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
+
     // Call callback if provided: callback(error, stdout, stderr)
     if callback.is_some() && !callback_r.get().is_null() {
         rooted!(&in(cx_ref) let global = CurrentGlobalOrNull(cx));
@@ -482,6 +496,136 @@ unsafe extern "C" fn cp_exec_sync(
             return false;
         }
     };
+
+    let exit_code = status_to_exit_code(&spawn_result.status);
+    let pid = spawn_result.pid;
+    let signal = status_to_signal(&spawn_result.status);
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    if exit_code != 0 || signal.is_some() {
+        // Build a rich Error object with pid, status, signal, output, stdout, stderr
+        let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+        if err_obj.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        rooted!(&in(cx_ref) let err_r = err_obj);
+        let err_h = err_r.handle().into();
+
+        // Set error.message
+        let stderr_str = String::from_utf8_lossy(&spawn_result.stderr).into_owned();
+        let msg = format!("Command failed: {}", cmd);
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        {
+            let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                rooted!(&in(cx_ref) let rv = v);
+                JS_SetProperty(cx, err_h, c"message".as_ptr(), rv.handle().into());
+            }
+        }
+
+        // Set error.status
+        rooted!(&in(cx_ref) let sv = Int32Value(exit_code));
+        JS_SetProperty(cx, err_h, c"status".as_ptr(), sv.handle().into());
+
+        // Set error.pid
+        rooted!(&in(cx_ref) let pv = Int32Value(pid as i32));
+        JS_SetProperty(cx, err_h, c"pid".as_ptr(), pv.handle().into());
+
+        // Set error.signal — null if normal exit, signal name string if killed
+        let signal_val = match signal {
+            Some(sig) => {
+                // Convert signal number to name
+                let sig_name = match sig {
+                    1 => "SIGHUP",
+                    2 => "SIGINT",
+                    3 => "SIGQUIT",
+                    6 => "SIGABRT",
+                    9 => "SIGKILL",
+                    11 => "SIGSEGV",
+                    13 => "SIGPIPE",
+                    15 => "SIGTERM",
+                    _ => "SIG",
+                };
+                let name_str = if sig_name == "SIG" {
+                    format!("SIG{}", sig)
+                } else {
+                    sig_name.to_string()
+                };
+                let c_sig = ZBox::from_bytes(name_str.as_bytes());
+                let js_str = JS_NewStringCopyZ(cx, c_sig.as_ptr());
+                if !js_str.is_null() {
+                    StringValue(&*js_str)
+                } else {
+                    NullValue()
+                }
+            }
+            None => NullValue(),
+        };
+        rooted!(&in(cx_ref) let sigv = signal_val);
+        JS_SetProperty(cx, err_h, c"signal".as_ptr(), sigv.handle().into());
+
+        // Set error.stdout
+        let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
+        let c_stdout = ZBox::from_bytes(stdout_str.as_bytes());
+        {
+            let js_str = JS_NewStringCopyZ(cx, c_stdout.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                rooted!(&in(cx_ref) let rv = v);
+                JS_SetProperty(cx, err_h, c"stdout".as_ptr(), rv.handle().into());
+            }
+        }
+
+        // Set error.stderr
+        let c_stderr = ZBox::from_bytes(stderr_str.as_bytes());
+        {
+            let js_str = JS_NewStringCopyZ(cx, c_stderr.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                rooted!(&in(cx_ref) let rv = v);
+                JS_SetProperty(cx, err_h, c"stderr".as_ptr(), rv.handle().into());
+            }
+        }
+
+        // Set error.output array: [null, stdout, stderr]
+        let output_arr_obj = w2::NewArrayObject1(cx_ref, 3);
+        if !output_arr_obj.is_null() {
+            rooted!(&in(cx_ref) let output_r = output_arr_obj);
+            // output[0] = null (stdin)
+            {
+                let null_v = NullValue();
+                rooted!(&in(cx_ref) let nv = null_v);
+                JS_DefineElement(cx, output_r.handle().into(), 0, nv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            // output[1] = stdout
+            {
+                let mut stdout_val = UndefinedValue();
+                JS_GetProperty(cx, err_h, c"stdout".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut stdout_val });
+                rooted!(&in(cx_ref) let sov = stdout_val);
+                JS_DefineElement(cx, output_r.handle().into(), 1, sov.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            // output[2] = stderr
+            {
+                let mut stderr_val = UndefinedValue();
+                JS_GetProperty(cx, err_h, c"stderr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut stderr_val });
+                rooted!(&in(cx_ref) let sev = stderr_val);
+                JS_DefineElement(cx, output_r.handle().into(), 2, sev.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            let output_val = ObjectValue(output_r.get());
+            rooted!(&in(cx_ref) let ov = output_val);
+            JS_SetProperty(cx, err_h, c"output".as_ptr(), ov.handle().into());
+        }
+
+        // Throw the error object
+        let err_val = ObjectValue(err_r.get());
+        rooted!(&in(cx_ref) let ev = err_val);
+        JS_SetPendingException(cx, ev.handle().into(), ExceptionStackBehavior::DoNotCapture);
+        return false;
+    }
 
     let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
     let c_out = ZBox::from_bytes(stdout_str.as_bytes());
@@ -618,6 +762,11 @@ unsafe extern "C" fn cp_exec_file(
     rooted!(&in(cx_ref) let ec = Int32Value(exit_code));
     JS_DefineProperty(cx, child_h, c"exitCode".as_ptr(), ec.handle().into(), JSPROP_ENUMERATE as u32);
 
+    // pid
+    let pid_v = Int32Value(spawn_result.pid as i32);
+    rooted!(&in(cx_ref) let pv = pid_v);
+    JS_DefineProperty(cx, child_h, c"pid".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
+
     args.rval().set(ObjectValue(child_r.get()));
     true
 }
@@ -704,11 +853,113 @@ unsafe extern "C" fn cp_exec_file_sync(
     };
 
     let exit_code = status_to_exit_code(&spawn_result.status);
-    if exit_code != 0 {
+    let pid = spawn_result.pid;
+    let signal = status_to_signal(&spawn_result.status);
+
+    if exit_code != 0 || signal.is_some() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+
+        // Build a rich Error object like execSync does
+        let err_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx);
+        if err_obj.is_null() {
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        rooted!(&in(cx_ref) let err_r = err_obj);
+        let err_h = err_r.handle().into();
+
+        // error.message
         let stderr_str = String::from_utf8_lossy(&spawn_result.stderr).into_owned();
-        let msg = format!("execFileSync failed with status {}: {}", exit_code, stderr_str);
+        let msg = format!("execFileSync failed with status {}", exit_code);
         let c_msg = ZBox::from_bytes(msg.as_bytes());
-        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        {
+            let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                rooted!(&in(cx_ref) let rv = v);
+                JS_SetProperty(cx, err_h, c"message".as_ptr(), rv.handle().into());
+            }
+        }
+
+        // error.status
+        rooted!(&in(cx_ref) let sv = Int32Value(exit_code));
+        JS_SetProperty(cx, err_h, c"status".as_ptr(), sv.handle().into());
+
+        // error.pid
+        rooted!(&in(cx_ref) let pv = Int32Value(pid as i32));
+        JS_SetProperty(cx, err_h, c"pid".as_ptr(), pv.handle().into());
+
+        // error.signal
+        let signal_val = match signal {
+            Some(sig) => {
+                let sig_name = match sig {
+                    1 => "SIGHUP", 2 => "SIGINT", 3 => "SIGQUIT",
+                    6 => "SIGABRT", 9 => "SIGKILL", 11 => "SIGSEGV",
+                    13 => "SIGPIPE", 15 => "SIGTERM", _ => "SIG",
+                };
+                let name_str = if sig_name == "SIG" { format!("SIG{}", sig) } else { sig_name.to_string() };
+                let c_sig = ZBox::from_bytes(name_str.as_bytes());
+                let js_str = JS_NewStringCopyZ(cx, c_sig.as_ptr());
+                if !js_str.is_null() { StringValue(&*js_str) } else { NullValue() }
+            }
+            None => NullValue(),
+        };
+        rooted!(&in(cx_ref) let sigv = signal_val);
+        JS_SetProperty(cx, err_h, c"signal".as_ptr(), sigv.handle().into());
+
+        // error.stdout
+        let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
+        let c_stdout = ZBox::from_bytes(stdout_str.as_bytes());
+        {
+            let js_str = JS_NewStringCopyZ(cx, c_stdout.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                rooted!(&in(cx_ref) let rv = v);
+                JS_SetProperty(cx, err_h, c"stdout".as_ptr(), rv.handle().into());
+            }
+        }
+
+        // error.stderr
+        let c_stderr = ZBox::from_bytes(stderr_str.as_bytes());
+        {
+            let js_str = JS_NewStringCopyZ(cx, c_stderr.as_ptr());
+            if !js_str.is_null() {
+                let v = StringValue(&*js_str);
+                rooted!(&in(cx_ref) let rv = v);
+                JS_SetProperty(cx, err_h, c"stderr".as_ptr(), rv.handle().into());
+            }
+        }
+
+        // error.output array
+        let output_arr_obj = w2::NewArrayObject1(cx_ref, 3);
+        if !output_arr_obj.is_null() {
+            rooted!(&in(cx_ref) let output_r = output_arr_obj);
+            {
+                let null_v = NullValue();
+                rooted!(&in(cx_ref) let nv = null_v);
+                JS_DefineElement(cx, output_r.handle().into(), 0, nv.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            {
+                let mut stdout_val = UndefinedValue();
+                JS_GetProperty(cx, err_h, c"stdout".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut stdout_val });
+                rooted!(&in(cx_ref) let sov = stdout_val);
+                JS_DefineElement(cx, output_r.handle().into(), 1, sov.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            {
+                let mut stderr_val = UndefinedValue();
+                JS_GetProperty(cx, err_h, c"stderr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut stderr_val });
+                rooted!(&in(cx_ref) let sev = stderr_val);
+                JS_DefineElement(cx, output_r.handle().into(), 2, sev.handle().into(), JSPROP_ENUMERATE as u32);
+            }
+            let output_val = ObjectValue(output_r.get());
+            rooted!(&in(cx_ref) let ov = output_val);
+            JS_SetProperty(cx, err_h, c"output".as_ptr(), ov.handle().into());
+        }
+
+        let err_val = ObjectValue(err_r.get());
+        rooted!(&in(cx_ref) let ev2 = err_val);
+        JS_SetPendingException(cx, ev2.handle().into(), ExceptionStackBehavior::DoNotCapture);
         return false;
     }
     let stdout_str = String::from_utf8_lossy(&spawn_result.stdout).into_owned();
@@ -860,9 +1111,72 @@ unsafe extern "C" fn cp_spawn_sync(
         }
     }
 
-    let pid = Int32Value(unsafe { libc::getpid() } as i32);
+    let pid = Int32Value(spawn_result.pid as i32);
     rooted!(&in(cx_ref) let pv = pid);
     JS_DefineProperty(cx, result_r.handle().into(), c"pid".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
+
+    // signal: null if exited normally, signal name string if killed by signal
+    let signal_val = match status_to_signal(&spawn_result.status) {
+        Some(sig) => {
+            let sig_name = match sig {
+                1 => "SIGHUP",
+                2 => "SIGINT",
+                3 => "SIGQUIT",
+                6 => "SIGABRT",
+                9 => "SIGKILL",
+                11 => "SIGSEGV",
+                13 => "SIGPIPE",
+                15 => "SIGTERM",
+                _ => "SIG",
+            };
+            let name_str = if sig_name == "SIG" {
+                format!("SIG{}", sig)
+            } else {
+                sig_name.to_string()
+            };
+            let c_sig = ZBox::from_bytes(name_str.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_sig.as_ptr());
+            if !js_str.is_null() {
+                StringValue(&*js_str)
+            } else {
+                NullValue()
+            }
+        }
+        None => NullValue(),
+    };
+    rooted!(&in(cx_ref) let sigv = signal_val);
+    JS_DefineProperty(cx, result_r.handle().into(), c"signal".as_ptr(), sigv.handle().into(), JSPROP_ENUMERATE as u32);
+
+    // output array: [stdin (null), stdout (Buffer), stderr (Buffer)]
+    let output_arr_obj = w2::NewArrayObject1(cx_ref, 3);
+    let output_arr_val = if !output_arr_obj.is_null() {
+        rooted!(&in(cx_ref) let output_r = output_arr_obj);
+        // output[0] = null (stdin is not captured in sync spawn)
+        {
+            let null_v = NullValue();
+            rooted!(&in(cx_ref) let nv = null_v);
+            JS_DefineElement(cx, output_r.handle().into(), 0, nv.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        // output[1] = stdout — read from result object
+        {
+            let mut stdout_val = UndefinedValue();
+            JS_GetProperty(cx, result_r.handle().into(), c"stdout".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut stdout_val });
+            rooted!(&in(cx_ref) let sov = stdout_val);
+            JS_DefineElement(cx, output_r.handle().into(), 1, sov.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        // output[2] = stderr
+        {
+            let mut stderr_val = UndefinedValue();
+            JS_GetProperty(cx, result_r.handle().into(), c"stderr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut stderr_val });
+            rooted!(&in(cx_ref) let sev = stderr_val);
+            JS_DefineElement(cx, output_r.handle().into(), 2, sev.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        ObjectValue(output_r.get())
+    } else {
+        NullValue()
+    };
+    rooted!(&in(cx_ref) let oav = output_arr_val);
+    JS_DefineProperty(cx, result_r.handle().into(), c"output".as_ptr(), oav.handle().into(), JSPROP_ENUMERATE as u32);
 
     let err_val = NullValue();
     rooted!(&in(cx_ref) let erv = err_val);
@@ -963,7 +1277,7 @@ unsafe extern "C" fn cp_fork(
         }
     }
 
-    let pid_v = Int32Value(unsafe { libc::getpid() } as i32);
+    let pid_v = Int32Value(spawn_result.pid as i32);
     rooted!(&in(cx_ref) let pv = pid_v);
     JS_DefineProperty(cx, child_h, c"pid".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
 
@@ -1328,6 +1642,7 @@ mod tests {
             status: Status::Exited(Exited { code: 0, signal: 0 }),
             stdout: vec![],
             stderr: vec![],
+            pid: 0,
         };
         assert!(result.is_ok());
     }
@@ -1338,6 +1653,7 @@ mod tests {
             status: Status::Exited(Exited { code: 1, signal: 0 }),
             stdout: vec![],
             stderr: vec![],
+            pid: 0,
         };
         assert!(!result.is_ok());
     }
@@ -1348,6 +1664,7 @@ mod tests {
             status: Status::Exited(Exited { code: 0, signal: 0 }),
             stdout: b"hello\n".to_vec(),
             stderr: vec![],
+            pid: 0,
         };
         assert_eq!(result.stdout, b"hello\n");
         assert!(result.stderr.is_empty());

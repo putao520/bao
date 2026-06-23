@@ -29,7 +29,12 @@
 //! - `workers_count() -> usize`
 //! - `frames_count() -> usize`
 //!
-//! 非 D 类 method(goto/click/screenshot/...)走 transport,本 TASK 不实现。
+//! CDP 命令 method(通过 Connection 发送):
+//! - `goto(url)` → `Page.navigate`
+//! - `evaluate(expr)` → `Runtime.evaluate`
+//! - `screenshot()` → `Page.captureScreenshot`
+//! - `close()` → `Page.close`
+//! - `title()` → `document.title`(via Runtime.evaluate)
 //!
 //! @trace REQ-BAO-API-006 [class:Page]
 
@@ -37,6 +42,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
+
+use serde_json::Value;
 
 use super::accessibility::Accessibility;
 use crate::api::browser::Browser as HighLevelBrowser;
@@ -48,6 +55,8 @@ use super::keyboard::Keyboard;
 use super::mouse::Mouse;
 use super::touchscreen::Touchscreen;
 use super::tracing::Tracing;
+use crate::connection::Connection;
+use crate::error::CdpError;
 
 /// Worker — Web Worker(target attached 类型)。
 #[derive(Debug, Clone)]
@@ -115,7 +124,8 @@ pub struct TargetInfo {
 /// Page 本地状态(核心类)。
 ///
 /// 持有:target_id、main_frame、frame tree、本地实例(mouse/keyboard/...)、
-/// EventEmitter inner、默认 timeout、opener weak、context 弱引用。
+/// EventEmitter inner、默认 timeout、opener weak、context 弱引用、
+/// Connection 引用(共享,所有 Page 共用同一 CDP 连接)。
 ///
 /// @trace REQ-BAO-API-006 [class:Page]
 pub struct Page {
@@ -150,6 +160,10 @@ pub struct Page {
     opener: RefCell<Option<Weak<Page>>>,
     /// 所属 BrowserContext(weak)。
     context: Weak<BrowserContext>,
+    /// Connection 引用(共享 — 同一 Browser 的所有 Page 共用)。
+    /// `None` 表示未连接(占位 Page / 测试用)。
+    /// `RefCell` 允许 `&self` 方法内 borrow_mut 发送命令。
+    connection: RefCell<Option<Rc<RefCell<Connection>>>>,
     /// EventEmitter inner。
     events: Rc<EventEmitterInner>,
 }
@@ -162,6 +176,7 @@ impl std::fmt::Debug for Page {
             .field("frame_count", &self.frames_map.borrow().len())
             .field("worker_count", &self.workers.borrow().len())
             .field("closed", &self.closed.borrow())
+            .field("has_connection", &self.connection.borrow().is_some())
             .finish()
     }
 }
@@ -171,10 +186,20 @@ impl Page {
     ///
     /// @trace REQ-BAO-API-006 [class:Page]
     pub fn new(target_id: impl Into<String>, context: Weak<BrowserContext>) -> Self {
+        Self::new_with_connection(target_id, context, None)
+    }
+
+    /// 构造 Page 并绑定 Connection(共享引用)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn new_with_connection(
+        target_id: impl Into<String>,
+        context: Weak<BrowserContext>,
+        connection: Option<Rc<RefCell<Connection>>>,
+    ) -> Self {
         let target_id = target_id.into();
         let ctx_clone = context.clone();
         let main_frame = Rc::new(Frame::new("MAIN", true, Weak::new()));
-        // main_frame 的 page 关联在构造后调用 set_frame_page。
         let mut frames = HashMap::new();
         frames.insert("MAIN".to_string(), main_frame.clone());
 
@@ -197,6 +222,7 @@ impl Page {
             default_nav_timeout: RefCell::new(None),
             opener: RefCell::new(None),
             context: ctx_clone,
+            connection: RefCell::new(connection),
             events: Rc::new(EventEmitterInner::new()),
         }
     }
@@ -233,11 +259,6 @@ impl Page {
     ///
     /// @trace REQ-BAO-API-006 [class:Page]
     pub fn set_is_service_worker(&self, v: bool) {
-        // is_service_worker 是非 mut field,我们绕过 — 通过 unsafe 不推荐,
-        // 改为 RefCell 包装。但本 TASK 简化:在构造时确定。如果调用方需要变更,
-        // 我们提供以下 Cell 接口。
-        // 由于 is_service_worker 是 bool 字段(非 RefCell),无 setter。
-        // 不过语义上 target type 在创建时就确定,所以这个 setter 不必要。
         let _ = v;
     }
 
@@ -478,6 +499,162 @@ impl Page {
     pub fn events_inner(&self) -> &Rc<EventEmitterInner> {
         &self.events
     }
+
+    // ─── Connection 管理 ──────────────────────────────────────────────────
+
+    /// 是否绑定 Connection(可发送 CDP 命令)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn has_connection(&self) -> bool {
+        self.connection.borrow().is_some()
+    }
+
+    /// 设置 Connection(共享引用)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn set_connection(&self, conn: Rc<RefCell<Connection>>) {
+        *self.connection.borrow_mut() = Some(conn);
+    }
+
+    // ─── CDP 命令 method ──────────────────────────────────────────────────
+
+    /// 导航到指定 URL(CDP `Page.navigate`)。
+    ///
+    /// # 错误
+    /// - `CdpError::ConnectionClosed`: 未绑定 Connection 或连接已断开
+    /// - `CdpError::ProtocolError`: 导航失败(无效 URL / 网络错误)
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn goto(&self, url: &str) -> crate::error::Result<Value> {
+        self.send_cdp_command(
+            "Page.navigate",
+            serde_json::json!({"url": url}),
+        )
+    }
+
+    /// 在页面上下文中执行 JavaScript 表达式(CDP `Runtime.evaluate`)。
+    ///
+    /// # 错误
+    /// - `CdpError::ConnectionClosed`: 未绑定 Connection
+    /// - `CdpError::ProtocolError`: JS 执行异常
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn evaluate(&self, expression: &str) -> crate::error::Result<Value> {
+        self.send_cdp_command(
+            "Runtime.evaluate",
+            serde_json::json!({
+                "expression": expression,
+                "returnByValue": true,
+            }),
+        )
+    }
+
+    /// 截取页面截图(CDP `Page.captureScreenshot`)。
+    ///
+    /// 返回 base64 编码的截图数据。
+    ///
+    /// # 错误
+    /// - `CdpError::ConnectionClosed`: 未绑定 Connection
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn screenshot(&self) -> crate::error::Result<Value> {
+        self.send_cdp_command(
+            "Page.captureScreenshot",
+            serde_json::json!({"format": "png"}),
+        )
+    }
+
+    /// 截取页面截图(指定格式)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn screenshot_with_format(&self, format: &str) -> crate::error::Result<Value> {
+        self.send_cdp_command(
+            "Page.captureScreenshot",
+            serde_json::json!({"format": format}),
+        )
+    }
+
+    /// 关闭页面(CDP `Page.close`)。
+    ///
+    /// 同时标记本地 `closed = true`。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn close(&self) -> crate::error::Result<Value> {
+        let result = self.send_cdp_command("Page.close", serde_json::json!({}));
+        if result.is_ok() {
+            *self.closed.borrow_mut() = true;
+        }
+        result
+    }
+
+    /// 获取页面标题(CDP `Runtime.evaluate` 执行 `document.title`)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn title(&self) -> crate::error::Result<String> {
+        let result = self.evaluate("document.title")?;
+        Ok(result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string())
+    }
+
+    /// 设置页面 Viewport(CDP `Emulation.setDeviceMetricsOverride`)。
+    ///
+    /// 同时更新本地 viewport 缓存。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn set_viewport_cdp(&self, viewport: Viewport) -> crate::error::Result<Value> {
+        let result = self.send_cdp_command(
+            "Emulation.setDeviceMetricsOverride",
+            serde_json::json!({
+                "width": viewport.width,
+                "height": viewport.height,
+                "deviceScaleFactor": viewport.device_scale_factor,
+                "mobile": viewport.is_mobile,
+            }),
+        );
+        if result.is_ok() {
+            *self.viewport.borrow_mut() = Some(viewport);
+        }
+        result
+    }
+
+    /// 发送任意 CDP 命令(底层)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn send_cdp_command(&self, method: &str, params: Value) -> crate::error::Result<Value> {
+        match &*self.connection.borrow() {
+            Some(conn) => conn.borrow_mut().send_command(method, params),
+            None => Err(CdpError::ConnectionClosed),
+        }
+    }
+
+    /// 发送 CDP 命令(带 session_id)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn send_cdp_command_with_session(
+        &self,
+        method: &str,
+        params: Value,
+        session_id: &str,
+    ) -> crate::error::Result<Value> {
+        match &*self.connection.borrow() {
+            Some(conn) => conn.borrow_mut().send_command_with_session(method, params, Some(session_id)),
+            None => Err(CdpError::ConnectionClosed),
+        }
+    }
+
+    /// 接收一个 CDP 事件。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Page]
+    pub fn recv_cdp_event(&self) -> crate::error::Result<Option<crate::transport::CdpEvent>> {
+        match &*self.connection.borrow() {
+            Some(conn) => conn.borrow_mut().recv_event(),
+            None => Err(CdpError::ConnectionClosed),
+        }
+    }
 }
 
 impl EventEmitter for Page {
@@ -511,6 +688,7 @@ mod tests {
         assert!(p.default_timeout().is_none());
         assert!(p.default_navigation_timeout().is_none());
         assert!(p.opener().is_none());
+        assert!(!p.has_connection());
     }
 
     #[test]
@@ -593,7 +771,6 @@ mod tests {
         let got = p.target_info();
         assert_eq!(got.title, "Hello");
         assert_eq!(got.url, "https://example.com");
-        // Ref access (no clone)
         let r = p.target();
         assert_eq!(r.type_str, "page");
     }
@@ -707,5 +884,88 @@ mod tests {
         assert_eq!(p.listener_count("b"), 1);
         p.remove_all_listeners(None);
         assert_eq!(p.listener_count("b"), 0);
+    }
+
+    #[test]
+    fn cdp_command_without_connection_returns_error() {
+        let ctx = make_browser_ctx();
+        let p = make_page_with_ctx(ctx);
+        let err = p.goto("https://example.com").unwrap_err();
+        assert!(matches!(err, CdpError::ConnectionClosed));
+    }
+
+    #[test]
+    fn cdp_evaluate_without_connection_returns_error() {
+        let ctx = make_browser_ctx();
+        let p = make_page_with_ctx(ctx);
+        let err = p.evaluate("1+1").unwrap_err();
+        assert!(matches!(err, CdpError::ConnectionClosed));
+    }
+
+    #[test]
+    fn cdp_screenshot_without_connection_returns_error() {
+        let ctx = make_browser_ctx();
+        let p = make_page_with_ctx(ctx);
+        let err = p.screenshot().unwrap_err();
+        assert!(matches!(err, CdpError::ConnectionClosed));
+    }
+
+    #[test]
+    fn cdp_close_without_connection_returns_error() {
+        let ctx = make_browser_ctx();
+        let p = make_page_with_ctx(ctx);
+        let err = p.close().unwrap_err();
+        assert!(matches!(err, CdpError::ConnectionClosed));
+        assert!(!p.is_closed());
+    }
+
+    #[test]
+    fn page_with_connection_has_connection() {
+        let ctx = make_browser_ctx();
+        // Create a mock connection via InMemoryTransport + MockBridge
+        use crate::transport::{InMemoryTransport, InMemoryBridge, InMemoryBridgeResponse};
+        use std::sync::Arc;
+
+        struct MockBridge;
+        impl InMemoryBridge for MockBridge {
+            fn dispatch_command(&self, _m: &str, _p: Value, _s: Option<&str>) -> InMemoryBridgeResponse {
+                InMemoryBridgeResponse::Ok(serde_json::json!({"result": 42}))
+            }
+        }
+
+        let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
+        let transport = InMemoryTransport::new(bridge);
+        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(transport))));
+
+        let p = Rc::new(Page::new_with_connection(
+            "TARGET-1",
+            Rc::downgrade(&ctx),
+            Some(conn),
+        ));
+        assert!(p.has_connection());
+    }
+
+    #[test]
+    fn set_connection_on_existing_page() {
+        let ctx = make_browser_ctx();
+        let p = make_page_with_ctx(ctx);
+        assert!(!p.has_connection());
+
+        use crate::transport::{InMemoryTransport, InMemoryBridge, InMemoryBridgeResponse};
+        use std::sync::Arc;
+
+        struct MockBridge;
+        impl InMemoryBridge for MockBridge {
+            fn dispatch_command(&self, _m: &str, _p: Value, _s: Option<&str>) -> InMemoryBridgeResponse {
+                InMemoryBridgeResponse::Ok(Value::Null)
+            }
+        }
+
+        let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
+        let transport = InMemoryTransport::new(bridge);
+        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(transport))));
+
+        p.set_connection(conn);
+        assert!(p.has_connection());
     }
 }

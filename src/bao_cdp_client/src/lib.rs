@@ -182,7 +182,7 @@ pub use bridge::{
 };
 // 截图格式:bridge 内部用 `BridgeScreenshotFormat`,公共 API 别名为 `ScreenshotFormat`。
 pub use bridge::ScreenshotFormat as BridgeScreenshotFormat;
-pub use connection::{Connection, ConnectionConfig, ParsedConnectUrl};
+pub use connection::{Connection, ConnectionConfig, EventListener, EventListenerId, ParsedConnectUrl};
 
 // ─── 公共类型(types 模块顶层 re-export) ────────────────────────────────
 //
@@ -228,8 +228,12 @@ mod tests {
 
     #[test]
     fn reexport_transport_kind() {
-        let b = Browser::connect("ws://127.0.0.1:9222").unwrap();
-        assert_eq!(b.transport_kind(), TransportKind::WebSocket);
+        // memory:// 不需要 bridge,返回 InMemory
+        let b = Browser::connect("memory://bao").unwrap();
+        assert_eq!(b.transport_kind(), TransportKind::InMemory);
+        // ws:// 路由到 WebSocket kind(即使连接失败)
+        let p = Browser::route("ws://127.0.0.1:9222").unwrap();
+        assert_eq!(p.transport_kind, TransportKind::WebSocket);
     }
 
     /// 编译时验证所有公共 API 类型可被外部代码引用(防止 accidental private)。

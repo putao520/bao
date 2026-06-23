@@ -1934,31 +1934,32 @@ unsafe fn serve_build_request_object(
         }
     }
 
-    // headers — plain object keyed by lowercased header name (matches the
-    // node_http::uws_route_handler shape and the common Fetch headers list).
+    // headers — iterate ALL headers via uWS forEachHeader (not just
+    // hardcoded common headers) so the request object carries every header
+    // the client sent.
     rooted!(&in(cx_ref) let headers_obj = JS_NewPlainObject(cx_ref));
     if !headers_obj.get().is_null() {
-        let common_headers: &[&[u8]] = &[
-            b"host", b"content-type", b"content-length", b"accept",
-            b"user-agent", b"connection", b"authorization", b"cookie",
-            b"upgrade", b"origin", b"referer",
-        ];
-        for &name in common_headers {
-            if let Some(value) = req_ref.header(name) {
-                let c_k = ZBox::from_bytes(name);
-                let c_v = ZBox::from_bytes(value);
-                let js_v = JS_NewStringCopyZ(raw_cx, c_v.as_ptr());
-                if !js_v.is_null() {
-                    let hv = StringValue(&*js_v);
-                    rooted!(&in(cx_ref) let hvr = hv);
-                    JS_DefineProperty(
-                        raw_cx,
-                        headers_obj.handle().into(),
-                        c_k.as_ptr(),
-                        hvr.handle().into(),
-                        JSPROP_ENUMERATE as u32,
-                    );
-                }
+        let mut header_pairs: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        req_ref.for_each_header(
+            |pairs: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], value: &[u8]| {
+                pairs.push((name.to_vec(), value.to_vec()));
+            },
+            &mut header_pairs as *mut Vec<(Vec<u8>, Vec<u8>)>,
+        );
+        for (name, value) in &header_pairs {
+            let c_k = ZBox::from_bytes(name);
+            let c_v = ZBox::from_bytes(value);
+            let js_v = JS_NewStringCopyZ(raw_cx, c_v.as_ptr());
+            if !js_v.is_null() {
+                let hv = StringValue(&*js_v);
+                rooted!(&in(cx_ref) let hvr = hv);
+                JS_DefineProperty(
+                    raw_cx,
+                    headers_obj.handle().into(),
+                    c_k.as_ptr(),
+                    hvr.handle().into(),
+                    JSPROP_ENUMERATE as u32,
+                );
             }
         }
         let hdrs_val = ObjectValue(headers_obj.get());
@@ -1970,6 +1971,129 @@ unsafe fn serve_build_request_object(
             hdrs_r.handle().into(),
             JSPROP_ENUMERATE as u32,
         );
+    }
+
+    // body — attach a body property with .text(), .json(), .arrayBuffer()
+    // methods. The body content is read from the uWS request via on_data
+    // (async). For the synchronous route handler model, we store an empty
+    // body by default and provide methods that return Promises. When
+    // Content-Length is 0 or the method is GET/HEAD, the body is empty.
+    {
+        // Determine Content-Length to decide if there's a body to read.
+        let content_length: usize = req_ref.header(b"content-length")
+            .and_then(|v| ::std::str::from_utf8(v).ok())
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        let method_bytes = req_ref.method();
+        let is_bodyless_method = method_bytes.eq_ignore_ascii_case(b"GET")
+            || method_bytes.eq_ignore_ascii_case(b"HEAD");
+
+        // Build a JS body object with text/json/arrayBuffer methods.
+        // For bodyless methods or zero-length bodies, methods resolve
+        // immediately with empty values. For methods with a body, they
+        // return a Promise (body reading is async in uWS).
+        let body_src = if is_bodyless_method || content_length == 0 {
+            r#"(function() {
+  var b = {
+    text: function() { return Promise.resolve(''); },
+    json: function() { return Promise.resolve(null); },
+    arrayBuffer: function() { return Promise.resolve(new ArrayBuffer(0)); },
+    _bodyText: '',
+    _bodyBytes: new Uint8Array(0),
+  };
+  return b;
+})"#
+        } else {
+            r#"(function() {
+  // Lazy body — text/json/arrayBuffer return Promises that resolve
+  // once the body is read. The _bodyText field is populated by the
+  // native host when the body arrives via on_data.
+  var _resolved = false;
+  var _text = '';
+  var _bytes = null;
+  var _promises = [];
+
+  function resolveBody(text) {
+    _resolved = true;
+    _text = text;
+    _bytes = new TextEncoder().encode(text);
+    for (var i = 0; i < _promises.length; i++) {
+      _promises[i](text);
+    }
+    _promises = [];
+  }
+
+  var b = {
+    text: function() {
+      if (_resolved) return Promise.resolve(_text);
+      return new Promise(function(resolve) { _promises.push(resolve); });
+    },
+    json: function() {
+      if (_resolved) {
+        try { return Promise.resolve(JSON.parse(_text)); }
+        catch(e) { return Promise.reject(e); }
+      }
+      return b.text().then(function(t) {
+        try { return JSON.parse(t); }
+        catch(e) { throw e; }
+      });
+    },
+    arrayBuffer: function() {
+      if (_resolved) return Promise.resolve(_bytes.buffer || new ArrayBuffer(0));
+      return b.text().then(function(t) {
+        return new TextEncoder().encode(t).buffer;
+      });
+    },
+    _bodyText: '',
+    _bodyBytes: null,
+    _resolveBody: resolveBody,
+  };
+  return b;
+})"#
+        };
+        let mut body_text = mozjs::rust::transform_str_to_source_text(body_src);
+        let mut body_rval = UndefinedValue();
+        let body_rval_h = MutableHandle::<Value> {
+            _phantom_0: ::std::marker::PhantomData,
+            ptr: &mut body_rval,
+        };
+        let body_opts = mozjs::glue::NewCompileOptions(raw_cx, c"<body-factory>".as_ptr(), 1);
+        if !body_opts.is_null() {
+            if mozjs_sys::jsapi::JS::Evaluate2(raw_cx, body_opts, &mut body_text, body_rval_h)
+                && body_rval.is_object()
+            {
+                // Call the factory function to create the body object.
+                rooted!(&in(cx_ref) let factory_fn = body_rval.to_object());
+                rooted!(&in(cx_ref) let factory_val = ObjectValue(factory_fn.get()));
+                rooted!(&in(cx_ref) let null_obj = ::std::ptr::null_mut::<JSObject>());
+                let mut call_rval = UndefinedValue();
+                let call_rval_h = MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData,
+                    ptr: &mut call_rval,
+                };
+                let _ = JS_CallFunctionValue(
+                    raw_cx,
+                    null_obj.handle().into(),
+                    factory_val.handle().into(),
+                    &HandleValueArray::empty(),
+                    call_rval_h,
+                );
+                if call_rval.is_object() {
+                    rooted!(&in(cx_ref) let body_obj = call_rval.to_object());
+                    let body_val = ObjectValue(body_obj.get());
+                    rooted!(&in(cx_ref) let body_val_root = body_val);
+                    JS_DefineProperty(
+                        raw_cx,
+                        req_obj.handle().into(),
+                        c"body".as_ptr(),
+                        body_val_root.handle().into(),
+                        JSPROP_ENUMERATE as u32,
+                    );
+                }
+            }
+            libc::free(body_opts as *mut _);
+        }
     }
 
     req_obj.get()

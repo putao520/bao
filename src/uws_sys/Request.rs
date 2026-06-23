@@ -103,6 +103,34 @@ impl Request {
         // ffi::slice tolerates the (null, 0) shape uWS returns when no parameter is present.
         unsafe { bun_core::ffi::slice(ptr, len) }
     }
+    /// Iterate all request headers.
+    ///
+    /// Calls `cb(ctx, name, value)` for each header in the request.
+    /// The callback receives borrowed slices valid for the duration of the call.
+    /// Modeled after `h3::Request::for_each_header` with the same ZST-handler
+    /// trampoline pattern.
+    pub fn for_each_header<Ctx, H>(&self, _cb: H, ctx: *mut Ctx)
+    where
+        H: Fn(&mut Ctx, &[u8], &[u8]) + Copy + 'static,
+    {
+        extern "C" fn each<Ctx, H>(
+            n: *const u8,
+            nl: usize,
+            v: *const u8,
+            vl: usize,
+            ud: *mut core::ffi::c_void,
+        ) where
+            H: Fn(&mut Ctx, &[u8], &[u8]) + Copy + 'static,
+        {
+            unsafe {
+                let Some(ctx) = crate::thunk::user_mut::<Ctx>(ud) else {
+                    return;
+                };
+                crate::thunk::zst::<H>()(ctx, crate::thunk::c_slice(n, nl), crate::thunk::c_slice(v, vl));
+            }
+        }
+        unsafe { c::uws_req_for_each_header(self, each::<Ctx, H>, ctx.cast()) }
+    }
 }
 
 mod c {
@@ -135,6 +163,11 @@ mod c {
             index: c_ushort,
             dest: &mut *const u8,
         ) -> usize;
+        pub(super) fn uws_req_for_each_header(
+            res: *const Request,
+            handler: extern "C" fn(*const u8, usize, *const u8, usize, *mut core::ffi::c_void),
+            user_data: *mut core::ffi::c_void,
+        );
     }
 }
 

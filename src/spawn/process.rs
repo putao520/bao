@@ -2392,6 +2392,8 @@ mod spawn_process_body {
             pub status: Status,
             pub stdout: Vec<u8>,
             pub stderr: Vec<u8>,
+            /// PID of the spawned child process.
+            pub pid: PidT,
         }
 
         impl Result {
@@ -2711,6 +2713,7 @@ mod spawn_process_body {
                 status: unsafe { (*process).status.clone() },
                 stdout: Vec::new(),
                 stderr: Vec::new(),
+                pid: unsafe { (*process).pid },
             }))
         }
 
@@ -2814,6 +2817,7 @@ mod spawn_process_body {
                         .expect("Expected Process to have exited when waiting_count == 0"),
                     stdout: flatten_owned_chunks(core::mem::take(&mut (*this_ptr).stdout)),
                     stderr: flatten_owned_chunks(core::mem::take(&mut (*this_ptr).stderr)),
+                    pid: (*(*this_ptr).process).pid,
                 }
             };
             // SAFETY: drop the ref taken above, then reclaim the SyncWindowsProcess
@@ -3372,6 +3376,7 @@ mod spawn_process_body {
                 status,
                 stdout,
                 stderr,
+                pid: process.pid,
             }))
         }
 

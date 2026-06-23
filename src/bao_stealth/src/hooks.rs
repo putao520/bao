@@ -2,7 +2,11 @@
 use crate::canvas::CanvasNoise;
 use crate::navigator::{NavigatorProfile, ScreenProfile};
 use crate::webgl_audio::{AudioProfile, WebGLProfile};
-use crate::profile::{FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig, ScreenDisplayConfig};
+use crate::profile::{
+    FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig, ScreenDisplayConfig,
+    PluginConfig, SpeechConfig, MediaDevicesConfig, PermissionsConfig,
+    WebGLContextConfig, ConnectionConfig, IframeConfig,
+};
 
 pub struct StealthHooks {
     canvas_js: String,
@@ -14,6 +18,13 @@ pub struct StealthHooks {
     timing_js: String,
     clientrects_js: String,
     screen_display_js: String,
+    plugin_js: String,
+    speech_js: String,
+    media_devices_js: String,
+    permissions_js: String,
+    webgl_context_js: String,
+    connection_js: String,
+    iframe_js: String,
 }
 
 impl StealthHooks {
@@ -29,6 +40,13 @@ impl StealthHooks {
         timing: &TimingConfig,
         clientrects: &ClientRectsConfig,
         screen_display: &ScreenDisplayConfig,
+        plugin: &PluginConfig,
+        speech: &SpeechConfig,
+        media_devices: &MediaDevicesConfig,
+        permissions: &PermissionsConfig,
+        webgl_context: &WebGLContextConfig,
+        connection: &ConnectionConfig,
+        iframe: &IframeConfig,
     ) -> Self {
         StealthHooks {
             canvas_js: Self::build_canvas_js(canvas),
@@ -40,6 +58,13 @@ impl StealthHooks {
             timing_js: Self::build_timing_js(timing),
             clientrects_js: Self::build_clientrects_js(clientrects),
             screen_display_js: Self::build_screen_display_js(screen_display),
+            plugin_js: Self::build_plugin_js(plugin),
+            speech_js: Self::build_speech_js(speech),
+            media_devices_js: Self::build_media_devices_js(media_devices),
+            permissions_js: Self::build_permissions_js(permissions),
+            webgl_context_js: Self::build_webgl_context_js(webgl_context),
+            connection_js: Self::build_connection_js(connection),
+            iframe_js: Self::build_iframe_js(iframe),
         }
     }
 
@@ -79,6 +104,34 @@ impl StealthHooks {
         &self.screen_display_js
     }
 
+    pub fn plugin_js(&self) -> &str {
+        &self.plugin_js
+    }
+
+    pub fn speech_js(&self) -> &str {
+        &self.speech_js
+    }
+
+    pub fn media_devices_js(&self) -> &str {
+        &self.media_devices_js
+    }
+
+    pub fn permissions_js(&self) -> &str {
+        &self.permissions_js
+    }
+
+    pub fn webgl_context_js(&self) -> &str {
+        &self.webgl_context_js
+    }
+
+    pub fn connection_js(&self) -> &str {
+        &self.connection_js
+    }
+
+    pub fn iframe_js(&self) -> &str {
+        &self.iframe_js
+    }
+
     pub fn combined_js(&self) -> String {
         let mut out = String::with_capacity(
             self.canvas_js.len()
@@ -90,7 +143,14 @@ impl StealthHooks {
                 + self.timing_js.len()
                 + self.clientrects_js.len()
                 + self.screen_display_js.len()
-                + 10,
+                + self.plugin_js.len()
+                + self.speech_js.len()
+                + self.media_devices_js.len()
+                + self.permissions_js.len()
+                + self.webgl_context_js.len()
+                + self.connection_js.len()
+                + self.iframe_js.len()
+                + 16,
         );
         out.push_str(&self.canvas_js);
         out.push('\n');
@@ -109,6 +169,20 @@ impl StealthHooks {
         out.push_str(&self.clientrects_js);
         out.push('\n');
         out.push_str(&self.screen_display_js);
+        out.push('\n');
+        out.push_str(&self.plugin_js);
+        out.push('\n');
+        out.push_str(&self.speech_js);
+        out.push('\n');
+        out.push_str(&self.media_devices_js);
+        out.push('\n');
+        out.push_str(&self.permissions_js);
+        out.push('\n');
+        out.push_str(&self.webgl_context_js);
+        out.push('\n');
+        out.push_str(&self.connection_js);
+        out.push('\n');
+        out.push_str(&self.iframe_js);
         out
     }
 
@@ -709,6 +783,448 @@ impl StealthHooks {
             dpr = dpr,
         )
     }
+
+    // ── Plugin/MimeType spoofing ────────────────────────────────
+
+    fn build_plugin_js(config: &PluginConfig) -> String {
+        let plugins_json = serde_json::to_string(&config.plugins)
+            .unwrap_or_else(|_| "[]".into());
+        let mime_types_json = serde_json::to_string(&config.mime_types)
+            .unwrap_or_else(|_| "[]".into());
+        let plugin_count = config.plugin_count;
+
+        format!(
+            r#"(function() {{
+  var PLUGIN_COUNT = {plugin_count};
+  var PLUGIN_NAMES = {plugins};
+  var MIME_TYPES = {mime_types};
+
+  function makePlugin(name, filename, description, mimes) {{
+    var p = Object.create(Plugin.prototype);
+    Object.defineProperty(p, 'name', {{ get: function() {{ return name; }}, enumerable: true }});
+    Object.defineProperty(p, 'filename', {{ get: function() {{ return filename; }}, enumerable: true }});
+    Object.defineProperty(p, 'description', {{ get: function() {{ return description; }}, enumerable: true }});
+    Object.defineProperty(p, 'length', {{ get: function() {{ return mimes.length; }}, enumerable: true }});
+    for (var i = 0; i < mimes.length; i++) {{
+      Object.defineProperty(p, i, {{ get: function() {{ return mimes[i]; }}, enumerable: true }});
+    }}
+    return p;
+  }}
+
+  function makeMimeType(type, suffixes, description) {{
+    var m = Object.create(MimeType.prototype);
+    Object.defineProperty(m, 'type', {{ get: function() {{ return type; }}, enumerable: true }});
+    Object.defineProperty(m, 'suffixes', {{ get: function() {{ return suffixes; }}, enumerable: true }});
+    Object.defineProperty(m, 'description', {{ get: function() {{ return description; }}, enumerable: true }});
+    return m;
+  }}
+
+  if (typeof navigator !== 'undefined') {{
+    var mimeObjs = MIME_TYPES.map(function(t) {{
+      var suffix = t === 'application/pdf' ? 'pdf' : 'pdf';
+      return makeMimeType(t, suffix, '');
+    }});
+
+    var pluginObjs = PLUGIN_NAMES.map(function(name, idx) {{
+      var mimesForPlugin = mimeObjs.slice(0, Math.min(mimeObjs.length, PLUGIN_NAMES.length > 1 ? 1 : mimeObjs.length));
+      var filename = 'internal-pdf-viewer';
+      return makePlugin(name, filename, name, mimesForPlugin);
+    }});
+
+    Object.defineProperty(navigator, 'plugins', {{
+      get: function() {{
+        var arr = pluginObjs;
+        Object.defineProperty(arr, 'length', {{ get: function() {{ return PLUGIN_COUNT; }}, configurable: true }});
+        arr.item = function(i) {{ return arr[i] || null; }};
+        arr.namedItem = function(name) {{
+          for (var j = 0; j < arr.length; j++) {{
+            if (arr[j] && arr[j].name === name) return arr[j];
+          }}
+          return null;
+        }};
+        arr.refresh = function() {{}};
+        return arr;
+      }},
+      configurable: true
+    }});
+
+    Object.defineProperty(navigator, 'mimeTypes', {{
+      get: function() {{
+        var arr = mimeObjs;
+        Object.defineProperty(arr, 'length', {{ get: function() {{ return arr.length; }}, configurable: true }});
+        arr.item = function(i) {{ return arr[i] || null; }};
+        arr.namedItem = function(type) {{
+          for (var j = 0; j < arr.length; j++) {{
+            if (arr[j] && arr[j].type === type) return arr[j];
+          }}
+          return null;
+        }};
+        return arr;
+      }},
+      configurable: true
+    }});
+  }}
+}})();"#,
+            plugin_count = plugin_count,
+            plugins = plugins_json,
+            mime_types = mime_types_json,
+        )
+    }
+
+    // ── SpeechSynthesis voices ───────────────────────────────────
+
+    fn build_speech_js(config: &SpeechConfig) -> String {
+        if !config.enabled {
+            return String::new();
+        }
+        let voices_json = serde_json::to_string(&config.voices)
+            .unwrap_or_else(|_| "[]".into());
+
+        format!(
+            r#"(function() {{
+  var VOICE_NAMES = {voices};
+
+  function makeVoice(name, lang, localService, isDefault) {{
+    var v = Object.create(SpeechSynthesisVoice.prototype);
+    Object.defineProperty(v, 'voiceURI', {{ get: function() {{ return name; }}, enumerable: true }});
+    Object.defineProperty(v, 'name', {{ get: function() {{ return name; }}, enumerable: true }});
+    Object.defineProperty(v, 'lang', {{ get: function() {{ return lang; }}, enumerable: true }});
+    Object.defineProperty(v, 'localService', {{ get: function() {{ return localService; }}, enumerable: true }});
+    Object.defineProperty(v, 'isDefault', {{ get: function() {{ return isDefault; }}, enumerable: true }});
+    return v;
+  }}
+
+  if (typeof navigator !== 'undefined' && navigator.speechSynthesis) {{
+    var voiceList = VOICE_NAMES.map(function(name, idx) {{
+      var langMap = {{
+        'Google US English': 'en-US',
+        'Google UK English Female': 'en-GB',
+        'Google UK English Male': 'en-GB',
+        'Google Deutsch': 'de-DE',
+        'Google Français': 'fr-FR',
+        'Google Español': 'es-ES',
+        'Google Italiano': 'it-IT',
+        'Google Japanese': 'ja-JP',
+        'Google Nederlands': 'nl-NL',
+        'Google Polski': 'pl-PL',
+        'Google Português do Brasil': 'pt-BR',
+        'Google Pútonghuà': 'zh-CN'
+      }};
+      var lang = langMap[name] || 'en-US';
+      return makeVoice(name, lang, false, idx === 0);
+    }});
+
+    voiceList.push(makeVoice('Microsoft David - English (United States)', 'en-US', true, false));
+    voiceList.push(makeVoice('Microsoft Zira - English (United States)', 'en-US', true, false));
+
+    var origGetVoices = navigator.speechSynthesis.getVoices;
+    navigator.speechSynthesis.getVoices = function() {{
+      return voiceList;
+    }};
+
+    Object.defineProperty(navigator.speechSynthesis, 'speaking', {{ get: function() {{ return false; }}, configurable: true }});
+    Object.defineProperty(navigator.speechSynthesis, 'pending', {{ get: function() {{ return false; }}, configurable: true }});
+  }}
+}})();"#,
+            voices = voices_json,
+        )
+    }
+
+    // ── MediaDevices enumeration ─────────────────────────────────
+
+    fn build_media_devices_js(config: &MediaDevicesConfig) -> String {
+        if !config.enabled {
+            return String::new();
+        }
+        let audio_input_count = config.audio_input_count;
+        let video_input_count = config.video_input_count;
+        let audio_output_count = config.audio_output_count;
+
+        format!(
+            r#"(function() {{
+  var AUDIO_IN = {audio_input_count};
+  var VIDEO_IN = {video_input_count};
+  var AUDIO_OUT = {audio_output_count};
+
+  function makeDevice(kind, label, deviceId, groupId) {{
+    var d = Object.create(MediaDeviceInfo.prototype);
+    Object.defineProperty(d, 'kind', {{ get: function() {{ return kind; }}, enumerable: true }});
+    Object.defineProperty(d, 'label', {{ get: function() {{ return label; }}, enumerable: true }});
+    Object.defineProperty(d, 'deviceId', {{ get: function() {{ return deviceId; }}, enumerable: true }});
+    Object.defineProperty(d, 'groupId', {{ get: function() {{ return groupId; }}, enumerable: true }});
+    d.toJSON = function() {{
+      return {{ kind: kind, label: label, deviceId: deviceId, groupId: groupId }};
+    }};
+    return d;
+  }}
+
+  if (typeof navigator !== 'undefined' && navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {{
+    var origEnumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+    navigator.mediaDevices.enumerateDevices = function() {{
+      return origEnumerate().then(function(realDevices) {{
+        var hasLabels = realDevices.some(function(d) {{ return d.label && d.label.length > 0; }});
+        if (hasLabels) return realDevices;
+
+        var devices = [];
+        for (var i = 0; i < AUDIO_IN; i++) {{
+          devices.push(makeDevice('audioinput', '', 'audioinput-' + i, 'group-' + i));
+        }}
+        for (var i = 0; i < VIDEO_IN; i++) {{
+          devices.push(makeDevice('videoinput', '', 'videoinput-' + i, 'group-' + (AUDIO_IN + i)));
+        }}
+        for (var i = 0; i < AUDIO_OUT; i++) {{
+          devices.push(makeDevice('audiooutput', '', 'audiooutput-' + i, 'group-' + (AUDIO_IN + VIDEO_IN + i)));
+        }}
+        return devices;
+      }}).catch(function() {{
+        var devices = [];
+        for (var i = 0; i < AUDIO_IN; i++) {{
+          devices.push(makeDevice('audioinput', '', 'audioinput-' + i, 'group-' + i));
+        }}
+        for (var i = 0; i < VIDEO_IN; i++) {{
+          devices.push(makeDevice('videoinput', '', 'videoinput-' + i, 'group-' + (AUDIO_IN + i)));
+        }}
+        for (var i = 0; i < AUDIO_OUT; i++) {{
+          devices.push(makeDevice('audiooutput', '', 'audiooutput-' + i, 'group-' + (AUDIO_IN + VIDEO_IN + i)));
+        }}
+        return devices;
+      }});
+    }};
+  }}
+}})();"#,
+            audio_input_count = audio_input_count,
+            video_input_count = video_input_count,
+            audio_output_count = audio_output_count,
+        )
+    }
+
+    // ── Permissions API ──────────────────────────────────────────
+
+    fn build_permissions_js(config: &PermissionsConfig) -> String {
+        if !config.enabled {
+            return String::new();
+        }
+        let states_json: Vec<String> = config.states.iter()
+            .map(|(k, v)| format!("'{}': '{}'", k, v))
+            .collect();
+        let states_map = states_json.join(", ");
+
+        format!(
+            r#"(function() {{
+  var PERMISSION_STATES = {{{states_map}}};
+
+  if (typeof navigator !== 'undefined' && navigator.permissions && navigator.permissions.query) {{
+    var origQuery = navigator.permissions.query.bind(navigator.permissions);
+    navigator.permissions.query = function(desc) {{
+      var name = (typeof desc === 'object' && desc !== null) ? desc.name : desc;
+      if (name && PERMISSION_STATES.hasOwnProperty(name)) {{
+        var state = PERMISSION_STATES[name];
+        return Promise.resolve({{
+          state: state,
+          status: state,
+          name: name,
+          onchange: null,
+          addEventListener: function() {{}},
+          removeEventListener: function() {{}},
+          dispatchEvent: function() {{ return true; }}
+        }});
+      }}
+      return origQuery(desc);
+    }};
+  }}
+}})();"#,
+            states_map = states_map,
+        )
+    }
+
+    // ── WebGL context attributes ─────────────────────────────────
+
+    fn build_webgl_context_js(config: &WebGLContextConfig) -> String {
+        if !config.enabled {
+            return String::new();
+        }
+        let antialias = config.antialias;
+        let depth = config.depth;
+        let stencil = config.stencil;
+        let alpha = config.alpha;
+        let premultiplied_alpha = config.premultiplied_alpha;
+        let preserve_drawing_buffer = config.preserve_drawing_buffer;
+        let power_preference = &config.power_preference;
+        let fail_if_major_performance_caveat = config.fail_if_major_performance_caveat;
+
+        format!(
+            r#"(function() {{
+  var CONTEXT_ATTRS = {{
+    antialias: {antialias},
+    depth: {depth},
+    stencil: {stencil},
+    alpha: {alpha},
+    premultipliedAlpha: {premultiplied_alpha},
+    preserveDrawingBuffer: {preserve_drawing_buffer},
+    powerPreference: {power_preference:?},
+    failIfMajorPerformanceCaveat: {fail_if_major_performance_caveat}
+  }};
+
+  if (typeof WebGLRenderingContext !== 'undefined') {{
+    var origGetContextAttributes = WebGLRenderingContext.prototype.getContextAttributes;
+    WebGLRenderingContext.prototype.getContextAttributes = function() {{
+      if (origGetContextAttributes) {{
+        try {{
+          var real = origGetContextAttributes.call(this);
+          if (real) {{
+            return {{
+              antialias: CONTEXT_ATTRS.antialias,
+              depth: CONTEXT_ATTRS.depth,
+              stencil: CONTEXT_ATTRS.stencil,
+              alpha: CONTEXT_ATTRS.alpha,
+              premultipliedAlpha: CONTEXT_ATTRS.premultipliedAlpha,
+              preserveDrawingBuffer: CONTEXT_ATTRS.preserveDrawingBuffer,
+              powerPreference: CONTEXT_ATTRS.powerPreference,
+              failIfMajorPerformanceCaveat: CONTEXT_ATTRS.failIfMajorPerformanceCaveat
+            }};
+          }}
+        }} catch(e) {{}}
+      }}
+      return CONTEXT_ATTRS;
+    }};
+  }}
+
+  if (typeof WebGL2RenderingContext !== 'undefined') {{
+    var origGetContextAttributes2 = WebGL2RenderingContext.prototype.getContextAttributes;
+    WebGL2RenderingContext.prototype.getContextAttributes = function() {{
+      if (origGetContextAttributes2) {{
+        try {{
+          var real = origGetContextAttributes2.call(this);
+          if (real) {{
+            return {{
+              antialias: CONTEXT_ATTRS.antialias,
+              depth: CONTEXT_ATTRS.depth,
+              stencil: CONTEXT_ATTRS.stencil,
+              alpha: CONTEXT_ATTRS.alpha,
+              premultipliedAlpha: CONTEXT_ATTRS.premultipliedAlpha,
+              preserveDrawingBuffer: CONTEXT_ATTRS.preserveDrawingBuffer,
+              powerPreference: CONTEXT_ATTRS.powerPreference,
+              failIfMajorPerformanceCaveat: CONTEXT_ATTRS.failIfMajorPerformanceCaveat
+            }};
+          }}
+        }} catch(e) {{}}
+      }}
+      return CONTEXT_ATTRS;
+    }};
+  }}
+}})();"#,
+            antialias = antialias,
+            depth = depth,
+            stencil = stencil,
+            alpha = alpha,
+            premultiplied_alpha = premultiplied_alpha,
+            preserve_drawing_buffer = preserve_drawing_buffer,
+            power_preference = power_preference,
+            fail_if_major_performance_caveat = fail_if_major_performance_caveat,
+        )
+    }
+
+    // ── navigator.connection ─────────────────────────────────────
+
+    fn build_connection_js(config: &ConnectionConfig) -> String {
+        if !config.enabled {
+            return String::new();
+        }
+        let effective_type = &config.effective_type;
+        let downlink = config.downlink;
+        let rtt = config.rtt;
+        let save_data = config.save_data;
+
+        format!(
+            r#"(function() {{
+  var EFFECTIVE_TYPE = {effective_type:?};
+  var DOWNLINK = {downlink};
+  var RTT = {rtt};
+  var SAVE_DATA = {save_data};
+
+  if (typeof navigator !== 'undefined') {{
+    var connObj = {{
+      effectiveType: EFFECTIVE_TYPE,
+      downlink: DOWNLINK,
+      rtt: RTT,
+      saveData: SAVE_DATA,
+      type: 'wifi',
+      onchange: null,
+      addEventListener: function(type, listener) {{
+        if (type === 'change') this.onchange = listener;
+      }},
+      removeEventListener: function(type) {{
+        if (type === 'change') this.onchange = null;
+      }},
+      dispatchEvent: function() {{ return true; }}
+    }};
+
+    if (navigator.connection) {{
+      try {{
+        Object.defineProperty(navigator.connection, 'effectiveType', {{ get: function() {{ return EFFECTIVE_TYPE; }}, configurable: true }});
+        Object.defineProperty(navigator.connection, 'downlink', {{ get: function() {{ return DOWNLINK; }}, configurable: true }});
+        Object.defineProperty(navigator.connection, 'rtt', {{ get: function() {{ return RTT; }}, configurable: true }});
+        Object.defineProperty(navigator.connection, 'saveData', {{ get: function() {{ return SAVE_DATA; }}, configurable: true }});
+      }} catch(e) {{
+        Object.defineProperty(navigator, 'connection', {{ get: function() {{ return connObj; }}, configurable: true }});
+      }}
+    }} else {{
+      Object.defineProperty(navigator, 'connection', {{ get: function() {{ return connObj; }}, configurable: true }});
+    }}
+  }}
+}})();"#,
+            effective_type = effective_type,
+            downlink = downlink,
+            rtt = rtt,
+            save_data = save_data,
+        )
+    }
+
+    // ── iframe contentWindow normalization ───────────────────────
+
+    fn build_iframe_js(config: &IframeConfig) -> String {
+        if !config.enabled {
+            return String::new();
+        }
+
+        r#"(function() {
+  if (typeof HTMLIFrameElement === 'undefined') return;
+
+  var origContentWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
+  var origContentDocument = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentDocument');
+
+  if (origContentWindow && origContentWindow.get) {
+    var origCWGetter = origContentWindow.get;
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+      get: function() {
+        var win = origCWGetter.call(this);
+        if (!win) return null;
+        try {
+          var doc = win.document;
+          return win;
+        } catch(e) {
+          return win;
+        }
+      },
+      configurable: true
+    });
+  }
+
+  if (origContentDocument && origContentDocument.get) {
+    var origCDGetter = origContentDocument.get;
+    Object.defineProperty(HTMLIFrameElement.prototype, 'contentDocument', {
+      get: function() {
+        try {
+          return origCDGetter.call(this);
+        } catch(e) {
+          return null;
+        }
+      },
+      configurable: true
+    });
+  }
+})();"#.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -733,6 +1249,13 @@ mod tests {
             &profile.timing,
             &profile.clientrects,
             &profile.screen_display,
+            &profile.plugin,
+            &profile.speech,
+            &profile.media_devices,
+            &profile.permissions,
+            &profile.webgl_context,
+            &profile.connection,
+            &profile.iframe,
         )
     }
 
@@ -750,6 +1273,13 @@ mod tests {
             &profile.timing,
             &profile.clientrects,
             &profile.screen_display,
+            &profile.plugin,
+            &profile.speech,
+            &profile.media_devices,
+            &profile.permissions,
+            &profile.webgl_context,
+            &profile.connection,
+            &profile.iframe,
         )
     }
 
@@ -1003,6 +1533,34 @@ mod tests {
             combined.contains("screen_display_js") || combined.contains("screen, 'width'"),
             "combined JS must contain screen/display hooks"
         );
+        assert!(
+            combined.contains("PLUGIN_COUNT"),
+            "combined JS must contain plugin hooks"
+        );
+        assert!(
+            combined.contains("getVoices"),
+            "combined JS must contain speech hooks"
+        );
+        assert!(
+            combined.contains("enumerateDevices"),
+            "combined JS must contain media devices hooks"
+        );
+        assert!(
+            combined.contains("permissions.query"),
+            "combined JS must contain permissions hooks"
+        );
+        assert!(
+            combined.contains("getContextAttributes"),
+            "combined JS must contain WebGL context hooks"
+        );
+        assert!(
+            combined.contains("effectiveType"),
+            "combined JS must contain connection hooks"
+        );
+        assert!(
+            combined.contains("contentWindow"),
+            "combined JS must contain iframe hooks"
+        );
     }
 
     #[test]
@@ -1196,7 +1754,19 @@ mod tests {
         let timing = TimingConfig::default();
         let clientrects = ClientRectsConfig::default();
         let screen_display = ScreenDisplayConfig::default();
-        let hooks = StealthHooks::from_profile(&canvas, &audio, &nav, &screen, &webgl, &font, &battery, WebRtcMode::Default, &timing, &clientrects, &screen_display);
+        let plugin = PluginConfig::default();
+        let speech = SpeechConfig::default();
+        let media_devices = MediaDevicesConfig::default();
+        let permissions = PermissionsConfig::default();
+        let webgl_context = WebGLContextConfig::default();
+        let connection = ConnectionConfig::default();
+        let iframe = IframeConfig::default();
+        let hooks = StealthHooks::from_profile(
+            &canvas, &audio, &nav, &screen, &webgl, &font, &battery,
+            WebRtcMode::Default, &timing, &clientrects, &screen_display,
+            &plugin, &speech, &media_devices, &permissions, &webgl_context,
+            &connection, &iframe,
+        );
         let js = hooks.navigator_js();
         assert!(
             js.contains("800") && js.contains("600"),

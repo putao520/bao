@@ -8,16 +8,16 @@
 //! 其他 scheme 一律返回 [`ConnectError::InvalidScheme`]。空串或无 `://` 返回
 //! [`ConnectError::InvalidUrl`]。
 //!
-//! TASK-2 在 TASK-1 的基础上引入 [`build_transport`] / [`build_in_memory_transport`]
-//! / [`build_websocket_transport`] 三个构造方法,把已解析的 URL 实例化为真实 Transport。
-//! `connect()` 本身保持轻量(只解析 URL),实际握手由 `build_*` 触发 — 这与
-//! chromiumoxide 的 lazy connect 模式一致,且便于在 `connect("ws://127.0.0.1:9222")`
-//! 等不保证后端在线的测试场景下做路由验证。
+//! `Browser` 持有 `Connection`(封装 `Box<dyn Transport>`),提供:
+//! - `connect(url)` → 解析 URL → 构建 Transport → 创建 Connection → 返回 Browser
+//! - `new_page()` → 发送 `Target.createTarget` CDP 命令
+//! - `pages()` → 发送 `Target.getTargets` CDP 命令
+//! - `version()` → 发送 `Browser.getVersion` CDP 命令
 //!
 //! @trace REQ-BAO-API-001 [level:library]
 //! @trace REQ-BAO-API-002 [interface:Transport]
 
-use crate::connection::{ParsedConnectUrl};
+use crate::connection::{Connection, ConnectionConfig, ParsedConnectUrl};
 use crate::error::ConnectError;
 use crate::transport::{
     InMemoryBridge, InMemoryTransport, Transport, TransportKind, WebSocketTransport,
@@ -26,63 +26,72 @@ use std::sync::Arc;
 
 /// CDP Browser 实例。
 ///
-/// 代表一次成功的 `connect` —— 持有解析后的 URL 和 transport 类型。
-/// TASK-2 后会扩展为持有真实的 `Transport` + `Connection`。
+/// 代表一次成功的 `connect` —— 持有解析后的 URL、Connection 和 transport 类型。
 ///
 /// @trace REQ-BAO-API-001 [level:library]
-#[derive(Debug, Clone)]
 pub struct Browser {
     parsed: ParsedConnectUrl,
+    connection: Option<Connection>,
 }
 
 impl Browser {
-    /// 连接到 CDP 目标。
+    /// 连接到 CDP 目标(解析 URL,按需创建 Connection)。
     ///
     /// 根据输入 URL 的 scheme 自动路由到三种 transport 模式:
     ///
-    /// | Scheme          | 路由                 | Transport       |
-    /// |-----------------|----------------------|-----------------|
-    /// | `memory://`     | `connect_in_memory`  | InMemory        |
-    /// | `ws://`/`wss://`| `connect_ws`         | WebSocket(直连)|
-    /// | `http://`/`https://` | `connect_http_discover` | WebSocket(自动发现 ws endpoint) |
+    /// | Scheme          | 行为                                |
+    /// |-----------------|--------------------------------------|
+    /// | `memory://`     | 解析 URL,返回 Browser(无 Connection,需 `connect_with_bridge` 接入) |
+    /// | `ws://`/`wss://`| 解析 URL,返回 Browser(无 Connection,需 `connect_with_discovered_ws` 接入) |
+    /// | `http://`/`https://` | 解析 URL,返回 Browser(无 Connection,同 ws://) |
+    ///
+    /// 这是 lazy connect 模式:不触发网络 I/O,不阻塞,瞬时返回。
+    /// 实际的 Transport 建立通过 `connect_with_bridge`(memory://)
+    /// 或 `connect_with_discovered_ws`(ws://) 完成。
     ///
     /// # 错误
     /// - [`ConnectError::InvalidUrl`]: 空 URL 或无 `://`
     /// - [`ConnectError::InvalidScheme`]: scheme 不在支持列表(如 `ftp`)
     ///
-    /// # 示例
-    /// ```
-    /// use bao_cdp_client::Browser;
-    /// use bao_cdp_client::error::ConnectError;
-    ///
-    /// // memory:// → InMemory
-    /// let b = Browser::connect("memory://bao").unwrap();
-    /// assert!(b.is_in_memory());
-    ///
-    /// // ws:// → WebSocket
-    /// let b = Browser::connect("ws://127.0.0.1:9222").unwrap();
-    /// assert!(b.is_websocket());
-    ///
-    /// // http:// → 自动发现 ws endpoint(本 TASK 内部仅返回 Browser 占位)
-    /// let b = Browser::connect("http://127.0.0.1:9222").unwrap();
-    /// assert!(b.is_websocket());
-    ///
-    /// // 非法 scheme
-    /// let err = Browser::connect("ftp://x").unwrap_err();
-    /// assert!(matches!(err, ConnectError::InvalidScheme(_)));
-    /// ```
-    ///
     /// @trace REQ-BAO-API-001 [level:library]
     pub fn connect(url: &str) -> Result<Self, ConnectError> {
         let parsed = Self::route(url)?;
-        // 显式三路分发,保证 connect_in_memory / connect_ws / connect_http_discover
-        // 都被 connect() 实际调用(TASK-2 各自接管不同的 Transport 构造)。
-        match parsed.scheme.as_str() {
-            "memory" => Self::connect_in_memory(url, parsed),
-            "ws" | "wss" => Self::connect_ws(url, parsed),
-            "http" | "https" => Self::connect_http_discover(url, parsed),
-            // route() 已校验过 scheme,这里不可达;保险起见返回 InvalidScheme。
-            other => Err(ConnectError::InvalidScheme(other.to_string())),
+        // Lazy connect:只解析 URL,不创建 Transport/Connection。
+        // 实际连接通过 connect_with_bridge / connect_with_discovered_ws 完成。
+        Ok(Browser {
+            parsed,
+            connection: None,
+        })
+    }
+
+    /// 连接到 CDP 目标并传入 InMemoryBridge(memory:// 模式)。
+    ///
+    /// 与 `connect` 类似,但立即为 memory:// 创建 Connection。
+    /// 其他 scheme 仍返回 Browser(无 Connection)。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn connect_with_bridge(
+        url: &str,
+        bridge: Arc<dyn InMemoryBridge>,
+    ) -> Result<Self, ConnectError> {
+        let parsed = Self::route(url)?;
+        if parsed.scheme == "memory" {
+            let transport = InMemoryTransport::new(bridge);
+            let config = ConnectionConfig {
+                default_timeout_ms: 30_000,
+                transport_kind: TransportKind::InMemory,
+            };
+            let connection = Connection::new(Box::new(transport), config);
+            Ok(Browser {
+                parsed,
+                connection: Some(connection),
+            })
+        } else {
+            // 非 memory:// scheme:仅解析 URL,不创建 Connection
+            Ok(Browser {
+                parsed,
+                connection: None,
+            })
         }
     }
 
@@ -93,21 +102,17 @@ impl Browser {
     ///
     /// @trace REQ-BAO-API-001 [level:library]
     pub(crate) fn route(url: &str) -> Result<ParsedConnectUrl, ConnectError> {
-        // 空串早返回 InvalidUrl。
         if url.is_empty() {
             return Err(ConnectError::InvalidUrl);
         }
 
-        // 用 bun_url 解析(借用视图,零分配)。
         let parsed_url = bun_url::URL::parse(url.as_bytes());
         let scheme_bytes: &[u8] = parsed_url.protocol;
 
-        // bun_url 的 URL::parse 找不到 "://" 时返回 protocol 空 — 视为 InvalidUrl。
         if scheme_bytes.is_empty() {
             return Err(ConnectError::InvalidUrl);
         }
 
-        // 协议是 ASCII,转 str 失败说明 scheme 含非 ASCII 字节 — 视为 InvalidUrl。
         let scheme = match std::str::from_utf8(scheme_bytes) {
             Ok(s) => s,
             Err(_) => return Err(ConnectError::InvalidUrl),
@@ -116,47 +121,136 @@ impl Browser {
         match scheme {
             "memory" => Ok(ParsedConnectUrl::new(url, scheme, TransportKind::InMemory)),
             "ws" | "wss" => Ok(ParsedConnectUrl::new(url, scheme, TransportKind::WebSocket)),
-            "http" | "https" => Ok(ParsedConnectUrl::new(
-                url,
-                scheme,
-                TransportKind::WebSocket,
-            )),
+            "http" | "https" => Ok(ParsedConnectUrl::new(url, scheme, TransportKind::WebSocket)),
             other => Err(ConnectError::InvalidScheme(other.to_string())),
         }
     }
 
-    /// InMemory transport 路由。Browser::connect 仅解析 URL,实际 Transport
-    /// 由 [`build_in_memory_transport`] 构造(传入 servo bridge 实现)。
+    /// HTTP 发现完成后,用发现的 ws URL 创建 Connection。
+    ///
+    /// 触发实际的 WebSocket 连接(会阻塞直到 TCP+WS 握手完成或超时)。
     ///
     /// @trace REQ-BAO-API-001 [level:library]
-    fn connect_in_memory(url: &str, parsed: ParsedConnectUrl) -> Result<Browser, ConnectError> {
-        let _ = url;
-        Ok(Browser { parsed })
+    pub fn connect_with_discovered_ws(ws_url: &str) -> Result<Self, ConnectError> {
+        let parsed = Self::route(ws_url)?;
+        let ws = WebSocketTransport::connect(&parsed.raw).map_err(|e| {
+            ConnectError::ConnectionFailed(format!("ws connect: {}", e))
+        })?;
+        let config = ConnectionConfig {
+            default_timeout_ms: 30_000,
+            transport_kind: TransportKind::WebSocket,
+        };
+        let connection = Connection::new(Box::new(ws), config);
+        Ok(Browser {
+            parsed,
+            connection: Some(connection),
+        })
     }
 
-    /// WebSocket transport 路由(`ws://` / `wss://` 直连)。Browser::connect 仅解析 URL,
-    /// 实际 Transport 由 [`build_websocket_transport`] 构造(触发 TCP + WebSocket 握手)。
+    // ─── CDP 命令方法 ──────────────────────────────────────────────────────
+
+    /// 发送 CDP 命令(通过 Connection)。
     ///
     /// @trace REQ-BAO-API-001 [level:library]
-    fn connect_ws(url: &str, parsed: ParsedConnectUrl) -> Result<Browser, ConnectError> {
-        let _ = url;
-        Ok(Browser { parsed })
+    pub fn send_command(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> crate::error::Result<serde_json::Value> {
+        match &mut self.connection {
+            Some(conn) => conn.send_command(method, params),
+            None => Err(crate::error::CdpError::ConnectionClosed),
+        }
     }
 
-    /// HTTP 自动发现路由(`http://` / `https://`)。
-    ///
-    /// 标准流程是 GET `/json/version` 拿到 `webSocketDebuggerUrl`,再 `connect_ws`。
-    /// TASK-1 不实际发请求(避免网络副作用),返回 Browser 占位,但内部记录
-    /// `discovery_pending = true` 以便 TASK-2 接管。
+    /// 发送 CDP 命令(带 session_id)。
     ///
     /// @trace REQ-BAO-API-001 [level:library]
-    #[allow(unused_variables)]
-    fn connect_http_discover(url: &str, parsed: ParsedConnectUrl) -> Result<Browser, ConnectError> {
-        // 注:在 route() 中 http/https 已合并到 WebSocket 分支,本方法在 TASK-1 暂不被直接调用,
-        // 但保留为 TASK-2 的语义占位与测试锚点。
-        // 误用保护:如果未来 route() 把 http/https 路由到独立分支,本方法仍可作为单独入口。
-        Ok(Browser { parsed })
+    pub fn send_command_with_session(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+        session_id: &str,
+    ) -> crate::error::Result<serde_json::Value> {
+        match &mut self.connection {
+            Some(conn) => conn.send_command_with_session(method, params, Some(session_id)),
+            None => Err(crate::error::CdpError::ConnectionClosed),
+        }
     }
+
+    /// 获取 Browser 版本信息(CDP `Browser.getVersion`)。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn version(&mut self) -> crate::error::Result<serde_json::Value> {
+        self.send_command("Browser.getVersion", serde_json::json!({}))
+    }
+
+    /// 获取所有 target 列表(CDP `Target.getTargets`)。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn pages(&mut self) -> crate::error::Result<serde_json::Value> {
+        self.send_command("Target.getTargets", serde_json::json!({}))
+    }
+
+    /// 创建新 page/tab(CDP `Target.createTarget`)。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn new_page(&mut self, url: &str) -> crate::error::Result<serde_json::Value> {
+        self.send_command(
+            "Target.createTarget",
+            serde_json::json!({"url": url}),
+        )
+    }
+
+    /// 接收一个 CDP 事件。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn recv_event(&mut self) -> crate::error::Result<Option<crate::transport::CdpEvent>> {
+        match &mut self.connection {
+            Some(conn) => conn.recv_event(),
+            None => Err(crate::error::CdpError::ConnectionClosed),
+        }
+    }
+
+    /// 注册事件 handler。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn on_event(
+        &mut self,
+        method: &str,
+        handler: crate::connection::EventListener,
+    ) -> crate::connection::EventListenerId {
+        match &mut self.connection {
+            Some(conn) => conn.on_event(method, handler),
+            None => 0,
+        }
+    }
+
+    /// 移除事件 handler。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn off_event(
+        &mut self,
+        method: &str,
+        listener_id: crate::connection::EventListenerId,
+    ) -> bool {
+        match &mut self.connection {
+            Some(conn) => conn.off_event(method, listener_id),
+            None => false,
+        }
+    }
+
+    /// 关闭 Connection。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn close_connection(&mut self) -> crate::error::Result<()> {
+        match &mut self.connection {
+            Some(conn) => conn.close(),
+            None => Ok(()),
+        }
+    }
+
+    // ─── 属性访问 ──────────────────────────────────────────────────────────
 
     /// 原 URL。
     ///
@@ -193,6 +287,18 @@ impl Browser {
         self.parsed.transport_kind == TransportKind::WebSocket
     }
 
+    /// 是否有 Connection(即 transport 已建立)。
+    pub fn has_connection(&self) -> bool {
+        self.connection.is_some()
+    }
+
+    /// 获取 Connection 的可变引用。
+    ///
+    /// @trace REQ-BAO-API-001 [level:library]
+    pub fn connection_mut(&mut self) -> Option<&mut Connection> {
+        self.connection.as_mut()
+    }
+
     /// 根据 URL scheme 构造对应 Transport。
     ///
     /// - InMemory URL(`memory://`)需要调用方传入 servo bridge → 调 [`build_in_memory_transport`]
@@ -200,15 +306,11 @@ impl Browser {
     ///
     /// 返回 `Box<dyn Transport>` 便于上层 Connection 持有 trait 对象。
     ///
-    /// # 错误
-    /// - [`ConnectError::ConnectionFailed`]: TCP/WebSocket 握手失败
-    /// - [`ConnectError::InvalidScheme`]: URL scheme 与构造方式不匹配
-    ///
     /// @trace REQ-BAO-API-002 [interface:Transport]
     pub fn build_transport(&self) -> Result<Box<dyn Transport>, ConnectError> {
         match self.parsed.transport_kind {
             TransportKind::InMemory => Err(ConnectError::ConnectionFailed(
-                "InMemory transport requires explicit InMemoryBridge; use build_in_memory_transport()"
+                "InMemory transport requires explicit InMemoryBridge; use connect_with_bridge()"
                     .into(),
             )),
             TransportKind::WebSocket => {
@@ -221,12 +323,6 @@ impl Browser {
     }
 
     /// 构造 InMemory transport(同进程 servo)。
-    ///
-    /// 调用方传入 `InMemoryBridge` 实现 — TASK-3 提供 `CDPRdpBridge` 实现,
-    /// TASK-2 单测用 mock bridge。
-    ///
-    /// # 错误
-    /// - [`ConnectError::InvalidScheme`]: 当前 URL 不是 `memory://`
     ///
     /// @trace REQ-BAO-API-002 [interface:Transport]
     pub fn build_in_memory_transport(
@@ -244,13 +340,6 @@ impl Browser {
 
     /// 构造 WebSocket transport(外部 Chrome)。
     ///
-    /// 触发 TCP 连接 + RFC 6455 WebSocket 握手(通过 `bun_uws::ws_client::WebSocketClient`)。
-    /// 成功后返回包装好的 `WebSocketTransport`。
-    ///
-    /// # 错误
-    /// - [`ConnectError::InvalidScheme`]: 当前 URL 不是 `ws://`
-    /// - [`ConnectError::ConnectionFailed`]: TCP/WebSocket 握手失败
-    ///
     /// @trace REQ-BAO-API-002 [interface:Transport]
     pub fn build_websocket_transport(&self) -> Result<WebSocketTransport, ConnectError> {
         if self.parsed.transport_kind != TransportKind::WebSocket {
@@ -263,24 +352,74 @@ impl Browser {
             ConnectError::ConnectionFailed(format!("ws connect: {}", e))
         })
     }
+}
 
-    /// 内部构造(测试用)。
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn from_parsed(parsed: ParsedConnectUrl) -> Self {
-        Browser { parsed }
+impl std::fmt::Debug for Browser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Browser")
+            .field("url", &self.parsed.raw)
+            .field("scheme", &self.parsed.scheme)
+            .field("transport_kind", &self.parsed.transport_kind)
+            .field("connected", &self.connection.is_some())
+            .finish()
     }
 }
 
 impl std::fmt::Display for Browser {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Browser({}, kind={:?})", self.parsed.raw, self.parsed.transport_kind)
+        write!(
+            f,
+            "Browser({}, kind={:?}, connected={})",
+            self.parsed.raw,
+            self.parsed.transport_kind,
+            self.connection.is_some()
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::CdpError;
+    use crate::transport::CdpEvent;
+
+    // ─── Mock Transport ────────────────────────────────────────────────────
+    struct MockTransport {
+        kind: TransportKind,
+        closed: bool,
+        next_response: Option<serde_json::Value>,
+    }
+
+    impl Transport for MockTransport {
+        fn kind(&self) -> TransportKind {
+            self.kind
+        }
+        fn send_command(
+            &mut self,
+            _m: &str,
+            _p: serde_json::Value,
+            _s: Option<&str>,
+        ) -> crate::error::Result<serde_json::Value> {
+            if self.closed {
+                return Err(CdpError::ConnectionClosed);
+            }
+            self.next_response
+                .clone()
+                .ok_or(CdpError::ProtocolError("no response".into()))
+        }
+        fn recv_event(&mut self) -> crate::error::Result<Option<CdpEvent>> {
+            if self.closed {
+                return Err(CdpError::ConnectionClosed);
+            }
+            Ok(None)
+        }
+        fn close(&mut self) -> crate::error::Result<()> {
+            self.closed = true;
+            Ok(())
+        }
+    }
+
+    // ─── URL 路由测试 ──────────────────────────────────────────────────────
 
     #[test]
     fn route_memory() {
@@ -335,7 +474,6 @@ mod tests {
 
     #[test]
     fn route_no_scheme_invalid_url() {
-        // "localhost:9222" 没有 ://,bun_url 解析后 protocol 为空。
         let err = Browser::route("localhost:9222").unwrap_err();
         assert!(matches!(err, ConnectError::InvalidUrl));
     }
@@ -346,27 +484,33 @@ mod tests {
         assert!(matches!(err, ConnectError::InvalidScheme(_)));
     }
 
+    // ─── connect 测试 ──────────────────────────────────────────────────────
+
     #[test]
-    fn connect_memory_returns_browser() {
+    fn connect_memory_returns_browser_no_connection() {
         let b = Browser::connect("memory://bao").unwrap();
         assert!(b.is_in_memory());
         assert!(!b.is_websocket());
         assert_eq!(b.scheme(), "memory");
         assert_eq!(b.url(), "memory://bao");
+        assert!(!b.has_connection());
     }
 
     #[test]
-    fn connect_ws_returns_browser() {
+    fn connect_ws_returns_browser_no_connection() {
+        // Lazy connect:ws:// 只解析 URL,不触发实际 WebSocket 连接。
         let b = Browser::connect("ws://127.0.0.1:9222").unwrap();
         assert!(b.is_websocket());
         assert_eq!(b.scheme(), "ws");
+        assert!(!b.has_connection());
     }
 
     #[test]
-    fn connect_http_returns_browser() {
+    fn connect_http_returns_browser_no_connection() {
         let b = Browser::connect("http://127.0.0.1:9222").unwrap();
         assert!(b.is_websocket());
         assert_eq!(b.scheme(), "http");
+        assert!(!b.has_connection());
     }
 
     #[test]
@@ -381,6 +525,76 @@ mod tests {
         assert!(matches!(err, ConnectError::InvalidUrl));
     }
 
+    // ─── connect_with_bridge 测试 ──────────────────────────────────────────
+
+    /// Mock InMemoryBridge for testing.
+    struct MockBridge;
+
+    impl InMemoryBridge for MockBridge {
+        fn dispatch_command(
+            &self,
+            method: &str,
+            _params: serde_json::Value,
+            _session_id: Option<&str>,
+        ) -> crate::transport::InMemoryBridgeResponse {
+            match method {
+                "Browser.getVersion" => crate::transport::InMemoryBridgeResponse::Ok(
+                    serde_json::json!({"product": "HeadlessChrome/120", "userAgent": "Mozilla/5.0"}),
+                ),
+                "Target.getTargets" => crate::transport::InMemoryBridgeResponse::Ok(
+                    serde_json::json!({"targetInfos": []}),
+                ),
+                "Target.createTarget" => crate::transport::InMemoryBridgeResponse::Ok(
+                    serde_json::json!({"targetId": "TARGET-NEW-1"}),
+                ),
+                _ => crate::transport::InMemoryBridgeResponse::Ok(serde_json::Value::Null),
+            }
+        }
+    }
+
+    #[test]
+    fn connect_with_bridge_creates_connection() {
+        let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
+        let b = Browser::connect_with_bridge("memory://bao", bridge).unwrap();
+        assert!(b.is_in_memory());
+        assert!(b.has_connection());
+    }
+
+    #[test]
+    fn browser_send_command_with_bridge() {
+        let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
+        let mut b = Browser::connect_with_bridge("memory://bao", bridge).unwrap();
+        let result = b.version().unwrap();
+        assert_eq!(result["product"], "HeadlessChrome/120");
+    }
+
+    #[test]
+    fn browser_pages_with_bridge() {
+        let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
+        let mut b = Browser::connect_with_bridge("memory://bao", bridge).unwrap();
+        let result = b.pages().unwrap();
+        assert!(result["targetInfos"].is_array());
+    }
+
+    #[test]
+    fn browser_new_page_with_bridge() {
+        let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
+        let mut b = Browser::connect_with_bridge("memory://bao", bridge).unwrap();
+        let result = b.new_page("https://example.com").unwrap();
+        assert_eq!(result["targetId"], "TARGET-NEW-1");
+    }
+
+    #[test]
+    fn browser_send_command_without_connection_returns_error() {
+        let mut b = Browser::connect("memory://bao").unwrap();
+        let err = b
+            .send_command("X.y", serde_json::json!({}))
+            .unwrap_err();
+        assert!(matches!(err, CdpError::ConnectionClosed));
+    }
+
+    // ─── Display ────────────────────────────────────────────────────────────
+
     #[test]
     fn browser_display_format() {
         let b = Browser::connect("memory://bao").unwrap();
@@ -390,11 +604,10 @@ mod tests {
     }
 
     #[test]
-    fn browser_clone_preserves_state() {
-        let b1 = Browser::connect("ws://127.0.0.1:9222").unwrap();
-        let b2 = b1.clone();
-        assert_eq!(b1.scheme(), b2.scheme());
-        assert_eq!(b1.url(), b2.url());
-        assert_eq!(b1.transport_kind(), b2.transport_kind());
+    fn browser_with_bridge_display_shows_connected() {
+        let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
+        let b = Browser::connect_with_bridge("memory://bao", bridge).unwrap();
+        let s = b.to_string();
+        assert!(s.contains("connected=true"), "got: {}", s);
     }
 }

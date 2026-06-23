@@ -121,6 +121,183 @@ impl Default for ScreenDisplayConfig {
     }
 }
 
+/// Plugin/MimeType spoofing configuration.
+/// Overrides navigator.plugins and navigator.mimeTypes with realistic values.
+#[derive(Debug, Clone)]
+pub struct PluginConfig {
+    /// Number of plugins to spoof (3-5 common PDF viewer plugins).
+    pub plugin_count: u32,
+    /// Plugin names in order.
+    pub plugins: Vec<String>,
+    /// MIME type descriptions corresponding to plugins.
+    pub mime_types: Vec<String>,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        PluginConfig {
+            plugin_count: 5,
+            plugins: vec![
+                "PDF Viewer".into(),
+                "Chrome PDF Viewer".into(),
+                "Chromium PDF Viewer".into(),
+                "Microsoft Edge PDF Viewer".into(),
+                "WebKit built-in PDF".into(),
+            ],
+            mime_types: vec![
+                "application/pdf".into(),
+                "text/pdf".into(),
+            ],
+        }
+    }
+}
+
+/// SpeechSynthesis voices spoofing configuration.
+#[derive(Debug, Clone)]
+pub struct SpeechConfig {
+    /// Whether to spoof speechSynthesis.getVoices().
+    pub enabled: bool,
+    /// Voice names to return from getVoices().
+    pub voices: Vec<String>,
+}
+
+impl Default for SpeechConfig {
+    fn default() -> Self {
+        SpeechConfig {
+            enabled: true,
+            voices: vec![
+                "Google US English".into(),
+                "Google UK English Female".into(),
+                "Google UK English Male".into(),
+                "Google Deutsch".into(),
+                "Google Français".into(),
+                "Google Español".into(),
+                "Google Italiano".into(),
+                "Google Japanese".into(),
+                "Google Nederlands".into(),
+                "Google Polski".into(),
+                "Google Português do Brasil".into(),
+                "Google Pútonghuà".into(),
+            ],
+        }
+    }
+}
+
+/// MediaDevices enumeration spoofing configuration.
+#[derive(Debug, Clone)]
+pub struct MediaDevicesConfig {
+    /// Whether to spoof navigator.mediaDevices.enumerateDevices().
+    pub enabled: bool,
+    /// Number of audioinput devices.
+    pub audio_input_count: u32,
+    /// Number of videoinput devices.
+    pub video_input_count: u32,
+    /// Number of audiooutput devices.
+    pub audio_output_count: u32,
+}
+
+impl Default for MediaDevicesConfig {
+    fn default() -> Self {
+        MediaDevicesConfig {
+            enabled: true,
+            audio_input_count: 1,
+            video_input_count: 1,
+            audio_output_count: 1,
+        }
+    }
+}
+
+/// Permissions API spoofing configuration.
+#[derive(Debug, Clone)]
+pub struct PermissionsConfig {
+    /// Whether to spoof navigator.permissions.query().
+    pub enabled: bool,
+    /// Map of permission name -> state string (e.g. "notifications" -> "prompt").
+    pub states: Vec<(String, String)>,
+}
+
+impl Default for PermissionsConfig {
+    fn default() -> Self {
+        PermissionsConfig {
+            enabled: true,
+            states: vec![
+                ("notifications".into(), "prompt".into()),
+                ("geolocation".into(), "prompt".into()),
+                ("camera".into(), "prompt".into()),
+                ("microphone".into(), "prompt".into()),
+                ("midi".into(), "prompt".into()),
+            ],
+        }
+    }
+}
+
+/// WebGL context attributes spoofing configuration.
+#[derive(Debug, Clone)]
+pub struct WebGLContextConfig {
+    /// Whether to override getContextAttributes().
+    pub enabled: bool,
+    pub antialias: bool,
+    pub depth: bool,
+    pub stencil: bool,
+    pub alpha: bool,
+    pub premultiplied_alpha: bool,
+    pub preserve_drawing_buffer: bool,
+    pub power_preference: String,
+    pub fail_if_major_performance_caveat: bool,
+}
+
+impl Default for WebGLContextConfig {
+    fn default() -> Self {
+        WebGLContextConfig {
+            enabled: true,
+            antialias: true,
+            depth: true,
+            stencil: false,
+            alpha: true,
+            premultiplied_alpha: true,
+            preserve_drawing_buffer: false,
+            power_preference: "default".into(),
+            fail_if_major_performance_caveat: false,
+        }
+    }
+}
+
+/// navigator.connection (NetworkInformation) spoofing configuration.
+#[derive(Debug, Clone)]
+pub struct ConnectionConfig {
+    /// Whether to spoof navigator.connection.
+    pub enabled: bool,
+    pub effective_type: String,
+    pub downlink: f64,
+    pub rtt: u32,
+    pub save_data: bool,
+}
+
+impl Default for ConnectionConfig {
+    fn default() -> Self {
+        ConnectionConfig {
+            enabled: true,
+            effective_type: "4g".into(),
+            downlink: 10.0,
+            rtt: 50,
+            save_data: false,
+        }
+    }
+}
+
+/// iframe contentWindow normalization configuration.
+#[derive(Debug, Clone)]
+pub struct IframeConfig {
+    /// Whether to normalize iframe.contentWindow behavior.
+    pub enabled: bool,
+}
+
+impl Default for IframeConfig {
+    fn default() -> Self {
+        IframeConfig { enabled: true }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StealthProfile {
     pub tls: TlsFingerprint,
@@ -138,6 +315,14 @@ pub struct StealthProfile {
     pub timing: TimingConfig,
     pub clientrects: ClientRectsConfig,
     pub screen_display: ScreenDisplayConfig,
+    // Missing dimensions
+    pub plugin: PluginConfig,
+    pub speech: SpeechConfig,
+    pub media_devices: MediaDevicesConfig,
+    pub permissions: PermissionsConfig,
+    pub webgl_context: WebGLContextConfig,
+    pub connection: ConnectionConfig,
+    pub iframe: IframeConfig,
 }
 
 impl StealthProfile {
@@ -157,6 +342,13 @@ impl StealthProfile {
             timing: TimingConfig::default(),
             clientrects: ClientRectsConfig { noise_delta: 0.5, seed: 42 },
             screen_display: ScreenDisplayConfig::default(),
+            plugin: PluginConfig::default(),
+            speech: SpeechConfig::default(),
+            media_devices: MediaDevicesConfig::default(),
+            permissions: PermissionsConfig::default(),
+            webgl_context: WebGLContextConfig::default(),
+            connection: ConnectionConfig::default(),
+            iframe: IframeConfig::default(),
         }
     }
 
@@ -176,6 +368,13 @@ impl StealthProfile {
             timing: TimingConfig::default(),
             clientrects: ClientRectsConfig { noise_delta: 0.5, seed: 137 },
             screen_display: ScreenDisplayConfig::default(),
+            plugin: PluginConfig::default(),
+            speech: SpeechConfig::default(),
+            media_devices: MediaDevicesConfig::default(),
+            permissions: PermissionsConfig::default(),
+            webgl_context: WebGLContextConfig::default(),
+            connection: ConnectionConfig::default(),
+            iframe: IframeConfig::default(),
         }
     }
 }
@@ -321,5 +520,61 @@ mod tests {
         assert_eq!(profile.screen_display.height, 1080);
         assert_eq!(profile.screen_display.color_depth, 24);
         assert!((profile.screen_display.device_pixel_ratio - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn default_plugin_config_has_5_plugins() {
+        let profile = StealthProfile::firefox_default();
+        assert_eq!(profile.plugin.plugin_count, 5);
+        assert_eq!(profile.plugin.plugins.len(), 5);
+        assert!(profile.plugin.plugins.contains(&"PDF Viewer".to_string()));
+    }
+
+    #[test]
+    fn default_speech_config_enabled() {
+        let profile = StealthProfile::firefox_default();
+        assert!(profile.speech.enabled);
+        assert!(!profile.speech.voices.is_empty());
+    }
+
+    #[test]
+    fn default_media_devices_config() {
+        let profile = StealthProfile::firefox_default();
+        assert!(profile.media_devices.enabled);
+        assert_eq!(profile.media_devices.audio_input_count, 1);
+        assert_eq!(profile.media_devices.video_input_count, 1);
+        assert_eq!(profile.media_devices.audio_output_count, 1);
+    }
+
+    #[test]
+    fn default_permissions_config() {
+        let profile = StealthProfile::firefox_default();
+        assert!(profile.permissions.enabled);
+        assert_eq!(profile.permissions.states.len(), 5);
+    }
+
+    #[test]
+    fn default_webgl_context_config() {
+        let profile = StealthProfile::firefox_default();
+        assert!(profile.webgl_context.enabled);
+        assert!(profile.webgl_context.antialias);
+        assert!(profile.webgl_context.depth);
+        assert!(!profile.webgl_context.stencil);
+    }
+
+    #[test]
+    fn default_connection_config() {
+        let profile = StealthProfile::firefox_default();
+        assert!(profile.connection.enabled);
+        assert_eq!(profile.connection.effective_type, "4g");
+        assert!((profile.connection.downlink - 10.0).abs() < f64::EPSILON);
+        assert_eq!(profile.connection.rtt, 50);
+        assert!(!profile.connection.save_data);
+    }
+
+    #[test]
+    fn default_iframe_config_enabled() {
+        let profile = StealthProfile::firefox_default();
+        assert!(profile.iframe.enabled);
     }
 }

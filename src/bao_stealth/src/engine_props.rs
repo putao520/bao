@@ -23,6 +23,7 @@ use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, ObjectValue, St
 use mozjs::rooted;
 
 use crate::StealthProfile;
+use crate::hooks::StealthHooks;
 
 // ---------------------------------------------------------------------------
 // Per-Realm (per-page) stealth profile storage — keyed by global object address.
@@ -81,6 +82,33 @@ struct RealmProfile {
     screen_display_h: u32,
     screen_display_cd: u32,
     screen_display_dpr: f64,
+    // Missing dimensions
+    plugin_count: u32,
+    plugin_names: Vec<String>,
+    mime_types: Vec<String>,
+    speech_enabled: bool,
+    speech_voices: Vec<String>,
+    media_devices_enabled: bool,
+    media_devices_audio_in: u32,
+    media_devices_video_in: u32,
+    media_devices_audio_out: u32,
+    permissions_enabled: bool,
+    permissions_states: Vec<(String, String)>,
+    webgl_context_enabled: bool,
+    webgl_context_antialias: bool,
+    webgl_context_depth: bool,
+    webgl_context_stencil: bool,
+    webgl_context_alpha: bool,
+    webgl_context_premultiplied_alpha: bool,
+    webgl_context_preserve_drawing_buffer: bool,
+    webgl_context_power_preference: String,
+    webgl_context_fail_if_major_performance_caveat: bool,
+    connection_enabled: bool,
+    connection_effective_type: String,
+    connection_downlink: f64,
+    connection_rtt: u32,
+    connection_save_data: bool,
+    iframe_enabled: bool,
 }
 
 impl RealmProfile {
@@ -128,6 +156,33 @@ impl RealmProfile {
             screen_display_h: p.screen_display.height,
             screen_display_cd: p.screen_display.color_depth,
             screen_display_dpr: p.screen_display.device_pixel_ratio,
+            // Missing dimensions
+            plugin_count: p.plugin.plugin_count,
+            plugin_names: p.plugin.plugins.clone(),
+            mime_types: p.plugin.mime_types.clone(),
+            speech_enabled: p.speech.enabled,
+            speech_voices: p.speech.voices.clone(),
+            media_devices_enabled: p.media_devices.enabled,
+            media_devices_audio_in: p.media_devices.audio_input_count,
+            media_devices_video_in: p.media_devices.video_input_count,
+            media_devices_audio_out: p.media_devices.audio_output_count,
+            permissions_enabled: p.permissions.enabled,
+            permissions_states: p.permissions.states.clone(),
+            webgl_context_enabled: p.webgl_context.enabled,
+            webgl_context_antialias: p.webgl_context.antialias,
+            webgl_context_depth: p.webgl_context.depth,
+            webgl_context_stencil: p.webgl_context.stencil,
+            webgl_context_alpha: p.webgl_context.alpha,
+            webgl_context_premultiplied_alpha: p.webgl_context.premultiplied_alpha,
+            webgl_context_preserve_drawing_buffer: p.webgl_context.preserve_drawing_buffer,
+            webgl_context_power_preference: p.webgl_context.power_preference.clone(),
+            webgl_context_fail_if_major_performance_caveat: p.webgl_context.fail_if_major_performance_caveat,
+            connection_enabled: p.connection.enabled,
+            connection_effective_type: p.connection.effective_type.clone(),
+            connection_downlink: p.connection.downlink,
+            connection_rtt: p.connection.rtt,
+            connection_save_data: p.connection.save_data,
+            iframe_enabled: p.iframe.enabled,
         }
     }
 }
@@ -272,6 +327,39 @@ thread_local! {
     static TL_SCREEN_DISPLAY_H: RefCell<u32> = RefCell::new(1080);
     static TL_SCREEN_DISPLAY_CD: RefCell<u32> = RefCell::new(24);
     static TL_SCREEN_DISPLAY_DPR: RefCell<f64> = RefCell::new(1.0);
+    // Plugin/MimeType config
+    static TL_PLUGIN_COUNT: RefCell<u32> = RefCell::new(5);
+    static TL_PLUGIN_NAMES: RefCell<Vec<String>> = RefCell::new(vec![]);
+    static TL_MIME_TYPES: RefCell<Vec<String>> = RefCell::new(vec![]);
+    // SpeechSynthesis config
+    static TL_SPEECH_ENABLED: RefCell<bool> = RefCell::new(true);
+    static TL_SPEECH_VOICES: RefCell<Vec<String>> = RefCell::new(vec![]);
+    // MediaDevices config
+    static TL_MEDIA_DEVICES_ENABLED: RefCell<bool> = RefCell::new(true);
+    static TL_MEDIA_DEVICES_AUDIO_IN: RefCell<u32> = RefCell::new(1);
+    static TL_MEDIA_DEVICES_VIDEO_IN: RefCell<u32> = RefCell::new(1);
+    static TL_MEDIA_DEVICES_AUDIO_OUT: RefCell<u32> = RefCell::new(1);
+    // Permissions config
+    static TL_PERMISSIONS_ENABLED: RefCell<bool> = RefCell::new(true);
+    static TL_PERMISSIONS_STATES: RefCell<Vec<(String, String)>> = RefCell::new(vec![]);
+    // WebGL context attributes config
+    static TL_WEBGL_CONTEXT_ENABLED: RefCell<bool> = RefCell::new(true);
+    static TL_WEBGL_CONTEXT_ANTIALIAS: RefCell<bool> = RefCell::new(true);
+    static TL_WEBGL_CONTEXT_DEPTH: RefCell<bool> = RefCell::new(true);
+    static TL_WEBGL_CONTEXT_STENCIL: RefCell<bool> = RefCell::new(false);
+    static TL_WEBGL_CONTEXT_ALPHA: RefCell<bool> = RefCell::new(true);
+    static TL_WEBGL_CONTEXT_PREMULTIPLIED_ALPHA: RefCell<bool> = RefCell::new(true);
+    static TL_WEBGL_CONTEXT_PRESERVE_DRAWING_BUFFER: RefCell<bool> = RefCell::new(false);
+    static TL_WEBGL_CONTEXT_POWER_PREFERENCE: RefCell<String> = RefCell::new(String::new());
+    static TL_WEBGL_CONTEXT_FAIL_IF_MAJOR_PERFORMANCE_CAVEAT: RefCell<bool> = RefCell::new(false);
+    // Connection config
+    static TL_CONNECTION_ENABLED: RefCell<bool> = RefCell::new(true);
+    static TL_CONNECTION_EFFECTIVE_TYPE: RefCell<String> = RefCell::new(String::new());
+    static TL_CONNECTION_DOWNLINK: RefCell<f64> = RefCell::new(10.0);
+    static TL_CONNECTION_RTT: RefCell<u32> = RefCell::new(50);
+    static TL_CONNECTION_SAVE_DATA: RefCell<bool> = RefCell::new(false);
+    // iframe config
+    static TL_IFRAME_ENABLED: RefCell<bool> = RefCell::new(true);
 }
 
 /// Store all profile values into thread-local before calling install_stealth_props.
@@ -318,6 +406,33 @@ pub fn set_profile(profile: &StealthProfile) {
     TL_SCREEN_DISPLAY_H.with(|v| *v.borrow_mut() = profile.screen_display.height);
     TL_SCREEN_DISPLAY_CD.with(|v| *v.borrow_mut() = profile.screen_display.color_depth);
     TL_SCREEN_DISPLAY_DPR.with(|v| *v.borrow_mut() = profile.screen_display.device_pixel_ratio);
+    // Missing dimensions
+    TL_PLUGIN_COUNT.with(|v| *v.borrow_mut() = profile.plugin.plugin_count);
+    TL_PLUGIN_NAMES.with(|v| *v.borrow_mut() = profile.plugin.plugins.clone());
+    TL_MIME_TYPES.with(|v| *v.borrow_mut() = profile.plugin.mime_types.clone());
+    TL_SPEECH_ENABLED.with(|v| *v.borrow_mut() = profile.speech.enabled);
+    TL_SPEECH_VOICES.with(|v| *v.borrow_mut() = profile.speech.voices.clone());
+    TL_MEDIA_DEVICES_ENABLED.with(|v| *v.borrow_mut() = profile.media_devices.enabled);
+    TL_MEDIA_DEVICES_AUDIO_IN.with(|v| *v.borrow_mut() = profile.media_devices.audio_input_count);
+    TL_MEDIA_DEVICES_VIDEO_IN.with(|v| *v.borrow_mut() = profile.media_devices.video_input_count);
+    TL_MEDIA_DEVICES_AUDIO_OUT.with(|v| *v.borrow_mut() = profile.media_devices.audio_output_count);
+    TL_PERMISSIONS_ENABLED.with(|v| *v.borrow_mut() = profile.permissions.enabled);
+    TL_PERMISSIONS_STATES.with(|v| *v.borrow_mut() = profile.permissions.states.clone());
+    TL_WEBGL_CONTEXT_ENABLED.with(|v| *v.borrow_mut() = profile.webgl_context.enabled);
+    TL_WEBGL_CONTEXT_ANTIALIAS.with(|v| *v.borrow_mut() = profile.webgl_context.antialias);
+    TL_WEBGL_CONTEXT_DEPTH.with(|v| *v.borrow_mut() = profile.webgl_context.depth);
+    TL_WEBGL_CONTEXT_STENCIL.with(|v| *v.borrow_mut() = profile.webgl_context.stencil);
+    TL_WEBGL_CONTEXT_ALPHA.with(|v| *v.borrow_mut() = profile.webgl_context.alpha);
+    TL_WEBGL_CONTEXT_PREMULTIPLIED_ALPHA.with(|v| *v.borrow_mut() = profile.webgl_context.premultiplied_alpha);
+    TL_WEBGL_CONTEXT_PRESERVE_DRAWING_BUFFER.with(|v| *v.borrow_mut() = profile.webgl_context.preserve_drawing_buffer);
+    TL_WEBGL_CONTEXT_POWER_PREFERENCE.with(|v| *v.borrow_mut() = profile.webgl_context.power_preference.clone());
+    TL_WEBGL_CONTEXT_FAIL_IF_MAJOR_PERFORMANCE_CAVEAT.with(|v| *v.borrow_mut() = profile.webgl_context.fail_if_major_performance_caveat);
+    TL_CONNECTION_ENABLED.with(|v| *v.borrow_mut() = profile.connection.enabled);
+    TL_CONNECTION_EFFECTIVE_TYPE.with(|v| *v.borrow_mut() = profile.connection.effective_type.clone());
+    TL_CONNECTION_DOWNLINK.with(|v| *v.borrow_mut() = profile.connection.downlink);
+    TL_CONNECTION_RTT.with(|v| *v.borrow_mut() = profile.connection.rtt);
+    TL_CONNECTION_SAVE_DATA.with(|v| *v.borrow_mut() = profile.connection.save_data);
+    TL_IFRAME_ENABLED.with(|v| *v.borrow_mut() = profile.iframe.enabled);
 }
 
 // ---------------------------------------------------------------------------
@@ -768,74 +883,43 @@ unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject)
 }
 
 // ---------------------------------------------------------------------------
-// Canvas + Audio JS-layer hooks
+// All stealth JS hooks via StealthHooks
 // ---------------------------------------------------------------------------
 
-/// Inject Canvas and Audio fingerprint noise hooks via SM evaluate_script.
+/// Inject all stealth JS hooks via SM evaluate_script.
 ///
-/// Generates JS code that intercepts `HTMLCanvasElement.prototype.toDataURL/toBlob`,
-/// `CanvasRenderingContext2D.getImageData`, and `AudioContext/OfflineAudioContext.getChannelData`
-/// with deterministic noise matching the Rust-side algorithms.
-///
-/// Canvas noise is now applied at the servo rendering layer (CanvasData::read_pixels)
-/// per REQ-STL-003 — JS-layer detection is impossible since noise is injected before
-/// any JS code sees the pixel data. Only Audio hooks remain at the JS layer since
-/// AudioContext has no servo rendering-layer path.
-unsafe fn inject_audio_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool {
+/// Uses StealthHooks to generate combined JS code for Canvas, Audio, Navigator,
+/// Font, Battery, WebRTC, Timing, ClientRects, ScreenDisplay, Plugin, Speech,
+/// MediaDevices, Permissions, WebGL Context, Connection, and iframe hooks.
+unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool {
     use mozjs::context::JSContext;
     use mozjs::rooted;
     use mozjs::rust::{CompileOptionsWrapper, evaluate_script, Handle as RustHandle};
     use ::std::ptr::NonNull;
 
     let js_code = {
-        // BUG-ENG-366: prefer per-Realm audio seed/amplitude so two pages on the
-        // same servo ScriptThread get different AudioContext fingerprints.
-        let (seed, amplitude) = match current_realm_profile(raw_cx) {
-            Some(rp) => (rp.audio_seed, rp.audio_amplitude),
-            None => (
-                TL_AUDIO_SEED.with(|v| *v.borrow()),
-                TL_AUDIO_AMPLITUDE.with(|v| *v.borrow()),
-            ),
-        };
-        format!(
-                r#"(function() {{
-  'use strict';
-  var SEED = {seed}n;
-  var AMPLITUDE = {amplitude};
-
-  function deterministicNoise(index) {{
-    var state = BigInt(SEED);
-    state ^= BigInt(index) * 0x517CC1B727220A95n;
-    state = state * 0x2545F4914F6CDD1Dn;
-    state = BigInt.asUintN(64, state);
-    state ^= state >> 33n;
-    state = BigInt.asUintN(64, state);
-    return Number(state) / Number(0xFFFFFFFFFFFFFFFFn) - 0.5;
-  }}
-
-  function hookGetChannelData(proto, name) {{
-    if (!proto || !proto.getChannelData) return;
-    var origGCD = proto.getChannelData;
-    var hooked = function(channel) {{
-      var data = origGCD.call(this, channel);
-      for (var i = 0; i < data.length; i++) {{
-        data[i] = data[i] + deterministicNoise(i) * AMPLITUDE;
-      }}
-      return data;
-    }};
-    // Anti-detection: make toString() return [native code]
-    hooked.toString = function() {{ return 'function getChannelData() {{ [native code] }}'; }};
-    Object.defineProperty(hooked, 'name', {{ value: 'getChannelData' }});
-    proto.getChannelData = hooked;
-  }}
-
-  if (typeof AudioContext !== 'undefined') hookGetChannelData(AudioContext.prototype, 'AudioContext');
-  if (typeof OfflineAudioContext !== 'undefined') hookGetChannelData(OfflineAudioContext.prototype, 'OfflineAudioContext');
-  if (typeof webkitAudioContext !== 'undefined') hookGetChannelData(webkitAudioContext.prototype, 'webkitAudioContext');
-}})();"#,
-            seed = seed,
-            amplitude = amplitude,
-        )
+        let profile = StealthProfile::firefox_default();
+        let hooks = StealthHooks::from_profile(
+            &profile.canvas,
+            &profile.audio,
+            &profile.navigator,
+            &profile.screen,
+            &profile.webgl,
+            &profile.font,
+            &profile.battery,
+            profile.webrtc_mode,
+            &profile.timing,
+            &profile.clientrects,
+            &profile.screen_display,
+            &profile.plugin,
+            &profile.speech,
+            &profile.media_devices,
+            &profile.permissions,
+            &profile.webgl_context,
+            &profile.connection,
+            &profile.iframe,
+        );
+        hooks.combined_js()
     };
 
     // Wrap raw_cx into JSContext for mozjs::rust APIs
@@ -915,7 +999,7 @@ pub unsafe fn install_stealth_props(cx: *mut JSContext, global: *mut JSObject) -
     all_ok &= delete_cdp_leaked_properties(cx, global_root.handle().into());
 
     // --- Canvas fingerprint JS hooks (toDataURL/toBlob/getImageData) ---
-    all_ok &= inject_audio_hooks(cx, global_root.handle().into());
+    all_ok &= inject_js_hooks(cx, global_root.handle().into());
 
     all_ok
 }
