@@ -4,7 +4,7 @@ use bun_core::ZBox;
 use ::std::ptr::NonNull;
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, ObjectValue, BooleanValue};
+use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, DoubleValue, ObjectValue, BooleanValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{
     JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1,
@@ -4200,7 +4200,7 @@ unsafe extern "C" fn buffer_index_of(
         rooted!(&in(cx_ref_n) let needle_root = search_val.to_object());
         let (needle_len, needle_data) = buffer_view_bytes(needle_root.get());
         if needle_len == 0 {
-            args.rval().set(Int32Value(byte_offset as i32));
+            args.rval().set(DoubleValue(byte_offset as f64));
             return true;
         }
         if byte_offset > buf_len || needle_len > buf_len - byte_offset {
@@ -4258,7 +4258,7 @@ unsafe extern "C" fn buffer_index_of(
         };
         if needle.is_empty() {
             // Node: empty needle matches at byte_offset.
-            args.rval().set(Int32Value(byte_offset as i32));
+            args.rval().set(DoubleValue(byte_offset as f64));
             return true;
         }
         if needle.len() > buf_len || byte_offset > buf_len - needle.len() {
@@ -4282,7 +4282,7 @@ unsafe extern "C" fn buffer_index_of(
         rooted!(&in(cx_ref_nd) let needle_root = search_val.to_object());
         let (n_len, n_data) = buffer_view_bytes(needle_root.get());
         if n_data.is_null() || n_len == 0 {
-            args.rval().set(Int32Value(byte_offset as i32));
+            args.rval().set(DoubleValue(byte_offset as f64));
             return true;
         }
         if n_len > buf_len || byte_offset > buf_len - n_len {
@@ -4379,7 +4379,7 @@ unsafe fn buffer_index_of_legacy(
             _ => needle_str.bytes().collect(),
         };
         if needle.is_empty() || needle.len() > buf_len {
-            args.rval().set(Int32Value(byte_offset as i32));
+            args.rval().set(DoubleValue(byte_offset as f64));
             return true;
         }
         'outer: for i in byte_offset..=(buf_len - needle.len()) {
@@ -4542,7 +4542,7 @@ unsafe extern "C" fn buffer_byte_length(
             });
             if bl_val.is_int32() { bl_val.to_int32().max(0) as usize } else { 0 }
         };
-        args.rval().set(Int32Value(n as i32));
+        args.rval().set(DoubleValue(n as f64));
     } else {
         // @trace REQ-ENG-005 — Node.js throws ERR_INVALID_ARG_TYPE (a
         // TypeError) for non-string/non-ArrayBufferView/non-ArrayBuffer
@@ -4774,7 +4774,7 @@ unsafe extern "C" fn crypto_subtle_digest(cx: *mut JSContext, argc: u32, vp: *mu
     }
     let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let arr_root = arr_obj);
-    let lv = Int32Value(hash.len() as i32);
+    let lv = DoubleValue(hash.len() as f64);
     rooted!(&in(cx_ref) let lv_r = lv);
     JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), lv_r.handle().into(), JSPROP_ENUMERATE as u32);
     for (i, &byte) in hash.iter().enumerate() {

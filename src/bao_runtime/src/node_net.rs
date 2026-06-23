@@ -12,7 +12,7 @@ use ::std::ptr::{self, NonNull};
 
 use mozjs::conversions::jsstr_to_string;
 use mozjs::jsapi::*;
-use mozjs::jsval::{BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue};
+use mozjs::jsval::{BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -471,6 +471,33 @@ const NET_JS: &str = r#"
 })();
 "#;
 
+// ──────────────────── JS↔Rust pointer helpers ────────────────────
+
+/// Extract a socket pointer from a JSVal as a full `usize`.
+///
+/// JS stores pointers as `Number` (f64), which can losslessly represent
+/// integers up to 2^53 — more than enough for 64-bit pointers (always < 2^48).
+/// Previously `to_int32()` was used, which truncated the high 32 bits on
+/// 64-bit systems, causing HashMap lookups to fail silently.
+#[inline]
+fn jsval_to_ptr(val: &JSVal) -> usize {
+    if val.is_double() {
+        val.to_double() as usize
+    } else if val.is_int32() {
+        val.to_int32() as usize
+    } else {
+        0
+    }
+}
+
+/// Convert a `usize` pointer to a JS `DoubleValue` for return to JS.
+///
+/// Uses f64 which can losslessly represent integers up to 2^53.
+#[inline]
+fn ptr_to_jsval(ptr: usize) -> JSVal {
+    DoubleValue(ptr as f64)
+}
+
 // ──────────────────── host_fn implementations ────────────────────
 
 /// Get the uSockets event loop, ensuring bao_uloop is initialized.
@@ -537,8 +564,8 @@ unsafe extern "C" fn net_listen(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     // will retrieve the actual port, but we store the requested port as fallback.
     NET_LISTEN_PORTS.with(|p| p.borrow_mut().insert(listen_key, port as u16));
 
-    // Return the listen socket pointer as an integer to JS.
-    args.rval().set(Int32Value(if listen_key <= i32::MAX as usize { listen_key as i32 } else { 0 }));
+    // Return the listen socket pointer as a JS Number (f64) to avoid i32 truncation on 64-bit.
+    args.rval().set(ptr_to_jsval(listen_key));
     true
 }
 
@@ -585,8 +612,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
             NET_SOCKETS.with(|m| m.borrow_mut().insert(key, true));
             // Store the group so it lives as long as the socket.
             NET_SERVER_GROUPS.with(|g| g.borrow_mut().insert(key, unsafe { Box::from_raw(group_ptr) }));
-            let val = if key <= i32::MAX as usize { key as i32 } else { 0 };
-            args.rval().set(Int32Value(val));
+            args.rval().set(ptr_to_jsval(key));
         }
         bun_uws_sys::ConnectResult::Connecting(_connecting) => {
             // Async connect — tick the loop until on_open or on_connect_error fires.
@@ -614,8 +640,7 @@ unsafe extern "C" fn net_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
                 args.rval().set(Int32Value(0));
             } else {
                 NET_SOCKETS.with(|m| m.borrow_mut().insert(result_key, true));
-                let val = if result_key <= i32::MAX as usize { result_key as i32 } else { 0 };
-                args.rval().set(Int32Value(val));
+                args.rval().set(ptr_to_jsval(result_key));
             }
         }
         bun_uws_sys::ConnectResult::Failed => {
@@ -635,7 +660,7 @@ unsafe extern "C" fn net_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         return true;
     }
 
-    let ptr_val = (*args.get(0).ptr).to_int32() as usize;
+    let ptr_val = jsval_to_ptr(&(*args.get(0).ptr));
     let data = if (*args.get(1).ptr).is_string() {
         jsstr_to_string(cx, NonNull::new_unchecked((*args.get(1).ptr).to_string()))
     } else {
@@ -658,7 +683,7 @@ unsafe extern "C" fn net_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let ptr_val = if argc > 0 { (*args.get(0).ptr).to_int32() as usize } else { 0 };
+    let ptr_val = if argc > 0 { jsval_to_ptr(&(*args.get(0).ptr)) } else { 0 };
 
     if ptr_val == 0 {
         args.rval().set(UndefinedValue());
@@ -694,7 +719,7 @@ unsafe extern "C" fn net_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let ptr_val = if argc > 0 { (*args.get(0).ptr).to_int32() as usize } else { 0 };
+    let ptr_val = if argc > 0 { jsval_to_ptr(&(*args.get(0).ptr)) } else { 0 };
 
     if ptr_val == 0 {
         args.rval().set(ObjectValue(::std::ptr::null_mut()));
@@ -802,7 +827,7 @@ unsafe extern "C" fn net_address(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn net_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
-    let ptr_val = if argc > 0 { (*args.get(0).ptr).to_int32() as usize } else { 0 };
+    let ptr_val = if argc > 0 { jsval_to_ptr(&(*args.get(0).ptr)) } else { 0 };
 
     if ptr_val == 0 {
         args.rval().set(NullValue());

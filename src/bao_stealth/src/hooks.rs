@@ -791,7 +791,10 @@ impl StealthHooks {
             .unwrap_or_else(|_| "[]".into());
         let mime_types_json = serde_json::to_string(&config.mime_types)
             .unwrap_or_else(|_| "[]".into());
-        let plugin_count = config.plugin_count;
+        // Clamp plugin_count to actual plugins length to avoid fingerprint-detectable
+        // inconsistency where navigator.plugins.length reports fewer items than are
+        // actually accessible by index.
+        let plugin_count = config.plugin_count.min(config.plugins.len() as u32);
 
         format!(
             r#"(function() {{

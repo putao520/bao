@@ -8,7 +8,7 @@ use ::std::sync::{Arc, Mutex};
 
 use mozjs::glue::NewCompileOptions;
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, StringValue};
+use mozjs::jsval::{JSVal, UndefinedValue, StringValue, DoubleValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
 
@@ -1996,7 +1996,7 @@ unsafe extern "C" fn fs_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
         if bytes_read >= 0 {
             buf.truncate(bytes_read as usize);
             let buf_obj = crate::globals::create_buffer_object(cx, &buf);
-            if buf_obj.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::Int32Value(bytes_read as i32)); }
+            if buf_obj.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::DoubleValue(bytes_read as f64)); }
             true
         } else {
             throw_fs_error(cx, "read", &format!("fd:{}", fd), &::std::io::Error::last_os_error())
@@ -2363,7 +2363,7 @@ unsafe extern "C" fn fs_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
     #[cfg(unix)]
     {
         let written = unsafe { libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len()) };
-        if written >= 0 { args.rval().set(mozjs::jsval::Int32Value(written as i32)); true } else { throw_fs_error(cx, "write", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) }
+        if written >= 0 { args.rval().set(mozjs::jsval::DoubleValue(written as f64)); true } else { throw_fs_error(cx, "write", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) }
     }
     #[cfg(not(unix))]
     { args.rval().set(UndefinedValue()); true }
@@ -2931,7 +2931,7 @@ unsafe extern "C" fn fs_promises_write(cx: *mut JSContext, argc: u32, vp: *mut J
     {
         let written = unsafe { libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len()) };
         if written >= 0 {
-            rooted!(&in(cx_ref) let val = mozjs::jsval::Int32Value(written as i32));
+            rooted!(&in(cx_ref) let val = mozjs::jsval::DoubleValue(written as f64));
             unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
         } else {
             reject_with_error(cx, promise.get(), &format!("write fd:{}: {}", fd, ::std::io::Error::last_os_error()));
@@ -3126,7 +3126,7 @@ unsafe extern "C" fn fs_read_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         if bytes_read >= 0 {
             buf.truncate(bytes_read as usize);
             let _buf_obj = crate::globals::create_buffer_object(cx, &buf);
-            args.rval().set(mozjs::jsval::Int32Value(bytes_read as i32));
+            args.rval().set(mozjs::jsval::DoubleValue(bytes_read as f64));
             true
         } else {
             throw_fs_error(cx, "readSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error())
@@ -3151,7 +3151,7 @@ unsafe extern "C" fn fs_write_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     #[cfg(unix)]
     {
         let written = unsafe { libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len()) };
-        if written >= 0 { args.rval().set(mozjs::jsval::Int32Value(written as i32)); true } else { throw_fs_error(cx, "writeSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) }
+        if written >= 0 { args.rval().set(mozjs::jsval::DoubleValue(written as f64)); true } else { throw_fs_error(cx, "writeSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) }
     }
     #[cfg(not(unix))]
     { args.rval().set(UndefinedValue()); true }
@@ -3960,7 +3960,7 @@ unsafe extern "C" fn fh_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
             if !buf_obj.is_null() {
                 rooted!(&in(cx_ref) let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
                 if !result_obj.get().is_null() {
-                    rooted!(&in(cx_ref) let br_val = mozjs::jsval::Int32Value(bytes_read as i32));
+                    rooted!(&in(cx_ref) let br_val = mozjs::jsval::DoubleValue(bytes_read as f64));
                     JS_DefineProperty(cx, result_obj.handle().into(), c"bytesRead".as_ptr(), br_val.handle().into(), JSPROP_ENUMERATE as u32);
                     rooted!(&in(cx_ref) let buf_val = mozjs::jsval::ObjectValue(buf_obj));
                     JS_DefineProperty(cx, result_obj.handle().into(), c"buffer".as_ptr(), buf_val.handle().into(), JSPROP_ENUMERATE as u32);
@@ -4019,7 +4019,7 @@ unsafe extern "C" fn fh_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         if bytes_written >= 0 {
             rooted!(&in(cx_ref) let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
             if !result_obj.get().is_null() {
-                rooted!(&in(cx_ref) let bw_val = mozjs::jsval::Int32Value(bytes_written as i32));
+                rooted!(&in(cx_ref) let bw_val = mozjs::jsval::DoubleValue(bytes_written as f64));
                 JS_DefineProperty(cx, result_obj.handle().into(), c"bytesWritten".as_ptr(), bw_val.handle().into(), JSPROP_ENUMERATE as u32);
                 let buf_obj = crate::globals::create_buffer_object(cx, &data);
                 if !buf_obj.is_null() {

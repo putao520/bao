@@ -596,6 +596,17 @@ pub unsafe extern "C" fn simdutf__validate_utf8(buf: *const u8, len: usize) -> b
     validate_utf8_impl(unsafe { core::slice::from_raw_parts(buf, len) })
 }
 
+/// C++ bridge alias: `libuwsockets.cpp` → `simdutf::validate_utf8()` →
+/// `extern "C" bool bun_simdutf_validate_utf8(const char*, size_t)`
+/// (see `uws_sys/src/wtf/SIMDUTF.h`).  Same implementation as
+/// `simdutf__validate_utf8`, just a different symbol name expected by the
+/// C++ linker.
+#[no_mangle]
+pub unsafe extern "C" fn bun_simdutf_validate_utf8(buf: *const u8, len: usize) -> bool {
+    if len == 0 { return true; }
+    validate_utf8_impl(unsafe { core::slice::from_raw_parts(buf, len) })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn simdutf__validate_utf8_with_errors(buf: *const u8, len: usize) -> SIMDUTFResult {
     if len == 0 { return SIMDUTFResult { status: Status::SUCCESS, count: 0 }; }

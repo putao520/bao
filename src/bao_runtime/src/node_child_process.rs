@@ -14,7 +14,7 @@ use ::std::sync::{Arc, Mutex, LazyLock};
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{
-    BooleanValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue,
+    BooleanValue, DoubleValue, Int32Value, JSVal, NullValue, ObjectValue, StringValue, UndefinedValue,
 };
 use mozjs::rooted;
 use mozjs::rust::wrappers2 as w2;
@@ -524,7 +524,7 @@ unsafe extern "C" fn cp_spawn(
 
     // Build PosixSpawnOptions with Pipe() variants.
     let spawn_opts = PosixSpawnOptions {
-        stdin: if pipe_stdin { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdin_pipe[1]) }) } else { PosixStdio::Inherit },
+        stdin: if pipe_stdin { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdin_pipe[0]) }) } else { PosixStdio::Inherit },
         stdout: if pipe_stdout { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdout_pipe[1]) }) } else { PosixStdio::Inherit },
         stderr: if pipe_stderr { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stderr_pipe[1]) }) } else { PosixStdio::Inherit },
         ipc: None,
@@ -574,14 +574,18 @@ unsafe extern "C" fn cp_spawn(
     let spawn_result = unsafe { spawn_process(&spawn_opts, c_args.as_ptr(), envp) };
 
     // Close the child-side pipe fds (they're now dup'd into the child).
-    if stdin_pipe[1] >= 0 { unsafe { libc::close(stdin_pipe[1]); } }
+    // stdin: child uses read end (stdin_pipe[0]), so parent closes it.
+    // stdout/stderr: child uses write end (pipe[1]), so parent closes those.
+    if stdin_pipe[0] >= 0 { unsafe { libc::close(stdin_pipe[0]); } }
     if stdout_pipe[1] >= 0 { unsafe { libc::close(stdout_pipe[1]); } }
     if stderr_pipe[1] >= 0 { unsafe { libc::close(stderr_pipe[1]); } }
 
     match spawn_result {
         Err(e) => {
             // Cleanup parent-side pipe fds.
-            if stdin_pipe[0] >= 0 { unsafe { libc::close(stdin_pipe[0]); } }
+            // stdin: parent holds write end (stdin_pipe[1]).
+            // stdout/stderr: parent holds read end (pipe[0]).
+            if stdin_pipe[1] >= 0 { unsafe { libc::close(stdin_pipe[1]); } }
             if stdout_pipe[0] >= 0 { unsafe { libc::close(stdout_pipe[0]); } }
             if stderr_pipe[0] >= 0 { unsafe { libc::close(stderr_pipe[0]); } }
             let msg = format!("spawn failed: {:?}", e);
@@ -590,7 +594,7 @@ unsafe extern "C" fn cp_spawn(
             false
         }
         Ok(Err(sys_err)) => {
-            if stdin_pipe[0] >= 0 { unsafe { libc::close(stdin_pipe[0]); } }
+            if stdin_pipe[1] >= 0 { unsafe { libc::close(stdin_pipe[1]); } }
             if stdout_pipe[0] >= 0 { unsafe { libc::close(stdout_pipe[0]); } }
             if stderr_pipe[0] >= 0 { unsafe { libc::close(stderr_pipe[0]); } }
             let msg = format!("spawn system error: {:?}", sys_err);
@@ -619,7 +623,7 @@ unsafe extern "C" fn cp_spawn(
                 pid,
                 stdout_fd: if pipe_stdout { stdout_pipe[0] } else { -1 },
                 stderr_fd: if pipe_stderr { stderr_pipe[0] } else { -1 },
-                stdin_fd: if pipe_stdin { stdin_pipe[0] } else { -1 },
+                stdin_fd: if pipe_stdin { stdin_pipe[1] } else { -1 },
                 stdout_eof: false,
                 stderr_eof: false,
                 child_exited: false,
@@ -634,14 +638,18 @@ unsafe extern "C" fn cp_spawn(
             }
 
             // Store stdin_fd on a thread-local map for __cp_stdin_write/__cp_stdin_close.
-            CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[0]));
+            // Parent holds the write end (stdin_pipe[1]) to write to child's stdin.
+            CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[1]));
 
             {
                 let state_clone = Arc::clone(&async_state);
-                let _ = ::std::thread::Builder::new()
+                if let Err(e) = ::std::thread::Builder::new()
                     .name(format!("cp-poll-{}", pid))
                     .stack_size(128 * 1024)
-                    .spawn(move || pipe_poll_thread(state_clone));
+                    .spawn(move || pipe_poll_thread(state_clone))
+                {
+                    eprintln!("[bao] FATAL: failed to spawn cp-poll-{} thread: {} — child stdout/stderr will not drain, process may block on 64KB pipe buffer", pid, e);
+                }
             }
 
             // Build the JS ChildProcess object.
@@ -705,8 +713,8 @@ unsafe extern "C" fn cp_spawn(
                 JS_DefineProperty(cx, child_h, c"spawnargs".as_ptr(), sav.handle().into(), JSPROP_ENUMERATE as u32);
             }
 
-            // stdin_fd (stored for native __cp_stdin_write)
-            let stdin_fd_v = Int32Value(if pipe_stdin { stdin_pipe[0] } else { -1 });
+            // stdin_fd (stored for native __cp_stdin_write) — parent's write end
+            let stdin_fd_v = Int32Value(if pipe_stdin { stdin_pipe[1] } else { -1 });
             rooted!(&in(cx_ref) let sfdv = stdin_fd_v);
             JS_DefineProperty(cx, child_h, c"_stdinFd".as_ptr(), sfdv.handle().into(), 0);
 
@@ -887,7 +895,7 @@ unsafe extern "C" fn cp_stdin_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     let written = unsafe {
         libc::write(stdin_fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len())
     };
-    args.rval().set(Int32Value(written as i32));
+    args.rval().set(DoubleValue(written as f64));
     true
 }
 
@@ -1774,7 +1782,7 @@ unsafe extern "C" fn cp_fork(
     let _ = unsafe { libc::pipe(stdin_pipe.as_mut_ptr()) };
 
     let spawn_opts = PosixSpawnOptions {
-        stdin: if stdin_pipe[0] >= 0 { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdin_pipe[1]) }) } else { PosixStdio::Inherit },
+        stdin: if stdin_pipe[0] >= 0 { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdin_pipe[0]) }) } else { PosixStdio::Inherit },
         stdout: if stdout_pipe[0] >= 0 { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdout_pipe[1]) }) } else { PosixStdio::Inherit },
         stderr: if stderr_pipe[0] >= 0 { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stderr_pipe[1]) }) } else { PosixStdio::Inherit },
         ipc: None,
@@ -1822,7 +1830,9 @@ unsafe extern "C" fn cp_fork(
     let spawn_result = unsafe { spawn_process(&spawn_opts, c_args.as_ptr(), envp) };
 
     // Close child-side pipe fds.
-    if stdin_pipe[1] >= 0 { unsafe { libc::close(stdin_pipe[1]); } }
+    // stdin: child uses read end (stdin_pipe[0]), so parent closes it.
+    // stdout/stderr: child uses write end (pipe[1]), so parent closes those.
+    if stdin_pipe[0] >= 0 { unsafe { libc::close(stdin_pipe[0]); } }
     if stdout_pipe[1] >= 0 { unsafe { libc::close(stdout_pipe[1]); } }
     if stderr_pipe[1] >= 0 { unsafe { libc::close(stderr_pipe[1]); } }
 
@@ -1831,7 +1841,10 @@ unsafe extern "C" fn cp_fork(
 
     match spawn_result {
         Err(e) => {
-            for fd in [stdin_pipe[0], stdout_pipe[0], stderr_pipe[0]] {
+            // Cleanup parent-side pipe fds.
+            // stdin: parent holds write end (stdin_pipe[1]).
+            // stdout/stderr: parent holds read end (pipe[0]).
+            for fd in [stdin_pipe[1], stdout_pipe[0], stderr_pipe[0]] {
                 if fd >= 0 { unsafe { libc::close(fd); } }
             }
             let msg = format!("fork failed: {:?}", e);
@@ -1840,7 +1853,7 @@ unsafe extern "C" fn cp_fork(
             false
         }
         Ok(Err(sys_err)) => {
-            for fd in [stdin_pipe[0], stdout_pipe[0], stderr_pipe[0]] {
+            for fd in [stdin_pipe[1], stdout_pipe[0], stderr_pipe[0]] {
                 if fd >= 0 { unsafe { libc::close(fd); } }
             }
             let msg = format!("fork system error: {:?}", sys_err);
@@ -1857,7 +1870,7 @@ unsafe extern "C" fn cp_fork(
                 pid,
                 stdout_fd: stdout_pipe[0],
                 stderr_fd: stderr_pipe[0],
-                stdin_fd: stdin_pipe[0],
+                stdin_fd: stdin_pipe[1],
                 stdout_eof: false,
                 stderr_eof: false,
                 child_exited: false,
@@ -1871,7 +1884,8 @@ unsafe extern "C" fn cp_fork(
                 registry.insert(pid, Arc::clone(&async_state));
             }
 
-            CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[0]));
+            // Parent holds the write end (stdin_pipe[1]) to write to child's stdin.
+            CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[1]));
             {
                 let state_clone = Arc::clone(&async_state);
                 let _ = ::std::thread::Builder::new()
@@ -1905,7 +1919,7 @@ unsafe extern "C" fn cp_fork(
             rooted!(&in(cx_ref) let ev = exited_v);
             JS_DefineProperty(cx, child_h, c"exited".as_ptr(), ev.handle().into(), JSPROP_ENUMERATE as u32);
 
-            let stdin_fd_v = Int32Value(stdin_pipe[0]);
+            let stdin_fd_v = Int32Value(stdin_pipe[1]);
             rooted!(&in(cx_ref) let sfdv = stdin_fd_v);
             JS_DefineProperty(cx, child_h, c"_stdinFd".as_ptr(), sfdv.handle().into(), 0);
 

@@ -11,7 +11,7 @@ use ::std::ptr::NonNull;
 use ::std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use mozjs::jsapi::*;
-use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, NullValue, ObjectValue, BooleanValue};
+use mozjs::jsval::{JSVal, UndefinedValue, StringValue, Int32Value, DoubleValue, NullValue, ObjectValue, BooleanValue};
 use mozjs::rooted;
 use mozjs::rust::wrappers2::{
     JS_DefineFunction, JS_DefineProperty3, JS_NewPlainObject, NewArrayObject1,
@@ -1950,9 +1950,10 @@ unsafe fn ws_create_js_object(
     JS_DefineFunction(cx_ref, ws_obj.handle(), c"terminate".as_ptr(), Some(ws_js_terminate), 0, JSPROP_ENUMERATE as u32);
 
     // readyState: 0=CONNECTING, 1=OPEN, 2=CLOSING, 3=CLOSED
-    // Set to OPEN by default (on_open will fire after upgrade).
+    // Set to CONNECTING(0) initially — the socket does not exist yet during upgrade.
+    // ws_on_open will set it to OPEN(1) once the connection is actually established.
     {
-        let ready_val = Int32Value(1);
+        let ready_val = Int32Value(0);
         rooted!(&in(cx_ref) let rv = ready_val);
         JS_DefineProperty(raw_cx, ws_obj.handle().into(), c"readyState".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
     }
@@ -2302,6 +2303,10 @@ unsafe extern "C" fn ws_on_open(raw_ws: *mut RawWebSocket) {
     JS_SetProperty(cx, ws_obj_root.handle().into(), c"_wsPtrHi".as_ptr(), hi_val.handle().into());
     rooted!(&in(cx_ref) let lo_val = Int32Value(ptr_lo));
     JS_SetProperty(cx, ws_obj_root.handle().into(), c"_wsPtrLo".as_ptr(), lo_val.handle().into());
+
+    // Connection is now established — update readyState to OPEN(1).
+    rooted!(&in(cx_ref) let open_state = Int32Value(1));
+    JS_SetProperty(cx, ws_obj_root.handle().into(), c"readyState".as_ptr(), open_state.handle().into());
 
     // Resolve the user's websocket handler object from GcStore.
     // The websocket handler is an object with open/message/close methods.
@@ -3456,7 +3461,7 @@ unsafe extern "C" fn bun_build(
             JS_DefineProperty(cx, art_h, c"output".as_ptr(), ov.handle().into(), JSPROP_ENUMERATE as u32);
         }
 
-        rooted!(&in(cx_ref) let size_root = Int32Value(size as i32));
+        rooted!(&in(cx_ref) let size_root = DoubleValue(size as f64));
         JS_DefineProperty(cx, art_h, c"size".as_ptr(), size_root.handle().into(), JSPROP_ENUMERATE as u32);
 
         let kind_str = if entry.ends_with(".ts") || entry.ends_with(".tsx") {
@@ -3670,7 +3675,7 @@ unsafe extern "C" fn bun_file(
         JS_DefineProperty(cx, file_obj.handle().into(), c"path".as_ptr(), val.handle().into(), JSPROP_ENUMERATE as u32);
     }
     if let Ok(meta) = bun_sys::fs::metadata(&s) {
-        rooted!(&in(cx_ref) let size_root = Int32Value(meta.size as i32));
+        rooted!(&in(cx_ref) let size_root = DoubleValue(meta.size as f64));
         JS_DefineProperty(cx, file_obj.handle().into(), c"size".as_ptr(), size_root.handle().into(), JSPROP_ENUMERATE as u32);
         rooted!(&in(cx_ref) let exists_root = mozjs::jsval::BooleanValue(true));
         JS_DefineProperty(cx, file_obj.handle().into(), c"exists".as_ptr(), exists_root.handle().into(), JSPROP_ENUMERATE as u32);
@@ -3700,7 +3705,7 @@ unsafe extern "C" fn bun_write(
     let content = crate::js_to_rust_string(cx, content_val);
     match bun_sys::fs::write(fpath.as_str(), content.as_bytes()) {
         Ok(()) => {
-            let written = Int32Value(content.len() as i32);
+            let written = DoubleValue(content.len() as f64);
             args.rval().set(written);
             true
         }
