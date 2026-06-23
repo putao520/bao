@@ -1395,7 +1395,7 @@ mod tests {
 
     #[test]
     fn status_codes_count() {
-        assert_eq!(STATUS_CODES.len(), 61);
+        assert_eq!(STATUS_CODES.len(), 63);
     }
 
     #[test]
