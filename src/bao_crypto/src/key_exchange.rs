@@ -491,6 +491,10 @@ impl EcdhKeyPair {
     pub fn private_key_bytes(&self) -> Vec<u8> {
         self.private_bytes.clone()
     }
+
+    pub fn curve(&self) -> EcCurve {
+        self.curve
+    }
 }
 
 #[cfg(test)]

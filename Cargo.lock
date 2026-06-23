@@ -458,6 +458,7 @@ name = "bao_browser"
 version = "0.1.0"
 dependencies = [
  "bao_cdp",
+ "bao_cdp_client",
  "bao_engine",
  "bao_native_stubs",
  "bao_stealth",

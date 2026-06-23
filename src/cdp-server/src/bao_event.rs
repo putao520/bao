@@ -75,6 +75,16 @@ pub enum BaoEvent {
     PageLoadEventFired {
         timestamp: f64,
     },
+    PageFrameNavigated {
+        frame_id: String,
+        url: String,
+        loader_id: String,
+    },
+    SecurityCertificateError {
+        event_id: i32,
+        error_type: String,
+        url: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +220,16 @@ impl BaoEvent {
             })),
             "Page.loadEventFired" => Some(ConsoleMessage::Event(BaoEvent::PageLoadEventFired {
                 timestamp: v.get("timestamp").and_then(|t| t.as_f64()).unwrap_or(0.0),
+            })),
+            "Page.frameNavigated" => Some(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
+                frame_id: v["frameId"].as_str().unwrap_or("0").to_string(),
+                url: v["url"].as_str().unwrap_or_default().to_string(),
+                loader_id: v["loaderId"].as_str().unwrap_or_default().to_string(),
+            })),
+            "Security.certificateError" => Some(ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
+                event_id: v["eventId"].as_i64().unwrap_or(0) as i32,
+                error_type: v["errorType"].as_str().unwrap_or_default().to_string(),
+                url: v["url"].as_str().unwrap_or_default().to_string(),
             })),
             _ => None,
         }
@@ -369,6 +389,31 @@ impl BaoEvent {
                     "Page.loadEventFired",
                     serde_json::json!({
                         "timestamp": *timestamp,
+                    }),
+                );
+            }
+            BaoEvent::PageFrameNavigated { frame_id, url, loader_id } => {
+                sender.send_event(
+                    "Page.frameNavigated",
+                    serde_json::json!({
+                        "frame": {
+                            "id": frame_id,
+                            "url": url,
+                            "loaderId": loader_id,
+                            "mimeType": "text/html",
+                            "securityOrigin": "",
+                            "secureContextType": "Secure",
+                        },
+                    }),
+                );
+            }
+            BaoEvent::SecurityCertificateError { event_id, error_type, url } => {
+                sender.send_event(
+                    "Security.certificateError",
+                    serde_json::json!({
+                        "eventId": event_id,
+                        "errorType": error_type,
+                        "resourceUrl": url,
                     }),
                 );
             }
@@ -882,5 +927,104 @@ mod tests {
             }
             _ => panic!("expected Event(PageLoadEventFired)"),
         }
+    }
+
+    // ---- PageFrameNavigated tests ----
+
+    #[test]
+    fn from_console_text_page_frame_navigated() {
+        let input = "__BAO_EVT__Page.frameNavigated\n{\"frameId\":\"0\",\"url\":\"https://example.com\",\"loaderId\":\"abc\"}";
+        let msg = BaoEvent::from_console_text(input).expect("should parse");
+        match msg {
+            ConsoleMessage::Event(BaoEvent::PageFrameNavigated { frame_id, url, loader_id }) => {
+                assert_eq!(frame_id, "0");
+                assert_eq!(url, "https://example.com");
+                assert_eq!(loader_id, "abc");
+            }
+            other => panic!("expected PageFrameNavigated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn from_console_text_page_frame_navigated_defaults() {
+        let input = "__BAO_EVT__Page.frameNavigated\n{}";
+        let msg = BaoEvent::from_console_text(input).expect("should parse with defaults");
+        match msg {
+            ConsoleMessage::Event(BaoEvent::PageFrameNavigated { frame_id, url, loader_id }) => {
+                assert_eq!(frame_id, "0");
+                assert_eq!(url, "");
+                assert_eq!(loader_id, "");
+            }
+            other => panic!("expected PageFrameNavigated, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn broadcast_page_frame_navigated() {
+        let sender = RecordingSender::new();
+        let event = BaoEvent::PageFrameNavigated {
+            frame_id: "0".into(),
+            url: "https://example.com".into(),
+            loader_id: "abc".into(),
+        };
+        event.broadcast(&sender);
+        let events = sender.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "Page.frameNavigated");
+        let params = &events[0].1;
+        assert_eq!(params["frame"]["id"], "0");
+        assert_eq!(params["frame"]["url"], "https://example.com");
+        assert_eq!(params["frame"]["loaderId"], "abc");
+        assert_eq!(params["frame"]["mimeType"], "text/html");
+        assert_eq!(params["frame"]["securityOrigin"], "");
+        assert_eq!(params["frame"]["secureContextType"], "Secure");
+    }
+
+    // ---- SecurityCertificateError tests ----
+
+    #[test]
+    fn from_console_text_security_certificate_error() {
+        let input = "__BAO_EVT__Security.certificateError\n{\"eventId\":1,\"errorType\":\"net::ERR_CERT_AUTHORITY_INVALID\",\"url\":\"https://bad.example.com\"}";
+        let msg = BaoEvent::from_console_text(input).expect("should parse");
+        match msg {
+            ConsoleMessage::Event(BaoEvent::SecurityCertificateError { event_id, error_type, url }) => {
+                assert_eq!(event_id, 1);
+                assert_eq!(error_type, "net::ERR_CERT_AUTHORITY_INVALID");
+                assert_eq!(url, "https://bad.example.com");
+            }
+            other => panic!("expected SecurityCertificateError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn from_console_text_security_certificate_error_defaults() {
+        let input = "__BAO_EVT__Security.certificateError\n{}";
+        let msg = BaoEvent::from_console_text(input).expect("should parse with defaults");
+        match msg {
+            ConsoleMessage::Event(BaoEvent::SecurityCertificateError { event_id, error_type, url }) => {
+                assert_eq!(event_id, 0);
+                assert_eq!(error_type, "");
+                assert_eq!(url, "");
+            }
+            other => panic!("expected SecurityCertificateError, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn broadcast_security_certificate_error() {
+        let sender = RecordingSender::new();
+        let event = BaoEvent::SecurityCertificateError {
+            event_id: 1,
+            error_type: "net::ERR_CERT_AUTHORITY_INVALID".into(),
+            url: "https://bad.example.com".into(),
+        };
+        event.broadcast(&sender);
+        let events = sender.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "Security.certificateError");
+        let params = &events[0].1;
+        assert_eq!(params["eventId"], 1);
+        assert_eq!(params["errorType"], "net::ERR_CERT_AUTHORITY_INVALID");
+        assert_eq!(params["resourceUrl"], "https://bad.example.com");
     }
 }

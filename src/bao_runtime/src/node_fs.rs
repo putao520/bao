@@ -18,6 +18,18 @@ use crate::require::cache_builtin;
 // Background I/O uses std::thread::spawn + Arc<Mutex<Option<Result>>> shared slot.
 // Completion is scheduled on the JS thread via bao_uloop::uws_loop_defer (next_tick).
 
+/// Result of statfs() — simplified subset of fields exposed by Node.js fs.statfs().
+struct StatfsResult {
+    type_: u64,
+    bsize: u64,
+    frsize: u64,
+    blocks: u64,
+    bfree: u64,
+    bavail: u64,
+    files: u64,
+    ffree: u64,
+}
+
 enum FsAsyncResult {
     Ok(Vec<u8>),
     OkStat(bun_sys::PosixStat),
@@ -29,6 +41,7 @@ enum FsAsyncResult {
     OkRead { bytes_read: i32, buffer: Vec<u8> },
     OkWrite(i32),
     OkDirnames(Vec<String>),
+    OkStatfs(StatfsResult),
     OkDirents(Vec<(String, bool)>),
 }
 
@@ -182,6 +195,15 @@ unsafe extern "C" fn fs_async_defer_callback(raw_ctx: *mut ::std::ffi::c_void) {
             }
             rooted!(&in(cx_ref) let arr_val = mozjs::jsval::ObjectValue(arr.get()));
             let args_arr = [UndefinedValue(), arr_val.get()];
+            let cb_args = HandleValueArray { length_: 2, elements_: args_arr.as_ptr() };
+            let mut rval = UndefinedValue();
+            JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &cb_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+            JS_ClearPendingException(cx);
+        }
+        Some(Ok(FsAsyncResult::OkStatfs(sf))) => {
+            let stats_obj = create_statfs_object(cx, &sf);
+            rooted!(&in(cx_ref) let stats_val = mozjs::jsval::ObjectValue(stats_obj));
+            let args_arr = [UndefinedValue(), stats_val.get()];
             let cb_args = HandleValueArray { length_: 2, elements_: args_arr.as_ptr() };
             let mut rval = UndefinedValue();
             JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &cb_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
@@ -416,6 +438,24 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"cp".as_ptr(), Some(fs_cp), 3, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"watch".as_ptr(), Some(fs_watch), 2, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"watchFile".as_ptr(), Some(fs_watch_file), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"statfsSync".as_ptr(), Some(fs_statfs_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"openSync".as_ptr(), Some(fs_open_sync), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"closeSync".as_ptr(), Some(fs_close_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"readSync".as_ptr(), Some(fs_read_sync), 4, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"writeSync".as_ptr(), Some(fs_write_sync), 4, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"mkdtempSync".as_ptr(), Some(fs_mkdtemp_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"fchmodSync".as_ptr(), Some(fs_fchmod_sync), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"fchownSync".as_ptr(), Some(fs_fchown_sync), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"fdatasyncSync".as_ptr(), Some(fs_fdatasync_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"fsyncSync".as_ptr(), Some(fs_fsync_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"ftruncateSync".as_ptr(), Some(fs_ftruncate_sync), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"futimesSync".as_ptr(), Some(fs_futimes_sync), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"lchmodSync".as_ptr(), Some(fs_lchmod_sync), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"lchownSync".as_ptr(), Some(fs_lchown_sync), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"readvSync".as_ptr(), Some(fs_readv_sync), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"writevSync".as_ptr(), Some(fs_writev_sync), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"globSync".as_ptr(), Some(fs_glob_sync), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"openAsBlob".as_ptr(), Some(fs_open_as_blob), 2, JSPROP_ENUMERATE as u32);
 
         // Async methods
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"readFile".as_ptr(), Some(fs_read_file), 2, JSPROP_ENUMERATE as u32);
@@ -457,6 +497,8 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"utimes".as_ptr(), Some(fs_utimes), 3, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"write".as_ptr(), Some(fs_write), 4, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, fs_obj.handle(), c"writev".as_ptr(), Some(fs_writev), 4, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"statfs".as_ptr(), Some(fs_statfs), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, fs_obj.handle(), c"glob".as_ptr(), Some(fs_glob), 3, JSPROP_ENUMERATE as u32);
 
         // Constants
         let constants: &[(&str, i32)] = &[
@@ -502,6 +544,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             w2::JS_DefineFunction(cx, promises_obj.handle(), c"open".as_ptr(), Some(fs_promises_open), 2, JSPROP_ENUMERATE as u32);
             w2::JS_DefineFunction(cx, promises_obj.handle(), c"read".as_ptr(), Some(fs_promises_read), 4, JSPROP_ENUMERATE as u32);
             w2::JS_DefineFunction(cx, promises_obj.handle(), c"write".as_ptr(), Some(fs_promises_write), 4, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, promises_obj.handle(), c"statfs".as_ptr(), Some(fs_promises_statfs), 1, JSPROP_ENUMERATE as u32);
 
             rooted!(&in(cx) let prom_val = mozjs::jsval::ObjectValue(promises_obj.get()));
             JS_DefineProperty(
@@ -585,6 +628,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             w2::JS_DefineFunction(cx, fsp_obj.handle(), c"open".as_ptr(), Some(fs_promises_open), 2, JSPROP_ENUMERATE as u32);
             w2::JS_DefineFunction(cx, fsp_obj.handle(), c"read".as_ptr(), Some(fs_promises_read), 4, JSPROP_ENUMERATE as u32);
             w2::JS_DefineFunction(cx, fsp_obj.handle(), c"write".as_ptr(), Some(fs_promises_write), 4, JSPROP_ENUMERATE as u32);
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"statfs".as_ptr(), Some(fs_promises_statfs), 1, JSPROP_ENUMERATE as u32);
+
+            // FileHandle class — wraps a file descriptor and provides
+            // promise-based read/write/close/stat etc.
+            w2::JS_DefineFunction(cx, fsp_obj.handle(), c"FileHandle".as_ptr(), Some(fs_promises_filehandle_ctor), 1, JSPROP_ENUMERATE as u32);
             cache_builtin(cx, "fs/promises", fsp_obj.get());
         }
     }
@@ -1502,7 +1550,7 @@ unsafe extern "C" fn fs_fchown(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 3) {
         spawn_fs_async(cx, "fchown", format!("fd:{}", fd), callback, None, move || {
             #[cfg(unix)]
-            { let rv = unsafe { libc::fchown(fd, uid, gid) }; if rv == 0 { Ok(FsAsyncResult::OkVoid) } else { Err(::std::io::Error::last_os_error()) } }
+            { let rv = unsafe { libc::fchown(fd, uid as libc::uid_t, gid as libc::gid_t) }; if rv == 0 { Ok(FsAsyncResult::OkVoid) } else { Err(::std::io::Error::last_os_error()) } }
             #[cfg(not(unix))]
             { Ok(FsAsyncResult::OkVoid) }
         });
@@ -1511,7 +1559,7 @@ unsafe extern "C" fn fs_fchown(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
     }
 
     #[cfg(unix)]
-    { let rv = unsafe { libc::fchown(fd, uid, gid) }; if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "fchown", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) } }
+    { let rv = unsafe { libc::fchown(fd, uid as libc::uid_t, gid as libc::gid_t) }; if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "fchown", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) } }
     #[cfg(not(unix))]
     { args.rval().set(UndefinedValue()); true }
 }
@@ -2801,8 +2849,16 @@ unsafe extern "C" fn fs_promises_open(cx: *mut JSContext, argc: u32, vp: *mut JS
         let c_path = ::std::ffi::CString::new(path.as_str()).unwrap_or_default();
         let fd = unsafe { libc::open(c_path.as_ptr(), flags, mode) };
         if fd >= 0 {
-            rooted!(&in(cx_ref) let val = mozjs::jsval::Int32Value(fd));
-            unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
+            // Wrap the fd in a FileHandle instance before resolving the promise.
+            let fh = create_filehandle_object(cx, fd);
+            if !fh.is_null() {
+                rooted!(&in(cx_ref) let fh_val = mozjs::jsval::ObjectValue(fh));
+                unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), fh_val.handle().into()); }
+            } else {
+                // Fallback: resolve with raw fd
+                rooted!(&in(cx_ref) let val = mozjs::jsval::Int32Value(fd));
+                unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
+            }
         } else {
             reject_with_error(cx, promise.get(), &format!("open '{}': {}", path, ::std::io::Error::last_os_error()));
         }
@@ -2874,6 +2930,515 @@ unsafe extern "C" fn fs_promises_write(cx: *mut JSContext, argc: u32, vp: *mut J
     }
     #[cfg(not(unix))]
     { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+// --- statfs ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_statfs_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    #[cfg(unix)]
+    {
+        let c_path = ::std::ffi::CString::new(path.as_str()).unwrap_or_default();
+        let mut buf: libc::statfs = ::std::mem::zeroed();
+        let rv = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
+        if rv == 0 {
+            let sf = StatfsResult {
+                type_: buf.f_type as u64,
+                bsize: buf.f_bsize as u64,
+                frsize: buf.f_frsize as u64,
+                blocks: buf.f_blocks as u64,
+                bfree: buf.f_bfree as u64,
+                bavail: buf.f_bavail as u64,
+                files: buf.f_files as u64,
+                ffree: buf.f_ffree as u64,
+            };
+            let obj = create_statfs_object(cx, &sf);
+            args.rval().set(mozjs::jsval::ObjectValue(obj));
+            true
+        } else {
+            throw_fs_error(cx, "statfsSync", &path, &::std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        args.rval().set(UndefinedValue());
+        true
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_statfs(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+
+    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 1) {
+        spawn_fs_async(cx, "statfs", path.clone(), callback, None, move || {
+            #[cfg(unix)]
+            {
+                let c_path = ::std::ffi::CString::new(path.as_str()).unwrap_or_default();
+                let mut buf: libc::statfs = ::std::mem::zeroed();
+                let rv = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
+                if rv == 0 {
+                    Ok(FsAsyncResult::OkStatfs(StatfsResult {
+                        type_: buf.f_type as u64,
+                        bsize: buf.f_bsize as u64,
+                        frsize: buf.f_frsize as u64,
+                        blocks: buf.f_blocks as u64,
+                        bfree: buf.f_bfree as u64,
+                        bavail: buf.f_bavail as u64,
+                        files: buf.f_files as u64,
+                        ffree: buf.f_ffree as u64,
+                    }))
+                } else {
+                    Err(::std::io::Error::last_os_error())
+                }
+            }
+            #[cfg(not(unix))]
+            { Ok(FsAsyncResult::OkStatfs(StatfsResult { type_: 0, bsize: 0, frsize: 0, blocks: 0, bfree: 0, bavail: 0, files: 0, ffree: 0 })) }
+        });
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    #[cfg(unix)]
+    {
+        let c_path = ::std::ffi::CString::new(path.as_str()).unwrap_or_default();
+        let mut buf: libc::statfs = ::std::mem::zeroed();
+        let rv = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
+        if rv == 0 {
+            let sf = StatfsResult {
+                type_: buf.f_type as u64,
+                bsize: buf.f_bsize as u64,
+                frsize: buf.f_frsize as u64,
+                blocks: buf.f_blocks as u64,
+                bfree: buf.f_bfree as u64,
+                bavail: buf.f_bavail as u64,
+                files: buf.f_files as u64,
+                ffree: buf.f_ffree as u64,
+            };
+            let obj = create_statfs_object(cx, &sf);
+            args.rval().set(mozjs::jsval::ObjectValue(obj));
+            true
+        } else {
+            throw_fs_error(cx, "statfs", &path, &::std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_promises_statfs(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+
+    #[cfg(unix)]
+    {
+        let c_path = ::std::ffi::CString::new(path.as_str()).unwrap_or_default();
+        let mut buf: libc::statfs = ::std::mem::zeroed();
+        let rv = unsafe { libc::statfs(c_path.as_ptr(), &mut buf) };
+        if rv == 0 {
+            let sf = StatfsResult {
+                type_: buf.f_type as u64,
+                bsize: buf.f_bsize as u64,
+                frsize: buf.f_bsize as u64,
+                blocks: buf.f_blocks as u64,
+                bfree: buf.f_bfree as u64,
+                bavail: buf.f_bavail as u64,
+                files: buf.f_files as u64,
+                ffree: buf.f_ffree as u64,
+            };
+            let obj = create_statfs_object(cx, &sf);
+            rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(obj));
+            unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
+        } else {
+            reject_with_error(cx, promise.get(), &format!("statfs '{}': {}", path, ::std::io::Error::last_os_error()));
+        }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+// --- fd sync operations ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_open_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    let flags_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let flags = if flags_val.is_int32() { flags_val.to_int32() } else if flags_val.is_string() {
+        let s = flags_val.to_string();
+        if !s.is_null() { parse_open_flags(&crate::jsstr_to_rust_string(cx, s)) } else { 0 }
+    } else { 0 };
+    let mode_val = if argc > 2 { *args.get(2).ptr } else { UndefinedValue() };
+    let mode = if mode_val.is_int32() { mode_val.to_int32() as u32 } else { 0o644 };
+    #[cfg(unix)]
+    {
+        let c_path = ::std::ffi::CString::new(path.as_str()).unwrap_or_default();
+        let fd = unsafe { libc::open(c_path.as_ptr(), flags, mode) };
+        if fd >= 0 { args.rval().set(mozjs::jsval::Int32Value(fd)); true } else { throw_fs_error(cx, "openSync", &path, &::std::io::Error::last_os_error()) }
+    }
+    #[cfg(not(unix))]
+    { args.rval().set(mozjs::jsval::Int32Value(0)); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_close_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    #[cfg(unix)]
+    { let rv = unsafe { libc::close(fd) }; if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "closeSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) } }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_read_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    let length = if argc > 3 { let v = *args.get(3).ptr; if v.is_int32() { v.to_int32() as usize } else { 65536 } } else { 65536 };
+    let mut buf = vec![0u8; length];
+    #[cfg(unix)]
+    {
+        let bytes_read = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) };
+        if bytes_read >= 0 {
+            buf.truncate(bytes_read as usize);
+            let _buf_obj = crate::globals::create_buffer_object(cx, &buf);
+            args.rval().set(mozjs::jsval::Int32Value(bytes_read as i32));
+            true
+        } else {
+            throw_fs_error(cx, "readSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_write_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    let data_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let bytes = if data_val.is_string() {
+        let s = data_val.to_string();
+        if !s.is_null() { crate::jsstr_to_rust_string(cx, s).into_bytes() } else { Vec::new() }
+    } else if data_val.is_object() {
+        crate::node_crypto::extract_buffer_bytes(cx, data_val)
+    } else { Vec::new() };
+    #[cfg(unix)]
+    {
+        let written = unsafe { libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len()) };
+        if written >= 0 { args.rval().set(mozjs::jsval::Int32Value(written as i32)); true } else { throw_fs_error(cx, "writeSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) }
+    }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_mkdtemp_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let prefix = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    match mkdtemp_inner(&prefix) {
+        ::std::result::Result::Ok(dir) => {
+            let c_str = ZBox::from_bytes(dir.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_str.as_ptr());
+            if js_str.is_null() { args.rval().set(UndefinedValue()); } else { args.rval().set(mozjs::jsval::StringValue(&*js_str)); }
+            true
+        }
+        ::std::result::Result::Err(e) => throw_fs_error(cx, "mkdtempSync", &prefix, &e),
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_fchmod_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    let mode_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let mode = if mode_val.is_int32() { mode_val.to_int32() as u32 } else { 0o644 };
+    #[cfg(unix)]
+    { let rv = unsafe { libc::fchmod(fd, mode) }; if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "fchmodSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) } }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_fchown_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    let uid = if argc > 1 { let v = *args.get(1).ptr; if v.is_int32() { v.to_int32() as u32 } else { 0 } } else { 0 };
+    let gid = if argc > 2 { let v = *args.get(2).ptr; if v.is_int32() { v.to_int32() as u32 } else { 0 } } else { 0 };
+    #[cfg(unix)]
+    { let rv = unsafe { libc::fchown(fd, uid as libc::uid_t, gid as libc::gid_t) }; if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "fchownSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) } }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_fdatasync_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    #[cfg(unix)]
+    { let rv = unsafe { libc::fdatasync(fd) }; if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "fdatasyncSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) } }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_fsync_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    #[cfg(unix)]
+    { let rv = unsafe { libc::fsync(fd) }; if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "fsyncSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) } }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_ftruncate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    let len_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let len = if len_val.is_int32() { len_val.to_int32() as i64 } else if len_val.is_double() { len_val.to_double() as i64 } else { 0 };
+    #[cfg(unix)]
+    { let rv = unsafe { libc::ftruncate(fd, len) }; if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "ftruncateSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) } }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_futimes_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    let atime_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let mtime_val = if argc > 2 { *args.get(2).ptr } else { UndefinedValue() };
+    let atime = if atime_val.is_double() { atime_val.to_double() } else if atime_val.is_int32() { atime_val.to_int32() as f64 } else { 0.0 };
+    let mtime = if mtime_val.is_double() { mtime_val.to_double() } else if mtime_val.is_int32() { mtime_val.to_int32() as f64 } else { 0.0 };
+    #[cfg(unix)]
+    {
+        let tv = [
+            libc::timeval { tv_sec: atime as i64, tv_usec: ((atime % 1.0) * 1_000_000.0) as i64 },
+            libc::timeval { tv_sec: mtime as i64, tv_usec: ((mtime % 1.0) * 1_000_000.0) as i64 },
+        ];
+        let rv = unsafe { libc::futimes(fd, tv.as_ptr()) };
+        if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "futimesSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()) }
+    }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_lchmod_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    let mode_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    let mode = if mode_val.is_int32() { mode_val.to_int32() as u32 } else { 0o644 };
+    // lchmod is not available on Linux; fall back to chmod
+    #[cfg(unix)]
+    { use ::std::os::unix::fs::PermissionsExt; match fs::set_permissions(&path, fs::Permissions::from_mode(mode)) { ::std::result::Result::Ok(()) => { args.rval().set(UndefinedValue()); true } ::std::result::Result::Err(e) => throw_fs_error(cx, "lchmodSync", &path, &e) } }
+    #[cfg(not(unix))]
+    { let _ = mode; let _ = path; args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_lchown_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    let uid = if argc > 1 { let v = *args.get(1).ptr; if v.is_int32() { v.to_int32() as u32 } else { 0 } } else { 0 };
+    let gid = if argc > 2 { let v = *args.get(2).ptr; if v.is_int32() { v.to_int32() as u32 } else { 0 } } else { 0 };
+    #[cfg(unix)]
+    {
+        let c_path = ::std::ffi::CString::new(path.as_str()).unwrap_or_default();
+        let rv = unsafe { libc::lchown(c_path.as_ptr(), uid, gid) };
+        if rv == 0 { args.rval().set(UndefinedValue()); true } else { throw_fs_error(cx, "lchownSync", &path, &::std::io::Error::last_os_error()) }
+    }
+    #[cfg(not(unix))]
+    { args.rval().set(UndefinedValue()); true }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_readv_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    let buffers_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    if !buffers_val.is_object() {
+        JS_ReportErrorUTF8(cx, c"readvSync: buffers must be an array".as_ptr());
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let buffers_obj = buffers_val.to_object());
+    let mut total_read: i32 = 0;
+    let mut buf_idx: u32 = 0;
+    loop {
+        let mut elem = UndefinedValue();
+        JS_GetElement(cx, buffers_obj.handle().into(), buf_idx, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+        if elem.is_undefined() { break; }
+        if elem.is_object() {
+            let buf_bytes = crate::node_crypto::extract_buffer_bytes(cx, elem);
+            if !buf_bytes.is_empty() {
+                let mut write_buf = buf_bytes;
+                #[cfg(unix)]
+                {
+                    let n = unsafe { libc::read(fd, write_buf.as_mut_ptr() as *mut ::std::ffi::c_void, write_buf.len()) };
+                    if n < 0 { return throw_fs_error(cx, "readvSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()); }
+                    total_read += n as i32;
+                }
+            }
+        }
+        buf_idx += 1;
+    }
+    args.rval().set(mozjs::jsval::Int32Value(total_read));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_writev_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    let buffers_val = if argc > 1 { *args.get(1).ptr } else { UndefinedValue() };
+    if !buffers_val.is_object() {
+        JS_ReportErrorUTF8(cx, c"writevSync: buffers must be an array".as_ptr());
+        return false;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let buffers_obj = buffers_val.to_object());
+    let mut total_written: i32 = 0;
+    let mut buf_idx: u32 = 0;
+    loop {
+        let mut elem = UndefinedValue();
+        JS_GetElement(cx, buffers_obj.handle().into(), buf_idx, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+        if elem.is_undefined() { break; }
+        let bytes = if elem.is_string() {
+            let s = elem.to_string();
+            if !s.is_null() { crate::jsstr_to_rust_string(cx, s).into_bytes() } else { Vec::new() }
+        } else if elem.is_object() {
+            crate::node_crypto::extract_buffer_bytes(cx, elem)
+        } else { Vec::new() };
+        if !bytes.is_empty() {
+            #[cfg(unix)]
+            {
+                let n = unsafe { libc::write(fd, bytes.as_ptr() as *const ::std::ffi::c_void, bytes.len()) };
+                if n < 0 { return throw_fs_error(cx, "writevSync", &format!("fd:{}", fd), &::std::io::Error::last_os_error()); }
+                total_written += n as i32;
+            }
+        }
+        buf_idx += 1;
+    }
+    args.rval().set(mozjs::jsval::Int32Value(total_written));
+    true
+}
+
+// --- glob ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_glob_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let pattern = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    let cwd = ::std::env::current_dir().unwrap_or_default();
+    let results = glob_walk(&cwd, &pattern);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, results.len()));
+    if arr.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    for (idx, path) in results.iter().enumerate() {
+        let c_path = ZBox::from_bytes(path.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+        if !js_str.is_null() {
+            rooted!(&in(cx_ref) let val = mozjs::jsval::StringValue(&*js_str));
+            JS_DefineElement(cx, arr.handle().into(), idx as u32, val.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_glob(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let pattern = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+
+    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 2) {
+        spawn_fs_async(cx, "glob", pattern.clone(), callback, None, move || {
+            let cwd = ::std::env::current_dir().unwrap_or_default();
+            let results = glob_walk(&cwd, &pattern);
+            Ok(FsAsyncResult::OkDirnames(results))
+        });
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // No callback — behave like sync
+    let cwd = ::std::env::current_dir().unwrap_or_default();
+    let results = glob_walk(&cwd, &pattern);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, results.len()));
+    if arr.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+    for (idx, path) in results.iter().enumerate() {
+        let c_path = ZBox::from_bytes(path.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+        if !js_str.is_null() {
+            rooted!(&in(cx_ref) let val = mozjs::jsval::StringValue(&*js_str));
+            JS_DefineElement(cx, arr.handle().into(), idx as u32, val.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_open_as_blob(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+
+    match bun_fs::read(&path) {
+        ::std::result::Result::Ok(data) => {
+            let buf_obj = crate::globals::create_buffer_object(cx, &data);
+            if !buf_obj.is_null() {
+                // Create a Blob-like object with arrayBuffer() and size
+                rooted!(&in(cx_ref) let blob_obj = JS_NewPlainObject(cx));
+                if !blob_obj.get().is_null() {
+                    define_num_prop(cx, blob_obj.get(), "size", data.len() as f64);
+                    rooted!(&in(cx_ref) let buf_val = mozjs::jsval::ObjectValue(buf_obj));
+                    JS_DefineProperty(cx, blob_obj.handle().into(), c"_buffer".as_ptr(), buf_val.handle().into(), 0);
+                    rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(blob_obj.get()));
+                    unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
+                } else {
+                    resolve_undefined(cx, promise.get());
+                }
+            } else {
+                resolve_undefined(cx, promise.get());
+            }
+        }
+        ::std::result::Result::Err(e) => reject_with_error(cx, promise.get(), &format!("openAsBlob '{}': {}", path, e)),
+    }
     args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
     true
 }
@@ -3005,6 +3570,16 @@ unsafe fn create_stats_object(cx: *mut JSContext, meta: &bun_fs::PosixStat) -> *
     let is_file = mode_type == libc::S_IFREG;
     let is_dir = mode_type == libc::S_IFDIR;
     let is_symlink = mode_type == libc::S_IFLNK;
+    let is_block_device = mode_type == libc::S_IFBLK;
+    let is_character_device = mode_type == libc::S_IFCHR;
+    let is_fifo = mode_type == libc::S_IFIFO;
+    let is_socket = mode_type == libc::S_IFSOCK;
+
+    let atime_ms = meta.atim.sec as f64 * 1000.0 + meta.atim.nsec as f64 / 1_000_000.0;
+    let mtime_ms = meta.mtim.sec as f64 * 1000.0 + meta.mtim.nsec as f64 / 1_000_000.0;
+    let ctime_ms = meta.ctim.sec as f64 * 1000.0 + meta.ctim.nsec as f64 / 1_000_000.0;
+    // On Linux, birthtime is often not available; fall back to ctime
+    let birthtime_ms = if meta.birthtim.sec == 0 && meta.birthtim.nsec == 0 { ctime_ms } else { meta.birthtim.sec as f64 * 1000.0 + meta.birthtim.nsec as f64 / 1_000_000.0 };
 
     define_num_prop(cx, stats.get(), "size", meta.size as f64);
     define_num_prop(cx, stats.get(), "dev", meta.dev as f64);
@@ -3016,19 +3591,44 @@ unsafe fn create_stats_object(cx: *mut JSContext, meta: &bun_fs::PosixStat) -> *
     define_num_prop(cx, stats.get(), "rdev", meta.rdev as f64);
     define_num_prop(cx, stats.get(), "blksize", meta.blksize as f64);
     define_num_prop(cx, stats.get(), "blocks", meta.blocks as f64);
-    define_num_prop(cx, stats.get(), "atimeMs", meta.atim.sec as f64 * 1000.0 + meta.atim.nsec as f64 / 1_000_000.0);
-    define_num_prop(cx, stats.get(), "mtimeMs", meta.mtim.sec as f64 * 1000.0 + meta.mtim.nsec as f64 / 1_000_000.0);
-    define_num_prop(cx, stats.get(), "ctimeMs", meta.ctim.sec as f64 * 1000.0 + meta.ctim.nsec as f64 / 1_000_000.0);
+    define_num_prop(cx, stats.get(), "atimeMs", atime_ms);
+    define_num_prop(cx, stats.get(), "mtimeMs", mtime_ms);
+    define_num_prop(cx, stats.get(), "ctimeMs", ctime_ms);
+    define_num_prop(cx, stats.get(), "birthtimeMs", birthtime_ms);
+
+    // Date objects for atime, mtime, ctime, birthtime
+    let date_props: [(&str, f64); 4] = [
+        ("atime", atime_ms),
+        ("mtime", mtime_ms),
+        ("ctime", ctime_ms),
+        ("birthtime", birthtime_ms),
+    ];
+    for (prop, ms) in &date_props {
+        let date_obj = w2::NewDateObject(cx_ref, mozjs::jsapi::ClippedTime { t: *ms });
+        if !date_obj.is_null() {
+            rooted!(&in(cx_ref) let date_val = mozjs::jsval::ObjectValue(date_obj));
+            let c_prop = ZBox::from_bytes(prop.as_bytes());
+            JS_DefineProperty(cx, stats.handle().into(), c_prop.as_ptr(), date_val.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+    }
 
     // Store boolean values as hidden properties for method callbacks
     define_bool_prop(cx, stats.get(), "_isFile", is_file);
     define_bool_prop(cx, stats.get(), "_isDirectory", is_dir);
     define_bool_prop(cx, stats.get(), "_isSymbolicLink", is_symlink);
+    define_bool_prop(cx, stats.get(), "_isBlockDevice", is_block_device);
+    define_bool_prop(cx, stats.get(), "_isCharacterDevice", is_character_device);
+    define_bool_prop(cx, stats.get(), "_isFIFO", is_fifo);
+    define_bool_prop(cx, stats.get(), "_isSocket", is_socket);
 
     // Node.js Stats methods
     w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isFile".as_ptr(), Some(stats_is_file), 0, JSPROP_ENUMERATE as u32);
     w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isDirectory".as_ptr(), Some(stats_is_directory), 0, JSPROP_ENUMERATE as u32);
     w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isSymbolicLink".as_ptr(), Some(stats_is_symlink), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isBlockDevice".as_ptr(), Some(stats_is_block_device), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isCharacterDevice".as_ptr(), Some(stats_is_character_device), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isFIFO".as_ptr(), Some(stats_is_fifo), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isSocket".as_ptr(), Some(stats_is_socket), 0, JSPROP_ENUMERATE as u32);
 
     stats.get()
 }
@@ -3045,8 +3645,20 @@ unsafe fn create_dirent(cx: *mut JSContext, name: &str, is_dir: bool) -> *mut JS
         rooted!(&in(cx_ref) let name_val = mozjs::jsval::StringValue(&*js_str));
         JS_DefineProperty(cx, dirent.handle().into(), c"name".as_ptr(), name_val.handle().into(), JSPROP_ENUMERATE as u32);
     }
+    // Type code: 0=file, 1=dir, 2=symlink, 3=block, 4=char, 5=fifo, 6=socket
+    let type_code: i32 = if is_dir { 1 } else { 0 };
+    set_hidden_int(cx, dirent.get(), "_typeCode", type_code);
     define_bool_prop(cx, dirent.get(), "isFile", !is_dir);
     define_bool_prop(cx, dirent.get(), "isDirectory", is_dir);
+
+    w2::JS_DefineFunction(cx_ref, dirent.handle().into(), c"isFile".as_ptr(), Some(dirent_is_file), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, dirent.handle().into(), c"isDirectory".as_ptr(), Some(dirent_is_directory), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, dirent.handle().into(), c"isSymbolicLink".as_ptr(), Some(dirent_is_symbolic_link), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, dirent.handle().into(), c"isBlockDevice".as_ptr(), Some(dirent_is_block_device), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, dirent.handle().into(), c"isCharacterDevice".as_ptr(), Some(dirent_is_character_device), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, dirent.handle().into(), c"isFIFO".as_ptr(), Some(dirent_is_fifo), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, dirent.handle().into(), c"isSocket".as_ptr(), Some(dirent_is_socket), 0, JSPROP_ENUMERATE as u32);
+
     dirent.get()
 }
 
@@ -3103,6 +3715,108 @@ unsafe fn define_bool_prop(cx: *mut JSContext, obj_ptr: *mut JSObject, name: &st
 }
 
 #[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn set_hidden_int(cx: *mut JSContext, obj: *mut JSObject, prop: &str, val: i32) {
+    let c_name = ZBox::from_bytes(prop.as_bytes());
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_rooted = obj);
+    rooted!(&in(cx_ref) let v = mozjs::jsval::Int32Value(val));
+    JS_DefineProperty(cx, obj_rooted.handle().into(), c_name.as_ptr(), v.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn set_hidden_bool(cx: *mut JSContext, obj: *mut JSObject, prop: &str, val: bool) {
+    let c_name = ZBox::from_bytes(prop.as_bytes());
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_rooted = obj);
+    rooted!(&in(cx_ref) let v = mozjs::jsval::BooleanValue(val));
+    JS_DefineProperty(cx, obj_rooted.handle().into(), c_name.as_ptr(), v.handle().into(), (JSPROP_ENUMERATE | JSPROP_PERMANENT) as u32);
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn get_hidden_int(cx: *mut JSContext, obj: *mut JSObject, prop: &str) -> i32 {
+    let c_name = ZBox::from_bytes(prop.as_bytes());
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj_rooted = obj);
+    let mut val = UndefinedValue();
+    JS_GetProperty(cx, obj_rooted.handle().into(), c_name.as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val });
+    if val.is_int32() { val.to_int32() } else { -1 }
+}
+
+/// Build a Stats object from a `libc::stat` (used by FileHandle.stat).
+unsafe fn build_stats_object(cx: *mut JSContext, st: &libc::stat) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let stats = JS_NewPlainObject(cx));
+    if stats.get().is_null() { return stats.get(); }
+
+    let mode_type = st.st_mode & libc::S_IFMT;
+    let is_file = mode_type == libc::S_IFREG;
+    let is_dir = mode_type == libc::S_IFDIR;
+    let is_symlink = mode_type == libc::S_IFLNK;
+    let is_block_device = mode_type == libc::S_IFBLK;
+    let is_character_device = mode_type == libc::S_IFCHR;
+    let is_fifo = mode_type == libc::S_IFIFO;
+    let is_socket = mode_type == libc::S_IFSOCK;
+
+    let atime_ms = st.st_atime as f64 * 1000.0 + st.st_atime_nsec as f64 / 1_000_000.0;
+    let mtime_ms = st.st_mtime as f64 * 1000.0 + st.st_mtime_nsec as f64 / 1_000_000.0;
+    let ctime_ms = st.st_ctime as f64 * 1000.0 + st.st_ctime_nsec as f64 / 1_000_000.0;
+    let birthtime_ms = ctime_ms; // Linux fallback
+
+    define_num_prop(cx, stats.get(), "size", st.st_size as f64);
+    define_num_prop(cx, stats.get(), "dev", st.st_dev as f64);
+    define_num_prop(cx, stats.get(), "ino", st.st_ino as f64);
+    define_num_prop(cx, stats.get(), "mode", st.st_mode as f64);
+    define_num_prop(cx, stats.get(), "nlink", st.st_nlink as f64);
+    define_num_prop(cx, stats.get(), "uid", st.st_uid as f64);
+    define_num_prop(cx, stats.get(), "gid", st.st_gid as f64);
+    define_num_prop(cx, stats.get(), "rdev", st.st_rdev as f64);
+    define_num_prop(cx, stats.get(), "blksize", st.st_blksize as f64);
+    define_num_prop(cx, stats.get(), "blocks", st.st_blocks as f64);
+    define_num_prop(cx, stats.get(), "atimeMs", atime_ms);
+    define_num_prop(cx, stats.get(), "mtimeMs", mtime_ms);
+    define_num_prop(cx, stats.get(), "ctimeMs", ctime_ms);
+    define_num_prop(cx, stats.get(), "birthtimeMs", birthtime_ms);
+
+    // Date objects for atime, mtime, ctime, birthtime
+    let date_props: [(&str, f64); 4] = [
+        ("atime", atime_ms),
+        ("mtime", mtime_ms),
+        ("ctime", ctime_ms),
+        ("birthtime", birthtime_ms),
+    ];
+    for (prop, ms) in &date_props {
+        let date_obj = w2::NewDateObject(cx_ref, mozjs::jsapi::ClippedTime { t: *ms });
+        if !date_obj.is_null() {
+            rooted!(&in(cx_ref) let date_val = mozjs::jsval::ObjectValue(date_obj));
+            let c_prop = ZBox::from_bytes(prop.as_bytes());
+            JS_DefineProperty(cx, stats.handle().into(), c_prop.as_ptr(), date_val.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+    }
+
+    define_bool_prop(cx, stats.get(), "_isFile", is_file);
+    define_bool_prop(cx, stats.get(), "_isDirectory", is_dir);
+    define_bool_prop(cx, stats.get(), "_isSymbolicLink", is_symlink);
+    define_bool_prop(cx, stats.get(), "_isBlockDevice", is_block_device);
+    define_bool_prop(cx, stats.get(), "_isCharacterDevice", is_character_device);
+    define_bool_prop(cx, stats.get(), "_isFIFO", is_fifo);
+    define_bool_prop(cx, stats.get(), "_isSocket", is_socket);
+
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isFile".as_ptr(), Some(stats_is_file), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isDirectory".as_ptr(), Some(stats_is_directory), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isSymbolicLink".as_ptr(), Some(stats_is_symlink), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isBlockDevice".as_ptr(), Some(stats_is_block_device), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isCharacterDevice".as_ptr(), Some(stats_is_character_device), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isFIFO".as_ptr(), Some(stats_is_fifo), 0, JSPROP_ENUMERATE as u32);
+    w2::JS_DefineFunction(cx_ref, stats.handle().into(), c"isSocket".as_ptr(), Some(stats_is_socket), 0, JSPROP_ENUMERATE as u32);
+
+    stats.get()
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn get_hidden_bool(cx: *mut JSContext, obj: *mut JSObject, prop: &str) -> bool {
     let c_name = ZBox::from_bytes(prop.as_bytes());
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
@@ -3132,6 +3846,532 @@ unsafe extern "C" fn stats_is_directory(cx: *mut JSContext, argc: u32, vp: *mut 
     args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isDirectory")));
     true
 }
+// --- FileHandle class for fs/promises ---
+//
+// FileHandle wraps a raw fd and provides async read/write/close/stat etc.
+// Internal state is stored as hidden properties on the JS object:
+//   _fd       — the raw file descriptor (i32)
+//   _refs     — reference count (starts at 1, close only when 0)
+//   _closed   — whether the fd has been closed (bool)
+
+/// Create a FileHandle JS object wrapping the given fd.
+unsafe fn create_filehandle_object(cx: *mut JSContext, fd: i32) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let fh = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+    if fh.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
+
+    set_hidden_int(cx, fh.get(), "_fd", fd);
+    set_hidden_int(cx, fh.get(), "_refs", 1);
+    set_hidden_bool(cx, fh.get(), "_closed", false);
+
+    rooted!(&in(cx_ref) let fd_val = mozjs::jsval::Int32Value(fd));
+    JS_DefineProperty(cx, fh.handle().into(), c"fd".as_ptr(),
+        fd_val.handle().into(),
+        (JSPROP_ENUMERATE | JSPROP_READONLY) as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"read".as_ptr(), Some(fh_read), 4, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"write".as_ptr(), Some(fh_write), 4, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"close".as_ptr(), Some(fh_close), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"stat".as_ptr(), Some(fh_stat), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"chmod".as_ptr(), Some(fh_chmod), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"chown".as_ptr(), Some(fh_chown), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"datasync".as_ptr(), Some(fh_datasync), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"sync".as_ptr(), Some(fh_sync), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"truncate".as_ptr(), Some(fh_truncate), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"utimes".as_ptr(), Some(fh_utimes), 2, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"appendFile".as_ptr(), Some(fh_append_file), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"readFile".as_ptr(), Some(fh_read_file), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, fh.handle().into(), c"writeFile".as_ptr(), Some(fh_write_file), 1, JSPROP_ENUMERATE as u32);
+
+    fh.get()
+}
+
+/// FileHandle constructor — callable as `new FileHandle(fd)`.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fs_promises_filehandle_ctor(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let fd_val = if argc > 0 { *args.get(0).ptr } else { UndefinedValue() };
+    let fd = if fd_val.is_int32() { fd_val.to_int32() } else { -1 };
+    if fd < 0 {
+        JS_ReportErrorUTF8(cx, c"FileHandle requires a valid file descriptor".as_ptr());
+        args.rval().set(UndefinedValue());
+        return false;
+    }
+    let fh = create_filehandle_object(cx, fd);
+    if fh.is_null() {
+        args.rval().set(UndefinedValue());
+        return false;
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(fh));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        JS_ReportErrorUTF8(cx, c"FileHandle.read() must be called on a FileHandle instance".as_ptr());
+        args.rval().set(UndefinedValue());
+        return false;
+    }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+
+    if fd < 0 {
+        reject_with_error(cx, promise.get(), "FileHandle: fd is invalid (already closed)");
+        args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+        return true;
+    }
+
+    let length = if argc > 2 { let v = *args.get(2).ptr; if v.is_int32() { v.to_int32() as usize } else { 65536 } } else { 65536 };
+    let position = if argc > 3 { let v = *args.get(3).ptr; if v.is_int32() { v.to_int32() as i64 } else if v.is_double() { v.to_double() as i64 } else { -1 } } else { -1 };
+
+    let mut buf = vec![0u8; length];
+    #[cfg(unix)]
+    {
+        let bytes_read = if position >= 0 {
+            unsafe { libc::lseek(fd, position, libc::SEEK_SET); }
+            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) }
+        } else {
+            unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, length) }
+        };
+        if bytes_read >= 0 {
+            buf.truncate(bytes_read as usize);
+            let buf_obj = crate::globals::create_buffer_object(cx, &buf);
+            if !buf_obj.is_null() {
+                rooted!(&in(cx_ref) let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+                if !result_obj.get().is_null() {
+                    rooted!(&in(cx_ref) let br_val = mozjs::jsval::Int32Value(bytes_read as i32));
+                    JS_DefineProperty(cx, result_obj.handle().into(), c"bytesRead".as_ptr(), br_val.handle().into(), JSPROP_ENUMERATE as u32);
+                    rooted!(&in(cx_ref) let buf_val = mozjs::jsval::ObjectValue(buf_obj));
+                    JS_DefineProperty(cx, result_obj.handle().into(), c"buffer".as_ptr(), buf_val.handle().into(), JSPROP_ENUMERATE as u32);
+                    rooted!(&in(cx_ref) let result_val = mozjs::jsval::ObjectValue(result_obj.get()));
+                    unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), result_val.handle().into()); }
+                } else { resolve_undefined(cx, promise.get()); }
+            } else { resolve_undefined(cx, promise.get()); }
+        } else {
+            reject_with_error(cx, promise.get(), &format!("FileHandle.read: {}", ::std::io::Error::last_os_error()));
+        }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_write(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        JS_ReportErrorUTF8(cx, c"FileHandle.write() must be called on a FileHandle instance".as_ptr());
+        args.rval().set(UndefinedValue());
+        return false;
+    }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+
+    if fd < 0 {
+        reject_with_error(cx, promise.get(), "FileHandle: fd is invalid (already closed)");
+        args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+        return true;
+    }
+
+    let data = if argc > 0 && (*args.get(0).ptr).is_object() {
+        crate::node_crypto::extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else if argc > 0 && (*args.get(0).ptr).is_string() {
+        let s = (*args.get(0).ptr).to_string();
+        if !s.is_null() { crate::jsstr_to_rust_string(cx, s).into_bytes() } else { Vec::new() }
+    } else { Vec::new() };
+
+    let position = if argc > 3 { let v = *args.get(3).ptr; if v.is_int32() { v.to_int32() as i64 } else if v.is_double() { v.to_double() as i64 } else { -1 } } else { -1 };
+
+    #[cfg(unix)]
+    {
+        let bytes_written = if position >= 0 {
+            unsafe { libc::lseek(fd, position, libc::SEEK_SET); }
+            unsafe { libc::write(fd, data.as_ptr() as *const ::std::ffi::c_void, data.len()) }
+        } else {
+            unsafe { libc::write(fd, data.as_ptr() as *const ::std::ffi::c_void, data.len()) }
+        };
+        if bytes_written >= 0 {
+            rooted!(&in(cx_ref) let result_obj = mozjs_sys::jsapi::JS_NewPlainObject(cx));
+            if !result_obj.get().is_null() {
+                rooted!(&in(cx_ref) let bw_val = mozjs::jsval::Int32Value(bytes_written as i32));
+                JS_DefineProperty(cx, result_obj.handle().into(), c"bytesWritten".as_ptr(), bw_val.handle().into(), JSPROP_ENUMERATE as u32);
+                let buf_obj = crate::globals::create_buffer_object(cx, &data);
+                if !buf_obj.is_null() {
+                    rooted!(&in(cx_ref) let buf_val = mozjs::jsval::ObjectValue(buf_obj));
+                    JS_DefineProperty(cx, result_obj.handle().into(), c"buffer".as_ptr(), buf_val.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+                unsafe { rooted!(&in(cx_ref) let result_val = mozjs::jsval::ObjectValue(result_obj.get())); mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), result_val.handle().into()); }
+            } else { resolve_undefined(cx, promise.get()); }
+        } else {
+            reject_with_error(cx, promise.get(), &format!("FileHandle.write: {}", ::std::io::Error::last_os_error()));
+        }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fh_obj = this.to_object();
+    let fd = get_hidden_int(cx, fh_obj, "_fd");
+    let closed = get_hidden_bool(cx, fh_obj, "_closed");
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    if closed || fd < 0 {
+        resolve_undefined(cx, promise.get());
+    } else {
+        #[cfg(unix)]
+        {
+            let ret = unsafe { libc::close(fd) };
+            if ret == 0 {
+                set_hidden_bool(cx, fh_obj, "_closed", true);
+                set_hidden_int(cx, fh_obj, "_fd", -1);
+                resolve_undefined(cx, promise.get());
+            } else {
+                reject_with_error(cx, promise.get(), &format!("FileHandle.close: {}", ::std::io::Error::last_os_error()));
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            set_hidden_bool(cx, fh_obj, "_closed", true);
+            set_hidden_int(cx, fh_obj, "_fd", -1);
+            resolve_undefined(cx, promise.get());
+        }
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_stat(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let mut st: libc::stat = unsafe { ::std::mem::zeroed() };
+        let ret = unsafe { libc::fstat(fd, &mut st) };
+        if ret == 0 {
+            let stats_obj = build_stats_object(cx, &st);
+            if !stats_obj.is_null() {
+                rooted!(&in(cx_ref) let stats_val = mozjs::jsval::ObjectValue(stats_obj));
+                unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), stats_val.handle().into()); }
+            } else { resolve_undefined(cx, promise.get()); }
+        } else {
+            reject_with_error(cx, promise.get(), &format!("FileHandle.stat: {}", ::std::io::Error::last_os_error()));
+        }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_chmod(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let mode = if argc > 0 { let v = *args.get(0).ptr; if v.is_int32() { v.to_int32() as u32 } else if v.is_double() { v.to_double() as u32 } else { 0o644 } } else { 0o644 };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::fchmod(fd, mode) };
+        if ret == 0 { resolve_undefined(cx, promise.get()); }
+        else { reject_with_error(cx, promise.get(), &format!("FileHandle.chmod: {}", ::std::io::Error::last_os_error())); }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_chown(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let uid = if argc > 0 { let v = *args.get(0).ptr; if v.is_int32() { v.to_int32() } else { -1 } } else { -1 };
+    let gid = if argc > 1 { let v = *args.get(1).ptr; if v.is_int32() { v.to_int32() } else { -1 } } else { -1 };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::fchown(fd, uid as u32, gid as u32) };
+        if ret == 0 { resolve_undefined(cx, promise.get()); }
+        else { reject_with_error(cx, promise.get(), &format!("FileHandle.chown: {}", ::std::io::Error::last_os_error())); }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_datasync(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::fdatasync(fd) };
+        if ret == 0 { resolve_undefined(cx, promise.get()); }
+        else { reject_with_error(cx, promise.get(), &format!("FileHandle.datasync: {}", ::std::io::Error::last_os_error())); }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_sync(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::fsync(fd) };
+        if ret == 0 { resolve_undefined(cx, promise.get()); }
+        else { reject_with_error(cx, promise.get(), &format!("FileHandle.sync: {}", ::std::io::Error::last_os_error())); }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_truncate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let len = if argc > 0 { let v = *args.get(0).ptr; if v.is_int32() { v.to_int32() as i64 } else if v.is_double() { v.to_double() as i64 } else { 0 } } else { 0 };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::ftruncate(fd, len) };
+        if ret == 0 { resolve_undefined(cx, promise.get()); }
+        else { reject_with_error(cx, promise.get(), &format!("FileHandle.truncate: {}", ::std::io::Error::last_os_error())); }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_utimes(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let atime = if argc > 0 { let v = *args.get(0).ptr; if v.is_double() { v.to_double() } else if v.is_int32() { v.to_int32() as f64 } else { 0.0 } } else { 0.0 };
+    let mtime = if argc > 1 { let v = *args.get(1).ptr; if v.is_double() { v.to_double() } else if v.is_int32() { v.to_int32() as f64 } else { 0.0 } } else { 0.0 };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let tv = [
+            libc::timeval { tv_sec: atime as i64, tv_usec: 0 },
+            libc::timeval { tv_sec: mtime as i64, tv_usec: 0 },
+        ];
+        let ret = unsafe { libc::futimes(fd, tv.as_ptr()) };
+        if ret == 0 { resolve_undefined(cx, promise.get()); }
+        else { reject_with_error(cx, promise.get(), &format!("FileHandle.utimes: {}", ::std::io::Error::last_os_error())); }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_append_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let data = if argc > 0 && (*args.get(0).ptr).is_object() {
+        crate::node_crypto::extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else if argc > 0 && (*args.get(0).ptr).is_string() {
+        let s = (*args.get(0).ptr).to_string();
+        if !s.is_null() { crate::jsstr_to_rust_string(cx, s).into_bytes() } else { Vec::new() }
+    } else { Vec::new() };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::write(fd, data.as_ptr() as *const ::std::ffi::c_void, data.len()) };
+        if ret >= 0 { resolve_undefined(cx, promise.get()); }
+        else { reject_with_error(cx, promise.get(), &format!("FileHandle.appendFile: {}", ::std::io::Error::last_os_error())); }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_read_file(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let file_size = unsafe { libc::lseek(fd, 0, libc::SEEK_END) };
+        if file_size < 0 {
+            reject_with_error(cx, promise.get(), &format!("FileHandle.readFile: {}", ::std::io::Error::last_os_error()));
+        } else {
+            unsafe { libc::lseek(fd, 0, libc::SEEK_SET); }
+            let mut buf = vec![0u8; file_size as usize];
+            let bytes_read = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, file_size as usize) };
+            if bytes_read >= 0 {
+                buf.truncate(bytes_read as usize);
+                let buf_obj = crate::globals::create_buffer_object(cx, &buf);
+                if !buf_obj.is_null() {
+                    rooted!(&in(cx_ref) let buf_val = mozjs::jsval::ObjectValue(buf_obj));
+                    unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), buf_val.handle().into()); }
+                } else { resolve_undefined(cx, promise.get()); }
+            } else {
+                reject_with_error(cx, promise.get(), &format!("FileHandle.readFile: {}", ::std::io::Error::last_os_error()));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn fh_write_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() { args.rval().set(UndefinedValue()); return false; }
+    let fd = get_hidden_int(cx, this.to_object(), "_fd");
+    let data = if argc > 0 && (*args.get(0).ptr).is_object() {
+        crate::node_crypto::extract_buffer_bytes(cx, *args.get(0).ptr)
+    } else if argc > 0 && (*args.get(0).ptr).is_string() {
+        let s = (*args.get(0).ptr).to_string();
+        if !s.is_null() { crate::jsstr_to_rust_string(cx, s).into_bytes() } else { Vec::new() }
+    } else { Vec::new() };
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let promise = mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()));
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+    #[cfg(unix)]
+    {
+        let ret = unsafe { libc::write(fd, data.as_ptr() as *const ::std::ffi::c_void, data.len()) };
+        if ret >= 0 { resolve_undefined(cx, promise.get()); }
+        else { reject_with_error(cx, promise.get(), &format!("FileHandle.writeFile: {}", ::std::io::Error::last_os_error())); }
+    }
+    #[cfg(not(unix))]
+    { resolve_undefined(cx, promise.get()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+// --- Stats type methods ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stats_is_block_device(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isBlockDevice")));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stats_is_character_device(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isCharacterDevice")));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stats_is_fifo(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isFIFO")));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn stats_is_socket(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isSocket")));
+    true
+}
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn stats_is_symlink(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
@@ -3141,4 +4381,124 @@ unsafe extern "C" fn stats_is_symlink(cx: *mut JSContext, argc: u32, vp: *mut JS
     rooted!(&in(cx_ref) let this = args.thisv().to_object());
     args.rval().set(mozjs::jsval::BooleanValue(get_hidden_bool(cx, this.get(), "_isSymbolicLink")));
     true
+}
+
+// --- Dirent type methods ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dirent_is_file(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    let type_code = get_hidden_int(cx, this.get(), "_typeCode");
+    args.rval().set(mozjs::jsval::BooleanValue(type_code == 0));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dirent_is_directory(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    let type_code = get_hidden_int(cx, this.get(), "_typeCode");
+    args.rval().set(mozjs::jsval::BooleanValue(type_code == 1));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dirent_is_symbolic_link(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    let type_code = get_hidden_int(cx, this.get(), "_typeCode");
+    args.rval().set(mozjs::jsval::BooleanValue(type_code == 2));
+    true
+}
+
+macro_rules! dirent_type_method {
+    ($fn_name:ident) => {
+        #[allow(unsafe_op_in_unsafe_fn)]
+        unsafe extern "C" fn $fn_name(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+            let args = CallArgs::from_vp(vp, _argc);
+            args.rval().set(mozjs::jsval::BooleanValue(false));
+            true
+        }
+    };
+}
+dirent_type_method!(dirent_is_block_device);
+dirent_type_method!(dirent_is_character_device);
+dirent_type_method!(dirent_is_fifo);
+dirent_type_method!(dirent_is_socket);
+
+// --- statfs helper ---
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn create_statfs_object(cx: *mut JSContext, sf: &StatfsResult) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx));
+    if obj.get().is_null() { return obj.get(); }
+    define_num_prop(cx, obj.get(), "type", sf.type_ as f64);
+    define_num_prop(cx, obj.get(), "bsize", sf.bsize as f64);
+    define_num_prop(cx, obj.get(), "blocks", sf.blocks as f64);
+    define_num_prop(cx, obj.get(), "bfree", sf.bfree as f64);
+    define_num_prop(cx, obj.get(), "bavail", sf.bavail as f64);
+    define_num_prop(cx, obj.get(), "files", sf.files as f64);
+    define_num_prop(cx, obj.get(), "ffree", sf.ffree as f64);
+    obj.get()
+}
+
+// --- glob helpers ---
+
+fn glob_walk(root: &Path, pattern: &str) -> Vec<String> {
+    let mut results = Vec::new();
+    glob_walk_recursive(root, pattern, &mut results);
+    results
+}
+
+fn glob_walk_recursive(dir: &Path, pattern: &str, results: &mut Vec<String>) {
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            let relative = path.to_string_lossy().into_owned();
+            if glob_match(pattern, &relative) || glob_match(pattern, &name) {
+                results.push(relative);
+            }
+            if path.is_dir() {
+                glob_walk_recursive(&path, pattern, results);
+            }
+        }
+    }
+}
+
+fn glob_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    glob_match_inner(&p, &t, 0, 0)
+}
+
+fn glob_match_inner(pattern: &[char], text: &[char], pi: usize, ti: usize) -> bool {
+    if pi == pattern.len() && ti == text.len() { return true; }
+    if pi == pattern.len() { return false; }
+    if pi + 1 < pattern.len() && pattern[pi] == '*' && pattern[pi + 1] == '*' {
+        let mut next_pi = pi + 2;
+        while next_pi < pattern.len() && pattern[next_pi] == '*' { next_pi += 1; }
+        for k in ti..=text.len() {
+            if glob_match_inner(pattern, text, next_pi, k) { return true; }
+        }
+        return false;
+    }
+    if ti == text.len() { return false; }
+    if pattern[pi] == '?' { return glob_match_inner(pattern, text, pi + 1, ti + 1); }
+    if pattern[pi] == '*' {
+        for k in ti..=text.len() {
+            if glob_match_inner(pattern, text, pi + 1, k) { return true; }
+        }
+        return false;
+    }
+    if pattern[pi] == text[ti] { glob_match_inner(pattern, text, pi + 1, ti + 1) } else { false }
 }

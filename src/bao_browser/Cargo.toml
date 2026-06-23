@@ -13,6 +13,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 base64 = "0.22"
 serde_json = "1"
 bao_cdp = { path = "../bao_cdp" }
+bao_cdp_client = { path = "../bao_cdp_client" }
 bao_stealth = { path = "../bao_stealth" }
 bun_runtime.workspace = true
 bao_native_stubs = { path = "../bao_native_stubs" }

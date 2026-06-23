@@ -24,6 +24,7 @@ pub use screenshot::{encode_image, ScreenshotFormat};
 pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, EvaluateResult, RuntimeBridge};
 
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 use servo::{
@@ -32,7 +33,8 @@ use servo::{
 
 use bao_cdp::domains::ServoTargetProvider;
 use bao_cdp::servo_bridge::bridge_channel;
-use cdp_server::{CdpServer, DomainRegistry, EmptyHandler, ServerConfig};
+use bao_cdp_client::bridge::{translate, ServoEvent};
+use cdp_server::{CdpServer, DomainRegistry, EmptyHandler, EventBroadcaster, EventSender, ServerConfig};
 
 // Force-link bao_native_stubs (dispatch no-op stubs + C library bridges).
 // Without this anchor, the linker GCs the entire bao_native_stubs compilation
@@ -133,6 +135,13 @@ impl BaoRuntime {
         self.delegate.set_console_log_tx(tx);
     }
 
+    /// Set the structured event forwarding channel on the servo delegate.
+    /// When set, servo callbacks push ServoEvent (Path B) as the primary event path.
+    /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+    pub fn set_event_channel(&self, tx: std::sync::mpsc::Sender<ServoEvent>) {
+        self.delegate.set_event_tx(tx);
+    }
+
     pub fn run(&self) -> Result<(), BrowserError> {
         let max_wait = Duration::from_secs(300);
         let start = std::time::Instant::now();
@@ -150,9 +159,14 @@ impl BaoRuntime {
     }
 
     /// Run with a CDP bridge that processes commands during the event loop.
+    /// Also drains ServoEvent from the EventSubscriber path (Path B) and
+    /// broadcasts translated CdpEvents via the shared EventBroadcaster.
+    /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub fn run_with_bridge(
         &self,
         bridge_rx: bao_cdp::servo_bridge::BridgeReceiver,
+        servo_event_rx: std::sync::mpsc::Receiver<ServoEvent>,
+        broadcaster: Arc<EventBroadcaster>,
     ) -> Result<(), BrowserError> {
         let max_wait = Duration::from_secs(3600);
         let start = std::time::Instant::now();
@@ -163,6 +177,16 @@ impl BaoRuntime {
 
             // Process pending CDP bridge commands
             bridge_rx.drain(|cmd| cdp_handler::handle_bridge_command(cmd, &self.page_pool));
+
+            // Drain ServoEvent from EventSubscriber (Path B) and broadcast
+            // as CDP events via the shared EventBroadcaster.
+            // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+            while let Ok(servo_event) = servo_event_rx.try_recv() {
+                let cdp_events = translate(servo_event);
+                for cdp_event in cdp_events {
+                    broadcaster.send_event(&cdp_event.method, cdp_event.params);
+                }
+            }
 
             // Yield instead of sleep — check bridge commands more frequently.
             std::thread::yield_now();
@@ -205,32 +229,41 @@ pub fn run_browser(config: BrowserConfig) -> Result<(), BrowserError> {
         let (console_tx, console_rx) = std::sync::mpsc::channel::<cdp_server::ConsoleMessage>();
         runtime.set_console_log_channel(console_tx);
 
-        let handle = std::thread::spawn(move || {
-            let config = ServerConfig::builder()
-                .host("127.0.0.1")
-                .port(port)
-                .build();
-            let target_id = format!("{:016x}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64);
-            // TASK-6 (DEC-CDP-001): evaluate_js 注入式 domain handlers 已删除,
-            // CDP 命令分发由 bao_cdp_client::CDPRdpBridge 接管。CdpServer 此处
-            // 仅作为 Playwright 兼容的 ws 入口,TargetProvider 仍由 servo 桥接
-            // 提供。registry 用 EmptyHandler 占位 — 实际命令路由通过 servo 桥
-            // 完成,无需在此注册 domain handlers。
-            let registry = std::sync::Arc::new(DomainRegistry::<EmptyHandler>::new());
-            let mut server = CdpServer::with_registry(config, registry);
-            let provider = std::sync::Arc::new(
-                ServoTargetProvider::new(bridge_tx, target_id, "127.0.0.1".into(), port)
-            );
-            server.set_target_provider(provider);
-            server.set_console_receiver(console_rx);
+        // Create EventSubscriber pair for structured ServoEvent path (Path B).
+        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        let (event_subscriber, servo_event_rx) = bao_cdp_client::bridge::EventSubscriber::new();
+        runtime.set_event_channel(event_subscriber.sender());
+
+        // Build CdpServer and extract the shared broadcaster BEFORE moving the
+        // server into its thread. The broadcaster is Arc<EventBroadcaster> which
+        // shares the same SessionMap — events sent via this broadcaster reach all
+        // connected WebSocket sessions.
+        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        let registry = Arc::new(DomainRegistry::<EmptyHandler>::new());
+        let config = ServerConfig::builder()
+            .host("127.0.0.1")
+            .port(port)
+            .build();
+        let target_id = format!("{:016x}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64);
+        let mut server = CdpServer::with_registry(config, registry);
+        let provider = Arc::new(
+            ServoTargetProvider::new(bridge_tx, target_id, "127.0.0.1".into(), port)
+        );
+        server.set_target_provider(provider);
+        server.set_console_receiver(console_rx);
+        // Clone the broadcaster before moving server into the thread.
+        // Arc<EventBroadcaster> shares the same SessionMap with the server.
+        let broadcaster = server.broadcaster();
+
+        let _handle = std::thread::spawn(move || {
             let _ = server.run();
         });
 
-        let result = runtime.run_with_bridge(bridge_rx);
-        handle.thread().unpark();
+        let result = runtime.run_with_bridge(bridge_rx, servo_event_rx, broadcaster);
+        _handle.thread().unpark();
         return result;
     }
 

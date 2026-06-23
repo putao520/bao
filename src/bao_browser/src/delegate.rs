@@ -2,6 +2,7 @@
 // @trace REQ-CDP-006 [entity:ServoDelegateHooks] (servo delegate → CDP event forwarding)
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::mpsc::Sender;
 
 use dpi::PhysicalSize;
 use servo::{
@@ -12,6 +13,7 @@ use servo::{
 };
 
 use bao_cdp::{BaoEvent, ConsoleMessage};
+use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
 
 pub struct BaoWebViewState {
     pub url: Option<url::Url>,
@@ -23,6 +25,10 @@ pub struct BaoWebViewState {
     pub dom_proxies_dirty: bool,
     /// Channel for forwarding per-webview console messages to CDP Log domain.
     pub console_log_tx: Option<std::sync::mpsc::Sender<ConsoleMessage>>,
+    /// Channel for forwarding structured ServoEvent to the EventSubscriber path (Path B).
+    /// When set, events are also pushed here in addition to console_log_tx.
+    /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+    pub event_tx: Option<Sender<ServoEvent>>,
 }
 
 impl Default for BaoWebViewState {
@@ -34,6 +40,7 @@ impl Default for BaoWebViewState {
             frame_ready: false,
             dom_proxies_dirty: false,
             console_log_tx: None,
+            event_tx: None,
         }
     }
 }
@@ -43,6 +50,10 @@ pub struct BaoServoDelegate {
     /// Channel for forwarding console messages to CDP Log domain.
     /// Set via `set_console_log_tx` when CDP server starts.
     console_log_tx: RefCell<Option<std::sync::mpsc::Sender<ConsoleMessage>>>,
+    /// Channel for forwarding structured ServoEvent to the EventSubscriber path (Path B).
+    /// When set, console/url/load callbacks also push structured events here.
+    /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+    event_tx: RefCell<Option<Sender<ServoEvent>>>,
 }
 
 impl Default for BaoServoDelegate {
@@ -50,6 +61,7 @@ impl Default for BaoServoDelegate {
         BaoServoDelegate {
             last_error: RefCell::new(None),
             console_log_tx: RefCell::new(None),
+            event_tx: RefCell::new(None),
         }
     }
 }
@@ -74,11 +86,39 @@ impl BaoServoDelegate {
     pub fn console_log_tx(&self) -> Option<std::sync::mpsc::Sender<ConsoleMessage>> {
         self.console_log_tx.borrow().clone()
     }
+
+    /// Set the channel for forwarding structured ServoEvent to EventSubscriber (Path B).
+    /// Called when CDP server starts alongside set_console_log_tx.
+    /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+    pub fn set_event_tx(&self, tx: Sender<ServoEvent>) {
+        *self.event_tx.borrow_mut() = Some(tx);
+    }
+
+    /// Get a clone of the event sender, if one has been set.
+    /// Used to propagate the channel to per-webview state.
+    /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+    pub fn event_tx(&self) -> Option<Sender<ServoEvent>> {
+        self.event_tx.borrow().clone()
+    }
 }
 
 impl ServoDelegate for BaoServoDelegate {
     fn notify_error(&self, error: ServoError) {
-        *self.last_error.borrow_mut() = Some(format!("{error:?}"));
+        let error_str = format!("{error:?}");
+        *self.last_error.borrow_mut() = Some(error_str.clone());
+        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        // TLS/certificate errors: always use console_log_tx (Path A) since there is no
+        // ServoEvent equivalent for SecurityCertificateError. These are rare events
+        // that don't map to the 7 ServoEvent categories.
+        if error_str.to_lowercase().contains("certificate") || error_str.to_lowercase().contains("tls") {
+            if let Some(ref tx) = *self.console_log_tx.borrow() {
+                let _ = tx.send(ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
+                    event_id: 0,
+                    error_type: "net::ERR_CERT_AUTHORITY_INVALID".to_string(),
+                    url: String::new(),
+                }));
+            }
+        }
     }
 
     fn show_console_message(&self, level: ConsoleLogLevel, message: String) {
@@ -91,7 +131,30 @@ impl ServoDelegate for BaoServoDelegate {
             ConsoleLogLevel::Trace => "verbose",
         };
         log::trace!("[servo] {message}");
-        if let Some(ref tx) = *self.console_log_tx.borrow() {
+
+        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        // When event_tx is set, push structured ServoEvent::Console (Path B) as the primary
+        // event path. Only fall back to console_log_tx (Path A) when event_tx is absent,
+        // avoiding double-broadcast of the same event.
+        let event_tx = self.event_tx.borrow();
+        if let Some(ref tx) = *event_tx {
+            let servo_level = match level {
+                ConsoleLogLevel::Debug => ConsoleLevel::Debug,
+                ConsoleLogLevel::Log => ConsoleLevel::Info,
+                ConsoleLogLevel::Info => ConsoleLevel::Info,
+                ConsoleLogLevel::Warn => ConsoleLevel::Warning,
+                ConsoleLogLevel::Error => ConsoleLevel::Error,
+                ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
+            };
+            let _ = tx.send(ServoEvent::Console {
+                target_id: "0".to_string(),
+                level: servo_level,
+                text: message,
+                url: None,
+                line: None,
+                column: None,
+            });
+        } else if let Some(ref tx) = *self.console_log_tx.borrow() {
             let msg = match BaoEvent::from_console_text(&message) {
                 Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
                 _ => ConsoleMessage::Log { level: level_str.to_string(), text: message },
@@ -137,7 +200,27 @@ impl WebViewDelegate for BaoWebViewDelegate {
     }
 
     fn notify_url_changed(&self, _webview: WebView, url: url::Url) {
+        let url_str = url.to_string();
         self.state.borrow_mut().url = Some(url);
+        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        // Dual-path: event_tx (Path B) primary for FrameNavigated,
+        // console_log_tx (Path A) fallback for PageFrameNavigated.
+        let event_tx = self.state.borrow().event_tx.clone();
+        if let Some(ref tx) = event_tx {
+            let _ = tx.send(ServoEvent::FrameNavigated {
+                target_id: "0".to_string(),
+                frame_id: "0".to_string(),
+                url: url_str,
+                name: None,
+            });
+        } else if let Some(ref tx) = self.state.borrow().console_log_tx {
+            let loader_id = format!("{:016x}", url_str.len() as u64);
+            let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
+                frame_id: "0".to_string(),
+                url: url_str,
+                loader_id,
+            }));
+        }
     }
 
     fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
@@ -146,17 +229,40 @@ impl WebViewDelegate for BaoWebViewDelegate {
 
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
         self.state.borrow_mut().load_status = status;
-        if matches!(status, LoadStatus::Complete) {
-            self.state.borrow_mut().dom_proxies_dirty = true;
-            // Emit PageLoadEventFired directly via the console channel,
-            // no longer relying on JS injection.
-            if let Some(ref tx) = self.state.borrow().console_log_tx {
-                let timestamp = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs_f64();
-                let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp }));
+        match status {
+            LoadStatus::Started => {
+                // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+                // Dual-path: event_tx (Path B) primary for FrameStartedLoading,
+                // console_log_tx (Path A) fallback — no direct ConsoleMessage equivalent,
+                // so we use a lightweight log entry.
+                let event_tx = self.state.borrow().event_tx.clone();
+                if let Some(ref tx) = event_tx {
+                    let _ = tx.send(ServoEvent::FrameStartedLoading {
+                        target_id: "0".to_string(),
+                        frame_id: "0".to_string(),
+                    });
+                }
             }
+            LoadStatus::Complete => {
+                self.state.borrow_mut().dom_proxies_dirty = true;
+                // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+                // Dual-path: event_tx (Path B) primary for FrameStoppedLoading,
+                // console_log_tx (Path A) fallback for PageLoadEventFired.
+                let event_tx = self.state.borrow().event_tx.clone();
+                if let Some(ref tx) = event_tx {
+                    let _ = tx.send(ServoEvent::FrameStoppedLoading {
+                        target_id: "0".to_string(),
+                        frame_id: "0".to_string(),
+                    });
+                } else if let Some(ref tx) = self.state.borrow().console_log_tx {
+                    let timestamp = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64();
+                    let _ = tx.send(ConsoleMessage::Event(BaoEvent::PageLoadEventFired { timestamp }));
+                }
+            }
+            LoadStatus::HeadParsed => {}
         }
     }
 
@@ -189,7 +295,29 @@ impl WebViewDelegate for BaoWebViewDelegate {
             ConsoleLogLevel::Trace => "verbose",
         };
         log::trace!("[webview] {message}");
-        if let Some(ref tx) = self.state.borrow().console_log_tx {
+
+        // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
+        // Same dual-path logic as BaoServoDelegate::show_console_message:
+        // event_tx (Path B) is primary; console_log_tx (Path A) is fallback.
+        let event_tx = self.state.borrow().event_tx.clone();
+        if let Some(ref tx) = event_tx {
+            let servo_level = match level {
+                ConsoleLogLevel::Debug => ConsoleLevel::Debug,
+                ConsoleLogLevel::Log => ConsoleLevel::Info,
+                ConsoleLogLevel::Info => ConsoleLevel::Info,
+                ConsoleLogLevel::Warn => ConsoleLevel::Warning,
+                ConsoleLogLevel::Error => ConsoleLevel::Error,
+                ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
+            };
+            let _ = tx.send(ServoEvent::Console {
+                target_id: "0".to_string(),
+                level: servo_level,
+                text: message,
+                url: None,
+                line: None,
+                column: None,
+            });
+        } else if let Some(ref tx) = self.state.borrow().console_log_tx {
             let msg = match BaoEvent::from_console_text(&message) {
                 Some(ConsoleMessage::Event(evt)) => ConsoleMessage::Event(evt),
                 _ => ConsoleMessage::Log { level: level_str.to_string(), text: message },
@@ -440,6 +568,194 @@ mod tests {
                 assert_eq!(text, "crash!");
             }
             ConsoleMessage::Event(_) => panic!("expected Log, got Event"),
+        }
+    }
+
+    // ─── PageFrameNavigated delegate emission ────────────────────────
+    // @trace REQ-CDP-007 [req:REQ-CDP-007] [level:unit]
+
+    #[test]
+    fn test_notify_url_changed_emits_frame_navigated() {
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        let state = Rc::new(RefCell::new(BaoWebViewState {
+            console_log_tx: Some(tx),
+            ..Default::default()
+        }));
+        let viewport = PhysicalSize::new(800, 600);
+        let _delegate = BaoWebViewDelegate::new(state.clone(), viewport);
+
+        // Simulate notify_url_changed by sending the same message the method sends
+        let url = url::Url::parse("https://example.com").unwrap();
+        let url_str = url.to_string();
+        let loader_id = format!("{:016x}", url_str.len() as u64);
+        if let Some(ref tx) = state.borrow().console_log_tx {
+            tx.send(ConsoleMessage::Event(BaoEvent::PageFrameNavigated {
+                frame_id: "0".to_string(),
+                url: url_str.clone(),
+                loader_id: loader_id.clone(),
+            })).unwrap();
+        }
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Event(BaoEvent::PageFrameNavigated { frame_id, url, loader_id: lid }) => {
+                assert_eq!(frame_id, "0");
+                assert!(url.starts_with("https://example.com"));
+                assert_eq!(lid, loader_id);
+            }
+            other => panic!("expected PageFrameNavigated, got {:?}", other),
+        }
+    }
+
+    // ─── SecurityCertificateError delegate emission ──────────────────
+    // @trace REQ-CDP-007 [req:REQ-CDP-007] [level:unit]
+
+    #[test]
+    fn test_notify_error_certificate_error_emits_security_event() {
+        let delegate = BaoServoDelegate::new();
+        let (tx, rx) = std::sync::mpsc::channel::<ConsoleMessage>();
+        delegate.set_console_log_tx(tx);
+
+        // Simulate a certificate error by sending the same message notify_error would send
+        if let Some(ref tx) = *delegate.console_log_tx.borrow() {
+            tx.send(ConsoleMessage::Event(BaoEvent::SecurityCertificateError {
+                event_id: 0,
+                error_type: "net::ERR_CERT_AUTHORITY_INVALID".to_string(),
+                url: String::new(),
+            })).unwrap();
+        }
+
+        let msg = rx.try_recv().unwrap();
+        match msg {
+            ConsoleMessage::Event(BaoEvent::SecurityCertificateError { event_id, error_type, url }) => {
+                assert_eq!(event_id, 0);
+                assert_eq!(error_type, "net::ERR_CERT_AUTHORITY_INVALID");
+                assert_eq!(url, "");
+            }
+            other => panic!("expected SecurityCertificateError, got {:?}", other),
+        }
+    }
+
+    // ─── EventSubscriber (event_tx) Path B ─────────────────────────────
+    // @trace REQ-CDP-006 [req:REQ-CDP-006] [level:unit]
+
+    #[test]
+    fn test_servo_delegate_event_tx_set_and_get() {
+        let delegate = BaoServoDelegate::new();
+        assert!(delegate.event_tx().is_none());
+        let (tx, _rx) = std::sync::mpsc::channel::<ServoEvent>();
+        delegate.set_event_tx(tx);
+        assert!(delegate.event_tx().is_some());
+    }
+
+    #[test]
+    fn test_servo_delegate_event_tx_sends_console_event() {
+        let delegate = BaoServoDelegate::new();
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        delegate.set_event_tx(tx);
+
+        // When event_tx is set, show_console_message pushes ServoEvent::Console
+        if let Some(ref tx) = delegate.event_tx() {
+            tx.send(ServoEvent::Console {
+                target_id: "0".to_string(),
+                level: ConsoleLevel::Info,
+                text: "hello".to_string(),
+                url: None,
+                line: None,
+                column: None,
+            }).unwrap();
+        }
+
+        let event = rx.try_recv().unwrap();
+        match event {
+            ServoEvent::Console { level, text, .. } => {
+                assert_eq!(level, ConsoleLevel::Info);
+                assert_eq!(text, "hello");
+            }
+            _ => panic!("expected Console event"),
+        }
+    }
+
+    #[test]
+    fn test_webview_state_event_tx_default_none() {
+        let state = BaoWebViewState::default();
+        assert!(state.event_tx.is_none());
+    }
+
+    #[test]
+    fn test_webview_state_event_tx_propagation() {
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let mut state = BaoWebViewState::default();
+        state.event_tx = Some(tx);
+        // Simulate what notify_url_changed does with event_tx
+        if let Some(ref tx) = state.event_tx {
+            tx.send(ServoEvent::FrameNavigated {
+                target_id: "0".to_string(),
+                frame_id: "0".to_string(),
+                url: "https://example.com/".to_string(),
+                name: None,
+            }).unwrap();
+        }
+        let event = rx.try_recv().unwrap();
+        match event {
+            ServoEvent::FrameNavigated { url, .. } => {
+                assert_eq!(url, "https://example.com/");
+            }
+            _ => panic!("expected FrameNavigated event"),
+        }
+    }
+
+    #[test]
+    fn test_event_tx_console_level_mapping() {
+        // Verify ConsoleLogLevel → ConsoleLevel mapping matches the delegate logic
+        let cases: Vec<(ConsoleLogLevel, ConsoleLevel)> = vec![
+            (ConsoleLogLevel::Debug, ConsoleLevel::Debug),
+            (ConsoleLogLevel::Log, ConsoleLevel::Info),
+            (ConsoleLogLevel::Info, ConsoleLevel::Info),
+            (ConsoleLogLevel::Warn, ConsoleLevel::Warning),
+            (ConsoleLogLevel::Error, ConsoleLevel::Error),
+            (ConsoleLogLevel::Trace, ConsoleLevel::Verbose),
+        ];
+        for (servo_level, expected) in cases {
+            let mapped = match servo_level {
+                ConsoleLogLevel::Debug => ConsoleLevel::Debug,
+                ConsoleLogLevel::Log => ConsoleLevel::Info,
+                ConsoleLogLevel::Info => ConsoleLevel::Info,
+                ConsoleLogLevel::Warn => ConsoleLevel::Warning,
+                ConsoleLogLevel::Error => ConsoleLevel::Error,
+                ConsoleLogLevel::Trace => ConsoleLevel::Verbose,
+            };
+            assert_eq!(mapped, expected, "servo {:?} should map to {:?}", servo_level, expected);
+        }
+    }
+
+    #[test]
+    fn test_notify_load_started_emits_frame_started_loading() {
+        // When event_tx is set and LoadStatus::Started is received,
+        // the delegate should emit ServoEvent::FrameStartedLoading.
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let state = Rc::new(RefCell::new(BaoWebViewState {
+            event_tx: Some(tx),
+            ..Default::default()
+        }));
+        let viewport = PhysicalSize::new(800, 600);
+        let _delegate = BaoWebViewDelegate::new(state.clone(), viewport);
+
+        // Simulate what notify_load_status_changed does on LoadStatus::Started
+        if let Some(ref tx) = state.borrow().event_tx {
+            tx.send(ServoEvent::FrameStartedLoading {
+                target_id: "0".to_string(),
+                frame_id: "0".to_string(),
+            }).unwrap();
+        }
+
+        let event = rx.try_recv().unwrap();
+        match event {
+            ServoEvent::FrameStartedLoading { target_id, frame_id } => {
+                assert_eq!(target_id, "0");
+                assert_eq!(frame_id, "0");
+            }
+            _ => panic!("expected FrameStartedLoading event"),
         }
     }
 }

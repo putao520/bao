@@ -1155,8 +1155,28 @@ pub fn from_console_message(
                     stack,
                 })
             }
-            // 其他变体当前未对应 REQ-BAO-API-003 直接映射,留给
-            // EventSubscriber::on_* 方法手动 push。
+            BaoEvent::PageLoadEventFired { timestamp: _ } => {
+                // PageLoadEventFired maps to FrameStoppedLoading —
+                // semantically, "page load event fired" means loading is done.
+                Some(ServoEvent::FrameStoppedLoading {
+                    target_id,
+                    frame_id: "0".to_string(),
+                })
+            }
+            BaoEvent::PageFrameNavigated {
+                frame_id,
+                url,
+                loader_id: _,
+            } => Some(ServoEvent::FrameNavigated {
+                target_id,
+                frame_id,
+                url,
+                name: None,
+            }),
+            // FetchRequestPaused / DebuggerPaused / SecurityCertificateError
+            // have no ServoEvent equivalent — these are CDP-specific events
+            // outside the 7 ServoEvent categories (REQ-BAO-API-003).
+            // They remain on the console_rx (Path A) broadcast path.
             _ => None,
         },
     }
@@ -1835,6 +1855,76 @@ mod tests {
             }
             _ => panic!("expected PageError"),
         }
+    }
+
+    #[test]
+    fn from_console_message_page_load_event_maps_to_frame_stopped_loading() {
+        let msg = bao_cdp::ConsoleMessage::Event(bao_cdp::BaoEvent::PageLoadEventFired {
+            timestamp: 12345.0,
+        });
+        let ev = from_console_message(msg, "T").expect("should map");
+        match ev {
+            ServoEvent::FrameStoppedLoading { target_id, frame_id } => {
+                assert_eq!(target_id, "T");
+                assert_eq!(frame_id, "0");
+            }
+            _ => panic!("expected FrameStoppedLoading"),
+        }
+    }
+
+    #[test]
+    fn from_console_message_page_frame_navigated_maps_to_frame_navigated() {
+        let msg = bao_cdp::ConsoleMessage::Event(bao_cdp::BaoEvent::PageFrameNavigated {
+            frame_id: "FRAME1".into(),
+            url: "https://example.com".into(),
+            loader_id: "abc".into(),
+        });
+        let ev = from_console_message(msg, "T").expect("should map");
+        match ev {
+            ServoEvent::FrameNavigated { target_id, frame_id, url, name } => {
+                assert_eq!(target_id, "T");
+                assert_eq!(frame_id, "FRAME1");
+                assert_eq!(url, "https://example.com");
+                assert!(name.is_none());
+            }
+            _ => panic!("expected FrameNavigated"),
+        }
+    }
+
+    #[test]
+    fn from_console_message_fetch_request_paused_returns_none() {
+        // FetchRequestPaused has no ServoEvent equivalent
+        let msg = bao_cdp::ConsoleMessage::Event(bao_cdp::BaoEvent::FetchRequestPaused {
+            request_id: "r1".into(),
+            url: "http://test.com".into(),
+            method: "GET".into(),
+            headers: serde_json::json!({}),
+            post_data: None,
+            resource_type: "Document".into(),
+        });
+        assert!(from_console_message(msg, "T").is_none());
+    }
+
+    #[test]
+    fn from_console_message_debugger_paused_returns_none() {
+        // DebuggerPaused has no ServoEvent equivalent
+        let msg = bao_cdp::ConsoleMessage::Event(bao_cdp::BaoEvent::DebuggerPaused {
+            call_frames: serde_json::json!([]),
+            reason: "breakpoint".into(),
+            hit_breakpoints: serde_json::json!([]),
+        });
+        assert!(from_console_message(msg, "T").is_none());
+    }
+
+    #[test]
+    fn from_console_message_security_certificate_error_returns_none() {
+        // SecurityCertificateError has no ServoEvent equivalent
+        let msg = bao_cdp::ConsoleMessage::Event(bao_cdp::BaoEvent::SecurityCertificateError {
+            event_id: 1,
+            error_type: "net::ERR_CERT_AUTHORITY_INVALID".into(),
+            url: "https://bad.example.com".into(),
+        });
+        assert!(from_console_message(msg, "T").is_none());
     }
 
     // ── §7.11 工具函数 ───────────────────────────────────────────────
