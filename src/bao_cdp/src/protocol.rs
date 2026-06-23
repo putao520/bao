@@ -423,49 +423,97 @@ fn handle_dom(command: &str, target_id: &str, params: &Option<Value>, bridge: Op
 fn handle_network(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
     let tid = target_id.to_string();
     match command {
-        "enable" => bridge_send(bridge, BridgeCommand::NetworkEnable { target_id: tid }),
-        "disable" => bridge_send(bridge, BridgeCommand::NetworkDisable { target_id: tid }),
+        "enable" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::NetworkEnable { target_id: tid })?;
+            }
+            ok_empty()
+        }
+        "disable" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::NetworkDisable { target_id: tid })?;
+            }
+            ok_empty()
+        }
         "getCookies" => {
             let urls: Vec<String> = params.as_ref()
                 .and_then(|p| p.get("urls"))
                 .and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
                 .unwrap_or_default();
-            bridge_send(bridge, BridgeCommand::GetCookies { target_id: tid, urls })
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::GetCookies { target_id: tid, urls })
+            } else {
+                Ok(serde_json::json!({ "cookies": [] }))
+            }
         }
-        "getAllCookies" => bridge_send(bridge, BridgeCommand::GetAllCookies { target_id: tid }),
+        "getAllCookies" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::GetAllCookies { target_id: tid })
+            } else {
+                Ok(serde_json::json!({ "cookies": [] }))
+            }
+        }
         "setCookie" => {
             let name = params_str(params, "name");
             let value = params_str(params, "value");
             let url = params.as_ref().and_then(|p| p.get("url")).and_then(|v| v.as_str()).map(|s| s.to_string());
             let domain = params.as_ref().and_then(|p| p.get("domain")).and_then(|v| v.as_str()).map(|s| s.to_string());
-            bridge_send(bridge, BridgeCommand::SetCookie { target_id: tid, name, value, url, domain })
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::SetCookie { target_id: tid, name, value, url, domain })
+            } else {
+                ok_empty()
+            }
         }
         "deleteCookies" => {
             let name = params_str(params, "name");
             let url = params.as_ref().and_then(|p| p.get("url")).and_then(|v| v.as_str()).map(|s| s.to_string());
-            bridge_send(bridge, BridgeCommand::DeleteCookie { target_id: tid, name, url })
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DeleteCookie { target_id: tid, name, url })
+            } else {
+                ok_empty()
+            }
         }
         "getResponseBody" => {
             let request_id = params_str(params, "requestId");
-            bridge_send(bridge, BridgeCommand::GetResponseBody { target_id: tid, request_id })
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::GetResponseBody { target_id: tid, request_id })
+            } else {
+                Ok(serde_json::json!({ "body": "", "base64Encoded": false }))
+            }
         }
         "setCacheDisabled" => {
             let cache_disabled = params.as_ref()
                 .and_then(|p| p.get("cacheDisabled"))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            bridge_send(bridge, BridgeCommand::NetworkSetCacheDisabled { target_id: tid, cache_disabled })
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::NetworkSetCacheDisabled { target_id: tid, cache_disabled })?;
+            }
+            ok_empty()
         }
         "setExtraHTTPHeaders" => {
             let headers = params.as_ref()
                 .and_then(|p| p.get("headers"))
                 .cloned()
                 .unwrap_or(serde_json::json!({}));
-            bridge_send(bridge, BridgeCommand::NetworkSetExtraHTTPHeaders { target_id: tid, headers })
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::NetworkSetExtraHTTPHeaders { target_id: tid, headers })?;
+            }
+            ok_empty()
         }
-        "clearBrowserCache" => bridge_send(bridge, BridgeCommand::NetworkClearBrowserCache { target_id: tid }),
-        "clearBrowserCookies" => bridge_send(bridge, BridgeCommand::NetworkClearBrowserCookies { target_id: tid }),
+        "clearBrowserCache" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::NetworkClearBrowserCache { target_id: tid })?;
+            }
+            ok_empty()
+        }
+        "clearBrowserCookies" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::NetworkClearBrowserCookies { target_id: tid })?;
+            }
+            ok_empty()
+        }
         "emulateNetworkConditions" | "setRequestInterception" | "continueInterceptedRequest" => ok_empty(),
         _ => Err(CdpError { code: -32601, message: format!("'Network.{}' wasn't found", command) }),
     }

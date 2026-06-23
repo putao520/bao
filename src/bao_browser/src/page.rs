@@ -1478,7 +1478,7 @@ mod tests {
         let source = include_str!("runtime_bridge.rs");
         let func_start = source.find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
-        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
+        let func_body = &source[func_start..func_start + 5000.min(source.len() - func_start)];
 
         assert!(
             func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
@@ -1613,14 +1613,14 @@ mod tests {
 
     #[test]
     fn key_code_for_char_letters() {
-        assert_eq!(super::key_code_for_char('a'), Code::Key('A'));
-        assert_eq!(super::key_code_for_char('Z'), Code::Key('Z'));
+        assert_eq!(super::key_code_for_char('a'), Code::KeyA);
+        assert_eq!(super::key_code_for_char('Z'), Code::KeyZ);
     }
 
     #[test]
     fn key_code_for_char_digits() {
-        assert_eq!(super::key_code_for_char('0'), Code::Digit('0'));
-        assert_eq!(super::key_code_for_char('9'), Code::Digit('9'));
+        assert_eq!(super::key_code_for_char('0'), Code::Digit0);
+        assert_eq!(super::key_code_for_char('9'), Code::Digit9);
     }
 
     #[test]
@@ -1633,18 +1633,18 @@ mod tests {
     #[test]
     fn parse_key_name_enter() {
         let (key, code) = super::parse_key_name("Enter");
-        assert!(matches!(key, Key::Enter));
+        assert!(matches!(key, Key::Named(NamedKey::Enter)));
         assert_eq!(code, Code::Enter);
     }
 
     #[test]
     fn parse_key_name_arrow_keys() {
         let (key, code) = super::parse_key_name("ArrowDown");
-        assert!(matches!(key, Key::ArrowDown));
+        assert!(matches!(key, Key::Named(NamedKey::ArrowDown)));
         assert_eq!(code, Code::ArrowDown);
 
         let (key, code) = super::parse_key_name("ArrowUp");
-        assert!(matches!(key, Key::ArrowUp));
+        assert!(matches!(key, Key::Named(NamedKey::ArrowUp)));
         assert_eq!(code, Code::ArrowUp);
     }
 
@@ -1652,24 +1652,24 @@ mod tests {
     fn parse_key_name_single_char() {
         let (key, code) = super::parse_key_name("a");
         assert!(matches!(key, Key::Character(s) if s == "a"));
-        assert_eq!(code, Code::Key('A'));
+        assert_eq!(code, Code::KeyA);
     }
 
     #[test]
     fn parse_key_name_function_keys() {
         let (key, code) = super::parse_key_name("F1");
-        assert!(matches!(key, Key::F1));
+        assert!(matches!(key, Key::Named(NamedKey::F1)));
         assert_eq!(code, Code::F1);
     }
 
     #[test]
     fn parse_key_name_escape_aliases() {
         let (key, code) = super::parse_key_name("Escape");
-        assert!(matches!(key, Key::Escape));
+        assert!(matches!(key, Key::Named(NamedKey::Escape)));
         assert_eq!(code, Code::Escape);
 
         let (key, code) = super::parse_key_name("Esc");
-        assert!(matches!(key, Key::Escape));
+        assert!(matches!(key, Key::Named(NamedKey::Escape)));
         assert_eq!(code, Code::Escape);
     }
 

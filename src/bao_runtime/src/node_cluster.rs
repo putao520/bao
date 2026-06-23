@@ -750,9 +750,11 @@ mod tests {
 
     #[test]
     fn test_is_cluster_worker_with_env() {
-        ::std::env::set_var("BAO_CLUSTER_WORKER_ID", "3");
+        // SAFETY: Safe in test context: single-threaded test, no concurrent env access.
+        unsafe { ::std::env::set_var("BAO_CLUSTER_WORKER_ID", "3") };
         assert!(is_cluster_worker());
-        ::std::env::remove_var("BAO_CLUSTER_WORKER_ID");
+        // SAFETY: Safe in test context: single-threaded test, no concurrent env access.
+        unsafe { ::std::env::remove_var("BAO_CLUSTER_WORKER_ID") };
     }
 
     #[test]

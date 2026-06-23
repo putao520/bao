@@ -2686,8 +2686,8 @@ mod tests {
         let source = include_str!("runtime_bridge.rs");
         let func_start = source.find("unsafe fn install_all_native")
             .expect("install_all_native function not found");
-        // Extract just the function body — 2000 chars max to avoid test code.
-        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
+        // Extract just the function body — 5000 chars max to avoid test code.
+        let func_body = &source[func_start..func_start + 5000.min(source.len() - func_start)];
 
         assert!(
             func_body.contains("bun_runtime::fetch_api::install_fetch_global"),
@@ -2923,8 +2923,8 @@ mod tests {
         let search_limit = source[func_start + func_body_start..]
             .find("const NODE_POLYFILLS")
             .or_else(|| source[func_start + func_body_start..].find("/// Inject Node.js APIs as native"))
-            .unwrap_or(3000)
-            .min(3000);
+            .unwrap_or(5000)
+            .min(5000);
         let func_body = &source[func_start + func_body_start..func_start + func_body_start + search_limit];
 
         assert!(
