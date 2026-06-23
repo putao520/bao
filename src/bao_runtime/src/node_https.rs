@@ -206,7 +206,7 @@ unsafe extern "C" fn https_request(
     };
 
     // Build the PENDING Promise. The network round-trip runs off the JS thread.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let null_global = ::std::ptr::null_mut::<JSObject>());
     let promise = mozjs_sys::jsapi::JS::NewPromiseObject(
         cx,

@@ -1122,17 +1122,20 @@ unsafe extern "C" fn fs_link_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
 }
 
 // Recursive directory copy. Mirrors Node.js fs.cpSync(src, dst[, opts])
-// behaviour for the common recursive case (no symlink/filter handling —
-// those are advanced options that the conformance suite does not exercise).
+// behaviour for the common recursive case.
+// Supports errorOnExist option: throw if destination exists and is not a directory.
 #[allow(unsafe_op_in_unsafe_fn)]
-fn cp_recursive(src: &Path, dst: &Path) -> ::std::io::Result<()> {
+fn cp_recursive(src: &Path, dst: &Path, error_on_exist: bool) -> ::std::io::Result<()> {
     if fs::metadata(src)?.is_dir() {
+        if error_on_exist && dst.exists() && !dst.is_dir() {
+            return Err(::std::io::Error::new(::std::io::ErrorKind::AlreadyExists, "destination already exists"));
+        }
         fs::create_dir_all(dst)?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
             let from = entry.path();
             let to = dst.join(entry.file_name());
-            cp_recursive(&from, &to)?;
+            cp_recursive(&from, &to, error_on_exist)?;
         }
     } else {
         fs::copy(src, dst)?;
@@ -1145,7 +1148,8 @@ unsafe extern "C" fn fs_cp_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, argc);
     let from = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     let to = match get_path_arg(cx, &args, 1) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
-    match cp_recursive(Path::new(&from), Path::new(&to)) {
+    let error_on_exist = get_bool_option(cx, &args, 2, "errorOnExist");
+    match cp_recursive(Path::new(&from), Path::new(&to), error_on_exist) {
         ::std::result::Result::Ok(()) => { args.rval().set(UndefinedValue()); true }
         ::std::result::Result::Err(e) => {
             let msg = format!("cpSync: {}", e);
@@ -1162,7 +1166,8 @@ unsafe extern "C" fn fs_cp(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> boo
     let args = CallArgs::from_vp(vp, argc);
     let from = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
     let to = match get_path_arg(cx, &args, 1) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
-    let res = cp_recursive(Path::new(&from), Path::new(&to));
+    let error_on_exist = get_bool_option(cx, &args, 2, "errorOnExist");
+    let res = cp_recursive(Path::new(&from), Path::new(&to), error_on_exist);
     if let ::std::result::Result::Err(e) = res {
         let msg = format!("cp: {}", e);
         let c_msg = ZBox::from_bytes(msg.as_bytes());
@@ -1922,32 +1927,36 @@ unsafe extern "C" fn fs_opendir(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
     let path = match get_path_arg(cx, &args, 0) { ::std::result::Result::Ok(p) => p, ::std::result::Result::Err(b) => return b };
 
     if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 1) {
-        spawn_fs_async(cx, "opendir", path.clone(), callback, None, move || {
-            fs::read_dir(&path).map(|entries| {
-                let names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-                FsAsyncResult::OkDirnames(names)
-            })
-        });
+        // With callback: create Dir object and pass to callback
+        let dir_obj = create_dir_object(cx, &path);
+        let mut wrapped_cx_od = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+        let cx_ref_od = &mut wrapped_cx_od;
+        rooted!(&in(cx_ref_od) let cb = callback);
+        rooted!(&in(cx_ref_od) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
+        rooted!(&in(cx_ref_od) let dir_val = mozjs::jsval::ObjectValue(dir_obj));
+        let args_arr = [UndefinedValue(), dir_val.get()];
+        let cb_args = HandleValueArray { length_: 2, elements_: args_arr.as_ptr() };
+        let global = CurrentGlobalOrNull(cx);
+        if !global.is_null() {
+            rooted!(&in(cx_ref_od) let global_rooted = global);
+            let mut rval = UndefinedValue();
+            JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &cb_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+            JS_ClearPendingException(cx);
+        }
         args.rval().set(UndefinedValue());
         return true;
     }
 
-    match fs::read_dir(&path) {
-        ::std::result::Result::Ok(entries) => {
-            let names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
-            rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, names.len()));
-            for (i, name) in names.iter().enumerate() {
-                let c_name = ZBox::from_bytes(name.as_bytes());
-                let js_str = JS_NewStringCopyZ(cx, c_name.as_ptr());
-                if !js_str.is_null() {
-                    rooted!(&in(cx_ref) let val = mozjs::jsval::StringValue(&*js_str));
-                    JS_DefineElement(cx, arr.handle().into(), i as u32, val.handle().into(), JSPROP_ENUMERATE as u32);
-                }
-            }
-            args.rval().set(mozjs::jsval::ObjectValue(arr.get()));
+    // No callback: return Dir object directly
+    match fs::metadata(&path) {
+        ::std::result::Result::Ok(meta) if meta.is_dir() => {
+            let dir_obj = create_dir_object(cx, &path);
+            args.rval().set(mozjs::jsval::ObjectValue(dir_obj));
             true
+        }
+        ::std::result::Result::Ok(_) => {
+            JS_ReportErrorUTF8(cx, c"opendir: path is not a directory".as_ptr());
+            false
         }
         ::std::result::Result::Err(e) => throw_fs_error(cx, "opendir", &path, &e),
     }
@@ -4501,4 +4510,402 @@ fn glob_match_inner(pattern: &[char], text: &[char], pi: usize, ti: usize) -> bo
         return false;
     }
     if pattern[pi] == text[ti] { glob_match_inner(pattern, text, pi + 1, ti + 1) } else { false }
+}
+
+// --- Dir class ---
+//
+// fs.opendir() / fs.opendirSync() returns a Dir object with:
+//   .path          — the directory path
+//   .readSync()    — next Dirent or null
+//   .read(cb)      — async next Dirent
+//   .closeSync()   — close the dir
+//   .close(cb)     — async close
+//   [Symbol.asyncIterator]() — async iterable
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn create_dir_object(cx: *mut JSContext, dir_path: &str) -> *mut JSObject {
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let dir = JS_NewPlainObject(cx));
+    if dir.get().is_null() { return dir.get(); }
+
+    // .path property
+    let c_path = ZBox::from_bytes(dir_path.as_bytes());
+    let path_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+    if !path_str.is_null() {
+        rooted!(&in(cx_ref) let path_val = mozjs::jsval::StringValue(&*path_str));
+        JS_DefineProperty(cx, dir.handle().into(), c"path".as_ptr(), path_val.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+
+    // Hidden _dirPath for method callbacks
+    let c_dp = ZBox::from_bytes(dir_path.as_bytes());
+    let dp_str = JS_NewStringCopyZ(cx, c_dp.as_ptr());
+    if !dp_str.is_null() {
+        rooted!(&in(cx_ref) let dp_val = mozjs::jsval::StringValue(&*dp_str));
+        JS_DefineProperty(cx, dir.handle().into(), c"_dirPath".as_ptr(), dp_val.handle().into(), 0);
+    }
+
+    // _entriesIndex hidden prop (current position in entries cache)
+    set_hidden_int(cx, dir.get(), "_entriesIndex", 0);
+    // _closed hidden prop
+    set_hidden_bool(cx, dir.get(), "_closed", false);
+
+    // Methods
+    JS_DefineFunction(cx, dir.handle().into(), c"readSync".as_ptr(), Some(dir_read_sync), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, dir.handle().into(), c"read".as_ptr(), Some(dir_read), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, dir.handle().into(), c"closeSync".as_ptr(), Some(dir_close_sync), 0, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, dir.handle().into(), c"close".as_ptr(), Some(dir_close), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, dir.handle().into(), c"\x5B\x5D".as_ptr(), Some(dir_symbol_iterator), 0, 0);
+
+    dir.get()
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn dir_ensure_entries(cx: *mut JSContext, dir_obj: *mut JSObject) {
+    // Check if _entries already exists
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let dir_rooted = dir_obj);
+    let mut entries_val = UndefinedValue();
+    JS_GetProperty(cx, dir_rooted.handle().into(), c"_entries".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut entries_val });
+    if !entries_val.is_undefined() { return; }
+
+    // Read directory and cache entries
+    let dir_path = {
+        let mut dp_val = UndefinedValue();
+        JS_GetProperty(cx, dir_rooted.handle().into(), c"_dirPath".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut dp_val });
+        if dp_val.is_string() {
+            crate::jsstr_to_rust_string(cx, dp_val.to_string())
+        } else {
+            return;
+        }
+    };
+
+    match fs::read_dir(&dir_path) {
+        Ok(raw_entries) => {
+            let entries: Vec<(String, bool)> = raw_entries.flatten().map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let is_dir = e.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                (name, is_dir)
+            }).collect();
+
+            rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, entries.len()));
+            if !arr.get().is_null() {
+                for (idx, (name, is_dir)) in entries.iter().enumerate() {
+                    let dirent = create_dirent(cx, name, *is_dir);
+                    rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(dirent));
+                    JS_DefineElement(cx, arr.handle().into(), idx as u32, val.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+            }
+            rooted!(&in(cx_ref) let arr_val = mozjs::jsval::ObjectValue(arr.get()));
+            JS_DefineProperty(cx, dir_rooted.handle().into(), c"_entries".as_ptr(), arr_val.handle().into(), 0);
+        }
+        Err(_) => {
+            // On error, set empty entries array
+            rooted!(&in(cx_ref) let arr = w2::NewArrayObject1(cx_ref, 0));
+            rooted!(&in(cx_ref) let arr_val = mozjs::jsval::ObjectValue(arr.get()));
+            JS_DefineProperty(cx, dir_rooted.handle().into(), c"_entries".as_ptr(), arr_val.handle().into(), 0);
+        }
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dir_read_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+
+    let closed = get_hidden_bool(cx, this.get(), "_closed");
+    if closed {
+        let c_msg = ZBox::from_bytes("Dir is already closed".as_bytes());
+        JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+        return false;
+    }
+
+    dir_ensure_entries(cx, this.get());
+
+    let idx = get_hidden_int(cx, this.get(), "_entriesIndex") as u32;
+
+    let mut entries_val = UndefinedValue();
+    JS_GetProperty(cx, this.handle().into(), c"_entries".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut entries_val });
+    if entries_val.is_object() {
+        let entries_obj = entries_val.to_object();
+        rooted!(&in(cx_ref) let eo = entries_obj);
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(cx, eo.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+        let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { 0 };
+
+        if idx < len {
+            let mut elem = UndefinedValue();
+            JS_GetElement(cx, eo.handle().into(), idx, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+            args.rval().set(elem);
+            set_hidden_int(cx, this.get(), "_entriesIndex", (idx + 1) as i32);
+        } else {
+            args.rval().set(mozjs::jsval::NullValue());
+        }
+    } else {
+        args.rval().set(mozjs::jsval::NullValue());
+    }
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dir_read(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+
+    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 0) {
+        // Synchronously read next entry, then invoke callback
+        let closed = get_hidden_bool(cx, this.get(), "_closed");
+        if closed {
+            rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
+            if !err_obj.get().is_null() {
+                let c_msg = ZBox::from_bytes("Dir is already closed".as_bytes());
+                let msg_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+                if !msg_str.is_null() {
+                    rooted!(&in(cx_ref) let msg_val = mozjs::jsval::StringValue(&*msg_str));
+                    JS_DefineProperty(cx, err_obj.handle().into(), c"message".as_ptr(), msg_val.handle().into(), JSPROP_ENUMERATE as u32);
+                }
+            }
+            rooted!(&in(cx_ref) let err_val = mozjs::jsval::ObjectValue(err_obj.get()));
+            let err_args = HandleValueArray { length_: 1, elements_: &err_val.get() as *const JSVal };
+            let global = CurrentGlobalOrNull(cx);
+            if !global.is_null() {
+                rooted!(&in(cx_ref) let global_rooted = global);
+                rooted!(&in(cx_ref) let cb = callback);
+                rooted!(&in(cx_ref) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
+                let mut rval = UndefinedValue();
+                JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &err_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+                JS_ClearPendingException(cx);
+            }
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+
+        dir_ensure_entries(cx, this.get());
+        let idx = get_hidden_int(cx, this.get(), "_entriesIndex") as u32;
+        let mut entries_val = UndefinedValue();
+        JS_GetProperty(cx, this.handle().into(), c"_entries".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut entries_val });
+
+        let next_val = if entries_val.is_object() {
+            let entries_obj = entries_val.to_object();
+            rooted!(&in(cx_ref) let eo = entries_obj);
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(cx, eo.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { 0 };
+            if idx < len {
+                let mut elem = UndefinedValue();
+                JS_GetElement(cx, eo.handle().into(), idx, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                set_hidden_int(cx, this.get(), "_entriesIndex", (idx + 1) as i32);
+                elem
+            } else {
+                mozjs::jsval::NullValue()
+            }
+        } else {
+            mozjs::jsval::NullValue()
+        };
+
+        rooted!(&in(cx_ref) let next_rooted = next_val);
+        rooted!(&in(cx_ref) let cb = callback);
+        rooted!(&in(cx_ref) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
+        let args_arr = [UndefinedValue(), next_rooted.get()];
+        let cb_args = HandleValueArray { length_: 2, elements_: args_arr.as_ptr() };
+        let global = CurrentGlobalOrNull(cx);
+        if !global.is_null() {
+            rooted!(&in(cx_ref) let global_rooted = global);
+            let mut rval = UndefinedValue();
+            JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &cb_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+            JS_ClearPendingException(cx);
+        }
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // No callback: return a Promise
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+
+    let closed = get_hidden_bool(cx, this.get(), "_closed");
+    if closed {
+        reject_with_error(cx, promise.get(), "Dir is already closed");
+    } else {
+        dir_ensure_entries(cx, this.get());
+        let idx = get_hidden_int(cx, this.get(), "_entriesIndex") as u32;
+        let mut entries_val = UndefinedValue();
+        JS_GetProperty(cx, this.handle().into(), c"_entries".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut entries_val });
+
+        let next_val = if entries_val.is_object() {
+            let entries_obj = entries_val.to_object();
+            rooted!(&in(cx_ref) let eo = entries_obj);
+            let mut len_val = UndefinedValue();
+            JS_GetProperty(cx, eo.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+            let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { 0 };
+            if idx < len {
+                let mut elem = UndefinedValue();
+                JS_GetElement(cx, eo.handle().into(), idx, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+                set_hidden_int(cx, this.get(), "_entriesIndex", (idx + 1) as i32);
+                elem
+            } else {
+                mozjs::jsval::NullValue()
+            }
+        } else {
+            mozjs::jsval::NullValue()
+        };
+
+        rooted!(&in(cx_ref) let val = next_val);
+        unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
+    }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dir_close_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    set_hidden_bool(cx, this.get(), "_closed", true);
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dir_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this = args.thisv().to_object());
+    set_hidden_bool(cx, this.get(), "_closed", true);
+
+    if let Some((callback, _)) = extract_callback_and_encoding(cx, &args, 0) {
+        rooted!(&in(cx_ref) let cb = callback);
+        rooted!(&in(cx_ref) let cb_val = mozjs::jsval::ObjectValue(cb.get()));
+        let null_args = HandleValueArray::empty();
+        let global = CurrentGlobalOrNull(cx);
+        if !global.is_null() {
+            rooted!(&in(cx_ref) let global_rooted = global);
+            let mut rval = UndefinedValue();
+            JS_CallFunctionValue(cx, global_rooted.handle().into(), cb_val.handle().into(), &null_args, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval });
+            JS_ClearPendingException(cx);
+        }
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dir_symbol_iterator(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    // Return an object with next() method for for-await-of
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let iter = JS_NewPlainObject(cx));
+    if iter.get().is_null() { args.rval().set(UndefinedValue()); return true; }
+
+    // Store reference to the Dir object on the iterator
+    let this_val = args.thisv();
+    if this_val.is_object() {
+        rooted!(&in(cx_ref) let dir_ref = this_val.to_object());
+        rooted!(&in(cx_ref) let dir_ref_val = mozjs::jsval::ObjectValue(dir_ref.get()));
+        JS_DefineProperty(cx, iter.handle().into(), c"_dirRef".as_ptr(), dir_ref_val.handle().into(), 0);
+    }
+
+    JS_DefineFunction(cx, iter.handle().into(), c"next".as_ptr(), Some(dir_iterator_next), 0, JSPROP_ENUMERATE as u32);
+    args.rval().set(mozjs::jsval::ObjectValue(iter.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn dir_iterator_next(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+
+    rooted!(&in(cx_ref) let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, HandleObject::null()) });
+    if promise.get().is_null() { args.rval().set(UndefinedValue()); return false; }
+
+    // Get the Dir object reference
+    let this_val = args.thisv();
+    if !this_val.is_object() {
+        reject_with_error(cx, promise.get(), "Dir iterator next() called on wrong object");
+        args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+        return true;
+    }
+    let iter_obj = this_val.to_object();
+    rooted!(&in(cx_ref) let iter_rooted = iter_obj);
+    let mut dir_ref_val = UndefinedValue();
+    JS_GetProperty(cx, iter_rooted.handle().into(), c"_dirRef".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut dir_ref_val });
+
+    if !dir_ref_val.is_object() {
+        // No dir ref, return {done: true}
+        rooted!(&in(cx_ref) let result_obj = JS_NewPlainObject(cx));
+        if !result_obj.get().is_null() {
+            define_bool_prop(cx, result_obj.get(), "done", true);
+        }
+        rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(result_obj.get()));
+        unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
+        args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+        return true;
+    }
+
+    let dir_obj = dir_ref_val.to_object();
+    let closed = get_hidden_bool(cx, dir_obj, "_closed");
+    if closed {
+        rooted!(&in(cx_ref) let result_obj = JS_NewPlainObject(cx));
+        if !result_obj.get().is_null() {
+            define_bool_prop(cx, result_obj.get(), "done", true);
+        }
+        rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(result_obj.get()));
+        unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
+        args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+        return true;
+    }
+
+    dir_ensure_entries(cx, dir_obj);
+    let idx = get_hidden_int(cx, dir_obj, "_entriesIndex") as u32;
+
+    rooted!(&in(cx_ref) let dir_rooted = dir_obj);
+    let mut entries_val = UndefinedValue();
+    JS_GetProperty(cx, dir_rooted.handle().into(), c"_entries".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut entries_val });
+
+    let next_dirent = if entries_val.is_object() {
+        let entries_arr = entries_val.to_object();
+        rooted!(&in(cx_ref) let ea = entries_arr);
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(cx, ea.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+        let len = if len_val.is_int32() { len_val.to_int32() as u32 } else { 0 };
+        if idx < len {
+            let mut elem = UndefinedValue();
+            JS_GetElement(cx, ea.handle().into(), idx, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut elem });
+            set_hidden_int(cx, dir_obj, "_entriesIndex", (idx + 1) as i32);
+            elem
+        } else {
+            mozjs::jsval::NullValue()
+        }
+    } else {
+        mozjs::jsval::NullValue()
+    };
+
+    rooted!(&in(cx_ref) let result_obj = JS_NewPlainObject(cx));
+    if !result_obj.get().is_null() {
+        if next_dirent.is_null() {
+            define_bool_prop(cx, result_obj.get(), "done", true);
+        } else {
+            define_bool_prop(cx, result_obj.get(), "done", false);
+            rooted!(&in(cx_ref) let dv = next_dirent);
+            JS_DefineProperty(cx, result_obj.handle().into(), c"value".as_ptr(), dv.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+    }
+    rooted!(&in(cx_ref) let val = mozjs::jsval::ObjectValue(result_obj.get()));
+    unsafe { mozjs_sys::jsapi::JS::ResolvePromise(cx, promise.handle().into(), val.handle().into()); }
+    args.rval().set(mozjs::jsval::ObjectValue(promise.get()));
+    true
 }

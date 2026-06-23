@@ -175,6 +175,81 @@ unsafe fn populate_bun_object(
     // Bun.hash
     JS_DefineFunction(cx, bun_obj, c"hash".as_ptr(), Some(bun_hash), 2, JSPROP_ENUMERATE as u32);
 
+    // @trace REQ-ENG-006 [api:Bun.CryptoHasher] — streaming hash constructor.
+    // new CryptoHasher(algorithm) creates a hasher; .update(data) feeds data;
+    // .digest(encoding?) returns hex/base64 digest. Uses bun_sha_hmac.
+    JS_DefineFunction(cx, bun_obj, c"CryptoHasher".as_ptr(), Some(bun_crypto_hasher_ctor), 1, JSPROP_ENUMERATE as u32);
+
+    // Bun.SHA = Bun.CryptoHasher (alias)
+    {
+        rooted!(&in(cx) let mut sha_val = UndefinedValue());
+        let _ok = JS_GetProperty(
+            cx.raw_cx(),
+            bun_obj.into(),
+            c"CryptoHasher".as_ptr(),
+            sha_val.handle_mut().into(),
+        );
+        JS_DefineProperty(
+            cx.raw_cx(),
+            bun_obj.into(),
+            c"SHA".as_ptr(),
+            sha_val.handle().into(),
+            JSPROP_ENUMERATE as u32,
+        );
+    }
+
+    // @trace REQ-ENG-006 [api:Bun.gzip/deflate/inflate/gunzip] — compression.
+    // Synchronous compress/decompress using flate2 (workspace crate).
+    JS_DefineFunction(cx, bun_obj, c"gzip".as_ptr(), Some(bun_gzip), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, bun_obj, c"deflate".as_ptr(), Some(bun_deflate), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, bun_obj, c"inflate".as_ptr(), Some(bun_inflate), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, bun_obj, c"gunzip".as_ptr(), Some(bun_gunzip), 1, JSPROP_ENUMERATE as u32);
+
+    // @trace REQ-ENG-006 [api:Bun.fileURLToPath/pathToFileURL] — URL<->path.
+    // Uses bun_url crate's WHATWG URL parser.
+    JS_DefineFunction(cx, bun_obj, c"fileURLToPath".as_ptr(), Some(bun_file_url_to_path), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx, bun_obj, c"pathToFileURL".as_ptr(), Some(bun_path_to_file_url), 1, JSPROP_ENUMERATE as u32);
+
+    // @trace REQ-ENG-006 [api:Bun.semver] — semver parsing object (JS IIFE).
+    // Bun's semver is a JS implementation; we ship a minimal IIFE.
+    install_bun_semver(cx, bun_obj);
+
+    // @trace REQ-ENG-006 [api:Bun.escapeHTML] — HTML entity escaping.
+    JS_DefineFunction(cx, bun_obj, c"escapeHTML".as_ptr(), Some(bun_escape_html), 1, JSPROP_ENUMERATE as u32);
+
+    // @trace REQ-ENG-006 [api:Bun.Mime] — MIME type utility class (JS IIFE).
+    install_bun_mime(cx, bun_obj);
+
+    // @trace REQ-ENG-006 [api:Bun.stdin/stdout/stderr] — typed stream wrappers.
+    // Bun.stdin = Bun.file(0), Bun.stdout = Bun.file(1), Bun.stderr = Bun.file(2).
+    {
+        let stdin_ptr = make_bun_file_for_fd(cx, 0);
+        rooted!(&in(cx) let stdin_file = stdin_ptr);
+        if !stdin_file.get().is_null() {
+            JS_DefineProperty3(cx, bun_obj, c"stdin".as_ptr(), stdin_file.handle(), JSPROP_ENUMERATE as u32);
+        }
+    }
+    {
+        let stdout_ptr = make_bun_file_for_fd(cx, 1);
+        rooted!(&in(cx) let stdout_file = stdout_ptr);
+        if !stdout_file.get().is_null() {
+            JS_DefineProperty3(cx, bun_obj, c"stdout".as_ptr(), stdout_file.handle(), JSPROP_ENUMERATE as u32);
+        }
+    }
+    {
+        let stderr_ptr = make_bun_file_for_fd(cx, 2);
+        rooted!(&in(cx) let stderr_file = stderr_ptr);
+        if !stderr_file.get().is_null() {
+            JS_DefineProperty3(cx, bun_obj, c"stderr".as_ptr(), stderr_file.handle(), JSPROP_ENUMERATE as u32);
+        }
+    }
+
+    // @trace REQ-ENG-006 [api:Bun.deepLink] — throws "not implemented".
+    JS_DefineFunction(cx, bun_obj, c"deepLink".as_ptr(), Some(bun_deep_link), 0, JSPROP_ENUMERATE as u32);
+
+    // @trace REQ-ENG-006 [api:Bun.openInNewTab] — open URL in new tab (browser mode).
+    JS_DefineFunction(cx, bun_obj, c"openInNewTab".as_ptr(), Some(bun_open_in_new_tab), 1, JSPROP_ENUMERATE as u32);
+
     // @trace REQ-ENG-006 [api:Bun.concatArrayBuffers] — merge an iterable of
     // ArrayBuffer/TypedArray into a single ArrayBuffer (or Uint8Array when
     // `asUint8Array=true`). Matches Bun's signature:
@@ -3908,6 +3983,835 @@ unsafe extern "C" fn bun_concat_array_buffers(
     }
     true
 }
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.CryptoHasher] — streaming hash constructor
+//
+// Bun.CryptoHasher(algorithm) creates a streaming hash object.
+// Supported algorithms: sha256, sha512, sha1, md5.
+// Methods: .update(data), .digest(encoding?)
+// Encoding: "hex" (default), "base64", "buffer" (Uint8Array).
+//
+// Internal state is stored as a GcStore'd native pointer (boxed Vec<u8>
+// accumulator + algorithm tag). This avoids SpiderMonkey GC pressure and
+// keeps the hash state alive as long as the JS object references it.
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Algorithm tag for CryptoHasher internal state.
+#[derive(Clone, Copy, Debug)]
+#[repr(u8)]
+enum CryptoHasherAlgo {
+    Sha256 = 0,
+    Sha512 = 1,
+    Sha1 = 2,
+    Md5 = 3,
+}
+
+/// Internal state for a CryptoHasher instance.
+struct CryptoHasherState {
+    algo: CryptoHasherAlgo,
+    data: Vec<u8>,
+}
+
+static CRYPTO_HASHER_CB_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_crypto_hasher_ctor(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let algo_str = if argc > 0 && (*args.get(0).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(0).ptr).to_ascii_lowercase()
+    } else {
+        "sha256".to_string()
+    };
+    let algo = match algo_str.as_str() {
+        "sha256" | "sha-256" => CryptoHasherAlgo::Sha256,
+        "sha512" | "sha-512" => CryptoHasherAlgo::Sha512,
+        "sha1" | "sha-1" => CryptoHasherAlgo::Sha1,
+        "md5" => CryptoHasherAlgo::Md5,
+        _ => {
+            let msg = format!("Unsupported algorithm: {}", algo_str);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            return false;
+        }
+    };
+
+    let state = Box::new(CryptoHasherState { algo, data: Vec::new() });
+    let state_ptr = Box::into_raw(state) as *mut ::std::ffi::c_void;
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let obj = JS_NewPlainObject(cx_ref));
+    if obj.get().is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // Store state pointer as PrivateValue
+    let priv_val = mozjs::jsval::PrivateValue(state_ptr);
+    rooted!(&in(cx_ref) let pv = priv_val);
+    JS_DefineProperty(cx, obj.handle().into(), c"_statePtr".as_ptr(), pv.handle().into(), 0);
+    // Store algorithm tag
+    let algo_val = Int32Value(algo as i32);
+    rooted!(&in(cx_ref) let av = algo_val);
+    JS_DefineProperty(cx, obj.handle().into(), c"_algo".as_ptr(), av.handle().into(), 0);
+
+    JS_DefineFunction(cx_ref, obj.handle(), c"update".as_ptr(), Some(crypto_hasher_update), 1, JSPROP_ENUMERATE as u32);
+    JS_DefineFunction(cx_ref, obj.handle(), c"digest".as_ptr(), Some(crypto_hasher_digest), 0, JSPROP_ENUMERATE as u32);
+
+    args.rval().set(ObjectValue(obj.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_hasher_update(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        // No data to update — return this for chaining
+        args.rval().set(*args.thisv().ptr);
+        return true;
+    }
+
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    // Read state pointer
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+    let mut state_val = UndefinedValue();
+    JS_GetProperty(cx, this_obj.handle().into(), c"_statePtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut state_val });
+    if !state_val.is_double() || (state_val.asBits_ & 0xFFFF000000000000) != 0 {
+        args.rval().set(*args.thisv().ptr);
+        return true;
+    }
+    let state_ptr = state_val.to_private() as *mut CryptoHasherState;
+    if state_ptr.is_null() {
+        args.rval().set(*args.thisv().ptr);
+        return true;
+    }
+
+    // Extract input data
+    let input = *args.get(0).ptr;
+    let data = if input.is_string() {
+        crate::js_to_rust_string(cx, input).into_bytes()
+    } else if input.is_object() {
+        rooted!(&in(cx_ref) let arr_obj = input.to_object());
+        let mut len_val = UndefinedValue();
+        JS_GetProperty(cx, arr_obj.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });
+        let len = if len_val.is_int32() { len_val.to_int32().max(0) as u32 } else { 0 };
+        let mut bytes = Vec::with_capacity(len as usize);
+        for i in 0..len {
+            let mut byte_val = Int32Value(0);
+            JS_GetElement(cx, arr_obj.handle().into(), i, MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut byte_val });
+            bytes.push(if byte_val.is_int32() { byte_val.to_int32() as u8 } else { 0 });
+        }
+        bytes
+    } else {
+        Vec::new()
+    };
+
+    // Append to accumulator
+    (*state_ptr).data.extend_from_slice(&data);
+
+    // Return this for chaining
+    args.rval().set(ObjectValue(this_obj.get()));
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn crypto_hasher_digest(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let this = args.thisv();
+    if !this.is_object() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let this_obj = this.to_object());
+
+    // Read state pointer
+    let mut state_val = UndefinedValue();
+    JS_GetProperty(cx, this_obj.handle().into(), c"_statePtr".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut state_val });
+    if !state_val.is_double() || (state_val.asBits_ & 0xFFFF000000000000) != 0 {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let state_ptr = state_val.to_private() as *mut CryptoHasherState;
+    if state_ptr.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+
+    let encoding = if argc > 0 && (*args.get(0).ptr).is_string() {
+        crate::js_to_rust_string(cx, *args.get(0).ptr).to_ascii_lowercase()
+    } else {
+        "hex".to_string()
+    };
+
+    let state = &*state_ptr;
+    let hash_bytes = match state.algo {
+        CryptoHasherAlgo::Sha256 => {
+            let mut hasher = bun_sha_hmac::SHA256::init();
+            hasher.update(&state.data);
+            let mut out = [0u8; bun_sha_hmac::SHA256::DIGEST];
+            hasher.r#final(&mut out);
+            out.to_vec()
+        }
+        CryptoHasherAlgo::Sha512 => {
+            let mut hasher = bun_sha_hmac::SHA512::init();
+            hasher.update(&state.data);
+            let mut out = [0u8; bun_sha_hmac::SHA512::DIGEST];
+            hasher.r#final(&mut out);
+            out.to_vec()
+        }
+        CryptoHasherAlgo::Sha1 => {
+            let mut hasher = bun_sha_hmac::SHA1::init();
+            hasher.update(&state.data);
+            let mut out = [0u8; bun_sha_hmac::SHA1::DIGEST];
+            hasher.r#final(&mut out);
+            out.to_vec()
+        }
+        CryptoHasherAlgo::Md5 => {
+            let mut hasher = bun_sha_hmac::MD5::init();
+            hasher.update(&state.data);
+            let mut out = [0u8; bun_sha_hmac::MD5::DIGEST];
+            hasher.r#final(&mut out);
+            out.to_vec()
+        }
+    };
+
+    match encoding.as_str() {
+        "buffer" => {
+            // Return Uint8Array
+            let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, hash_bytes.len());
+            if u8_obj.is_null() {
+                args.rval().set(UndefinedValue());
+                return true;
+            }
+            rooted!(&in(cx_ref) let u8_root = u8_obj);
+            if !hash_bytes.is_empty() {
+                let mut is_shared = false;
+                let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(
+                    u8_root.get(),
+                    &mut is_shared,
+                    ::std::ptr::null(),
+                );
+                if !data_ptr.is_null() {
+                    ::std::ptr::copy_nonoverlapping(hash_bytes.as_ptr(), data_ptr, hash_bytes.len());
+                }
+            }
+            args.rval().set(ObjectValue(u8_root.get()));
+        }
+        "base64" => {
+            // Base64 encoding via bun_base64 (workspace crate)
+            let b64_bytes = bun_base64::encode_alloc(&hash_bytes);
+            let b64_str = String::from_utf8_lossy(&b64_bytes).into_owned();
+            let c_b64 = ZBox::from_bytes(b64_str.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_b64.as_ptr());
+            args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+        }
+        _ => {
+            // "hex" (default)
+            let hex: String = bun_core::fmt::bytes_to_hex_lower_string(&hash_bytes);
+            let c_hex = ZBox::from_bytes(hex.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c_hex.as_ptr());
+            args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+        }
+    }
+    true
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.gzip/deflate/inflate/gunzip] — compression
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Extract byte data from a JS value (string or Uint8Array/ArrayBuffer).
+unsafe fn extract_bytes_from_jsval(cx: *mut JSContext, val: JSVal) -> Option<Vec<u8>> {
+    if val.is_string() {
+        Some(crate::js_to_rust_string(cx, val).into_bytes())
+    } else if val.is_object() {
+        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let cx_ref = &mut wrapped_cx;
+        rooted!(&in(cx_ref) let obj = val.to_object());
+        // Try ArrayBuffer
+        if mozjs_sys::jsapi::JS::IsArrayBufferObjectMaybeShared(obj.get()) {
+            let mut len: usize = 0;
+            let mut is_shared = false;
+            let mut data: *mut u8 = ::std::ptr::null_mut();
+            mozjs_sys::jsapi::JS::GetArrayBufferMaybeSharedLengthAndData(obj.get(), &mut len, &mut is_shared, &mut data);
+            if data.is_null() { return Some(Vec::new()); }
+            let mut bytes = vec![0u8; len];
+            ::std::ptr::copy_nonoverlapping(data, bytes.as_mut_ptr(), len);
+            return Some(bytes);
+        }
+        // Try Uint8Array / TypedArray
+        let mut length: usize = 0;
+        let mut is_shared = false;
+        let mut data: *mut u8 = ::std::ptr::null_mut();
+        let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(obj.get(), &mut length, &mut is_shared, &mut data);
+        if !unwrapped.is_null() && !data.is_null() {
+            let mut bytes = vec![0u8; length];
+            ::std::ptr::copy_nonoverlapping(data, bytes.as_mut_ptr(), length);
+            return Some(bytes);
+        }
+        None
+    } else {
+        None
+    }
+}
+
+/// Create a JS Uint8Array from a byte slice.
+unsafe fn bytes_to_js_uint8array(cx: *mut JSContext, bytes: &[u8]) -> JSVal {
+    let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len());
+    if u8_obj.is_null() {
+        return UndefinedValue();
+    }
+    if !bytes.is_empty() {
+        let mut is_shared = false;
+        let data_ptr = mozjs_sys::jsapi::JS_GetUint8ArrayData(u8_obj, &mut is_shared, ::std::ptr::null());
+        if !data_ptr.is_null() {
+            ::std::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr, bytes.len());
+        }
+    }
+    ObjectValue(u8_obj)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_gzip(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"Bun.gzip() requires data".as_ptr());
+        return false;
+    }
+    let input = match extract_bytes_from_jsval(cx, *args.get(0).ptr) {
+        Some(d) => d,
+        None => {
+            JS_ReportErrorUTF8(cx, c"Bun.gzip() requires string or ArrayBuffer".as_ptr());
+            return false;
+        }
+    };
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    ::std::io::Write::write_all(&mut encoder, &input).ok();
+    match encoder.finish() {
+        Ok(compressed) => {
+            args.rval().set(bytes_to_js_uint8array(cx, &compressed));
+            true
+        }
+        Err(e) => {
+            let msg = format!("Bun.gzip() failed: {}", e);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            false
+        }
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_deflate(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"Bun.deflate() requires data".as_ptr());
+        return false;
+    }
+    let input = match extract_bytes_from_jsval(cx, *args.get(0).ptr) {
+        Some(d) => d,
+        None => {
+            JS_ReportErrorUTF8(cx, c"Bun.deflate() requires string or ArrayBuffer".as_ptr());
+            return false;
+        }
+    };
+    use flate2::write::DeflateEncoder;
+    use flate2::Compression;
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    ::std::io::Write::write_all(&mut encoder, &input).ok();
+    match encoder.finish() {
+        Ok(compressed) => {
+            args.rval().set(bytes_to_js_uint8array(cx, &compressed));
+            true
+        }
+        Err(e) => {
+            let msg = format!("Bun.deflate() failed: {}", e);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            false
+        }
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_inflate(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"Bun.inflate() requires data".as_ptr());
+        return false;
+    }
+    let input = match extract_bytes_from_jsval(cx, *args.get(0).ptr) {
+        Some(d) => d,
+        None => {
+            JS_ReportErrorUTF8(cx, c"Bun.inflate() requires string or ArrayBuffer".as_ptr());
+            return false;
+        }
+    };
+    use flate2::write::DeflateDecoder;
+    let mut decoder = DeflateDecoder::new(Vec::new());
+    ::std::io::Write::write_all(&mut decoder, &input).ok();
+    match decoder.finish() {
+        Ok(decompressed) => {
+            args.rval().set(bytes_to_js_uint8array(cx, &decompressed));
+            true
+        }
+        Err(e) => {
+            let msg = format!("Bun.inflate() failed: {}", e);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            false
+        }
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_gunzip(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"Bun.gunzip() requires data".as_ptr());
+        return false;
+    }
+    let input = match extract_bytes_from_jsval(cx, *args.get(0).ptr) {
+        Some(d) => d,
+        None => {
+            JS_ReportErrorUTF8(cx, c"Bun.gunzip() requires string or ArrayBuffer".as_ptr());
+            return false;
+        }
+    };
+    use flate2::write::GzDecoder;
+    let mut decoder = GzDecoder::new(Vec::new());
+    ::std::io::Write::write_all(&mut decoder, &input).ok();
+    match decoder.finish() {
+        Ok(decompressed) => {
+            args.rval().set(bytes_to_js_uint8array(cx, &decompressed));
+            true
+        }
+        Err(e) => {
+            let msg = format!("Bun.gunzip() failed: {}", e);
+            let c_msg = ZBox::from_bytes(msg.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c_msg.as_ptr());
+            false
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.fileURLToPath/pathToFileURL] — URL<->path
+// ──────────────────────────────────────────────────────────────────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_file_url_to_path(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"Bun.fileURLToPath() requires a URL".as_ptr());
+        return false;
+    }
+    let url_val = *args.get(0).ptr;
+    let url_str = if url_val.is_string() {
+        crate::js_to_rust_string(cx, url_val)
+    } else {
+        JS_ReportErrorUTF8(cx, c"Bun.fileURLToPath() requires a string".as_ptr());
+        return false;
+    };
+
+    // Use bun_url's WHATWG URL parser to extract path from file:// URL
+    let path = if url_str.starts_with("file://") {
+        let bun_str = bun_core::String::borrow_utf8(url_str.as_bytes());
+        let result = bun_url::whatwg::path_from_file_url(&bun_str);
+        if result.tag() == bun_core::Tag::Dead {
+            url_str.clone()
+        } else {
+            let utf8 = result.to_utf8();
+            let s = ::std::str::from_utf8(utf8.slice()).unwrap_or(&url_str).to_string();
+            result.deref();
+            s
+        }
+    } else {
+        // Not a file:// URL — return as-is (Bun behavior)
+        url_str.clone()
+    };
+
+    // Decode percent-encoding in the path
+    let decoded = percent_decode_path(&path);
+
+    let c_path = ZBox::from_bytes(decoded.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_path.as_ptr());
+    args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+    true
+}
+
+/// Minimal percent-decode for file paths (decode %XX sequences).
+fn percent_decode_path(s: &str) -> String {
+    let mut result = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = hex_digit(bytes[i + 1]);
+            let lo = hex_digit(bytes[i + 2]);
+            if hi.is_some() && lo.is_some() {
+                result.push(hi.unwrap() << 4 | lo.unwrap());
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_path_to_file_url(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"Bun.pathToFileURL() requires a path".as_ptr());
+        return false;
+    }
+    let path_val = *args.get(0).ptr;
+    let path_str = if path_val.is_string() {
+        crate::js_to_rust_string(cx, path_val)
+    } else {
+        JS_ReportErrorUTF8(cx, c"Bun.pathToFileURL() requires a string".as_ptr());
+        return false;
+    };
+
+    // Use bun_url's WHATWG URL parser to convert path to file:// URL
+    let url = {
+        let bun_str = bun_core::String::borrow_utf8(path_str.as_bytes());
+        let result = bun_url::whatwg::file_url_from_string(&bun_str);
+        if result.tag() == bun_core::Tag::Dead {
+            // Fallback: construct file:// URL manually
+            let canonical = ::std::path::Path::new(&path_str)
+                .canonicalize()
+                .unwrap_or_else(|_| ::std::path::PathBuf::from(&path_str));
+            format!("file://{}", canonical.to_string_lossy())
+        } else {
+            let utf8 = result.to_utf8();
+            let s = ::std::str::from_utf8(utf8.slice()).unwrap_or("").to_string();
+            result.deref();
+            s
+        }
+    };
+
+    let c_url = ZBox::from_bytes(url.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_url.as_ptr());
+    args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+    true
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.semver] — semver parsing (JS IIFE)
+// ──────────────────────────────────────────────────────────────────────────
+
+unsafe fn install_bun_semver(
+    cx: &mut mozjs::context::JSContext,
+    bun_obj: mozjs::rust::Handle<*mut JSObject>,
+) {
+    let src = r#"(function() {
+  var semver = {};
+  // Minimal semver.satisfies(version, range) — supports exact match,
+  // ^x.y.z (caret), ~x.y.z (tilde), >x.y.z, >=x.y.z, <x.y.z, <=x.y.z,
+  // and x.y.z - a.b.c ranges.
+  function parseSemver(v) {
+    var m = String(v).trim().match(/^(\d+)\.(\d+)\.(\d+)(.*)$/);
+    if (!m) return null;
+    return { major: +m[1], minor: +m[2], patch: +m[3], prerelease: m[4] };
+  }
+  function cmpSemver(a, b) {
+    if (a.major !== b.major) return a.major - b.major;
+    if (a.minor !== b.minor) return a.minor - b.minor;
+    return a.patch - b.patch;
+  }
+  semver.satisfies = function satisfies(version, range) {
+    var v = parseSemver(version);
+    if (!v) return false;
+    range = String(range).trim();
+    // Caret range: ^1.2.3 → >=1.2.3 <2.0.0
+    if (range[0] === '^') {
+      var r = parseSemver(range.slice(1));
+      if (!r) return false;
+      return cmpSemver(v, r) >= 0 && v.major === r.major;
+    }
+    // Tilde range: ~1.2.3 → >=1.2.3 <1.3.0
+    if (range[0] === '~') {
+      var r = parseSemver(range.slice(1));
+      if (!r) return false;
+      return cmpSemver(v, r) >= 0 && v.major === r.major && v.minor === r.minor;
+    }
+    // Comparison operators
+    if (range.slice(0, 2) === '>=') {
+      var r = parseSemver(range.slice(2));
+      return r ? cmpSemver(v, r) >= 0 : false;
+    }
+    if (range[0] === '>') {
+      var r = parseSemver(range.slice(1));
+      return r ? cmpSemver(v, r) > 0 : false;
+    }
+    if (range.slice(0, 2) === '<=') {
+      var r = parseSemver(range.slice(2));
+      return r ? cmpSemver(v, r) <= 0 : false;
+    }
+    if (range[0] === '<') {
+      var r = parseSemver(range.slice(1));
+      return r ? cmpSemver(v, r) < 0 : false;
+    }
+    // Exact match
+    var r = parseSemver(range);
+    return r ? cmpSemver(v, r) === 0 : false;
+  };
+  semver.parse = parseSemver;
+  return semver;
+})()"#;
+
+    let mut text = mozjs::rust::transform_str_to_source_text(src);
+    let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<bun:semver>".as_ptr(), 1);
+    if opts.is_null() { return; }
+    let mut rval = UndefinedValue();
+    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut text, rval_h);
+    libc::free(opts as *mut _);
+    if ok && rval.is_object() {
+        rooted!(&in(cx) let semver_obj = rval.to_object());
+        JS_DefineProperty3(cx, bun_obj, c"semver".as_ptr(), semver_obj.handle(), JSPROP_ENUMERATE as u32);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.escapeHTML] — HTML entity escaping
+// ──────────────────────────────────────────────────────────────────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_escape_html(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        let js_str = JS_NewStringCopyZ(cx, c"".as_ptr());
+        args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+        return true;
+    }
+    let val = *args.get(0).ptr;
+    if !val.is_string() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
+    let s = crate::js_to_rust_string(cx, val);
+    let mut out = String::with_capacity(s.len() * 2);
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            _ => out.push(ch),
+        }
+    }
+    let c_out = ZBox::from_bytes(out.as_bytes());
+    let js_str = JS_NewStringCopyZ(cx, c_out.as_ptr());
+    args.rval().set(if js_str.is_null() { UndefinedValue() } else { StringValue(&*js_str) });
+    true
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.Mime] — MIME type utility class (JS IIFE)
+// ──────────────────────────────────────────────────────────────────────────
+
+unsafe fn install_bun_mime(
+    cx: &mut mozjs::context::JSContext,
+    bun_obj: mozjs::rust::Handle<*mut JSObject>,
+) {
+    let src = r#"(function() {
+  function Mime(type, subtype, params) {
+    this.type = String(type || '');
+    this.subtype = String(subtype || '');
+    this.params = (params && typeof params === 'object') ? params : {};
+  }
+  Mime.prototype.toString = function() {
+    var s = this.type + '/' + this.subtype;
+    var keys = Object.keys(this.params);
+    if (keys.length > 0) {
+      s += '; ' + keys.map(function(k) { return k + '=' + this.params[k]; }.bind(this)).join('; ');
+    }
+    return s;
+  };
+  Mime.prototype.essence = function() {
+    return this.type + '/' + this.subtype;
+  };
+  return Mime;
+})()"#;
+
+    let mut text = mozjs::rust::transform_str_to_source_text(src);
+    let opts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<bun:Mime>".as_ptr(), 1);
+    if opts.is_null() { return; }
+    let mut rval = UndefinedValue();
+    let rval_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut rval };
+    let ok = mozjs_sys::jsapi::JS::Evaluate2(cx.raw_cx(), opts, &mut text, rval_h);
+    libc::free(opts as *mut _);
+    if ok && rval.is_object() {
+        rooted!(&in(cx) let mime_ctor = rval.to_object());
+        JS_DefineProperty3(cx, bun_obj, c"Mime".as_ptr(), mime_ctor.handle(), JSPROP_ENUMERATE as u32);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.stdin/stdout/stderr] — Bun.file(fd) wrappers
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Create a JS object representing Bun.file(fd) for the given file descriptor.
+unsafe fn make_bun_file_for_fd(
+    cx: &mut mozjs::context::JSContext,
+    fd: i32,
+) -> *mut JSObject {
+    rooted!(&in(cx) let file_obj = JS_NewPlainObject(cx));
+    if file_obj.get().is_null() {
+        return ::std::ptr::null_mut();
+    }
+
+    let fd_val = Int32Value(fd);
+    rooted!(&in(cx) let fv = fd_val);
+    JS_DefineProperty(cx.raw_cx(), file_obj.handle().into(), c"fd".as_ptr(), fv.handle().into(), JSPROP_ENUMERATE as u32);
+
+    // Add a path property for the fd
+    let path_str = match fd {
+        0 => "/dev/stdin",
+        1 => "/dev/stdout",
+        2 => "/dev/stderr",
+        _ => "",
+    };
+    let c_path = ZBox::from_bytes(path_str.as_bytes());
+    let js_path = JS_NewStringCopyZ(cx.raw_cx(), c_path.as_ptr());
+    if !js_path.is_null() {
+        rooted!(&in(cx) let pv = StringValue(&*js_path));
+        JS_DefineProperty(cx.raw_cx(), file_obj.handle().into(), c"path".as_ptr(), pv.handle().into(), JSPROP_ENUMERATE as u32);
+    }
+
+    // Add readable/writable properties
+    let (readable, writable) = match fd {
+        0 => (true, false),
+        1 | 2 => (false, true),
+        _ => (true, true),
+    };
+    rooted!(&in(cx) let rv = BooleanValue(readable));
+    JS_DefineProperty(cx.raw_cx(), file_obj.handle().into(), c"readable".as_ptr(), rv.handle().into(), JSPROP_ENUMERATE as u32);
+    rooted!(&in(cx) let wv = BooleanValue(writable));
+    JS_DefineProperty(cx.raw_cx(), file_obj.handle().into(), c"writable".as_ptr(), wv.handle().into(), JSPROP_ENUMERATE as u32);
+
+    file_obj.get()
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.deepLink] — throws "not implemented"
+// ──────────────────────────────────────────────────────────────────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_deep_link(
+    cx: *mut JSContext,
+    _argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, _argc);
+    JS_ReportErrorUTF8(cx, c"Bun.deepLink() is not implemented in this environment".as_ptr());
+    args.rval().set(UndefinedValue());
+    false
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// @trace REQ-ENG-006 [api:Bun.openInNewTab] — open URL in new tab
+// ──────────────────────────────────────────────────────────────────────────
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn bun_open_in_new_tab(
+    cx: *mut JSContext,
+    argc: u32,
+    vp: *mut JSVal,
+) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    if argc == 0 {
+        JS_ReportErrorUTF8(cx, c"Bun.openInNewTab() requires a URL".as_ptr());
+        return false;
+    }
+    let url_val = *args.get(0).ptr;
+    if !url_val.is_string() {
+        JS_ReportErrorUTF8(cx, c"Bun.openInNewTab() requires a string URL".as_ptr());
+        return false;
+    }
+    let url = crate::js_to_rust_string(cx, url_val);
+
+    // Try to open via xdg-open (Linux) or open (macOS)
+    #[cfg(target_family = "unix")]
+    {
+        let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+        let _ = ::std::process::Command::new(opener)
+            .arg(&url)
+            .spawn();
+    }
+
+    // Return undefined (Bun behavior)
+    args.rval().set(UndefinedValue());
+    true
+}
+
 // @trace REQ-ENG-006 [req:REQ-ENG-006] [level:unit]
 
 #[cfg(test)]

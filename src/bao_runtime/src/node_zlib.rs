@@ -111,14 +111,42 @@ unsafe fn return_bytes(cx: *mut JSContext, args: &CallArgs, data: Vec<u8>) -> bo
 }
 
 // ---------------------------------------------------------------------------
-// Native sync functions — accept buffer-like, return Uint8Array
+// Options extraction helper — reads level/strategy/memLevel from options obj
+// ---------------------------------------------------------------------------
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn extract_compression_level(cx: *mut JSContext, opts_val: JSVal) -> flate2::Compression {
+    let mut level = flate2::Compression::default();
+    if !opts_val.is_object() {
+        return level;
+    }
+    let obj = opts_val.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
+
+    let mut val = UndefinedValue();
+    JS_GetProperty(cx, obj_root.handle().into(), c"level".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut val,
+    });
+    if val.is_int32() {
+        let l = val.to_int32();
+        if l >= 0 && l <= 9 {
+            level = flate2::Compression::new(l as u32);
+        }
+    }
+    level
+}
+
+// ---------------------------------------------------------------------------
+// Native sync functions — accept buffer-like, return Buffer
 // ---------------------------------------------------------------------------
 
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn zlib_deflate_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    let level = if argc > 1 { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), level);
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
@@ -142,7 +170,8 @@ unsafe extern "C" fn zlib_inflate_sync(cx: *mut JSContext, argc: u32, vp: *mut J
 unsafe extern "C" fn zlib_deflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+    let level = if argc > 1 { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
+    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), level);
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
@@ -166,7 +195,8 @@ unsafe extern "C" fn zlib_inflate_raw_sync(cx: *mut JSContext, argc: u32, vp: *m
 unsafe extern "C" fn zlib_gzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
-    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let level = if argc > 1 { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), level);
     let _ = encoder.write_all(&data);
     match encoder.finish() {
         Ok(compressed) => return_bytes(cx, &args, compressed),
@@ -186,54 +216,810 @@ unsafe extern "C" fn zlib_gunzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JS
     }
 }
 
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_unzip_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    // unzip auto-detects gzip/zlib/deflate header
+    // Try gzip first, then zlib, then raw deflate
+    let mut decompressed = Vec::new();
+    {
+        let mut decoder = flate2::read::GzDecoder::new(&data[..]);
+        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
+            return return_bytes(cx, &args, decompressed);
+        }
+    }
+    decompressed.clear();
+    {
+        let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
+        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
+            return return_bytes(cx, &args, decompressed);
+        }
+    }
+    decompressed.clear();
+    {
+        let mut decoder = flate2::read::DeflateDecoder::new(&data[..]);
+        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
+            return return_bytes(cx, &args, decompressed);
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
 // ---------------------------------------------------------------------------
-// JS polyfill — classes + constants only
+// Brotli sync functions — using bun_brotli crate
+// ---------------------------------------------------------------------------
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn extract_brotli_options(cx: *mut JSContext, opts_val: JSVal) -> (u32, u32) {
+    // Returns (quality, lgwin)
+    let mut quality = 11u32; // brotli default
+    let mut lgwin = 22u32;   // brotli default
+    if !opts_val.is_object() {
+        return (quality, lgwin);
+    }
+    let obj = opts_val.to_object();
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let obj_root = obj);
+
+    let mut val = UndefinedValue();
+    JS_GetProperty(cx, obj_root.handle().into(), c"quality".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut val,
+    });
+    if val.is_int32() {
+        let q = val.to_int32();
+        if q >= 0 && q <= 11 {
+            quality = q as u32;
+        }
+    }
+
+    let mut val2 = UndefinedValue();
+    JS_GetProperty(cx, obj_root.handle().into(), c"lgwin".as_ptr(), MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut val2,
+    });
+    if val2.is_int32() {
+        let w = val2.to_int32();
+        if w >= 10 && w <= 24 {
+            lgwin = w as u32;
+        }
+    }
+
+    (quality, lgwin)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_brotli_compress_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let (quality, lgwin) = if argc > 1 { extract_brotli_options(cx, *args.get(1).ptr) } else { (11, 22) };
+    let compressed = bun_brotli::compress(&data, quality, lgwin);
+    return_bytes(cx, &args, compressed)
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_brotli_decompress_sync(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    match bun_brotli::decompress(&data) {
+        Ok(decompressed) => return_bytes(cx, &args, decompressed),
+        Err(_) => { args.rval().set(UndefinedValue()); true }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Async callback-style functions — deflate/inflate/gzip/gunzip/unzip/brotli
+// ---------------------------------------------------------------------------
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn call_callback(cx: *mut JSContext, callback: JSVal, err: JSVal, result: JSVal) {
+    if !callback.is_object() {
+        return;
+    }
+    let global = CurrentGlobalOrNull(cx);
+    if global.is_null() {
+        return;
+    }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    rooted!(&in(wrapped_cx) let global_root = global);
+    let cb_obj = callback.to_object();
+    let cb_val = mozjs::jsval::ObjectValue(cb_obj);
+    rooted!(&in(wrapped_cx) let cb_root = cb_val);
+
+    let vals = [err, result];
+    let call_args = HandleValueArray {
+        length_: 2,
+        elements_: vals.as_ptr(),
+    };
+    let mut rval = UndefinedValue();
+    JS_CallFunctionValue(cx, global_root.handle().into(), cb_root.handle().into(), &call_args, MutableHandle::<Value> {
+        _phantom_0: ::std::marker::PhantomData, ptr: &mut rval,
+    });
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_deflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let level = if argc > 1 { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
+    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), level);
+    let _ = encoder.write_all(&data);
+    match encoder.finish() {
+        Ok(compressed) => {
+            let null_val = UndefinedValue();
+            // Build a Buffer for the result
+            let global = CurrentGlobalOrNull(cx);
+            if !global.is_null() && callback.is_object() {
+                // Use return_bytes logic to create Buffer, then pass to callback
+                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                rooted!(&in(wrapped_cx) let global_root = global);
+                let mut buffer_ctor = UndefinedValue();
+                JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
+                });
+                if buffer_ctor.is_object() {
+                    let buffer_ctor_obj = buffer_ctor.to_object();
+                    rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
+                    let mut from_fn = UndefinedValue();
+                    JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
+                    });
+                    if from_fn.is_object() {
+                        let arr_obj = JS_NewPlainObject(cx);
+                        if !arr_obj.is_null() {
+                            rooted!(&in(wrapped_cx) let arr_root = arr_obj);
+                            for (i, &byte) in compressed.iter().enumerate() {
+                                let v = Int32Value(byte as i32);
+                                rooted!(&in(wrapped_cx) let v_root = v);
+                                JS_SetElement(cx, arr_root.handle().into(), i as u32, v_root.handle().into());
+                            }
+                            let len_v = Int32Value(compressed.len() as i32);
+                            rooted!(&in(wrapped_cx) let len_root = len_v);
+                            JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), len_root.handle().into(), JSPROP_ENUMERATE as u32);
+                            let arr_val = mozjs::jsval::ObjectValue(arr_obj);
+                            rooted!(&in(wrapped_cx) let arr_val_root = arr_val);
+                            let arr_val_copy = *arr_val_root;
+                            let call_args_buf = HandleValueArray { length_: 1, elements_: &arr_val_copy as *const JSVal };
+                            rooted!(&in(wrapped_cx) let ctor_root = from_fn);
+                            let mut buf_rval = UndefinedValue();
+                            JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args_buf, MutableHandle::<Value> {
+                                _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_rval,
+                            });
+                            call_callback(cx, callback, null_val, buf_rval);
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            if callback.is_object() {
+                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"deflate error".as_ptr()) });
+                call_callback(cx, callback, err_msg, UndefinedValue());
+            }
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_inflate(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+
+    let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
+    let mut decompressed = Vec::new();
+    match decoder.read_to_end(&mut decompressed) {
+        Ok(_) => {
+            if callback.is_object() {
+                // Build Buffer and call callback
+                let global = CurrentGlobalOrNull(cx);
+                if !global.is_null() {
+                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                    rooted!(&in(wrapped_cx) let global_root = global);
+                    let mut buffer_ctor = UndefinedValue();
+                    JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
+                    });
+                    if buffer_ctor.is_object() {
+                        let buffer_ctor_obj = buffer_ctor.to_object();
+                        rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
+                        let mut from_fn = UndefinedValue();
+                        JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
+                        });
+                        if from_fn.is_object() {
+                            let arr_obj = JS_NewPlainObject(cx);
+                            if !arr_obj.is_null() {
+                                rooted!(&in(wrapped_cx) let arr_root = arr_obj);
+                                for (i, &byte) in decompressed.iter().enumerate() {
+                                    let v = Int32Value(byte as i32);
+                                    rooted!(&in(wrapped_cx) let v_root = v);
+                                    JS_SetElement(cx, arr_root.handle().into(), i as u32, v_root.handle().into());
+                                }
+                                let len_v = Int32Value(decompressed.len() as i32);
+                                rooted!(&in(wrapped_cx) let len_root = len_v);
+                                JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), len_root.handle().into(), JSPROP_ENUMERATE as u32);
+                                let arr_val = mozjs::jsval::ObjectValue(arr_obj);
+                                rooted!(&in(wrapped_cx) let arr_val_root = arr_val);
+                                let arr_val_copy = *arr_val_root;
+                                let call_args_buf = HandleValueArray { length_: 1, elements_: &arr_val_copy as *const JSVal };
+                                rooted!(&in(wrapped_cx) let ctor_root = from_fn);
+                                let mut buf_rval = UndefinedValue();
+                                JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args_buf, MutableHandle::<Value> {
+                                    _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_rval,
+                                });
+                                call_callback(cx, callback, UndefinedValue(), buf_rval);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            if callback.is_object() {
+                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"inflate error".as_ptr()) });
+                call_callback(cx, callback, err_msg, UndefinedValue());
+            }
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_gzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let level = if argc > 1 && !(*args.get(1).ptr).is_object() { extract_compression_level(cx, *args.get(1).ptr) } else { flate2::Compression::default() };
+    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), level);
+    let _ = encoder.write_all(&data);
+    match encoder.finish() {
+        Ok(compressed) => {
+            if callback.is_object() {
+                let global = CurrentGlobalOrNull(cx);
+                if !global.is_null() {
+                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                    rooted!(&in(wrapped_cx) let global_root = global);
+                    let mut buffer_ctor = UndefinedValue();
+                    JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
+                    });
+                    if buffer_ctor.is_object() {
+                        let buffer_ctor_obj = buffer_ctor.to_object();
+                        rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
+                        let mut from_fn = UndefinedValue();
+                        JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
+                        });
+                        if from_fn.is_object() {
+                            let arr_obj = JS_NewPlainObject(cx);
+                            if !arr_obj.is_null() {
+                                rooted!(&in(wrapped_cx) let arr_root = arr_obj);
+                                for (i, &byte) in compressed.iter().enumerate() {
+                                    let v = Int32Value(byte as i32);
+                                    rooted!(&in(wrapped_cx) let v_root = v);
+                                    JS_SetElement(cx, arr_root.handle().into(), i as u32, v_root.handle().into());
+                                }
+                                let len_v = Int32Value(compressed.len() as i32);
+                                rooted!(&in(wrapped_cx) let len_root = len_v);
+                                JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), len_root.handle().into(), JSPROP_ENUMERATE as u32);
+                                let arr_val = mozjs::jsval::ObjectValue(arr_obj);
+                                rooted!(&in(wrapped_cx) let arr_val_root = arr_val);
+                                let arr_val_copy = *arr_val_root;
+                                let call_args_buf = HandleValueArray { length_: 1, elements_: &arr_val_copy as *const JSVal };
+                                rooted!(&in(wrapped_cx) let ctor_root = from_fn);
+                                let mut buf_rval = UndefinedValue();
+                                JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args_buf, MutableHandle::<Value> {
+                                    _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_rval,
+                                });
+                                call_callback(cx, callback, UndefinedValue(), buf_rval);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            if callback.is_object() {
+                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"gzip error".as_ptr()) });
+                call_callback(cx, callback, err_msg, UndefinedValue());
+            }
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_gunzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+
+    let mut decoder = flate2::read::GzDecoder::new(&data[..]);
+    let mut decompressed = Vec::new();
+    match decoder.read_to_end(&mut decompressed) {
+        Ok(_) => {
+            if callback.is_object() {
+                let global = CurrentGlobalOrNull(cx);
+                if !global.is_null() {
+                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                    rooted!(&in(wrapped_cx) let global_root = global);
+                    let mut buffer_ctor = UndefinedValue();
+                    JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
+                    });
+                    if buffer_ctor.is_object() {
+                        let buffer_ctor_obj = buffer_ctor.to_object();
+                        rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
+                        let mut from_fn = UndefinedValue();
+                        JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
+                        });
+                        if from_fn.is_object() {
+                            let arr_obj = JS_NewPlainObject(cx);
+                            if !arr_obj.is_null() {
+                                rooted!(&in(wrapped_cx) let arr_root = arr_obj);
+                                for (i, &byte) in decompressed.iter().enumerate() {
+                                    let v = Int32Value(byte as i32);
+                                    rooted!(&in(wrapped_cx) let v_root = v);
+                                    JS_SetElement(cx, arr_root.handle().into(), i as u32, v_root.handle().into());
+                                }
+                                let len_v = Int32Value(decompressed.len() as i32);
+                                rooted!(&in(wrapped_cx) let len_root = len_v);
+                                JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), len_root.handle().into(), JSPROP_ENUMERATE as u32);
+                                let arr_val = mozjs::jsval::ObjectValue(arr_obj);
+                                rooted!(&in(wrapped_cx) let arr_val_root = arr_val);
+                                let arr_val_copy = *arr_val_root;
+                                let call_args_buf = HandleValueArray { length_: 1, elements_: &arr_val_copy as *const JSVal };
+                                rooted!(&in(wrapped_cx) let ctor_root = from_fn);
+                                let mut buf_rval = UndefinedValue();
+                                JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args_buf, MutableHandle::<Value> {
+                                    _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_rval,
+                                });
+                                call_callback(cx, callback, UndefinedValue(), buf_rval);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            if callback.is_object() {
+                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"gunzip error".as_ptr()) });
+                call_callback(cx, callback, err_msg, UndefinedValue());
+            }
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_unzip(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+
+    let mut decompressed = Vec::new();
+    let mut success = false;
+    {
+        let mut decoder = flate2::read::GzDecoder::new(&data[..]);
+        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
+            success = true;
+        }
+    }
+    if !success {
+        decompressed.clear();
+        let mut decoder = flate2::read::ZlibDecoder::new(&data[..]);
+        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
+            success = true;
+        }
+    }
+    if !success {
+        decompressed.clear();
+        let mut decoder = flate2::read::DeflateDecoder::new(&data[..]);
+        if decoder.read_to_end(&mut decompressed).is_ok() && !decompressed.is_empty() {
+            success = true;
+        }
+    }
+
+    if success && callback.is_object() {
+        let global = CurrentGlobalOrNull(cx);
+        if !global.is_null() {
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let global_root = global);
+            let mut buffer_ctor = UndefinedValue();
+            JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
+            });
+            if buffer_ctor.is_object() {
+                let buffer_ctor_obj = buffer_ctor.to_object();
+                rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
+                let mut from_fn = UndefinedValue();
+                JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
+                });
+                if from_fn.is_object() {
+                    let arr_obj = JS_NewPlainObject(cx);
+                    if !arr_obj.is_null() {
+                        rooted!(&in(wrapped_cx) let arr_root = arr_obj);
+                        for (i, &byte) in decompressed.iter().enumerate() {
+                            let v = Int32Value(byte as i32);
+                            rooted!(&in(wrapped_cx) let v_root = v);
+                            JS_SetElement(cx, arr_root.handle().into(), i as u32, v_root.handle().into());
+                        }
+                        let len_v = Int32Value(decompressed.len() as i32);
+                        rooted!(&in(wrapped_cx) let len_root = len_v);
+                        JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), len_root.handle().into(), JSPROP_ENUMERATE as u32);
+                        let arr_val = mozjs::jsval::ObjectValue(arr_obj);
+                        rooted!(&in(wrapped_cx) let arr_val_root = arr_val);
+                        let arr_val_copy = *arr_val_root;
+                        let call_args_buf = HandleValueArray { length_: 1, elements_: &arr_val_copy as *const JSVal };
+                        rooted!(&in(wrapped_cx) let ctor_root = from_fn);
+                        let mut buf_rval = UndefinedValue();
+                        JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args_buf, MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_rval,
+                        });
+                        call_callback(cx, callback, UndefinedValue(), buf_rval);
+                    }
+                }
+            }
+        }
+    } else if !success && callback.is_object() {
+        let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"unzip error".as_ptr()) });
+        call_callback(cx, callback, err_msg, UndefinedValue());
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_brotli_compress(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let (quality, lgwin) = if argc > 1 && !(*args.get(1).ptr).is_object() { extract_brotli_options(cx, *args.get(1).ptr) } else { (11, 22) };
+    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+
+    let compressed = bun_brotli::compress(&data, quality, lgwin);
+    if callback.is_object() {
+        let global = CurrentGlobalOrNull(cx);
+        if !global.is_null() {
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            rooted!(&in(wrapped_cx) let global_root = global);
+            let mut buffer_ctor = UndefinedValue();
+            JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
+                _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
+            });
+            if buffer_ctor.is_object() {
+                let buffer_ctor_obj = buffer_ctor.to_object();
+                rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
+                let mut from_fn = UndefinedValue();
+                JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
+                    _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
+                });
+                if from_fn.is_object() {
+                    let arr_obj = JS_NewPlainObject(cx);
+                    if !arr_obj.is_null() {
+                        rooted!(&in(wrapped_cx) let arr_root = arr_obj);
+                        for (i, &byte) in compressed.iter().enumerate() {
+                            let v = Int32Value(byte as i32);
+                            rooted!(&in(wrapped_cx) let v_root = v);
+                            JS_SetElement(cx, arr_root.handle().into(), i as u32, v_root.handle().into());
+                        }
+                        let len_v = Int32Value(compressed.len() as i32);
+                        rooted!(&in(wrapped_cx) let len_root = len_v);
+                        JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), len_root.handle().into(), JSPROP_ENUMERATE as u32);
+                        let arr_val = mozjs::jsval::ObjectValue(arr_obj);
+                        rooted!(&in(wrapped_cx) let arr_val_root = arr_val);
+                        let arr_val_copy = *arr_val_root;
+                        let call_args_buf = HandleValueArray { length_: 1, elements_: &arr_val_copy as *const JSVal };
+                        rooted!(&in(wrapped_cx) let ctor_root = from_fn);
+                        let mut buf_rval = UndefinedValue();
+                        JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args_buf, MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_rval,
+                        });
+                        call_callback(cx, callback, UndefinedValue(), buf_rval);
+                    }
+                }
+            }
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn zlib_brotli_decompress(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let data = if argc > 0 { extract_bytes(cx, *args.get(0).ptr) } else { Vec::new() };
+    let callback = if argc > 2 { *args.get(2).ptr } else if argc > 1 && (*args.get(1).ptr).is_object() { *args.get(1).ptr } else { UndefinedValue() };
+
+    match bun_brotli::decompress(&data) {
+        Ok(decompressed) => {
+            if callback.is_object() {
+                let global = CurrentGlobalOrNull(cx);
+                if !global.is_null() {
+                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                    rooted!(&in(wrapped_cx) let global_root = global);
+                    let mut buffer_ctor = UndefinedValue();
+                    JS_GetProperty(cx, global_root.handle().into(), c"Buffer".as_ptr(), MutableHandle::<Value> {
+                        _phantom_0: ::std::marker::PhantomData, ptr: &mut buffer_ctor,
+                    });
+                    if buffer_ctor.is_object() {
+                        let buffer_ctor_obj = buffer_ctor.to_object();
+                        rooted!(&in(wrapped_cx) let buffer_ctor_root = buffer_ctor_obj);
+                        let mut from_fn = UndefinedValue();
+                        JS_GetProperty(cx, buffer_ctor_root.handle().into(), c"from".as_ptr(), MutableHandle::<Value> {
+                            _phantom_0: ::std::marker::PhantomData, ptr: &mut from_fn,
+                        });
+                        if from_fn.is_object() {
+                            let arr_obj = JS_NewPlainObject(cx);
+                            if !arr_obj.is_null() {
+                                rooted!(&in(wrapped_cx) let arr_root = arr_obj);
+                                for (i, &byte) in decompressed.iter().enumerate() {
+                                    let v = Int32Value(byte as i32);
+                                    rooted!(&in(wrapped_cx) let v_root = v);
+                                    JS_SetElement(cx, arr_root.handle().into(), i as u32, v_root.handle().into());
+                                }
+                                let len_v = Int32Value(decompressed.len() as i32);
+                                rooted!(&in(wrapped_cx) let len_root = len_v);
+                                JS_DefineProperty(cx, arr_root.handle().into(), c"length".as_ptr(), len_root.handle().into(), JSPROP_ENUMERATE as u32);
+                                let arr_val = mozjs::jsval::ObjectValue(arr_obj);
+                                rooted!(&in(wrapped_cx) let arr_val_root = arr_val);
+                                let arr_val_copy = *arr_val_root;
+                                let call_args_buf = HandleValueArray { length_: 1, elements_: &arr_val_copy as *const JSVal };
+                                rooted!(&in(wrapped_cx) let ctor_root = from_fn);
+                                let mut buf_rval = UndefinedValue();
+                                JS_CallFunctionValue(cx, global_root.handle().into(), ctor_root.handle().into(), &call_args_buf, MutableHandle::<Value> {
+                                    _phantom_0: ::std::marker::PhantomData, ptr: &mut buf_rval,
+                                });
+                                call_callback(cx, callback, UndefinedValue(), buf_rval);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            if callback.is_object() {
+                let err_msg = mozjs::jsval::StringValue(unsafe { &*JS_NewStringCopyZ(cx, c"brotli decompress error".as_ptr()) });
+                call_callback(cx, callback, err_msg, UndefinedValue());
+            }
+        }
+    }
+    args.rval().set(UndefinedValue());
+    true
+}
+
+// ---------------------------------------------------------------------------
+// JS polyfill — Transform stream classes + constants + convenience wrappers
 // ---------------------------------------------------------------------------
 
 const ZLIB_JS: &str = r#"
 (function() {
+  // ── Minimal EventEmitter (shared with node:stream, duplicated for isolation) ──
   function EE() { this._events = {}; }
   EE.prototype.on = function(e, fn) { (this._events[e] || (this._events[e] = [])).push(fn); return this; };
-  EE.prototype.emit = function(e) { var a = Array.prototype.slice.call(arguments, 1); var ls = this._events[e]; if (ls) for (var i = 0; i < ls.length; i++) ls[i].apply(this, a); return !!ls; };
+  EE.prototype.once = function(e, fn) { var self = this; function w() { self.removeListener(e, w); fn.apply(this, arguments); }; fn._onceWrapper = w; return this.on(e, w); };
+  EE.prototype.emit = function(e) { var a = Array.prototype.slice.call(arguments, 1); var ls = this._events[e]; if (ls) { ls = ls.slice(); for (var i = 0; i < ls.length; i++) ls[i].apply(this, a); } return !!ls; };
+  EE.prototype.removeListener = function(e, fn) { var ls = this._events[e]; if (ls) { var idx = ls.indexOf(fn); if (idx === -1 && fn._onceWrapper) idx = ls.indexOf(fn._onceWrapper); if (idx >= 0) ls.splice(idx, 1); } return this; };
+  EE.prototype.removeAllListeners = function(e) { if (e) delete this._events[e]; else this._events = {}; return this; };
 
-  function ZlibBase() { EE.call(this); this._chunks = []; this._ended = false; }
-  ZlibBase.prototype = Object.create(EE.prototype);
-  ZlibBase.prototype.constructor = ZlibBase;
-  ZlibBase.prototype.write = function(chunk) { this._chunks.push(chunk); return true; };
-  ZlibBase.prototype.end = function(chunk) { if (chunk) this._chunks.push(chunk); this._ended = true; this.emit("end"); return this; };
-  ZlibBase.prototype.pipe = function(dest) { this.on("data", function(c) { dest.write(c); }); this.on("end", function() { dest.end(); }); return dest; };
+  // ── Minimal Transform base (Duplex: Readable + Writable) ──
+  function RS(opts) { this.buffer = []; this.length = 0; this.ended = false; this.endEmitted = false; this.flowing = false; this.paused = false; this.hwm = (opts && opts.highWaterMark) || 16384; }
+  function WS(opts) { this.buffer = []; this.writing = false; this.ended = false; this.finished = false; this.hwm = (opts && opts.highWaterMark) || 16384; this.corked = 0; this.corkBuffer = []; }
 
-  function Deflate(opts) { ZlibBase.call(this); }
-  Deflate.prototype = Object.create(ZlibBase.prototype);
+  function ZlibTransform(opts) {
+    if (!(this instanceof ZlibTransform)) return new ZlibTransform(opts);
+    EE.call(this);
+    this._readableState = new RS(opts);
+    this._writableState = new WS(opts);
+    this._chunks = [];
+    this._processing = false;
+    this.readable = true;
+    this.writable = true;
+    this.destroyed = false;
+    this.bytesWritten = 0;
+    this.bytesRead = 0;
+  }
+  ZlibTransform.prototype = Object.create(EE.prototype);
+  ZlibTransform.prototype.constructor = ZlibTransform;
 
-  function Inflate(opts) { ZlibBase.call(this); }
-  Inflate.prototype = Object.create(ZlibBase.prototype);
+  ZlibTransform.prototype.push = function(chunk) {
+    var s = this._readableState;
+    if (chunk === null) { s.ended = true; if (s.buffer.length === 0 && !s.endEmitted) { s.endEmitted = true; this.emit("end"); } return false; }
+    s.buffer.push(chunk);
+    s.length += (chunk && chunk.length) || 1;
+    if (s.flowing && !s.paused) { var d = s.buffer.shift(); s.length -= (d && d.length) || 1; this.emit("data", d); if (s.ended && s.buffer.length === 0 && !s.endEmitted) { s.endEmitted = true; this.emit("end"); } }
+    return s.length < s.hwm;
+  };
 
-  function Gzip(opts) { ZlibBase.call(this); }
-  Gzip.prototype = Object.create(ZlibBase.prototype);
+  ZlibTransform.prototype.write = function(chunk) {
+    if (this._writableState.ended) return false;
+    this._chunks.push(chunk);
+    this.bytesWritten += (chunk && chunk.length) || 0;
+    return true;
+  };
 
-  function Gunzip(opts) { ZlibBase.call(this); }
-  Gunzip.prototype = Object.create(ZlibBase.prototype);
+  ZlibTransform.prototype.end = function(chunk) {
+    if (chunk) this.write(chunk);
+    this._writableState.ended = true;
+    this.writable = false;
+    return this;
+  };
 
-  function DeflateRaw(opts) { ZlibBase.call(this); }
-  DeflateRaw.prototype = Object.create(ZlibBase.prototype);
+  ZlibTransform.prototype.read = function() {
+    var s = this._readableState;
+    if (s.buffer.length > 0) { var d = s.buffer.shift(); s.length -= (d && d.length) || 1; if (s.ended && s.buffer.length === 0 && !s.endEmitted) { s.endEmitted = true; this.emit("end"); } return d; }
+    return null;
+  };
 
-  function InflateRaw(opts) { ZlibBase.call(this); }
-  InflateRaw.prototype = Object.create(ZlibBase.prototype);
+  ZlibTransform.prototype.pipe = function(dest) { this.on("data", function(c) { dest.write(c); }); this.on("end", function() { dest.end(); }); return dest; };
 
+  ZlibTransform.prototype.on = function(e, fn) {
+    EE.prototype.on.call(this, e, fn);
+    if (e === "data") { this._readableState.flowing = true; this._readableState.paused = false; }
+    return this;
+  };
+
+  ZlibTransform.prototype.flush = function(kind) { /* no-op in base; subclasses override */ };
+  ZlibTransform.prototype.reset = function() { this._chunks = []; this.bytesWritten = 0; this.bytesRead = 0; };
+  ZlibTransform.prototype.destroy = function(err) { if (this.destroyed) return this; this.destroyed = true; this.readable = false; this.writable = false; if (err) this.emit("error", err); this.emit("close"); return this; };
+
+  // ── Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw Transform classes ──
+  // These accumulate chunks and process on end/flush via native sync functions.
+
+  function Deflate(opts) { ZlibTransform.call(this, opts); this._level = (opts && opts.level) || -1; }
+  Deflate.prototype = Object.create(ZlibTransform.prototype);
+  Deflate.prototype.constructor = Deflate;
+  Deflate.prototype._process = function() {
+    var all = Buffer.concat(this._chunks);
+    this._chunks = [];
+    return __zlib_deflateSync(all, { level: this._level });
+  };
+
+  function Inflate(opts) { ZlibTransform.call(this, opts); }
+  Inflate.prototype = Object.create(ZlibTransform.prototype);
+  Inflate.prototype.constructor = Inflate;
+  Inflate.prototype._process = function() {
+    var all = Buffer.concat(this._chunks);
+    this._chunks = [];
+    return __zlib_inflateSync(all);
+  };
+
+  function Gzip(opts) { ZlibTransform.call(this, opts); this._level = (opts && opts.level) || -1; }
+  Gzip.prototype = Object.create(ZlibTransform.prototype);
+  Gzip.prototype.constructor = Gzip;
+  Gzip.prototype._process = function() {
+    var all = Buffer.concat(this._chunks);
+    this._chunks = [];
+    return __zlib_gzipSync(all, { level: this._level });
+  };
+
+  function Gunzip(opts) { ZlibTransform.call(this, opts); }
+  Gunzip.prototype = Object.create(ZlibTransform.prototype);
+  Gunzip.prototype.constructor = Gunzip;
+  Gunzip.prototype._process = function() {
+    var all = Buffer.concat(this._chunks);
+    this._chunks = [];
+    return __zlib_gunzipSync(all);
+  };
+
+  function DeflateRaw(opts) { ZlibTransform.call(this, opts); this._level = (opts && opts.level) || -1; }
+  DeflateRaw.prototype = Object.create(ZlibTransform.prototype);
+  DeflateRaw.prototype.constructor = DeflateRaw;
+  DeflateRaw.prototype._process = function() {
+    var all = Buffer.concat(this._chunks);
+    this._chunks = [];
+    return __zlib_deflateRawSync(all, { level: this._level });
+  };
+
+  function InflateRaw(opts) { ZlibTransform.call(this, opts); }
+  InflateRaw.prototype = Object.create(ZlibTransform.prototype);
+  InflateRaw.prototype.constructor = InflateRaw;
+  InflateRaw.prototype._process = function() {
+    var all = Buffer.concat(this._chunks);
+    this._chunks = [];
+    return __zlib_inflateRawSync(all);
+  };
+
+  // ── Brotli Transform classes ──
+  function BrotliCompress(opts) { ZlibTransform.call(this, opts); this._quality = (opts && opts.quality) || 11; this._lgwin = (opts && opts.lgwin) || 22; }
+  BrotliCompress.prototype = Object.create(ZlibTransform.prototype);
+  BrotliCompress.prototype.constructor = BrotliCompress;
+  BrotliCompress.prototype._process = function() {
+    var all = Buffer.concat(this._chunks);
+    this._chunks = [];
+    return __zlib_brotliCompressSync(all, { quality: this._quality, lgwin: this._lgwin });
+  };
+
+  function BrotliDecompress(opts) { ZlibTransform.call(this, opts); }
+  BrotliDecompress.prototype = Object.create(ZlibTransform.prototype);
+  BrotliDecompress.prototype.constructor = BrotliDecompress;
+  BrotliDecompress.prototype._process = function() {
+    var all = Buffer.concat(this._chunks);
+    this._chunks = [];
+    return __zlib_brotliDecompressSync(all);
+  };
+
+  // ── Patch end() on all transform classes to process + emit data/finish ──
+  var classes = [Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, BrotliCompress, BrotliDecompress];
+  classes.forEach(function(Cls) {
+    var origEnd = Cls.prototype.end;
+    Cls.prototype.end = function(chunk) {
+      if (chunk) this.write(chunk);
+      this._writableState.ended = true;
+      this.writable = false;
+      try {
+        var result = this._process();
+        if (result !== undefined && result !== null) {
+          this.bytesRead += result.length;
+          this.push(result);
+        }
+      } catch(e) {
+        this.emit("error", e);
+      }
+      this.push(null);
+      this.emit("finish");
+      return this;
+    };
+    Cls.prototype.flush = function(kind) {
+      try {
+        var result = this._process();
+        if (result !== undefined && result !== null) this.push(result);
+      } catch(e) {
+        this.emit("error", e);
+      }
+    };
+  });
+
+  // ── Constants ──
+  var constants = {
+    Z_NO_FLUSH: 0, Z_PARTIAL_FLUSH: 1, Z_SYNC_FLUSH: 2, Z_FULL_FLUSH: 3,
+    Z_FINISH: 4, Z_BLOCK: 5, Z_TREES: 6,
+    Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2,
+    Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4,
+    Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6,
+    Z_NO_COMPRESSION: 0, Z_BEST_SPEED: 1, Z_BEST_COMPRESSION: 9, Z_DEFAULT_COMPRESSION: -1,
+    Z_FILTERED: 1, Z_HUFFMAN_ONLY: 2, Z_RLE: 3, Z_FIXED: 4, Z_DEFAULT_STRATEGY: 0,
+    ZLIB_VERSION: "1.2.13", DEFLATE: 1, INFLATE: 2, GZIP: 3, GUNZIP: 4, DEFLATERAW: 5, INFLATERAW: 6, UNZIP: 7,
+    BROTLI_DECODE: 8, BROTLI_ENCODE: 9,
+    // Brotli constants
+    BROTLI_OK: 0, BROTLI_ERROR: -1,
+    BROTLI_MODE_GENERIC: 0, BROTLI_MODE_TEXT: 1, BROTLI_MODE_FONT: 2,
+    BROTLI_DEFAULT_QUALITY: 11, BROTLI_MIN_QUALITY: 0, BROTLI_MAX_QUALITY: 11,
+    BROTLI_DEFAULT_WINDOW: 22, BROTLI_MIN_WINDOW_BITS: 10, BROTLI_MAX_WINDOW_BITS: 24,
+    BROTLI_LARGE_MAX_WINDOW_BITS: 24,
+    BROTLI_MIN_INPUT_BLOCK_BITS: 16, BROTLI_MAX_INPUT_BLOCK_BITS: 24,
+    BROTLI_MAX_INPUT_BLOCK_BITS: 24,
+    BROTLI_OPERATION_PROCESS: 0, BROTLI_OPERATION_FLUSH: 1,
+    BROTLI_OPERATION_FINISH: 2, BROTLI_OPERATION_EMIT_METADATA: 3,
+  };
+
+  // ── Export ──
   return {
+    // Transform stream classes
     Deflate: Deflate, Inflate: Inflate, Gzip: Gzip, Gunzip: Gunzip,
     DeflateRaw: DeflateRaw, InflateRaw: InflateRaw,
+    BrotliCompress: BrotliCompress, BrotliDecompress: BrotliDecompress,
+    // Factory functions
     createDeflate: function(o) { return new Deflate(o); },
     createInflate: function(o) { return new Inflate(o); },
     createGzip: function(o) { return new Gzip(o); },
     createGunzip: function(o) { return new Gunzip(o); },
     createDeflateRaw: function(o) { return new DeflateRaw(o); },
     createInflateRaw: function(o) { return new InflateRaw(o); },
-    constants: {
-      Z_NO_FLUSH: 0, Z_FINISH: 4, Z_OK: 0, Z_STREAM_END: 1,
-      Z_DATA_ERROR: -3, Z_BUF_ERROR: -5,
-    },
+    createBrotliCompress: function(o) { return new BrotliCompress(o); },
+    createBrotliDecompress: function(o) { return new BrotliDecompress(o); },
+    // Constants
+    constants: constants,
   };
 })();
 "#;
@@ -251,12 +1037,37 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
     unsafe {
         let cx_raw = cx.raw_cx();
 
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflateSync".as_ptr(), Some(zlib_deflate_sync), 1, JSPROP_ENUMERATE as u32);
+        // Sync functions
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflateSync".as_ptr(), Some(zlib_deflate_sync), 2, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"inflateSync".as_ptr(), Some(zlib_inflate_sync), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflateRawSync".as_ptr(), Some(zlib_deflate_raw_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflateRawSync".as_ptr(), Some(zlib_deflate_raw_sync), 2, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"inflateRawSync".as_ptr(), Some(zlib_inflate_raw_sync), 1, JSPROP_ENUMERATE as u32);
-        w2::JS_DefineFunction(cx, mod_obj.handle(), c"gzipSync".as_ptr(), Some(zlib_gzip_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"gzipSync".as_ptr(), Some(zlib_gzip_sync), 2, JSPROP_ENUMERATE as u32);
         w2::JS_DefineFunction(cx, mod_obj.handle(), c"gunzipSync".as_ptr(), Some(zlib_gunzip_sync), 1, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"unzipSync".as_ptr(), Some(zlib_unzip_sync), 1, JSPROP_ENUMERATE as u32);
+
+        // Brotli sync functions
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"brotliCompressSync".as_ptr(), Some(zlib_brotli_compress_sync), 2, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"brotliDecompressSync".as_ptr(), Some(zlib_brotli_decompress_sync), 1, JSPROP_ENUMERATE as u32);
+
+        // Async callback-style functions
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"deflate".as_ptr(), Some(zlib_deflate), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"inflate".as_ptr(), Some(zlib_inflate), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"gzip".as_ptr(), Some(zlib_gzip), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"gunzip".as_ptr(), Some(zlib_gunzip), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"unzip".as_ptr(), Some(zlib_unzip), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"brotliCompress".as_ptr(), Some(zlib_brotli_compress), 3, JSPROP_ENUMERATE as u32);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"brotliDecompress".as_ptr(), Some(zlib_brotli_decompress), 3, JSPROP_ENUMERATE as u32);
+
+        // Internal helpers used by JS Transform classes (prefixed with __)
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_deflateSync".as_ptr(), Some(zlib_deflate_sync), 2, 0);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_inflateSync".as_ptr(), Some(zlib_inflate_sync), 1, 0);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_gzipSync".as_ptr(), Some(zlib_gzip_sync), 2, 0);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_gunzipSync".as_ptr(), Some(zlib_gunzip_sync), 1, 0);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_deflateRawSync".as_ptr(), Some(zlib_deflate_raw_sync), 2, 0);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_inflateRawSync".as_ptr(), Some(zlib_inflate_raw_sync), 1, 0);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_brotliCompressSync".as_ptr(), Some(zlib_brotli_compress_sync), 2, 0);
+        w2::JS_DefineFunction(cx, mod_obj.handle(), c"__zlib_brotliDecompressSync".as_ptr(), Some(zlib_brotli_decompress_sync), 1, 0);
 
         let c_filename = ZBox::from_bytes("node:zlib".as_bytes());
         let opts = mozjs::glue::NewCompileOptions(cx_raw, c_filename.as_ptr(), 1);
@@ -282,8 +1093,11 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         rooted!(&in(cx) let exports_rooted = exports_obj);
 
         for name in &["Deflate", "Inflate", "Gzip", "Gunzip", "DeflateRaw", "InflateRaw",
+                       "BrotliCompress", "BrotliDecompress",
                        "createDeflate", "createInflate", "createGzip", "createGunzip",
-                       "createDeflateRaw", "createInflateRaw", "constants"] {
+                       "createDeflateRaw", "createInflateRaw",
+                       "createBrotliCompress", "createBrotliDecompress",
+                       "constants"] {
             let cname = ZBox::from_bytes(name.as_bytes());
             let mut val = UndefinedValue();
             JS_GetProperty(cx_raw, exports_rooted.handle().into(), cname.as_ptr(), MutableHandle::<Value> {

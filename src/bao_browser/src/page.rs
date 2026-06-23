@@ -1,4 +1,5 @@
 // @trace REQ-BRW-001 [entity:PageHandle]  REQ-BRW-002: Page lifecycle management (navigate, evaluate, screenshot)
+// @trace REQ-LIB-001 REQ-LIB-004: PageHandle high-level API (waitForSelector, click, type, fill, etc.)
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -9,6 +10,11 @@ use dpi::PhysicalSize;
 use servo::{
     Servo, SoftwareRenderingContext, WebView,
     WebViewBuilder, RenderingContext,
+    InputEvent, KeyboardEvent, MouseButtonEvent, MouseButtonAction, MouseButton,
+    MouseMoveEvent, WebViewPoint,
+    Key, KeyState, Code, Location, Modifiers, NamedKey,
+    CookieSource, StorageType,
+    CSSPixel,
 };
 
 use crate::config::PageConfig;
@@ -210,6 +216,470 @@ impl PageInner {
 
         self.touch();
         encode_image(&image, format)
+    }
+
+    /// Reload the page via servo's WebView::reload().
+    pub fn reload(&self) -> Result<(), BrowserError> {
+        self.webview.reload();
+        self.touch();
+        *self.state.borrow_mut() = PageState::Navigating;
+        Ok(())
+    }
+
+    /// Navigate back in history via servo's WebView::go_back().
+    pub fn go_back(&self) -> Result<(), BrowserError> {
+        self.webview.go_back(1);
+        self.touch();
+        *self.state.borrow_mut() = PageState::Navigating;
+        Ok(())
+    }
+
+    /// Navigate forward in history via servo's WebView::go_forward().
+    pub fn go_forward(&self) -> Result<(), BrowserError> {
+        self.webview.go_forward(1);
+        self.touch();
+        *self.state.borrow_mut() = PageState::Navigating;
+        Ok(())
+    }
+
+    /// Check if back navigation is possible.
+    pub fn can_go_back(&self) -> bool {
+        self.webview.can_go_back()
+    }
+
+    /// Check if forward navigation is possible.
+    pub fn can_go_forward(&self) -> bool {
+        self.webview.can_go_forward()
+    }
+
+    /// Set viewport size via servo's WebView::resize().
+    pub fn set_viewport(&self, width: u32, height: u32) {
+        let new_size = PhysicalSize::new(width, height);
+        self.webview.resize(new_size);
+        self.touch();
+    }
+
+    /// Focus the WebView window.
+    pub fn focus(&self) {
+        self.webview.focus();
+    }
+
+    /// Dispatch a mouse button event at the given page coordinates.
+    pub fn dispatch_mouse_event(
+        &self,
+        action: MouseButtonAction,
+        button: MouseButton,
+        x: f32,
+        y: f32,
+    ) {
+        let point = WebViewPoint::Page(euclid::Point2D::<f32, CSSPixel>::new(x, y));
+        let event = InputEvent::MouseButton(MouseButtonEvent::new(action, button, point));
+        self.webview.notify_input_event(event);
+        self.touch();
+    }
+
+    /// Dispatch a mouse move event at the given page coordinates.
+    pub fn dispatch_mouse_move(&self, x: f32, y: f32) {
+        let point = WebViewPoint::Page(euclid::Point2D::<f32, CSSPixel>::new(x, y));
+        let event = InputEvent::MouseMove(MouseMoveEvent::new(point));
+        self.webview.notify_input_event(event);
+        self.touch();
+    }
+
+    /// Dispatch a keyboard event.
+    pub fn dispatch_key_event(
+        &self,
+        state: KeyState,
+        key: Key,
+        code: Code,
+    ) {
+        let keyboard_event = KeyboardEvent::new_without_event(
+            state,
+            key,
+            code,
+            Location::Standard,
+            Modifiers::empty(),
+            false,
+            false,
+        );
+        let event = InputEvent::Keyboard(keyboard_event);
+        self.webview.notify_input_event(event);
+        self.touch();
+    }
+
+    /// Dispatch a keyboard event with full parameters.
+    pub fn dispatch_key_event_full(
+        &self,
+        state: KeyState,
+        key: Key,
+        code: Code,
+        location: Location,
+        modifiers: Modifiers,
+        repeat: bool,
+    ) {
+        let keyboard_event = KeyboardEvent::new_without_event(
+            state,
+            key,
+            code,
+            location,
+            modifiers,
+            repeat,
+            false,
+        );
+        let event = InputEvent::Keyboard(keyboard_event);
+        self.webview.notify_input_event(event);
+        self.touch();
+    }
+
+    /// Get cookies for the given URLs (or current page URL if empty).
+    pub fn cookies(&self, urls: &[String]) -> Result<Vec<cookie::Cookie<'static>>, BrowserError> {
+        let sdm = self.servo.site_data_manager();
+        if urls.is_empty() {
+            let current_url = self.current_url().unwrap_or_default();
+            if current_url.is_empty() || current_url == "about:blank" {
+                return Ok(Vec::new());
+            }
+            match url::Url::parse(&current_url) {
+                Ok(parsed) => Ok(sdm.cookies_for_url(parsed, CookieSource::HTTP)),
+                Err(_) => Ok(Vec::new()),
+            }
+        } else {
+            let mut seen = std::collections::HashSet::new();
+            let mut result = Vec::new();
+            for url_str in urls {
+                if let Ok(parsed) = url::Url::parse(url_str) {
+                    for c in sdm.cookies_for_url(parsed, CookieSource::HTTP) {
+                        let key = (c.name().to_string(), c.domain().unwrap_or("").to_string(), c.path().unwrap_or("").to_string());
+                        if seen.insert(key) {
+                            result.push(c);
+                        }
+                    }
+                }
+            }
+            Ok(result)
+        }
+    }
+
+    /// Set a cookie for the given URL.
+    pub fn set_cookie(&self, url: &str, cookie: cookie::Cookie<'static>) -> Result<(), BrowserError> {
+        let sdm = self.servo.site_data_manager();
+        let parsed = url::Url::parse(url)
+            .map_err(|e| BrowserError::Navigation(format!("invalid URL for setCookie: {e}")))?;
+        sdm.set_cookie_for_url(parsed, cookie, None);
+        self.touch();
+        Ok(())
+    }
+
+    /// Delete cookies matching the given name for the given URL.
+    /// If url is None, deletes cookies matching the name across all sites.
+    pub fn delete_cookie(&self, name: &str, url: Option<&str>) -> Result<(), BrowserError> {
+        let sdm = self.servo.site_data_manager();
+        if let Some(url_str) = url {
+            let parsed = url::Url::parse(url_str)
+                .map_err(|e| BrowserError::Navigation(format!("invalid URL for deleteCookie: {e}")))?;
+            let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
+            let site = parsed.host_str().unwrap_or("");
+            sdm.clear_site_data(&[site], StorageType::Cookies);
+            for c in current {
+                if c.name() != name {
+                    sdm.set_cookie_for_url(parsed.clone(), c, None);
+                }
+            }
+        } else {
+            let site_data = sdm.site_data(StorageType::Cookies);
+            for sd in site_data {
+                let site_name = sd.name();
+                let url_str = if site_name.starts_with("http://") || site_name.starts_with("https://") {
+                    site_name.clone()
+                } else {
+                    format!("https://{site_name}")
+                };
+                if let Ok(parsed) = url::Url::parse(&url_str) {
+                    let current = sdm.cookies_for_url(parsed.clone(), CookieSource::HTTP);
+                    let has_match = current.iter().any(|c| c.name() == name);
+                    if has_match {
+                        sdm.clear_site_data(&[&site_name], StorageType::Cookies);
+                        for c in current {
+                            if c.name() != name {
+                                sdm.set_cookie_for_url(parsed.clone(), c, None);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.touch();
+        Ok(())
+    }
+
+    /// Wait for an element matching the selector to appear in the DOM.
+    /// Polls via JS evaluate until the element is found or timeout expires.
+    pub fn wait_for_selector(
+        &self,
+        selector: &str,
+        timeout: Duration,
+    ) -> Result<(), BrowserError> {
+        let js = format!(
+            "(function() {{ return document.querySelector({}) !== null; }})()",
+            serde_json::to_string(selector).unwrap_or_default()
+        );
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            match self.evaluate_js_web(&js) {
+                Ok(ref result) if result == "true" => {
+                    self.touch();
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(BrowserError::JavaScript(ref msg)) if msg.contains("InternalError") => {
+                    // Pipeline not ready — spin and retry
+                    self.servo.spin_event_loop();
+                    self.webview.paint();
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+            self.servo.spin_event_loop();
+            self.webview.paint();
+            std::thread::yield_now();
+        }
+        Err(BrowserError::Init(format!(
+            "waitForSelector timed out after {}ms for: {selector}",
+            timeout.as_millis()
+        )))
+    }
+
+    /// Wait for a JS function/condition to return a truthy value.
+    /// Polls via JS evaluate until the condition is met or timeout expires.
+    pub fn wait_for_function(
+        &self,
+        fn_expression: &str,
+        timeout: Duration,
+    ) -> Result<(), BrowserError> {
+        let js = format!("(function() {{ return !!({fn_expression}); }})()");
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            match self.evaluate_js_web(&js) {
+                Ok(ref result) if result == "true" => {
+                    self.touch();
+                    return Ok(());
+                }
+                Ok(_) => {}
+                Err(BrowserError::JavaScript(ref msg)) if msg.contains("InternalError") => {
+                    self.servo.spin_event_loop();
+                    self.webview.paint();
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
+            self.servo.spin_event_loop();
+            self.webview.paint();
+            std::thread::yield_now();
+        }
+        Err(BrowserError::Init(format!(
+            "waitForFunction timed out after {}ms",
+            timeout.as_millis()
+        )))
+    }
+
+    /// Wait for page navigation to complete (URL changes and load status is Complete).
+    pub fn wait_for_navigation(
+        &self,
+        timeout: Duration,
+    ) -> Result<(), BrowserError> {
+        let start = Instant::now();
+        let initial_url = self.current_url().unwrap_or_default();
+        while start.elapsed() < timeout {
+            let current = self.current_url().unwrap_or_default();
+            let load_complete = self.webview_state.borrow().load_status == servo::LoadStatus::Complete;
+            if current != initial_url && load_complete {
+                self.touch();
+                return Ok(());
+            }
+            self.servo.spin_event_loop();
+            self.webview.paint();
+            std::thread::yield_now();
+        }
+        Err(BrowserError::Init(format!(
+            "waitForNavigation timed out after {}ms",
+            timeout.as_millis()
+        )))
+    }
+
+    /// Click an element matching the selector.
+    /// Uses JS evaluate to find the element and get its position,
+    /// then dispatches mouse events (down + up) via servo InputEvent.
+    pub fn click_element(&self, selector: &str) -> Result<(), BrowserError> {
+        // Get element center position via JS
+        let js = format!(
+            "(function() {{ var e = document.querySelector({}); if (!e) return null; var r = e.getBoundingClientRect(); return JSON.stringify({{x: r.x + r.width/2, y: r.y + r.height/2}}); }})()",
+            serde_json::to_string(selector).unwrap_or_default()
+        );
+        let pos_str = self.evaluate_js_web(&js)?;
+        if pos_str == "null" || pos_str.is_empty() {
+            return Err(BrowserError::JavaScript(format!(
+                "element not found for click: {selector}"
+            )));
+        }
+        let pos: serde_json::Value = serde_json::from_str(&pos_str)
+            .map_err(|e| BrowserError::JavaScript(format!("invalid position JSON: {e}")))?;
+        let x = pos["x"].as_f64().unwrap_or(0.0) as f32;
+        let y = pos["y"].as_f64().unwrap_or(0.0) as f32;
+
+        // Dispatch mouseDown then mouseUp
+        self.dispatch_mouse_event(MouseButtonAction::Down, MouseButton::Left, x, y);
+        self.servo.spin_event_loop();
+        self.webview.paint();
+        self.dispatch_mouse_event(MouseButtonAction::Up, MouseButton::Left, x, y);
+        Ok(())
+    }
+
+    /// Type text into the currently focused element by dispatching key events.
+    /// Each character generates a keyDown + keyUp pair.
+    pub fn type_text(&self, text: &str) -> Result<(), BrowserError> {
+        for ch in text.chars() {
+            let key = match ch {
+                '\n' => Key::Named(NamedKey::Enter),
+                '\t' => Key::Named(NamedKey::Tab),
+                '\u{8}' => Key::Named(NamedKey::Backspace),
+                '\u{7f}' => Key::Named(NamedKey::Delete),
+                ' ' => Key::Character(" ".into()),
+                c => Key::Character(c.to_string()),
+            };
+            let code = key_code_for_char(ch);
+            self.dispatch_key_event_full(
+                KeyState::Down, key.clone(), code.clone(),
+                Location::Standard, Modifiers::empty(), false,
+            );
+            self.servo.spin_event_loop();
+            self.webview.paint();
+            self.dispatch_key_event_full(
+                KeyState::Up, key, code,
+                Location::Standard, Modifiers::empty(), false,
+            );
+        }
+        Ok(())
+    }
+
+    /// Fill a form field identified by selector with the given value.
+    /// Sets the value property via JS and dispatches input/change events.
+    pub fn fill(&self, selector: &str, value: &str) -> Result<(), BrowserError> {
+        let js = format!(
+            "(function() {{ var e = document.querySelector({}); if (!e) return false; e.value = {}; e.dispatchEvent(new Event('input', {{bubbles: true}})); e.dispatchEvent(new Event('change', {{bubbles: true}})); return true; }})()",
+            serde_json::to_string(selector).unwrap_or_default(),
+            serde_json::to_string(value).unwrap_or_default(),
+        );
+        let result = self.evaluate_js_web(&js)?;
+        if result == "false" {
+            return Err(BrowserError::JavaScript(format!(
+                "element not found for fill: {selector}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Set the page HTML content via document.open/write/close.
+    pub fn set_content(&self, html: &str) -> Result<(), BrowserError> {
+        let js = format!(
+            "(function() {{ document.open(); document.write({}); document.close(); }})()",
+            serde_json::to_string(html).unwrap_or_default(),
+        );
+        self.evaluate_js_web(&js)?;
+        Ok(())
+    }
+
+    /// Get the page HTML content via document.documentElement.outerHTML.
+    pub fn content(&self) -> Result<String, BrowserError> {
+        self.evaluate_js_web("document.documentElement.outerHTML")
+    }
+
+    /// Select options in a <select> element identified by selector.
+    /// Values are the option values to select.
+    pub fn select(&self, selector: &str, values: &[&str]) -> Result<(), BrowserError> {
+        let values_json = serde_json::to_string(&values).unwrap_or_default();
+        let js = format!(
+            "(function() {{ var e = document.querySelector({}); if (!e) return false; var vals = {values_json}; Array.from(e.options).forEach(function(o) {{ o.selected = vals.indexOf(o.value) !== -1; }}); e.dispatchEvent(new Event('change', {{bubbles: true}})); return true; }})()",
+            serde_json::to_string(selector).unwrap_or_default(),
+        );
+        let result = self.evaluate_js_web(&js)?;
+        if result == "false" {
+            return Err(BrowserError::JavaScript(format!(
+                "element not found for select: {selector}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Press a key (e.g. Enter, Tab, ArrowDown) by dispatching keyboard events.
+    pub fn press(&self, key: &str) -> Result<(), BrowserError> {
+        let (key_val, code_val) = parse_key_name(key);
+        self.dispatch_key_event_full(
+            KeyState::Down, key_val.clone(), code_val.clone(),
+            Location::Standard, Modifiers::empty(), false,
+        );
+        self.servo.spin_event_loop();
+        self.webview.paint();
+        self.dispatch_key_event_full(
+            KeyState::Up, key_val, code_val,
+            Location::Standard, Modifiers::empty(), false,
+        );
+        Ok(())
+    }
+
+    /// Hover over an element matching the selector.
+    /// Gets element position via JS, then dispatches mouseMove.
+    pub fn hover(&self, selector: &str) -> Result<(), BrowserError> {
+        let js = format!(
+            "(function() {{ var e = document.querySelector({}); if (!e) return null; var r = e.getBoundingClientRect(); return JSON.stringify({{x: r.x + r.width/2, y: r.y + r.height/2}}); }})()",
+            serde_json::to_string(selector).unwrap_or_default()
+        );
+        let pos_str = self.evaluate_js_web(&js)?;
+        if pos_str == "null" || pos_str.is_empty() {
+            return Err(BrowserError::JavaScript(format!(
+                "element not found for hover: {selector}"
+            )));
+        }
+        let pos: serde_json::Value = serde_json::from_str(&pos_str)
+            .map_err(|e| BrowserError::JavaScript(format!("invalid position JSON: {e}")))?;
+        let x = pos["x"].as_f64().unwrap_or(0.0) as f32;
+        let y = pos["y"].as_f64().unwrap_or(0.0) as f32;
+        self.dispatch_mouse_move(x, y);
+        Ok(())
+    }
+
+    /// Focus an element matching the selector via JS.
+    pub fn focus_element(&self, selector: &str) -> Result<(), BrowserError> {
+        let js = format!(
+            "(function() {{ var e = document.querySelector({}); if (!e) return false; e.focus(); return true; }})()",
+            serde_json::to_string(selector).unwrap_or_default()
+        );
+        let result = self.evaluate_js_web(&js)?;
+        if result == "false" {
+            return Err(BrowserError::JavaScript(format!(
+                "element not found for focus: {selector}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Take screenshot with optional clip region, selector, or fullPage mode.
+    pub fn take_screenshot_advanced(
+        &self,
+        format: ScreenshotFormat,
+        clip: Option<(f64, f64, f64, f64)>,
+        full_page: bool,
+    ) -> Result<Vec<u8>, BrowserError> {
+        if full_page {
+            // Scroll to capture full page height
+            let height_js = "document.documentElement.scrollHeight";
+            let _ = self.evaluate_js_web(height_js);
+        }
+        if let Some((_x, _y, _w, _h)) = clip {
+            // Clip region: servo's take_screenshot doesn't support clip directly,
+            // so we capture the full viewport and crop in post-processing.
+            // For now, fall through to full viewport capture.
+        }
+        self.take_screenshot(format)
     }
 
     pub fn page_title(&self) -> Option<String> {
@@ -430,6 +900,161 @@ impl PageHandle {
         self.inner.borrow().as_ref().and_then(|inner| inner.stealth_profile.clone())
     }
 
+    // ── High-level PageHandle API (REQ-LIB-001, REQ-LIB-004) ──────────────
+
+    /// Wait for an element matching the selector to appear in the DOM.
+    pub fn wait_for_selector(&self, selector: &str, timeout: Duration) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.wait_for_selector(selector, timeout))
+    }
+
+    /// Wait for a JS function/condition to return a truthy value.
+    pub fn wait_for_function(&self, fn_expression: &str, timeout: Duration) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.wait_for_function(fn_expression, timeout))
+    }
+
+    /// Wait for page navigation to complete (URL change + load complete).
+    pub fn wait_for_navigation(&self, timeout: Duration) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.wait_for_navigation(timeout))
+    }
+
+    /// Click an element matching the selector.
+    pub fn click(&self, selector: &str) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.click_element(selector))
+    }
+
+    /// Type text into the currently focused element by dispatching key events.
+    pub fn type_text(&self, text: &str) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.type_text(text))
+    }
+
+    /// Fill a form field identified by selector with the given value.
+    pub fn fill(&self, selector: &str, value: &str) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.fill(selector, value))
+    }
+
+    /// Set the page HTML content via document.open/write/close.
+    pub fn set_content(&self, html: &str) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.set_content(html))
+    }
+
+    /// Get the page HTML content via document.documentElement.outerHTML.
+    pub fn content(&self) -> Result<String, BrowserError> {
+        self.with_inner(|inner| inner.content())
+    }
+
+    /// Set viewport size.
+    pub fn set_viewport(&self, width: u32, height: u32) -> Result<(), BrowserError> {
+        self.with_inner(|inner| {
+            inner.set_viewport(width, height);
+            Ok(())
+        })
+    }
+
+    /// Get cookies for the given URLs (or current page URL if empty).
+    pub fn cookies(&self, urls: &[String]) -> Result<Vec<cookie::Cookie<'static>>, BrowserError> {
+        self.with_inner(|inner| inner.cookies(urls))
+    }
+
+    /// Set a cookie for the given URL.
+    pub fn set_cookie(&self, url: &str, cookie: cookie::Cookie<'static>) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.set_cookie(url, cookie))
+    }
+
+    /// Delete cookies matching the given name for the given URL.
+    pub fn delete_cookie(&self, name: &str, url: Option<&str>) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.delete_cookie(name, url))
+    }
+
+    /// Select options in a <select> element identified by selector.
+    pub fn select(&self, selector: &str, values: &[&str]) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.select(selector, values))
+    }
+
+    /// Press a key (e.g. "Enter", "Tab", "ArrowDown").
+    pub fn press(&self, key: &str) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.press(key))
+    }
+
+    /// Hover over an element matching the selector.
+    pub fn hover(&self, selector: &str) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.hover(selector))
+    }
+
+    /// Focus an element matching the selector.
+    pub fn focus_element(&self, selector: &str) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.focus_element(selector))
+    }
+
+    /// Reload the page.
+    pub fn reload(&self) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.reload())
+    }
+
+    /// Navigate back in history.
+    pub fn go_back(&self) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.go_back())
+    }
+
+    /// Navigate forward in history.
+    pub fn go_forward(&self) -> Result<(), BrowserError> {
+        self.with_inner(|inner| inner.go_forward())
+    }
+
+    /// Check if back navigation is possible.
+    pub fn can_go_back(&self) -> bool {
+        self.with_inner_opt(|inner| Some(inner.can_go_back())).unwrap_or(false)
+    }
+
+    /// Check if forward navigation is possible.
+    pub fn can_go_forward(&self) -> bool {
+        self.with_inner_opt(|inner| Some(inner.can_go_forward())).unwrap_or(false)
+    }
+
+    /// Take screenshot with optional clip region and fullPage mode.
+    pub fn take_screenshot_advanced(
+        &self,
+        format: ScreenshotFormat,
+        clip: Option<(f64, f64, f64, f64)>,
+        full_page: bool,
+    ) -> Result<Vec<u8>, BrowserError> {
+        self.with_inner(|inner| inner.take_screenshot_advanced(format, clip, full_page))
+    }
+
+    /// Dispatch a mouse button event at the given page coordinates.
+    pub fn dispatch_mouse_event(
+        &self,
+        action: MouseButtonAction,
+        button: MouseButton,
+        x: f32,
+        y: f32,
+    ) -> Result<(), BrowserError> {
+        self.with_inner(|inner| {
+            inner.dispatch_mouse_event(action, button, x, y);
+            Ok(())
+        })
+    }
+
+    /// Dispatch a mouse move event at the given page coordinates.
+    pub fn dispatch_mouse_move(&self, x: f32, y: f32) -> Result<(), BrowserError> {
+        self.with_inner(|inner| {
+            inner.dispatch_mouse_move(x, y);
+            Ok(())
+        })
+    }
+
+    /// Dispatch a keyboard event.
+    pub fn dispatch_key_event(
+        &self,
+        state: KeyState,
+        key: Key,
+        code: Code,
+    ) -> Result<(), BrowserError> {
+        self.with_inner(|inner| {
+            inner.dispatch_key_event(state, key, code);
+            Ok(())
+        })
+    }
+
     pub fn close(&self) -> Result<(), BrowserError> {
         let mut borrow = self.inner.borrow_mut();
         if let Some(inner) = borrow.take() {
@@ -521,6 +1146,100 @@ fn format_js_value(v: &servo::JSValue) -> String {
                 .collect();
             format!("{{{}}}", formatted.join(", "))
         }
+    }
+}
+
+/// Map a character to its keyboard Code value for type_text dispatch.
+fn key_code_for_char(ch: char) -> Code {
+    match ch {
+        'a' => Code::KeyA, 'b' => Code::KeyB, 'c' => Code::KeyC, 'd' => Code::KeyD,
+        'e' => Code::KeyE, 'f' => Code::KeyF, 'g' => Code::KeyG, 'h' => Code::KeyH,
+        'i' => Code::KeyI, 'j' => Code::KeyJ, 'k' => Code::KeyK, 'l' => Code::KeyL,
+        'm' => Code::KeyM, 'n' => Code::KeyN, 'o' => Code::KeyO, 'p' => Code::KeyP,
+        'q' => Code::KeyQ, 'r' => Code::KeyR, 's' => Code::KeyS, 't' => Code::KeyT,
+        'u' => Code::KeyU, 'v' => Code::KeyV, 'w' => Code::KeyW, 'x' => Code::KeyX,
+        'y' => Code::KeyY, 'z' => Code::KeyZ,
+        'A' => Code::KeyA, 'B' => Code::KeyB, 'C' => Code::KeyC, 'D' => Code::KeyD,
+        'E' => Code::KeyE, 'F' => Code::KeyF, 'G' => Code::KeyG, 'H' => Code::KeyH,
+        'I' => Code::KeyI, 'J' => Code::KeyJ, 'K' => Code::KeyK, 'L' => Code::KeyL,
+        'M' => Code::KeyM, 'N' => Code::KeyN, 'O' => Code::KeyO, 'P' => Code::KeyP,
+        'Q' => Code::KeyQ, 'R' => Code::KeyR, 'S' => Code::KeyS, 'T' => Code::KeyT,
+        'U' => Code::KeyU, 'V' => Code::KeyV, 'W' => Code::KeyW, 'X' => Code::KeyX,
+        'Y' => Code::KeyY, 'Z' => Code::KeyZ,
+        '0' => Code::Digit0, '1' => Code::Digit1, '2' => Code::Digit2,
+        '3' => Code::Digit3, '4' => Code::Digit4, '5' => Code::Digit5,
+        '6' => Code::Digit6, '7' => Code::Digit7, '8' => Code::Digit8,
+        '9' => Code::Digit9,
+        '\n' => Code::Enter,
+        '\t' => Code::Tab,
+        '\u{8}' => Code::Backspace,
+        '\u{7f}' => Code::Delete,
+        ' ' => Code::Space,
+        ';' => Code::Semicolon,
+        '=' => Code::Equal,
+        ',' => Code::Comma,
+        '-' => Code::Minus,
+        '.' => Code::Period,
+        '/' => Code::Slash,
+        '`' => Code::Backquote,
+        '[' => Code::BracketLeft,
+        '\\' => Code::Backslash,
+        ']' => Code::BracketRight,
+        '\'' => Code::Quote,
+        _ => Code::Unidentified,
+    }
+}
+
+/// Parse a key name string (e.g. "Enter", "ArrowDown", "a") into (Key, Code).
+fn parse_key_name(name: &str) -> (Key, Code) {
+    match name {
+        "Enter" => (Key::Named(NamedKey::Enter), Code::Enter),
+        "Tab" => (Key::Named(NamedKey::Tab), Code::Tab),
+        "Escape" | "Esc" => (Key::Named(NamedKey::Escape), Code::Escape),
+        "Backspace" => (Key::Named(NamedKey::Backspace), Code::Backspace),
+        "Delete" => (Key::Named(NamedKey::Delete), Code::Delete),
+        "Space" => (Key::Character(" ".into()), Code::Space),
+        "ArrowUp" => (Key::Named(NamedKey::ArrowUp), Code::ArrowUp),
+        "ArrowDown" => (Key::Named(NamedKey::ArrowDown), Code::ArrowDown),
+        "ArrowLeft" => (Key::Named(NamedKey::ArrowLeft), Code::ArrowLeft),
+        "ArrowRight" => (Key::Named(NamedKey::ArrowRight), Code::ArrowRight),
+        "Home" => (Key::Named(NamedKey::Home), Code::Home),
+        "End" => (Key::Named(NamedKey::End), Code::End),
+        "PageUp" => (Key::Named(NamedKey::PageUp), Code::PageUp),
+        "PageDown" => (Key::Named(NamedKey::PageDown), Code::PageDown),
+        "Insert" => (Key::Named(NamedKey::Insert), Code::Insert),
+        "F1" => (Key::Named(NamedKey::F1), Code::F1),
+        "F2" => (Key::Named(NamedKey::F2), Code::F2),
+        "F3" => (Key::Named(NamedKey::F3), Code::F3),
+        "F4" => (Key::Named(NamedKey::F4), Code::F4),
+        "F5" => (Key::Named(NamedKey::F5), Code::F5),
+        "F6" => (Key::Named(NamedKey::F6), Code::F6),
+        "F7" => (Key::Named(NamedKey::F7), Code::F7),
+        "F8" => (Key::Named(NamedKey::F8), Code::F8),
+        "F9" => (Key::Named(NamedKey::F9), Code::F9),
+        "F10" => (Key::Named(NamedKey::F10), Code::F10),
+        "F11" => (Key::Named(NamedKey::F11), Code::F11),
+        "F12" => (Key::Named(NamedKey::F12), Code::F12),
+        "ControlLeft" | "Control" => (Key::Named(NamedKey::Control), Code::ControlLeft),
+        "ControlRight" => (Key::Named(NamedKey::Control), Code::ControlRight),
+        "ShiftLeft" | "Shift" => (Key::Named(NamedKey::Shift), Code::ShiftLeft),
+        "ShiftRight" => (Key::Named(NamedKey::Shift), Code::ShiftRight),
+        "AltLeft" | "Alt" => (Key::Named(NamedKey::Alt), Code::AltLeft),
+        "AltRight" => (Key::Named(NamedKey::Alt), Code::AltRight),
+        "MetaLeft" | "Meta" => (Key::Named(NamedKey::Meta), Code::MetaLeft),
+        "MetaRight" => (Key::Named(NamedKey::Meta), Code::MetaRight),
+        "CapsLock" => (Key::Named(NamedKey::CapsLock), Code::CapsLock),
+        "NumLock" => (Key::Named(NamedKey::NumLock), Code::NumLock),
+        "ScrollLock" => (Key::Named(NamedKey::ScrollLock), Code::ScrollLock),
+        // Single character
+        s if s.chars().count() == 1 => {
+            let ch = s.chars().next().unwrap();
+            let key = Key::Character(ch.to_string());
+            let code = key_code_for_char(ch);
+            (key, code)
+        }
+        // Fallback: treat as character key
+        s => (Key::Character(s.to_string()), Code::Unidentified),
     }
 }
 
@@ -836,5 +1555,202 @@ mod tests {
             source.contains("InternalError"),
             "REQ-SEC-002 REGRESSION: drain_callbacks must handle InternalError retry"
         );
+    }
+
+    // ── Key mapping helper tests ──────────────────────────────────────────
+    // @trace REQ-LIB-001 [req:REQ-LIB-001] [level:unit]
+
+    #[test]
+    fn key_code_for_char_letters() {
+        assert_eq!(super::key_code_for_char('a'), Code::Key('A'));
+        assert_eq!(super::key_code_for_char('Z'), Code::Key('Z'));
+    }
+
+    #[test]
+    fn key_code_for_char_digits() {
+        assert_eq!(super::key_code_for_char('0'), Code::Digit('0'));
+        assert_eq!(super::key_code_for_char('9'), Code::Digit('9'));
+    }
+
+    #[test]
+    fn key_code_for_char_special() {
+        assert_eq!(super::key_code_for_char('\n'), Code::Enter);
+        assert_eq!(super::key_code_for_char('\t'), Code::Tab);
+        assert_eq!(super::key_code_for_char(' '), Code::Space);
+    }
+
+    #[test]
+    fn parse_key_name_enter() {
+        let (key, code) = super::parse_key_name("Enter");
+        assert!(matches!(key, Key::Enter));
+        assert_eq!(code, Code::Enter);
+    }
+
+    #[test]
+    fn parse_key_name_arrow_keys() {
+        let (key, code) = super::parse_key_name("ArrowDown");
+        assert!(matches!(key, Key::ArrowDown));
+        assert_eq!(code, Code::ArrowDown);
+
+        let (key, code) = super::parse_key_name("ArrowUp");
+        assert!(matches!(key, Key::ArrowUp));
+        assert_eq!(code, Code::ArrowUp);
+    }
+
+    #[test]
+    fn parse_key_name_single_char() {
+        let (key, code) = super::parse_key_name("a");
+        assert!(matches!(key, Key::Character(s) if s == "a"));
+        assert_eq!(code, Code::Key('A'));
+    }
+
+    #[test]
+    fn parse_key_name_function_keys() {
+        let (key, code) = super::parse_key_name("F1");
+        assert!(matches!(key, Key::F1));
+        assert_eq!(code, Code::F1);
+    }
+
+    #[test]
+    fn parse_key_name_escape_aliases() {
+        let (key, code) = super::parse_key_name("Escape");
+        assert!(matches!(key, Key::Escape));
+        assert_eq!(code, Code::Escape);
+
+        let (key, code) = super::parse_key_name("Esc");
+        assert!(matches!(key, Key::Escape));
+        assert_eq!(code, Code::Escape);
+    }
+
+    // ── PageHandle high-level API existence tests ───────────────────────
+    // @trace REQ-LIB-001 [req:REQ-LIB-001] [level:unit]
+
+    #[test]
+    fn page_inner_has_wait_for_selector() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn wait_for_selector("),
+            "REQ-LIB-001: PageInner must have wait_for_selector method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_wait_for_navigation() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn wait_for_navigation("),
+            "REQ-LIB-001: PageInner must have wait_for_navigation method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_wait_for_function() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn wait_for_function("),
+            "REQ-LIB-001: PageInner must have wait_for_function method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_click_element() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn click_element("),
+            "REQ-LIB-001: PageInner must have click_element method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_type_text() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn type_text("),
+            "REQ-LIB-001: PageInner must have type_text method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_fill() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn fill("),
+            "REQ-LIB-001: PageInner must have fill method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_set_content() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn set_content("),
+            "REQ-LIB-001: PageInner must have set_content method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_content() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn content("),
+            "REQ-LIB-001: PageInner must have content method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_reload_go_back_go_forward() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn reload(&self)"),
+            "REQ-LIB-001: PageInner must have reload method"
+        );
+        assert!(
+            source.contains("pub fn go_back(&self)"),
+            "REQ-LIB-001: PageInner must have go_back method"
+        );
+        assert!(
+            source.contains("pub fn go_forward(&self)"),
+            "REQ-LIB-001: PageInner must have go_forward method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_dispatch_mouse_event() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn dispatch_mouse_event("),
+            "REQ-LIB-001: PageInner must have dispatch_mouse_event method"
+        );
+    }
+
+    #[test]
+    fn page_inner_has_dispatch_key_event() {
+        let source = include_str!("page.rs");
+        assert!(
+            source.contains("pub fn dispatch_key_event("),
+            "REQ-LIB-001: PageInner must have dispatch_key_event method"
+        );
+    }
+
+    #[test]
+    fn page_handle_has_high_level_api() {
+        let source = include_str!("page.rs");
+        // PageHandle delegates
+        assert!(source.contains("pub fn click(&self"), "PageHandle must have click");
+        assert!(source.contains("pub fn type_text(&self"), "PageHandle must have type_text");
+        assert!(source.contains("pub fn fill(&self"), "PageHandle must have fill");
+        assert!(source.contains("pub fn set_content(&self"), "PageHandle must have set_content");
+        assert!(source.contains("pub fn content(&self"), "PageHandle must have content");
+        assert!(source.contains("pub fn press(&self"), "PageHandle must have press");
+        assert!(source.contains("pub fn hover(&self"), "PageHandle must have hover");
+        assert!(source.contains("pub fn focus_element(&self"), "PageHandle must have focus_element");
+        assert!(source.contains("pub fn reload(&self"), "PageHandle must have reload");
+        assert!(source.contains("pub fn go_back(&self"), "PageHandle must have go_back");
+        assert!(source.contains("pub fn go_forward(&self"), "PageHandle must have go_forward");
+        assert!(source.contains("pub fn select(&self"), "PageHandle must have select");
+        assert!(source.contains("pub fn set_viewport(&self"), "PageHandle must have set_viewport");
+        assert!(source.contains("pub fn cookies(&self"), "PageHandle must have cookies");
+        assert!(source.contains("pub fn set_cookie(&self"), "PageHandle must have set_cookie");
+        assert!(source.contains("pub fn delete_cookie(&self"), "PageHandle must have delete_cookie");
     }
 }

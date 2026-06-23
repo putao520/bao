@@ -63,6 +63,7 @@ bao_uloop = { path = "../bao_uloop" }
 bun_sha_hmac = { path = "../sha_hmac" }
 hex = "0.4"
 flate2.workspace = true
+bun_brotli = { path = "../brotli" }
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine" }

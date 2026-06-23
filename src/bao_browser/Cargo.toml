@@ -24,6 +24,7 @@ mozjs = { path = "../../vendor/mozjs/mozjs" }
 serde = "1"
 cookie = { package = "cookie", version = "0.18" }
 log = "0.4"
+euclid = "0.22"
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine" }

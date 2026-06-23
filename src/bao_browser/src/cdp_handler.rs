@@ -127,6 +127,20 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         BridgeCommand::MemoryPurgeJS { .. } => Ok(serde_json::json!({})),
         // ── Performance commands ──
         BridgeCommand::PerformanceGetMetrics { .. } => Ok(serde_json::json!({"metrics": []})),
+
+        // ── CSS domain commands — JS evaluate for computed/matched/inline styles ──
+        BridgeCommand::CssGetComputedStyleForNode { target_id, node_id } =>
+            with_page(pool, &target_id, |page| cmd_css_get_computed_style(page, node_id)),
+        BridgeCommand::CssGetMatchedStylesForNode { target_id, node_id } =>
+            with_page(pool, &target_id, |page| cmd_css_get_matched_styles(page, node_id)),
+        BridgeCommand::CssGetInlineStylesForNode { target_id, node_id } =>
+            with_page(pool, &target_id, |page| cmd_css_get_inline_styles(page, node_id)),
+
+        // ── Runtime domain commands — JS evaluate for object inspection and function calls ──
+        BridgeCommand::RuntimeGetProperties { target_id, object_id, own_properties } =>
+            with_page(pool, &target_id, |page| cmd_runtime_get_properties(page, &object_id, own_properties)),
+        BridgeCommand::RuntimeCallFunctionOn { target_id, object_id, function_declaration, arguments, return_by_value } =>
+            with_page(pool, &target_id, |page| cmd_runtime_call_function_on(page, object_id.as_deref(), &function_declaration, arguments.as_ref(), return_by_value)),
     };
     BridgeResponse { result }
 }
@@ -470,6 +484,323 @@ fn cmd_debugger_blackbox(page: &PageHandle) -> Result<Value, String> {
 fn cmd_debugger_unblackbox(page: &PageHandle) -> Result<Value, String> {
     let _ = page.evaluate_js("(function() { /* unblackbox: not yet supported */ })()").map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
+}
+
+// ---------------------------------------------------------------------------
+// CSS domain commands — JS evaluate for computed/matched/inline styles
+// ---------------------------------------------------------------------------
+
+/// Resolve a CDP nodeId to a DOM element via JS evaluate.
+/// nodeId in our CDP implementation maps to a synthetic data-node-id attribute,
+/// or falls back to traversing the DOM tree by index.
+fn resolve_node_by_id(page: &PageHandle, node_id: i64) -> Result<String, String> {
+    if node_id <= 0 {
+        // nodeId 1 = document, 2 = html element
+        let js: String = match node_id {
+            0 | 1 => "document".to_string(),
+            2 => "document.documentElement".to_string(),
+            _ => {
+                let idx = node_id - 3;
+                format!("document.documentElement.childNodes[{}]", idx)
+            }
+        };
+        let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+        Ok(result)
+    } else {
+        // Try data-node-id attribute first, then fall back to DOM traversal
+        let js = format!(
+            "(function() {{ var el = document.querySelector('[data-node-id=\"{}\"]'); if (el) return 'found'; return 'not-found'; }})()",
+            node_id
+        );
+        let found = page.evaluate_js(&js).map_err(to_browser_error)?;
+        if found.trim() == "found" {
+            Ok(format!("document.querySelector('[data-node-id=\"{}\"]')", node_id))
+        } else {
+            // Fall back to body.childNodes traversal
+            Ok(format!("document.body.childNodes[{}]", node_id - 3))
+        }
+    }
+}
+
+fn cmd_css_get_computed_style(page: &PageHandle, node_id: i64) -> Result<Value, String> {
+    let node_ref = resolve_node_by_id(page, node_id)?;
+    let js = format!(
+        r#"(function() {{
+            var el = {node_ref};
+            if (!el || !el.nodeType || el.nodeType !== 1) return JSON.stringify({{"computedStyle": []}});
+            try {{
+                var styles = getComputedStyle(el);
+                var result = [];
+                for (var i = 0; i < styles.length; i++) {{
+                    var name = styles[i];
+                    result.push({{ name: name, value: styles.getPropertyValue(name) }});
+                }}
+                return JSON.stringify({{"computedStyle": result}});
+            }} catch(e) {{
+                return JSON.stringify({{"computedStyle": []}});
+            }}
+        }})()"#,
+        node_ref = node_ref
+    );
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+fn cmd_css_get_matched_styles(page: &PageHandle, node_id: i64) -> Result<Value, String> {
+    let node_ref = resolve_node_by_id(page, node_id)?;
+    let js = format!(
+        r#"(function() {{
+            var el = {node_ref};
+            if (!el || !el.nodeType || el.nodeType !== 1) return JSON.stringify({{"matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null}});
+            try {{
+                var rules = [];
+                var sheets = document.styleSheets;
+                for (var s = 0; s < sheets.length; s++) {{
+                    try {{
+                        var cssRules = sheets[s].cssRules || sheets[s].rules;
+                        for (var r = 0; r < cssRules.length; r++) {{
+                            try {{
+                                if (cssRules[r].selectorText && el.matches(cssRules[r].selectorText)) {{
+                                    var rule = {{
+                                        rule: {{
+                                            selectorList: {{ selectors: [{{ text: cssRules[r].selectorText }}] }},
+                                            style: {{ cssProperties: [], shorthandEntries: [] }},
+                                            origin: sheets[s].href ? "regular" : "regular",
+                                            sourceURL: sheets[s].href || ""
+                                        }},
+                                        matchingSelectors: [r]
+                                    }};
+                                    var decls = cssRules[r].style;
+                                    for (var d = 0; d < decls.length; d++) {{
+                                        rule.rule.style.cssProperties.push({{
+                                            name: decls[d],
+                                            value: decls.getPropertyValue(decls[d]),
+                                            important: decls.getPropertyPriority(decls[d]) === "important"
+                                        }});
+                                    }}
+                                    rules.push(rule);
+                                }}
+                            }} catch(e2) {{}}
+                        }}
+                    }} catch(e1) {{}}
+                }}
+                var inlineStyle = null;
+                if (el.style && el.style.length > 0) {{
+                    inlineStyle = {{ cssProperties: [], shorthandEntries: [] }};
+                    for (var i = 0; i < el.style.length; i++) {{
+                        inlineStyle.cssProperties.push({{
+                            name: el.style[i],
+                            value: el.style.getPropertyValue(el.style[i]),
+                            important: el.style.getPropertyPriority(el.style[i]) === "important"
+                        }});
+                    }}
+                }}
+                return JSON.stringify({{"matchedCSSRules": rules, "inlineStyle": inlineStyle, "attributesStyle": null}});
+            }} catch(e) {{
+                return JSON.stringify({{"matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null}});
+            }}
+        }})()"#,
+        node_ref = node_ref
+    );
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+fn cmd_css_get_inline_styles(page: &PageHandle, node_id: i64) -> Result<Value, String> {
+    let node_ref = resolve_node_by_id(page, node_id)?;
+    let js = format!(
+        r#"(function() {{
+            var el = {node_ref};
+            if (!el || !el.nodeType || el.nodeType !== 1) return JSON.stringify({{"inlineStyle": null}});
+            try {{
+                var inlineStyle = null;
+                if (el.style && el.style.length > 0) {{
+                    inlineStyle = {{ cssProperties: [], shorthandEntries: [] }};
+                    for (var i = 0; i < el.style.length; i++) {{
+                        inlineStyle.cssProperties.push({{
+                            name: el.style[i],
+                            value: el.style.getPropertyValue(el.style[i]),
+                            important: el.style.getPropertyPriority(el.style[i]) === "important"
+                        }});
+                    }}
+                }}
+                var attributesStyle = null;
+                if (el.getAttribute('style')) {{
+                    attributesStyle = {{ cssProperties: [], shorthandEntries: [] }};
+                    var styleText = el.getAttribute('style');
+                    var pairs = styleText.split(';');
+                    for (var p = 0; p < pairs.length; p++) {{
+                        var kv = pairs[p].trim();
+                        if (kv) {{
+                            var colon = kv.indexOf(':');
+                            if (colon > 0) {{
+                                var name = kv.substring(0, colon).trim();
+                                var value = kv.substring(colon + 1).trim();
+                                var important = value.endsWith(' !important');
+                                if (important) value = value.substring(0, value.length - 11).trim();
+                                attributesStyle.cssProperties.push({{
+                                    name: name, value: value, important: important
+                                }});
+                            }}
+                        }}
+                    }}
+                }}
+                return JSON.stringify({{"inlineStyle": inlineStyle, "attributesStyle": attributesStyle}});
+            }} catch(e) {{
+                return JSON.stringify({{"inlineStyle": null}});
+            }}
+        }})()"#,
+        node_ref = node_ref
+    );
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+// ---------------------------------------------------------------------------
+// Runtime domain commands — JS evaluate for object inspection and function calls
+// ---------------------------------------------------------------------------
+
+/// Resolve a CDP objectId to a JS expression that references the object.
+/// objectId format: "injected-script-N" where N is a node or object reference.
+fn resolve_object_by_id(object_id: &str) -> String {
+    // objectId patterns from Runtime.evaluate when returnByValue=false:
+    // "node-N" → DOM node reference
+    // "obj-N" → stored object reference via __bao_objs map
+    if object_id.starts_with("node-") {
+        let idx: i64 = object_id[5..].parse().unwrap_or(0);
+        match idx {
+            0 | 1 => "document".to_string(),
+            2 => "document.documentElement".to_string(),
+            _ => format!("document.body.childNodes[{}]", idx - 3),
+        }
+    } else if object_id.starts_with("obj-") {
+        format!("(window.__bao_objs && window.__bao_objs['{}']) || null", object_id)
+    } else {
+        format!("(window.__bao_objs && window.__bao_objs['{}']) || null", object_id)
+    }
+}
+
+fn cmd_runtime_get_properties(page: &PageHandle, object_id: &str, own_properties: Option<bool>) -> Result<Value, String> {
+    let obj_ref = resolve_object_by_id(object_id);
+    let own = own_properties.unwrap_or(true);
+    let prop_method = if own { "Object.getOwnPropertyNames" } else { "Object.getOwnPropertyNames" };
+    let js = format!(
+        r#"(function() {{
+            var obj = {obj_ref};
+            if (obj === null || obj === undefined) return JSON.stringify({{"result": []}});
+            try {{
+                var names = {prop_method}(obj);
+                var result = [];
+                for (var i = 0; i < names.length; i++) {{
+                    var name = names[i];
+                    try {{
+                        var desc = Object.getOwnPropertyDescriptor(obj, name);
+                        var value = desc.value;
+                        var valueType = typeof value;
+                        var valueDesc = '';
+                        if (value === null) {{ valueType = 'object'; valueDesc = 'null'; }}
+                        else if (value === undefined) {{ valueType = 'undefined'; }}
+                        else {{ valueDesc = String(value); }}
+                        if (valueType === 'object' && value !== null) {{
+                            result.push({{
+                                name: name,
+                                value: {{ type: 'object', objectId: 'obj-' + Date.now() + '-' + i, description: valueDesc || valueType }},
+                                configurable: desc.configurable || false,
+                                enumerable: desc.enumerable || false
+                            }});
+                        }} else {{
+                            result.push({{
+                                name: name,
+                                value: {{ type: valueType, value: valueType === 'number' ? Number(value) : valueType === 'boolean' ? Boolean(value) : String(value), description: valueDesc }},
+                                configurable: desc.configurable || false,
+                                enumerable: desc.enumerable || false
+                            }});
+                        }}
+                    }} catch(e2) {{
+                        result.push({{ name: name, value: {{ type: 'undefined' }}, configurable: false, enumerable: false }});
+                    }}
+                }}
+                return JSON.stringify({{"result": result}});
+            }} catch(e) {{
+                return JSON.stringify({{"result": []}});
+            }}
+        }})()"#,
+        obj_ref = obj_ref,
+        prop_method = prop_method,
+    );
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
+}
+
+fn cmd_runtime_call_function_on(
+    page: &PageHandle,
+    object_id: Option<&str>,
+    function_declaration: &str,
+    arguments: Option<&Value>,
+    return_by_value: Option<bool>,
+) -> Result<Value, String> {
+    let obj_ref = object_id.map(resolve_object_by_id).unwrap_or_else(|| "undefined".to_string());
+    let rbv = return_by_value.unwrap_or(true);
+
+    // Parse arguments array from CDP params
+    let args_js = match arguments {
+        Some(Value::Array(arr)) => {
+            let args: Vec<String> = arr.iter().map(|a| {
+                match a {
+                    Value::String(s) => serde_json::to_string(s).unwrap_or_default(),
+                    Value::Number(n) => n.to_string(),
+                    Value::Bool(b) => b.to_string(),
+                    Value::Null => "null".to_string(),
+                    v => serde_json::to_string(v).unwrap_or_default(),
+                }
+            }).collect();
+            format!("[{}]", args.join(", "))
+        }
+        _ => "[]".to_string(),
+    };
+
+    // functionDeclaration is typically "function(arg1,arg2) { ... }"
+    // We wrap it to call on the object with provided arguments
+    let js = format!(
+        r#"(function() {{
+            try {{
+                var obj = {obj_ref};
+                var args = {args_js};
+                var fn = eval({func_json});
+                if (typeof fn !== 'function') return JSON.stringify({{"result": {{ type: 'undefined' }}, "exceptionDetails": null}});
+                var callResult = fn.apply(obj, args);
+                if ({rbv}) {{
+                    var valueType = typeof callResult;
+                    if (callResult === null) valueType = 'object';
+                    if (callResult === undefined) valueType = 'undefined';
+                    if (valueType === 'object' && callResult !== null) {{
+                        // Store object for later reference
+                        if (!window.__bao_objs) window.__bao_objs = {{}};
+                        var oid = 'obj-' + Date.now();
+                        window.__bao_objs[oid] = callResult;
+                        return JSON.stringify({{"result": {{ type: 'object', objectId: oid, description: String(callResult) }}, "exceptionDetails": null}});
+                    }}
+                    return JSON.stringify({{"result": {{ type: valueType, value: valueType === 'number' ? Number(callResult) : valueType === 'boolean' ? Boolean(callResult) : String(callResult), description: String(callResult) }}, "exceptionDetails": null}});
+                }} else {{
+                    if (!window.__bao_objs) window.__bao_objs = {{}};
+                    var oid = 'obj-' + Date.now();
+                    window.__bao_objs[oid] = callResult;
+                    var valueType = typeof callResult;
+                    if (callResult === null) valueType = 'object';
+                    if (callResult === undefined) valueType = 'undefined';
+                    return JSON.stringify({{"result": {{ type: valueType, objectId: oid, description: String(callResult) }}, "exceptionDetails": null}});
+                }}
+            }} catch(e) {{
+                return JSON.stringify({{"result": {{ type: 'undefined' }}, "exceptionDetails": {{ text: e.message || String(e), exceptionId: 0 }}}});
+            }}
+        }})()"#,
+        obj_ref = obj_ref,
+        args_js = args_js,
+        func_json = serde_json::to_string(function_declaration).unwrap_or_default(),
+        rbv = rbv,
+    );
+    let result = page.evaluate_js(&js).map_err(to_browser_error)?;
+    parse_js_result(&result)
 }
 
 fn json_type(v: &Value) -> &'static str {

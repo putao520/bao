@@ -111,11 +111,11 @@ pub fn handle_command(
         "Runtime" => handle_runtime(command, target_id, params, bridge),
         "DOM" => handle_dom(command, target_id, params, bridge),
         "Network" => handle_network(command, target_id, params, bridge),
-        "CSS" => handle_css(command),
+        "CSS" => handle_css(command, target_id, params, bridge),
         "Emulation" => handle_emulation(command, target_id, params, bridge),
         "Input" => handle_input(command, target_id, params, bridge),
         "Overlay" => handle_overlay(command),
-        "Debugger" => handle_debugger(command),
+        "Debugger" => handle_debugger(command, target_id, params, bridge),
         "Log" => handle_log(command),
         "Fetch" => handle_fetch(command, params),
         "Storage" => handle_storage(command, target_id, params, bridge),
@@ -304,8 +304,49 @@ fn handle_runtime(command: &str, target_id: &str, params: &Option<Value>, bridge
                 Ok(serde_json::json!({ "result": { "type": "undefined" }, "exceptionDetails": null }))
             }
         }
-        "callFunctionOn" => Ok(serde_json::json!({ "result": { "type": "undefined" } })),
-        "getProperties" => Ok(serde_json::json!({ "result": [] })),
+        "callFunctionOn" => {
+            let object_id = params.as_ref()
+                .and_then(|p| p.get("objectId"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            let function_declaration = params.as_ref()
+                .and_then(|p| p.get("functionDeclaration"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("function(){}")
+                .to_string();
+            let arguments = params.as_ref()
+                .and_then(|p| p.get("arguments"))
+                .cloned();
+            let return_by_value = params.as_ref()
+                .and_then(|p| p.get("returnByValue"))
+                .and_then(|v| v.as_bool());
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::RuntimeCallFunctionOn {
+                    target_id: tid,
+                    object_id,
+                    function_declaration,
+                    arguments,
+                    return_by_value,
+                })
+            } else {
+                Ok(serde_json::json!({ "result": { "type": "undefined" } }))
+            }
+        }
+        "getProperties" => {
+            let object_id = params.as_ref()
+                .and_then(|p| p.get("objectId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let own_properties = params.as_ref()
+                .and_then(|p| p.get("ownProperties"))
+                .and_then(|v| v.as_bool());
+            if bridge.is_some() && !object_id.is_empty() {
+                bridge_send(bridge, BridgeCommand::RuntimeGetProperties { target_id: tid, object_id, own_properties })
+            } else {
+                Ok(serde_json::json!({ "result": [] }))
+            }
+        }
         "evaluateAsync" | "runScript" => Ok(serde_json::json!({ "result": { "type": "undefined" } })),
         "releaseObject" | "releaseObjectGroup" | "compileScript" | "callArgument" => ok_empty(),
         _ => Err(CdpError { code: -32601, message: format!("'Runtime.{}' wasn't found", command) }),
@@ -473,14 +514,45 @@ fn handle_security(command: &str, target_id: &str, params: &Option<Value>, bridg
     }
 }
 
-fn handle_css(command: &str) -> HandlerResult {
+fn handle_css(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
         "enable" | "disable" => ok_empty(),
-        "getComputedStyleForNode" => Ok(serde_json::json!({ "computedStyle": [] })),
-        "getMatchedStylesForNode" => Ok(serde_json::json!({
-            "matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null
-        })),
-        "getInlineStylesForNode" => Ok(serde_json::json!({ "inlineStyle": null })),
+        "getComputedStyleForNode" => {
+            let node_id = params.as_ref()
+                .and_then(|p| p.get("nodeId"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::CssGetComputedStyleForNode { target_id: tid, node_id })
+            } else {
+                Ok(serde_json::json!({ "computedStyle": [] }))
+            }
+        }
+        "getMatchedStylesForNode" => {
+            let node_id = params.as_ref()
+                .and_then(|p| p.get("nodeId"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::CssGetMatchedStylesForNode { target_id: tid, node_id })
+            } else {
+                Ok(serde_json::json!({
+                    "matchedCSSRules": [], "inlineStyle": null, "attributesStyle": null
+                }))
+            }
+        }
+        "getInlineStylesForNode" => {
+            let node_id = params.as_ref()
+                .and_then(|p| p.get("nodeId"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::CssGetInlineStylesForNode { target_id: tid, node_id })
+            } else {
+                Ok(serde_json::json!({ "inlineStyle": null }))
+            }
+        }
         "setStyleTexts" => Ok(serde_json::json!({ "styles": [] })),
         _ => Err(CdpError { code: -32601, message: format!("'CSS.{}' wasn't found", command) }),
     }
@@ -567,16 +639,125 @@ fn handle_overlay(command: &str) -> HandlerResult {
     }
 }
 
-fn handle_debugger(command: &str) -> HandlerResult {
+fn handle_debugger(command: &str, target_id: &str, params: &Option<Value>, bridge: Option<&BridgeSender>) -> HandlerResult {
+    let tid = target_id.to_string();
     match command {
-        "enable" | "disable" => ok_empty(),
-        "setBreakpointByUrl" => Ok(serde_json::json!({ "breakpointId": "1", "locations": [] })),
-        "removeBreakpoint" | "pause" | "resume" => ok_empty(),
-        "stepOver" | "stepInto" | "stepOut" => ok_empty(),
+        "enable" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerEnable { target_id: tid })
+            } else {
+                ok_empty()
+            }
+        }
+        "disable" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerDisable { target_id: tid })
+            } else {
+                ok_empty()
+            }
+        }
+        "setBreakpointByUrl" => {
+            let line = params.as_ref()
+                .and_then(|p| p.get("lineNumber"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let column = params.as_ref()
+                .and_then(|p| p.get("columnNumber"))
+                .and_then(|v| v.as_u64())
+                .map(|c| c as u32);
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerSetBreakpoint {
+                    target_id: tid,
+                    script_id: 0,
+                    offset: 0,
+                    line,
+                    column,
+                })
+            } else {
+                Ok(serde_json::json!({ "breakpointId": "1", "locations": [] }))
+            }
+        }
+        "removeBreakpoint" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerClearBreakpoint {
+                    target_id: tid,
+                    script_id: 0,
+                    offset: 0,
+                })
+            } else {
+                ok_empty()
+            }
+        }
+        "pause" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerInterrupt { target_id: tid })
+            } else {
+                ok_empty()
+            }
+        }
+        "resume" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerResume { target_id: tid, step_type: None })
+            } else {
+                ok_empty()
+            }
+        }
+        "stepOver" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerResume { target_id: tid, step_type: Some("next".into()) })
+            } else {
+                ok_empty()
+            }
+        }
+        "stepInto" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerResume { target_id: tid, step_type: Some("step".into()) })
+            } else {
+                ok_empty()
+            }
+        }
+        "stepOut" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerResume { target_id: tid, step_type: Some("finish".into()) })
+            } else {
+                ok_empty()
+            }
+        }
         "setSkipAllPauses" | "setBreakpointsActive" => ok_empty(),
-        "evaluateOnCallFrame" => Ok(serde_json::json!({ "result": { "type": "undefined" } })),
-        "getPossibleBreakpoints" => Ok(serde_json::json!({ "locations": [] })),
-        "getScriptSource" => Ok(serde_json::json!({ "scriptSource": "" })),
+        "evaluateOnCallFrame" => {
+            let expression = params.as_ref()
+                .and_then(|p| p.get("expression"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("").to_string();
+            let frame_actor_id = params.as_ref()
+                .and_then(|p| p.get("callFrameId"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            if bridge.is_some() && !expression.is_empty() {
+                bridge_send(bridge, BridgeCommand::DebuggerEval { target_id: tid, expression, frame_actor_id })
+            } else {
+                Ok(serde_json::json!({ "result": { "type": "undefined" } }))
+            }
+        }
+        "getPossibleBreakpoints" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: tid, script_id: 0 })
+            } else {
+                Ok(serde_json::json!({ "locations": [] }))
+            }
+        }
+        "getScriptSource" => {
+            let script_id = params.as_ref()
+                .and_then(|p| p.get("scriptId"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::DebuggerGetScriptSource { target_id: tid, script_id })
+            } else {
+                Ok(serde_json::json!({ "scriptSource": "" }))
+            }
+        }
         "setPauseOnExceptions" => ok_empty(),
         _ => Err(CdpError { code: -32601, message: format!("'Debugger.{}' wasn't found", command) }),
     }

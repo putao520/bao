@@ -88,6 +88,13 @@ pub enum BridgeCommand {
     MemoryPurgeJS { target_id: String },
     // Performance domain — performance metrics
     PerformanceGetMetrics { target_id: String },
+    // CSS domain — computed/matched/inline style retrieval via JS evaluate
+    CssGetComputedStyleForNode { target_id: String, node_id: i64 },
+    CssGetMatchedStylesForNode { target_id: String, node_id: i64 },
+    CssGetInlineStylesForNode { target_id: String, node_id: i64 },
+    // Runtime domain — object property inspection and function invocation via JS evaluate
+    RuntimeGetProperties { target_id: String, object_id: String, own_properties: Option<bool> },
+    RuntimeCallFunctionOn { target_id: String, object_id: Option<String>, function_declaration: String, arguments: Option<Value>, return_by_value: Option<bool> },
 }
 
 /// Response from the main thread back to the CDP server.
