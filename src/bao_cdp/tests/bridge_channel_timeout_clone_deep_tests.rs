@@ -498,18 +498,17 @@ fn test_bridge_command_debugger_disable_debug() {
 #[test]
 fn test_bridge_command_debugger_set_breakpoint_debug() {
     let cmd = BridgeCommand::DebuggerSetBreakpoint {
-        target_id: TID.into(), script_id: 42, offset: 100, line: 10, column: Some(5),
+        target_id: TID.into(), url: Some("http://example.com".into()), url_regex: None, line: 10, column: Some(5),
     };
     let debug = format!("{:?}", cmd);
     assert!(debug.contains("DebuggerSetBreakpoint"));
-    // Adversarial: numeric fields must survive Debug round-trip (not be elided).
-    assert!(debug.contains("42") && debug.contains("100"));
+    assert!(debug.contains("example.com"));
 }
 
 #[test]
-fn test_bridge_command_debugger_clear_breakpoint_debug() {
-    let cmd = BridgeCommand::DebuggerClearBreakpoint { target_id: TID.into(), script_id: 7, offset: 9 };
-    assert!(format!("{:?}", cmd).contains("DebuggerClearBreakpoint"));
+fn test_bridge_command_debugger_remove_breakpoint_debug() {
+    let cmd = BridgeCommand::DebuggerRemoveBreakpoint { target_id: TID.into(), breakpoint_id: "bp-1-5-0".into() };
+    assert!(format!("{:?}", cmd).contains("DebuggerRemoveBreakpoint"));
 }
 
 #[test]
@@ -552,7 +551,7 @@ fn test_bridge_command_debugger_eval_debug() {
 
 #[test]
 fn test_bridge_command_debugger_get_possible_breakpoints_debug() {
-    let cmd = BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: TID.into(), script_id: 11 };
+    let cmd = BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: TID.into(), start_script_id: "11".into() };
     assert!(format!("{:?}", cmd).contains("DebuggerGetPossibleBreakpoints"));
 }
 
@@ -622,14 +621,14 @@ fn test_all_bridge_commands_constructible() {
         // These 13 variants are the REQ-CDP-003 surface; previously MISSING.
         BridgeCommand::DebuggerEnable { target_id: TID.into() },
         BridgeCommand::DebuggerDisable { target_id: TID.into() },
-        BridgeCommand::DebuggerSetBreakpoint { target_id: TID.into(), script_id: 0, offset: 0, line: 0, column: None },
-        BridgeCommand::DebuggerClearBreakpoint { target_id: TID.into(), script_id: 0, offset: 0 },
+        BridgeCommand::DebuggerSetBreakpoint { target_id: TID.into(), url: None, url_regex: None, line: 0, column: None },
+        BridgeCommand::DebuggerRemoveBreakpoint { target_id: TID.into(), breakpoint_id: String::new() },
         BridgeCommand::DebuggerInterrupt { target_id: TID.into() },
         BridgeCommand::DebuggerResume { target_id: TID.into(), step_type: None },
         BridgeCommand::DebuggerListFrames { target_id: TID.into() },
         BridgeCommand::DebuggerGetEnvironment { target_id: TID.into(), frame_actor_id: String::new() },
         BridgeCommand::DebuggerEval { target_id: TID.into(), expression: String::new(), frame_actor_id: None },
-        BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: TID.into(), script_id: 0 },
+        BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: TID.into(), start_script_id: String::new() },
         BridgeCommand::DebuggerGetScriptSource { target_id: TID.into(), script_id: 0 },
         BridgeCommand::DebuggerBlackbox { target_id: TID.into(), script_id: 0 },
         BridgeCommand::DebuggerUnblackbox { target_id: TID.into(), script_id: 0 },
@@ -675,14 +674,14 @@ fn test_all_bridge_commands_clone_round_trip() {
         BridgeCommand::ListTargets,
         BridgeCommand::DebuggerEnable { target_id: TID.into() },
         BridgeCommand::DebuggerDisable { target_id: TID.into() },
-        BridgeCommand::DebuggerSetBreakpoint { target_id: TID.into(), script_id: 1, offset: 2, line: 3, column: Some(4) },
-        BridgeCommand::DebuggerClearBreakpoint { target_id: TID.into(), script_id: 1, offset: 2 },
+        BridgeCommand::DebuggerSetBreakpoint { target_id: TID.into(), url: Some("http://a.com".into()), url_regex: None, line: 3, column: Some(4) },
+        BridgeCommand::DebuggerRemoveBreakpoint { target_id: TID.into(), breakpoint_id: "bp-1-3-4".into() },
         BridgeCommand::DebuggerInterrupt { target_id: TID.into() },
         BridgeCommand::DebuggerResume { target_id: TID.into(), step_type: Some("stepOver".into()) },
         BridgeCommand::DebuggerListFrames { target_id: TID.into() },
         BridgeCommand::DebuggerGetEnvironment { target_id: TID.into(), frame_actor_id: "fa".into() },
         BridgeCommand::DebuggerEval { target_id: TID.into(), expression: "e".into(), frame_actor_id: Some("fa".into()) },
-        BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: TID.into(), script_id: 1 },
+        BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: TID.into(), start_script_id: "1".into() },
         BridgeCommand::DebuggerGetScriptSource { target_id: TID.into(), script_id: 1 },
         BridgeCommand::DebuggerBlackbox { target_id: TID.into(), script_id: 1 },
         BridgeCommand::DebuggerUnblackbox { target_id: TID.into(), script_id: 1 },

@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn close_marks_pages_and_self() {
         let b = make_browser();
-        let ctx = make_ctx(b);
+        let ctx = make_ctx(b.clone());
         let p = BrowserContext::new_page_for_test(&ctx);
         assert_eq!(ctx.pages_count(), 1);
         ctx.close();
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn add_remove_page() {
         let b = make_browser();
-        let ctx = make_ctx(b);
+        let ctx = make_ctx(b.clone());
         let p = BrowserContext::new_page_for_test(&ctx);
         assert_eq!(ctx.pages_count(), 1);
         ctx.remove_page(p.target_id());
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn page_by_target_lookup() {
         let b = make_browser();
-        let ctx = make_ctx(b);
+        let ctx = make_ctx(b.clone());
         let p = BrowserContext::new_page_for_test(&ctx);
         let got = ctx.page_by_target(p.target_id());
         assert!(got.is_some());

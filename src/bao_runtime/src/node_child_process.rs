@@ -6,12 +6,11 @@
 // Async spawn: polling thread + __cp_drain pattern (same as node_net's __net_read)
 // Sync spawn: bun_spawn::sync::spawn for all sync ops
 use bun_core::ZBox;
-use ::std::cell::{Cell, RefCell};
+use ::std::cell::RefCell;
 use ::std::collections::HashMap;
 use ::std::ffi::c_int;
-use ::std::io::Read;
 use ::std::ptr::NonNull;
-use ::std::sync::{Arc, Mutex};
+use ::std::sync::{Arc, Mutex, LazyLock};
 
 use mozjs::jsapi::*;
 use mozjs::jsval::{
@@ -27,22 +26,17 @@ use bun_sys::FdExt;
 
 use crate::require::cache_builtin;
 
-// ─── Thread-local state for async child process pipe data ──────────────────
-// Same pattern as node_net: background thread writes into HashMap, JS drains via __cp_drain.
+// ─── Shared state for async child process pipe data ────────────────────────
+// The polling thread and JS thread both access the same AsyncChildState via
+// Arc<Mutex<...>>.  Data written by the polling thread is visible to the JS
+// thread — unlike the old thread_local! approach where each thread got its own
+// independent copy and async output was permanently lost.
 
-thread_local! {
-    /// Per-pid incoming stdout data: pid (as i32) → Vec<u8>.
-    static CP_STDOUT_DATA: RefCell<HashMap<i32, Vec<u8>>> = RefCell::new(HashMap::new());
-
-    /// Per-pid incoming stderr data: pid (as i32) → Vec<u8>.
-    static CP_STDERR_DATA: RefCell<HashMap<i32, Vec<u8>>> = RefCell::new(HashMap::new());
-
-    /// Per-pid exit info: pid (as i32) → (exit_code, signal). Set when child exits.
-    static CP_EXIT_INFO: RefCell<HashMap<i32, (i32, i32)>> = RefCell::new(HashMap::new());
-
-    /// Per-pid EOF flags: pid → (stdout_eof, stderr_eof). Set when a pipe closes.
-    static CP_EOF_FLAGS: RefCell<HashMap<i32, (bool, bool)>> = RefCell::new(HashMap::new());
-}
+/// Global registry: pid → shared state for that child process.
+/// Used by __cp_drain / __cp_poll_exit to look up the Arc<Mutex<AsyncChildState>>
+/// created during spawn.
+static CP_ASYNC_STATES: LazyLock<Mutex<HashMap<i32, Arc<Mutex<AsyncChildState>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Shared state between the polling thread and the JS thread for a single child process.
 struct AsyncChildState {
@@ -53,22 +47,28 @@ struct AsyncChildState {
     stdout_eof: bool,
     stderr_eof: bool,
     child_exited: bool,
+    /// Buffered stdout data accumulated by the polling thread.
+    stdout_data: Vec<u8>,
+    /// Buffered stderr data accumulated by the polling thread.
+    stderr_data: Vec<u8>,
+    /// Exit info (exit_code, signal) set when the child exits.
+    exit_info: Option<(i32, i32)>,
 }
 
-/// RAII cleanup for thread-local child process state.
+/// RAII cleanup for shared child process state.
 pub struct CpCleanup;
 
 impl Drop for CpCleanup {
     fn drop(&mut self) {
-        CP_STDOUT_DATA.with(|m| m.borrow_mut().clear());
-        CP_STDERR_DATA.with(|m| m.borrow_mut().clear());
-        CP_EXIT_INFO.with(|m| m.borrow_mut().clear());
-        CP_EOF_FLAGS.with(|m| m.borrow_mut().clear());
+        if let Ok(mut states) = CP_ASYNC_STATES.lock() {
+            states.clear();
+        }
+        CP_STDIN_FDS.with(|m| m.borrow_mut().clear());
     }
 }
 
-/// Background polling thread: reads from stdout/stderr pipes into thread-local buffers.
-/// Uses Arc<Mutex<AsyncChildState>> for shared state with the main thread.
+/// Background polling thread: reads from stdout/stderr pipes into shared AsyncChildState.
+/// Uses Arc<Mutex<AsyncChildState>> for shared state with the JS thread.
 fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
     let mut buf = [0u8; 65536]; // 64 KiB read buffer
 
@@ -141,62 +141,33 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
             match unsafe { libc::read(fd, buf.as_mut_ptr() as *mut ::std::ffi::c_void, buf.len()) } {
                 n if n > 0 => {
                     let data = &buf[..n as usize];
-                    let pid = {
-                        let s = state.lock().unwrap();
-                        s.pid
-                    };
+                    let mut s = state.lock().unwrap();
                     if which == "stdout" {
-                        CP_STDOUT_DATA.with(|m| {
-                            let mut map = m.borrow_mut();
-                            let entry = map.entry(pid).or_insert_with(Vec::new);
-                            entry.extend_from_slice(data);
-                        });
+                        s.stdout_data.extend_from_slice(data);
                     } else {
-                        CP_STDERR_DATA.with(|m| {
-                            let mut map = m.borrow_mut();
-                            let entry = map.entry(pid).or_insert_with(Vec::new);
-                            entry.extend_from_slice(data);
-                        });
+                        s.stderr_data.extend_from_slice(data);
                     }
                 }
                 0 => {
                     // EOF.
-                    let pid = {
-                        let s = state.lock().unwrap();
-                        s.pid
-                    };
+                    let mut s = state.lock().unwrap();
                     if which == "stdout" {
-                        let mut s = state.lock().unwrap();
                         s.stdout_eof = true;
                     } else {
-                        let mut s = state.lock().unwrap();
                         s.stderr_eof = true;
                     }
-                    CP_EOF_FLAGS.with(|m| {
-                        let mut map = m.borrow_mut();
-                        let (so, se) = map.entry(pid).or_insert((false, false));
-                        if which == "stdout" { *so = true; } else { *se = true; }
-                    });
                 }
                 _ => {
                     // EAGAIN or error.
                     let errno = unsafe { *libc::__errno_location() };
                     if errno != libc::EAGAIN && errno != libc::EWOULDBLOCK {
                         // Real error — treat as EOF.
-                        let pid = {
-                            let s = state.lock().unwrap();
-                            s.pid
-                        };
+                        let mut s = state.lock().unwrap();
                         if which == "stdout" {
-                            state.lock().unwrap().stdout_eof = true;
+                            s.stdout_eof = true;
                         } else {
-                            state.lock().unwrap().stderr_eof = true;
+                            s.stderr_eof = true;
                         }
-                        CP_EOF_FLAGS.with(|m| {
-                            let mut map = m.borrow_mut();
-                            let (so, se) = map.entry(pid).or_insert((false, false));
-                            if which == "stdout" { *so = true; } else { *se = true; }
-                        });
                     }
                 }
             }
@@ -220,11 +191,8 @@ fn pipe_poll_thread(state: Arc<Mutex<AsyncChildState>>) {
                     } else {
                         0
                     };
-                    let pid = s.pid;
                     s.child_exited = true;
-                    CP_EXIT_INFO.with(|m| {
-                        m.borrow_mut().insert(pid, (exit_code, signal));
-                    });
+                    s.exit_info = Some((exit_code, signal));
                 }
             }
         }
@@ -646,12 +614,7 @@ unsafe extern "C" fn cp_spawn(
                 let _ = unsafe { bun_sys::set_nonblocking(bun_sys::Fd::from_native(stderr_pipe[0])) };
             }
 
-            // Initialize thread-local state for this child.
-            CP_STDOUT_DATA.with(|m| m.borrow_mut().insert(pid, Vec::new()));
-            CP_STDERR_DATA.with(|m| m.borrow_mut().insert(pid, Vec::new()));
-            CP_EOF_FLAGS.with(|m| m.borrow_mut().insert(pid, (false, false)));
-
-            // Build the shared state and spawn the polling thread.
+            // Build the shared state and register it globally for __cp_drain / __cp_poll_exit.
             let async_state = Arc::new(Mutex::new(AsyncChildState {
                 pid,
                 stdout_fd: if pipe_stdout { stdout_pipe[0] } else { -1 },
@@ -660,9 +623,17 @@ unsafe extern "C" fn cp_spawn(
                 stdout_eof: false,
                 stderr_eof: false,
                 child_exited: false,
+                stdout_data: Vec::new(),
+                stderr_data: Vec::new(),
+                exit_info: None,
             }));
 
-            // Store stdin_fd on a global map for __cp_stdin_write/__cp_stdin_close.
+            // Register in global registry so __cp_drain / __cp_poll_exit can find it.
+            if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+                registry.insert(pid, Arc::clone(&async_state));
+            }
+
+            // Store stdin_fd on a thread-local map for __cp_stdin_write/__cp_stdin_close.
             CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[0]));
 
             {
@@ -765,11 +736,22 @@ unsafe extern "C" fn cp_drain(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> 
         return true;
     }
 
-    let data = if which == 0 {
-        CP_STDOUT_DATA.with(|m| m.borrow_mut().remove(&pid).unwrap_or_default())
-    } else {
-        CP_STDERR_DATA.with(|m| m.borrow_mut().remove(&pid).unwrap_or_default())
-    };
+    // Look up shared state by pid, then drain the requested buffer.
+    let data: Vec<u8> = CP_ASYNC_STATES.lock().ok()
+        .and_then(|registry| registry.get(&pid).cloned())
+        .and_then(|state| {
+            let mut s = state.lock().unwrap();
+            if which == 0 {
+                let mut swap = Vec::new();
+                ::std::mem::swap(&mut s.stdout_data, &mut swap);
+                Some(swap)
+            } else {
+                let mut swap = Vec::new();
+                ::std::mem::swap(&mut s.stderr_data, &mut swap);
+                Some(swap)
+            }
+        })
+        .unwrap_or_default();
 
     if data.is_empty() {
         args.rval().set(NullValue());
@@ -816,7 +798,14 @@ unsafe extern "C" fn cp_poll_exit(cx: *mut JSContext, argc: u32, vp: *mut JSVal)
         return true;
     }
 
-    let exit_info = CP_EXIT_INFO.with(|m| m.borrow_mut().remove(&pid));
+    // Look up shared state by pid, then take the exit_info if present.
+    let exit_info = CP_ASYNC_STATES.lock().ok()
+        .and_then(|registry| registry.get(&pid).cloned())
+        .and_then(|state| {
+            let mut s = state.lock().unwrap();
+            s.exit_info.take()
+        });
+
     match exit_info {
         Some((code, signal)) => {
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
@@ -1863,13 +1852,7 @@ unsafe extern "C" fn cp_fork(
             let pid = posix_result.pid;
             drop(posix_result);
 
-            // Initialize thread-local state for this child.
-            CP_STDOUT_DATA.with(|m| m.borrow_mut().insert(pid, Vec::new()));
-            CP_STDERR_DATA.with(|m| m.borrow_mut().insert(pid, Vec::new()));
-            CP_EOF_FLAGS.with(|m| m.borrow_mut().insert(pid, (false, false)));
-            CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[0]));
-
-            // Spawn polling thread.
+            // Build shared state and register it globally for __cp_drain / __cp_poll_exit.
             let async_state = Arc::new(Mutex::new(AsyncChildState {
                 pid,
                 stdout_fd: stdout_pipe[0],
@@ -1878,7 +1861,17 @@ unsafe extern "C" fn cp_fork(
                 stdout_eof: false,
                 stderr_eof: false,
                 child_exited: false,
+                stdout_data: Vec::new(),
+                stderr_data: Vec::new(),
+                exit_info: None,
             }));
+
+            // Register in global registry so __cp_drain / __cp_poll_exit can find it.
+            if let Ok(mut registry) = CP_ASYNC_STATES.lock() {
+                registry.insert(pid, Arc::clone(&async_state));
+            }
+
+            CP_STDIN_FDS.with(|m| m.borrow_mut().insert(pid, stdin_pipe[0]));
             {
                 let state_clone = Arc::clone(&async_state);
                 let _ = ::std::thread::Builder::new()

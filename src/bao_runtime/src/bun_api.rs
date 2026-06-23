@@ -1504,8 +1504,13 @@ unsafe extern "C" fn bun_serve(
         // the `app.ws()` route registered before this `app.any()` route.
         // If a WS upgrade reaches here, it means no ws route was registered
         // (no websocket handler) — return 426 Upgrade Required.
+        // A proper WebSocket handshake requires BOTH "Upgrade: websocket" AND
+        // "Sec-WebSocket-Key" headers (RFC 6455 §4.1). Checking only Upgrade
+        // would misclassify non-WS requests that happen to carry an Upgrade
+        // header (e.g. HTTP/2 h2c, CONNECT tunnelling).
         let upgrade_header = req_ref.header(b"upgrade").map(|h| h.to_vec()).unwrap_or_default();
-        let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket");
+        let is_ws_upgrade = upgrade_header.eq_ignore_ascii_case(b"websocket")
+            && req_ref.header(b"sec-websocket-key").is_some();
 
         if is_ws_upgrade {
             // No WebSocket handler registered — return 426 Upgrade Required.
@@ -2012,11 +2017,23 @@ unsafe extern "C" fn ws_js_send(
         message = s.into_bytes();
         opcode = Opcode::Text;
     } else if data_val.is_object() {
-        // Try to treat as ArrayBuffer/TypedArray — extract byte contents.
-        // For simplicity, convert to string and send as text.
-        let s = crate::js_to_rust_string(cx, data_val);
-        message = s.into_bytes();
-        opcode = Opcode::Binary;
+        // Try ArrayBuffer / TypedArray / ArrayBufferView — extract bytes directly.
+        if let Some(bytes) = extract_bytes_from_jsval(cx, data_val) {
+            message = bytes;
+            opcode = Opcode::Binary;
+        } else {
+            // Not a binary object — convert to string via JS::ToString and send as text.
+            // SAFETY: data_val is an object; rooted handle for ToString call.
+            rooted!(&in(cx_ref) let data_root = data_val);
+            let jsstr = mozjs::rust::ToString(cx, data_root.handle());
+            if jsstr.is_null() {
+                args.rval().set(BooleanValue(false));
+                return true;
+            }
+            let str_val = StringValue(&*jsstr);
+            message = crate::js_to_rust_string(cx, str_val).into_bytes();
+            opcode = Opcode::Text;
+        }
     } else {
         args.rval().set(BooleanValue(false));
         return true;
@@ -3066,7 +3083,10 @@ unsafe fn serve_write_default_response(
     let method_str = method_str_lower.to_ascii_uppercase();
     let url_str = ::std::str::from_utf8(url_bytes).unwrap_or("/");
 
-    let body = format!("{{\"method\":\"{}\",\"url\":\"{}\"}}", method_str, url_str);
+    let body = serde_json::json!({
+        "method": method_str,
+        "url": url_str,
+    }).to_string();
     let body_bytes = body.as_bytes();
 
     res_mut.write_status(b"200 OK");
@@ -5049,8 +5069,9 @@ unsafe extern "C" fn crypto_hasher_digest(
 // @trace REQ-ENG-006 [api:Bun.gzip/deflate/inflate/gunzip] — compression
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Extract byte data from a JS value (string or Uint8Array/ArrayBuffer).
-unsafe fn extract_bytes_from_jsval(cx: *mut JSContext, val: JSVal) -> Option<Vec<u8>> {
+/// Extract byte data from a JS value (string, ArrayBuffer, TypedArray, or ArrayBufferView).
+/// Returns `None` for unrecognized objects (non-ArrayBuffer/TypedArray/ArrayBufferView).
+pub(crate) unsafe fn extract_bytes_from_jsval(cx: *mut JSContext, val: JSVal) -> Option<Vec<u8>> {
     if val.is_string() {
         Some(crate::js_to_rust_string(cx, val).into_bytes())
     } else if val.is_object() {
@@ -5062,21 +5083,48 @@ unsafe fn extract_bytes_from_jsval(cx: *mut JSContext, val: JSVal) -> Option<Vec
             let mut len: usize = 0;
             let mut is_shared = false;
             let mut data: *mut u8 = ::std::ptr::null_mut();
+            // SAFETY: obj is a valid ArrayBuffer object; out-params are stack locals.
             mozjs_sys::jsapi::JS::GetArrayBufferMaybeSharedLengthAndData(obj.get(), &mut len, &mut is_shared, &mut data);
             if data.is_null() { return Some(Vec::new()); }
             let mut bytes = vec![0u8; len];
+            // SAFETY: data points to len bytes within the ArrayBuffer's owned memory.
             ::std::ptr::copy_nonoverlapping(data, bytes.as_mut_ptr(), len);
             return Some(bytes);
         }
-        // Try Uint8Array / TypedArray
+        // Try Uint8Array (also matches Buffer, which is a Uint8Array subclass)
         let mut length: usize = 0;
         let mut is_shared = false;
         let mut data: *mut u8 = ::std::ptr::null_mut();
+        // SAFETY: obj is a valid JS object; out-params are stack locals.
         let unwrapped = mozjs_sys::jsapi::JS_GetObjectAsUint8Array(obj.get(), &mut length, &mut is_shared, &mut data);
         if !unwrapped.is_null() && !data.is_null() {
             let mut bytes = vec![0u8; length];
+            // SAFETY: data points to length bytes within the TypedArray's buffer.
             ::std::ptr::copy_nonoverlapping(data, bytes.as_mut_ptr(), length);
             return Some(bytes);
+        }
+        if !unwrapped.is_null() {
+            return Some(Vec::new());
+        }
+        // Try ArrayBufferView (DataView, Int8Array, Int16Array, Float32Array, etc.)
+        let mut view_length: usize = 0;
+        let mut view_shared = false;
+        let mut view_data: *mut u8 = ::std::ptr::null_mut();
+        // SAFETY: obj is a valid JS object; out-params are stack locals.
+        let view_unwrapped = mozjs_sys::jsapi::JS_GetObjectAsArrayBufferView(
+            obj.get(),
+            &mut view_length,
+            &mut view_shared,
+            &mut view_data,
+        );
+        if !view_unwrapped.is_null() && !view_data.is_null() {
+            let mut bytes = vec![0u8; view_length];
+            // SAFETY: view_data points to view_length bytes within the view's buffer.
+            ::std::ptr::copy_nonoverlapping(view_data, bytes.as_mut_ptr(), view_length);
+            return Some(bytes);
+        }
+        if !view_unwrapped.is_null() {
+            return Some(Vec::new());
         }
         None
     } else {
@@ -5085,7 +5133,7 @@ unsafe fn extract_bytes_from_jsval(cx: *mut JSContext, val: JSVal) -> Option<Vec
 }
 
 /// Create a JS Uint8Array from a byte slice.
-unsafe fn bytes_to_js_uint8array(cx: *mut JSContext, bytes: &[u8]) -> JSVal {
+pub(crate) unsafe fn bytes_to_js_uint8array(cx: *mut JSContext, bytes: &[u8]) -> JSVal {
     let u8_obj = mozjs_sys::jsapi::JS_NewUint8Array(cx, bytes.len());
     if u8_obj.is_null() {
         return UndefinedValue();

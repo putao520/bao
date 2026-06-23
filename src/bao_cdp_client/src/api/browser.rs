@@ -21,6 +21,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::connection::Connection;
+
 use super::browser_context::{BrowserContext, ContextOptions};
 use super::event_emitter::{EventEmitter, EventEmitterInner};
 use super::page::Page;
@@ -53,6 +55,9 @@ pub struct Browser {
     disconnected: RefCell<bool>,
     /// Contexts 列表(本地)。
     contexts: RefCell<Vec<Rc<BrowserContext>>>,
+    /// Connection 引用(共享 — 所有 Page 共用同一 CDP 连接)。
+    /// `None` 表示未连接(测试用 / 占位 Browser)。
+    connection: RefCell<Option<Rc<RefCell<Connection>>>>,
     /// EventEmitter inner。
     events: Rc<EventEmitterInner>,
 }
@@ -65,6 +70,7 @@ impl std::fmt::Debug for Browser {
             .field("user_agent", &self.user_agent.borrow())
             .field("disconnected", &self.disconnected.borrow())
             .field("context_count", &self.contexts.borrow().len())
+            .field("has_connection", &self.connection.borrow().is_some())
             .finish()
     }
 }
@@ -81,6 +87,7 @@ impl Browser {
             pid: RefCell::new(opts.initial_pid),
             disconnected: RefCell::new(false),
             contexts: RefCell::new(Vec::new()),
+            connection: RefCell::new(None),
             events: Rc::new(EventEmitterInner::new()),
         }
     }
@@ -204,6 +211,29 @@ impl Browser {
         &self.events
     }
 
+    /// 是否绑定 Connection(可发送 CDP 命令)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Browser]
+    pub fn has_connection(&self) -> bool {
+        self.connection.borrow().is_some()
+    }
+
+    /// 设置 Connection(共享引用)。
+    ///
+    /// Browser 持有 Connection,所有通过此 Browser 创建的 Page 共享同一连接。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Browser]
+    pub fn set_connection(&self, conn: Rc<RefCell<Connection>>) {
+        *self.connection.borrow_mut() = Some(conn);
+    }
+
+    /// 获取 Connection 的共享引用(若已绑定)。
+    ///
+    /// @trace REQ-BAO-API-006 [class:Browser]
+    pub fn connection(&self) -> Option<Rc<RefCell<Connection>>> {
+        self.connection.borrow().clone()
+    }
+
     /// 测试辅助:创建 BrowserContext(默认 options)。
     ///
     /// 注:由于 Rust 的所有权模型,`new_context` 需要 `Rc<Browser>` 才能
@@ -251,10 +281,14 @@ pub fn new_page_on_rc(this: &Rc<Browser>) -> Rc<Page> {
 
 /// 在 BrowserContext 上创建 Page。
 ///
+/// 如果 Browser 绑定了 Connection,自动将共享连接传递给新 Page,
+/// 使其可发送 CDP 命令。
+///
 /// @trace REQ-BAO-API-006 [class:BrowserContext]
 pub fn new_page_on_context(ctx: &Rc<BrowserContext>) -> Rc<Page> {
     let target_id = format!("TARGET-{}", ctx.pages_count() + 1);
-    let p = Rc::new(Page::new(target_id, Rc::downgrade(ctx)));
+    let conn = ctx.browser().connection();
+    let p = Rc::new(Page::new_with_connection(target_id, Rc::downgrade(ctx), conn));
     ctx.add_page(p.clone());
     p
 }
@@ -389,5 +423,41 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert!(!list[0].is_incognito());
         assert!(list[1].is_incognito());
+    }
+
+    #[test]
+    fn new_page_on_context_propagates_connection() {
+        use crate::connection::Connection;
+        use crate::transport::{InMemoryTransport, InMemoryBridge, InMemoryBridgeResponse};
+        use std::sync::Arc;
+
+        struct MockBridge;
+        impl InMemoryBridge for MockBridge {
+            fn dispatch_command(&self, _m: &str, _p: serde_json::Value, _s: Option<&str>) -> InMemoryBridgeResponse {
+                InMemoryBridgeResponse::Ok(serde_json::Value::Null)
+            }
+        }
+
+        let b = Rc::new(Browser::new_for_test("ws://x"));
+        assert!(!b.has_connection());
+
+        // Attach connection to Browser.
+        let bridge: Arc<dyn InMemoryBridge> = Arc::new(MockBridge);
+        let transport = InMemoryTransport::new(bridge);
+        let conn = Rc::new(RefCell::new(Connection::from_transport(Box::new(transport))));
+        b.set_connection(conn);
+        assert!(b.has_connection());
+
+        // Create page via new_page_on_rc — should inherit connection.
+        let p = new_page_on_rc(&b);
+        assert!(p.has_connection());
+    }
+
+    #[test]
+    fn new_page_on_context_without_connection_has_no_connection() {
+        let b = Rc::new(Browser::new_for_test("ws://x"));
+        assert!(!b.has_connection());
+        let p = new_page_on_rc(&b);
+        assert!(!p.has_connection());
     }
 }

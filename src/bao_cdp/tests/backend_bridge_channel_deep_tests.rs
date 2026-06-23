@@ -790,14 +790,14 @@ fn test_bridge_cmd_debugger_disable_clone_debug() {
 fn test_bridge_cmd_debugger_set_breakpoint_clone_debug() {
     assert_clone_debug("DebuggerSetBreakpoint",
         &BridgeCommand::DebuggerSetBreakpoint {
-            target_id: TID.into(), script_id: 1, offset: 0, line: 5, column: Some(3),
+            target_id: TID.into(), url: Some("http://example.com".into()), url_regex: None, line: 5, column: Some(3),
         });
 }
 
 #[test]
 fn test_bridge_cmd_debugger_clear_breakpoint_clone_debug() {
-    assert_clone_debug("DebuggerClearBreakpoint",
-        &BridgeCommand::DebuggerClearBreakpoint { target_id: TID.into(), script_id: 1, offset: 0 });
+    assert_clone_debug("DebuggerRemoveBreakpoint",
+        &BridgeCommand::DebuggerRemoveBreakpoint { target_id: TID.into(), breakpoint_id: "bp-1-5-0".into() });
 }
 
 #[test]
@@ -833,7 +833,7 @@ fn test_bridge_cmd_debugger_eval_clone_debug() {
 #[test]
 fn test_bridge_cmd_debugger_get_possible_breakpoints_clone_debug() {
     assert_clone_debug("DebuggerGetPossibleBreakpoints",
-        &BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: TID.into(), script_id: 7 });
+        &BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: TID.into(), start_script_id: "7".into() });
 }
 
 #[test]
@@ -957,7 +957,7 @@ fn test_bridge_cmd_get_cookies_empty_urls_vec() {
 #[test]
 fn test_bridge_cmd_debugger_set_breakpoint_no_column() {
     let cmd = BridgeCommand::DebuggerSetBreakpoint {
-        target_id: TID.into(), script_id: 0, offset: 0, line: 0, column: None,
+        target_id: TID.into(), url: None, url_regex: None, line: 0, column: None,
     };
     let dbg = format!("{:?}", cmd);
     assert!(dbg.contains("DebuggerSetBreakpoint"));

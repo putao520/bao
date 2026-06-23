@@ -657,6 +657,16 @@ fn handle_debugger(command: &str, target_id: &str, params: &Option<Value>, bridg
             }
         }
         "setBreakpointByUrl" => {
+            let url = params.as_ref()
+                .and_then(|p| p.get("url"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
+            let url_regex = params.as_ref()
+                .and_then(|p| p.get("urlRegex"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string());
             let line = params.as_ref()
                 .and_then(|p| p.get("lineNumber"))
                 .and_then(|v| v.as_u64())
@@ -668,8 +678,8 @@ fn handle_debugger(command: &str, target_id: &str, params: &Option<Value>, bridg
             if bridge.is_some() {
                 bridge_send(bridge, BridgeCommand::DebuggerSetBreakpoint {
                     target_id: tid,
-                    script_id: 0,
-                    offset: 0,
+                    url,
+                    url_regex,
                     line,
                     column,
                 })
@@ -678,11 +688,15 @@ fn handle_debugger(command: &str, target_id: &str, params: &Option<Value>, bridg
             }
         }
         "removeBreakpoint" => {
+            let breakpoint_id = params.as_ref()
+                .and_then(|p| p.get("breakpointId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerClearBreakpoint {
+                bridge_send(bridge, BridgeCommand::DebuggerRemoveBreakpoint {
                     target_id: tid,
-                    script_id: 0,
-                    offset: 0,
+                    breakpoint_id,
                 })
             } else {
                 ok_empty()
@@ -740,8 +754,14 @@ fn handle_debugger(command: &str, target_id: &str, params: &Option<Value>, bridg
             }
         }
         "getPossibleBreakpoints" => {
+            let start_script_id = params.as_ref()
+                .and_then(|p| p.get("start"))
+                .and_then(|v| v.get("scriptId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             if bridge.is_some() {
-                bridge_send(bridge, BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: tid, script_id: 0 })
+                bridge_send(bridge, BridgeCommand::DebuggerGetPossibleBreakpoints { target_id: tid, start_script_id })
             } else {
                 Ok(serde_json::json!({ "locations": [] }))
             }

@@ -93,10 +93,10 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
         // DevtoolScriptControlMsg once servo's devtools channel is exposed to Bao.
         BridgeCommand::DebuggerEnable { target_id } => with_page(pool, &target_id, |page| cmd_debugger_enable(page)),
         BridgeCommand::DebuggerDisable { target_id } => with_page(pool, &target_id, |page| cmd_debugger_disable(page)),
-        BridgeCommand::DebuggerSetBreakpoint { target_id, line, column, .. } =>
-            with_page(pool, &target_id, |page| cmd_debugger_set_breakpoint(page, line, column)),
-        BridgeCommand::DebuggerClearBreakpoint { target_id, .. } =>
-            with_page(pool, &target_id, |page| cmd_debugger_clear_all_breakpoints(page)),
+        BridgeCommand::DebuggerSetBreakpoint { target_id, url, url_regex, line, column } =>
+            with_page(pool, &target_id, |page| cmd_debugger_set_breakpoint(page, url.as_deref(), url_regex.as_deref(), line, column)),
+        BridgeCommand::DebuggerRemoveBreakpoint { target_id, breakpoint_id } =>
+            with_page(pool, &target_id, |page| cmd_debugger_remove_breakpoint(page, &breakpoint_id)),
         BridgeCommand::DebuggerInterrupt { target_id } => with_page(pool, &target_id, |page| cmd_debugger_interrupt(page)),
         BridgeCommand::DebuggerResume { target_id, step_type } =>
             with_page(pool, &target_id, |page| cmd_debugger_resume(page, step_type.as_deref())),
@@ -105,8 +105,8 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             with_page(pool, &target_id, |page| cmd_debugger_get_environment(page)),
         BridgeCommand::DebuggerEval { target_id, expression, frame_actor_id: _ } =>
             with_page(pool, &target_id, |page| cmd_evaluate(page, &expression, true)),
-        BridgeCommand::DebuggerGetPossibleBreakpoints { target_id, .. } =>
-            with_page(pool, &target_id, |page| cmd_debugger_get_possible_breakpoints(page)),
+        BridgeCommand::DebuggerGetPossibleBreakpoints { target_id, start_script_id } =>
+            with_page(pool, &target_id, |page| cmd_debugger_get_possible_breakpoints(page, &start_script_id)),
         BridgeCommand::DebuggerGetScriptSource { target_id, script_id } =>
             with_page(pool, &target_id, |page| cmd_debugger_get_script_source(page, script_id)),
         BridgeCommand::DebuggerBlackbox { target_id, .. } =>
@@ -416,19 +416,36 @@ fn cmd_debugger_disable(page: &PageHandle) -> Result<Value, String> {
     Ok(serde_json::json!({}))
 }
 
-fn cmd_debugger_set_breakpoint(page: &PageHandle, line: u32, column: Option<u32>) -> Result<Value, String> {
+fn cmd_debugger_set_breakpoint(page: &PageHandle, url: Option<&str>, url_regex: Option<&str>, line: u32, column: Option<u32>) -> Result<Value, String> {
     let col = column.unwrap_or(0);
+    // Build a script filter: match by url (exact) or urlRegex, fall back to line-range match
+    let url_filter = match (url, url_regex) {
+        (Some(u), _) => format!(
+            "s.url === {}",
+            serde_json::to_string(u).unwrap_or_default()
+        ),
+        (None, Some(r)) => format!(
+            "new RegExp({}).test(s.url)",
+            serde_json::to_string(r).unwrap_or_default()
+        ),
+        (None, None) => format!("s.startLine <= {line} && {line} <= s.startLine + s.lineCount - 1"),
+    };
     let js = format!(
-        "(function() {{ try {{ if (!window.__bao_dbg) return {{}}; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ var s = scripts[i]; if (s.startLine <= {line} && {line} <= s.startLine + s.lineCount - 1) {{ var offset = s.offsetLine ? s.offsetLine({line}, {col}) : 0; s.setBreakpoint(offset, {{ hit: function(frame) {{ console.log('__BAO_EVT__Debugger.paused\n' + JSON.stringify({{ callFrames: [], reason: 'breakpoint', hitBreakpoints: [] }})); }} }}); return {{ actualLocation: {{ scriptId: String(s.id), lineNumber: {line}, columnNumber: {col} }} }}; }} }} }} catch(e) {{}} return {{}}; }})()",
-        line = line, col = col
+        "(function() {{ try {{ if (!window.__bao_dbg) return {{}}; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ var s = scripts[i]; if ({url_filter}) {{ var offset = s.offsetLine ? s.offsetLine({line}, {col}) : 0; var bpId = 'bp-' + String(s.id) + '-' + {line} + '-' + {col}; s.setBreakpoint(offset, {{ hit: function(frame) {{ console.log('__BAO_EVT__Debugger.paused\\n' + JSON.stringify({{ callFrames: [], reason: 'breakpoint', hitBreakpoints: [bpId] }})); }} }}); if (!window.__bao_bps) window.__bao_bps = {{}}; window.__bao_bps[bpId] = {{ scriptId: String(s.id), offset: offset }}; return {{ breakpointId: bpId, actualLocation: {{ scriptId: String(s.id), lineNumber: {line}, columnNumber: {col} }} }}; }} }} }} catch(e) {{}} return {{}}; }})()",
+        url_filter = url_filter, line = line, col = col
     );
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }
 
-fn cmd_debugger_clear_all_breakpoints(page: &PageHandle) -> Result<Value, String> {
-    let js = "(function() { try { if (!window.__bao_dbg) return; var scripts = window.__bao_dbg.findScripts(); scripts.forEach(function(s) { s.clearAllBreakpoints(); }); } catch(e) {} })()";
-    let _ = page.evaluate_js(js).map_err(to_browser_error)?;
+fn cmd_debugger_remove_breakpoint(page: &PageHandle, breakpoint_id: &str) -> Result<Value, String> {
+    let js = format!(
+        "(function() {{ try {{ if (!window.__bao_dbg) return; if (window.__bao_bps && window.__bao_bps[{}]) {{ var info = window.__bao_bps[{}]; var scripts = window.__bao_dbg.findScripts(); for (var i = 0; i < scripts.length; i++) {{ if (String(scripts[i].id) === info.scriptId) {{ scripts[i].clearAllBreakpoints(); break; }} }} delete window.__bao_bps[{}]; }} else {{ var scripts = window.__bao_dbg.findScripts(); scripts.forEach(function(s) {{ s.clearAllBreakpoints(); }}); }} }} catch(e) {{}} }})()",
+        serde_json::to_string(breakpoint_id).unwrap_or_default(),
+        serde_json::to_string(breakpoint_id).unwrap_or_default(),
+        serde_json::to_string(breakpoint_id).unwrap_or_default(),
+    );
+    let _ = page.evaluate_js(&js).map_err(to_browser_error)?;
     Ok(serde_json::json!({}))
 }
 
@@ -461,8 +478,16 @@ fn cmd_debugger_get_environment(page: &PageHandle) -> Result<Value, String> {
     parse_js_result(&result)
 }
 
-fn cmd_debugger_get_possible_breakpoints(page: &PageHandle) -> Result<Value, String> {
-    let js = "(function() { try { if (!window.__bao_dbg) return JSON.stringify({locations: []}); var scripts = window.__bao_dbg.findScripts(); var locs = []; scripts.forEach(function(s) { for (var line = s.startLine; line < s.startLine + s.lineCount; line++) { locs.push({scriptId: String(s.id), lineNumber: line}); } }); return JSON.stringify({locations: locs}); } catch(e) { return JSON.stringify({locations: []}); } })()";
+fn cmd_debugger_get_possible_breakpoints(page: &PageHandle, start_script_id: &str) -> Result<Value, String> {
+    let filter_by_script = if start_script_id.is_empty() {
+        "true".to_string()
+    } else {
+        format!("String(s.id) === {}", serde_json::to_string(start_script_id).unwrap_or_default())
+    };
+    let js = format!(
+        "(function() {{ try {{ if (!window.__bao_dbg) return JSON.stringify({{locations: []}}); var scripts = window.__bao_dbg.findScripts(); var locs = []; scripts.forEach(function(s) {{ if ({filter}) {{ for (var line = s.startLine; line < s.startLine + s.lineCount; line++) {{ locs.push({{scriptId: String(s.id), lineNumber: line}}); }} }} }}); return JSON.stringify({{locations: locs}}); }} catch(e) {{ return JSON.stringify({{locations: []}}); }} }})()",
+        filter = filter_by_script
+    );
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }
@@ -565,7 +590,7 @@ fn cmd_css_get_matched_styles(page: &PageHandle, node_id: i64) -> Result<Value, 
                                         rule: {{
                                             selectorList: {{ selectors: [{{ text: cssRules[r].selectorText }}] }},
                                             style: {{ cssProperties: [], shorthandEntries: [] }},
-                                            origin: sheets[s].href ? "regular" : "regular",
+                                            origin: sheets[s].href ? "regular" : "user-agent",
                                             sourceURL: sheets[s].href || ""
                                         }},
                                         matchingSelectors: [r]
@@ -683,51 +708,111 @@ fn resolve_object_by_id(object_id: &str) -> String {
 fn cmd_runtime_get_properties(page: &PageHandle, object_id: &str, own_properties: Option<bool>) -> Result<Value, String> {
     let obj_ref = resolve_object_by_id(object_id);
     let own = own_properties.unwrap_or(true);
-    let prop_method = if own { "Object.getOwnPropertyNames" } else { "Object.getOwnPropertyNames" };
-    let js = format!(
-        r#"(function() {{
-            var obj = {obj_ref};
-            if (obj === null || obj === undefined) return JSON.stringify({{"result": []}});
-            try {{
-                var names = {prop_method}(obj);
-                var result = [];
-                for (var i = 0; i < names.length; i++) {{
-                    var name = names[i];
-                    try {{
-                        var desc = Object.getOwnPropertyDescriptor(obj, name);
-                        var value = desc.value;
-                        var valueType = typeof value;
-                        var valueDesc = '';
-                        if (value === null) {{ valueType = 'object'; valueDesc = 'null'; }}
-                        else if (value === undefined) {{ valueType = 'undefined'; }}
-                        else {{ valueDesc = String(value); }}
-                        if (valueType === 'object' && value !== null) {{
-                            result.push({{
-                                name: name,
-                                value: {{ type: 'object', objectId: 'obj-' + Date.now() + '-' + i, description: valueDesc || valueType }},
-                                configurable: desc.configurable || false,
-                                enumerable: desc.enumerable || false
-                            }});
-                        }} else {{
-                            result.push({{
-                                name: name,
-                                value: {{ type: valueType, value: valueType === 'number' ? Number(value) : valueType === 'boolean' ? Boolean(value) : String(value), description: valueDesc }},
-                                configurable: desc.configurable || false,
-                                enumerable: desc.enumerable || false
-                            }});
+    // When own_properties is true, only list own properties (getOwnPropertyNames).
+    // When false, include inherited properties via for-in (enumerable on prototype chain).
+    let js = if own {
+        format!(
+            r#"(function() {{
+                var obj = {obj_ref};
+                if (obj === null || obj === undefined) return JSON.stringify({{"result": []}});
+                try {{
+                    var names = Object.getOwnPropertyNames(obj);
+                    var result = [];
+                    for (var i = 0; i < names.length; i++) {{
+                        var name = names[i];
+                        try {{
+                            var desc = Object.getOwnPropertyDescriptor(obj, name);
+                            var value = desc.value;
+                            var valueType = typeof value;
+                            var valueDesc = '';
+                            if (value === null) {{ valueType = 'object'; valueDesc = 'null'; }}
+                            else if (value === undefined) {{ valueType = 'undefined'; }}
+                            else {{ valueDesc = String(value); }}
+                            if (valueType === 'object' && value !== null) {{
+                                result.push({{
+                                    name: name,
+                                    value: {{ type: 'object', objectId: 'obj-' + Date.now() + '-' + i, description: valueDesc || valueType }},
+                                    configurable: desc.configurable || false,
+                                    enumerable: desc.enumerable || false
+                                }});
+                            }} else {{
+                                result.push({{
+                                    name: name,
+                                    value: {{ type: valueType, value: valueType === 'number' ? Number(value) : valueType === 'boolean' ? Boolean(value) : String(value), description: valueDesc }},
+                                    configurable: desc.configurable || false,
+                                    enumerable: desc.enumerable || false
+                                }});
+                            }}
+                        }} catch(e2) {{
+                            result.push({{ name: name, value: {{ type: 'undefined' }}, configurable: false, enumerable: false }});
                         }}
-                    }} catch(e2) {{
-                        result.push({{ name: name, value: {{ type: 'undefined' }}, configurable: false, enumerable: false }});
                     }}
+                    return JSON.stringify({{"result": result}});
+                }} catch(e) {{
+                    return JSON.stringify({{"result": []}});
                 }}
-                return JSON.stringify({{"result": result}});
-            }} catch(e) {{
-                return JSON.stringify({{"result": []}});
-            }}
-        }})()"#,
-        obj_ref = obj_ref,
-        prop_method = prop_method,
-    );
+            }})()"#,
+            obj_ref = obj_ref,
+        )
+    } else {
+        // own_properties=false: include inherited properties from prototype chain.
+        // Use for-in to enumerate all enumerable properties (own + inherited),
+        // plus Object.getOwnPropertyNames for non-enumerable own properties.
+        format!(
+            r#"(function() {{
+                var obj = {obj_ref};
+                if (obj === null || obj === undefined) return JSON.stringify({{"result": []}});
+                try {{
+                    var seen = {{}};
+                    var result = [];
+                    // Enumerate enumerable properties (own + inherited) via for-in
+                    for (var name in obj) {{
+                        if (seen[name]) continue;
+                        seen[name] = true;
+                        try {{
+                            var desc = Object.getOwnPropertyDescriptor(obj, name);
+                            // If not own property, walk prototype chain
+                            if (!desc) {{
+                                var proto = Object.getPrototypeOf(obj);
+                                while (proto && !desc) {{
+                                    desc = Object.getOwnPropertyDescriptor(proto, name);
+                                    proto = Object.getPrototypeOf(proto);
+                                }}
+                            }}
+                            if (!desc) continue;
+                            var value = desc.value;
+                            var valueType = typeof value;
+                            var valueDesc = '';
+                            if (value === null) {{ valueType = 'object'; valueDesc = 'null'; }}
+                            else if (value === undefined) {{ valueType = 'undefined'; }}
+                            else {{ valueDesc = String(value); }}
+                            if (valueType === 'object' && value !== null) {{
+                                result.push({{
+                                    name: name,
+                                    value: {{ type: 'object', objectId: 'obj-' + Date.now() + '-' + result.length, description: valueDesc || valueType }},
+                                    configurable: desc.configurable || false,
+                                    enumerable: desc.enumerable || false
+                                }});
+                            }} else {{
+                                result.push({{
+                                    name: name,
+                                    value: {{ type: valueType, value: valueType === 'number' ? Number(value) : valueType === 'boolean' ? Boolean(value) : String(value), description: valueDesc }},
+                                    configurable: desc.configurable || false,
+                                    enumerable: desc.enumerable || false
+                                }});
+                            }}
+                        }} catch(e2) {{
+                            result.push({{ name: name, value: {{ type: 'undefined' }}, configurable: false, enumerable: false }});
+                        }}
+                    }}
+                    return JSON.stringify({{"result": result}});
+                }} catch(e) {{
+                    return JSON.stringify({{"result": []}});
+                }}
+            }})()"#,
+            obj_ref = obj_ref,
+        )
+    };
     let result = page.evaluate_js(&js).map_err(to_browser_error)?;
     parse_js_result(&result)
 }

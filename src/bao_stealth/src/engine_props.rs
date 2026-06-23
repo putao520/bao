@@ -185,6 +185,126 @@ impl RealmProfile {
             iframe_enabled: p.iframe.enabled,
         }
     }
+
+    /// Reconstruct partial StealthProfile sub-structures from the flat fields
+    /// and generate the combined JS hook code.
+    fn build_hooks_js(&self) -> String {
+        use crate::canvas::CanvasNoise;
+        use crate::navigator::{NavigatorProfile, ScreenProfile};
+        use crate::webgl_audio::{AudioProfile, WebGLProfile};
+        use crate::profile::{
+            FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig,
+            ScreenDisplayConfig, PluginConfig, SpeechConfig, MediaDevicesConfig,
+            PermissionsConfig, WebGLContextConfig, ConnectionConfig, IframeConfig,
+        };
+
+        let canvas = CanvasNoise::new(self.canvas_seed);
+        let audio = AudioProfile::new(self.audio_seed);
+        let navigator = NavigatorProfile {
+            user_agent: self.ua.clone(),
+            platform: self.platform.clone(),
+            language: self.language.clone(),
+            languages: self.languages.clone(),
+            hardware_concurrency: self.hwc,
+            max_touch_points: self.touch,
+            vendor: self.vendor.clone(),
+            app_version: String::new(),
+            oscpu: None,
+            build_id: None,
+            product_sub: String::new(),
+            device_memory: self.device_memory,
+        };
+        let screen = ScreenProfile {
+            width: self.screen_w,
+            height: self.screen_h,
+            avail_width: self.avail_w,
+            avail_height: self.avail_h,
+            color_depth: self.color_depth,
+            pixel_depth: self.color_depth,
+            device_pixel_ratio: self.dpr,
+        };
+        let webgl = WebGLProfile {
+            vendor: self.webgl_vendor.clone(),
+            renderer: self.webgl_renderer.clone(),
+            extensions: self.webgl_extensions.clone(),
+            max_texture_size: 16384,
+            max_renderbuffer_size: 16384,
+            max_viewport_dims: [16384, 16384],
+        };
+        let font = FontConfig {
+            seed: self.font_seed,
+            extra_font_count: self.font_extra_count,
+            hidden_fonts: self.font_hidden_fonts.clone(),
+        };
+        let battery = BatteryConfig {
+            charging: self.battery_charging,
+            level: self.battery_level,
+            charging_time: self.battery_charging_time,
+            discharging_time: self.battery_discharging_time,
+        };
+        let webrtc_mode = match self.webrtc_mode {
+            0 => WebRtcMode::Default,
+            1 => WebRtcMode::Strict,
+            _ => WebRtcMode::None,
+        };
+        let timing = TimingConfig { precision_us: self.timing_precision_us };
+        let clientrects = ClientRectsConfig {
+            noise_delta: self.clientrects_delta,
+            seed: self.clientrects_seed,
+        };
+        let screen_display = ScreenDisplayConfig {
+            width: self.screen_display_w,
+            height: self.screen_display_h,
+            color_depth: self.screen_display_cd,
+            device_pixel_ratio: self.screen_display_dpr,
+        };
+        let plugin = PluginConfig {
+            plugin_count: self.plugin_count,
+            plugins: self.plugin_names.clone(),
+            mime_types: self.mime_types.clone(),
+        };
+        let speech = SpeechConfig {
+            enabled: self.speech_enabled,
+            voices: self.speech_voices.clone(),
+        };
+        let media_devices = MediaDevicesConfig {
+            enabled: self.media_devices_enabled,
+            audio_input_count: self.media_devices_audio_in,
+            video_input_count: self.media_devices_video_in,
+            audio_output_count: self.media_devices_audio_out,
+        };
+        let permissions = PermissionsConfig {
+            enabled: self.permissions_enabled,
+            states: self.permissions_states.clone(),
+        };
+        let webgl_context = WebGLContextConfig {
+            enabled: self.webgl_context_enabled,
+            antialias: self.webgl_context_antialias,
+            depth: self.webgl_context_depth,
+            stencil: self.webgl_context_stencil,
+            alpha: self.webgl_context_alpha,
+            premultiplied_alpha: self.webgl_context_premultiplied_alpha,
+            preserve_drawing_buffer: self.webgl_context_preserve_drawing_buffer,
+            power_preference: self.webgl_context_power_preference.clone(),
+            fail_if_major_performance_caveat: self.webgl_context_fail_if_major_performance_caveat,
+        };
+        let connection = ConnectionConfig {
+            enabled: self.connection_enabled,
+            effective_type: self.connection_effective_type.clone(),
+            downlink: self.connection_downlink,
+            rtt: self.connection_rtt,
+            save_data: self.connection_save_data,
+        };
+        let iframe = IframeConfig { enabled: self.iframe_enabled };
+
+        let hooks = StealthHooks::from_profile(
+            &canvas, &audio, &navigator, &screen, &webgl, &font, &battery,
+            webrtc_mode, &timing, &clientrects, &screen_display,
+            &plugin, &speech, &media_devices, &permissions, &webgl_context,
+            &connection, &iframe,
+        );
+        hooks.combined_js()
+    }
 }
 
 static REALM_PROFILES: OnceLock<DashMap<usize, ::std::sync::Arc<RealmProfile>>> = OnceLock::new();
@@ -446,6 +566,126 @@ pub fn set_profile(profile: &StealthProfile) {
 /// per-Realm profile is set.
 unsafe fn read_realm_field<T, F: FnOnce(&RealmProfile) -> T>(raw_cx: *mut JSContext, f: F) -> Option<T> {
     current_realm_profile(raw_cx).map(|rp| f(&rp))
+}
+
+/// Build the combined JS hook code from thread-local profile values.
+/// Used when no per-Realm profile is registered (CLI/engine/test contexts).
+fn build_hooks_js_from_thread_local() -> String {
+    use crate::canvas::CanvasNoise;
+    use crate::navigator::{NavigatorProfile, ScreenProfile};
+    use crate::webgl_audio::{AudioProfile, WebGLProfile};
+    use crate::profile::{
+        FontConfig, BatteryConfig, WebRtcMode, TimingConfig, ClientRectsConfig,
+        ScreenDisplayConfig, PluginConfig, SpeechConfig, MediaDevicesConfig,
+        PermissionsConfig, WebGLContextConfig, ConnectionConfig, IframeConfig,
+    };
+
+    let canvas = CanvasNoise::new(TL_CANVAS_SEED.with(|v| *v.borrow()));
+    let audio = AudioProfile::new(TL_AUDIO_SEED.with(|v| *v.borrow()));
+    let navigator = NavigatorProfile {
+        user_agent: TL_UA.with(|v| v.borrow().clone()),
+        platform: TL_PLATFORM.with(|v| v.borrow().clone()),
+        language: TL_LANGUAGE.with(|v| v.borrow().clone()),
+        languages: TL_LANGUAGES.with(|v| v.borrow().clone()),
+        hardware_concurrency: TL_HWC.with(|v| *v.borrow()),
+        max_touch_points: TL_TOUCH.with(|v| *v.borrow()),
+        vendor: TL_VENDOR.with(|v| v.borrow().clone()),
+        app_version: String::new(),
+        oscpu: None,
+        build_id: None,
+        product_sub: String::new(),
+        device_memory: TL_DEVICE_MEMORY.with(|v| *v.borrow()),
+    };
+    let screen = ScreenProfile {
+        width: TL_SCREEN_W.with(|v| *v.borrow()),
+        height: TL_SCREEN_H.with(|v| *v.borrow()),
+        avail_width: TL_AVAIL_W.with(|v| *v.borrow()),
+        avail_height: TL_AVAIL_H.with(|v| *v.borrow()),
+        color_depth: TL_COLOR_DEPTH.with(|v| *v.borrow()),
+        pixel_depth: TL_COLOR_DEPTH.with(|v| *v.borrow()),
+        device_pixel_ratio: TL_DPR.with(|v| *v.borrow()),
+    };
+    let webgl = WebGLProfile {
+        vendor: TL_WEBGL_VENDOR.with(|v| v.borrow().clone()),
+        renderer: TL_WEBGL_RENDERER.with(|v| v.borrow().clone()),
+        extensions: TL_WEBGL_EXTENSIONS.with(|v| v.borrow().clone()),
+        max_texture_size: 16384,
+        max_renderbuffer_size: 16384,
+        max_viewport_dims: [16384, 16384],
+    };
+    let font = FontConfig {
+        seed: TL_FONT_SEED.with(|v| *v.borrow()),
+        extra_font_count: TL_FONT_EXTRA_COUNT.with(|v| *v.borrow()),
+        hidden_fonts: TL_FONT_HIDDEN_FONTS.with(|v| v.borrow().clone()),
+    };
+    let battery = BatteryConfig {
+        charging: TL_BATTERY_CHARGING.with(|v| *v.borrow()),
+        level: TL_BATTERY_LEVEL.with(|v| *v.borrow()),
+        charging_time: TL_BATTERY_CHARGING_TIME.with(|v| *v.borrow()),
+        discharging_time: TL_BATTERY_DISCHARGING_TIME.with(|v| *v.borrow()),
+    };
+    let webrtc_mode = match TL_WEBRTC_MODE.with(|v| *v.borrow()) {
+        0 => WebRtcMode::Default,
+        1 => WebRtcMode::Strict,
+        _ => WebRtcMode::None,
+    };
+    let timing = TimingConfig { precision_us: TL_TIMING_PRECISION_US.with(|v| *v.borrow()) };
+    let clientrects = ClientRectsConfig {
+        noise_delta: TL_CLIENTRECTS_DELTA.with(|v| *v.borrow()),
+        seed: TL_CLIENTRECTS_SEED.with(|v| *v.borrow()),
+    };
+    let screen_display = ScreenDisplayConfig {
+        width: TL_SCREEN_DISPLAY_W.with(|v| *v.borrow()),
+        height: TL_SCREEN_DISPLAY_H.with(|v| *v.borrow()),
+        color_depth: TL_SCREEN_DISPLAY_CD.with(|v| *v.borrow()),
+        device_pixel_ratio: TL_SCREEN_DISPLAY_DPR.with(|v| *v.borrow()),
+    };
+    let plugin = PluginConfig {
+        plugin_count: TL_PLUGIN_COUNT.with(|v| *v.borrow()),
+        plugins: TL_PLUGIN_NAMES.with(|v| v.borrow().clone()),
+        mime_types: TL_MIME_TYPES.with(|v| v.borrow().clone()),
+    };
+    let speech = SpeechConfig {
+        enabled: TL_SPEECH_ENABLED.with(|v| *v.borrow()),
+        voices: TL_SPEECH_VOICES.with(|v| v.borrow().clone()),
+    };
+    let media_devices = MediaDevicesConfig {
+        enabled: TL_MEDIA_DEVICES_ENABLED.with(|v| *v.borrow()),
+        audio_input_count: TL_MEDIA_DEVICES_AUDIO_IN.with(|v| *v.borrow()),
+        video_input_count: TL_MEDIA_DEVICES_VIDEO_IN.with(|v| *v.borrow()),
+        audio_output_count: TL_MEDIA_DEVICES_AUDIO_OUT.with(|v| *v.borrow()),
+    };
+    let permissions = PermissionsConfig {
+        enabled: TL_PERMISSIONS_ENABLED.with(|v| *v.borrow()),
+        states: TL_PERMISSIONS_STATES.with(|v| v.borrow().clone()),
+    };
+    let webgl_context = WebGLContextConfig {
+        enabled: TL_WEBGL_CONTEXT_ENABLED.with(|v| *v.borrow()),
+        antialias: TL_WEBGL_CONTEXT_ANTIALIAS.with(|v| *v.borrow()),
+        depth: TL_WEBGL_CONTEXT_DEPTH.with(|v| *v.borrow()),
+        stencil: TL_WEBGL_CONTEXT_STENCIL.with(|v| *v.borrow()),
+        alpha: TL_WEBGL_CONTEXT_ALPHA.with(|v| *v.borrow()),
+        premultiplied_alpha: TL_WEBGL_CONTEXT_PREMULTIPLIED_ALPHA.with(|v| *v.borrow()),
+        preserve_drawing_buffer: TL_WEBGL_CONTEXT_PRESERVE_DRAWING_BUFFER.with(|v| *v.borrow()),
+        power_preference: TL_WEBGL_CONTEXT_POWER_PREFERENCE.with(|v| v.borrow().clone()),
+        fail_if_major_performance_caveat: TL_WEBGL_CONTEXT_FAIL_IF_MAJOR_PERFORMANCE_CAVEAT.with(|v| *v.borrow()),
+    };
+    let connection = ConnectionConfig {
+        enabled: TL_CONNECTION_ENABLED.with(|v| *v.borrow()),
+        effective_type: TL_CONNECTION_EFFECTIVE_TYPE.with(|v| v.borrow().clone()),
+        downlink: TL_CONNECTION_DOWNLINK.with(|v| *v.borrow()),
+        rtt: TL_CONNECTION_RTT.with(|v| *v.borrow()),
+        save_data: TL_CONNECTION_SAVE_DATA.with(|v| *v.borrow()),
+    };
+    let iframe = IframeConfig { enabled: TL_IFRAME_ENABLED.with(|v| *v.borrow()) };
+
+    let hooks = StealthHooks::from_profile(
+        &canvas, &audio, &navigator, &screen, &webgl, &font, &battery,
+        webrtc_mode, &timing, &clientrects, &screen_display,
+        &plugin, &speech, &media_devices, &permissions, &webgl_context,
+        &connection, &iframe,
+    );
+    hooks.combined_js()
 }
 
 /// Accessors for canvas noise parameters — used by the servo rendering layer
@@ -891,13 +1131,22 @@ unsafe fn delete_cdp_leaked_properties(cx: *mut JSContext, global: HandleObject)
 /// Uses StealthHooks to generate combined JS code for Canvas, Audio, Navigator,
 /// Font, Battery, WebRTC, Timing, ClientRects, ScreenDisplay, Plugin, Speech,
 /// MediaDevices, Permissions, WebGL Context, Connection, and iframe hooks.
+///
+/// Profile resolution follows the same precedence as native getter callbacks:
+/// 1. Per-Realm profile (via DashMap, keyed by current global)
+/// 2. Thread-local profile (set via `set_profile`)
+/// 3. Static `firefox_default()` as last resort
 unsafe fn inject_js_hooks(raw_cx: *mut JSContext, global: HandleObject) -> bool {
     use mozjs::context::JSContext;
     use mozjs::rooted;
     use mozjs::rust::{CompileOptionsWrapper, evaluate_script, Handle as RustHandle};
     use ::std::ptr::NonNull;
 
-    let js_code = {
+    let js_code = if let Some(rp) = current_realm_profile(raw_cx) {
+        rp.build_hooks_js()
+    } else if is_profile_set() {
+        build_hooks_js_from_thread_local()
+    } else {
         let profile = StealthProfile::firefox_default();
         let hooks = StealthHooks::from_profile(
             &profile.canvas,

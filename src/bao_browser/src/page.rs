@@ -482,20 +482,34 @@ impl PageInner {
         )))
     }
 
-    /// Wait for page navigation to complete (URL changes and load status is Complete).
+    /// Wait for page navigation to complete (load status transitions to Complete).
+    ///
+    /// Tracks navigation via `LoadStatus` transitions rather than URL changes,
+    /// which correctly handles same-URL navigation (reload, pushState to current URL).
+    /// Detects when `load_status` transitions from Started/HeadParsed to Complete.
     pub fn wait_for_navigation(
         &self,
         timeout: Duration,
     ) -> Result<(), BrowserError> {
         let start = Instant::now();
-        let initial_url = self.current_url().unwrap_or_default();
+        // Record the initial load_status. Navigation begins with Started,
+        // so if we're already at Complete, we wait for a new Started first.
+        let initial_status = self.webview_state.borrow().load_status;
+        let mut saw_new_navigation = initial_status != servo::LoadStatus::Started;
+
         while start.elapsed() < timeout {
-            let current = self.current_url().unwrap_or_default();
-            let load_complete = self.webview_state.borrow().load_status == servo::LoadStatus::Complete;
-            if current != initial_url && load_complete {
+            let current_status = self.webview_state.borrow().load_status;
+
+            if current_status == servo::LoadStatus::Started {
+                // A new navigation has begun — we now wait for it to complete.
+                saw_new_navigation = true;
+            }
+
+            if saw_new_navigation && current_status == servo::LoadStatus::Complete {
                 self.touch();
                 return Ok(());
             }
+
             self.servo.spin_event_loop();
             self.webview.paint();
             std::thread::yield_now();
@@ -669,17 +683,54 @@ impl PageInner {
         clip: Option<(f64, f64, f64, f64)>,
         full_page: bool,
     ) -> Result<Vec<u8>, BrowserError> {
+        let original_viewport = self.viewport;
+
         if full_page {
-            // Scroll to capture full page height
+            // Resize viewport to full page height to capture everything.
             let height_js = "document.documentElement.scrollHeight";
-            let _ = self.evaluate_js_web(height_js);
+            let height_str = self.evaluate_js_web(height_js).unwrap_or_default();
+            let full_height: u32 = height_str.trim().parse().unwrap_or(original_viewport.height);
+            let capped_height = full_height.max(original_viewport.height);
+            if capped_height != original_viewport.height {
+                self.set_viewport(original_viewport.width, capped_height);
+                // Allow servo to re-layout at the new viewport size.
+                self.servo.spin_event_loop();
+                self.webview.paint();
+            }
         }
-        if let Some((_x, _y, _w, _h)) = clip {
-            // Clip region: servo's take_screenshot doesn't support clip directly,
-            // so we capture the full viewport and crop in post-processing.
-            // For now, fall through to full viewport capture.
+
+        let result = self.take_screenshot(format);
+
+        // Restore original viewport after full_page capture.
+        if full_page && original_viewport != self.viewport {
+            self.set_viewport(original_viewport.width, original_viewport.height);
         }
-        self.take_screenshot(format)
+
+        let image_bytes = result?;
+
+        // Apply clip region by decoding, cropping, and re-encoding.
+        if let Some((x, y, w, h)) = clip {
+            let mut img = image::load_from_memory(&image_bytes)
+                .map_err(|e| BrowserError::Rendering(format!("failed to decode screenshot for clip: {e}")))?;
+            let crop_x = x.max(0.0) as u32;
+            let crop_y = y.max(0.0) as u32;
+            let crop_w = (w as u32).min(img.width().saturating_sub(crop_x));
+            let crop_h = (h as u32).min(img.height().saturating_sub(crop_y));
+            if crop_w == 0 || crop_h == 0 {
+                return Err(BrowserError::Rendering("clip region has zero dimensions".into()));
+            }
+            let cropped = img.crop(crop_x, crop_y, crop_w, crop_h);
+            let rgba = cropped.to_rgba8();
+            // Re-determine format from the original bytes (PNG by default).
+            let fmt = if image_bytes.starts_with(&[0x89, 0x50, 0x4E, 0x47]) {
+                ScreenshotFormat::Png
+            } else {
+                ScreenshotFormat::Jpeg
+            };
+            return encode_image(&rgba, fmt);
+        }
+
+        Ok(image_bytes)
     }
 
     pub fn page_title(&self) -> Option<String> {

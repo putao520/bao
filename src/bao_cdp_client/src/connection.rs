@@ -75,6 +75,14 @@ pub type EventListenerId = u64;
 /// 事件 handler 类型。`Arc<dyn Fn>` 允许跨 Rc 边界。
 pub type EventListener = Arc<dyn Fn(CdpEvent) + Send + Sync>;
 
+/// 单条事件 handler 记录(内部)。
+#[derive(Clone)]
+struct EventListenerEntry {
+    id: EventListenerId,
+    handler: EventListener,
+    once: bool,
+}
+
 // ─── 全局 ID 计数器(跨 Connection 实例共享) ──────────────────────────────
 //
 // JSON-RPC spec 要求 request id 在同一 session 内唯一。用全局 AtomicU64
@@ -101,8 +109,8 @@ fn next_command_id() -> u64 {
 pub struct Connection {
     transport: Box<dyn Transport>,
     config: ConnectionConfig,
-    /// 事件 handler 注册表:method → Vec<(id, handler)>。
-    event_handlers: HashMap<String, Vec<(EventListenerId, EventListener)>>,
+    /// 事件 handler 注册表:method → Vec<EventListenerEntry>。
+    event_handlers: HashMap<String, Vec<EventListenerEntry>>,
     /// 下一个事件 handler ID。
     next_listener_id: EventListenerId,
     /// 是否已关闭。
@@ -251,17 +259,24 @@ impl Connection {
         self.event_handlers
             .entry(method.to_string())
             .or_default()
-            .push((id, handler));
+            .push(EventListenerEntry { id, handler, once: false });
         id
     }
 
     /// 注册一次性事件 handler(触发后自动移除)。
     ///
-    /// 简化实现:与 `on_event` 相同,调用方负责在 handler 内调 `off_event`。
+    /// handler 在首次匹配到 method 的事件后被调用并自动从注册表移除,
+    /// 后续相同 method 的事件不再触发此 handler。
     ///
     /// @trace REQ-BAO-API-001 [level:library]
     pub fn once_event(&mut self, method: &str, handler: EventListener) -> EventListenerId {
-        self.on_event(method, handler)
+        let id = self.next_listener_id;
+        self.next_listener_id += 1;
+        self.event_handlers
+            .entry(method.to_string())
+            .or_default()
+            .push(EventListenerEntry { id, handler, once: true });
+        id
     }
 
     /// 移除事件 handler。
@@ -270,7 +285,7 @@ impl Connection {
     pub fn off_event(&mut self, method: &str, listener_id: EventListenerId) -> bool {
         let removed = if let Some(handlers) = self.event_handlers.get_mut(method) {
             let before = handlers.len();
-            handlers.retain(|(id, _)| *id != listener_id);
+            handlers.retain(|e| e.id != listener_id);
             before > handlers.len()
         } else {
             false
@@ -298,27 +313,49 @@ impl Connection {
     }
 
     /// 分发事件到已注册 handler。
+    ///
+    /// once handler 在首次调用后自动从注册表移除(与 EventEmitterInner::emit 一致)。
     fn dispatch_event(&mut self, event: CdpEvent) {
-        // 收集匹配的 handler(克隆 Arc),避免 borrow 冲突。
-        let handlers: Vec<EventListener> = self
+        // 1. 收集 (id, handler, once_flag) 三元组,克隆 handler。
+        let to_call: Vec<(EventListenerId, EventListener, bool)> = self
             .event_handlers
             .get(&event.method)
-            .map(|v| v.iter().map(|(_, h)| h.clone()).collect())
+            .map(|v| v.iter().map(|e| (e.id, e.handler.clone(), e.once)).collect())
             .unwrap_or_default();
 
-        // 也检查通配符 handler(method 为 "*")。
-        let wildcard_handlers: Vec<EventListener> = self
+        // 也收集通配符 handler(method 为 "*")。
+        let wildcard_to_call: Vec<(EventListenerId, EventListener, bool)> = self
             .event_handlers
             .get("*")
-            .map(|v| v.iter().map(|(_, h)| h.clone()).collect())
+            .map(|v| v.iter().map(|e| (e.id, e.handler.clone(), e.once)).collect())
             .unwrap_or_default();
 
-        // 释放 borrow 后调用 handler。
-        for handler in handlers {
+        // 2. 收集需要移除的 once handler ID。
+        let once_ids: Vec<EventListenerId> = to_call
+            .iter()
+            .chain(wildcard_to_call.iter())
+            .filter(|(_, _, o)| *o)
+            .map(|(id, _, _)| *id)
+            .collect();
+
+        // 3. 调用所有 handler(此时未持有任何 borrow)。
+        for (_, handler, _) in &to_call {
             handler(event.clone());
         }
-        for handler in wildcard_handlers {
+        for (_, handler, _) in &wildcard_to_call {
             handler(event.clone());
+        }
+
+        // 4. 移除 once handler。
+        if !once_ids.is_empty() {
+            for method in [&event.method[..], "*"] {
+                if let Some(list) = self.event_handlers.get_mut(method) {
+                    list.retain(|e| !once_ids.contains(&e.id));
+                    if list.is_empty() {
+                        self.event_handlers.remove(method);
+                    }
+                }
+            }
         }
     }
 
@@ -554,5 +591,69 @@ mod tests {
         let id1 = next_command_id();
         let id2 = next_command_id();
         assert!(id2 > id1);
+    }
+
+    #[test]
+    fn connection_once_event_auto_removes_after_first_invocation() {
+        let ev1 = CdpEvent::new("Page.load", serde_json::json!({"url": "a"}));
+        let ev2 = CdpEvent::new("Page.load", serde_json::json!({"url": "b"}));
+        let mut conn = make_mock_with_events(vec![ev1, ev2]);
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+        let handler: EventListener = Arc::new(move |_ev| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        conn.once_event("Page.load", handler);
+        assert_eq!(conn.event_handler_count("Page.load"), 1);
+
+        // First event: handler invoked, then auto-removed.
+        let got = conn.recv_event().unwrap().expect("expected event");
+        assert_eq!(got.method, "Page.load");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(conn.event_handler_count("Page.load"), 0);
+
+        // Second event: handler not invoked (already removed).
+        let got2 = conn.recv_event().unwrap().expect("expected event");
+        assert_eq!(got2.method, "Page.load");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn connection_once_event_wildcard_auto_removes() {
+        let ev = CdpEvent::new("Page.load", Value::Null);
+        let mut conn = make_mock_with_events(vec![ev]);
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+        let handler: EventListener = Arc::new(move |_ev| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        conn.once_event("*", handler);
+        assert_eq!(conn.event_handler_count("*"), 1);
+
+        let _ = conn.recv_event().unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        assert_eq!(conn.event_handler_count("*"), 0);
+    }
+
+    #[test]
+    fn connection_on_event_persists_across_events() {
+        let ev1 = CdpEvent::new("Page.load", Value::Null);
+        let ev2 = CdpEvent::new("Page.load", Value::Null);
+        let mut conn = make_mock_with_events(vec![ev1, ev2]);
+
+        let counter = Arc::new(AtomicU32::new(0));
+        let c = counter.clone();
+        let handler: EventListener = Arc::new(move |_ev| {
+            c.fetch_add(1, Ordering::SeqCst);
+        });
+        conn.on_event("Page.load", handler);
+
+        let _ = conn.recv_event().unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        let _ = conn.recv_event().unwrap();
+        assert_eq!(counter.load(Ordering::SeqCst), 2);
+        assert_eq!(conn.event_handler_count("Page.load"), 1);
     }
 }

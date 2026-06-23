@@ -38,7 +38,7 @@
 //!
 //! @trace REQ-BAO-API-006 [class:Page]
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
@@ -132,7 +132,7 @@ pub struct Page {
     /// Target ID(Target.targetCreated 事件分配的 ID)。
     target_id: String,
     /// 是否 service worker / shared worker(非 page target)。
-    is_service_worker: bool,
+    is_service_worker: Cell<bool>,
     /// 主 Frame(Rc,持有 frame tree 根)。
     main_frame: Rc<Frame>,
     /// 所有 frame(ID → Rc),便于 O(1) 查找。
@@ -172,7 +172,7 @@ impl std::fmt::Debug for Page {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Page")
             .field("target_id", &self.target_id)
-            .field("is_service_worker", &self.is_service_worker)
+            .field("is_service_worker", &self.is_service_worker.get())
             .field("frame_count", &self.frames_map.borrow().len())
             .field("worker_count", &self.workers.borrow().len())
             .field("closed", &self.closed.borrow())
@@ -205,7 +205,7 @@ impl Page {
 
         Self {
             target_id,
-            is_service_worker: false,
+            is_service_worker: Cell::new(false),
             main_frame,
             frames_map: RefCell::new(frames),
             workers: RefCell::new(Vec::new()),
@@ -252,14 +252,14 @@ impl Page {
     ///
     /// @trace REQ-BAO-API-006 [class:Page]
     pub fn is_service_worker(&self) -> bool {
-        self.is_service_worker
+        self.is_service_worker.get()
     }
 
     /// 设置 is_service_worker(targetCreated 时根据 type 填入)。
     ///
     /// @trace REQ-BAO-API-006 [class:Page]
     pub fn set_is_service_worker(&self, v: bool) {
-        let _ = v;
+        self.is_service_worker.set(v);
     }
 
     /// 主 Frame(Rc clone)。
@@ -967,5 +967,16 @@ mod tests {
 
         p.set_connection(conn);
         assert!(p.has_connection());
+    }
+
+    #[test]
+    fn set_is_service_worker_actually_sets_value() {
+        let ctx = make_browser_ctx();
+        let p = make_page_with_ctx(ctx);
+        assert!(!p.is_service_worker());
+        p.set_is_service_worker(true);
+        assert!(p.is_service_worker());
+        p.set_is_service_worker(false);
+        assert!(!p.is_service_worker());
     }
 }
