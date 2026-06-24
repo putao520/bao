@@ -82,6 +82,9 @@ pub mod http_client;
 pub mod resolver_bridge;
 pub mod s3_api;
 pub mod stealth_http;
+pub mod bun_listen;
+pub mod bun_udp;
+pub mod bun_shell;
 pub mod install;
 
 pub use runtime::BaoRuntime;

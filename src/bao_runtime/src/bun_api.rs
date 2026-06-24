@@ -270,6 +270,13 @@ unsafe fn populate_bun_object(
 
     // Bao.browser 全局对象(连接 CDP client — REQ-BAO-API-008)
     crate::bao_browser_global::install_bao_browser_on_bun(cx, bun_obj);
+
+    // @trace REQ-BAO-API-017 [api:Bun.listen/Bun.connect/Bun.udpSocket] — native TCP/UDP server
+    unsafe { crate::bun_listen::install(cx, bun_obj); }
+    // @trace REQ-BAO-API-017 [api:Bun.udpSocket] — native UDP socket
+    unsafe { crate::bun_udp::install(cx, bun_obj); }
+    // @trace REQ-BAO-API-018 [api:Bun.Shell/Bun.$] — shell interpreter via bun_shell_parser
+    unsafe { crate::bun_shell::install_bun_shell(cx, bun_obj); }
 }
 
 pub fn install_bun_global(
