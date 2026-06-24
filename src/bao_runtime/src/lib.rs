@@ -85,6 +85,7 @@ pub mod stealth_http;
 pub mod bun_listen;
 pub mod bun_udp;
 pub mod bun_shell;
+pub mod bun_password;
 pub mod install;
 
 pub use runtime::BaoRuntime;

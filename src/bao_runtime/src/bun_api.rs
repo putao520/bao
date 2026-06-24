@@ -277,6 +277,8 @@ unsafe fn populate_bun_object(
     unsafe { crate::bun_udp::install(cx, bun_obj); }
     // @trace REQ-BAO-API-018 [api:Bun.Shell/Bun.$] — shell interpreter via bun_shell_parser
     unsafe { crate::bun_shell::install_bun_shell(cx, bun_obj); }
+    // @trace REQ-ENG-14 [api:Bun.password] — password hashing (argon2id/bcrypt)
+    unsafe { crate::bun_password::install(cx, bun_obj); }
 }
 
 pub fn install_bun_global(
