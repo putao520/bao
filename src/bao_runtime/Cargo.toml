@@ -37,6 +37,10 @@ bun_uws = { path = "../uws" }
 bun_uws_sys = { path = "../uws_sys" }
 bun_spawn = { path = "../spawn" }
 bun_spawn_sys = { path = "../spawn_sys" }
+# @trace REQ-BAO-API-018 [dep:bun_shell_parser] — Shell lexer/parser/AST (replaces hand-written shell parsing)
+bun_shell_parser = { path = "../shell_parser" }
+# @trace REQ-BAO-API-018 [dep:bun_alloc] — Arena allocator for bun_shell_parser Lexer/Parser
+bun_alloc = { path = "../bun_alloc" }
 bun_sys = { path = "../sys" }
 bun_opaque = { path = "../opaque" }
 bun_picohttp = { path = "../picohttp" }
@@ -63,6 +67,17 @@ compact_str.workspace = true
 smallvec.workspace = true
 bao_uloop = { path = "../bao_uloop" }
 bun_sha_hmac = { path = "../sha_hmac" }
+# @trace REQ-BAO-API-010 [dep:bun_hash] — non-cryptographic hash (adler32, xxhash, cityhash, etc.)
+bun_hash = { path = "../hash" }
+# @trace REQ-BAO-API-010 [dep:crc32fast] — CRC32 via crc32fast (same backend as bun_zlib)
+crc32fast.workspace = true
+# @trace REQ-ENG-014 [dep:argon2] — password hashing (argon2id/argon2i/argon2d via rust-argon2)
+# Workspace key is `rust-argon2` (matches package name); crate name is `argon2`.
+rust-argon2.workspace = true
+# @trace REQ-ENG-014 [dep:bcrypt] — password hashing (bcrypt)
+bcrypt = { workspace = true }
+# @trace REQ-ENG-014 [dep:getrandom] — salt generation for password hashing
+getrandom = { workspace = true }
 hex = "0.4"
 flate2.workspace = true
 bun_brotli = { path = "../brotli" }
