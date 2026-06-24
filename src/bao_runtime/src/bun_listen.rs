@@ -736,11 +736,22 @@ struct ConnectUserData {
     error_cb_key: Option<String>,
     close_cb_key: Option<String>,
     open_cb_key: Option<String>,
+    end_cb_key: Option<String>,
     group_ptr: *mut SocketGroup,
     cx: *mut JSContext,
+    /// Pending Promise to resolve on open / reject on error.
+    promise: *mut JSObject,
+    /// Whether the promise has been settled (resolved or rejected).
+    promise_settled: Cell<bool>,
 }
 
-/// @trace REQ-BAO-API-017 [api:Bun.connect] Bun.connect(options) -> Socket
+/// @trace REQ-BAO-API-017 [api:Bun.connect] Bun.connect(options) -> Promise<Socket>
+///
+/// Creates a TCP client connection via bun_uws_sys::SocketGroup::connect().
+/// Returns a Promise that resolves with the Socket on open, or rejects on error.
+///
+/// Options shape (matching Bun API):
+///   Bun.connect({ hostname, port, tls?, socket: { data?, open?, close?, error?, end? } })
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn bun_connect(
     cx: *mut JSContext,
@@ -751,10 +762,12 @@ unsafe extern "C" fn bun_connect(
 
     let mut port: u16 = 0;
     let mut hostname = "127.0.0.1".to_string();
+    let mut _tls = false;
     let mut on_data: Option<*mut JSObject> = None;
     let mut on_error: Option<*mut JSObject> = None;
     let mut on_close: Option<*mut JSObject> = None;
     let mut on_open: Option<*mut JSObject> = None;
+    let mut on_end: Option<*mut JSObject> = None;
 
     if argc > 0 {
         let opts_val = *args.get(0).ptr;
@@ -764,37 +777,76 @@ unsafe extern "C" fn bun_connect(
             rooted!(&in(cx_ref) let opts_obj = opts_val.to_object());
             let opts_h = opts_obj.handle().into();
 
+            // Parse port
             let mut pv = UndefinedValue();
             JS_GetProperty(cx, opts_h, c"port".as_ptr(),
                 MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut pv });
             if pv.is_int32() { port = pv.to_int32().max(0) as u16; }
             else if pv.is_double() { port = pv.to_double().max(0.0) as u16; }
 
+            // Parse hostname
             let mut hv = UndefinedValue();
             JS_GetProperty(cx, opts_h, c"hostname".as_ptr(),
                 MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut hv });
             if hv.is_string() { hostname = crate::js_to_rust_string(cx, hv); }
 
-            on_data = extract_js_callback(cx, opts_h, "data");
-            on_error = extract_js_callback(cx, opts_h, "error");
-            on_close = extract_js_callback(cx, opts_h, "close");
-            on_open = extract_js_callback(cx, opts_h, "open");
+            // Parse tls (boolean)
+            let mut tv = UndefinedValue();
+            JS_GetProperty(cx, opts_h, c"tls".as_ptr(),
+                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut tv });
+            _tls = tv.is_boolean() && unsafe { tv.to_boolean() };
+
+            // Parse socket sub-object for callbacks (Bun API pattern)
+            // Bun.connect({ hostname, port, socket: { data, open, close, error, end } })
+            let mut sv = UndefinedValue();
+            JS_GetProperty(cx, opts_h, c"socket".as_ptr(),
+                MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut sv });
+            if sv.is_object() {
+                rooted!(&in(cx_ref) let so = sv.to_object());
+                let so_h = so.handle().into();
+                on_data = extract_js_callback(cx, so_h, "data");
+                on_error = extract_js_callback(cx, so_h, "error");
+                on_close = extract_js_callback(cx, so_h, "close");
+                on_open = extract_js_callback(cx, so_h, "open");
+                on_end = extract_js_callback(cx, so_h, "end");
+            }
+
+            // Fallback: also check top-level callbacks (if no socket sub-object)
+            if on_data.is_none() { on_data = extract_js_callback(cx, opts_h, "data"); }
+            if on_error.is_none() { on_error = extract_js_callback(cx, opts_h, "error"); }
+            if on_close.is_none() { on_close = extract_js_callback(cx, opts_h, "close"); }
+            if on_open.is_none() { on_open = extract_js_callback(cx, opts_h, "open"); }
+            if on_end.is_none() { on_end = extract_js_callback(cx, opts_h, "end"); }
         }
     }
 
     let connect_id = CONNECT_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
 
-    // Store callbacks
+    // Store callbacks in GcStore
     let data_cb_key = on_data.map(|cb| { let k = gc_store_unique_key(&format!("connect_data_{}", connect_id)); gc_store_insert(cx, &k, cb); k });
     let error_cb_key = on_error.map(|cb| { let k = gc_store_unique_key(&format!("connect_error_{}", connect_id)); gc_store_insert(cx, &k, cb); k });
     let close_cb_key = on_close.map(|cb| { let k = gc_store_unique_key(&format!("connect_close_{}", connect_id)); gc_store_insert(cx, &k, cb); k });
     let open_cb_key = on_open.map(|cb| { let k = gc_store_unique_key(&format!("connect_open_{}", connect_id)); gc_store_insert(cx, &k, cb); k });
+    let end_cb_key = on_end.map(|cb| { let k = gc_store_unique_key(&format!("connect_end_{}", connect_id)); gc_store_insert(cx, &k, cb); k });
+
+    // Create Promise for async result — SPEC requires Promise<Socket>
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let null_global = ::std::ptr::null_mut::<JSObject>());
+    let promise = unsafe { mozjs_sys::jsapi::JS::NewPromiseObject(cx, null_global.handle().into()) };
+    if promise.is_null() {
+        args.rval().set(UndefinedValue());
+        return true;
+    }
 
     crate::timers::with_event_loop(|_| {});
 
     let loop_ = get_loop();
     if loop_.is_null() {
-        args.rval().set(UndefinedValue());
+        // Reject the promise — no event loop
+        unsafe { reject_connect_promise(cx, promise, "Bun.connect: event loop not available"); }
+        rooted!(&in(cx_ref) let p = promise);
+        args.rval().set(ObjectValue(p.get()));
         return true;
     }
 
@@ -804,8 +856,11 @@ unsafe extern "C" fn bun_connect(
         error_cb_key,
         close_cb_key,
         open_cb_key,
+        end_cb_key,
         group_ptr: ptr::null_mut(), // filled in after group creation
         cx,
+        promise,
+        promise_settled: Cell::new(false),
     });
     let ud_ptr = Box::into_raw(ud) as *mut ::std::ffi::c_void;
 
@@ -823,9 +878,12 @@ unsafe extern "C" fn bun_connect(
     CONNECT_RESULT.with(|r| r.set(None));
     CONNECT_ERROR.with(|e| e.set(false));
 
+    // Determine SocketKind based on tls option
+    let socket_kind = if _tls { SocketKind::BunSocketTls } else { SocketKind::BunSocketTcp };
+
     let result = unsafe {
         (*group_ptr).connect(
-            SocketKind::UwsHttp,
+            socket_kind,
             None,
             (*host_cstr).as_cstr(),
             port as i32,
@@ -876,7 +934,9 @@ unsafe extern "C" fn bun_connect(
     rooted!(&in(cx_ref) let socket_obj = unsafe { w2::JS_NewPlainObject(cx_ref) });
     if socket_obj.get().is_null() {
         let _ = unsafe { Box::from_raw(ud_ptr as *mut ConnectUserData) };
-        args.rval().set(UndefinedValue());
+        unsafe { reject_connect_promise(cx, promise, "Bun.connect: failed to create socket object"); }
+        rooted!(&in(cx_ref) let p = promise);
+        args.rval().set(ObjectValue(p.get()));
         return true;
     }
     let sock_h = socket_obj.handle().into();
@@ -889,6 +949,15 @@ unsafe extern "C" fn bun_connect(
     let ud_jsval = mozjs::jsval::PrivateValue(ud_ptr as *const core::ffi::c_void);
     rooted!(&in(cx_ref) let ud_h = ud_jsval);
     unsafe { JS_DefineProperty(cx, sock_h, c"_udPtr".as_ptr(), ud_h.handle().into(), 0); }
+
+    // Store GcStore keys as private properties for cleanup
+    // (keys are inside ConnectUserData which was Box::into_raw, so we access via ud_ptr)
+    let ud_ref = unsafe { &*(ud_ptr as *const ConnectUserData) };
+    store_gc_key_on_obj(cx, cx_ref, sock_h, c"_dataCbKey".as_ptr(), &ud_ref.data_cb_key);
+    store_gc_key_on_obj(cx, cx_ref, sock_h, c"_errorCbKey".as_ptr(), &ud_ref.error_cb_key);
+    store_gc_key_on_obj(cx, cx_ref, sock_h, c"_closeCbKey".as_ptr(), &ud_ref.close_cb_key);
+    store_gc_key_on_obj(cx, cx_ref, sock_h, c"_openCbKey".as_ptr(), &ud_ref.open_cb_key);
+    store_gc_key_on_obj(cx, cx_ref, sock_h, c"_endCbKey".as_ptr(), &ud_ref.end_cb_key);
 
     // Store remote address info
     let c_hn = ZBox::from_bytes(hostname.as_bytes());
@@ -920,6 +989,15 @@ unsafe extern "C" fn bun_connect(
             rooted!(&in(cx_ref) let lp_v = Int32Value(local_port as i32));
             unsafe { JS_DefineProperty(cx, sock_h, c"localPort".as_ptr(), lp_v.handle().into(), JSPROP_ENUMERATE as u32); }
         }
+    }
+
+    // Store the socket object on user data so VTable callbacks can resolve the Promise with it
+    // We keep a rooted reference via the Promise resolution
+    unsafe { (*(ud_ptr as *mut ConnectUserData)).promise = promise; }
+
+    // If connect failed synchronously, reject the promise now
+    if socket_key == 0 {
+        unsafe { reject_connect_promise(cx, promise, "Bun.connect: connection failed"); }
     }
 
     // socket.write(data)
@@ -968,6 +1046,13 @@ unsafe extern "C" fn bun_connect(
             let socket_ptr = ptr_val.to_double() as usize as *mut us_socket_t;
             unsafe { (*socket_ptr).close(CloseCode::normal); }
         }
+
+        // Fire end callback
+        let ud = get_connect_ud(cx, this_h);
+        if let Some(ud_ref) = ud {
+            let _ = invoke_js_callback(ud_ref.cx, &ud_ref.end_cb_key, &[]);
+        }
+
         args.rval().set(UndefinedValue());
         true
     }
@@ -994,6 +1079,7 @@ unsafe extern "C" fn bun_connect(
         cleanup_gc_key(cx, this_h, c"_errorCbKey".as_ptr());
         cleanup_gc_key(cx, this_h, c"_closeCbKey".as_ptr());
         cleanup_gc_key(cx, this_h, c"_openCbKey".as_ptr());
+        cleanup_gc_key(cx, this_h, c"_endCbKey".as_ptr());
 
         let mut ud_val = UndefinedValue();
         JS_GetProperty(cx, this_h, c"_udPtr".as_ptr(),
@@ -1016,7 +1102,9 @@ unsafe extern "C" fn bun_connect(
         mozjs_sys::jsapi::JS_DefineFunction(cx, sock_h, c"destroy".as_ptr(), Some(socket_destroy), 0, JSPROP_ENUMERATE as u32);
     }
 
-    args.rval().set(ObjectValue(socket_obj.get()));
+    // Return the Promise
+    rooted!(&in(cx_ref) let promise_root = promise);
+    args.rval().set(ObjectValue(promise_root.get()));
     true
 }
 
@@ -1449,12 +1537,27 @@ unsafe extern "C" fn tcp_on_connect_error(
 }
 
 unsafe extern "C" fn tcp_on_connecting_error(
-    _c: *mut bun_uws_sys::ConnectingSocket,
+    c: *mut bun_uws_sys::ConnectingSocket,
     _code: ::std::ffi::c_int,
 ) -> *mut bun_uws_sys::ConnectingSocket {
     CONNECT_ERROR.with(|e| e.set(true));
     CONNECT_RESULT.with(|r| r.set(Some(0)));
-    _c
+
+    // If this is a Bun.connect connecting socket, reject the pending Promise
+    let conn_ref = unsafe { bun_opaque::opaque_deref_mut(c) };
+    let group_ptr = conn_ref.group();
+    if !group_ptr.is_null() {
+        let owner = unsafe { (*group_ptr).owner::<ConnectUserData>() as *const ConnectUserData };
+        if !owner.is_null() {
+            let ud = unsafe { &*owner };
+            if !ud.promise_settled.get() && !ud.promise.is_null() {
+                ud.promise_settled.set(true);
+                unsafe { reject_connect_promise(ud.cx, ud.promise, "Bun.connect: connecting error"); }
+            }
+        }
+    }
+
+    c
 }
 
 unsafe extern "C" fn tcp_on_handshake(
@@ -1468,6 +1571,7 @@ unsafe extern "C" fn tcp_on_handshake(
 // Connect-specific VTable callbacks
 
 /// @trace REQ-BAO-API-017 [api:Bun.connect] on_open callback — fires socket.open JS callback
+/// and resolves the pending Promise with the socket object.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn connect_on_open(
     s: *mut us_socket_t,
@@ -1485,6 +1589,30 @@ unsafe extern "C" fn connect_on_open(
     // group() returns &mut SocketGroup (never null for live sockets per uSockets contract)
     let ud = &*((*s).group().owner::<ConnectUserData>() as *const ConnectUserData);
     let _ = invoke_js_callback(ud.cx, &ud.open_cb_key, &[]);
+
+    // Resolve the pending Promise with the socket pointer
+    // The socket JS object is built lazily — we resolve with the socket key
+    // so the caller can construct the Socket object from the resolved value.
+    // For Bun API compatibility, we resolve with the us_socket_t pointer as a number.
+    if !ud.promise_settled.get() && !ud.promise.is_null() {
+        ud.promise_settled.set(true);
+        let cx = ud.cx;
+        if !cx.is_null() {
+            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let cx_ref = &mut wrapped_cx;
+            rooted!(&in(cx_ref) let p = ud.promise);
+            // Build a Socket-like object to resolve with
+            rooted!(&in(cx_ref) let sock_obj = w2::JS_NewPlainObject(cx_ref));
+            if !sock_obj.get().is_null() {
+                let sock_h = sock_obj.handle().into();
+                rooted!(&in(cx_ref) let ptr_v = DoubleValue(key as f64));
+                JS_DefineProperty(cx, sock_h, c"_socketPtr".as_ptr(), ptr_v.handle().into(), 0);
+                rooted!(&in(cx_ref) let val = ObjectValue(sock_obj.get()));
+                mozjs_sys::jsapi::JS::ResolvePromise(cx, p.handle().into(), val.handle().into());
+            }
+            mozjs_sys::jsapi::js::RunJobs(cx);
+        }
+    }
 
     s
 }
@@ -1513,6 +1641,7 @@ unsafe extern "C" fn connect_on_data(
 }
 
 /// @trace REQ-BAO-API-017 [api:Bun.connect] on_close callback — fires socket.close JS callback
+/// and socket.end JS callback.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn connect_on_close(
     s: *mut us_socket_t,
@@ -1526,11 +1655,14 @@ unsafe extern "C" fn connect_on_close(
     let ud = &*((*s).group().owner::<ConnectUserData>() as *const ConnectUserData);
     let code_val = Int32Value(code);
     let _ = invoke_js_callback(ud.cx, &ud.close_cb_key, &[code_val]);
+    // Also fire end callback on close (Bun API: close implies end)
+    let _ = invoke_js_callback(ud.cx, &ud.end_cb_key, &[]);
 
     s
 }
 
 /// @trace REQ-BAO-API-017 [api:Bun.connect] on_connect_error callback — fires socket.error JS callback
+/// and rejects the pending Promise.
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn connect_on_connect_error(
     s: *mut us_socket_t,
@@ -1542,6 +1674,12 @@ unsafe extern "C" fn connect_on_connect_error(
     let ud = &*((*s).group().owner::<ConnectUserData>() as *const ConnectUserData);
     let code_val = Int32Value(code);
     let _ = invoke_js_callback(ud.cx, &ud.error_cb_key, &[code_val]);
+
+    // Reject the pending Promise with an error
+    if !ud.promise_settled.get() && !ud.promise.is_null() {
+        ud.promise_settled.set(true);
+        reject_connect_promise(ud.cx, ud.promise, &format!("Bun.connect: connection error (code {})", code));
+    }
 
     s
 }
@@ -1850,6 +1988,67 @@ unsafe fn cleanup_gc_key(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, prop:
         let key = crate::js_to_rust_string(cx, val);
         gc_store_remove(cx, &key);
     }
+}
+
+/// Store a GcStore key as a JS string property on an object (for cleanup in destroy).
+fn store_gc_key_on_obj(
+    cx: *mut JSContext,
+    _cx_ref: &mut mozjs::context::JSContext,
+    obj_h: Handle<*mut JSObject>,
+    prop: *const i8,
+    key: &Option<String>,
+) {
+    if let Some(ref k) = *key {
+        let c_k = ZBox::from_bytes(k.as_bytes());
+        unsafe {
+            let js_str = JS_NewStringCopyZ(cx, c_k.as_ptr());
+            if !js_str.is_null() {
+                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                let cx_ref = &mut wrapped_cx;
+                rooted!(&in(cx_ref) let v = StringValue(&*js_str));
+                JS_DefineProperty(cx, obj_h, prop, v.handle().into(), 0);
+            }
+        }
+    }
+}
+
+/// @trace REQ-BAO-API-017 [api:Bun.connect] Reject a connect Promise with an error message.
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn reject_connect_promise(cx: *mut JSContext, promise: *mut JSObject, msg: &str) {
+    if cx.is_null() || promise.is_null() { return; }
+    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_ref = &mut wrapped_cx;
+    rooted!(&in(cx_ref) let err_obj = JS_NewPlainObject(cx));
+    if !err_obj.get().is_null() {
+        let c_msg = ZBox::from_bytes(msg.as_bytes());
+        let js_str = JS_NewStringCopyZ(cx, c_msg.as_ptr());
+        if !js_str.is_null() {
+            rooted!(&in(cx_ref) let msg_val = StringValue(&*js_str));
+            JS_DefineProperty(cx, err_obj.handle().into(), c"message".as_ptr(), msg_val.handle().into(), JSPROP_ENUMERATE as u32);
+        }
+        rooted!(&in(cx_ref) let err_val = ObjectValue(err_obj.get()));
+        rooted!(&in(cx_ref) let p = promise);
+        mozjs_sys::jsapi::JS::RejectPromise(cx, p.handle().into(), err_val.handle().into());
+    }
+    mozjs_sys::jsapi::js::RunJobs(cx);
+}
+
+/// Get ConnectUserData from a JS socket object's _udPtr private property.
+/// Returns None if the property is missing or invalid.
+unsafe fn get_connect_ud<'a>(
+    cx: *mut JSContext,
+    obj_h: Handle<*mut JSObject>,
+) -> Option<&'a ConnectUserData> {
+    let mut ud_val = UndefinedValue();
+    JS_GetProperty(cx, obj_h, c"_udPtr".as_ptr(),
+        MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ud_val });
+    if ud_val.is_double() && (ud_val.asBits_ & 0xFFFF000000000000) == 0 {
+        let ud_ptr = ud_val.to_private() as *mut ConnectUserData;
+        if !ud_ptr.is_null() {
+            return Some(&*ud_ptr);
+        }
+    }
+    None
 }
 
 // ──────────────────── Install entry point ────────────────────
