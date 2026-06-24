@@ -57,7 +57,7 @@ unsafe extern "C" fn timers_set_timeout(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let callback_root = (*args.get(0).ptr).to_object());
     let delay = if argc > 1 {
         let v = *args.get(1).ptr;
@@ -97,7 +97,7 @@ unsafe extern "C" fn timers_set_interval(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let callback_root = (*args.get(0).ptr).to_object());
     let delay = if argc > 1 {
         let v = *args.get(1).ptr;
@@ -129,7 +129,7 @@ unsafe extern "C" fn timers_set_immediate(
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let callback_root = (*args.get(0).ptr).to_object());
     let id = crate::timers::schedule_raw(cx, callback_root.get(), 0, false, &[]);
     args.rval().set(Int32Value(id as i32));

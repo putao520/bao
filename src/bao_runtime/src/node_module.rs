@@ -189,7 +189,7 @@ unsafe extern "C" fn module_create_require(
     let args = CallArgs::from_vp(vp, argc);
 
     // createRequire returns the global require function
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let global = JS::CurrentGlobalOrNull(cx);
     if !global.is_null() {
         rooted!(&in(wrapped_cx) let global_root = global);

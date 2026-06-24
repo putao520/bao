@@ -177,7 +177,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             if !global.is_null()
                 && JS::Evaluate2(cx.raw_cx(), mopts, &mut msrc, mh)
                 && mval.is_object() {
-                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                 rooted!(&in(wrapped_cx) let global_root = global);
                 rooted!(&in(wrapped_cx) let path_val_root = ObjectValue(path_obj.get()));
                 let args_arr = HandleValueArray {
@@ -211,7 +211,7 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> ::std::option::Option
     if val.is_undefined() || val.is_null() {
         return ::std::option::Option::None;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let val_root = val);
     let s = mozjs::rust::ToString(cx, val_root.handle().into());
     if s.is_null() {
@@ -452,7 +452,7 @@ unsafe extern "C" fn path_parse(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -
         args.rval().set(UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let parsed_root = parsed);
 
     define_string_prop(cx, parsed_root.handle().into(), "root", &root);
@@ -478,7 +478,7 @@ unsafe extern "C" fn path_format(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         return false;
     }
     let obj = val.to_object();
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = obj);
     let dir = get_string_prop(cx, obj_root.handle().into(), "dir");
     let base = get_string_prop(cx, obj_root.handle().into(), "base");
@@ -703,7 +703,7 @@ unsafe fn define_string_prop(cx: *mut JSContext, obj: Handle<*mut JSObject>, nam
     let js_str = JS_NewStringCopyZ(cx, c_val.as_ptr());
     if !js_str.is_null() {
         let val = mozjs::jsval::StringValue(&*js_str);
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let val_root = val);
         JS_DefineProperty(cx, obj, c_name.as_ptr(), val_root.handle().into(), JSPROP_ENUMERATE as u32);
     }

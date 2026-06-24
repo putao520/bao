@@ -331,7 +331,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
         // We expose this via the mozjs fork's `JS_NewEmulatesUndefinedFunction`
         // (js/src/jsapi.cpp), then install it as the `transcode` property so
         // buffer.test.js's two assertions both pass.
-        rooted!(&in(cx) let transcode_obj = unsafe {
+        rooted!(&in(cx) let transcode_obj = {
             w2::JS_NewEmulatesUndefinedFunction(
                 cx,
                 Some(buffer_transcode),
@@ -442,7 +442,7 @@ unsafe fn collect_byte_view(cx: *mut JSContext, v: JSVal) -> Option<Vec<u8>> {
     if !v.is_object() {
         return None;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = v.to_object());
     // Try TypedArray / DataView / Buffer (JS_GetObjectAsUint8Array handles
     // all TypedArray kinds; Buffer is a Uint8Array subclass).

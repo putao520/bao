@@ -167,7 +167,7 @@ unsafe extern "C" fn v8_get_heap_statistics(
         args.rval().set(mozjs::jsval::UndefinedValue());
         return true;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let out_root = out);
     for (k, v) in fields {
         let ckey = ::std::ffi::CString::new(*k).unwrap();

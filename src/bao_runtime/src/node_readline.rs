@@ -115,7 +115,7 @@ unsafe extern "C" fn rl_close(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_obj = this.to_object());
     rooted!(&in(wrapped_cx) let closed_v = BooleanValue(true));
     JS_DefineProperty(cx, this_obj.handle().into(), c"closed".as_ptr(), closed_v.handle().into(), JSPROP_ENUMERATE as u32);
@@ -128,7 +128,7 @@ unsafe extern "C" fn rl_pause(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) ->
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_obj = this.to_object());
     rooted!(&in(wrapped_cx) let paused_v = BooleanValue(true));
     JS_DefineProperty(cx, this_obj.handle().into(), c"paused".as_ptr(), paused_v.handle().into(), JSPROP_ENUMERATE as u32);
@@ -141,7 +141,7 @@ unsafe extern "C" fn rl_resume(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if !this.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_obj = this.to_object());
     rooted!(&in(wrapped_cx) let paused_v = BooleanValue(false));
     JS_DefineProperty(cx, this_obj.handle().into(), c"paused".as_ptr(), paused_v.handle().into(), JSPROP_ENUMERATE as u32);
@@ -154,7 +154,7 @@ unsafe extern "C" fn rl_chain(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -
     let args = CallArgs::from_vp(vp, _argc);
     let this = args.thisv();
     if this.is_object() {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(_cx));
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(_cx));
         rooted!(&in(wrapped_cx) let this_obj = this.to_object());
         args.rval().set(ObjectValue(this_obj.get()));
     } else { args.rval().set(UndefinedValue()); }

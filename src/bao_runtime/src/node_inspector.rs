@@ -43,7 +43,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
 /// inspector.open([port[, host[, wait]]])
 /// Stores the port and marks the inspector as open.
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn inspector_open(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn inspector_open(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
 
     let port = if argc > 0 {
@@ -115,7 +115,7 @@ unsafe extern "C" fn inspector_wait_for_debugger(cx: *mut JSContext, _argc: u32,
     }
 
     // Get the Promise constructor from the global
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global_root = global);
 
     let mut promise_ctor_val = UndefinedValue();
@@ -162,7 +162,7 @@ unsafe extern "C" fn inspector_resolve_fn(cx: *mut JSContext, argc: u32, vp: *mu
     if argc > 0 {
         let resolve = *args.get(0).ptr;
         if resolve.is_object() {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let resolve_obj = resolve.to_object());
             rooted!(&in(wrapped_cx) let resolve_fn_val = ObjectValue(resolve_obj.get()));
 

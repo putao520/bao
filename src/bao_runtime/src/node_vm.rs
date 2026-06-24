@@ -43,9 +43,9 @@ use crate::require::cache_builtin;
 // VM Context Registry (thread-local)
 // ──────────────────────────────────────────────────────────────────────────
 
-/// Tracks contextified objects on this thread so `vm.isContext()` can
-/// recognise them. Each entry maps a JSObject* to its sandbox global and
-/// the active code-generation policy (REQ-ENG-011 criterion 8).
+// Tracks contextified objects on this thread so `vm.isContext()` can
+// recognise them. Each entry maps a JSObject* to its sandbox global and
+// the active code-generation policy (REQ-ENG-011 criterion 8).
 thread_local! {
     static VM_CONTEXT_MAP: RefCell<Vec<(*mut JSObject, *mut JSObject, CodeGenerationFlags)>> = RefCell::new(Vec::new());
 }
@@ -118,7 +118,7 @@ unsafe fn parse_code_generation_options(
         return CodeGenerationFlags::permissive();
     }
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let raw_cx = cx;
 
     rooted!(&in(wrapped_cx) let opts = opts_val.to_object());
@@ -137,7 +137,7 @@ unsafe fn parse_code_generation_options(
 
     rooted!(&in(wrapped_cx) let cgen = cgen_val.to_object());
 
-    let mut read_bool = |key: &::std::ffi::CStr| -> bool {
+    let read_bool = |key: &::std::ffi::CStr| -> bool {
         let mut v = UndefinedValue();
         let ok = JS_GetProperty(
             raw_cx,
@@ -488,7 +488,7 @@ fn define_properties_on_global(
     rooted!(&in(realm_cx) let global_root = global);
 
     for (key, heap_val) in props {
-        let c_key = unsafe { bun_core::ZBox::from_bytes(key.as_bytes()) };
+        let c_key = bun_core::ZBox::from_bytes(key.as_bytes());
         if c_key.as_ptr().is_null() {
             continue;
         }

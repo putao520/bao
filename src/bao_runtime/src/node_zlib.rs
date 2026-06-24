@@ -27,7 +27,7 @@ unsafe fn extract_bytes(cx: *mut JSContext, val: JSVal) -> Vec<u8> {
     // Fallback: plain JS Array (element-by-element).
     if val.is_object() {
         let obj = val.to_object();
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let obj_root = obj);
 
         let mut len_val = UndefinedValue();
@@ -56,7 +56,7 @@ unsafe fn return_bytes(cx: *mut JSContext, args: &CallArgs, data: Vec<u8>) -> bo
     if u8_val.is_object() {
         let global = CurrentGlobalOrNull(cx);
         if !global.is_null() {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let global_root = global);
 
             let mut buffer_ctor = UndefinedValue();
@@ -101,7 +101,7 @@ unsafe fn extract_compression_level(cx: *mut JSContext, opts_val: JSVal) -> flat
         return level;
     }
     let obj = opts_val.to_object();
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = obj);
 
     let mut val = UndefinedValue();
@@ -240,7 +240,7 @@ unsafe fn extract_brotli_options(cx: *mut JSContext, opts_val: JSVal) -> (u32, u
         return (quality, lgwin);
     }
     let obj = opts_val.to_object();
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = obj);
 
     let mut val = UndefinedValue();
@@ -300,7 +300,7 @@ unsafe fn call_callback(cx: *mut JSContext, callback: JSVal, err: JSVal, result:
     if global.is_null() {
         return;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global_root = global);
     let cb_obj = callback.to_object();
     let cb_val = mozjs::jsval::ObjectValue(cb_obj);
@@ -329,7 +329,7 @@ unsafe fn make_buffer_val(cx: *mut JSContext, data: &[u8]) -> JSVal {
     if global.is_null() {
         return u8_val;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global_root = global);
 
     let mut buffer_ctor = UndefinedValue();

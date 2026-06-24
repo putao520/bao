@@ -245,7 +245,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let vopts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<http-validate>".as_ptr(), 1);
             if !vopts.is_null() {
                 if JS::Evaluate2(cx.raw_cx(), vopts, &mut vsrc, vh) && vval.is_object() {
-                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let global_root = CurrentGlobalOrNull(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let http_val_root = ObjectValue(http_obj.get()));
                     let args_arr = HandleValueArray { length_: 1, elements_: &http_val_root.get() as *const Value };
@@ -300,7 +300,7 @@ pub fn install(cx: &mut mozjs::context::JSContext) {
             let copts = mozjs::glue::NewCompileOptions(cx.raw_cx(), c"<http-classes>".as_ptr(), 1);
             if !copts.is_null() {
                 if JS::Evaluate2(cx.raw_cx(), copts, &mut csrc, ch) && cval.is_object() {
-                    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let global_root = CurrentGlobalOrNull(cx.raw_cx()));
                     rooted!(&in(wrapped_cx) let http_val_root = ObjectValue(http_obj.get()));
                     let args_arr = HandleValueArray { length_: 1, elements_: &http_val_root.get() as *const Value };
@@ -669,7 +669,7 @@ unsafe extern "C" fn res_write_head(
             }
         }
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_root = args.thisv().to_object());
     args.rval().set(ObjectValue(this_root.get()));
     true
@@ -720,7 +720,7 @@ unsafe extern "C" fn res_write(
             }
         }
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_root = args.thisv().to_object());
     args.rval().set(ObjectValue(this_root.get()));
     true

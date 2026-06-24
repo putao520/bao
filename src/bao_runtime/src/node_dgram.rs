@@ -195,7 +195,7 @@ unsafe extern "C" fn dgram_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal
     let port: u16 = (*args.get(1).ptr).to_int32() as u16;
     let addr_str = crate::js_to_rust_string(cx, *args.get(2).ptr);
     let target = format!("{}:{}", addr_str, port);
-    let mut reg = registry().lock().unwrap();
+    let reg = registry().lock().unwrap();
     match reg.get(&fd) {
         Some(sock) => match sock.connect(&target) {
             Ok(()) => { *vp = Int32Value(1); true }
@@ -207,11 +207,11 @@ unsafe extern "C" fn dgram_connect(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
 // ── Native __dgram_disconnect ──
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dgram_disconnect(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn dgram_disconnect(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 1 { return false; }
     let fd = (*args.get(0).ptr).to_int32();
-    let mut reg = registry().lock().unwrap();
+    let reg = registry().lock().unwrap();
     if let Some(sock) = reg.get(&fd) {
         // disconnect by connecting to 0.0.0.0:0
         let _ = sock.connect("0.0.0.0:0");
@@ -222,7 +222,7 @@ unsafe extern "C" fn dgram_disconnect(cx: *mut JSContext, argc: u32, vp: *mut JS
 
 // ── Native __dgram_close ──
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dgram_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn dgram_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 1 { return false; }
     let fd = (*args.get(0).ptr).to_int32();
@@ -233,7 +233,7 @@ unsafe extern "C" fn dgram_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
 
 // ── Native __dgram_set_broadcast ──
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dgram_set_broadcast(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn dgram_set_broadcast(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 { return false; }
     let fd = (*args.get(0).ptr).to_int32();
@@ -246,7 +246,7 @@ unsafe extern "C" fn dgram_set_broadcast(cx: *mut JSContext, argc: u32, vp: *mut
 
 // ── Native __dgram_set_ttl ──
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dgram_set_ttl(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn dgram_set_ttl(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 { return false; }
     let fd = (*args.get(0).ptr).to_int32();
@@ -259,7 +259,7 @@ unsafe extern "C" fn dgram_set_ttl(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
 // ── Native __dgram_set_multicast_ttl ──
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dgram_set_multicast_ttl(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn dgram_set_multicast_ttl(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 { return false; }
     let fd = (*args.get(0).ptr).to_int32();
@@ -272,7 +272,7 @@ unsafe extern "C" fn dgram_set_multicast_ttl(cx: *mut JSContext, argc: u32, vp: 
 
 // ── Native __dgram_set_multicast_loopback ──
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn dgram_set_multicast_loopback(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn dgram_set_multicast_loopback(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc < 2 { return false; }
     let fd = (*args.get(0).ptr).to_int32();

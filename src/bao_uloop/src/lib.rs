@@ -122,6 +122,13 @@ struct BaoLoopState {
     /// `(*loop_ptr).fd` so FilePoll can `epoll_ctl(loop_.fd, ...)`.
     epfd: c_int,
 
+    /// Saved pointer to the `Box::into_raw`-ed `BaoWakeupAsync` so `Drop` can
+    /// recover the correct Rust type. `InternalLoopData.wakeup_async` stores
+    /// this same address cast to `*mut us_internal_async` (an opaque ZST), so
+    /// we cannot reconstruct the `BaoWakeupAsync` from it — we must keep the
+    /// original typed pointer.
+    wakeup_async_ptr: *mut BaoWakeupAsync,
+
     /// Pending wakeups counter. Mirrors `PosixLoop::pending_wakeups` but
     /// kept on the Rust side so we can atomically swap-and-clear without
     /// touching FFI memory.
@@ -144,6 +151,49 @@ struct BaoLoopState {
 
     /// Optional post-callback set at `us_create_loop` time.
     post_cb: Option<LoopCb>,
+}
+
+// SAFETY: BaoLoopState owns its raw pointers and only accesses them from the
+// thread that created them. The `wakeup_async_ptr` field is a `Box::into_raw`
+// pointer that we reconstruct in `Drop` — it is never shared across threads.
+unsafe impl Send for BaoLoopState {}
+
+impl Drop for BaoLoopState {
+    fn drop(&mut self) {
+        // Release order: child resources first, then parent struct, then fd.
+        // This mirrors C's `us_loop_free` → `us_internal_loop_data_free` → `close(fd)` → `us_free(loop)`.
+
+        // 1. Close wakeup eventfd and free BaoWakeupAsync (Box-allocated).
+        if !self.wakeup_async_ptr.is_null() {
+            let wakeup = unsafe { &*self.wakeup_async_ptr };
+            if wakeup.fd >= 0 {
+                unsafe { libc::close(wakeup.fd); }
+            }
+            // Reconstruct the Box so Rust drops it.
+            unsafe { drop(Box::from_raw(self.wakeup_async_ptr)); }
+            self.wakeup_async_ptr = ptr::null_mut();
+        }
+
+        // 2. Free recv_buf and send_buf (libc::malloc-allocated).
+        if !self.loop_ptr.is_null() {
+            let internal = unsafe { &(*self.loop_ptr).internal_loop_data };
+            if !internal.recv_buf.is_null() {
+                unsafe { libc::free(internal.recv_buf as *mut c_void); }
+            }
+            if !internal.send_buf.is_null() {
+                unsafe { libc::free(internal.send_buf as *mut c_void); }
+            }
+            // 3. Free PosixLoop itself (Box::into_raw-allocated).
+            unsafe { drop(Box::from_raw(self.loop_ptr)); }
+            self.loop_ptr = ptr::null_mut();
+        }
+
+        // 4. Close epoll fd (last — child resources may reference it during teardown).
+        if self.epfd >= 0 {
+            unsafe { libc::close(self.epfd); }
+            self.epfd = -1;
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -265,6 +315,7 @@ fn create_loop(
         *slot = Some(BaoLoopState {
             loop_ptr,
             epfd,
+            wakeup_async_ptr: wakeup_async,
             pending_wakeups: core::sync::atomic::AtomicU32::new(0),
             deferred: std::collections::VecDeque::new(),
             pre_handlers: Vec::new(),

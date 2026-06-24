@@ -1118,6 +1118,28 @@ impl HttpThread {
                 this.queued_tasks.push(http);
             }
         }
+        // BUG-ENG-369 fix: wait for the HTTP thread to finish `on_start()` before
+        // calling `wakeup()`. `on_start()` sets `has_awoken = true` after
+        // configuring `uws_loop`; if we wakeup before that, `us_wakeup_loop`
+        // either dereferences a null loop pointer or misses the event entirely.
+        //
+        // Primary guarantee: `init()` blocks via Condvar until `on_start()`
+        // completes, so `has_awoken == true` is already expected here. The
+        // spin-wait is a defensive guard against any future regression where
+        // `schedule()` is called before `init()` finishes (e.g. if the Condvar
+        // wait is removed or a new call path bypasses `init()`).
+        if !this.has_awoken.load(Ordering::Acquire) {
+            let deadline =
+                std::time::Instant::now() + std::time::Duration::from_millis(100);
+            while !this.has_awoken.load(Ordering::Acquire) {
+                if std::time::Instant::now() > deadline {
+                    panic!(
+                        "HTTPThread::schedule() timed out waiting for HTTPThread::init()"
+                    );
+                }
+                std::hint::spin_loop();
+            }
+        }
         this.wakeup();
     }
 }
@@ -1181,9 +1203,21 @@ use core::cell::Cell;
 
 mod _event_loop_draft {
     use super::*;
-    use std::sync::Once;
+    use std::sync::{Arc, Condvar, Mutex, Once, OnceLock};
 
     static INIT_ONCE: Once = Once::new();
+
+    /// Condvar pair shared between `init_once()` (caller thread) and
+    /// `on_start()` (HTTP thread). The caller blocks until the HTTP thread
+    /// signals readiness — this eliminates the has_awoken race entirely.
+    static THREAD_READY: OnceLock<Arc<(Mutex<bool>, Condvar)>> = OnceLock::new();
+
+    fn thread_ready_pair() -> Arc<(Mutex<bool>, Condvar)> {
+        THREAD_READY
+            .get_or_init(|| Arc::new((Mutex::new(false), Condvar::new())))
+            .clone()
+    }
+
     // PORT NOTE: Zig `std.Thread.spawn` + `.detach()` allocates nothing on the
     // heap. Rust's `Builder::spawn` allocates an `Arc<thread::Inner>` (48 B)
     // shared between the `JoinHandle` and the new thread's TLS `current()`.
@@ -1213,10 +1247,12 @@ mod _event_loop_draft {
         }
         crate::HTTP_THREAD_INIT.store(true, core::sync::atomic::Ordering::Release);
         // libdeflate::load() no longer needed — pure Rust flate2 + miniz_oxide backend.
+        let ready = thread_ready_pair();
         let opts_copy = opts.clone();
+        let ready_clone = ready.clone();
         let thread = std::thread::Builder::new()
             .stack_size(bun_threading::thread_pool::DEFAULT_THREAD_STACK_SIZE as usize)
-            .spawn(move || on_start(opts_copy));
+            .spawn(move || on_start(opts_copy, ready_clone));
         match thread {
             // detach — see HTTP_THREAD_HANDLE note above re: LSAN reachability
             Ok(t) => {
@@ -1224,9 +1260,22 @@ mod _event_loop_draft {
             }
             Err(err) => Output::panic(format_args!("Failed to start HTTP Client thread: {}", err)),
         }
+        // Block until the HTTP thread has finished on_start() and is ready to
+        // accept tasks. This guarantees that every subsequent `schedule()` call
+        // observes `has_awoken == true`, eliminating the wakeup race entirely.
+        // The Condvar wait is the architecturally correct synchronization
+        // primitive for this thread-startup handshake (replaces the former
+        // yield-and-skip hack which relied on probabilistic timing).
+        {
+            let (lock, cvar) = &*ready;
+            let mut guard = lock.lock().unwrap();
+            while !*guard {
+                guard = cvar.wait(guard).unwrap();
+            }
+        }
     }
 
-    pub(super) fn on_start(opts: InitOpts) {
+    pub(super) fn on_start(opts: InitOpts, ready: Arc<(Mutex<bool>, Condvar)>) {
         Output::Source::configure_named_thread(bun_core::zstr!("HTTP Client"));
         // PERF(port): was MimallocArena bulk-free for bun.http.default_allocator.
 
@@ -1315,6 +1364,15 @@ mod _event_loop_draft {
         // Release: publishes `uws_loop`/`loop_` to cross-thread `wakeup()`
         // readers (which Acquire-load `has_awoken`).
         thread.has_awoken.store(true, Ordering::Release);
+        // Signal the caller thread that we are ready. The Condvar notify
+        // unblocks `init_once()` which is waiting in `cvar.wait()`, guaranteeing
+        // that every subsequent `schedule()` call observes `has_awoken == true`.
+        {
+            let (lock, cvar) = &*ready;
+            let mut guard = lock.lock().unwrap();
+            *guard = true;
+            cvar.notify_all();
+        }
         thread.process_events();
     }
 

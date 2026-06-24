@@ -19,9 +19,11 @@ use crate::require::cache_builtin;
 // Completion is scheduled on the JS thread via bao_uloop::uws_loop_defer (next_tick).
 
 /// Result of statfs() — simplified subset of fields exposed by Node.js fs.statfs().
+#[allow(dead_code)]
 struct StatfsResult {
     type_: u64,
     bsize: u64,
+    #[allow(dead_code)]
     frsize: u64,
     blocks: u64,
     bfree: u64,
@@ -30,6 +32,7 @@ struct StatfsResult {
     ffree: u64,
 }
 
+#[allow(dead_code)]
 enum FsAsyncResult {
     Ok(Vec<u8>),
     OkStat(bun_sys::PosixStat),

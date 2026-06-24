@@ -35,26 +35,28 @@ pub unsafe fn call_method_on_object(
     }
 
     // BCE-012: root obj/global/method_val — JS_GetProperty and JS_CallFunctionValue can trigger GC
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+    let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
 
     let c_method = ::std::ffi::CString::new(method_name).unwrap_or_default();
     let mut method_val = mozjs::jsval::UndefinedValue();
     rooted!(&in(wrapped_cx) let obj_root = obj);
-    mozjs::jsapi::JS_GetProperty(
-        cx,
-        obj_root.handle().into(),
-        c_method.as_ptr(),
-        mozjs::jsapi::MutableHandle::<mozjs::jsapi::Value> {
-            _phantom_0: ::std::marker::PhantomData,
-            ptr: &mut method_val,
-        },
-    );
+    unsafe {
+        mozjs::jsapi::JS_GetProperty(
+            cx,
+            obj_root.handle().into(),
+            c_method.as_ptr(),
+            mozjs::jsapi::MutableHandle::<mozjs::jsapi::Value> {
+                _phantom_0: ::std::marker::PhantomData,
+                ptr: &mut method_val,
+            },
+        );
+    }
 
     if !method_val.is_object() {
         return mozjs::jsval::UndefinedValue();
     }
 
-    let global = mozjs::jsapi::CurrentGlobalOrNull(cx);
+    let global = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx) };
     if global.is_null() {
         return mozjs::jsval::UndefinedValue();
     }
@@ -73,7 +75,7 @@ pub unsafe fn call_method_on_object(
         _phantom_0: ::std::marker::PhantomData,
         ptr: &mut rval,
     };
-    mozjs::jsapi::JS_CallFunctionValue(cx, global_root.handle().into(), cb_val_root.handle().into(), &call_args, rval_h);
-    mozjs::jsapi::JS_ClearPendingException(cx);
+    unsafe { mozjs::jsapi::JS_CallFunctionValue(cx, global_root.handle().into(), cb_val_root.handle().into(), &call_args, rval_h); }
+    unsafe { mozjs::jsapi::JS_ClearPendingException(cx); }
     rval
 }

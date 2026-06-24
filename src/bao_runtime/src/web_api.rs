@@ -424,7 +424,7 @@ unsafe fn ws_trigger_event(cx: *mut JSContext, ws_obj_key: &str, event_name: &st
         Some(obj) => obj,
         None => return,
     };
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let ws_obj_root = ws_obj);
     let mut handler_val = UndefinedValue();
     let c_name = ZBox::from_bytes(event_name.as_bytes());
@@ -461,7 +461,7 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
     }
     let msg_val = *args.get(0).ptr;
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_obj = args.thisv().to_object());
     let mut idx_val = Int32Value(-1);
     JS_GetProperty(cx, this_obj.handle().into(), c"_wsIdx".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut idx_val });
@@ -489,7 +489,7 @@ unsafe extern "C" fn ws_send(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> b
 
 unsafe extern "C" fn ws_close_fn(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, _argc);
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_obj = args.thisv().to_object());
 
     let mut idx_val = Int32Value(-1);
@@ -781,7 +781,7 @@ unsafe extern "C" fn text_encoder_encode(cx: *mut JSContext, argc: u32, vp: *mut
     };
 
     let bytes = input.as_bytes();
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
 
     // @trace REQ-ENG-005 [api:TextEncoder.encode] — Return a real SM
     // Uint8Array (not a plain Array) so callers see .byteLength/.buffer and
@@ -863,7 +863,7 @@ unsafe extern "C" fn text_decoder_decode(cx: *mut JSContext, argc: u32, vp: *mut
     let input = *args.get(0).ptr;
 
     let bytes = if input.is_object() {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let obj = input.to_object());
         let mut len_val = UndefinedValue();
         JS_GetProperty(cx, obj.handle().into(), c"length".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut len_val });

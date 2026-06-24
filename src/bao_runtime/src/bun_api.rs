@@ -803,7 +803,7 @@ unsafe extern "C" fn bun_spawn(
     //      executable and the rest as args.
     //   3. `Bun.spawn({ cmd: "/path/to/exe", args: [...] })` — split form
     //      (current Bao surface, kept for compatibility).
-    let mut cmd_args: Vec<String>;
+    let cmd_args: Vec<String>;
     let cmd: String = {
         // Primary: array `cmd` (shape #2).
         let cmd_array = get_string_array_prop(cx, opts_h, c"cmd".as_ptr());
@@ -4117,9 +4117,10 @@ thread_local! {
 }
 
 /// Global counter for generating unique GcStore keys for exit handler callbacks.
+#[allow(dead_code)]
 static EXIT_CB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[allow(unsafe_op_in_unsafe_fn)]
+#[allow(dead_code, unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn process_on(
     cx: *mut JSContext,
     argc: u32,
@@ -4853,6 +4854,7 @@ struct CryptoHasherState {
     data: Vec<u8>,
 }
 
+#[allow(dead_code)]
 static CRYPTO_HASHER_CB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[allow(unsafe_op_in_unsafe_fn)]

@@ -106,7 +106,7 @@ t.isCryptoKey=function(){return false};
                 if !opts.is_null() {
                     let global = CurrentGlobalOrNull(cx.raw_cx());
                     if !global.is_null() && JS::Evaluate2(cx.raw_cx(), opts, &mut src, factory_h) && factory_val.is_object() {
-                        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                         rooted!(&in(wrapped_cx) let global_root = global);
                         rooted!(&in(wrapped_cx) let types_val_root = ObjectValue(types_obj.get()));
                         let args_arr = HandleValueArray { length_: 1, elements_: &types_val_root.get() as *const Value };
@@ -204,7 +204,7 @@ t.isCryptoKey=function(){return false};
             if !global.is_null()
                 && JS::Evaluate2(cx.raw_cx(), eopts, &mut esrc, eval_h)
                 && eval_rval.is_object() {
-                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+                let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
                 rooted!(&in(wrapped_cx) let global_root = global);
                 rooted!(&in(wrapped_cx) let util_val_root = ObjectValue(util_obj.get()));
                 let args_arr = HandleValueArray {
@@ -621,7 +621,7 @@ pub fn install_assert(cx: &mut mozjs::context::JSContext) {
         if !ok || !rval.is_object() {
             return;
         }
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx()));
         rooted!(&in(wrapped_cx) let assert_fn_obj = rval.to_object());
 
         // Cache as builtin `assert` and `assert/strict`.
@@ -694,7 +694,7 @@ unsafe fn jsval_inspect(cx: *mut JSContext, val: JSVal, depth: u32) -> String { 
         return format!("'{}'", crate::js_to_rust_string(cx, val));
     }
     if val.is_object() {
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let obj = val.to_object());
 
         // Arrays → [ a, b, c ]
@@ -816,7 +816,7 @@ type_check_fn!(util_is_object, |v: &JSVal| v.is_object());
 
 unsafe fn is_function(cx: *mut JSContext, val: &JSVal) -> bool { unsafe {
     if !val.is_object() { return false; }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj = val.to_object());
     JS_ObjectIsFunction(obj.get())
 }}
@@ -833,7 +833,7 @@ unsafe extern "C" fn util_is_function(cx: *mut JSContext, argc: u32, vp: *mut JS
 unsafe fn is_array(cx: *mut JSContext, val: &JSVal) -> bool { unsafe {
     if !val.is_object() { return false; }
     let mut result = false;
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let v_root = *val);
     IsArrayObject(cx, v_root.handle().into(), &mut result);
     result
@@ -850,7 +850,7 @@ unsafe extern "C" fn util_is_array(cx: *mut JSContext, argc: u32, vp: *mut JSVal
 
 unsafe fn has_class_name(cx: *mut JSContext, val: &JSVal, name: &str) -> bool { unsafe {
     if !val.is_object() { return false; }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj = val.to_object());
     let mut ctor = UndefinedValue();
     JS_GetProperty(cx, obj.handle().into(), c"constructor".as_ptr(), MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut ctor });
@@ -1371,7 +1371,7 @@ unsafe extern "C" fn util_inherits(cx: *mut JSContext, argc: u32, vp: *mut JSVal
         return true;
     }
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let child_obj = child_val.to_object());
 
     // Child.super_ = Parent

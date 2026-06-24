@@ -112,7 +112,7 @@ unsafe extern "C" fn ffi_callback_dispatch(
     if cx.is_null() || js_fn.is_null() {
         return;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global = CurrentGlobalOrNull(cx));
     if global.get().is_null() {
         return;
@@ -351,7 +351,7 @@ unsafe extern "C" fn ffi_library_constructor(
         JS_ClearPendingException(cx);
         let this_val = args.thisv();
         if this_val.is_object() {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let this_root = this_val.to_object());
             args.rval().set(ObjectValue(this_root.get()));
         } else {
@@ -397,7 +397,7 @@ unsafe fn get_lib(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut FfiLi
     if !thisv.is_object() {
         return None;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj_root.get(), SLOT_LIB, &mut slot);
@@ -618,7 +618,7 @@ unsafe extern "C" fn ffi_callback(
     // Attach code_ptr as a non-enumerable `ptrValue` property (raw pointer
     // surfaced as a Number so JS consumers can read it). Kept off the proto
     // because it is per-instance.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_r = obj);
     let ptr_as_f64 = code_ptr as usize as f64;
     rooted!(&in(wrapped_cx) let ptr_val = DoubleValue(ptr_as_f64));
@@ -640,7 +640,7 @@ unsafe fn get_callback(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut 
     if !thisv.is_object() {
         return None;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj_root.get(), SLOT_CB, &mut slot);
@@ -679,7 +679,7 @@ unsafe extern "C" fn ffi_callback_close(
     // Reclaim the Box (drops the libffi Closure, freeing the trampoline).
     let _ = Box::from_raw(cb_ptr);
     // Clear the slot so a second close() reports invalid FfiCallback.
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
     let cleared = UndefinedValue();
     JS_SetReservedSlot(obj_root.get(), SLOT_CB, &cleared);

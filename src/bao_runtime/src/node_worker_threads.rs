@@ -59,6 +59,7 @@ enum WorkerMessage {
 }
 
 /// Messages from worker thread → main thread.
+#[allow(dead_code)]
 enum WorkerToMainMessage {
     /// JSON-serialized data.
     Data(String),
@@ -272,7 +273,7 @@ unsafe extern "C" fn worker_post_to_main(cx: *mut JSContext, argc: u32, vp: *mut
     true
 }
 
-/// Thread-local for the main-thread sender, set by worker_entry.
+// Thread-local for the main-thread sender, set by worker_entry.
 thread_local! {
     static WORKER_MAIN_SENDER: RefCell<Option<Sender<WorkerToMainMessage>>> =
         RefCell::new(None);
@@ -312,9 +313,9 @@ fn deliver_message_to_worker(raw_cx: *mut JSContext, json_str: &str) {
         if js_str.get().is_null() {
             return;
         }
-        rooted!(&in(cx) let json_str_val = StringValue(unsafe { &*js_str.get() }));
+        rooted!(&in(cx) let json_str_val = StringValue(&*js_str.get()));
 
-        let mut call_args_elements = [json_str_val.get()];
+        let call_args_elements = [json_str_val.get()];
         let call_args = HandleValueArray {
             length_: 1,
             elements_: call_args_elements.as_ptr() as *const Value,
@@ -559,7 +560,7 @@ unsafe extern "C" fn worker_post_message(cx: *mut JSContext, argc: u32, vp: *mut
     };
 
     // Send to the worker thread.
-    if let Some(mut handle) = worker_registry().get_mut(&thread_id) {
+    if let Some(handle) = worker_registry().get_mut(&thread_id) {
         let _ = handle.sender.send(WorkerMessage::Data(json_str));
     }
 
@@ -686,7 +687,7 @@ fn json_stringify(
         rooted!(&in(cx_ref) let stringify_fn = stringify_val.to_object());
         rooted!(&in(cx_ref) let arg_val = value);
 
-        let mut call_args_elements = [arg_val.get()];
+        let call_args_elements = [arg_val.get()];
         let call_args = HandleValueArray {
             length_: 1,
             elements_: call_args_elements.as_ptr() as *const Value,

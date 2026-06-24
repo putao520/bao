@@ -127,6 +127,7 @@ thread_local! {
 // ──────────────────── Bun.listen ────────────────────
 
 /// User data for Bun.listen HTTP mode (same shape as BunServeUserData).
+#[allow(dead_code)]
 struct ListenHttpUserData {
     fetch_cb_key: Option<String>,
     websocket_cb_key: Option<String>,
@@ -146,6 +147,7 @@ impl ListenHttpUserData {
 }
 
 /// User data for Bun.listen TCP mode (socket callbacks).
+#[allow(dead_code)]
 struct ListenTcpUserData {
     /// GcStore keys for JS callbacks: onconnect, ondata, onclose, onend.
     connect_cb_key: Option<String>,
@@ -616,7 +618,7 @@ fn build_tcp_server(
     }
 
     // Read actual bound port
-    let ls_ref = unsafe { bun_opaque::opaque_deref_mut(listen_socket) };
+    let ls_ref = bun_opaque::opaque_deref_mut(listen_socket);
     let p = ls_ref.get_local_port();
     let actual_port = if p > 0 { p as u16 } else { port };
 
@@ -794,7 +796,7 @@ unsafe extern "C" fn bun_connect(
             let mut tv = UndefinedValue();
             JS_GetProperty(cx, opts_h, c"tls".as_ptr(),
                 MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut tv });
-            _tls = tv.is_boolean() && unsafe { tv.to_boolean() };
+            _tls = tv.is_boolean() && tv.to_boolean();
 
             // Parse socket sub-object for callbacks (Bun API pattern)
             // Bun.connect({ hostname, port, socket: { data, open, close, error, end } })
@@ -1544,7 +1546,7 @@ unsafe extern "C" fn tcp_on_connecting_error(
     CONNECT_RESULT.with(|r| r.set(Some(0)));
 
     // If this is a Bun.connect connecting socket, reject the pending Promise
-    let conn_ref = unsafe { bun_opaque::opaque_deref_mut(c) };
+    let conn_ref = bun_opaque::opaque_deref_mut(c);
     let group_ptr = conn_ref.group();
     if !group_ptr.is_null() {
         let owner = unsafe { (*group_ptr).owner::<ConnectUserData>() as *const ConnectUserData };

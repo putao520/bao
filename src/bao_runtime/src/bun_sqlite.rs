@@ -182,6 +182,7 @@ const DATABASE_METHODS: &[JSFunctionSpec] = &[
     JSFunctionSpec::ZERO,
 ];
 
+#[allow(dead_code)]
 const STATEMENT_METHODS: &[JSFunctionSpec] = &[
     JSFunctionSpec {
         name: JSPropertySpec_Name {
@@ -235,7 +236,7 @@ unsafe fn get_db_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut Sq
     if !thisv.is_object() {
         return None;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj_root.get(), SLOT_DB, &mut slot);
@@ -255,7 +256,7 @@ unsafe fn get_stmt_ptr(cx: *mut JSContext, thisv: Handle<Value>) -> Option<*mut 
     if !thisv.is_object() {
         return None;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = thisv.to_object());
     let mut slot = UndefinedValue();
     JS_GetReservedSlot(obj_root.get(), SLOT_STMT, &mut slot);
@@ -337,7 +338,7 @@ unsafe extern "C" fn database_constructor(
         JS_ClearPendingException(cx);
         let this_val = args.thisv();
         if this_val.is_object() {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let this_root = this_val.to_object());
             args.rval().set(ObjectValue(this_root.get()));
         } else {

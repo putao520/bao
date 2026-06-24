@@ -2832,7 +2832,7 @@ unsafe extern "C" fn buffer_from(
             // (or its prototype) defines a toPrimitive symbol that is a
             // function. We do this in JS to avoid the C++ symbol-API dance.
             let cx_ref_t = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
-            let mut used_to_prim = false;
+            let used_to_prim = false;
             {
                 // Use a tiny JS helper to probe + invoke Symbol.toPrimitive.
                 let probe_src = r#"(function(obj) {
@@ -2866,7 +2866,6 @@ unsafe extern "C" fn buffer_from(
                         );
                         if ok && result_val.is_string() {
                             let s = crate::js_to_rust_string(cx, result_val);
-                            used_to_prim = true;
                             return create_buffer_from_bytes(cx, &args, s.as_bytes());
                         }
                     }
@@ -3437,7 +3436,7 @@ unsafe extern "C" fn buffer_concat(
     }
     // GC-trace the element objects so they survive across loop iterations
     // (JS_GetElement triggers user-defined getters which can trigger GC).
-    let mut rooted_vec = mozjs::rust::RootedObjectVectorWrapper::new(cx);
+    let rooted_vec = mozjs::rust::RootedObjectVectorWrapper::new(cx);
     let mut entries: Vec<ConcatEntry> = Vec::with_capacity(list_len);
     for i in 0..list_len {
         let mut elem = UndefinedValue();
@@ -4042,7 +4041,7 @@ unsafe extern "C" fn buffer_index_of(
     let cx_ref = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
     rooted!(&in(cx_ref) let obj_root = this.to_object());
 
-    let (buf_len, data_ptr) = buffer_view_bytes(obj_root.get());
+    let (_buf_len, data_ptr) = buffer_view_bytes(obj_root.get());
     if data_ptr.is_null() {
         // Fallback to JS-level access for non-typed-array Buffer-likes.
         let mut len_val = UndefinedValue();

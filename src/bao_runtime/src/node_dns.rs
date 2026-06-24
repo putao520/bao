@@ -1668,7 +1668,7 @@ unsafe extern "C" fn dns_lookup_service(cx: *mut JSContext, argc: u32, vp: *mut 
         else { 0 }
     } else { 0 };
 
-    let mut cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let cx_wrap = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let result_obj = JS_NewPlainObject(cx);
     if result_obj.is_null() {
         args.rval().set(UndefinedValue());

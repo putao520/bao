@@ -87,9 +87,9 @@ impl Queue {
         let global = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx) };
         if global.is_null() { return; }
         let key = format!("__async_wake_{:p}", module);
-        if let Some(cb) = crate::gc::gc_store::get(cx, &key) {
+        if let Some(cb) = unsafe { crate::gc::gc_store::get(cx, &key) } {
             // BCE-012: root global + cb_val — JS_CallFunctionValue can trigger GC
-            let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
             let cb_val = mozjs::jsval::ObjectValue(cb);
             let module_val = mozjs::jsval::ObjectValue(module);
             let args = [module_val];
@@ -111,11 +111,11 @@ impl Queue {
     pub unsafe fn on_dependency_error(cx: *mut mozjs::jsapi::JSContext, module: *mut mozjs::jsapi::JSObject, error: *mut mozjs::jsapi::JSObject) {
         if module.is_null() { return; }
         let key = format!("__async_err_{:p}", module);
-        if let Some(cb) = crate::gc::gc_store::get(cx, &key) {
-            let global = mozjs::jsapi::CurrentGlobalOrNull(cx);
+        if let Some(cb) = unsafe { crate::gc::gc_store::get(cx, &key) } {
+            let global = unsafe { mozjs::jsapi::CurrentGlobalOrNull(cx) };
             if global.is_null() { return; }
             // BCE-012: root global + cb_val — JS_CallFunctionValue can trigger GC
-            let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx));
+            let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(cx)) };
             let cb_val = mozjs::jsval::ObjectValue(cb);
             let module_val = mozjs::jsval::ObjectValue(module);
             let error_val = if error.is_null() { mozjs::jsval::UndefinedValue() } else { mozjs::jsval::ObjectValue(error) };

@@ -185,7 +185,7 @@ unsafe fn arg_to_string(cx: *mut JSContext, val: JSVal) -> Option<String> {
     if val.is_undefined() || val.is_null() {
         return None;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let val_root = val);
     let s = mozjs::rust::ToString(cx, val_root.handle().into());
     if s.is_null() {
@@ -275,7 +275,7 @@ unsafe extern "C" fn hash_update(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         let s = crate::js_to_rust_string(cx, input);
         decode_input_string(&s, input_encoding.as_deref())
     } else if input.is_object() {
-        let mut wrapped_cx_obj = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let wrapped_cx_obj = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx_obj) let obj_root = input.to_object());
         // Try as Uint8Array / Buffer / TypedArray view.
         let mut length: usize = 0;
@@ -682,7 +682,7 @@ unsafe extern "C" fn crypto_scrypt_sync(cx: *mut JSContext, argc: u32, vp: *mut 
     } else { 14 };
     let n = 1u64 << log_n;
 
-    let mut out = vec![0u8; key_len];
+    let out = vec![0u8; key_len];
     if let Err(e) = bao_crypto::kdf::scrypt(&password, &salt, n, 8, 1, key_len) {
         return throw_type_error(cx, &format!("scryptSync() failed: {}", e));
     }
@@ -858,6 +858,7 @@ fn cipher_registry_insert(ctx: bao_crypto::cipher::CipherCtx) -> u32 {
     id
 }
 
+#[allow(dead_code)]
 fn cipher_registry_take(id: u32) -> Option<bao_crypto::cipher::CipherCtx> {
     CIPHER_REGISTRY.with(|reg| reg.borrow_mut().get_mut(id as usize).and_then(|s| s.take()))
 }
@@ -1003,7 +1004,7 @@ unsafe fn read_cipher_id_from_this(cx: *mut JSContext, args: &CallArgs) -> Optio
     if !this.is_object() {
         return None;
     }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let this_root = this.to_object());
     read_cipher_id(cx, this_root.get())
 }
@@ -1200,7 +1201,7 @@ unsafe extern "C" fn cipher_get_auth_tag(cx: *mut JSContext, _argc: u32, vp: *mu
         _ => Vec::new(),
     };
     let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-    let cx_ref = &mut wrapped_cx;
+    let _cx_ref = &mut wrapped_cx;
     let arr = bytes_to_js_array(cx, &tag);
     if arr.is_null() {
         args.rval().set(UndefinedValue());
@@ -1477,7 +1478,7 @@ unsafe extern "C" fn sign_sign(cx: *mut JSContext, argc: u32, vp: *mut JSVal) ->
         "buffer" => {
             // Return the raw signature as a number[] (Node buffer encoding).
             let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
-            let cx_ref = &mut wrapped_cx;
+            let _cx_ref = &mut wrapped_cx;
             let arr = bytes_to_js_array(cx, &result);
             if arr.is_null() {
                 args.rval().set(UndefinedValue());
@@ -2625,6 +2626,7 @@ struct CryptoAsyncCtx {
     cx: *mut JSContext,
     callback: *mut JSObject,
     result: ::std::sync::Arc<::std::sync::Mutex<Option<::std::result::Result<Vec<u8>, String>>>>,
+    #[allow(dead_code)]
     op_name: String,
     rooted: bool,
 }
@@ -2886,7 +2888,7 @@ unsafe extern "C" fn crypto_generate_key_pair(cx: *mut JSContext, argc: u32, vp:
 // randomBytes — async-capable (replaces the sync-only version)
 // ============================================================
 
-#[allow(unsafe_op_in_unsafe_fn)]
+#[allow(dead_code, unsafe_op_in_unsafe_fn)]
 unsafe extern "C" fn crypto_random_bytes_async(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     if argc == 0 {

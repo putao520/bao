@@ -190,7 +190,7 @@ unsafe fn make_string_value(raw_cx: *mut JSContext, url: &str) -> Value {
     if js_str.is_null() {
         return UndefinedValue();
     }
-    mozjs::jsval::StringValue(&*js_str)
+    unsafe { mozjs::jsval::StringValue(&*js_str) }
 }
 
 /// Attach `module_private` (a file:// URL string) to a compiled module.
@@ -263,7 +263,7 @@ unsafe fn base_dir_from_private_cx(
     let Some(jsstr) = NonNull::new(url_jsstr) else {
         return None;
     };
-    let url = mozjs::conversions::jsstr_to_string(raw_cx, jsstr);
+    let url = unsafe { mozjs::conversions::jsstr_to_string(raw_cx, jsstr) };
     let path_str = url.strip_prefix("file://")?;
     let decoded = percent_decode_path(path_str);
     let path = PathBuf::from(decoded);
@@ -1380,7 +1380,7 @@ unsafe fn resolve_dynamic_promise_with_value(
     val: Value,
 ) -> bool {
     // BCE-20260619-012: val may contain GC-managed pointer; must be rooted.
-    let wrapped_cx = mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx));
+    let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(::std::ptr::NonNull::new_unchecked(raw_cx)) };
     rooted!(&in(wrapped_cx) let val_root = val);
     unsafe { mozjs_sys::jsapi::JS::ResolvePromise(raw_cx, promise, val_root.handle().into()) }
 }
@@ -1401,7 +1401,7 @@ unsafe fn reject_dynamic_promise(
         rooted!(in(raw_cx) let err_root = err_obj);
         let err_msg = unsafe { JS_NewStringCopyZ(raw_cx, c_msg.as_ptr()) };
         if !err_msg.is_null() {
-            let msg_val = mozjs::jsval::StringValue(&*err_msg);
+            let msg_val = unsafe { mozjs::jsval::StringValue(&*err_msg) };
             rooted!(in(raw_cx) let msg_h = msg_val);
             unsafe { JS_SetProperty(raw_cx, err_root.handle().into(), c"message".as_ptr(), msg_h.handle().into()) };
         }

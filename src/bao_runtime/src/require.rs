@@ -276,7 +276,7 @@ unsafe extern "C" fn require_fn(
             let mut val = mozjs::jsval::UndefinedValue();
             let c_prop = ZBox::from_bytes("process".as_bytes());
             unsafe {
-                let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+                let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
                 rooted!(&in(wrapped_cx) let global_root = global);
                 JS_GetProperty(
                     cx,
@@ -334,7 +334,7 @@ unsafe extern "C" fn require_fn(
     if let Some(existing) = cached
         && !existing.is_null() {
             // Check if this is a primitive wrapper {__primitive__: val}
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let existing_root = existing);
             let mut prim_check = mozjs::jsval::UndefinedValue();
             let prim_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut prim_check };
@@ -397,7 +397,7 @@ unsafe extern "C" fn require_fn(
     } else {
         let wrapper = mozjs_sys::jsapi::JS_NewPlainObject(cx);
         if !wrapper.is_null() {
-            let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+            let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
             rooted!(&in(wrapped_cx) let wrapper_root = wrapper);
             rooted!(&in(wrapped_cx) let val_root = exports_val);
             JS_DefineProperty(cx, wrapper_root.handle().into(), c"__primitive__".as_ptr(), val_root.handle().into(), 0);
@@ -439,7 +439,7 @@ unsafe fn load_json_module(cx: *mut JSContext, content: &str, specifier: &str) -
 #[inline]
 unsafe fn get_prop(cx: *mut JSContext, obj: *mut JSObject, name: *const i8) -> Value {
     let mut val = UndefinedValue();
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let obj_root = obj);
     let val_h = MutableHandle::<Value> { _phantom_0: ::std::marker::PhantomData, ptr: &mut val };
     JS_GetProperty(cx, obj_root.handle().into(), name, val_h);
@@ -523,7 +523,7 @@ unsafe fn load_esm_module(
         }
     }
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let module_root = module);
 
     // ModuleLink drives the host_resolve_imported_module hook for sub-imports.
@@ -593,7 +593,7 @@ unsafe fn load_cjs_module(
         return None;
     }
 
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let global_root = global);
 
     // Save old globals so we can restore them after evaluation.

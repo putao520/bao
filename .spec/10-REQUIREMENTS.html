@@ -1938,7 +1938,7 @@
         </table>
       </div>
 
-      <section id="req-eng-010" data-req="REQ-ENG-010" data-req-status="approved" data-req-domain="ENG" data-req-category="business" data-req-entity="FetchTasklet, FetchResolveTask, FetchOutcome" data-req-api="POST /fetch/async-tasklet">
+      <section id="req-eng-010" data-req="REQ-ENG-010" data-req-status="implemented" data-req-domain="ENG" data-req-category="business" data-req-entity="FetchTasklet, FetchResolveTask, FetchOutcome" data-req-api="POST /fetch/async-tasklet">
         <h3>REQ-ENG-010 异步 Fetch/HTTP 事件循环集成(复用 Bun FetchTasklet 事件驱动范式)</h3>
         <p>
           所有对外 JS fetch/http/https/tls API 必须复用 Bun 上游 FetchTasklet.zig 设计模式:返回 pending Promise,通过
@@ -2148,33 +2148,7 @@
         </div>
         <div data-bug-req-ref="REQ-ENG-010">REQ-ENG-010</div>
       </section>
-      <section id="bug-eng-369" data-bug="BUG-ENG-369" data-bug-status="confirmed" data-bug-severity="critical" data-bug-domain="ENG" data-bug-reporter="architect" data-bug-root-cause="待补充" data-bug-req-ref="REQ-ENG-010">
-        <h3>BUG-ENG-369:</h3>
-        <p>
-          fetch stack-use-after-free (BCE-007-R5) — AsyncHTTP 栈局部变量经 addr_of_mut 推入 HTTPThread 后 mem::forget
-          误用致 core::ptr::read 读回收栈帧。 ## BCE 阶段性确认 (2026-06-21) - C12 堆分配所有权契约: PASS
-          (代码已对齐上游 AsyncHTTP.rs:442 Preconnect 模式) * src/bao_runtime/src/fetch_async.rs:414
-          bun_core::heap::into_raw(Box::new(AsyncHTTP::init(...))) * :460 addr_of_mut!((*async_http_box).task) * 删除
-          mem::forget(async_http) (BUG 模式签名 grep 命中=0 真代码行) * :623 on_http_done 完成路径
-          bun_core::heap::take(async_http_box) dealloc * url/body/headers_buf 借用数据经 Box::leak 提升为
-          'static，resolve_tasklet 统一回收 (headers_owned/url_owned/body_owned 字段) - C13 端到端硬门 (EXIT=0 + strace
-          connect/sendto/recvfrom): BLOCKED — 当前构建 HTTPThread fetch 客户端 connect 次数仍=0 (strace
-          实证),修前修后行为一致,提示存在正交的 HTTPThread schedule/connect 缺陷 (独立于 BUG-ENG-369
-          stack-use-after-free 根因) - 残留: BUG-ENG-369 (stack-use-after-free 内存安全) 代码层残留=0; 但端到端 C13
-          未通过,BUG 暂不置 resolved,保持 confirmed 待 C13 通过 - 编译验证: cargo build -p bun_runtime + cargo build -p
-          bao_bin --bin bao 均零 error - 回归验证: cargo test -p bun_runtime --test fetch_api_tests PASS (1/1)
-        </p>
-        <div data-bug-root-cause="">
-          【BCE-007-R5 设计缺陷层 — 移植协议失配】fetch 挂死根因确证为 stack-use-after-free，位于
-          src/bao_runtime/src/fetch_async.rs:317-364。根因链：(1) :317 let mut async_http = AsyncHTTP::init(...) 是栈
-          let mut 局部变量；(2) :357 Batch::from(addr_of_mut!(async_http.task)) 取栈地址推入 HTTPThread 的 MPSC
-          队列；(3) :364 mem::forget(async_http) 是误用 —— forget 只跳过 Drop，不搬移到堆，栈帧返回后被回收；(4)
-          HTTPThread drain_events:931 pop 后 start_queued_task:1148 的 core::ptr::read(http)
-          从已回收栈帧逐字节拷贝垃圾数据；(5) on_start 在垃圾数据上运行 → connect() 从未发起。缺陷分层 =
-          设计缺陷（移植协议失配：上游 bun src/http/AsyncHTTP.rs:442 用 Box 堆分配所有权，移植到 Rust 时误用栈局部 +
-          mem::forget）。
-        </div>
-      </section>
+      
     <section data-req-category="api" data-req-domain="bao-api" data-req-status="implemented" data-req="REQ-BAO-API-017" id="req-bao-api-017"><h3>REQ-BAO-API-017 Bun.listen/connect/udpSocket 网络桥接 API</h3><p>Bun 原生网络 API — TCP 服务器/客户端 + UDP Socket，桥接 bun_uws_sys (App/SocketGroup/udp::Socket) 到 SpiderMonkey host_fn。
 
 ## 功能范围
@@ -2252,7 +2226,7 @@ tagged template literal 执行 shell 命令。
 
 ## 关联
 - REQ-ENG-18: Bun.shell Shell API — 同源需求
-- REQ-ENG-12: Bun.spawn/Bun.spawnSync — 子进程基础设施</p><div data-criterion="1. typeof Bun.Shell === 'function'">1. typeof Bun.Shell === 'function'</div><div data-criterion="2. new Bun.Shell() 创建 ShellInterpreter 实例">2. new Bun.Shell() 创建 ShellInterpreter 实例</div><div data-criterion="3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput">3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput</div><div data-criterion="4. ShellOutput.stdout/stderr/exitCode/success 属性完整">4. ShellOutput.stdout/stderr/exitCode/success 属性完整</div><div data-criterion="5. ShellOutput.lines()/text()/json()/bytes() 方法正常">5. ShellOutput.lines()/text()/json()/bytes() 方法正常</div><div data-criterion="6. pipeline 管道 (stdout→stdin) 正常工作">6. pipeline 管道 (stdout→stdin) 正常工作</div><div data-criterion="7. 变量插值 Bun.$`ls ${dir}` 正常展开">7. 变量插值 Bun.$`ls ${dir}` 正常展开</div><div data-criterion="8. 退出码非零时 success=false, exitCode 正确">8. 退出码非零时 success=false, exitCode 正确</div><div data-criterion="9. 完整 AST 解释: binary(&&/||)/subshell/if/elif/else/redirects">9. 完整 AST 解释: binary(&amp;&amp;/||)/subshell/if/elif/else/redirects</div><div data-criterion="10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)">10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><div id="test-bao-api-017" data-req-ref="REQ-BAO-API-017" data-test-categories="unit" data-test="TEST-BAO-API-017"><h4>TEST-BAO-API-017: REQ-BAO-API-017 单元测试</h4><p>Bun.listen/connect/udpSocket 网络桥接 API 测试：1. Bun.listen({port:0}) 返回 BunServer 对象，server.port &gt; 0 2. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise&lt;Socket&gt; 3. Socket.write/end/destroy 4. Bun.udpSocket({type:'udp4'}) 返回 Promise&lt;BunUdpSocket&gt; 5. BunUdpSocket.send/close 6. BunServer.stop() 7. TLS 模式 8. GcStore 回调清理</p></div><div id="test-bao-api-018" data-req-ref="REQ-BAO-API-018" data-test-categories="unit" data-test="TEST-BAO-API-018"><h4>TEST-BAO-API-018: REQ-BAO-API-018 单元测试</h4><p>Bun.Shell/$ Shell 解释器桥接 API 测试：1. typeof Bun.Shell === 'function' 2. new Bun.Shell() 创建 ShellInterpreter 3. Bun.$`echo hello` 执行命令 4. ShellOutput.stdout/stderr/exitCode/success 5. ShellOutput.lines()/text()/json()/bytes() 6. pipeline 管道 7. 变量插值 8. 退出码非零时 success=false</p></div></main>
+- REQ-ENG-12: Bun.spawn/Bun.spawnSync — 子进程基础设施</p><div data-criterion="1. typeof Bun.Shell === 'function'">1. typeof Bun.Shell === 'function'</div><div data-criterion="2. new Bun.Shell() 创建 ShellInterpreter 实例">2. new Bun.Shell() 创建 ShellInterpreter 实例</div><div data-criterion="3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput">3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput</div><div data-criterion="4. ShellOutput.stdout/stderr/exitCode/success 属性完整">4. ShellOutput.stdout/stderr/exitCode/success 属性完整</div><div data-criterion="5. ShellOutput.lines()/text()/json()/bytes() 方法正常">5. ShellOutput.lines()/text()/json()/bytes() 方法正常</div><div data-criterion="6. pipeline 管道 (stdout→stdin) 正常工作">6. pipeline 管道 (stdout→stdin) 正常工作</div><div data-criterion="7. 变量插值 Bun.$`ls ${dir}` 正常展开">7. 变量插值 Bun.$`ls ${dir}` 正常展开</div><div data-criterion="8. 退出码非零时 success=false, exitCode 正确">8. 退出码非零时 success=false, exitCode 正确</div><div data-criterion="9. 完整 AST 解释: binary(&&/||)/subshell/if/elif/else/redirects">9. 完整 AST 解释: binary(&amp;&amp;/||)/subshell/if/elif/else/redirects</div><div data-criterion="10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)">10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><div id="test-bao-api-017" data-req-ref="REQ-BAO-API-017" data-test-categories="unit" data-test="TEST-BAO-API-017"><h4>TEST-BAO-API-017: REQ-BAO-API-017 单元测试</h4><p>Bun.listen/connect/udpSocket 网络桥接 API 测试：1. Bun.listen({port:0}) 返回 BunServer 对象，server.port &gt; 0 2. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise&lt;Socket&gt; 3. Socket.write/end/destroy 4. Bun.udpSocket({type:'udp4'}) 返回 Promise&lt;BunUdpSocket&gt; 5. BunUdpSocket.send/close 6. BunServer.stop() 7. TLS 模式 8. GcStore 回调清理</p></div><div id="test-bao-api-018" data-req-ref="REQ-BAO-API-018" data-test-categories="unit" data-test="TEST-BAO-API-018"><h4>TEST-BAO-API-018: REQ-BAO-API-018 单元测试</h4><p>Bun.Shell/$ Shell 解释器桥接 API 测试：1. typeof Bun.Shell === 'function' 2. new Bun.Shell() 创建 ShellInterpreter 3. Bun.$`echo hello` 执行命令 4. ShellOutput.stdout/stderr/exitCode/success 5. ShellOutput.lines()/text()/json()/bytes() 6. pipeline 管道 7. 变量插值 8. 退出码非零时 success=false</p></div><section data-bug-root-cause="待补充" data-bug-status="fixing" data-bug="BUG-ENG-369" id="bug-eng-369"><h3>BUG-ENG-369: </h3></section></main>
     <section id="testing" data-tests-section="">
       <h2>测试用例</h2>
       <div id="test-eng-008" data-test="TEST-ENG-008" data-req-ref="REQ-ENG-008" data-test-categories="unit">

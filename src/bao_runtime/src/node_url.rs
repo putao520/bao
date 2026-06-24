@@ -751,7 +751,7 @@ pub fn install(cx: &mut mozjs::context::JSContext, global: mozjs::rust::Handle<*
             if !global.is_null()
                 && unsafe { JS::Evaluate2(cx.raw_cx(), eopts, &mut esrc, eval_h) }
                 && eval_rval.is_object() {
-                let mut wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx())) };
+                let wrapped_cx = unsafe { mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx.raw_cx())) };
                 rooted!(&in(wrapped_cx) let global_root = global);
                 rooted!(&in(wrapped_cx) let url_val_root = ObjectValue(url_mod.get()));
                 let args_arr = HandleValueArray {
@@ -1336,7 +1336,7 @@ unsafe extern "C" fn sp_for_each(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
     if argc == 0 { args.rval().set(UndefinedValue()); return true; }
     let callback_val = *args.get(0).ptr;
     if !callback_val.is_object() { args.rval().set(UndefinedValue()); return true; }
-    let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     rooted!(&in(wrapped_cx) let callback_obj = callback_val.to_object());
 
     rooted!(&in(wrapped_cx) let this_obj = this.to_object());

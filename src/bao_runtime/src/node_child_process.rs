@@ -43,6 +43,7 @@ struct AsyncChildState {
     pid: i32,
     stdout_fd: c_int,  // -1 if not piped
     stderr_fd: c_int,  // -1 if not piped
+    #[allow(dead_code)]
     stdin_fd: c_int,   // -1 if not piped
     stdout_eof: bool,
     stderr_eof: bool,
@@ -275,7 +276,7 @@ unsafe fn js_str_array_prop(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, na
     if !val.is_object() {
         return Vec::new();
     }
-    let mut arr_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+    let arr_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
     let arr = val.to_object();
     rooted!(&in(arr_cx) let arr_root = arr);
     let arr_h = arr_root.handle();
@@ -294,6 +295,7 @@ unsafe fn js_str_array_prop(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, na
 }}
 
 /// Map JS stdio string to bun_spawn::sync::Stdio variant.
+#[allow(dead_code)]
 unsafe fn js_stdio_mode(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, name: *const ::std::os::raw::c_char) -> SyncStdio { unsafe {
     match js_str_prop(cx, obj_h, name).as_deref() {
         Some("pipe") | Some("piped") => SyncStdio::Buffer,
@@ -314,6 +316,7 @@ unsafe fn js_stdio_wants_pipe(cx: *mut JSContext, obj_h: Handle<*mut JSObject>, 
 }}
 
 /// Build bun_spawn::sync::Options from JS opts object.
+#[allow(dead_code)]
 unsafe fn build_sync_opts_from_js(cx: *mut JSContext, opts_h: Handle<*mut JSObject>) -> Option<spawn_sync::Options> { unsafe {
     let cmd = js_str_prop(cx, opts_h, c"command".as_ptr())
         .or_else(|| js_str_prop(cx, opts_h, c"cmd".as_ptr()))?;
@@ -524,9 +527,9 @@ unsafe extern "C" fn cp_spawn(
 
     // Build PosixSpawnOptions with Pipe() variants.
     let spawn_opts = PosixSpawnOptions {
-        stdin: if pipe_stdin { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdin_pipe[0]) }) } else { PosixStdio::Inherit },
-        stdout: if pipe_stdout { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdout_pipe[1]) }) } else { PosixStdio::Inherit },
-        stderr: if pipe_stderr { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stderr_pipe[1]) }) } else { PosixStdio::Inherit },
+        stdin: if pipe_stdin { PosixStdio::Pipe(bun_sys::Fd::from_native(stdin_pipe[0])) } else { PosixStdio::Inherit },
+        stdout: if pipe_stdout { PosixStdio::Pipe(bun_sys::Fd::from_native(stdout_pipe[1])) } else { PosixStdio::Inherit },
+        stderr: if pipe_stderr { PosixStdio::Pipe(bun_sys::Fd::from_native(stderr_pipe[1])) } else { PosixStdio::Inherit },
         ipc: None,
         extra_fds: Box::new([]),
         cwd: cwd_bytes,
@@ -568,7 +571,7 @@ unsafe extern "C" fn cp_spawn(
         off += arg.len() + 1;
     }
     c_args.push(::std::ptr::null());
-    let envp: *const *const ::std::ffi::c_char = unsafe { bun_sys::environ_ptr() };
+    let envp: *const *const ::std::ffi::c_char = bun_sys::environ_ptr();
 
     // Spawn the child process.
     let spawn_result = unsafe { spawn_process(&spawn_opts, c_args.as_ptr(), envp) };
@@ -612,10 +615,10 @@ unsafe extern "C" fn cp_spawn(
 
             // Set non-blocking on the parent-side read fds.
             if stdout_pipe[0] >= 0 {
-                let _ = unsafe { bun_sys::set_nonblocking(bun_sys::Fd::from_native(stdout_pipe[0])) };
+                let _ = bun_sys::set_nonblocking(bun_sys::Fd::from_native(stdout_pipe[0]));
             }
             if stderr_pipe[0] >= 0 {
-                let _ = unsafe { bun_sys::set_nonblocking(bun_sys::Fd::from_native(stderr_pipe[0])) };
+                let _ = bun_sys::set_nonblocking(bun_sys::Fd::from_native(stderr_pipe[0]));
             }
 
             // Build the shared state and register it globally for __cp_drain / __cp_poll_exit.
@@ -866,7 +869,7 @@ unsafe extern "C" fn cp_stdin_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
     // Get data as bytes from ArrayBuffer or string.
     let bytes: Vec<u8> = if data_val.is_object() {
         let obj = data_val.to_object();
-        let mut wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
+        let wrapped_cx = mozjs::context::JSContext::from_ptr(NonNull::new_unchecked(cx));
         rooted!(&in(wrapped_cx) let obj_r = obj);
         // Check if it's an ArrayBuffer and get data.
         let mut length: usize = 0;
@@ -902,7 +905,7 @@ unsafe extern "C" fn cp_stdin_write(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 // ─── Native: __cp_stdin_close(pid) ─────────────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn cp_stdin_close(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn cp_stdin_close(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
 
@@ -924,7 +927,7 @@ unsafe extern "C" fn cp_stdin_close(cx: *mut JSContext, argc: u32, vp: *mut JSVa
 // ─── Native: __cp_kill_child(pid, signal) ──────────────────────────────────
 
 #[allow(unsafe_op_in_unsafe_fn)]
-unsafe extern "C" fn cp_kill_child(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+unsafe extern "C" fn cp_kill_child(_cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
     let args = CallArgs::from_vp(vp, argc);
     let pid = if argc > 0 { (*args.get(0).ptr).to_int32() } else { 0 };
     let signal = if argc > 1 { (*args.get(1).ptr).to_int32() } else { libc::SIGTERM as i32 };
@@ -1766,7 +1769,7 @@ unsafe extern "C" fn cp_fork(
     let exec_str = executable.to_string_lossy().into_owned();
 
     // Build argv.
-    let mut argv: Vec<Box<[u8]>> = vec![
+    let argv: Vec<Box<[u8]>> = vec![
         exec_str.as_bytes().to_vec().into_boxed_slice(),
         b"run".to_vec().into_boxed_slice(),
         module.as_bytes().to_vec().into_boxed_slice(),
@@ -1782,9 +1785,9 @@ unsafe extern "C" fn cp_fork(
     let _ = unsafe { libc::pipe(stdin_pipe.as_mut_ptr()) };
 
     let spawn_opts = PosixSpawnOptions {
-        stdin: if stdin_pipe[0] >= 0 { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdin_pipe[0]) }) } else { PosixStdio::Inherit },
-        stdout: if stdout_pipe[0] >= 0 { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stdout_pipe[1]) }) } else { PosixStdio::Inherit },
-        stderr: if stderr_pipe[0] >= 0 { PosixStdio::Pipe(unsafe { bun_sys::Fd::from_native(stderr_pipe[1]) }) } else { PosixStdio::Inherit },
+        stdin: if stdin_pipe[0] >= 0 { PosixStdio::Pipe(bun_sys::Fd::from_native(stdin_pipe[0])) } else { PosixStdio::Inherit },
+        stdout: if stdout_pipe[0] >= 0 { PosixStdio::Pipe(bun_sys::Fd::from_native(stdout_pipe[1])) } else { PosixStdio::Inherit },
+        stderr: if stderr_pipe[0] >= 0 { PosixStdio::Pipe(bun_sys::Fd::from_native(stderr_pipe[1])) } else { PosixStdio::Inherit },
         ipc: None,
         extra_fds: Box::new([]),
         cwd: Box::new([]),
@@ -1825,7 +1828,7 @@ unsafe extern "C" fn cp_fork(
         off += arg.len() + 1;
     }
     c_args.push(::std::ptr::null());
-    let envp: *const *const ::std::ffi::c_char = unsafe { bun_sys::environ_ptr() };
+    let envp: *const *const ::std::ffi::c_char = bun_sys::environ_ptr();
 
     let spawn_result = unsafe { spawn_process(&spawn_opts, c_args.as_ptr(), envp) };
 
