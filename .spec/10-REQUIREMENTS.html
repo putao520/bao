@@ -579,7 +579,7 @@
         </div>
         
         
-      <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
+      </div>
 
       <!-- ============================================================ -->
       <h2>§4 CDP 需求</h2>
@@ -2175,7 +2175,84 @@
           mem::forget）。
         </div>
       </section>
-    </main>
+    <section data-req-category="api" data-req-domain="bao-api" data-req-status="implemented" data-req="REQ-BAO-API-017" id="req-bao-api-017"><h3>REQ-BAO-API-017 Bun.listen/connect/udpSocket 网络桥接 API</h3><p>Bun 原生网络 API — TCP 服务器/客户端 + UDP Socket，桥接 bun_uws_sys (App/SocketGroup/udp::Socket) 到 SpiderMonkey host_fn。
+
+## 功能范围
+
+### Bun.listen(options)
+创建 TCP/HTTP 服务器。复用 bun_uws_sys::App::listen() (Bun.serve 同源) 和 SocketGroup::listen()。
+- options.port: 监听端口
+- options.hostname: 绑定地址 (默认 '0.0.0.0')
+- options.fetch: HTTP 请求处理函数 (App 模式)
+- options.data: TCP 数据回调 (SocketGroup 模式)
+- options.open/close/error: 连接生命周期回调
+- options.tls: TLS 配置 (cert/key/ca)
+- options.websocket: WebSocket 升级回调
+- 返回 BunServer JS 对象 (port/hostname/stop/ref/unref)
+
+### Bun.connect(options)
+创建 TCP 客户端连接。复用 bun_uws_sys::SocketGroup::connect()。
+- options.hostname: 目标主机
+- options.port: 目标端口
+- options.tls: 是否启用 TLS (boolean)
+- options.socket.data/open/close/error/end: Socket 回调
+- 返回 Promise&lt;Socket&gt;: resolve on open, reject on connect error
+- Socket JS 对象: write/end/destroy/remoteAddress/localAddress
+
+### Bun.udpSocket(options)
+创建 UDP 收发器。复用 bun_uws_sys::udp::Socket::create/send/connect/close。
+- options.type: 'udp4' | 'udp6'
+- options.port: 绑定端口 (可选)
+- options.hostname: 绑定地址 (可选)
+- options.onData: 数据接收回调 (PacketBuffer 解析)
+- options.onError: 错误回调
+- 返回 Promise&lt;BunUdpSocket&gt;
+- BunUdpSocket JS 对象: send/close/address/ref/unref
+
+## 复用
+- bun_uws_sys::App/SocketGroup/ListenSocket/ConnectingSocket (TCP)
+- bun_uws_sys::udp::Socket/PacketBuffer (UDP)
+- bao_runtime::gc_store (GcStore GC 安全回调存储)
+- bao_uloop (epoll tick 事件循环)
+
+## 关联
+- REQ-ENG-23: Node.js net 模块 (TCP/IPC) — Node.js 层面 TCP
+- REQ-ENG-40: Node.js dgram 模块 (UDP) — Node.js 层面 UDP
+- NFR-THREAD-SAFETY: 禁止跨线程 JSObject 裸指针</p><div data-criterion="1. Bun.listen({port:0}) 返回 BunServer 对象，server.port > 0">1. Bun.listen({port:0}) 返回 BunServer 对象，server.port &gt; 0</div><div data-criterion="2. Bun.listen({fetch}) HTTP 模式正常响应请求">2. Bun.listen({fetch}) HTTP 模式正常响应请求</div><div data-criterion="3. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise<Socket>">3. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise&lt;Socket&gt;</div><div data-criterion="4. Socket.write(data) 发送数据, Socket.end()/destroy() 关闭连接">4. Socket.write(data) 发送数据, Socket.end()/destroy() 关闭连接</div><div data-criterion="5. Bun.udpSocket({type:'udp4'}) 返回 Promise<BunUdpSocket>">5. Bun.udpSocket({type:'udp4'}) 返回 Promise&lt;BunUdpSocket&gt;</div><div data-criterion="6. BunUdpSocket.send(data,port,address) 发送 UDP 数据, BunUdpSocket.close() 关闭">6. BunUdpSocket.send(data,port,address) 发送 UDP 数据, BunUdpSocket.close() 关闭</div><div data-criterion="7. TLS 模式 Bun.connect({tls:true}) 正常握手">7. TLS 模式 Bun.connect({tls:true}) 正常握手</div><div data-criterion="8. BunServer.stop() 停止监听">8. BunServer.stop() 停止监听</div><div data-criterion="9. 所有 JS 回调通过 GcStore 管理，无跨线程 JSObject 裸指针 (NFR-THREAD-SAFETY)">9. 所有 JS 回调通过 GcStore 管理，无跨线程 JSObject 裸指针 (NFR-THREAD-SAFETY)</div><div data-criterion="10. 所有 socket I/O 回调在 JS 线程内分发 (BCE-20260621-001 不变式)">10. 所有 socket I/O 回调在 JS 线程内分发 (BCE-20260621-001 不变式)</div></section><section data-req-category="api" data-req-domain="bao-api" data-req-status="implemented" data-req="REQ-BAO-API-018" id="req-bao-api-018"><h3>REQ-BAO-API-018 Bun.Shell/$ Shell 解释器桥接 API</h3><p>Bun.Shell 类 + Bun.$ tagged template — Shell 命令解释器，桥接 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程) 到 SpiderMonkey host_fn。
+
+## 功能范围
+
+### Bun.Shell 类
+Shell 命令解释器构造器。
+- new Bun.Shell(options?) 创建 ShellInterpreter 实例
+- ShellInterpreter.env: 环境变量
+- ShellInterpreter.cwd: 工作目录
+- shell.run(command): 同步/异步执行 shell 命令
+- 完整 AST 解释: pipeline (stdout→stdin 管道), binary (&amp;&amp;/||), subshell, if/elif/else, command substitution, env assignments, redirects
+
+### Bun.$ tagged template
+tagged template literal 执行 shell 命令。
+- Bun.$`echo hello` — 直接执行
+- Bun.$`ls ${dir}` — 变量插值
+- 返回 Promise&lt;ShellOutput&gt;
+
+### ShellOutput JS 对象
+- stdout: string (标准输出)
+- stderr: string (标准错误)
+- exitCode: number (退出码)
+- success: boolean (exitCode === 0)
+- lines(): string[] (按行分割)
+- text(): string (同 stdout)
+- json(): any (JSON.parse(stdout))
+- bytes(): Uint8Array (原始字节)
+
+## 复用
+- bun_shell_parser::Lexer/Parser/AST — Shell 词法/语法分析 (4788 行)
+- bun_spawn::run/RunOptions/Term — 子进程执行 (3960 行)
+
+## 关联
+- REQ-ENG-18: Bun.shell Shell API — 同源需求
+- REQ-ENG-12: Bun.spawn/Bun.spawnSync — 子进程基础设施</p><div data-criterion="1. typeof Bun.Shell === 'function'">1. typeof Bun.Shell === 'function'</div><div data-criterion="2. new Bun.Shell() 创建 ShellInterpreter 实例">2. new Bun.Shell() 创建 ShellInterpreter 实例</div><div data-criterion="3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput">3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput</div><div data-criterion="4. ShellOutput.stdout/stderr/exitCode/success 属性完整">4. ShellOutput.stdout/stderr/exitCode/success 属性完整</div><div data-criterion="5. ShellOutput.lines()/text()/json()/bytes() 方法正常">5. ShellOutput.lines()/text()/json()/bytes() 方法正常</div><div data-criterion="6. pipeline 管道 (stdout→stdin) 正常工作">6. pipeline 管道 (stdout→stdin) 正常工作</div><div data-criterion="7. 变量插值 Bun.$`ls ${dir}` 正常展开">7. 变量插值 Bun.$`ls ${dir}` 正常展开</div><div data-criterion="8. 退出码非零时 success=false, exitCode 正确">8. 退出码非零时 success=false, exitCode 正确</div><div data-criterion="9. 完整 AST 解释: binary(&&/||)/subshell/if/elif/else/redirects">9. 完整 AST 解释: binary(&amp;&amp;/||)/subshell/if/elif/else/redirects</div><div data-criterion="10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)">10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)</div></section><div id="test-bao-api-017" data-req-ref="REQ-BAO-API-017" data-test-categories="unit" data-test="TEST-BAO-API-017"><h4>TEST-BAO-API-017: REQ-BAO-API-017 单元测试</h4><p>Bun.listen/connect/udpSocket 网络桥接 API 测试：1. Bun.listen({port:0}) 返回 BunServer 对象，server.port &gt; 0 2. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise&lt;Socket&gt; 3. Socket.write/end/destroy 4. Bun.udpSocket({type:'udp4'}) 返回 Promise&lt;BunUdpSocket&gt; 5. BunUdpSocket.send/close 6. BunServer.stop() 7. TLS 模式 8. GcStore 回调清理</p></div><div id="test-bao-api-018" data-req-ref="REQ-BAO-API-018" data-test-categories="unit" data-test="TEST-BAO-API-018"><h4>TEST-BAO-API-018: REQ-BAO-API-018 单元测试</h4><p>Bun.Shell/$ Shell 解释器桥接 API 测试：1. typeof Bun.Shell === 'function' 2. new Bun.Shell() 创建 ShellInterpreter 3. Bun.$`echo hello` 执行命令 4. ShellOutput.stdout/stderr/exitCode/success 5. ShellOutput.lines()/text()/json()/bytes() 6. pipeline 管道 7. 变量插值 8. 退出码非零时 success=false</p></div></main>
     <section id="testing" data-tests-section="">
       <h2>测试用例</h2>
       <div id="test-eng-008" data-test="TEST-ENG-008" data-req-ref="REQ-ENG-008" data-test-categories="unit">
