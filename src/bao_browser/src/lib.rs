@@ -28,6 +28,9 @@ pub use delegate::{
     WorkerChannelBridge, WorkerChannelEndpoints,
     WorkerLocation, WorkerNavigator, WorkerNetworkInformation,
     WorkerGlobalScopeState, DedicatedWorkerGlobalScopeState,
+    WorkerScriptSource, WorkerScriptLoadResult, WorkerScriptLoadError,
+    WorkerScriptType, WorkerScriptLoader, WorkerScriptLoadState,
+    is_javascript_mime_type,
 };
 pub use error::BrowserError;
 pub use page::{PageHandle, PageState};
@@ -35,7 +38,8 @@ pub use page_pool::PagePool;
 pub use permission::{Permission, PermissionDenied, PermissionGuard};
 pub use screenshot::{encode_image, ScreenshotFormat};
 pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, EvaluateResult, RuntimeBridge,
-    WorkerScopeInitFn, create_worker_scope_init};
+    WorkerScopeInitFn, create_worker_scope_init,
+    create_worker_with_script_loader, create_worker_with_inline_script};
 
 use std::rc::Rc;
 use std::sync::Arc;
