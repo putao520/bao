@@ -130,3 +130,11 @@ path = "tests/node_conformance/stream_conformance.rs"
 [[test]]
 name = "http_conformance"
 path = "tests/node_conformance/http_conformance.rs"
+
+[[test]]
+name = "fetch_c13_minimal"
+path = "tests/fetch_c13_minimal.rs"
+
+[[test]]
+name = "fetch_e2e_tests"
+path = "tests/fetch_e2e_tests.rs"
