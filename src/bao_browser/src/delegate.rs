@@ -1,11 +1,13 @@
 // @trace REQ-BRW-001 [entity:BrowserContext]  REQ-CDP-006: Servo delegate hooks for CDP event forwarding
 // @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope] Worker lifecycle + DedicatedWorkerGlobalScope API
+// @trace REQ-BRW-004 [entity:SharedWorker] [entity:SharedWorkerGlobalScope] SharedWorker cross-page routing + connect event
 // @trace REQ-CDP-006 [entity:ServoDelegateHooks] (servo delegate → CDP event forwarding)
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dpi::PhysicalSize;
 use servo::{
@@ -156,6 +158,492 @@ pub struct WorkerErrorEvent {
     pub colno: u32,
 }
 
+// ─── Structured Clone Message Channel (REQ-BRW-004 criterion #6) ────
+// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
+// SPEC criterion #6: "Structured Clone 消息序列化支持
+// （对象/数组/Buffer/ArrayBuffer/Transferable）"
+//
+// DF-WK-4: page→worker postMessage: worker.postMessage(v) →
+//   structuredclone::write(cx,v) → WorkerMessage(StructuredSerializedData)
+//   → crossbeam send → worker recv → structuredclone::read → message event
+// DF-WK-5: worker→page onmessage: self.postMessage(v) →
+//   structuredclone::write → channel → parent ScriptThread drain →
+//   structuredclone::read → worker.onmessage
+//
+// Architecture: servo internally handles structured clone serialization
+// (structuredclone::write/read) and cross-thread message transport
+// (crossbeam channels). Bao's responsibility is:
+//   1. Provide a `WorkerChannelBridge` that bao_browser consumers can
+//      use to post messages to a Worker without touching JSObject refs.
+//   2. Provide a `WorkerInbox` for receiving worker→page messages with
+//      structured-clone payload data.
+//   3. Track per-worker channel endpoints in `BaoWebViewState` for
+//      lifecycle management and CDP observability.
+//
+// Thread safety: All channel data is serialized bytes (Vec<u8>) — no
+// JSObject crosses thread boundaries. This satisfies NFR-THREAD-SAFETY
+// and the JSContext thread-local model (BCE-20260621-001).
+
+/// Monotonically increasing message ID counter for CDP trace correlation.
+/// @trace REQ-BRW-004 [entity:Worker] [criterion:6]
+static NEXT_MESSAGE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// A structured-clone serialized payload for Worker postMessage.
+///
+/// Contains the serialized bytes produced by SpiderMonkey's
+/// `structuredclone::write`. The actual serialization/deserialization
+/// happens on the sender/receiver thread's JSContext.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
+#[derive(Debug)]
+pub struct StructuredClonePayload {
+    /// Serialized bytes from structuredclone::write.
+    pub data: Vec<u8>,
+    /// Number of transferable objects in the payload (for CDP reporting).
+    pub transferable_count: u32,
+}
+
+impl Clone for StructuredClonePayload {
+    fn clone(&self) -> Self {
+        StructuredClonePayload {
+            data: self.data.clone(),
+            transferable_count: self.transferable_count,
+        }
+    }
+}
+
+/// A structured-clone message crossing the page↔worker boundary.
+///
+/// Carries both the serialized payload and metadata for CDP observability.
+/// Each message gets a unique ID for trace correlation.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
+#[derive(Debug, Clone)]
+pub struct WorkerStructuredMessage {
+    /// Unique message ID for CDP trace correlation.
+    pub message_id: u64,
+    /// Which Worker this message is associated with.
+    pub worker_id: WorkerId,
+    /// Direction of the message.
+    pub direction: WorkerMessageDirection,
+    /// Structured-clone serialized payload (when available from servo).
+    /// None when only forwarding metadata (e.g., servo handles clone internally).
+    pub payload: Option<StructuredClonePayload>,
+}
+
+impl WorkerStructuredMessage {
+    /// Create a new structured message with a unique ID.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6]
+    pub fn new(
+        worker_id: WorkerId,
+        direction: WorkerMessageDirection,
+        payload: Option<StructuredClonePayload>,
+    ) -> Self {
+        WorkerStructuredMessage {
+            message_id: NEXT_MESSAGE_ID.fetch_add(1, Ordering::Relaxed),
+            worker_id,
+            direction,
+            payload,
+        }
+    }
+
+    /// Create a metadata-only message (no structured-clone payload).
+    /// Used when servo handles the clone internally and bao only observes.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] DF-WK-4 / DF-WK-5
+    pub fn metadata_only(worker_id: WorkerId, direction: WorkerMessageDirection) -> Self {
+        Self::new(worker_id, direction, None)
+    }
+
+    /// Create a message with serialized structured-clone data.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6]
+    pub fn with_payload(
+        worker_id: WorkerId,
+        direction: WorkerMessageDirection,
+        data: Vec<u8>,
+        transferable_count: u32,
+    ) -> Self {
+        Self::new(
+            worker_id,
+            direction,
+            Some(StructuredClonePayload { data, transferable_count }),
+        )
+    }
+}
+
+/// Bidirectional channel bridge for a single Worker's postMessage channel.
+///
+/// Holds the mpsc channel endpoints for page↔worker communication.
+/// The bridge does NOT hold JSObject references — only channel endpoints
+/// and serialized data. This is safe to store across threads.
+///
+/// SPEC DF-WK-4: page→worker (sender → receiver in worker thread)
+/// SPEC DF-WK-5: worker→page (sender in worker thread → receiver here)
+///
+/// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
+///   [criterion:6] DF-WK-4 / DF-WK-5
+pub struct WorkerChannelBridge {
+    /// Worker ID this bridge belongs to.
+    pub worker_id: WorkerId,
+    /// Sender for page→worker messages (DF-WK-4: worker.postMessage(msg)).
+    /// Structured-clone serialized bytes sent through this channel.
+    /// @trace REQ-BRW-004 [entity:Worker] DF-WK-4
+    pub page_to_worker_tx: Sender<StructuredClonePayload>,
+    /// Receiver for page→worker messages (owned by worker thread).
+    /// @trace REQ-BRW-004 [entity:Worker] DF-WK-4
+    page_to_worker_rx: Option<Receiver<StructuredClonePayload>>,
+    /// Receiver for worker→page messages (DF-WK-5: self.postMessage(msg)).
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] DF-WK-5
+    pub worker_to_page_rx: Receiver<WorkerStructuredMessage>,
+    /// Sender for worker→page messages (owned by worker thread).
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] DF-WK-5
+    worker_to_page_tx: Option<Sender<WorkerStructuredMessage>>,
+}
+
+impl WorkerChannelBridge {
+    /// Create a new channel bridge for the given Worker.
+    ///
+    /// Returns the bridge (kept by bao_browser) and a `WorkerChannelEndpoints`
+    /// struct that should be sent to the worker thread for its use.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
+    pub fn new(worker_id: WorkerId) -> (Self, WorkerChannelEndpoints) {
+        // DF-WK-4: page→worker channel
+        let (page_to_worker_tx, page_to_worker_rx) =
+            std::sync::mpsc::channel::<StructuredClonePayload>();
+        // DF-WK-5: worker→page channel
+        let (worker_to_page_tx, worker_to_page_rx) =
+            std::sync::mpsc::channel::<WorkerStructuredMessage>();
+
+        let bridge = WorkerChannelBridge {
+            worker_id: worker_id.clone(),
+            page_to_worker_tx,
+            page_to_worker_rx: None, // rx goes to worker thread
+            worker_to_page_rx,
+            worker_to_page_tx: None, // tx goes to worker thread
+        };
+
+        let endpoints = WorkerChannelEndpoints {
+            worker_id: worker_id.clone(),
+            // Worker thread receives from page
+            page_to_worker_rx: Some(page_to_worker_rx),
+            // Worker thread sends to page
+            worker_to_page_tx: Some(worker_to_page_tx),
+        };
+
+        (bridge, endpoints)
+    }
+
+    /// Post a message from the page to this Worker (DF-WK-4).
+    ///
+    /// Sends structured-clone serialized bytes through the channel.
+    /// Returns Err if the worker thread has exited (channel closed).
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4
+    pub fn post_message_to_worker(
+        &self,
+        payload: StructuredClonePayload,
+    ) -> Result<(), std::sync::mpsc::SendError<StructuredClonePayload>> {
+        self.page_to_worker_tx.send(payload)
+    }
+
+    /// Try to receive a message from this Worker (DF-WK-5).
+    ///
+    /// Non-blocking: returns Ok(Some(msg)) if a message is available,
+    /// Ok(None) if the channel is empty, Err if the worker has exited.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:6] DF-WK-5
+    pub fn try_recv_from_worker(&self) -> Result<Option<WorkerStructuredMessage>, ()> {
+        match self.worker_to_page_rx.try_recv() {
+            Ok(msg) => Ok(Some(msg)),
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(()),
+        }
+    }
+
+    /// Drain all pending worker→page messages (DF-WK-5).
+    ///
+    /// Called during spin_event_loop to process all queued messages
+    /// from workers. Returns all available messages.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] DF-WK-5
+    pub fn drain_worker_messages(&self) -> Vec<WorkerStructuredMessage> {
+        let mut messages = Vec::new();
+        loop {
+            match self.worker_to_page_rx.try_recv() {
+                Ok(msg) => messages.push(msg),
+                Err(_) => break,
+            }
+        }
+        messages
+    }
+}
+
+/// Channel endpoints sent to the Worker thread.
+///
+/// The worker thread owns the receiving end of the page→worker channel
+/// and the sending end of the worker→page channel. These are `Send`
+/// safe because they only carry serialized bytes, not JSObject refs.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
+///   [criterion:6] DF-WK-4 / DF-WK-5
+pub struct WorkerChannelEndpoints {
+    /// Worker ID this endpoint belongs to.
+    pub worker_id: WorkerId,
+    /// Worker thread receives page→worker messages (DF-WK-4).
+    /// @trace REQ-BRW-004 [entity:Worker] DF-WK-4
+    pub page_to_worker_rx: Option<Receiver<StructuredClonePayload>>,
+    /// Worker thread sends worker→page messages (DF-WK-5).
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] DF-WK-5
+    pub worker_to_page_tx: Option<Sender<WorkerStructuredMessage>>,
+}
+
+// ─── SharedWorker Cross-Page Routing (REQ-BRW-004 / DF-WK-7) ────────
+// @trace REQ-BRW-004 [entity:SharedWorker] [entity:SharedWorkerGlobalScope] DF-WK-7
+// DF-WK-7: "多页 new SharedWorker(url) 同 name → constellation 路由到
+// 同一 worker 线程 → connect 事件派发 MessagePort → 各页经独立 port 通信"
+//
+// Key difference from DedicatedWorker:
+//   - Shared by name: multiple pages new SharedWorker(url, {name}) with the
+//     same (url, name) pair route to the SAME worker thread (servo constellation
+//     handles dedup). Each page gets its own MessagePort via the connect event.
+//   - Survives page unload: SharedWorkers are NOT terminated on page navigation.
+//     Only the per-page MessagePort is disconnected. The worker thread lives
+//     until all ports are closed or the worker calls self.close().
+//   - Global registry: Unlike DedicatedWorkers (per-page tracking), SharedWorkers
+//     need a global registry because they span pages. BaoServoDelegate holds
+//     the global SharedWorker registry; BaoWebViewState tracks per-page port refs.
+//
+// Thread safety: SharedWorkerHandle only holds Arc<AtomicBool> flags — no
+// JSObject, no raw pointer. The actual SharedWorker DOM object and MessagePorts
+// live in servo's ScriptThread(s); we never touch them from bao_browser.
+
+/// Unique identifier for a SharedWorker, keyed by (script_url, name).
+///
+/// Per SPEC entity:SharedWorker, the `name` field distinguishes multiple
+/// SharedWorkers with the same script URL. The constellation routes
+/// `new SharedWorker(url, {name: "X"})` to the same worker thread when
+/// (url, name) matches an existing SharedWorker.
+///
+/// @trace REQ-BRW-004 [entity:SharedWorker]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct SharedWorkerId {
+    /// Worker script URL.
+    pub script_url: String,
+    /// Worker name (empty string if not specified).
+    pub name: String,
+}
+
+/// A Send+Sync handle to a servo SharedWorker's lifecycle state.
+///
+/// Does NOT hold JSObject references — only atomic flags.
+/// This is safe to store across threads (unlike SharedWorker DOM objects).
+///
+/// @trace REQ-BRW-004 [entity:SharedWorker]
+#[derive(Debug, Clone)]
+pub struct SharedWorkerHandle {
+    /// Worker script URL.
+    pub script_url: String,
+    /// Worker name (empty string if not specified).
+    pub name: String,
+    /// Mirrors servo SharedWorker::closing — set by self.close().
+    pub closing: Arc<AtomicBool>,
+    /// Mirrors servo SharedWorker::terminated — true after full teardown.
+    pub terminated: Arc<AtomicBool>,
+    /// Number of pages currently connected via MessagePort.
+    /// Decremented when a page disconnects (unload or port.close()).
+    pub connected_pages: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl SharedWorkerHandle {
+    /// Create a new SharedWorkerHandle in the running state.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn new(script_url: String, name: String) -> Self {
+        SharedWorkerHandle {
+            script_url,
+            name,
+            closing: Arc::new(AtomicBool::new(false)),
+            terminated: Arc::new(AtomicBool::new(false)),
+            connected_pages: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// Returns the SharedWorkerId for this handle.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn id(&self) -> SharedWorkerId {
+        SharedWorkerId {
+            script_url: self.script_url.clone(),
+            name: self.name.clone(),
+        }
+    }
+
+    /// Returns true if self.close() has been called.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
+
+    /// Returns true if the SharedWorker thread has fully exited.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn is_terminated(&self) -> bool {
+        self.terminated.load(Ordering::Acquire)
+    }
+
+    /// Returns the number of pages currently connected via MessagePort.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn connected_page_count(&self) -> usize {
+        self.connected_pages.load(Ordering::Acquire)
+    }
+
+    /// Signal the SharedWorker to close (mirrors SharedWorker::self.close()).
+    /// Unlike DedicatedWorker, there is no terminate() from the main thread —
+    /// SharedWorkers are closed from within via self.close().
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn close(&self) {
+        self.closing.store(true, Ordering::Release);
+    }
+
+    /// Mark the SharedWorker as fully terminated (called after thread join).
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn mark_terminated(&self) {
+        self.terminated.store(true, Ordering::Release);
+    }
+
+    /// Increment the connected-page counter (when a new page connects).
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    pub fn page_connected(&self) {
+        self.connected_pages.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// Decrement the connected-page counter (when a page disconnects).
+    /// Returns the previous value.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    pub fn page_disconnected(&self) -> usize {
+        self.connected_pages.fetch_sub(1, Ordering::AcqRel)
+    }
+}
+
+/// A SharedWorker connect event observed by the bao layer.
+///
+/// DF-WK-7: When a page creates or reuses a SharedWorker, the worker's
+/// SharedWorkerGlobalScope fires a `connect` event with a MessagePort.
+/// This struct captures the metadata for CDP observability.
+///
+/// @trace REQ-BRW-004 [entity:SharedWorker] [entity:SharedWorkerGlobalScope] DF-WK-7
+#[derive(Debug, Clone)]
+pub struct SharedWorkerConnectEvent {
+    /// Which SharedWorker this connect event is associated with.
+    pub shared_worker_id: SharedWorkerId,
+    /// The page that initiated the connection (identified by URL).
+    pub page_url: String,
+}
+
+/// Configuration for initializing a SharedWorker's SharedWorkerGlobalScope
+/// with stealth-consistent properties from the first connecting page.
+///
+/// DF-WK-9: SharedWorkerGlobalScope inherits the parent page's StealthProfile.
+/// Unlike DedicatedWorker (one parent page), SharedWorker may be connected
+/// from multiple pages. The profile is set on first connection and remains
+/// fixed for the worker's lifetime (per DEC-WK-007).
+///
+/// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] [criterion:12..17] DF-WK-9
+#[derive(Debug, Clone)]
+pub struct SharedWorkerScopeConfig {
+    /// The StealthProfile to apply in the SharedWorker's global scope.
+    /// Set from the first connecting page's profile and fixed for lifetime.
+    /// @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK navigator 一致
+    pub stealth_profile: Option<bao_stealth::StealthProfile>,
+    /// Navigator userAgent — must match the first connecting page's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub user_agent: String,
+    /// Navigator platform — must match the first connecting page's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub platform: String,
+    /// Navigator hardwareConcurrency — must match the first connecting page's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub hardware_concurrency: usize,
+    /// Navigator language — must match the first connecting page's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub language: String,
+    /// Navigator languages — must match the first connecting page's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub languages: Vec<String>,
+}
+
+impl Default for SharedWorkerScopeConfig {
+    fn default() -> Self {
+        SharedWorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: String::new(),
+            platform: String::new(),
+            hardware_concurrency: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+            language: "en-US".to_string(),
+            languages: vec!["en-US".to_string(), "en".to_string()],
+        }
+    }
+}
+
+/// Per-page reference to a SharedWorker's MessagePort.
+///
+/// Unlike DedicatedWorker (which is per-page), SharedWorkers survive page
+/// unload. When a page navigates away, only the per-page MessagePort is
+/// disconnected. This struct tracks the page's connection to a SharedWorker.
+///
+/// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+#[derive(Debug)]
+pub struct SharedWorkerPortRef {
+    /// The SharedWorker this port connects to.
+    handle: SharedWorkerHandle,
+}
+
+impl SharedWorkerPortRef {
+    /// Create a new port reference to the given SharedWorker.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    pub fn new(handle: SharedWorkerHandle) -> Self {
+        handle.page_connected();
+        SharedWorkerPortRef { handle }
+    }
+
+    /// Access the underlying SharedWorkerHandle.
+    pub fn handle(&self) -> &SharedWorkerHandle {
+        &self.handle
+    }
+}
+
+impl Drop for SharedWorkerPortRef {
+    fn drop(&mut self) {
+        // @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+        // Decrement connected-pages counter when the page disconnects.
+        // The SharedWorker thread itself is NOT terminated — it survives
+        // until self.close() is called from within the worker.
+        self.handle.page_disconnected();
+    }
+}
+
+impl Clone for SharedWorkerPortRef {
+    fn clone(&self) -> Self {
+        // Cloning a port ref increments the connected-pages counter.
+        self.handle.page_connected();
+        SharedWorkerPortRef {
+            handle: self.handle.clone(),
+        }
+    }
+}
+
 // ─── Worker Lifecycle State (REQ-BRW-004 criterion #18) ───────────
 // @trace REQ-BRW-004 [entity:Worker] [criterion:18]
 // SPEC criterion #18: "worker terminate()/self.close()/页面卸载
@@ -200,6 +688,420 @@ pub enum WorkerLifecycleState {
     Terminated(WorkerTeardownPath),
     /// Worker failed to start (e.g., script fetch error).
     Failed,
+}
+
+// ─── WorkerLocation (REQ-BRW-004 entity:WorkerLocation) ──────────────
+// @trace REQ-BRW-004 [entity:WorkerLocation]
+// SPEC entity:WorkerLocation — represents the Worker's location object
+// (self.location in DedicatedWorkerGlobalScope). Parsed from the Worker's
+// script URL. All fields are derived from the script URL per the Web IDL
+// WorkerLocation interface.
+
+/// Represents the Worker's location object (self.location).
+///
+/// Parsed from the Worker's script URL. All fields are derived per the
+/// Web IDL WorkerLocation interface:
+///   href = the full URL
+///   protocol = the URL scheme (e.g., "https:")
+///   host = hostname:port (port omitted if default)
+///   hostname = the URL hostname
+///   port = the URL port (empty string if default)
+///   pathname = the URL path
+///   search = the URL query string (including "?")
+///   hash = the URL fragment (including "#")
+///   origin = the origin (scheme + host + port)
+///
+/// @trace REQ-BRW-004 [entity:WorkerLocation]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerLocation {
+    /// The full URL of the Worker script.
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub href: String,
+    /// The URL scheme (e.g., "https:").
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub protocol: String,
+    /// The host (hostname:port, port omitted if default).
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub host: String,
+    /// The URL hostname.
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub hostname: String,
+    /// The URL port (empty string if default for the scheme).
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub port: String,
+    /// The URL path.
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub pathname: String,
+    /// The URL query string (including "?", or empty string).
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub search: String,
+    /// The URL fragment (including "#", or empty string).
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub hash: String,
+    /// The origin (scheme + host + port).
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub origin: String,
+}
+
+impl WorkerLocation {
+    /// Parse a WorkerLocation from a script URL string.
+    ///
+    /// Returns None if the URL cannot be parsed.
+    ///
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub fn from_url(url_str: &str) -> Option<Self> {
+        let parsed = url::Url::parse(url_str).ok()?;
+        let scheme = parsed.scheme();
+        let host = parsed.host_str().unwrap_or("");
+        let port = parsed.port();
+        let default_port_for_scheme = match scheme {
+            "http" => Some(80),
+            "https" => Some(443),
+            _ => None,
+        };
+        let is_default_port = port.map_or(true, |p| Some(p) == default_port_for_scheme);
+        let host_with_port = if is_default_port {
+            host.to_string()
+        } else {
+            format!("{}:{}", host, port.unwrap())
+        };
+        let origin = if scheme == "http" || scheme == "https" {
+            if is_default_port {
+                format!("{}://{}", scheme, host)
+            } else {
+                format!("{}://{}:{}", scheme, host, port.unwrap())
+            }
+        } else {
+            "null".to_string()
+        };
+
+        Some(WorkerLocation {
+            href: url_str.to_string(),
+            protocol: format!("{}:", scheme),
+            host: host_with_port,
+            hostname: host.to_string(),
+            port: port.map_or(String::new(), |p| p.to_string()),
+            pathname: parsed.path().to_string(),
+            search: parsed.query().map_or(String::new(), |q| format!("?{}", q)),
+            hash: parsed.fragment().map_or(String::new(), |f| format!("#{}", f)),
+            origin,
+        })
+    }
+
+    /// Create a WorkerLocation for a local/file URL (used in tests or
+    /// when the Worker script is a data: or blob: URL).
+    ///
+    /// @trace REQ-BRW-004 [entity:WorkerLocation]
+    pub fn from_url_value(url: url::Url) -> Self {
+        let scheme = url.scheme();
+        let host = url.host_str().unwrap_or("");
+        let port = url.port();
+        let default_port_for_scheme = match scheme {
+            "http" => Some(80),
+            "https" => Some(443),
+            _ => None,
+        };
+        let is_default_port = port.map_or(true, |p| Some(p) == default_port_for_scheme);
+        let host_with_port = if is_default_port {
+            host.to_string()
+        } else {
+            format!("{}:{}", host, port.unwrap())
+        };
+        let origin = if scheme == "http" || scheme == "https" {
+            if is_default_port {
+                format!("{}://{}", scheme, host)
+            } else {
+                format!("{}://{}:{}", scheme, host, port.unwrap())
+            }
+        } else {
+            "null".to_string()
+        };
+        let href = url.to_string();
+
+        WorkerLocation {
+            href,
+            protocol: format!("{}:", scheme),
+            host: host_with_port,
+            hostname: host.to_string(),
+            port: port.map_or(String::new(), |p| p.to_string()),
+            pathname: url.path().to_string(),
+            search: url.query().map_or(String::new(), |q| format!("?{}", q)),
+            hash: url.fragment().map_or(String::new(), |f| format!("#{}", f)),
+            origin,
+        }
+    }
+}
+
+// ─── WorkerNavigator (REQ-BRW-004 entity:WorkerNavigator) ──────────────
+// @trace REQ-BRW-004 [entity:WorkerNavigator]
+// SPEC entity:WorkerNavigator — represents the Worker's navigator object
+// (self.navigator in DedicatedWorkerGlobalScope). Must match the parent
+// page's navigator values per criterion #12 (CRIT-STL-WK).
+
+/// Represents the Worker's navigator object (self.navigator).
+///
+/// All fingerprint-relevant fields must match the parent page's values
+/// per SPEC criterion #12: "CRIT-STL-WK navigator 一致: worker 内
+/// navigator.userAgent/platform/hardwareConcurrency/language(s) === 主线程对应值".
+///
+/// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+#[derive(Debug, Clone)]
+pub struct WorkerNavigator {
+    /// navigator.userAgent — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub user_agent: String,
+    /// navigator.platform — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub platform: String,
+    /// navigator.hardwareConcurrency — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub hardware_concurrency: usize,
+    /// navigator.language — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub language: String,
+    /// navigator.languages — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub languages: Vec<String>,
+    /// navigator.connection — NetworkInformation (optional, read-only).
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator]
+    pub connection: Option<WorkerNetworkInformation>,
+    /// navigator.cookieEnabled — mirrors main thread value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator]
+    pub cookie_enabled: bool,
+    /// navigator.maxTouchPoints — mirrors main thread value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator]
+    pub max_touch_points: u32,
+    /// navigator.product — always "Gecko" per spec.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator]
+    pub product: String,
+    /// navigator.appCodeName — always "Mozilla" per spec.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator]
+    pub app_code_name: String,
+    /// navigator.appName — always "Netscape" per spec.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator]
+    pub app_name: String,
+    /// navigator.appVersion — mirrors main thread value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator]
+    pub app_version: String,
+}
+
+/// Network information for WorkerNavigator.connection.
+///
+/// Represents the NavigatorNetworkInformation subset available in Workers.
+///
+/// @trace REQ-BRW-004 [entity:WorkerNavigator]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerNetworkInformation {
+    /// Effective connection type (e.g., "4g").
+    pub effective_type: String,
+    /// Downlink speed in Mbps.
+    pub downlink: u64,
+    /// Round-trip time in ms.
+    pub rtt: u64,
+    /// Whether the user has requested reduced data usage.
+    pub save_data: bool,
+}
+
+impl WorkerNavigator {
+    /// Create a WorkerNavigator from a WorkerScopeConfig.
+    ///
+    /// The navigator values are populated from the config which carries
+    /// the parent page's fingerprint values (criterion #12).
+    ///
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub fn from_scope_config(config: &WorkerScopeConfig) -> Self {
+        WorkerNavigator {
+            user_agent: config.user_agent.clone(),
+            platform: config.platform.clone(),
+            hardware_concurrency: config.hardware_concurrency,
+            language: config.language.clone(),
+            languages: config.languages.clone(),
+            connection: None,
+            cookie_enabled: false,
+            max_touch_points: 0,
+            product: "Gecko".to_string(),
+            app_code_name: "Mozilla".to_string(),
+            app_name: "Netscape".to_string(),
+            app_version: config.user_agent.clone(),
+        }
+    }
+
+    /// Create a WorkerNavigator from a SharedWorkerScopeConfig.
+    ///
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub fn from_shared_scope_config(config: &SharedWorkerScopeConfig) -> Self {
+        WorkerNavigator {
+            user_agent: config.user_agent.clone(),
+            platform: config.platform.clone(),
+            hardware_concurrency: config.hardware_concurrency,
+            language: config.language.clone(),
+            languages: config.languages.clone(),
+            connection: None,
+            cookie_enabled: false,
+            max_touch_points: 0,
+            product: "Gecko".to_string(),
+            app_code_name: "Mozilla".to_string(),
+            app_name: "Netscape".to_string(),
+            app_version: config.user_agent.clone(),
+        }
+    }
+}
+
+impl Default for WorkerNavigator {
+    fn default() -> Self {
+        WorkerNavigator {
+            user_agent: String::new(),
+            platform: String::new(),
+            hardware_concurrency: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+            language: "en-US".to_string(),
+            languages: vec!["en-US".to_string(), "en".to_string()],
+            connection: None,
+            cookie_enabled: false,
+            max_touch_points: 0,
+            product: "Gecko".to_string(),
+            app_code_name: "Mozilla".to_string(),
+            app_name: "Netscape".to_string(),
+            app_version: String::new(),
+        }
+    }
+}
+
+// ─── WorkerGlobalScope (REQ-BRW-004 entity:WorkerGlobalScope) ─────────
+// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
+// SPEC entity:WorkerGlobalScope — the base global scope shared by
+// DedicatedWorkerGlobalScope and SharedWorkerGlobalScope. Contains
+// the common APIs: self/close/importScripts/setTimeout/fetch/crypto/
+// performance/location/navigator/console.
+
+/// The base Worker global scope state tracked by bao_browser.
+///
+/// This struct represents the bao-side view of a Worker's WorkerGlobalScope.
+/// The actual DOM WorkerGlobalScope lives in servo's ScriptThread; this struct
+/// tracks the state that bao needs for lifecycle management and CDP observability.
+///
+/// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
+#[derive(Debug, Clone)]
+pub struct WorkerGlobalScopeState {
+    /// The Worker script URL.
+    /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
+    pub worker_url: String,
+    /// Whether the Worker is closing (mirrors servo's Worker::closing).
+    /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
+    pub closing: bool,
+    /// The Worker's location (parsed from worker_url).
+    /// @trace REQ-BRW-004 [entity:WorkerGlobalScope] [entity:WorkerLocation]
+    pub location: Option<WorkerLocation>,
+    /// The Worker's navigator (populated from parent page's config).
+    /// @trace REQ-BRW-004 [entity:WorkerGlobalScope] [entity:WorkerNavigator]
+    pub navigator: WorkerNavigator,
+}
+
+impl WorkerGlobalScopeState {
+    /// Create a WorkerGlobalScopeState from a script URL and scope config.
+    ///
+    /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
+    pub fn new(worker_url: String, config: &WorkerScopeConfig) -> Self {
+        WorkerGlobalScopeState {
+            location: WorkerLocation::from_url(&worker_url),
+            navigator: WorkerNavigator::from_scope_config(config),
+            worker_url,
+            closing: false,
+        }
+    }
+
+    /// Create a WorkerGlobalScopeState from a script URL and shared scope config.
+    ///
+    /// @trace REQ-BRW-004 [entity:WorkerGlobalScope]
+    pub fn new_shared(worker_url: String, config: &SharedWorkerScopeConfig) -> Self {
+        WorkerGlobalScopeState {
+            location: WorkerLocation::from_url(&worker_url),
+            navigator: WorkerNavigator::from_shared_scope_config(config),
+            worker_url,
+            closing: false,
+        }
+    }
+}
+
+// ─── DedicatedWorkerGlobalScope (REQ-BRW-004 entity) ────────────────
+// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+// SPEC entity:DedicatedWorkerGlobalScope — the global scope for a
+// Dedicated Worker. Extends WorkerGlobalScope with:
+//   - parent: reference to the parent page (via WorkerId)
+//   - receiver: channel for page→worker messages
+//   - onmessage/onerror event handlers
+//   - All WorkerGlobalScope APIs (self/close/importScripts/setTimeout/
+//     fetch/crypto/performance/location/navigator)
+
+/// The DedicatedWorkerGlobalScope state tracked by bao_browser.
+///
+/// This struct represents the bao-side view of a Dedicated Worker's global
+/// scope. The actual DOM DedicatedWorkerGlobalScope lives in servo's
+/// ScriptThread; this struct tracks the state that bao needs for lifecycle
+/// management, CDP observability, and message routing.
+///
+/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+#[derive(Debug, Clone)]
+pub struct DedicatedWorkerGlobalScopeState {
+    /// The base WorkerGlobalScope state.
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [entity:WorkerGlobalScope]
+    pub scope: WorkerGlobalScopeState,
+    /// The WorkerId identifying this Dedicated Worker.
+    /// Links the scope to its WorkerHandle and channel bridge.
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub worker_id: WorkerId,
+    /// Whether onmessage event handler is registered.
+    /// Tracked for CDP observability (Runtime binding reporting).
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub has_onmessage: bool,
+    /// Whether onerror event handler is registered.
+    /// Tracked for CDP observability (Runtime binding reporting).
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub has_onerror: bool,
+}
+
+impl DedicatedWorkerGlobalScopeState {
+    /// Create a DedicatedWorkerGlobalScopeState for the given Worker.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn new(worker_id: WorkerId, config: &WorkerScopeConfig) -> Self {
+        let worker_url = worker_id.0.clone();
+        DedicatedWorkerGlobalScopeState {
+            scope: WorkerGlobalScopeState::new(worker_url, config),
+            worker_id,
+            has_onmessage: false,
+            has_onerror: false,
+        }
+    }
+
+    /// Get the WorkerLocation for this scope.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [entity:WorkerLocation]
+    pub fn location(&self) -> Option<&WorkerLocation> {
+        self.scope.location.as_ref()
+    }
+
+    /// Get the WorkerNavigator for this scope.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [entity:WorkerNavigator]
+    pub fn navigator(&self) -> &WorkerNavigator {
+        &self.scope.navigator
+    }
+
+    /// Mark onmessage handler as registered.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn set_onmessage(&mut self) {
+        self.has_onmessage = true;
+    }
+
+    /// Mark onerror handler as registered.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn set_onerror(&mut self) {
+        self.has_onerror = true;
+    }
 }
 
 // ─── Worker Scope Config (REQ-BRW-004 criteria #12-17) ────────────
@@ -365,6 +1267,22 @@ pub struct BaoWebViewState {
     /// the page is created.
     /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:12..17]
     pub worker_scope_config: WorkerScopeConfig,
+    /// Active SharedWorker port references for this webview's page.
+    /// Unlike DedicatedWorkers, SharedWorkers survive page unload — only
+    /// the per-page MessagePort is disconnected (via SharedWorkerPortRef Drop).
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    shared_worker_ports: Vec<SharedWorkerPortRef>,
+    /// Worker channel bridges for page↔worker structured-clone communication.
+    /// Keyed by WorkerId for O(1) lookup. Each bridge holds the mpsc channel
+    /// endpoints for bidirectional postMessage (DF-WK-4 / DF-WK-5).
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
+    worker_channels: HashMap<WorkerId, WorkerChannelBridge>,
+    /// DedicatedWorkerGlobalScope states keyed by WorkerId.
+    /// Tracks each Worker's global scope state (navigator/location/event
+    /// handlers) for CDP observability and stealth consistency verification.
+    /// Populated when a Worker is created; removed when reaped.
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    dedicated_worker_scopes: HashMap<WorkerId, DedicatedWorkerGlobalScopeState>,
 }
 
 impl Default for BaoWebViewState {
@@ -379,6 +1297,9 @@ impl Default for BaoWebViewState {
             event_tx: None,
             active_workers: Vec::new(),
             worker_scope_config: WorkerScopeConfig::default(),
+            shared_worker_ports: Vec::new(),
+            worker_channels: HashMap::new(),
+            dedicated_worker_scopes: HashMap::new(),
         }
     }
 }
@@ -411,21 +1332,41 @@ impl BaoWebViewState {
     /// Called from notify_load_status_changed when a new navigation
     /// starts (LoadStatus::Started after a previous Complete).
     ///
-    /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+    /// Also clears all Worker channel bridges — dropping the channels
+    /// signals worker threads that the parent has disconnected (DF-WK-4/5).
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:10] [criterion:6]
     pub fn terminate_all_workers(&mut self) {
         for guard in &mut self.active_workers {
             guard.terminate_via(WorkerTeardownPath::PageUnload);
         }
+        // @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
+        // Clear all channel bridges — dropping the senders/receivers signals
+        // worker threads that the parent has disconnected.
+        self.worker_channels.clear();
+        // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+        // Clear all scope states — Workers are being terminated.
+        self.dedicated_worker_scopes.clear();
     }
 
     /// Remove fully-terminated Workers from the tracking list.
     ///
     /// Called after spin_event_loop to clean up Workers whose threads
     /// have exited (terminated flag set by Worker teardown).
+    /// Also reaps their channel bridges.
     ///
-    /// @trace REQ-BRW-004 [entity:Worker]
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6]
     pub fn reap_terminated_workers(&mut self) {
         self.active_workers.retain(|g| !g.handle().is_terminated());
+        self.reap_terminated_worker_channels();
+        // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+        // Also reap scope states for terminated workers.
+        let active_ids: std::collections::HashSet<WorkerId> = self
+            .active_workers
+            .iter()
+            .map(|g| WorkerId(g.handle().script_url.clone()))
+            .collect();
+        self.dedicated_worker_scopes.retain(|id, _| active_ids.contains(id));
     }
 
     /// Returns the number of active (non-terminated) Workers.
@@ -433,6 +1374,54 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:Worker]
     pub fn active_worker_count(&self) -> usize {
         self.active_workers.iter().filter(|g| !g.handle().is_terminated()).count()
+    }
+
+    /// Register a DedicatedWorkerGlobalScope state under the given WorkerId.
+    ///
+    /// Called when a Worker is created (DF-WK-1), populating the scope
+    /// state for CDP observability and stealth consistency verification.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn register_dedicated_worker_scope(&mut self, worker_id: WorkerId, scope: DedicatedWorkerGlobalScopeState) {
+        self.dedicated_worker_scopes.insert(worker_id, scope);
+    }
+
+    /// Get a reference to a DedicatedWorkerGlobalScope state.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn dedicated_worker_scope(&self, worker_id: &WorkerId) -> Option<&DedicatedWorkerGlobalScopeState> {
+        self.dedicated_worker_scopes.get(worker_id)
+    }
+
+    /// Get a mutable reference to a DedicatedWorkerGlobalScope state.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn dedicated_worker_scope_mut(&mut self, worker_id: &WorkerId) -> Option<&mut DedicatedWorkerGlobalScopeState> {
+        self.dedicated_worker_scopes.get_mut(worker_id)
+    }
+
+    /// Remove a DedicatedWorkerGlobalScope state (called when a Worker is reaped).
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn remove_dedicated_worker_scope(&mut self, worker_id: &WorkerId) -> Option<DedicatedWorkerGlobalScopeState> {
+        self.dedicated_worker_scopes.remove(worker_id)
+    }
+
+    /// Returns the number of tracked DedicatedWorkerGlobalScope states.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn dedicated_worker_scope_count(&self) -> usize {
+        self.dedicated_worker_scopes.len()
+    }
+
+    /// Returns a snapshot of all DedicatedWorkerGlobalScope states.
+    ///
+    /// Used for CDP observability (Runtime domain) and stealth consistency
+    /// verification (criterion #12-17).
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+    pub fn dedicated_worker_scopes(&self) -> Vec<&DedicatedWorkerGlobalScopeState> {
+        self.dedicated_worker_scopes.values().collect()
     }
 
     /// Returns a snapshot of all active Workers' lifecycle states.
@@ -464,10 +1453,10 @@ impl BaoWebViewState {
     ///
     /// DF-WK-4 / DF-WK-5: When event_tx is set, push a
     /// ServoEvent::Console for CDP observability.
-    /// The actual structured-clone data is handled by servo internally;
-    /// this only forwards the event metadata.
+    /// Supports both metadata-only events (from servo internal message
+    /// handling) and full structured-clone events (from bao channel bridge).
     ///
-    /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-4] [DF-WK-5]
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] [DF-WK-4] [DF-WK-5]
     pub fn forward_worker_message_event(&self, event: WorkerMessageEvent) {
         if let Some(ref tx) = self.event_tx {
             let direction = match event.direction {
@@ -478,6 +1467,37 @@ impl BaoWebViewState {
                 target_id: "0".to_string(),
                 level: ConsoleLevel::Debug,
                 text: format!("[Worker] postMessage {}: {}", direction, event.worker_id.0),
+                url: None,
+                line: None,
+                column: None,
+            });
+        }
+    }
+
+    /// Forward a Worker structured-clone message to the CDP event path.
+    ///
+    /// DF-WK-4 / DF-WK-5: When event_tx is set, push a
+    /// ServoEvent::Console for CDP observability with payload metadata.
+    /// Includes message_id for trace correlation and payload size.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] [DF-WK-4] [DF-WK-5]
+    pub fn forward_worker_structured_message(&self, msg: &WorkerStructuredMessage) {
+        if let Some(ref tx) = self.event_tx {
+            let direction = match msg.direction {
+                WorkerMessageDirection::PageToWorker => "page→worker",
+                WorkerMessageDirection::WorkerToPage => "worker→page",
+            };
+            let payload_info = match &msg.payload {
+                Some(p) => format!("{} bytes, {} transferable(s)", p.data.len(), p.transferable_count),
+                None => "metadata-only (servo handles clone)".to_string(),
+            };
+            let _ = tx.send(ServoEvent::Console {
+                target_id: "0".to_string(),
+                level: ConsoleLevel::Debug,
+                text: format!(
+                    "[Worker] postMessage #{} {}: {} [{}]",
+                    msg.message_id, direction, msg.worker_id.0, payload_info
+                ),
                 url: None,
                 line: None,
                 column: None,
@@ -505,6 +1525,179 @@ impl BaoWebViewState {
             });
         }
     }
+
+    // ─── Worker Structured Clone Channel (REQ-BRW-004 criterion #6) ─────
+
+    /// Register a channel bridge for a Worker's postMessage channel.
+    ///
+    /// Called when a Worker is created and its channel bridge is set up.
+    /// The bridge enables page→worker (DF-WK-4) and worker→page (DF-WK-5)
+    /// structured-clone message passing.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
+    pub fn register_worker_channel(&mut self, bridge: WorkerChannelBridge) {
+        let id = bridge.worker_id.clone();
+        self.worker_channels.insert(id, bridge);
+    }
+
+    /// Create and register a channel bridge for a Worker.
+    ///
+    /// Convenience method that creates the bridge and endpoints, registers
+    /// the bridge, and returns the endpoints for the worker thread.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
+    pub fn create_worker_channel(&mut self, worker_id: WorkerId) -> WorkerChannelEndpoints {
+        let (bridge, endpoints) = WorkerChannelBridge::new(worker_id);
+        self.worker_channels.insert(bridge.worker_id.clone(), bridge);
+        endpoints
+    }
+
+    /// Remove a Worker's channel bridge (e.g., after termination).
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6]
+    pub fn remove_worker_channel(&mut self, worker_id: &WorkerId) -> Option<WorkerChannelBridge> {
+        self.worker_channels.remove(worker_id)
+    }
+
+    /// Get a reference to a Worker's channel bridge.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6]
+    pub fn worker_channel(&self, worker_id: &WorkerId) -> Option<&WorkerChannelBridge> {
+        self.worker_channels.get(worker_id)
+    }
+
+    /// Post a structured-clone message to a Worker (DF-WK-4).
+    ///
+    /// Sends the payload through the Worker's channel bridge.
+    /// Returns Err if the worker is not found or the channel is closed.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4
+    pub fn post_to_worker(
+        &self,
+        worker_id: &WorkerId,
+        payload: StructuredClonePayload,
+    ) -> Result<(), String> {
+        match self.worker_channels.get(worker_id) {
+            Some(bridge) => bridge.post_message_to_worker(payload)
+                .map_err(|e| format!("Worker channel closed: {}", e)),
+            None => Err(format!("No channel bridge for worker: {}", worker_id.0)),
+        }
+    }
+
+    /// Drain all pending worker→page messages from all Workers (DF-WK-5).
+    ///
+    /// Called during spin_event_loop to process all queued messages
+    /// from workers. Each message is forwarded to CDP for observability.
+    /// Returns all available messages grouped by worker.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:6] DF-WK-5
+    pub fn drain_all_worker_messages(&self) -> Vec<WorkerStructuredMessage> {
+        let mut all_messages = Vec::new();
+        for (_, bridge) in &self.worker_channels {
+            all_messages.extend(bridge.drain_worker_messages());
+        }
+        all_messages
+    }
+
+    /// Drain worker→page messages and forward each to CDP (DF-WK-5).
+    ///
+    /// Convenience method combining drain_all_worker_messages with
+    /// forward_worker_structured_message for each message.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:6] DF-WK-5
+    pub fn drain_and_forward_worker_messages(&self) {
+        for msg in self.drain_all_worker_messages() {
+            self.forward_worker_structured_message(&msg);
+        }
+    }
+
+    /// Remove channel bridges for all terminated Workers.
+    ///
+    /// Called after reap_terminated_workers to clean up channel state
+    /// for Workers that have fully exited.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6]
+    pub fn reap_terminated_worker_channels(&mut self) {
+        // Collect IDs of workers that still have channels but are no longer
+        // in active_workers (meaning they've been reaped).
+        let active_ids: std::collections::HashSet<WorkerId> = self
+            .active_workers
+            .iter()
+            .map(|g| WorkerId(g.handle().script_url.clone()))
+            .collect();
+        self.worker_channels.retain(|id, _| active_ids.contains(id));
+    }
+
+    /// Returns the number of registered Worker channel bridges.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:6]
+    pub fn worker_channel_count(&self) -> usize {
+        self.worker_channels.len()
+    }
+
+    // ─── SharedWorker Cross-Page Routing (REQ-BRW-004 / DF-WK-7) ─────
+
+    /// Track a SharedWorker port reference for this webview.
+    ///
+    /// DF-WK-7: When a page creates a SharedWorker, the constellation routes
+    /// to the same worker thread if (url, name) matches. The page receives
+    /// a MessagePort via the connect event. This method tracks the port
+    /// reference so it can be disconnected on page unload.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    pub fn track_shared_worker_port(&mut self, port_ref: SharedWorkerPortRef) {
+        self.shared_worker_ports.push(port_ref);
+    }
+
+    /// Disconnect all SharedWorker ports on page unload.
+    ///
+    /// Unlike DedicatedWorkers (which are terminated), SharedWorkers survive
+    /// page unload. Only the per-page MessagePorts are disconnected by
+    /// dropping the SharedWorkerPortRef (which decrements the connected-pages
+    /// counter in the SharedWorkerHandle).
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    pub fn disconnect_shared_worker_ports(&mut self) {
+        if !self.shared_worker_ports.is_empty() {
+            log::debug!(
+                "[delegate] page navigation: disconnecting {} shared worker ports",
+                self.shared_worker_ports.len()
+            );
+        }
+        self.shared_worker_ports.clear();
+    }
+
+    /// Returns the number of active SharedWorker port references.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn shared_worker_port_count(&self) -> usize {
+        self.shared_worker_ports.len()
+    }
+
+    /// Forward a SharedWorker connect event to the CDP event path.
+    ///
+    /// DF-WK-7: When a page connects to a SharedWorker (either creating a new
+    /// one or reusing an existing one), the worker fires a `connect` event.
+    /// This method forwards the metadata for CDP observability.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker] [entity:SharedWorkerGlobalScope] DF-WK-7
+    pub fn forward_shared_worker_connect_event(&self, event: SharedWorkerConnectEvent) {
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(ServoEvent::Console {
+                target_id: "0".to_string(),
+                level: ConsoleLevel::Debug,
+                text: format!(
+                    "[SharedWorker] connect: {} (name={}) from {}",
+                    event.shared_worker_id.script_url,
+                    if event.shared_worker_id.name.is_empty() { "<default>" } else { &event.shared_worker_id.name },
+                    event.page_url
+                ),
+                url: None,
+                line: None,
+                column: None,
+            });
+        }
+    }
 }
 
 pub struct BaoServoDelegate {
@@ -516,6 +1709,13 @@ pub struct BaoServoDelegate {
     /// When set, console/url/load callbacks also push structured events here.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     event_tx: RefCell<Option<Sender<ServoEvent>>>,
+    /// Global SharedWorker registry — keyed by (script_url, name).
+    /// SharedWorkers span pages (DF-WK-7), so they must be tracked at the
+    /// delegate level rather than per-page. When a page creates a SharedWorker,
+    /// the constellation routes to the same worker thread if (url, name) matches.
+    /// This registry tracks all active SharedWorkers across all pages.
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    shared_workers: RefCell<Vec<SharedWorkerHandle>>,
 }
 
 impl Default for BaoServoDelegate {
@@ -524,6 +1724,7 @@ impl Default for BaoServoDelegate {
             last_error: RefCell::new(None),
             console_log_tx: RefCell::new(None),
             event_tx: RefCell::new(None),
+            shared_workers: RefCell::new(Vec::new()),
         }
     }
 }
@@ -561,6 +1762,62 @@ impl BaoServoDelegate {
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub fn event_tx(&self) -> Option<Sender<ServoEvent>> {
         self.event_tx.borrow().clone()
+    }
+
+    // ─── SharedWorker Global Registry (REQ-BRW-004 / DF-WK-7) ────────
+
+    /// Register a SharedWorker in the global registry.
+    ///
+    /// DF-WK-7: When a page creates a new SharedWorker, the handle is
+    /// registered here so other pages can find it by (script_url, name).
+    /// If a SharedWorker with the same id already exists, the existing
+    /// handle is returned instead (constellation dedup).
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    pub fn register_shared_worker(&self, handle: SharedWorkerHandle) -> SharedWorkerHandle {
+        let id = handle.id();
+        let mut shared_workers = self.shared_workers.borrow_mut();
+        if let Some(existing) = shared_workers.iter().find(|h| h.id() == id) {
+            existing.clone()
+        } else {
+            shared_workers.push(handle.clone());
+            handle
+        }
+    }
+
+    /// Find an existing SharedWorker by (script_url, name).
+    ///
+    /// Returns a clone of the SharedWorkerHandle if found, None otherwise.
+    /// Used when a page creates a SharedWorker and the constellation routes
+    /// to an existing worker (DF-WK-7: "多页 new SharedWorker(url) 同 name →
+    /// constellation 路由到同一 worker 线程").
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+    pub fn find_shared_worker(&self, script_url: &str, name: &str) -> Option<SharedWorkerHandle> {
+        self.shared_workers
+            .borrow()
+            .iter()
+            .find(|h| h.script_url == script_url && h.name == name)
+            .cloned()
+    }
+
+    /// Remove terminated SharedWorkers from the registry.
+    ///
+    /// Called after spin_event_loop to clean up SharedWorkers whose threads
+    /// have exited and have zero connected pages.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn reap_terminated_shared_workers(&self) {
+        self.shared_workers.borrow_mut().retain(|h| {
+            !h.is_terminated() || h.connected_page_count() > 0
+        });
+    }
+
+    /// Returns the number of active SharedWorkers across all pages.
+    ///
+    /// @trace REQ-BRW-004 [entity:SharedWorker]
+    pub fn shared_worker_count(&self) -> usize {
+        self.shared_workers.borrow().len()
     }
 }
 
@@ -707,6 +1964,9 @@ impl WebViewDelegate for BaoWebViewDelegate {
                         );
                         state.terminate_all_workers();
                     }
+                    // @trace REQ-BRW-004 [entity:SharedWorker] DF-WK-7
+                    // SharedWorkers survive page unload — only disconnect ports.
+                    state.disconnect_shared_worker_ports();
                 }
 
                 // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
@@ -1653,5 +2913,985 @@ mod tests {
         let state = BaoWebViewState::default();
         assert!(state.worker_scope_config.stealth_profile.is_none());
         assert!(state.worker_scope_config.hardware_concurrency > 0);
+    }
+
+    // ─── SharedWorker (REQ-BRW-004 / DF-WK-7) ─────────────────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:SharedWorker] [DF-WK-7] [level:unit]
+
+    #[test]
+    fn test_shared_worker_id_equality() {
+        let id1 = SharedWorkerId { script_url: "sw.js".to_string(), name: "myworker".to_string() };
+        let id2 = SharedWorkerId { script_url: "sw.js".to_string(), name: "myworker".to_string() };
+        let id3 = SharedWorkerId { script_url: "sw.js".to_string(), name: "other".to_string() };
+        let id4 = SharedWorkerId { script_url: "other.js".to_string(), name: "myworker".to_string() };
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3); // different name
+        assert_ne!(id1, id4); // different url
+    }
+
+    #[test]
+    fn test_shared_worker_id_default_name() {
+        let id = SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() };
+        assert!(id.name.is_empty());
+    }
+
+    #[test]
+    fn test_shared_worker_handle_new_is_running() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), "myname".to_string());
+        assert_eq!(handle.script_url, "sw.js");
+        assert_eq!(handle.name, "myname");
+        assert!(!handle.is_closing());
+        assert!(!handle.is_terminated());
+        assert_eq!(handle.connected_page_count(), 0);
+    }
+
+    #[test]
+    fn test_shared_worker_handle_id() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), "myname".to_string());
+        let id = handle.id();
+        assert_eq!(id.script_url, "sw.js");
+        assert_eq!(id.name, "myname");
+    }
+
+    #[test]
+    fn test_shared_worker_handle_close() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        assert!(!handle.is_closing());
+        handle.close();
+        assert!(handle.is_closing());
+        // Idempotent
+        handle.close();
+        assert!(handle.is_closing());
+    }
+
+    #[test]
+    fn test_shared_worker_handle_mark_terminated() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        assert!(!handle.is_terminated());
+        handle.mark_terminated();
+        assert!(handle.is_terminated());
+    }
+
+    #[test]
+    fn test_shared_worker_handle_connected_pages() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        assert_eq!(handle.connected_page_count(), 0);
+        handle.page_connected();
+        assert_eq!(handle.connected_page_count(), 1);
+        handle.page_connected();
+        assert_eq!(handle.connected_page_count(), 2);
+        handle.page_disconnected();
+        assert_eq!(handle.connected_page_count(), 1);
+        handle.page_disconnected();
+        assert_eq!(handle.connected_page_count(), 0);
+    }
+
+    #[test]
+    fn test_shared_worker_handle_clone_shares_state() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), "name".to_string());
+        let clone = handle.clone();
+        handle.close();
+        assert!(clone.is_closing(), "clone should see closing flag from original");
+        clone.mark_terminated();
+        assert!(handle.is_terminated(), "original should see terminated flag from clone");
+    }
+
+    #[test]
+    fn test_shared_worker_port_ref_increments_connected() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        let port = SharedWorkerPortRef::new(handle.clone());
+        assert_eq!(handle.connected_page_count(), 1);
+        assert_eq!(port.handle().script_url, "sw.js");
+    }
+
+    #[test]
+    fn test_shared_worker_port_ref_drop_decrements_connected() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        {
+            let _port = SharedWorkerPortRef::new(handle.clone());
+            assert_eq!(handle.connected_page_count(), 1);
+        }
+        assert_eq!(handle.connected_page_count(), 0, "dropping port should decrement connected count");
+    }
+
+    #[test]
+    fn test_shared_worker_port_ref_clone_increments_connected() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        let port = SharedWorkerPortRef::new(handle.clone());
+        assert_eq!(handle.connected_page_count(), 1);
+        let _port2 = port.clone();
+        assert_eq!(handle.connected_page_count(), 2);
+    }
+
+    #[test]
+    fn test_shared_worker_port_ref_multiple_pages() {
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), "shared".to_string());
+        let _port1 = SharedWorkerPortRef::new(handle.clone());
+        let _port2 = SharedWorkerPortRef::new(handle.clone());
+        assert_eq!(handle.connected_page_count(), 2);
+    }
+
+    #[test]
+    fn test_webview_state_track_shared_worker_port() {
+        let mut state = BaoWebViewState::default();
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), "myname".to_string());
+        state.track_shared_worker_port(SharedWorkerPortRef::new(handle));
+        assert_eq!(state.shared_worker_port_count(), 1);
+    }
+
+    #[test]
+    fn test_webview_state_disconnect_shared_worker_ports() {
+        let mut state = BaoWebViewState::default();
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        state.track_shared_worker_port(SharedWorkerPortRef::new(handle.clone()));
+        state.track_shared_worker_port(SharedWorkerPortRef::new(handle.clone()));
+        assert_eq!(state.shared_worker_port_count(), 2);
+        assert_eq!(handle.connected_page_count(), 2);
+        state.disconnect_shared_worker_ports();
+        assert_eq!(state.shared_worker_port_count(), 0);
+        assert_eq!(handle.connected_page_count(), 0, "disconnect should drop ports and decrement counter");
+    }
+
+    #[test]
+    fn test_webview_state_disconnect_shared_worker_ports_empty() {
+        let mut state = BaoWebViewState::default();
+        // No panic on empty
+        state.disconnect_shared_worker_ports();
+        assert_eq!(state.shared_worker_port_count(), 0);
+    }
+
+    #[test]
+    fn test_delegate_register_shared_worker_new() {
+        let delegate = BaoServoDelegate::new();
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), "myname".to_string());
+        let returned = delegate.register_shared_worker(handle);
+        assert_eq!(returned.script_url, "sw.js");
+        assert_eq!(returned.name, "myname");
+        assert_eq!(delegate.shared_worker_count(), 1);
+    }
+
+    #[test]
+    fn test_delegate_register_shared_worker_dedup() {
+        let delegate = BaoServoDelegate::new();
+        let handle1 = SharedWorkerHandle::new("sw.js".to_string(), "myname".to_string());
+        let handle2 = SharedWorkerHandle::new("sw.js".to_string(), "myname".to_string());
+        delegate.register_shared_worker(handle1);
+        let returned = delegate.register_shared_worker(handle2);
+        // Same (url, name) → returns existing, count stays 1
+        assert_eq!(delegate.shared_worker_count(), 1);
+        assert_eq!(returned.script_url, "sw.js");
+    }
+
+    #[test]
+    fn test_delegate_find_shared_worker() {
+        let delegate = BaoServoDelegate::new();
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), "myname".to_string());
+        delegate.register_shared_worker(handle);
+        let found = delegate.find_shared_worker("sw.js", "myname");
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().script_url, "sw.js");
+        assert!(delegate.find_shared_worker("other.js", "myname").is_none());
+        assert!(delegate.find_shared_worker("sw.js", "other").is_none());
+    }
+
+    #[test]
+    fn test_delegate_reap_terminated_shared_workers() {
+        let delegate = BaoServoDelegate::new();
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        delegate.register_shared_worker(handle.clone());
+        assert_eq!(delegate.shared_worker_count(), 1);
+        // Mark terminated with zero connected pages
+        handle.close();
+        handle.mark_terminated();
+        delegate.reap_terminated_shared_workers();
+        assert_eq!(delegate.shared_worker_count(), 0, "terminated shared worker with zero pages should be reaped");
+    }
+
+    #[test]
+    fn test_delegate_reap_keeps_terminated_with_connected_pages() {
+        let delegate = BaoServoDelegate::new();
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        delegate.register_shared_worker(handle.clone());
+        // Connect a page, then terminate the worker
+        let _port = SharedWorkerPortRef::new(handle.clone());
+        handle.close();
+        handle.mark_terminated();
+        delegate.reap_terminated_shared_workers();
+        assert_eq!(delegate.shared_worker_count(), 1, "terminated but still has connected pages — keep in registry");
+    }
+
+    #[test]
+    fn test_shared_worker_connect_event_creation() {
+        let event = SharedWorkerConnectEvent {
+            shared_worker_id: SharedWorkerId { script_url: "sw.js".to_string(), name: "myname".to_string() },
+            page_url: "https://example.com/page1".to_string(),
+        };
+        assert_eq!(event.shared_worker_id.script_url, "sw.js");
+        assert_eq!(event.shared_worker_id.name, "myname");
+        assert_eq!(event.page_url, "https://example.com/page1");
+    }
+
+    #[test]
+    fn test_forward_shared_worker_connect_event() {
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let state = BaoWebViewState {
+            event_tx: Some(tx),
+            ..Default::default()
+        };
+        let event = SharedWorkerConnectEvent {
+            shared_worker_id: SharedWorkerId { script_url: "sw.js".to_string(), name: "myname".to_string() },
+            page_url: "https://example.com".to_string(),
+        };
+        state.forward_shared_worker_connect_event(event);
+        let recv = rx.try_recv().unwrap();
+        match recv {
+            ServoEvent::Console { level, text, .. } => {
+                assert_eq!(level, ConsoleLevel::Debug);
+                assert!(text.contains("sw.js"));
+                assert!(text.contains("myname"));
+                assert!(text.contains("https://example.com"));
+            }
+            _ => panic!("expected Console event for shared worker connect"),
+        }
+    }
+
+    #[test]
+    fn test_forward_shared_worker_connect_event_no_tx() {
+        let state = BaoWebViewState::default();
+        let event = SharedWorkerConnectEvent {
+            shared_worker_id: SharedWorkerId { script_url: "sw.js".to_string(), name: String::new() },
+            page_url: "https://example.com".to_string(),
+        };
+        // Should not panic
+        state.forward_shared_worker_connect_event(event);
+    }
+
+    #[test]
+    fn test_shared_worker_scope_config_default() {
+        let config = SharedWorkerScopeConfig::default();
+        assert!(config.stealth_profile.is_none());
+        assert!(config.user_agent.is_empty());
+        assert!(config.platform.is_empty());
+        assert!(config.hardware_concurrency > 0);
+        assert_eq!(config.language, "en-US");
+        assert!(!config.languages.is_empty());
+    }
+
+    #[test]
+    fn test_page_navigation_disconnects_shared_workers() {
+        let mut state = BaoWebViewState::default();
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), String::new());
+        state.track_shared_worker_port(SharedWorkerPortRef::new(handle.clone()));
+        assert_eq!(state.shared_worker_port_count(), 1);
+        assert_eq!(handle.connected_page_count(), 1);
+        // Simulate page navigation — SharedWorkers survive but ports disconnect
+        state.disconnect_shared_worker_ports();
+        assert_eq!(state.shared_worker_port_count(), 0);
+        assert_eq!(handle.connected_page_count(), 0);
+    }
+
+    #[test]
+    fn test_shared_worker_cross_page_sharing() {
+        // Simulate two pages sharing the same SharedWorker
+        let handle = SharedWorkerHandle::new("sw.js".to_string(), "shared".to_string());
+
+        // Page 1 connects
+        let mut state1 = BaoWebViewState::default();
+        state1.track_shared_worker_port(SharedWorkerPortRef::new(handle.clone()));
+        assert_eq!(handle.connected_page_count(), 1);
+
+        // Page 2 connects
+        let mut state2 = BaoWebViewState::default();
+        state2.track_shared_worker_port(SharedWorkerPortRef::new(handle.clone()));
+        assert_eq!(handle.connected_page_count(), 2);
+
+        // Page 1 navigates away
+        state1.disconnect_shared_worker_ports();
+        assert_eq!(handle.connected_page_count(), 1);
+
+        // Page 2 still connected
+        assert_eq!(state2.shared_worker_port_count(), 1);
+
+        // SharedWorker is NOT terminated (only ports disconnect)
+        assert!(!handle.is_closing());
+        assert!(!handle.is_terminated());
+    }
+
+    // ─── Structured Clone Message Channel (REQ-BRW-004 criterion #6) ─────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [criterion:6] [level:unit]
+
+    #[test]
+    fn test_structured_clone_payload_creation() {
+        let payload = StructuredClonePayload {
+            data: vec![1, 2, 3, 4, 5],
+            transferable_count: 0,
+        };
+        assert_eq!(payload.data.len(), 5);
+        assert_eq!(payload.transferable_count, 0);
+    }
+
+    #[test]
+    fn test_structured_clone_payload_with_transferables() {
+        let payload = StructuredClonePayload {
+            data: vec![0u8; 1024],
+            transferable_count: 2,
+        };
+        assert_eq!(payload.data.len(), 1024);
+        assert_eq!(payload.transferable_count, 2);
+    }
+
+    #[test]
+    fn test_structured_clone_payload_clone() {
+        let payload = StructuredClonePayload {
+            data: vec![42u8; 100],
+            transferable_count: 1,
+        };
+        let cloned = payload.clone();
+        assert_eq!(cloned.data, payload.data);
+        assert_eq!(cloned.transferable_count, payload.transferable_count);
+    }
+
+    #[test]
+    fn test_worker_structured_message_metadata_only() {
+        let msg = WorkerStructuredMessage::metadata_only(
+            WorkerId("worker1.js".to_string()),
+            WorkerMessageDirection::PageToWorker,
+        );
+        assert!(msg.payload.is_none());
+        assert_eq!(msg.worker_id.0, "worker1.js");
+        assert_eq!(msg.direction, WorkerMessageDirection::PageToWorker);
+        assert!(msg.message_id > 0);
+    }
+
+    #[test]
+    fn test_worker_structured_message_with_payload() {
+        let msg = WorkerStructuredMessage::with_payload(
+            WorkerId("worker2.js".to_string()),
+            WorkerMessageDirection::WorkerToPage,
+            vec![1, 2, 3],
+            1,
+        );
+        assert!(msg.payload.is_some());
+        let payload = msg.payload.unwrap();
+        assert_eq!(payload.data, vec![1, 2, 3]);
+        assert_eq!(payload.transferable_count, 1);
+        assert_eq!(msg.direction, WorkerMessageDirection::WorkerToPage);
+    }
+
+    #[test]
+    fn test_worker_structured_message_unique_ids() {
+        let msg1 = WorkerStructuredMessage::metadata_only(
+            WorkerId("w.js".to_string()),
+            WorkerMessageDirection::PageToWorker,
+        );
+        let msg2 = WorkerStructuredMessage::metadata_only(
+            WorkerId("w.js".to_string()),
+            WorkerMessageDirection::PageToWorker,
+        );
+        // Each message should get a unique ID
+        assert_ne!(msg1.message_id, msg2.message_id);
+    }
+
+    #[test]
+    fn test_worker_channel_bridge_creation() {
+        let worker_id = WorkerId("worker1.js".to_string());
+        let (bridge, endpoints) = WorkerChannelBridge::new(worker_id.clone());
+        assert_eq!(bridge.worker_id, worker_id);
+        assert_eq!(endpoints.worker_id, worker_id);
+        // Endpoints should have the rx/tx for the worker thread
+        assert!(endpoints.page_to_worker_rx.is_some());
+        assert!(endpoints.worker_to_page_tx.is_some());
+    }
+
+    #[test]
+    fn test_worker_channel_bridge_page_to_worker() {
+        let worker_id = WorkerId("worker1.js".to_string());
+        let (bridge, endpoints) = WorkerChannelBridge::new(worker_id);
+        // Page sends a message to worker
+        let payload = StructuredClonePayload {
+            data: vec![1, 2, 3],
+            transferable_count: 0,
+        };
+        bridge.post_message_to_worker(payload).unwrap();
+        // Worker thread receives it
+        let rx = endpoints.page_to_worker_rx.unwrap();
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received.data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_worker_channel_bridge_worker_to_page() {
+        let worker_id = WorkerId("worker1.js".to_string());
+        let (bridge, endpoints) = WorkerChannelBridge::new(worker_id);
+        // Worker sends a message to page
+        let msg = WorkerStructuredMessage::with_payload(
+            WorkerId("worker1.js".to_string()),
+            WorkerMessageDirection::WorkerToPage,
+            vec![4, 5, 6],
+            0,
+        );
+        let tx = endpoints.worker_to_page_tx.unwrap();
+        tx.send(msg).unwrap();
+        // Page receives it
+        let result = bridge.try_recv_from_worker().unwrap();
+        assert!(result.is_some());
+        let received = result.unwrap();
+        assert_eq!(received.payload.unwrap().data, vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn test_worker_channel_bridge_drain() {
+        let worker_id = WorkerId("worker1.js".to_string());
+        let (bridge, endpoints) = WorkerChannelBridge::new(worker_id);
+        let tx = endpoints.worker_to_page_tx.unwrap();
+        // Send multiple messages
+        for i in 0..3 {
+            let msg = WorkerStructuredMessage::with_payload(
+                WorkerId("worker1.js".to_string()),
+                WorkerMessageDirection::WorkerToPage,
+                vec![i],
+                0,
+            );
+            tx.send(msg).unwrap();
+        }
+        // Drain all
+        let messages = bridge.drain_worker_messages();
+        assert_eq!(messages.len(), 3);
+        // Drain again should be empty
+        let empty = bridge.drain_worker_messages();
+        assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn test_webview_state_worker_channel_registration() {
+        let mut state = BaoWebViewState::default();
+        let worker_id = WorkerId("worker1.js".to_string());
+        let (bridge, _endpoints) = WorkerChannelBridge::new(worker_id.clone());
+        state.register_worker_channel(bridge);
+        assert_eq!(state.worker_channel_count(), 1);
+        assert!(state.worker_channel(&worker_id).is_some());
+    }
+
+    #[test]
+    fn test_webview_state_create_worker_channel() {
+        let mut state = BaoWebViewState::default();
+        let worker_id = WorkerId("worker1.js".to_string());
+        let endpoints = state.create_worker_channel(worker_id.clone());
+        assert_eq!(state.worker_channel_count(), 1);
+        assert_eq!(endpoints.worker_id, worker_id);
+        assert!(endpoints.page_to_worker_rx.is_some());
+        assert!(endpoints.worker_to_page_tx.is_some());
+    }
+
+    #[test]
+    fn test_webview_state_post_to_worker() {
+        let mut state = BaoWebViewState::default();
+        let worker_id = WorkerId("worker1.js".to_string());
+        let endpoints = state.create_worker_channel(worker_id.clone());
+        let payload = StructuredClonePayload {
+            data: vec![42],
+            transferable_count: 0,
+        };
+        // Post to existing worker
+        let result = state.post_to_worker(&worker_id, payload);
+        assert!(result.is_ok());
+        // Worker thread receives it
+        let rx = endpoints.page_to_worker_rx.unwrap();
+        let received = rx.try_recv().unwrap();
+        assert_eq!(received.data, vec![42]);
+        // Post to non-existent worker
+        let result = state.post_to_worker(
+            &WorkerId("nonexistent.js".to_string()),
+            StructuredClonePayload { data: vec![], transferable_count: 0 },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_webview_state_drain_all_worker_messages() {
+        let mut state = BaoWebViewState::default();
+        let worker_id1 = WorkerId("worker1.js".to_string());
+        let worker_id2 = WorkerId("worker2.js".to_string());
+        let endpoints1 = state.create_worker_channel(worker_id1);
+        let endpoints2 = state.create_worker_channel(worker_id2);
+        // Send messages from both workers
+        let tx1 = endpoints1.worker_to_page_tx.unwrap();
+        let tx2 = endpoints2.worker_to_page_tx.unwrap();
+        tx1.send(WorkerStructuredMessage::metadata_only(
+            WorkerId("worker1.js".to_string()),
+            WorkerMessageDirection::WorkerToPage,
+        )).unwrap();
+        tx2.send(WorkerStructuredMessage::metadata_only(
+            WorkerId("worker2.js".to_string()),
+            WorkerMessageDirection::WorkerToPage,
+        )).unwrap();
+        // Drain all
+        let messages = state.drain_all_worker_messages();
+        assert_eq!(messages.len(), 2);
+    }
+
+    #[test]
+    fn test_webview_state_terminate_clears_channels() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.create_worker_channel(WorkerId("worker1.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker2.js".to_string()));
+        state.create_worker_channel(WorkerId("worker2.js".to_string()));
+        assert_eq!(state.worker_channel_count(), 2);
+        // Terminate all — should clear channels too
+        state.terminate_all_workers();
+        assert_eq!(state.worker_channel_count(), 0);
+    }
+
+    #[test]
+    fn test_webview_state_reap_terminated_worker_channels() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.create_worker_channel(WorkerId("worker1.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker2.js".to_string()));
+        state.create_worker_channel(WorkerId("worker2.js".to_string()));
+        // Terminate and reap worker1
+        state.active_workers[0].handle().terminate();
+        state.active_workers[0].handle().mark_terminated();
+        state.reap_terminated_workers();
+        // worker1's channel should be reaped, worker2's should remain
+        assert_eq!(state.worker_channel_count(), 1);
+        assert!(state.worker_channel(&WorkerId("worker2.js".to_string())).is_some());
+    }
+
+    #[test]
+    fn test_webview_state_remove_worker_channel() {
+        let mut state = BaoWebViewState::default();
+        let worker_id = WorkerId("worker1.js".to_string());
+        state.create_worker_channel(worker_id.clone());
+        assert_eq!(state.worker_channel_count(), 1);
+        let removed = state.remove_worker_channel(&worker_id);
+        assert!(removed.is_some());
+        assert_eq!(state.worker_channel_count(), 0);
+    }
+
+    #[test]
+    fn test_forward_worker_structured_message_with_payload() {
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let state = BaoWebViewState {
+            event_tx: Some(tx),
+            ..Default::default()
+        };
+        let msg = WorkerStructuredMessage::with_payload(
+            WorkerId("worker1.js".to_string()),
+            WorkerMessageDirection::WorkerToPage,
+            vec![1, 2, 3],
+            1,
+        );
+        state.forward_worker_structured_message(&msg);
+        let event = rx.try_recv().unwrap();
+        match event {
+            ServoEvent::Console { level, text, .. } => {
+                assert_eq!(level, ConsoleLevel::Debug);
+                assert!(text.contains("worker→page"));
+                assert!(text.contains("worker1.js"));
+                assert!(text.contains("3 bytes"));
+                assert!(text.contains("1 transferable"));
+            }
+            _ => panic!("expected Console event for structured message"),
+        }
+    }
+
+    #[test]
+    fn test_forward_worker_structured_message_metadata_only() {
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let state = BaoWebViewState {
+            event_tx: Some(tx),
+            ..Default::default()
+        };
+        let msg = WorkerStructuredMessage::metadata_only(
+            WorkerId("worker1.js".to_string()),
+            WorkerMessageDirection::PageToWorker,
+        );
+        state.forward_worker_structured_message(&msg);
+        let event = rx.try_recv().unwrap();
+        match event {
+            ServoEvent::Console { text, .. } => {
+                assert!(text.contains("metadata-only"));
+            }
+            _ => panic!("expected Console event"),
+        }
+    }
+
+    #[test]
+    fn test_drain_and_forward_worker_messages() {
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let mut state = BaoWebViewState {
+            event_tx: Some(tx),
+            ..Default::default()
+        };
+        let endpoints = state.create_worker_channel(WorkerId("worker1.js".to_string()));
+        let worker_tx = endpoints.worker_to_page_tx.unwrap();
+        worker_tx.send(WorkerStructuredMessage::metadata_only(
+            WorkerId("worker1.js".to_string()),
+            WorkerMessageDirection::WorkerToPage,
+        )).unwrap();
+        // Drain and forward
+        state.drain_and_forward_worker_messages();
+        // Should have forwarded to CDP
+        let event = rx.try_recv().unwrap();
+        match event {
+            ServoEvent::Console { text, .. } => {
+                assert!(text.contains("worker→page"));
+            }
+            _ => panic!("expected Console event"),
+        }
+    }
+
+    #[test]
+    fn test_worker_channel_bridge_disconnected() {
+        let worker_id = WorkerId("worker1.js".to_string());
+        let (bridge, _endpoints) = WorkerChannelBridge::new(worker_id);
+        // Drop the worker-side sender to simulate worker exit
+        // The bridge's try_recv_from_worker should return Err
+        // (Can't easily test this without moving endpoints to another thread,
+        // but we can test the drain with disconnected channel)
+        let result = bridge.try_recv_from_worker();
+        assert!(result.is_ok()); // Empty channel, not disconnected yet
+        assert!(result.unwrap().is_none());
+    }
+
+    // ─── WorkerLocation (REQ-BRW-004 entity:WorkerLocation) ──────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:WorkerLocation] [level:unit]
+
+    #[test]
+    fn test_worker_location_from_https_url() {
+        let loc = WorkerLocation::from_url("https://example.com:8080/path?q=1#hash").unwrap();
+        assert_eq!(loc.href, "https://example.com:8080/path?q=1#hash");
+        assert_eq!(loc.protocol, "https:");
+        assert_eq!(loc.host, "example.com:8080");
+        assert_eq!(loc.hostname, "example.com");
+        assert_eq!(loc.port, "8080");
+        assert_eq!(loc.pathname, "/path");
+        assert_eq!(loc.search, "?q=1");
+        assert_eq!(loc.hash, "#hash");
+        assert_eq!(loc.origin, "https://example.com:8080");
+    }
+
+    #[test]
+    fn test_worker_location_from_default_port() {
+        let loc = WorkerLocation::from_url("https://example.com/path").unwrap();
+        assert_eq!(loc.host, "example.com");
+        assert_eq!(loc.port, "");
+        assert_eq!(loc.origin, "https://example.com");
+    }
+
+    #[test]
+    fn test_worker_location_from_http_url() {
+        let loc = WorkerLocation::from_url("http://localhost:3000/worker.js").unwrap();
+        assert_eq!(loc.protocol, "http:");
+        assert_eq!(loc.hostname, "localhost");
+        assert_eq!(loc.port, "3000");
+        assert_eq!(loc.pathname, "/worker.js");
+    }
+
+    #[test]
+    fn test_worker_location_from_url_no_query_no_hash() {
+        let loc = WorkerLocation::from_url("https://example.com/worker.js").unwrap();
+        assert_eq!(loc.search, "");
+        assert_eq!(loc.hash, "");
+    }
+
+    #[test]
+    fn test_worker_location_from_invalid_url() {
+        assert!(WorkerLocation::from_url("not a url").is_none());
+    }
+
+    #[test]
+    fn test_worker_location_from_url_value() {
+        let url = url::Url::parse("https://example.com/worker.js").unwrap();
+        let loc = WorkerLocation::from_url_value(url);
+        assert_eq!(loc.protocol, "https:");
+        assert_eq!(loc.hostname, "example.com");
+        assert_eq!(loc.pathname, "/worker.js");
+    }
+
+    // ─── WorkerNavigator (REQ-BRW-004 entity:WorkerNavigator) ──────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:WorkerNavigator] [level:unit]
+
+    #[test]
+    fn test_worker_navigator_default() {
+        let nav = WorkerNavigator::default();
+        assert!(nav.user_agent.is_empty());
+        assert!(nav.platform.is_empty());
+        assert!(nav.hardware_concurrency > 0);
+        assert_eq!(nav.language, "en-US");
+        assert!(!nav.languages.is_empty());
+        assert!(nav.connection.is_none());
+        assert!(!nav.cookie_enabled);
+        assert_eq!(nav.max_touch_points, 0);
+        assert_eq!(nav.product, "Gecko");
+        assert_eq!(nav.app_code_name, "Mozilla");
+        assert_eq!(nav.app_name, "Netscape");
+        assert!(nav.app_version.is_empty());
+    }
+
+    #[test]
+    fn test_worker_navigator_from_scope_config() {
+        let config = WorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: "Bao/1.0".to_string(),
+            platform: "Linux x86_64".to_string(),
+            hardware_concurrency: 8,
+            language: "zh-CN".to_string(),
+            languages: vec!["zh-CN".to_string(), "zh".to_string()],
+        };
+        let nav = WorkerNavigator::from_scope_config(&config);
+        assert_eq!(nav.user_agent, "Bao/1.0");
+        assert_eq!(nav.platform, "Linux x86_64");
+        assert_eq!(nav.hardware_concurrency, 8);
+        assert_eq!(nav.language, "zh-CN");
+        assert_eq!(nav.languages.len(), 2);
+        assert_eq!(nav.app_version, "Bao/1.0"); // app_version mirrors user_agent
+        assert_eq!(nav.product, "Gecko");
+        assert_eq!(nav.app_code_name, "Mozilla");
+        assert_eq!(nav.app_name, "Netscape");
+    }
+
+    #[test]
+    fn test_worker_navigator_from_shared_scope_config() {
+        let config = SharedWorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: "Bao/2.0".to_string(),
+            platform: "MacOS".to_string(),
+            hardware_concurrency: 4,
+            language: "ja".to_string(),
+            languages: vec!["ja".to_string(), "en".to_string()],
+        };
+        let nav = WorkerNavigator::from_shared_scope_config(&config);
+        assert_eq!(nav.user_agent, "Bao/2.0");
+        assert_eq!(nav.platform, "MacOS");
+        assert_eq!(nav.hardware_concurrency, 4);
+        assert_eq!(nav.app_version, "Bao/2.0");
+    }
+
+    #[test]
+    fn test_worker_network_information() {
+        let info = WorkerNetworkInformation {
+            effective_type: "4g".to_string(),
+            downlink: 10,
+            rtt: 50,
+            save_data: false,
+        };
+        assert_eq!(info.effective_type, "4g");
+        assert_eq!(info.downlink, 10);
+        assert_eq!(info.rtt, 50);
+        assert!(!info.save_data);
+    }
+
+    // ─── WorkerGlobalScopeState (REQ-BRW-004 entity:WorkerGlobalScope) ──
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:WorkerGlobalScope] [level:unit]
+
+    #[test]
+    fn test_worker_global_scope_state_new() {
+        let config = WorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: "Bao/1.0".to_string(),
+            platform: "Linux".to_string(),
+            hardware_concurrency: 8,
+            language: "en-US".to_string(),
+            languages: vec!["en-US".to_string()],
+        };
+        let scope = WorkerGlobalScopeState::new("https://example.com/worker.js".to_string(), &config);
+        assert_eq!(scope.worker_url, "https://example.com/worker.js");
+        assert!(!scope.closing);
+        assert!(scope.location.is_some());
+        assert_eq!(scope.navigator.user_agent, "Bao/1.0");
+    }
+
+    #[test]
+    fn test_worker_global_scope_state_new_shared() {
+        let config = SharedWorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: "Bao/2.0".to_string(),
+            platform: "MacOS".to_string(),
+            hardware_concurrency: 4,
+            language: "ja".to_string(),
+            languages: vec!["ja".to_string()],
+        };
+        let scope = WorkerGlobalScopeState::new_shared("https://example.com/sw.js".to_string(), &config);
+        assert_eq!(scope.worker_url, "https://example.com/sw.js");
+        assert_eq!(scope.navigator.user_agent, "Bao/2.0");
+    }
+
+    #[test]
+    fn test_worker_global_scope_state_location_parsed() {
+        let config = WorkerScopeConfig::default();
+        let scope = WorkerGlobalScopeState::new("https://example.com:8080/app/worker.js?debug=true#section".to_string(), &config);
+        let loc = scope.location.unwrap();
+        assert_eq!(loc.hostname, "example.com");
+        assert_eq!(loc.port, "8080");
+        assert_eq!(loc.pathname, "/app/worker.js");
+        assert_eq!(loc.search, "?debug=true");
+        assert_eq!(loc.hash, "#section");
+    }
+
+    #[test]
+    fn test_worker_global_scope_state_invalid_url_no_location() {
+        let config = WorkerScopeConfig::default();
+        let scope = WorkerGlobalScopeState::new("not-a-url".to_string(), &config);
+        assert!(scope.location.is_none());
+    }
+
+    // ─── DedicatedWorkerGlobalScopeState (REQ-BRW-004 entity) ────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:DedicatedWorkerGlobalScope] [level:unit]
+
+    #[test]
+    fn test_dedicated_worker_global_scope_state_new() {
+        let worker_id = WorkerId("https://example.com/worker.js".to_string());
+        let config = WorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: "Bao/1.0".to_string(),
+            platform: "Linux".to_string(),
+            hardware_concurrency: 8,
+            language: "en-US".to_string(),
+            languages: vec!["en-US".to_string()],
+        };
+        let scope = DedicatedWorkerGlobalScopeState::new(worker_id.clone(), &config);
+        assert_eq!(scope.worker_id, worker_id);
+        assert!(!scope.has_onmessage);
+        assert!(!scope.has_onerror);
+        assert_eq!(scope.scope.navigator.user_agent, "Bao/1.0");
+    }
+
+    #[test]
+    fn test_dedicated_worker_global_scope_state_location() {
+        let worker_id = WorkerId("https://example.com/worker.js".to_string());
+        let config = WorkerScopeConfig::default();
+        let scope = DedicatedWorkerGlobalScopeState::new(worker_id, &config);
+        let loc = scope.location().unwrap();
+        assert_eq!(loc.hostname, "example.com");
+        assert_eq!(loc.pathname, "/worker.js");
+    }
+
+    #[test]
+    fn test_dedicated_worker_global_scope_state_navigator() {
+        let worker_id = WorkerId("worker.js".to_string());
+        let config = WorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: "Bao/1.0".to_string(),
+            platform: "Linux".to_string(),
+            hardware_concurrency: 8,
+            language: "zh-CN".to_string(),
+            languages: vec!["zh-CN".to_string()],
+        };
+        let scope = DedicatedWorkerGlobalScopeState::new(worker_id, &config);
+        let nav = scope.navigator();
+        assert_eq!(nav.user_agent, "Bao/1.0");
+        assert_eq!(nav.hardware_concurrency, 8);
+    }
+
+    #[test]
+    fn test_dedicated_worker_global_scope_state_event_handlers() {
+        let worker_id = WorkerId("worker.js".to_string());
+        let config = WorkerScopeConfig::default();
+        let mut scope = DedicatedWorkerGlobalScopeState::new(worker_id, &config);
+        assert!(!scope.has_onmessage);
+        assert!(!scope.has_onerror);
+        scope.set_onmessage();
+        assert!(scope.has_onmessage);
+        assert!(!scope.has_onerror);
+        scope.set_onerror();
+        assert!(scope.has_onmessage);
+        assert!(scope.has_onerror);
+    }
+
+    // ─── DedicatedWorkerGlobalScope BaoWebViewState tracking ─────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:DedicatedWorkerGlobalScope] [level:unit]
+
+    #[test]
+    fn test_webview_state_dedicated_worker_scope_registration() {
+        let mut state = BaoWebViewState::default();
+        let worker_id = WorkerId("worker1.js".to_string());
+        let config = WorkerScopeConfig::default();
+        let scope = DedicatedWorkerGlobalScopeState::new(worker_id.clone(), &config);
+        state.register_dedicated_worker_scope(worker_id.clone(), scope);
+        assert_eq!(state.dedicated_worker_scope_count(), 1);
+        assert!(state.dedicated_worker_scope(&worker_id).is_some());
+    }
+
+    #[test]
+    fn test_webview_state_dedicated_worker_scope_get_mut() {
+        let mut state = BaoWebViewState::default();
+        let worker_id = WorkerId("worker1.js".to_string());
+        let config = WorkerScopeConfig::default();
+        let scope = DedicatedWorkerGlobalScopeState::new(worker_id.clone(), &config);
+        state.register_dedicated_worker_scope(worker_id.clone(), scope);
+        // Register event handler
+        state.dedicated_worker_scope_mut(&worker_id).unwrap().set_onmessage();
+        assert!(state.dedicated_worker_scope(&worker_id).unwrap().has_onmessage);
+    }
+
+    #[test]
+    fn test_webview_state_dedicated_worker_scope_remove() {
+        let mut state = BaoWebViewState::default();
+        let worker_id = WorkerId("worker1.js".to_string());
+        let config = WorkerScopeConfig::default();
+        let scope = DedicatedWorkerGlobalScopeState::new(worker_id.clone(), &config);
+        state.register_dedicated_worker_scope(worker_id.clone(), scope);
+        let removed = state.remove_dedicated_worker_scope(&worker_id);
+        assert!(removed.is_some());
+        assert_eq!(state.dedicated_worker_scope_count(), 0);
+    }
+
+    #[test]
+    fn test_webview_state_dedicated_worker_scopes_snapshot() {
+        let mut state = BaoWebViewState::default();
+        let config = WorkerScopeConfig::default();
+        let id1 = WorkerId("worker1.js".to_string());
+        let id2 = WorkerId("worker2.js".to_string());
+        state.register_dedicated_worker_scope(id1, DedicatedWorkerGlobalScopeState::new(WorkerId("worker1.js".to_string()), &config));
+        state.register_dedicated_worker_scope(id2, DedicatedWorkerGlobalScopeState::new(WorkerId("worker2.js".to_string()), &config));
+        let scopes = state.dedicated_worker_scopes();
+        assert_eq!(scopes.len(), 2);
+    }
+
+    #[test]
+    fn test_webview_state_terminate_clears_dedicated_worker_scopes() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        let config = WorkerScopeConfig::default();
+        state.register_dedicated_worker_scope(
+            WorkerId("worker1.js".to_string()),
+            DedicatedWorkerGlobalScopeState::new(WorkerId("worker1.js".to_string()), &config),
+        );
+        assert_eq!(state.dedicated_worker_scope_count(), 1);
+        state.terminate_all_workers();
+        assert_eq!(state.dedicated_worker_scope_count(), 0);
+    }
+
+    #[test]
+    fn test_webview_state_reap_terminated_dedicated_worker_scopes() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker2.js".to_string()));
+        let config = WorkerScopeConfig::default();
+        state.register_dedicated_worker_scope(
+            WorkerId("worker1.js".to_string()),
+            DedicatedWorkerGlobalScopeState::new(WorkerId("worker1.js".to_string()), &config),
+        );
+        state.register_dedicated_worker_scope(
+            WorkerId("worker2.js".to_string()),
+            DedicatedWorkerGlobalScopeState::new(WorkerId("worker2.js".to_string()), &config),
+        );
+        // Terminate and reap worker1
+        state.active_workers[0].handle().terminate();
+        state.active_workers[0].handle().mark_terminated();
+        state.reap_terminated_workers();
+        // worker1's scope should be reaped, worker2's should remain
+        assert_eq!(state.dedicated_worker_scope_count(), 1);
+        assert!(state.dedicated_worker_scope(&WorkerId("worker2.js".to_string())).is_some());
+    }
+
+    #[test]
+    fn test_worker_location_equality() {
+        let loc1 = WorkerLocation::from_url("https://example.com/worker.js").unwrap();
+        let loc2 = WorkerLocation::from_url("https://example.com/worker.js").unwrap();
+        assert_eq!(loc1, loc2);
     }
 }

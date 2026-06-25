@@ -22,13 +22,20 @@ pub use delegate::{
     WorkerMessageDirection, WorkerMessageEvent,
     WorkerErrorEvent, WorkerLifecycleState, WorkerTeardownPath,
     WorkerScopeConfig, AutoCloseWorker,
+    SharedWorkerId, SharedWorkerHandle, SharedWorkerConnectEvent,
+    SharedWorkerScopeConfig, SharedWorkerPortRef,
+    StructuredClonePayload, WorkerStructuredMessage,
+    WorkerChannelBridge, WorkerChannelEndpoints,
+    WorkerLocation, WorkerNavigator, WorkerNetworkInformation,
+    WorkerGlobalScopeState, DedicatedWorkerGlobalScopeState,
 };
 pub use error::BrowserError;
 pub use page::{PageHandle, PageState};
 pub use page_pool::PagePool;
 pub use permission::{Permission, PermissionDenied, PermissionGuard};
 pub use screenshot::{encode_image, ScreenshotFormat};
-pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, EvaluateResult, RuntimeBridge};
+pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, EvaluateResult, RuntimeBridge,
+    WorkerScopeInitFn, create_worker_scope_init};
 
 use std::rc::Rc;
 use std::sync::Arc;
