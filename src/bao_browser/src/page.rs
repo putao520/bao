@@ -799,6 +799,16 @@ impl PageHandle {
         if let Some(tx) = servo_delegate.console_log_tx() {
             webview_state.borrow_mut().console_log_tx = Some(tx);
         }
+        // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK stealth consistency
+        // Auto-populate worker_scope_config from the page's StealthProfile so that
+        // Workers spawned from this page inherit identical navigator/Canvas/WebGL/Audio
+        // fingerprints. Without this, WorkerScopeConfig defaults to stealth_profile: None
+        // and Workers would see servo's native fingerprint values instead.
+        if let Some(ref profile) = config.stealth_profile {
+            webview_state.borrow_mut().set_worker_scope_config(
+                crate::delegate::WorkerScopeConfig::from(profile as &bao_stealth::StealthProfile)
+            );
+        }
         let webview_delegate = Rc::new(BaoWebViewDelegate::new(Rc::clone(&webview_state), viewport));
         let state = Rc::new(RefCell::new(PageState::Created));
 

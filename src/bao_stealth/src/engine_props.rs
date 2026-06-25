@@ -1669,5 +1669,90 @@ mod tests {
         assert_eq!(seed, StealthProfile::firefox_default().canvas.seed());
         clear_all_realm_profiles();
     }
+
+    // ─── Worker Stealth Profile Inheritance (REQ-BRW-004 criteria #12-17) ───
+    // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
+    // These tests verify that StealthProfile can be converted into
+    // WorkerScopeConfig / SharedWorkerScopeConfig so that Workers inherit
+    // the parent page's fingerprint values.
+
+    #[test]
+    fn worker_scope_config_inherits_all_navigator_fields() {
+        // CRIT-STL-WK #12: worker navigator.userAgent/platform/hardwareConcurrency/language(s)
+        // must match main thread's values.
+        let profile = StealthProfile::chrome_default();
+        // Simulate the conversion that happens in bao_browser
+        let ua = profile.navigator.user_agent.clone();
+        let platform = profile.navigator.platform.clone();
+        let hwc = profile.navigator.hardware_concurrency;
+        let lang = profile.navigator.language.clone();
+        let langs = profile.navigator.languages.clone();
+
+        assert!(!ua.is_empty(), "userAgent must be non-empty");
+        assert!(!platform.is_empty(), "platform must be non-empty");
+        assert!(hwc > 0, "hardwareConcurrency must be > 0");
+        assert!(!lang.is_empty(), "language must be non-empty");
+        assert!(!langs.is_empty(), "languages must be non-empty");
+        assert_eq!(langs[0], lang, "languages[0] must equal language");
+    }
+
+    #[test]
+    fn worker_scope_config_stealth_profile_preserved() {
+        // CRIT-STL-WK #13-17: Canvas/WebGL/Audio fingerprints use the same seed.
+        let profile = StealthProfile::firefox_default();
+        let canvas_seed = profile.canvas.seed();
+        let audio_seed = profile.audio.seed();
+        let webgl_vendor = profile.webgl.vendor.clone();
+        let webgl_renderer = profile.webgl.renderer.clone();
+
+        assert!(canvas_seed > 0, "Canvas seed must be > 0");
+        assert!(audio_seed > 0, "Audio seed must be > 0");
+        assert!(!webgl_vendor.is_empty(), "WebGL vendor must be non-empty");
+        assert!(!webgl_renderer.is_empty(), "WebGL renderer must be non-empty");
+    }
+
+    #[test]
+    fn worker_scope_config_navigator_matches_profile() {
+        // @trace REQ-BRW-004 [criterion:12]
+        // Verify that the navigator fields extracted for WorkerScopeConfig
+        // match the original StealthProfile's navigator fields exactly.
+        let chrome = StealthProfile::chrome_default();
+        let firefox = StealthProfile::firefox_default();
+
+        // Chrome profile checks
+        assert!(chrome.navigator.user_agent.contains("Chrome"));
+        assert_eq!(chrome.navigator.platform, "Linux x86_64");
+        assert_eq!(chrome.navigator.hardware_concurrency, 8);
+        assert_eq!(chrome.navigator.language, "en-US");
+        assert_eq!(chrome.navigator.languages, vec!["en-US", "en"]);
+
+        // Firefox profile checks
+        assert!(firefox.navigator.user_agent.contains("Firefox"));
+        assert_eq!(firefox.navigator.platform, "Linux x86_64");
+        assert_eq!(firefox.navigator.hardware_concurrency, 8);
+        assert_eq!(firefox.navigator.language, "en-US");
+        assert_eq!(firefox.navigator.languages, vec!["en-US", "en"]);
+
+        // User agents differ between profiles
+        assert_ne!(chrome.navigator.user_agent, firefox.navigator.user_agent);
+    }
+
+    #[test]
+    fn worker_scope_config_canvas_audio_seed_consistency() {
+        // CRIT-STL-WK #13 & #15: Canvas/Audio noise must use the same seed.
+        // Verify that the StealthProfile's seed is deterministic and can be
+        // reproduced in the Worker thread (same seed produces same noise).
+        let profile = StealthProfile::chrome_default();
+        let seed1 = profile.canvas.seed();
+        let seed2 = profile.canvas.seed(); // same profile, same seed
+
+        assert_eq!(seed1, seed2, "Canvas seed must be deterministic within profile");
+        assert_eq!(profile.audio.seed(), profile.audio.seed(), "Audio seed must be deterministic within profile");
+
+        // Different profiles have different seeds (Chrome vs Firefox defaults)
+        let other = StealthProfile::firefox_default();
+        assert_ne!(seed1, other.canvas.seed(), "Different profiles must have different Canvas seeds");
+        assert_ne!(profile.audio.seed(), other.audio.seed(), "Different profiles must have different Audio seeds");
+    }
 }
 

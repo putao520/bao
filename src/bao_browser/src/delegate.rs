@@ -1162,6 +1162,47 @@ impl Default for WorkerScopeConfig {
     }
 }
 
+// ─── StealthProfile → WorkerScopeConfig conversion (REQ-BRW-004 criteria #12-17) ───
+// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:12..17]
+// CRIT-STL-WK: Worker global scope inherits the parent page's StealthProfile
+// so that navigator/Canvas/WebGL/Audio fingerprints are identical between
+// the main thread and the Worker thread.
+
+impl From<&bao_stealth::StealthProfile> for WorkerScopeConfig {
+    /// Convert a StealthProfile into a WorkerScopeConfig for Dedicated Worker inheritance.
+    ///
+    /// Ensures the Worker thread sees identical navigator/Canvas/WebGL/Audio
+    /// fingerprint values as the parent page.
+    /// @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK navigator 一致
+    fn from(profile: &bao_stealth::StealthProfile) -> Self {
+        WorkerScopeConfig {
+            stealth_profile: Some(profile.clone()),
+            user_agent: profile.navigator.user_agent.clone(),
+            platform: profile.navigator.platform.clone(),
+            hardware_concurrency: profile.navigator.hardware_concurrency as usize,
+            language: profile.navigator.language.clone(),
+            languages: profile.navigator.languages.clone(),
+        }
+    }
+}
+
+impl From<&bao_stealth::StealthProfile> for SharedWorkerScopeConfig {
+    /// Convert a StealthProfile into a SharedWorkerScopeConfig for Shared Worker inheritance.
+    ///
+    /// DF-WK-9: SharedWorkerGlobalScope inherits the first connecting page's profile.
+    /// @trace REQ-BRW-004 [entity:SharedWorkerGlobalScope] [criterion:12] CRIT-STL-WK navigator 一致
+    fn from(profile: &bao_stealth::StealthProfile) -> Self {
+        SharedWorkerScopeConfig {
+            stealth_profile: Some(profile.clone()),
+            user_agent: profile.navigator.user_agent.clone(),
+            platform: profile.navigator.platform.clone(),
+            hardware_concurrency: profile.navigator.hardware_concurrency as usize,
+            language: profile.navigator.language.clone(),
+            languages: profile.navigator.languages.clone(),
+        }
+    }
+}
+
 // ─── AutoCloseWorker (REQ-BRW-004 criterion #10) ───────────────────
 // @trace REQ-BRW-004 [entity:Worker] [criterion:10]
 // SPEC criterion #10: "页面卸载时自动终止所有 Worker
@@ -4947,5 +4988,82 @@ mod tests {
             }),
         );
         assert!(state.worker_script_load_state(&worker_id).unwrap().is_failed());
+    }
+
+    // ─── StealthProfile → WorkerScopeConfig conversion (REQ-BRW-004 criteria #12-17) ───
+    // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
+
+    #[test]
+    fn test_worker_scope_config_from_stealth_profile_chrome() {
+        let profile = bao_stealth::StealthProfile::chrome_default();
+        let config = WorkerScopeConfig::from(&profile);
+
+        assert!(config.stealth_profile.is_some(), "stealth_profile must be Some");
+        assert_eq!(config.user_agent, profile.navigator.user_agent);
+        assert_eq!(config.platform, profile.navigator.platform);
+        assert_eq!(config.hardware_concurrency, profile.navigator.hardware_concurrency as usize);
+        assert_eq!(config.language, profile.navigator.language);
+        assert_eq!(config.languages, profile.navigator.languages);
+        assert!(config.user_agent.contains("Chrome"), "Chrome profile UA must contain Chrome");
+    }
+
+    #[test]
+    fn test_worker_scope_config_from_stealth_profile_firefox() {
+        let profile = bao_stealth::StealthProfile::firefox_default();
+        let config = WorkerScopeConfig::from(&profile);
+
+        assert!(config.stealth_profile.is_some(), "stealth_profile must be Some");
+        assert_eq!(config.user_agent, profile.navigator.user_agent);
+        assert_eq!(config.platform, profile.navigator.platform);
+        assert_eq!(config.hardware_concurrency, profile.navigator.hardware_concurrency as usize);
+        assert_eq!(config.language, profile.navigator.language);
+        assert_eq!(config.languages, profile.navigator.languages);
+        assert!(config.user_agent.contains("Firefox"), "Firefox profile UA must contain Firefox");
+    }
+
+    #[test]
+    fn test_shared_worker_scope_config_from_stealth_profile() {
+        let profile = bao_stealth::StealthProfile::chrome_default();
+        let config = SharedWorkerScopeConfig::from(&profile);
+
+        assert!(config.stealth_profile.is_some(), "stealth_profile must be Some");
+        assert_eq!(config.user_agent, profile.navigator.user_agent);
+        assert_eq!(config.platform, profile.navigator.platform);
+        assert_eq!(config.hardware_concurrency, profile.navigator.hardware_concurrency as usize);
+        assert_eq!(config.language, profile.navigator.language);
+        assert_eq!(config.languages, profile.navigator.languages);
+    }
+
+    #[test]
+    fn test_worker_scope_config_from_stealth_profile_carries_canvas_webgl_audio() {
+        // CRIT-STL-WK #13-17: Canvas/WebGL/Audio seeds must be identical
+        // between the profile and the WorkerScopeConfig's embedded profile.
+        let profile = bao_stealth::StealthProfile::chrome_default();
+        let config = WorkerScopeConfig::from(&profile);
+        let worker_profile = config.stealth_profile.unwrap();
+
+        assert_eq!(worker_profile.canvas.seed(), profile.canvas.seed(),
+            "Canvas seed must match");
+        assert!((worker_profile.canvas.noise_amplitude() - profile.canvas.noise_amplitude()).abs() < f64::EPSILON,
+            "Canvas amplitude must match");
+        assert_eq!(worker_profile.audio.seed(), profile.audio.seed(),
+            "Audio seed must match");
+        assert_eq!(worker_profile.webgl.vendor, profile.webgl.vendor,
+            "WebGL vendor must match");
+        assert_eq!(worker_profile.webgl.renderer, profile.webgl.renderer,
+            "WebGL renderer must match");
+    }
+
+    #[test]
+    fn test_worker_scope_config_from_different_profiles_produces_different_configs() {
+        // @trace REQ-BRW-004 [criterion:17] new Worker 后 worker 回传指纹摘要 === 主线程指纹摘要
+        let chrome = bao_stealth::StealthProfile::chrome_default();
+        let firefox = bao_stealth::StealthProfile::firefox_default();
+        let chrome_config = WorkerScopeConfig::from(&chrome);
+        let firefox_config = WorkerScopeConfig::from(&firefox);
+
+        assert_ne!(chrome_config.user_agent, firefox_config.user_agent);
+        assert_ne!(chrome_config.stealth_profile.unwrap().canvas.seed(),
+                   firefox_config.stealth_profile.unwrap().canvas.seed());
     }
 }
