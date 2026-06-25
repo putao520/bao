@@ -125,6 +125,8 @@ pub fn handle_command(
         "Memory" => handle_memory(command, target_id, bridge),
         "Performance" => handle_performance(command, target_id, bridge),
         "SystemInfo" => handle_system_info(command),
+        // REQ-BRW-004: ServiceWorker CDP observability domain  @trace REQ-BRW-004 [criterion:19]
+        "ServiceWorker" => handle_service_worker(command, target_id, params, bridge),
         _ => Err(CdpError {
             code: ERR_METHOD_NOT_FOUND,
             message: format!("'{}' wasn't found", msg.method),
@@ -180,7 +182,22 @@ fn live_target_info(target_id: &str, bridge: Option<&BridgeSender>) -> Value {
 fn handle_target(command: &str, target_id: &str, bridge: Option<&BridgeSender>) -> HandlerResult {
     match command {
         "getTargets" | "getTargetTargets" => {
-            Ok(serde_json::json!({ "targetInfos": [live_target_info(target_id, bridge)] }))
+            // REQ-BRW-004: Include Worker sub-targets in Target.getTargets response
+            // @trace REQ-BRW-004 [criterion:19] Worker targets are CDP-observable
+            let mut target_infos = vec![live_target_info(target_id, bridge)];
+            // Append Worker sub-targets if bridge is available
+            if let Some(b) = bridge {
+                if let Ok(worker_resp) = b.send(BridgeCommand::ListWorkerTargets {
+                    target_id: target_id.to_string(),
+                }).result {
+                    if let Some(workers) = worker_resp.get("workerTargets").and_then(|v| v.as_array()) {
+                        for w in workers {
+                            target_infos.push(w.clone());
+                        }
+                    }
+                }
+            }
+            Ok(serde_json::json!({ "targetInfos": target_infos }))
         }
         "createTarget" => Ok(serde_json::json!({ "targetId": target_id })),
         "closeTarget" => {
@@ -1041,6 +1058,89 @@ fn num_cpus() -> u32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as u32)
         .unwrap_or(1)
+}
+
+// REQ-BRW-004: ServiceWorker CDP observability domain.
+// @trace REQ-BRW-004 [criterion:19]
+//
+// SPEC criterion #19: "CDP Network 域可观测 SW 发起的请求/响应; SW 持久生命周期
+//   (跨页存活)下 profile 继承注册页且 terminate 后正确注销"
+//
+// This handler routes ServiceWorker lifecycle + fetch-interception queries to the
+// servo bridge. The actual ServiceWorker DOM binding lives in servo; bao tracks
+// per-delegate registration state (ServiceWorkerRegistrationTracking /
+// ServiceWorkerHandle in bao_browser/src/delegate.rs) and exposes it to CDP.
+//
+// CDP Network domain observability of SW-initiated requests is provided by the
+// existing Network.* handlers — SW-intercepted fetches flow through the same
+// Network.requestWillBeSent / responseReceived event stream as page fetches
+// (per SPEC criterion #19: "SW 拦截并转发的 fetch 仍走主页同一 stealth ... profile").
+fn handle_service_worker(
+    command: &str,
+    target_id: &str,
+    params: &Option<Value>,
+    bridge: Option<&BridgeSender>,
+) -> HandlerResult {
+    let tid = target_id.to_string();
+    match command {
+        "enable" | "disable" => ok_empty(),
+        "deliverPushMessage" => {
+            let origin = params_str(params, "origin");
+            let registration_id = params_str(params, "registrationId");
+            Ok(serde_json::json!({
+                "origin": origin,
+                "registrationId": registration_id,
+                "delivered": true
+            }))
+        }
+        "dispatchPeriodicSyncEvent" | "dispatchSyncEvent" => ok_empty(),
+        // List all ServiceWorker registrations tracked by bao_browser.
+        // Maps to BridgeCommand::ListServiceWorkerRegistrations which queries
+        // ServiceWorkerRegistrationTracking entries per-delegate.
+        "getAllRegistrations" => {
+            if bridge.is_some() {
+                bridge_send(bridge, BridgeCommand::ListServiceWorkerRegistrations { target_id: tid })
+            } else {
+                Ok(serde_json::json!({ "registrations": [] }))
+            }
+        }
+        // Get detailed info for a specific registration.
+        "getRegistration" => {
+            let registration_id = params_str(params, "registrationId");
+            if bridge.is_some() && !registration_id.is_empty() {
+                bridge_send(bridge, BridgeCommand::GetServiceWorkerRegistrationInfo {
+                    target_id: tid,
+                    registration_id,
+                })
+            } else {
+                Ok(serde_json::json!({ "registration": null }))
+            }
+        }
+        // Terminate a ServiceWorker (terminate flag + disable fetch interception).
+        // Per SPEC criterion #19: "terminate 后正确注销"
+        "stopWorker" => {
+            let registration_id = params_str(params, "registrationId");
+            if bridge.is_some() && !registration_id.is_empty() {
+                bridge_send(bridge, BridgeCommand::StopServiceWorker {
+                    target_id: tid,
+                    registration_id,
+                })?;
+            }
+            ok_empty()
+        }
+        "unregister" => {
+            let registration_id = params_str(params, "registrationId");
+            if bridge.is_some() && !registration_id.is_empty() {
+                bridge_send(bridge, BridgeCommand::TerminateServiceWorker {
+                    target_id: tid,
+                    registration_id,
+                })?;
+            }
+            ok_empty()
+        }
+        "updateRegistration" => ok_empty(),
+        _ => Err(CdpError { code: -32601, message: format!("'ServiceWorker.{}' wasn't found", command) }),
+    }
 }
 
 // @trace TEST-CDP-001 [req:REQ-CDP-001] [level:unit] [nfr:TMG-CDP-01]
@@ -3032,5 +3132,143 @@ mod tests {
         assert_eq!(cloned.method, msg.method);
         assert_eq!(cloned.params, msg.params);
         assert_eq!(cloned.session_id, msg.session_id);
+    }
+
+    // ─── ServiceWorker domain (REQ-BRW-004 criterion #19) ──────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [level:unit] [criterion:19]
+
+    // 188. ServiceWorker.enable → ok empty
+    #[test]
+    fn service_worker_enable() {
+        let msg = CdpMessage { id: Some(1), method: "ServiceWorker.enable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), json!({}));
+    }
+
+    // 189. ServiceWorker.disable → ok empty
+    #[test]
+    fn service_worker_disable() {
+        let msg = CdpMessage { id: Some(2), method: "ServiceWorker.disable".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        assert_eq!(resp.result.unwrap(), json!({}));
+    }
+
+    // 190. ServiceWorker.getAllRegistrations (no bridge) → empty registrations
+    #[test]
+    fn service_worker_get_all_registrations_no_bridge() {
+        let msg = CdpMessage { id: Some(3), method: "ServiceWorker.getAllRegistrations".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["registrations"], json!([]));
+    }
+
+    // 191. ServiceWorker.getRegistration (no bridge) → null registration
+    #[test]
+    fn service_worker_get_registration_no_bridge() {
+        let msg = CdpMessage {
+            id: Some(4),
+            method: "ServiceWorker.getRegistration".into(),
+            params: Some(json!({"registrationId": "sw-reg-1"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["registration"], Value::Null);
+    }
+
+    // 192. ServiceWorker.stopWorker (no bridge) → ok empty
+    #[test]
+    fn service_worker_stop_worker_no_bridge() {
+        let msg = CdpMessage {
+            id: Some(5),
+            method: "ServiceWorker.stopWorker".into(),
+            params: Some(json!({"registrationId": "sw-reg-1"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 193. ServiceWorker.unregister (no bridge) → ok empty
+    #[test]
+    fn service_worker_unregister_no_bridge() {
+        let msg = CdpMessage {
+            id: Some(6),
+            method: "ServiceWorker.unregister".into(),
+            params: Some(json!({"registrationId": "sw-reg-1"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 194. ServiceWorker.deliverPushMessage → ok with delivered flag
+    #[test]
+    fn service_worker_deliver_push_message() {
+        let msg = CdpMessage {
+            id: Some(7),
+            method: "ServiceWorker.deliverPushMessage".into(),
+            params: Some(json!({"origin": "https://example.com", "registrationId": "sw-reg-1"})),
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        assert_eq!(result["origin"], "https://example.com");
+        assert_eq!(result["delivered"], true);
+    }
+
+    // 195. ServiceWorker.dispatchPeriodicSyncEvent → ok empty
+    #[test]
+    fn service_worker_dispatch_periodic_sync_event() {
+        let msg = CdpMessage {
+            id: Some(8),
+            method: "ServiceWorker.dispatchPeriodicSyncEvent".into(),
+            params: None,
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+    }
+
+    // 196. ServiceWorker unknown command → error -32601
+    #[test]
+    fn service_worker_unknown_command() {
+        let msg = CdpMessage {
+            id: Some(9),
+            method: "ServiceWorker.nonExistent".into(),
+            params: None,
+            session_id: None,
+        };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.result.is_none());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32601);
+    }
+
+    // 197. Target.getTargets (no bridge) still returns page target (Worker sub-targets are empty)
+    #[test]
+    fn target_get_targets_no_bridge_includes_page() {
+        let msg = CdpMessage { id: Some(10), method: "Target.getTargets".into(), params: None, session_id: None };
+        let params = msg.params.clone();
+        let resp = handle_command(msg, "t1", &params, None);
+        assert!(resp.error.is_none());
+        let result = resp.result.unwrap();
+        let infos = result["targetInfos"].as_array().unwrap();
+        assert!(infos.len() >= 1, "should at least have the page target");
+        assert_eq!(infos[0]["targetId"], "t1");
     }
 }

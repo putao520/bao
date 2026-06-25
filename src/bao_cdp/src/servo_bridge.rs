@@ -1,5 +1,6 @@
 // REQ-CDP-003: Bridge trait for CDP ↔ servo communication  @trace REQ-CDP-003
 // REQ-CDP-006: Channel-based async bridge (CDP thread ↔ main thread)
+// REQ-BRW-004: Worker/ServiceWorker CDP observability (Target sub-targets + Network SW requests)  @trace REQ-BRW-004 [criterion:19]
 //
 // Architecture:
 //   CDP WebSocket thread ──[BridgeCommand]──> main thread (servo)
@@ -95,6 +96,14 @@ pub enum BridgeCommand {
     // Runtime domain — object property inspection and function invocation via JS evaluate
     RuntimeGetProperties { target_id: String, object_id: String, own_properties: Option<bool> },
     RuntimeCallFunctionOn { target_id: String, object_id: Option<String>, function_declaration: String, arguments: Option<Value>, return_by_value: Option<bool> },
+    // Worker target observability — CDP Target domain exposes Worker as sub-targets  @trace REQ-BRW-004 [criterion:19]
+    ListWorkerTargets { target_id: String },
+    GetWorkerTargetInfo { target_id: String, worker_id: String },
+    // ServiceWorker CDP observability — Network domain can observe SW-initiated requests  @trace REQ-BRW-004 [criterion:19]
+    ListServiceWorkerRegistrations { target_id: String },
+    GetServiceWorkerRegistrationInfo { target_id: String, registration_id: String },
+    TerminateServiceWorker { target_id: String, registration_id: String },
+    StopServiceWorker { target_id: String, registration_id: String },
 }
 
 /// Response from the main thread back to the CDP server.
@@ -547,5 +556,116 @@ mod tests {
         assert!(results[0].starts_with("nav:"));
         assert!(results[1].starts_with("eval:"));
         assert_eq!(results[2], "title");
+    }
+
+    // ─── Worker/ServiceWorker CDP observability commands ────────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [level:unit] [criterion:19]
+
+    #[test]
+    fn list_worker_targets_construction() {
+        let cmd = BridgeCommand::ListWorkerTargets { target_id: TID.into() };
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("ListWorkerTargets"));
+    }
+
+    #[test]
+    fn get_worker_target_info_construction() {
+        let cmd = BridgeCommand::GetWorkerTargetInfo {
+            target_id: TID.into(),
+            worker_id: "worker-1".into(),
+        };
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("GetWorkerTargetInfo"));
+        assert!(debug_str.contains("worker-1"));
+    }
+
+    #[test]
+    fn list_service_worker_registrations_construction() {
+        let cmd = BridgeCommand::ListServiceWorkerRegistrations { target_id: TID.into() };
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("ListServiceWorkerRegistrations"));
+    }
+
+    #[test]
+    fn get_service_worker_registration_info_construction() {
+        let cmd = BridgeCommand::GetServiceWorkerRegistrationInfo {
+            target_id: TID.into(),
+            registration_id: "sw-reg-1".into(),
+        };
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("GetServiceWorkerRegistrationInfo"));
+        assert!(debug_str.contains("sw-reg-1"));
+    }
+
+    #[test]
+    fn terminate_service_worker_construction() {
+        let cmd = BridgeCommand::TerminateServiceWorker {
+            target_id: TID.into(),
+            registration_id: "sw-reg-1".into(),
+        };
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("TerminateServiceWorker"));
+    }
+
+    #[test]
+    fn stop_service_worker_construction() {
+        let cmd = BridgeCommand::StopServiceWorker {
+            target_id: TID.into(),
+            registration_id: "sw-reg-1".into(),
+        };
+        let debug_str = format!("{:?}", cmd);
+        assert!(debug_str.contains("StopServiceWorker"));
+    }
+
+    #[test]
+    fn list_worker_targets_bridge_send_receive() {
+        let (sender, receiver) = bridge_channel(TIMEOUT);
+        sender.send_fire_and_forget(BridgeCommand::ListWorkerTargets { target_id: TID.into() });
+        let processed = receiver.try_process(|cmd| {
+            match cmd {
+                BridgeCommand::ListWorkerTargets { .. } => ok_response(serde_json::json!({
+                    "workerTargets": [
+                        { "targetId": "worker-1", "type": "worker", "url": "https://example.com/worker.js", "title": "" }
+                    ]
+                })),
+                _ => err_response("unexpected"),
+            }
+        });
+        assert!(processed, "ListWorkerTargets should be receivable");
+    }
+
+    #[test]
+    fn service_worker_registrations_bridge_roundtrip() {
+        let (sender, receiver) = bridge_channel(Duration::from_secs(2));
+        let keeper = sender.clone();
+        std::thread::spawn(move || {
+            let _keeper = keeper;
+            loop {
+                let handled = receiver.try_process(|cmd| match cmd {
+                    BridgeCommand::ListServiceWorkerRegistrations { .. } => BridgeResponse {
+                        result: Ok(serde_json::json!({
+                            "registrations": [{
+                                "registrationId": "/sw.js:https://example.com/",
+                                "scriptURL": "https://example.com/sw.js",
+                                "scope": "https://example.com/",
+                                "state": "activated",
+                                "fetchInterceptActive": true
+                            }]
+                        })),
+                    },
+                    _ => BridgeResponse { result: Ok(serde_json::json!({})) },
+                });
+                if !handled {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
+        });
+        let resp = sender.send(BridgeCommand::ListServiceWorkerRegistrations { target_id: TID.into() });
+        assert!(resp.result.is_ok());
+        let result = resp.result.unwrap();
+        let regs = result["registrations"].as_array().unwrap();
+        assert_eq!(regs.len(), 1);
+        assert_eq!(regs[0]["state"], "activated");
+        assert_eq!(regs[0]["fetchInterceptActive"], true);
     }
 }
