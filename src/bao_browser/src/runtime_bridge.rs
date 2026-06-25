@@ -618,7 +618,7 @@ unsafe fn install_lazy_dom_getters(
         (c"document", Some(lazy_dom_getter_document)),
         (c"navigator", Some(lazy_dom_getter_navigator)),
     ];
-    // @trace REQ-BRW-004 [req:REQ-BRW-4] [entity:Worker] DF-WK-11:
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] DF-WK-11:
     // Worker/SharedWorker/ServiceWorker constructors exposed to Node Realm
     // via cross-compartment proxy. Page Realm already has these via servo DOM
     // bindings; Node Realm accesses them through the same lazy getter pattern
@@ -671,7 +671,7 @@ unsafe extern "C" fn lazy_dom_getter_navigator(
     lazy_dom_getter_impl(cx, argc, vp, "navigator")
 }
 
-// @trace REQ-BRW-004 [req:REQ-BRW-4] [entity:Worker] DF-WK-11:
+// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] DF-WK-11:
 // Worker/SharedWorker/ServiceWorker constructors exposed to Node Realm
 // via cross-compartment proxy. These constructors exist on the Page Realm's
 // Window global (installed by servo DOM bindings). The lazy getter fetches
@@ -741,7 +741,7 @@ unsafe extern "C" fn lazy_dom_getter_service_worker(
 /// Thread safety: same ScriptThread — Page Realm and Node Realm share the
 /// same thread. No cross-thread JSObject transfer.
 //
-// @trace REQ-BRW-004 [req:REQ-BRW-4] [entity:Worker] DF-WK-11
+// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] DF-WK-11
 #[allow(unsafe_op_in_unsafe_fn)]
 unsafe fn lazy_constructor_getter_impl(
     raw_cx: *mut mozjs::jsapi::JSContext,
@@ -3483,7 +3483,7 @@ mod tests {
         let _: mozjs::jsapi::JSNative = Some(super::lazy_dom_getter_service_worker);
     }
 
-    /// @trace REQ-BRW-004 [req:REQ-BRW-4] [entity:Worker] DF-WK-11
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] DF-WK-11
     /// Structural assertion: Worker/SharedWorker/ServiceWorker constructor lazy
     /// getters use JSPROP_PERMANENT (non-configurable), matching Web IDL semantics.
     /// Ordinary DOM object getters (window/document/navigator) use JSPROP_READONLY
@@ -3513,6 +3513,226 @@ mod tests {
         assert!(
             source.contains("(c\"ServiceWorker\", Some(lazy_dom_getter_service_worker))"),
             "REQ-BRW-004 REGRESSION: ServiceWorker must be in ctor_getters"
+        );
+    }
+
+    // ── DF-WK-11: Cross-Compartment Worker Constructor Proxy Behavioral Tests ──
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+
+    /// DF-WK-11: lazy_constructor_getter_impl reads from Page Realm (not Node Realm).
+    ///
+    /// Behavioral assertion: the getter fetches the constructor from the
+    /// PER_THREAD_PAGE_GLOBAL (Page Realm's Window global), NOT from
+    /// CurrentGlobalOrNull (which would be the Node Realm global in the
+    /// getter's execution context). This is the core of cross-Compartment
+    /// proxying — the constructor physically lives in Page Realm's Compartment,
+    /// and JS_WrapObject creates the proxy for Node Realm access.
+    ///
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+    #[test]
+    fn constructor_getter_reads_from_page_realm_not_node_realm() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+            .expect("lazy_constructor_getter_impl not found");
+        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
+
+        // Must read page_global from PER_THREAD_PAGE_GLOBAL
+        assert!(
+            func_body.contains("PER_THREAD_PAGE_GLOBAL.with"),
+            "DF-WK-11 REGRESSION: lazy_constructor_getter_impl must read Page Realm global from PER_THREAD_PAGE_GLOBAL"
+        );
+        // Must get the property from page_global_root (Page Realm), not node_global
+        assert!(
+            func_body.contains("page_global_root.handle()"),
+            "DF-WK-11 REGRESSION: lazy_constructor_getter_impl must JS_GetProperty from page_global_root (Page Realm)"
+        );
+    }
+
+    /// DF-WK-11: lazy_constructor_getter_impl uses JS_WrapObject for cross-Compartment proxy.
+    ///
+    /// Behavioral assertion: the getter wraps the fetched Page Realm constructor
+    /// with JS_WrapObject, creating a cross-Compartment proxy. This is what
+    /// enables Node Realm scripts to call `new Worker(url)` — SpiderMonkey
+    /// transparently enters Page Realm's Compartment when [[Construct]] is
+    /// invoked on the proxy.
+    ///
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+    #[test]
+    fn constructor_getter_uses_js_wrap_object_for_cross_compartment_proxy() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+            .expect("lazy_constructor_getter_impl not found");
+        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
+
+        assert!(
+            func_body.contains("JS_WrapObject"),
+            "DF-WK-11 REGRESSION: lazy_constructor_getter_impl must call JS_WrapObject for cross-Compartment proxy"
+        );
+    }
+
+    /// DF-WK-11: lazy_constructor_getter_impl validates IsConstructor before returning.
+    ///
+    /// Behavioral assertion: the getter checks IsConstructor on the fetched
+    /// object before wrapping it. If the Page Realm property is not a constructor
+    /// (e.g., it's a plain object or undefined), a ReferenceError is thrown
+    /// instead of returning an unusable value. This prevents cryptic
+    /// "X is not a constructor" TypeErrors at `new Worker()` call sites.
+    ///
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+    #[test]
+    fn constructor_getter_validates_is_constructor_before_wrapping() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+            .expect("lazy_constructor_getter_impl not found");
+        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
+
+        assert!(
+            func_body.contains("mozjs::jsapi::IsConstructor"),
+            "DF-WK-11 REGRESSION: lazy_constructor_getter_impl must call IsConstructor to validate the constructor"
+        );
+    }
+
+    /// DF-WK-11: constructor getter throws ReferenceError (not TypeError) on failure.
+    ///
+    /// Behavioral assertion: when the constructor is unavailable (no page loaded,
+    /// property not an object, or not a constructor), the getter throws a
+    /// ReferenceError via report_reference_error. This matches Web IDL semantics
+    /// where accessing an unsupported interface constructor should produce
+    /// ReferenceError, not a confusing TypeError at the call site.
+    ///
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+    #[test]
+    fn constructor_getter_throws_reference_error_on_failure() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+            .expect("lazy_constructor_getter_impl not found");
+        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
+
+        // Must call report_reference_error for each failure case
+        assert!(
+            func_body.contains("report_reference_error"),
+            "DF-WK-11 REGRESSION: lazy_constructor_getter_impl must call report_reference_error for error reporting"
+        );
+        // Error messages must contain the property name for diagnosability
+        assert!(
+            func_body.contains("property_name"),
+            "DF-WK-11 REGRESSION: lazy_constructor_getter_impl error messages must reference property_name"
+        );
+    }
+
+    /// DF-WK-11: null page_global triggers ReferenceError (not silent undefined).
+    ///
+    /// Behavioral assertion: when PER_THREAD_PAGE_GLOBAL returns null (no page
+    /// loaded yet), the getter throws a ReferenceError instead of silently
+    /// returning undefined. This is critical for Node Realm scripts that use
+    /// `new Worker()` — they need a clear diagnostic that the browser context
+    /// isn't ready, not a mysterious "Worker is not a constructor" TypeError.
+    ///
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+    #[test]
+    fn constructor_getter_throws_on_null_page_global() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn lazy_constructor_getter_impl")
+            .expect("lazy_constructor_getter_impl not found");
+        let func_body = &source[func_start..func_start + 3000.min(source.len() - func_start)];
+
+        // Must check for null page_global and throw
+        assert!(
+            func_body.contains("page_global.is_null()"),
+            "DF-WK-11 REGRESSION: lazy_constructor_getter_impl must check page_global.is_null()"
+        );
+        // Must throw ReferenceError (return false) on null page_global
+        // Search specifically for "page_global.is_null()" context — there's also
+        // node_global.is_null() earlier in the function which returns true silently.
+        let page_global_null_pos = func_body.find("page_global.is_null()")
+            .expect("DF-WK-11: page_global.is_null() check not found");
+        let after_null_check = &func_body[page_global_null_pos..page_global_null_pos + 300];
+        assert!(
+            after_null_check.contains("report_reference_error"),
+            "DF-WK-11 REGRESSION: null page_global must trigger report_reference_error, not silent return"
+        );
+    }
+
+    /// DF-WK-11: install_lazy_dom_getters registers constructors with PERMANENT attribute.
+    ///
+    /// Behavioral assertion: the ctor_getters are registered with
+    /// JSPROP_PERMANENT (non-deletable), matching Web IDL semantics where
+    /// interface constructors on the global must not be configurable.
+    /// This prevents page JS (or Node Realm scripts) from accidentally
+    /// deleting Worker/SharedWorker/ServiceWorker from the global.
+    ///
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+    #[test]
+    fn install_lazy_dom_getters_uses_js_define_property1_for_constructors() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn install_lazy_dom_getters")
+            .expect("install_lazy_dom_getters not found");
+        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+
+        // Must use JS_DefineProperty1 (not JS_SetProperty) for initial registration
+        assert!(
+            func_body.contains("JS_DefineProperty1"),
+            "DF-WK-11 REGRESSION: install_lazy_dom_getters must use JS_DefineProperty1 for property registration"
+        );
+        // Must iterate ctor_getters separately from obj_getters
+        assert!(
+            func_body.contains("for &(name, getter) in ctor_getters"),
+            "DF-WK-11 REGRESSION: ctor_getters must be registered with their own (PERMANENT) attributes"
+        );
+    }
+
+    /// DF-WK-11: constructor getters are called from Node Realm (not Page Realm).
+    ///
+    /// Structural assertion: install_lazy_dom_getters is called inside
+    /// create_node_realm_native, which creates the Node Realm's global.
+    /// The lazy getters are installed on the Node Realm global, meaning
+    /// they execute in the Node Realm context (CurrentGlobalOrNull returns
+    /// the Node Realm global). The getter then reads from Page Realm via
+    /// PER_THREAD_PAGE_GLOBAL and wraps via JS_WrapObject.
+    ///
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+    #[test]
+    fn lazy_dom_getters_installed_on_node_realm_not_page_realm() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn create_node_realm_native")
+            .expect("create_node_realm_native not found");
+        // Search the function body for install_lazy_dom_getters call
+        let func_body = &source[func_start..func_start + 5000.min(source.len() - func_start)];
+
+        assert!(
+            func_body.contains("install_lazy_dom_getters(realm_cx, global.handle())"),
+            "DF-WK-11 REGRESSION: install_lazy_dom_getters must be called from create_node_realm_native on the Node Realm global"
+        );
+        // The 'global' in that call is the Node Realm global (created via JS_NewGlobalObject
+        // with NewCompartmentAndZone), NOT the servo Window global
+        assert!(
+            func_body.contains("JS_NewGlobalObject") && func_body.contains("NewCompartmentAndZone"),
+            "DF-WK-11 REGRESSION: create_node_realm_native must create Node Realm with NewCompartmentAndZone before installing lazy getters"
+        );
+    }
+
+    /// DF-WK-11: report_reference_error produces JSEXN_REFERENCEERR.
+    ///
+    /// Behavioral assertion: the error reporting function uses
+    /// JSEXN_REFERENCEERR (not JSEXN_TYPEERR or generic error) when
+    /// constructor access fails. This matches the Web IDL convention
+    /// where accessing an undefined interface produces ReferenceError.
+    ///
+    /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
+    #[test]
+    fn report_reference_error_uses_reference_err_type() {
+        let source = include_str!("runtime_bridge.rs");
+        let func_start = source.find("unsafe fn report_reference_error")
+            .expect("report_reference_error not found");
+        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+
+        assert!(
+            func_body.contains("JSEXN_REFERENCEERR"),
+            "DF-WK-11 REGRESSION: report_reference_error must use JSEXN_REFERENCEERR error type"
+        );
+        assert!(
+            func_body.contains("JS_ReportErrorNumberUTF8"),
+            "DF-WK-11 REGRESSION: report_reference_error must use JS_ReportErrorNumberUTF8 for proper error reporting"
         );
     }
 
