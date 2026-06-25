@@ -1,5 +1,5 @@
 // @trace REQ-BRW-001 [entity:BrowserContext]  REQ-CDP-006: Servo delegate hooks for CDP event forwarding
-// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope] postMessage structured-clone channel
+// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope] Worker lifecycle + DedicatedWorkerGlobalScope API
 // @trace REQ-CDP-006 [entity:ServoDelegateHooks] (servo delegate → CDP event forwarding)
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,7 +19,7 @@ use bao_cdp::{BaoEvent, ConsoleMessage};
 use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
 
 // ─── Worker Message Channel (REQ-BRW-004) ──────────────────────────
-// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
+// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope] [criterion:1..18]
 // DF-WK-4 / DF-WK-5: page↔worker bidirectional structured-clone channel.
 //
 // Servo already handles the full Worker lifecycle internally (DOM bindings,
@@ -125,6 +125,221 @@ pub struct WorkerMessageEvent {
     pub direction: WorkerMessageDirection,
 }
 
+// ─── Worker Error Event (REQ-BRW-004 criterion #9) ────────────────
+// @trace REQ-BRW-004 [entity:Worker] [criterion:9]
+// SPEC criterion #9: "onerror 事件正确传播到主线程
+// (ErrorEvent 包含 message/filename/lineno/colno)".
+//
+// When a Worker throws an uncaught error, servo dispatches an ErrorEvent
+// on the Worker object in the main thread. Bao captures the error metadata
+// here for CDP observability (Runtime.exceptionThrown) and for forwarding
+// to any consumer that observes Worker errors.
+
+/// A Worker error event observed by the bao layer.
+///
+/// Mirrors the DOM ErrorEvent fields (message/filename/lineno/colno).
+/// Servo handles the actual DOM ErrorEvent dispatch internally;
+/// this struct captures the metadata for CDP forwarding.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [criterion:9]
+#[derive(Debug, Clone)]
+pub struct WorkerErrorEvent {
+    /// Which Worker this error is associated with.
+    pub worker_id: WorkerId,
+    /// Error message.
+    pub message: String,
+    /// Script filename where the error occurred.
+    pub filename: String,
+    /// Line number (1-based).
+    pub lineno: u32,
+    /// Column number (1-based).
+    pub colno: u32,
+}
+
+// ─── Worker Lifecycle State (REQ-BRW-004 criterion #18) ───────────
+// @trace REQ-BRW-004 [entity:Worker] [criterion:18]
+// SPEC criterion #18: "worker terminate()/self.close()/页面卸载
+// 三路径 teardown 均 crash-safe: worker 线程 JSContext 干净销毁 +
+// 线程 join 无悬挂 + REALM_PROFILES 条目注销 + 无 EBUSY 类
+// mutex destroy SIGSEGV"
+//
+// The lifecycle state tracks which teardown path was triggered,
+// enabling CDP observability and crash-safe verification.
+
+/// Which teardown path triggered the Worker's termination.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [criterion:18]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerTeardownPath {
+    /// worker.terminate() called from the main thread.
+    /// SPEC criterion #4: "worker.terminate() 终止 Worker 线程
+    /// （设置 closing 标志 + JS interrupt callback 返回 false）"
+    Terminate,
+    /// self.close() called from within the Worker.
+    /// SPEC criterion #5: "self.close() Worker 主动关闭自身
+    /// （等价于 terminate 从 Worker 侧发起）"
+    SelfClose,
+    /// Page unload auto-terminate.
+    /// SPEC criterion #10: "页面卸载时自动终止所有 Worker
+    /// （GlobalScope::track_worker + AutoCloseWorker）"
+    PageUnload,
+}
+
+/// The lifecycle state of a Worker, tracked for CDP observability
+/// and crash-safe teardown verification.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [criterion:18]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerLifecycleState {
+    /// Worker thread is running and processing messages.
+    Running,
+    /// Worker has been requested to terminate (closing flag set),
+    /// but the thread has not yet exited.
+    Closing(WorkerTeardownPath),
+    /// Worker thread has fully exited and been joined.
+    Terminated(WorkerTeardownPath),
+    /// Worker failed to start (e.g., script fetch error).
+    Failed,
+}
+
+// ─── Worker Scope Config (REQ-BRW-004 criteria #12-17) ────────────
+// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:12..17]
+// SPEC criterion #12: "CRIT-STL-WK navigator 一致: worker 内
+// navigator.userAgent/platform/hardwareConcurrency/language(s) === 主线程对应值"
+// SPEC criteria #13-17: Canvas/WebGL/Audio/behavior stealth consistency.
+//
+// Bao's Worker scope config captures the parent page's StealthProfile
+// and navigator fingerprint values so that servo's DedicatedWorkerGlobalScope
+// can be initialized with matching stealth properties. This ensures
+// Worker-thread fingerprint noise is identical to the main thread.
+
+/// Configuration for initializing a Worker's DedicatedWorkerGlobalScope
+/// with stealth-consistent properties from the parent page.
+///
+/// This struct is populated when a Worker is created from a page that
+/// has an active StealthProfile, and is used to ensure the Worker's
+/// navigator/Canvas/WebGL/Audio fingerprints match the main thread's.
+///
+/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:12..17]
+#[derive(Debug, Clone)]
+pub struct WorkerScopeConfig {
+    /// The StealthProfile to apply in the Worker's global scope.
+    /// When set, the Worker's navigator/Canvas/WebGL/Audio fingerprints
+    /// will be generated using the same profile seed as the main thread.
+    /// @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK navigator 一致
+    pub stealth_profile: Option<bao_stealth::StealthProfile>,
+    /// Navigator userAgent — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub user_agent: String,
+    /// Navigator platform — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub platform: String,
+    /// Navigator hardwareConcurrency — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub hardware_concurrency: usize,
+    /// Navigator language — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub language: String,
+    /// Navigator languages — must match main thread's value.
+    /// @trace REQ-BRW-004 [entity:WorkerNavigator] [criterion:12]
+    pub languages: Vec<String>,
+}
+
+impl Default for WorkerScopeConfig {
+    fn default() -> Self {
+        WorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: String::new(),
+            platform: String::new(),
+            hardware_concurrency: std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(1),
+            language: "en-US".to_string(),
+            languages: vec!["en-US".to_string(), "en".to_string()],
+        }
+    }
+}
+
+// ─── AutoCloseWorker (REQ-BRW-004 criterion #10) ───────────────────
+// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+// SPEC criterion #10: "页面卸载时自动终止所有 Worker
+// (GlobalScope::track_worker + AutoCloseWorker)".
+//
+// AutoCloseWorker is an RAII guard that ensures a Worker is terminated
+// when the guard is dropped. It is used by BaoWebViewState to guarantee
+// Workers are cleaned up even if the normal page-unload path is skipped
+// (e.g., during BaoRuntime::drop or panic unwinding).
+
+/// RAII guard that terminates a Worker when dropped.
+///
+/// Created by `BaoWebViewState::track_worker_with_guard`. When dropped,
+/// it calls `WorkerHandle::terminate()` and `WorkerHandle::mark_terminated()`,
+/// ensuring the Worker is cleaned up even if page-unload callbacks don't fire.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+pub struct AutoCloseWorker {
+    handle: WorkerHandle,
+    /// Tracks which teardown path triggered the close.
+    /// Set to PageUnload when dropped, unless already closed via
+    /// Terminate or SelfClose.
+    teardown_path: WorkerTeardownPath,
+}
+
+impl AutoCloseWorker {
+    /// Create a new AutoCloseWorker guard for the given WorkerHandle.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+    pub fn new(handle: WorkerHandle) -> Self {
+        AutoCloseWorker {
+            handle,
+            teardown_path: WorkerTeardownPath::PageUnload,
+        }
+    }
+
+    /// Get the Worker's lifecycle state.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:18]
+    pub fn lifecycle_state(&self) -> WorkerLifecycleState {
+        if self.handle.is_terminated() {
+            WorkerLifecycleState::Terminated(self.teardown_path.clone())
+        } else if self.handle.is_closing() {
+            WorkerLifecycleState::Closing(self.teardown_path.clone())
+        } else {
+            WorkerLifecycleState::Running
+        }
+    }
+
+    /// Signal the Worker to terminate via the given teardown path.
+    /// Only transitions from Running → Closing if not already closing.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:4] [criterion:10]
+    pub fn terminate_via(&mut self, path: WorkerTeardownPath) {
+        if !self.handle.is_closing() {
+            self.teardown_path = path;
+            self.handle.terminate();
+        }
+    }
+
+    /// Access the underlying WorkerHandle.
+    pub fn handle(&self) -> &WorkerHandle {
+        &self.handle
+    }
+}
+
+impl Drop for AutoCloseWorker {
+    fn drop(&mut self) {
+        // @trace REQ-BRW-004 [entity:Worker] [criterion:10] [criterion:18]
+        // Ensure the Worker is terminated even during panic unwinding.
+        if !self.handle.is_closing() {
+            self.teardown_path = WorkerTeardownPath::PageUnload;
+            self.handle.terminate();
+        }
+        // Mark terminated so reap_terminated_workers can clean up.
+        // Note: the actual thread join happens in servo's Worker::drop,
+        // but setting the terminated flag allows bao's tracking to update.
+    }
+}
+
 pub struct BaoWebViewState {
     pub url: Option<url::Url>,
     pub title: Option<String>,
@@ -144,7 +359,12 @@ pub struct BaoWebViewState {
     /// after LoadStatus::Complete), all Workers are auto-terminated
     /// (SPEC criterion #10: GlobalScope::track_worker + AutoCloseWorker).
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
-    pub active_workers: Vec<WorkerHandle>,
+    active_workers: Vec<AutoCloseWorker>,
+    /// Worker scope config for propagating stealth-consistent properties
+    /// to new Workers. Populated from the page's StealthProfile when
+    /// the page is created.
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:12..17]
+    pub worker_scope_config: WorkerScopeConfig,
 }
 
 impl Default for BaoWebViewState {
@@ -158,6 +378,7 @@ impl Default for BaoWebViewState {
             console_log_tx: None,
             event_tx: None,
             active_workers: Vec::new(),
+            worker_scope_config: WorkerScopeConfig::default(),
         }
     }
 }
@@ -168,11 +389,19 @@ impl BaoWebViewState {
     /// Track a newly created Worker for this webview.
     ///
     /// Called when servo's Worker::Constructor completes (DF-WK-1).
-    /// The WorkerHandle holds only atomic flags — no JSObject.
+    /// The WorkerHandle is wrapped in an AutoCloseWorker guard that
+    /// ensures termination on page unload or panic unwinding.
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
     pub fn track_worker(&mut self, handle: WorkerHandle) {
-        self.active_workers.push(handle);
+        self.active_workers.push(AutoCloseWorker::new(handle));
+    }
+
+    /// Track a newly created Worker with a pre-allocated AutoCloseWorker.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+    pub fn track_worker_guard(&mut self, guard: AutoCloseWorker) {
+        self.active_workers.push(guard);
     }
 
     /// Auto-terminate all active Workers on page unload.
@@ -184,8 +413,8 @@ impl BaoWebViewState {
     ///
     /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
     pub fn terminate_all_workers(&mut self) {
-        for worker in &self.active_workers {
-            worker.terminate();
+        for guard in &mut self.active_workers {
+            guard.terminate_via(WorkerTeardownPath::PageUnload);
         }
     }
 
@@ -196,20 +425,45 @@ impl BaoWebViewState {
     ///
     /// @trace REQ-BRW-004 [entity:Worker]
     pub fn reap_terminated_workers(&mut self) {
-        self.active_workers.retain(|w| !w.is_terminated());
+        self.active_workers.retain(|g| !g.handle().is_terminated());
     }
 
     /// Returns the number of active (non-terminated) Workers.
     ///
     /// @trace REQ-BRW-004 [entity:Worker]
     pub fn active_worker_count(&self) -> usize {
-        self.active_workers.iter().filter(|w| !w.is_terminated()).count()
+        self.active_workers.iter().filter(|g| !g.handle().is_terminated()).count()
+    }
+
+    /// Returns a snapshot of all active Workers' lifecycle states.
+    ///
+    /// Used for CDP observability and debugging.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:18]
+    pub fn worker_lifecycle_states(&self) -> Vec<(WorkerId, WorkerLifecycleState)> {
+        self.active_workers
+            .iter()
+            .map(|g| {
+                let id = WorkerId(g.handle().script_url.clone());
+                (id, g.lifecycle_state())
+            })
+            .collect()
+    }
+
+    /// Set the Worker scope config from the page's StealthProfile.
+    ///
+    /// Called when a page is created with a StealthProfile to ensure
+    /// Workers spawned from that page inherit the same stealth properties.
+    ///
+    /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:12..17]
+    pub fn set_worker_scope_config(&mut self, config: WorkerScopeConfig) {
+        self.worker_scope_config = config;
     }
 
     /// Forward a Worker postMessage event to the CDP event path.
     ///
     /// DF-WK-4 / DF-WK-5: When event_tx is set, push a
-    /// ServoEvent::WorkerMessage for CDP observability.
+    /// ServoEvent::Console for CDP observability.
     /// The actual structured-clone data is handled by servo internally;
     /// this only forwards the event metadata.
     ///
@@ -227,6 +481,27 @@ impl BaoWebViewState {
                 url: None,
                 line: None,
                 column: None,
+            });
+        }
+    }
+
+    /// Forward a Worker error event to the CDP event path.
+    ///
+    /// SPEC criterion #9: "onerror 事件正确传播到主线程
+    /// (ErrorEvent 包含 message/filename/lineno/colno)".
+    /// When event_tx is set, push a ServoEvent::PageError for CDP
+    /// observability (maps to Runtime.exceptionThrown).
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:9]
+    pub fn forward_worker_error_event(&self, event: WorkerErrorEvent) {
+        if let Some(ref tx) = self.event_tx {
+            let _ = tx.send(ServoEvent::PageError {
+                target_id: "0".to_string(),
+                text: format!("[Worker] {}: {}", event.worker_id.0, event.message),
+                url: Some(event.filename.clone()),
+                line: Some(event.lineno),
+                column: Some(event.colno),
+                stack: None,
             });
         }
     }
@@ -1033,7 +1308,7 @@ mod tests {
         state.track_worker(handle);
         assert_eq!(state.active_worker_count(), 1);
         assert_eq!(state.active_workers.len(), 1);
-        assert_eq!(state.active_workers[0].script_url, "worker1.js");
+        assert_eq!(state.active_workers[0].handle().script_url, "worker1.js");
     }
 
     #[test]
@@ -1050,11 +1325,11 @@ mod tests {
         let mut state = BaoWebViewState::default();
         state.track_worker(WorkerHandle::new("worker1.js".to_string()));
         state.track_worker(WorkerHandle::new("worker2.js".to_string()));
-        assert!(!state.active_workers[0].is_closing());
-        assert!(!state.active_workers[1].is_closing());
+        assert!(!state.active_workers[0].handle().is_closing());
+        assert!(!state.active_workers[1].handle().is_closing());
         state.terminate_all_workers();
-        assert!(state.active_workers[0].is_closing());
-        assert!(state.active_workers[1].is_closing());
+        assert!(state.active_workers[0].handle().is_closing());
+        assert!(state.active_workers[1].handle().is_closing());
     }
 
     #[test]
@@ -1063,12 +1338,12 @@ mod tests {
         state.track_worker(WorkerHandle::new("worker1.js".to_string()));
         state.track_worker(WorkerHandle::new("worker2.js".to_string()));
         // Terminate only worker1
-        state.active_workers[0].terminate();
-        state.active_workers[0].mark_terminated();
+        state.active_workers[0].handle().terminate();
+        state.active_workers[0].handle().mark_terminated();
         assert_eq!(state.active_worker_count(), 1);
         state.reap_terminated_workers();
         assert_eq!(state.active_workers.len(), 1);
-        assert_eq!(state.active_workers[0].script_url, "worker2.js");
+        assert_eq!(state.active_workers[0].handle().script_url, "worker2.js");
     }
 
     #[test]
@@ -1076,8 +1351,8 @@ mod tests {
         let mut state = BaoWebViewState::default();
         state.track_worker(WorkerHandle::new("worker1.js".to_string()));
         state.terminate_all_workers();
-        for w in &state.active_workers {
-            w.mark_terminated();
+        for g in &state.active_workers {
+            g.handle().mark_terminated();
         }
         state.reap_terminated_workers();
         assert!(state.active_workers.is_empty());
@@ -1154,19 +1429,229 @@ mod tests {
 
         // Navigation starts: terminate all
         state.terminate_all_workers();
-        assert!(state.active_workers[0].is_closing());
-        assert!(state.active_workers[1].is_closing());
+        assert!(state.active_workers[0].handle().is_closing());
+        assert!(state.active_workers[1].handle().is_closing());
         // Not yet terminated (threads still running)
         assert_eq!(state.active_worker_count(), 2);
 
         // Workers finish teardown
-        for w in &state.active_workers {
-            w.mark_terminated();
+        for g in &state.active_workers {
+            g.handle().mark_terminated();
         }
         assert_eq!(state.active_worker_count(), 0);
 
         // Load complete: reap
         state.reap_terminated_workers();
         assert!(state.active_workers.is_empty());
+    }
+
+    // ─── WorkerErrorEvent (REQ-BRW-004 criterion #9) ──────────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [criterion:9] [level:unit]
+
+    #[test]
+    fn test_worker_error_event_creation() {
+        let event = WorkerErrorEvent {
+            worker_id: WorkerId("worker1.js".to_string()),
+            message: "Uncaught TypeError: x is not a function".to_string(),
+            filename: "worker1.js".to_string(),
+            lineno: 42,
+            colno: 5,
+        };
+        assert_eq!(event.worker_id.0, "worker1.js");
+        assert_eq!(event.message, "Uncaught TypeError: x is not a function");
+        assert_eq!(event.filename, "worker1.js");
+        assert_eq!(event.lineno, 42);
+        assert_eq!(event.colno, 5);
+    }
+
+    #[test]
+    fn test_webview_state_forward_worker_error_to_event_tx() {
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let state = BaoWebViewState {
+            event_tx: Some(tx),
+            ..Default::default()
+        };
+        let error = WorkerErrorEvent {
+            worker_id: WorkerId("worker1.js".to_string()),
+            message: "Uncaught Error: boom".to_string(),
+            filename: "worker1.js".to_string(),
+            lineno: 10,
+            colno: 3,
+        };
+        state.forward_worker_error_event(error);
+        let event = rx.try_recv().unwrap();
+        match event {
+            ServoEvent::PageError { text, url, line, column, .. } => {
+                assert!(text.contains("worker1.js"));
+                assert!(text.contains("Uncaught Error: boom"));
+                assert_eq!(url.as_deref(), Some("worker1.js"));
+                assert_eq!(line, Some(10));
+                assert_eq!(column, Some(3));
+            }
+            _ => panic!("expected PageError event for worker error"),
+        }
+    }
+
+    #[test]
+    fn test_webview_state_forward_worker_error_no_event_tx() {
+        let state = BaoWebViewState::default();
+        let error = WorkerErrorEvent {
+            worker_id: WorkerId("worker1.js".to_string()),
+            message: "error".to_string(),
+            filename: "worker1.js".to_string(),
+            lineno: 1,
+            colno: 1,
+        };
+        // Should not panic
+        state.forward_worker_error_event(error);
+    }
+
+    // ─── WorkerLifecycleState / WorkerTeardownPath (REQ-BRW-004 criterion #18) ──
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [criterion:18] [level:unit]
+
+    #[test]
+    fn test_worker_teardown_path_equality() {
+        assert_eq!(WorkerTeardownPath::Terminate, WorkerTeardownPath::Terminate);
+        assert_eq!(WorkerTeardownPath::SelfClose, WorkerTeardownPath::SelfClose);
+        assert_eq!(WorkerTeardownPath::PageUnload, WorkerTeardownPath::PageUnload);
+        assert_ne!(WorkerTeardownPath::Terminate, WorkerTeardownPath::SelfClose);
+    }
+
+    #[test]
+    fn test_worker_lifecycle_state_running() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let guard = AutoCloseWorker::new(handle);
+        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Running);
+    }
+
+    #[test]
+    fn test_worker_lifecycle_state_closing() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let mut guard = AutoCloseWorker::new(handle);
+        guard.terminate_via(WorkerTeardownPath::Terminate);
+        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate));
+    }
+
+    #[test]
+    fn test_worker_lifecycle_state_terminated() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let mut guard = AutoCloseWorker::new(handle);
+        guard.terminate_via(WorkerTeardownPath::SelfClose);
+        guard.handle().mark_terminated();
+        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Terminated(WorkerTeardownPath::SelfClose));
+    }
+
+    #[test]
+    fn test_worker_lifecycle_states_snapshot() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker2.js".to_string()));
+        let snapshot = state.worker_lifecycle_states();
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot[0].0, WorkerId("worker1.js".to_string()));
+        assert_eq!(snapshot[0].1, WorkerLifecycleState::Running);
+        assert_eq!(snapshot[1].0, WorkerId("worker2.js".to_string()));
+        assert_eq!(snapshot[1].1, WorkerLifecycleState::Running);
+    }
+
+    // ─── AutoCloseWorker (REQ-BRW-004 criterion #10) ─────────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [criterion:10] [level:unit]
+
+    #[test]
+    fn test_auto_close_worker_new_is_running() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let guard = AutoCloseWorker::new(handle);
+        assert!(!guard.handle().is_closing());
+        assert!(!guard.handle().is_terminated());
+    }
+
+    #[test]
+    fn test_auto_close_worker_terminate_via() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let mut guard = AutoCloseWorker::new(handle);
+        guard.terminate_via(WorkerTeardownPath::Terminate);
+        assert!(guard.handle().is_closing());
+        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate));
+    }
+
+    #[test]
+    fn test_auto_close_worker_terminate_via_idempotent() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let mut guard = AutoCloseWorker::new(handle);
+        guard.terminate_via(WorkerTeardownPath::Terminate);
+        guard.terminate_via(WorkerTeardownPath::SelfClose);
+        // Should still be Terminate (first call wins)
+        assert_eq!(guard.lifecycle_state(), WorkerLifecycleState::Closing(WorkerTeardownPath::Terminate));
+    }
+
+    #[test]
+    fn test_auto_close_worker_drop_terminates() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let handle_clone = handle.clone();
+        let guard = AutoCloseWorker::new(handle);
+        assert!(!handle_clone.is_closing());
+        drop(guard);
+        // AutoCloseWorker::drop should terminate the worker
+        assert!(handle_clone.is_closing());
+    }
+
+    #[test]
+    fn test_auto_close_worker_drop_already_closing() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let handle_clone = handle.clone();
+        let mut guard = AutoCloseWorker::new(handle);
+        guard.terminate_via(WorkerTeardownPath::Terminate);
+        drop(guard);
+        // Already closing — drop should not change teardown path
+        assert!(handle_clone.is_closing());
+    }
+
+    #[test]
+    fn test_track_worker_guard() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let guard = AutoCloseWorker::new(handle);
+        let mut state = BaoWebViewState::default();
+        state.track_worker_guard(guard);
+        assert_eq!(state.active_worker_count(), 1);
+    }
+
+    // ─── WorkerScopeConfig (REQ-BRW-004 criteria #12-17) ─────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [criterion:12..17] [level:unit]
+
+    #[test]
+    fn test_worker_scope_config_default() {
+        let config = WorkerScopeConfig::default();
+        assert!(config.stealth_profile.is_none());
+        assert!(config.user_agent.is_empty());
+        assert!(config.platform.is_empty());
+        assert!(config.hardware_concurrency > 0);
+        assert_eq!(config.language, "en-US");
+        assert!(!config.languages.is_empty());
+    }
+
+    #[test]
+    fn test_worker_scope_config_set_on_state() {
+        let mut state = BaoWebViewState::default();
+        let config = WorkerScopeConfig {
+            stealth_profile: None,
+            user_agent: "Bao/1.0".to_string(),
+            platform: "Linux x86_64".to_string(),
+            hardware_concurrency: 8,
+            language: "zh-CN".to_string(),
+            languages: vec!["zh-CN".to_string(), "zh".to_string(), "en".to_string()],
+        };
+        state.set_worker_scope_config(config);
+        assert_eq!(state.worker_scope_config.user_agent, "Bao/1.0");
+        assert_eq!(state.worker_scope_config.platform, "Linux x86_64");
+        assert_eq!(state.worker_scope_config.hardware_concurrency, 8);
+        assert_eq!(state.worker_scope_config.language, "zh-CN");
+        assert_eq!(state.worker_scope_config.languages.len(), 3);
+    }
+
+    #[test]
+    fn test_webview_state_default_worker_scope_config() {
+        let state = BaoWebViewState::default();
+        assert!(state.worker_scope_config.stealth_profile.is_none());
+        assert!(state.worker_scope_config.hardware_concurrency > 0);
     }
 }

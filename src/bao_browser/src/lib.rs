@@ -20,6 +20,8 @@ pub use config::{BaoConfig, BrowserConfig, PageConfig};
 pub use delegate::{
     BaoServoDelegate, BaoWebViewDelegate, WorkerHandle, WorkerId,
     WorkerMessageDirection, WorkerMessageEvent,
+    WorkerErrorEvent, WorkerLifecycleState, WorkerTeardownPath,
+    WorkerScopeConfig, AutoCloseWorker,
 };
 pub use error::BrowserError;
 pub use page::{PageHandle, PageState};
