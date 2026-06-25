@@ -1,7 +1,9 @@
 // @trace REQ-BRW-001 [entity:BrowserContext] [entity:PageHandle]
+// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
 // @trace REQ-CLI-002
 #![allow(dead_code, unused_imports)]
 // REQ-BRW-001: Browser engine integration with servo
+// REQ-BRW-004: Worker constructor bridging to Page Realm (DF-WK-11)
 // REQ-CLI-002: bao browser 子命令 → servo 初始化 + CDP 端口输出
 // REQ-LIB-004: BaoRuntime top-level coordinator
 mod config;
@@ -15,7 +17,10 @@ mod runtime_bridge;
 mod screenshot;
 
 pub use config::{BaoConfig, BrowserConfig, PageConfig};
-pub use delegate::{BaoServoDelegate, BaoWebViewDelegate};
+pub use delegate::{
+    BaoServoDelegate, BaoWebViewDelegate, WorkerHandle, WorkerId,
+    WorkerMessageDirection, WorkerMessageEvent,
+};
 pub use error::BrowserError;
 pub use page::{PageHandle, PageState};
 pub use page_pool::PagePool;

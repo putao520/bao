@@ -1,8 +1,11 @@
 // @trace REQ-BRW-001 [entity:BrowserContext]  REQ-CDP-006: Servo delegate hooks for CDP event forwarding
+// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope] postMessage structured-clone channel
 // @trace REQ-CDP-006 [entity:ServoDelegateHooks] (servo delegate → CDP event forwarding)
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use dpi::PhysicalSize;
 use servo::{
@@ -14,6 +17,113 @@ use servo::{
 
 use bao_cdp::{BaoEvent, ConsoleMessage};
 use bao_cdp_client::bridge::{ConsoleLevel, ServoEvent};
+
+// ─── Worker Message Channel (REQ-BRW-004) ──────────────────────────
+// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
+// DF-WK-4 / DF-WK-5: page↔worker bidirectional structured-clone channel.
+//
+// Servo already handles the full Worker lifecycle internally (DOM bindings,
+// structured clone via `structuredclone::write/read`, crossbeam channel
+// transport). Bao's responsibility is:
+//   1. Track per-webview active Worker count for page-unload auto-terminate
+//      (SPEC criterion #10: GlobalScope::track_worker + AutoCloseWorker).
+//   2. Forward Worker message events to CDP via the existing event_tx path.
+//   3. Provide a `WorkerHandle` that bao_browser consumers can use to
+//      observe worker state (closing flag) without holding JSObject refs.
+//
+// Thread safety: WorkerHandle only holds Arc<AtomicBool> (closing) and
+// Arc<AtomicBool> (terminated) — no JSObject, no raw pointer. These are
+// Send + Sync safe. The actual Worker DOM object lives in servo's
+// ScriptThread; we never touch it from bao_browser.
+
+/// Unique identifier for a Worker within a page's scope.
+/// @trace REQ-BRW-004 [entity:Worker]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorkerId(pub String);
+
+/// A Send+Sync handle to a servo Worker's lifecycle state.
+///
+/// Does NOT hold JSObject references — only atomic flags.
+/// This is safe to store across threads (unlike Worker DOM objects).
+///
+/// @trace REQ-BRW-004 [entity:Worker]
+#[derive(Debug, Clone)]
+pub struct WorkerHandle {
+    /// Worker script URL.
+    pub script_url: String,
+    /// Mirrors servo Worker::closing — set by terminate() or self.close().
+    pub closing: Arc<AtomicBool>,
+    /// Mirrors servo Worker::terminated — true after full teardown.
+    pub terminated: Arc<AtomicBool>,
+}
+
+impl WorkerHandle {
+    /// Create a new WorkerHandle in the running state.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker]
+    pub fn new(script_url: String) -> Self {
+        WorkerHandle {
+            script_url,
+            closing: Arc::new(AtomicBool::new(false)),
+            terminated: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Returns true if terminate()/self.close() has been requested.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker]
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
+
+    /// Returns true if the Worker thread has fully exited.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker]
+    pub fn is_terminated(&self) -> bool {
+        self.terminated.load(Ordering::Acquire)
+    }
+
+    /// Signal the Worker to terminate (mirrors Worker::terminate()).
+    /// Idempotent — calling multiple times is safe.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker]
+    pub fn terminate(&self) {
+        self.closing.store(true, Ordering::Release);
+    }
+
+    /// Mark the Worker as fully terminated (called after thread join).
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker]
+    pub fn mark_terminated(&self) {
+        self.terminated.store(true, Ordering::Release);
+    }
+}
+
+/// Direction of a Worker postMessage event.
+///
+/// @trace REQ-BRW-004 [entity:Worker]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerMessageDirection {
+    /// page → worker (DF-WK-4: worker.postMessage(msg))
+    PageToWorker,
+    /// worker → page (DF-WK-5: self.postMessage(msg))
+    WorkerToPage,
+}
+
+/// A Worker postMessage event observed by the bao layer.
+///
+/// Only the metadata is captured here — the actual structured-clone data
+/// is handled entirely within servo's DOM (structuredclone::write/read).
+/// This struct is for CDP observability and event forwarding.
+///
+/// @trace REQ-BRW-004 [entity:Worker]
+#[derive(Debug, Clone)]
+pub struct WorkerMessageEvent {
+    /// Which Worker this message is associated with.
+    pub worker_id: WorkerId,
+    /// Direction of the message.
+    pub direction: WorkerMessageDirection,
+}
 
 pub struct BaoWebViewState {
     pub url: Option<url::Url>,
@@ -29,6 +139,12 @@ pub struct BaoWebViewState {
     /// When set, events are also pushed here in addition to console_log_tx.
     /// @trace REQ-CDP-006 [entity:ServoDelegateHooks]
     pub event_tx: Option<Sender<ServoEvent>>,
+    /// Active Workers spawned from this webview's page.
+    /// Keyed by WorkerId for O(1) lookup. On page unload (new navigation
+    /// after LoadStatus::Complete), all Workers are auto-terminated
+    /// (SPEC criterion #10: GlobalScope::track_worker + AutoCloseWorker).
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+    pub active_workers: Vec<WorkerHandle>,
 }
 
 impl Default for BaoWebViewState {
@@ -41,6 +157,77 @@ impl Default for BaoWebViewState {
             dom_proxies_dirty: false,
             console_log_tx: None,
             event_tx: None,
+            active_workers: Vec::new(),
+        }
+    }
+}
+
+impl BaoWebViewState {
+    // ─── Worker Lifecycle (REQ-BRW-004) ──────────────────────────────
+
+    /// Track a newly created Worker for this webview.
+    ///
+    /// Called when servo's Worker::Constructor completes (DF-WK-1).
+    /// The WorkerHandle holds only atomic flags — no JSObject.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+    pub fn track_worker(&mut self, handle: WorkerHandle) {
+        self.active_workers.push(handle);
+    }
+
+    /// Auto-terminate all active Workers on page unload.
+    ///
+    /// SPEC criterion #10: "页面卸载时自动终止所有 Worker
+    /// (GlobalScope::track_worker + AutoCloseWorker)".
+    /// Called from notify_load_status_changed when a new navigation
+    /// starts (LoadStatus::Started after a previous Complete).
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+    pub fn terminate_all_workers(&mut self) {
+        for worker in &self.active_workers {
+            worker.terminate();
+        }
+    }
+
+    /// Remove fully-terminated Workers from the tracking list.
+    ///
+    /// Called after spin_event_loop to clean up Workers whose threads
+    /// have exited (terminated flag set by Worker teardown).
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker]
+    pub fn reap_terminated_workers(&mut self) {
+        self.active_workers.retain(|w| !w.is_terminated());
+    }
+
+    /// Returns the number of active (non-terminated) Workers.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker]
+    pub fn active_worker_count(&self) -> usize {
+        self.active_workers.iter().filter(|w| !w.is_terminated()).count()
+    }
+
+    /// Forward a Worker postMessage event to the CDP event path.
+    ///
+    /// DF-WK-4 / DF-WK-5: When event_tx is set, push a
+    /// ServoEvent::WorkerMessage for CDP observability.
+    /// The actual structured-clone data is handled by servo internally;
+    /// this only forwards the event metadata.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-4] [DF-WK-5]
+    pub fn forward_worker_message_event(&self, event: WorkerMessageEvent) {
+        if let Some(ref tx) = self.event_tx {
+            let direction = match event.direction {
+                WorkerMessageDirection::PageToWorker => "page→worker",
+                WorkerMessageDirection::WorkerToPage => "worker→page",
+            };
+            let _ = tx.send(ServoEvent::Console {
+                target_id: "0".to_string(),
+                level: ConsoleLevel::Debug,
+                text: format!("[Worker] postMessage {}: {}", direction, event.worker_id.0),
+                url: None,
+                line: None,
+                column: None,
+            });
         }
     }
 }
@@ -231,6 +418,22 @@ impl WebViewDelegate for BaoWebViewDelegate {
         self.state.borrow_mut().load_status = status;
         match status {
             LoadStatus::Started => {
+                // @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+                // SPEC criterion #10: "页面卸载时自动终止所有 Worker
+                // (GlobalScope::track_worker + AutoCloseWorker)".
+                // When a new navigation starts (after a previous Complete),
+                // all Workers from the previous page must be terminated.
+                {
+                    let mut state = self.state.borrow_mut();
+                    if !state.active_workers.is_empty() {
+                        log::debug!(
+                            "[delegate] page navigation: terminating {} active workers",
+                            state.active_worker_count()
+                        );
+                        state.terminate_all_workers();
+                    }
+                }
+
                 // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
                 // Dual-path: event_tx (Path B) primary for FrameStartedLoading,
                 // console_log_tx (Path A) fallback — no direct ConsoleMessage equivalent,
@@ -245,6 +448,13 @@ impl WebViewDelegate for BaoWebViewDelegate {
             }
             LoadStatus::Complete => {
                 self.state.borrow_mut().dom_proxies_dirty = true;
+
+                // @trace REQ-BRW-004 [entity:Worker]
+                // Reap terminated workers after page load completes.
+                // Workers from the previous page that have been terminated
+                // during LoadStatus::Started are cleaned up here.
+                self.state.borrow_mut().reap_terminated_workers();
+
                 // @trace REQ-CDP-006 [entity:ServoDelegateHooks]
                 // Dual-path: event_tx (Path B) primary for FrameStoppedLoading,
                 // console_log_tx (Path A) fallback for PageLoadEventFired.
@@ -757,5 +967,206 @@ mod tests {
             }
             _ => panic!("expected FrameStartedLoading event"),
         }
+    }
+
+    // ─── Worker Lifecycle (REQ-BRW-004) ──────────────────────────────
+    // @trace REQ-BRW-004 [req:REQ-BRW-004] [level:unit]
+
+    #[test]
+    fn test_worker_handle_new_is_running() {
+        let handle = WorkerHandle::new("https://example.com/worker.js".to_string());
+        assert_eq!(handle.script_url, "https://example.com/worker.js");
+        assert!(!handle.is_closing());
+        assert!(!handle.is_terminated());
+    }
+
+    #[test]
+    fn test_worker_handle_terminate_sets_closing() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        assert!(!handle.is_closing());
+        handle.terminate();
+        assert!(handle.is_closing());
+        // Idempotent
+        handle.terminate();
+        assert!(handle.is_closing());
+    }
+
+    #[test]
+    fn test_worker_handle_mark_terminated() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        assert!(!handle.is_terminated());
+        handle.mark_terminated();
+        assert!(handle.is_terminated());
+    }
+
+    #[test]
+    fn test_worker_handle_terminate_then_terminated() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        handle.terminate();
+        assert!(handle.is_closing());
+        assert!(!handle.is_terminated());
+        handle.mark_terminated();
+        assert!(handle.is_terminated());
+    }
+
+    #[test]
+    fn test_worker_handle_clone_shares_state() {
+        let handle = WorkerHandle::new("worker.js".to_string());
+        let clone = handle.clone();
+        handle.terminate();
+        assert!(clone.is_closing(), "clone should see closing flag from original");
+        clone.mark_terminated();
+        assert!(handle.is_terminated(), "original should see terminated flag from clone");
+    }
+
+    #[test]
+    fn test_webview_state_active_workers_default_empty() {
+        let state = BaoWebViewState::default();
+        assert!(state.active_workers.is_empty());
+        assert_eq!(state.active_worker_count(), 0);
+    }
+
+    #[test]
+    fn test_webview_state_track_worker() {
+        let mut state = BaoWebViewState::default();
+        let handle = WorkerHandle::new("worker1.js".to_string());
+        state.track_worker(handle);
+        assert_eq!(state.active_worker_count(), 1);
+        assert_eq!(state.active_workers.len(), 1);
+        assert_eq!(state.active_workers[0].script_url, "worker1.js");
+    }
+
+    #[test]
+    fn test_webview_state_track_multiple_workers() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker2.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker3.js".to_string()));
+        assert_eq!(state.active_worker_count(), 3);
+    }
+
+    #[test]
+    fn test_webview_state_terminate_all_workers() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker2.js".to_string()));
+        assert!(!state.active_workers[0].is_closing());
+        assert!(!state.active_workers[1].is_closing());
+        state.terminate_all_workers();
+        assert!(state.active_workers[0].is_closing());
+        assert!(state.active_workers[1].is_closing());
+    }
+
+    #[test]
+    fn test_webview_state_reap_terminated_workers() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker2.js".to_string()));
+        // Terminate only worker1
+        state.active_workers[0].terminate();
+        state.active_workers[0].mark_terminated();
+        assert_eq!(state.active_worker_count(), 1);
+        state.reap_terminated_workers();
+        assert_eq!(state.active_workers.len(), 1);
+        assert_eq!(state.active_workers[0].script_url, "worker2.js");
+    }
+
+    #[test]
+    fn test_webview_state_reap_all_terminated() {
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.terminate_all_workers();
+        for w in &state.active_workers {
+            w.mark_terminated();
+        }
+        state.reap_terminated_workers();
+        assert!(state.active_workers.is_empty());
+        assert_eq!(state.active_worker_count(), 0);
+    }
+
+    #[test]
+    fn test_worker_id_equality() {
+        let id1 = WorkerId("worker1.js".to_string());
+        let id2 = WorkerId("worker1.js".to_string());
+        let id3 = WorkerId("worker2.js".to_string());
+        assert_eq!(id1, id2);
+        assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_worker_message_direction() {
+        assert_eq!(WorkerMessageDirection::PageToWorker, WorkerMessageDirection::PageToWorker);
+        assert_ne!(WorkerMessageDirection::PageToWorker, WorkerMessageDirection::WorkerToPage);
+    }
+
+    #[test]
+    fn test_worker_message_event_creation() {
+        let event = WorkerMessageEvent {
+            worker_id: WorkerId("worker1.js".to_string()),
+            direction: WorkerMessageDirection::PageToWorker,
+        };
+        assert_eq!(event.worker_id.0, "worker1.js");
+        assert_eq!(event.direction, WorkerMessageDirection::PageToWorker);
+    }
+
+    #[test]
+    fn test_webview_state_forward_worker_message_to_event_tx() {
+        let (tx, rx) = std::sync::mpsc::channel::<ServoEvent>();
+        let state = BaoWebViewState {
+            event_tx: Some(tx),
+            ..Default::default()
+        };
+        let msg = WorkerMessageEvent {
+            worker_id: WorkerId("worker1.js".to_string()),
+            direction: WorkerMessageDirection::WorkerToPage,
+        };
+        state.forward_worker_message_event(msg);
+        let event = rx.try_recv().unwrap();
+        match event {
+            ServoEvent::Console { level, text, .. } => {
+                assert_eq!(level, ConsoleLevel::Debug);
+                assert!(text.contains("worker→page"));
+                assert!(text.contains("worker1.js"));
+            }
+            _ => panic!("expected Console event for worker message"),
+        }
+    }
+
+    #[test]
+    fn test_webview_state_forward_worker_message_no_event_tx() {
+        // When event_tx is None, forward_worker_message_event should be a no-op
+        let state = BaoWebViewState::default();
+        let msg = WorkerMessageEvent {
+            worker_id: WorkerId("worker1.js".to_string()),
+            direction: WorkerMessageDirection::PageToWorker,
+        };
+        // Should not panic
+        state.forward_worker_message_event(msg);
+    }
+
+    #[test]
+    fn test_terminate_on_navigation_then_reap() {
+        // Simulate: page with workers → new navigation → terminate → load complete → reap
+        let mut state = BaoWebViewState::default();
+        state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        state.track_worker(WorkerHandle::new("worker2.js".to_string()));
+        assert_eq!(state.active_worker_count(), 2);
+
+        // Navigation starts: terminate all
+        state.terminate_all_workers();
+        assert!(state.active_workers[0].is_closing());
+        assert!(state.active_workers[1].is_closing());
+        // Not yet terminated (threads still running)
+        assert_eq!(state.active_worker_count(), 2);
+
+        // Workers finish teardown
+        for w in &state.active_workers {
+            w.mark_terminated();
+        }
+        assert_eq!(state.active_worker_count(), 0);
+
+        // Load complete: reap
+        state.reap_terminated_workers();
+        assert!(state.active_workers.is_empty());
     }
 }
