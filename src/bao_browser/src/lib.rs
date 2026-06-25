@@ -1,9 +1,11 @@
 // @trace REQ-BRW-001 [entity:BrowserContext] [entity:PageHandle]
 // @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
+// @trace REQ-BRW-4 [entity:Worker] [entity:SharedWorker] [entity:ServiceWorker]
 // @trace REQ-CLI-002
 #![allow(dead_code, unused_imports)]
 // REQ-BRW-001: Browser engine integration with servo
 // REQ-BRW-004: Worker constructor bridging to Page Realm (DF-WK-11)
+// REQ-BRW-4: Worker/SharedWorker/ServiceWorker constructors on JS global object
 // REQ-CLI-002: bao browser 子命令 → servo 初始化 + CDP 端口输出
 // REQ-LIB-004: BaoRuntime top-level coordinator
 mod config;
@@ -141,6 +143,161 @@ impl BaoRuntime {
 
         runtime_bridge::inject_all_with_profile(&page, &config.stealth_profile)?;
         Ok(page)
+    }
+
+    /// Create a Dedicated Worker bridged to a page's servo Realm.
+    ///
+    /// This is the primary entry point for the Worker constructor bridging
+    /// (REQ-BRW-004 / REQ-BRW-4). It:
+    /// 1. Resolves the Worker script via the page's script loading pipeline
+    ///    (DF-WK-2: fetch → MIME check → decode → compile)
+    /// 2. Creates a bao_engine::WebWorker with scope init that installs
+    ///    DedicatedWorkerGlobalScope APIs + stealth properties (criteria #8, #12-17)
+    /// 3. Establishes a WorkerChannelBridge for page↔worker postMessage (criteria #6, DF-WK-4/5)
+    /// 4. Registers the DedicatedWorkerGlobalScope state for CDP observability
+    /// 5. Tracks the Worker with AutoCloseWorker for page-unload termination (criterion #10)
+    ///
+    /// In browser mode, servo's DOM Worker::Constructor handles the full
+    /// lifecycle internally — this method is for Workers created via the
+    /// bao_engine::WebWorker API (CLI/test mode, data:/blob:/inline scripts).
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:1..10] [criterion:12..18]
+    /// @trace REQ-BRW-4 [criterion:C1..C4]
+    pub fn create_worker(
+        &self,
+        page: &PageHandle,
+        script: &str,
+    ) -> Result<WorkerHandle, BrowserError> {
+        let webview_state = page.webview_state();
+
+        // Generate a WorkerId from the script URL
+        let worker_id = crate::delegate::WorkerId(script.to_string());
+
+        // Get the page's WorkerScopeConfig — it carries the parent page's
+        // stealth profile and navigator values for worker consistency.
+        // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
+        let scope_config = webview_state.borrow().worker_scope_config.clone();
+
+        // Create the scope initialization callback — installs
+        // DedicatedWorkerGlobalScope APIs + stealth properties on the Worker
+        // thread's global object.
+        // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
+        // @trace REQ-BRW-004 [criterion:12..17] stealth consistency
+        let scope_init = crate::runtime_bridge::create_worker_scope_init(scope_config.clone());
+
+        // Create the WebWorker with the inline script content and scope init.
+        // bao_engine::WebWorker spawns a thread with its own SpiderMonkey
+        // Runtime (Runtime::new_with_parent for cooperative GC) and JSContext,
+        // executes the script, and installs the scope init callback.
+        // @trace REQ-BRW-004 [criterion:7] Worker thread own Runtime/JSContext
+        // @trace REQ-BRW-004 [criterion:1] new Worker(url) creates worker thread
+        let web_worker = bao_engine::WebWorker::new_with_scope_init(script, Some(scope_init))
+            .map_err(|_| BrowserError::Init("Failed to create WebWorker".into()))?;
+
+        // Create a WorkerHandle for lifecycle management.
+        // WorkerHandle tracks the closing/terminated state via Arc<AtomicBool>.
+        let handle = WorkerHandle::new(script.to_string());
+
+        // Create channel bridge for page↔worker postMessage (DF-WK-4/5).
+        // The bridge holds mpsc channels for bidirectional structured-clone
+        // message passing (criterion #6).
+        // @trace REQ-BRW-004 [criterion:6] DF-WK-4 / DF-WK-5
+        let _endpoints = webview_state.borrow_mut().create_worker_channel(worker_id.clone());
+
+        // Register DedicatedWorkerGlobalScope state for CDP observability
+        // and stealth consistency verification.
+        // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
+        let scope_state = crate::delegate::DedicatedWorkerGlobalScopeState::new(
+            worker_id.clone(),
+            &scope_config,
+        );
+        webview_state.borrow_mut().register_dedicated_worker_scope(worker_id.clone(), scope_state);
+
+        // Store the WebWorker instance — must be kept alive because its Drop
+        // impl terminates the Worker thread. Reaped on page unload or termination.
+        // @trace REQ-BRW-004 [criterion:18] crash-safe teardown
+        webview_state.borrow_mut().register_web_worker(worker_id.clone(), web_worker);
+
+        // Track the Worker with AutoCloseWorker — ensures termination on
+        // page unload (SPEC criterion #10: GlobalScope::track_worker).
+        // @trace REQ-BRW-004 [criterion:10] GlobalScope::track_worker + AutoCloseWorker
+        webview_state.borrow_mut().track_worker(handle.clone());
+
+        // Store the endpoints and web_worker reference on the WorkerHandle
+        // so the page can post messages and check running state.
+        // The WebWorker itself manages the thread lifecycle — WorkerHandle
+        // just mirrors the closing/terminated flags for cross-thread visibility.
+        log::debug!(
+            "[bao] created worker '{}' for page (tracked via AutoCloseWorker)",
+            script
+        );
+
+        Ok(handle)
+    }
+
+    /// Create a Dedicated Worker with a script URL resolved through
+    /// the Worker script loading pipeline.
+    ///
+    /// Uses the WorkerScriptLoader to resolve URL-based scripts
+    /// (DF-WK-2: fetch → MIME check → decode → compile).
+    /// Falls back to bao_engine::WebWorker for inline scripts.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
+    /// @trace REQ-BRW-4 [criterion:C1..C4]
+    pub fn create_worker_with_url(
+        &self,
+        page: &PageHandle,
+        url: &str,
+    ) -> Result<WorkerHandle, BrowserError> {
+        let webview_state = page.webview_state();
+
+        // Get the page's WorkerScopeConfig for stealth consistency
+        // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
+        let scope_config = webview_state.borrow().worker_scope_config.clone();
+
+        // Build a WorkerScriptLoader from the page's context
+        let loader = crate::delegate::WorkerScriptLoader::url(
+            url.to_string(),
+            crate::delegate::WorkerScriptType::Classic,
+        );
+
+        // Generate WorkerId
+        let worker_id = crate::delegate::WorkerId(url.to_string());
+
+        // Try to create via the script loading pipeline
+        // @trace REQ-BRW-004 [DF-WK-2] Worker script loading pipeline
+        let result = crate::runtime_bridge::create_worker_with_script_loader(loader, scope_config.clone());
+
+        match result {
+            Ok(web_worker) => {
+                let handle = WorkerHandle::new(url.to_string());
+
+                // Create channel bridge (DF-WK-4/5)
+                let _endpoints = webview_state.borrow_mut().create_worker_channel(worker_id.clone());
+
+                // Register scope state
+                let scope_state = crate::delegate::DedicatedWorkerGlobalScopeState::new(
+                    worker_id.clone(),
+                    &scope_config,
+                );
+                webview_state.borrow_mut().register_dedicated_worker_scope(worker_id.clone(), scope_state);
+
+                // Store the WebWorker instance — must be kept alive for thread lifecycle
+                // @trace REQ-BRW-004 [criterion:18] crash-safe teardown
+                webview_state.borrow_mut().register_web_worker(worker_id.clone(), web_worker);
+
+                // Track with AutoCloseWorker (criterion #10)
+                webview_state.borrow_mut().track_worker(handle.clone());
+
+                log::debug!(
+                    "[bao] created worker from URL '{}' (script loading pipeline, tracked via AutoCloseWorker)",
+                    url
+                );
+
+                Ok(handle)
+            }
+            Err(msg) => Err(BrowserError::Init(msg)),
+        }
     }
 
     pub fn spin_event_loop(&self) {

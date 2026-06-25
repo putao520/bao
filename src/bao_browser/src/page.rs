@@ -961,6 +961,18 @@ impl PageHandle {
         self.inner.borrow().as_ref().and_then(|inner| inner.stealth_profile.clone())
     }
 
+    /// Access the page's BaoWebViewState for Worker lifecycle management.
+    ///
+    /// Used by BaoRuntime::create_worker to access Worker tracking,
+    /// channel bridges, and scope states.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+    pub fn webview_state(&self) -> Rc<RefCell<BaoWebViewState>> {
+        self.inner.borrow().as_ref()
+            .map(|inner| inner.webview_state.clone())
+            .unwrap_or_else(|| Rc::new(RefCell::new(BaoWebViewState::default())))
+    }
+
     // ── High-level PageHandle API (REQ-LIB-001, REQ-LIB-004) ──────────────
 
     /// Wait for an element matching the selector to appear in the DOM.

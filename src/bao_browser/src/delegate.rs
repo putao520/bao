@@ -2644,6 +2644,11 @@ pub struct BaoWebViewState {
     /// and lifecycle management (DF-WK-2: script loading pipeline).
     /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
     worker_script_load_states: HashMap<WorkerId, WorkerScriptLoadState>,
+    /// Active bao_engine::WebWorker instances keyed by WorkerId.
+    /// These are Workers created via the bao_browser API (not servo DOM Workers).
+    /// The WebWorker must be kept alive because Drop terminates the Worker thread.
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:1] [criterion:18]
+    web_workers: HashMap<WorkerId, bao_engine::WebWorker>,
     /// Active ServiceWorker registrations controlling this webview's page.
     /// A page can be controlled by at most one ServiceWorker at a time.
     /// The ServiceWorker survives page navigation (persistent lifecycle),
@@ -2675,6 +2680,7 @@ impl Default for BaoWebViewState {
             worker_channels: HashMap::new(),
             dedicated_worker_scopes: HashMap::new(),
             worker_script_load_states: HashMap::new(),
+            web_workers: HashMap::new(),
             controlled_service_worker: None,
             service_worker_scope: None,
         }
@@ -2730,6 +2736,10 @@ impl BaoWebViewState {
         // @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
         // Clear all script loading states — in-progress loads are cancelled.
         self.worker_script_load_states.clear();
+        // @trace REQ-BRW-004 [entity:Worker] [criterion:18] crash-safe teardown
+        // Drop WebWorker instances — their Drop impl terminates the Worker thread
+        // and joins it. This ensures no dangling threads after page unload.
+        self.web_workers.clear();
     }
 
     /// Remove fully-terminated Workers from the tracking list.
@@ -2752,6 +2762,10 @@ impl BaoWebViewState {
             .map(|g| WorkerId(g.handle().script_url.clone()))
             .collect();
         self.dedicated_worker_scopes.retain(|id, _| active_ids.contains(id));
+        // @trace REQ-BRW-004 [entity:Worker] [criterion:18] reap terminated WebWorkers
+        // Drop WebWorker instances for terminated workers. Their Drop impl
+        // joins the Worker thread, ensuring clean teardown.
+        self.web_workers.retain(|id, _| active_ids.contains(id));
     }
 
     /// Returns the number of active (non-terminated) Workers.
@@ -2769,6 +2783,24 @@ impl BaoWebViewState {
     /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope]
     pub fn register_dedicated_worker_scope(&mut self, worker_id: WorkerId, scope: DedicatedWorkerGlobalScopeState) {
         self.dedicated_worker_scopes.insert(worker_id, scope);
+    }
+
+    /// Register a bao_engine::WebWorker instance for the given WorkerId.
+    ///
+    /// The WebWorker must be kept alive because its Drop impl terminates the
+    /// Worker thread. Storing it here ensures the Worker stays alive until
+    /// page unload or explicit termination.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [criterion:1] [criterion:18]
+    pub fn register_web_worker(&mut self, worker_id: WorkerId, worker: bao_engine::WebWorker) {
+        self.web_workers.insert(worker_id, worker);
+    }
+
+    /// Get a reference to a WebWorker instance.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker]
+    pub fn web_worker(&self, worker_id: &WorkerId) -> Option<&bao_engine::WebWorker> {
+        self.web_workers.get(worker_id)
     }
 
     /// Get a reference to a DedicatedWorkerGlobalScope state.
