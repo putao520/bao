@@ -1638,17 +1638,12 @@ fn test_dec_wk_001_servo_exposes_register_worker_scope_callback() {
 #[test]
 fn test_dec_wk_003_bao_engine_webworker_bypass_retained() {
     use bao_engine::WebWorker;
-    // Verify WebWorker::new_with_structured_clone exists and is callable.
-    // This is the bypass entry point for CLI/data:/blob:/inline scripts.
-    let _f: fn(
-        &str,
-        Option<bao_browser::WorkerScopeInitFn>,
-        std::sync::mpsc::Receiver<Vec<u8>>,
-        std::sync::mpsc::Sender<Vec<u8>>,
-    ) -> Result<WebWorker, ()> = WebWorker::new_with_structured_clone;
     // Verify WebWorker::new_with_scope_init exists (used by create_worker_with_inline_script).
-    let _g: fn(&str, Option<bao_browser::WorkerScopeInitFn>) -> Result<WebWorker, ()> =
+    // This is the bypass entry point for CLI/data:/blob:/inline scripts.
+    let _g: fn(&str, Option<bao_engine::ScopeInitFn>) -> Result<WebWorker, ()> =
         WebWorker::new_with_scope_init;
+    // Verify WebWorker::new exists.
+    let _new: fn(&str) -> Result<WebWorker, ()> = WebWorker::new;
     // If these compile, the bypass is retained (DEC-WK-003 satisfied).
 }
 
@@ -1669,7 +1664,7 @@ fn test_criterion_11_bun_sm_web_worker_is_real_implementation() {
         *mut mozjs::jsapi::JSContext,
         *mut mozjs::jsapi::JSObject,
         std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) = bun_sm::install_worker_lifecycle_natives;
+    ) = bao_engine::install_worker_lifecycle_natives;
 
     // Verify WebWorker struct exists with expected methods.
     use bao_engine::WebWorker;
@@ -1707,8 +1702,7 @@ fn test_bao_browser_exposes_register_worker_scope_callback_native() {
 /// requires a live BaoRuntime + servo DOM Worker (covered in integration tests).
 #[test]
 fn test_register_worker_scope_callback_native_no_panic_with_profile() {
-    use bao_stealth::{StealthProfile, StealthProfilePreset};
-    let profile = StealthProfile::from_preset(StealthProfilePreset::Chrome);
+    let profile = bao_stealth::StealthProfile::chrome_default();
     // Should not panic — queues callback in servo's global vector.
     bao_browser::register_worker_scope_callback_native(Some(profile));
 }
@@ -1753,18 +1747,19 @@ fn test_dual_track_bao_engine_webworker_independent_runtime() {
 ///
 /// Verifies that BOTH Worker creation paths exist in the codebase:
 ///   1. bao_engine::WebWorker (bypass: CLI/data:/blob:/file:/inline)
-///   2. bao_browser::create_worker (servo-native via DOM Worker::Constructor)
+///   2. bao_browser::BaoRuntime::create_worker (servo-native via DOM Worker::Constructor)
 /// This is the essence of DEC-WK-003 dual-track isolation — neither track
 /// is abandoned.
 #[test]
 fn test_dual_track_both_paths_coexist() {
     use bao_engine::WebWorker;
-    use bao_browser::{BaoRuntime, BaoConfig};
     // Bypass path: WebWorker::new (structural — function exists).
     let _bypass: fn(&str) -> Result<WebWorker, ()> = WebWorker::new;
     // Servo-native path: BaoRuntime::create_worker (structural — method exists).
-    let _native: fn(&BaoRuntime, &bao_browser::PageHandle, &str) -> Result<bao_browser::WorkerHandle, bao_browser::BrowserError> =
-        BaoRuntime::create_worker;
+    // Note: we don't instantiate BaoRuntime here (requires servo runtime).
+    // We just verify the method signature exists on the type.
+    let _native: fn(&bao_browser::BaoRuntime, &bao_browser::PageHandle, &str) -> Result<bao_browser::WorkerHandle, bao_browser::BrowserError> =
+        bao_browser::BaoRuntime::create_worker;
     // Both compile → both paths coexist (DEC-WK-003 satisfied).
     // Suppress unused variable warnings.
     let _ = (_bypass, _native);

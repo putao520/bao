@@ -1210,8 +1210,92 @@ pub fn inject_all(page: &PageHandle, stealth: bool) -> Result<(), BrowserError> 
 /// Inject Node.js APIs and (if profile present) stealth properties into a page.
 ///
 /// Stealth properties are installed as PERMANENT engine-layer getters (zero JS injection).
+//
+// DEC-WK-001 / TASK-1 (双轨收敛): Also registers a servo-native Worker scope
+// callback via `servo::register_worker_scope_callback`. When a Worker is
+// created via servo's DOM `new Worker(url)` (https/http URLs), this callback
+// fires on the Worker thread after servo constructs the Worker global and
+// installs bao's DedicatedWorkerGlobalScope APIs + stealth profile inheritance
+// (the same `worker_scope_init_native` path used by the bao_engine::WebWorker
+// bypass). This realizes DEC-WK-001's "servo-native Worker path" without
+// abandoning the bypass (DEC-WK-003 dual-track isolation).
+//
+// @trace DEC-WK-001 servo-native Worker path
+// @trace DEC-WK-003 dual-track: bypass (CLI/data:) vs native (https/http)
+// @trace REQ-BRW-004 [entity:Worker] [criterion:1,3,7] servo Worker scope
 pub fn inject_all_with_profile(page: &PageHandle, profile: &Option<bao_stealth::StealthProfile>) -> Result<(), BrowserError> {
-    inject_node_apis_with_stealth(page, profile.clone())
+    inject_node_apis_with_stealth(page, profile.clone())?;
+
+    // Register the servo-native Worker scope callback. This fires on any
+    // DedicatedWorker created via servo's DOM `new Worker()`. The callback
+    // captures this page's WorkerScopeConfig (which carries the parent page's
+    // stealth profile) so the Worker inherits stealth fingerprint noise.
+    // @trace DEC-WK-001 servo-native Worker path (vendor patch drain)
+    // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK stealth inheritance
+    register_worker_scope_callback_native(profile.clone());
+
+    Ok(())
+}
+
+/// Register a servo-native Worker scope callback via the vendor patch
+/// `servo::register_worker_scope_callback` (DEC-WK-001 / TASK-1).
+///
+/// The callback is queued in servo's global `EMBEDDER_WORKER_SCOPE_CALLBACKS`
+/// vector and drained once per Worker scope creation inside
+/// `DedicatedWorkerGlobalScope::run_worker_scope` — after the Worker's global
+/// is built but before the event loop starts. It runs on the Worker thread
+/// (the same thread that owns the Worker's JSContext), so it is safe to
+/// dereference the raw `cx`/`global` pointers there (per BCE-20260621-001:
+/// DOM↔Node interop must happen on the owning thread).
+///
+/// What the callback does (mirrors `worker_scope_init_native` for the bypass):
+///   - Install stealth profile inheritance keyed by the Worker global's address
+///     (DEC-WK-007 / CRIT-STL-WK: Worker navigator/Canvas/WebGL/Audio match
+///     parent page).
+///   - Install DedicatedWorkerGlobalScope Web APIs (fetch/timers/crypto/
+///     performance/etc., criterion #8).
+///
+/// Note: lifecycle natives (self.close/importScripts) are installed by servo
+/// upstream's DedicatedWorkerGlobalScope binding for native Workers, so the
+/// bao bypass's `install_worker_lifecycle_natives` is NOT needed here — it is
+/// only needed for bao_engine::WebWorker (DEC-WK-003 dual-track).
+///
+/// @trace DEC-WK-001 servo-native Worker path (vendor patch)
+/// @trace DEC-WK-003 dual-track isolation (bypass not abandoned)
+/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8,12..17]
+pub fn register_worker_scope_callback_native(profile: Option<bao_stealth::StealthProfile>) {
+    // Build a WorkerScopeConfig from the stealth profile (parent page's config).
+    // This is what worker_scope_init_native needs to install the right stealth
+    // properties + navigator values on the Worker's global.
+    // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
+    let config = match profile.as_ref() {
+        Some(p) => crate::delegate::WorkerScopeConfig::from(p),
+        None => crate::delegate::WorkerScopeConfig::default(),
+    };
+
+    let callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send> =
+        Box::new(move |cx_ptr, global_ptr| {
+            // SAFETY: Called on the Worker thread with valid JSContext + global.
+            // Per BCE-20260621-001 this is the owning thread, so dereferencing
+            // the raw pointers is safe (no cross-thread *mut JSObject).
+            let raw_cx = cx_ptr as *mut mozjs::jsapi::JSContext;
+            let raw_global = global_ptr as *mut mozjs::jsapi::JSObject;
+            if raw_cx.is_null() || raw_global.is_null() {
+                log::warn!(
+                    "[register_worker_scope_callback_native] NULL cx/global — \
+                     skipping Worker scope init (DEC-WK-001)"
+                );
+                return;
+            }
+            log::debug!(
+                "[register_worker_scope_callback_native] servo-native Worker \
+                 scope created — installing bao stealth + Web APIs (DEC-WK-001 / \
+                 DEC-WK-003 dual-track)"
+            );
+            unsafe { worker_scope_init_native(raw_cx, raw_global, &config); }
+        });
+
+    servo::register_worker_scope_callback(callback);
 }
 
 // ─── Worker Scope Initialization Bridge (REQ-BRW-004) ──────────────
