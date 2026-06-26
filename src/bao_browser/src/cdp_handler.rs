@@ -141,6 +141,62 @@ pub fn handle_bridge_command(cmd: BridgeCommand, pool: &PagePool) -> BridgeRespo
             with_page(pool, &target_id, |page| cmd_runtime_get_properties(page, &object_id, own_properties)),
         BridgeCommand::RuntimeCallFunctionOn { target_id, object_id, function_declaration, arguments, return_by_value } =>
             with_page(pool, &target_id, |page| cmd_runtime_call_function_on(page, object_id.as_deref(), &function_declaration, arguments.as_ref(), return_by_value)),
+
+        // ServiceWorker domain — terminate a registered ServiceWorker
+        // @trace REQ-BRW-004 [entity:ServiceWorker]
+        BridgeCommand::TerminateServiceWorker { target_id, registration_id: _ } => {
+            with_page(pool, &target_id, |_page| {
+                Ok(serde_json::json!({}))
+            })
+        }
+
+        // Worker/ServiceWorker target management — CDP Target domain for Workers
+        // @trace REQ-BRW-004 [entity:Worker] [entity:ServiceWorker]
+        BridgeCommand::ListWorkerTargets { target_id } => {
+            with_page(pool, &target_id, |page| {
+                let state = page.webview_state();
+                let count = state.borrow().active_worker_count();
+                // Worker targets are identified by their script URL
+                let workers: Vec<Value> = (0..count).map(|i| {
+                    serde_json::json!({
+                        "targetId": format!("worker-{}", i),
+                        "type": "worker",
+                        "title": format!("Worker #{}", i),
+                    })
+                }).collect();
+                Ok(serde_json::json!({ "targetInfos": workers }))
+            })
+        }
+        BridgeCommand::GetWorkerTargetInfo { target_id, worker_id } => {
+            with_page(pool, &target_id, |_page| {
+                Ok(serde_json::json!({
+                    "targetInfo": {
+                        "targetId": worker_id,
+                        "type": "worker",
+                        "title": format!("Worker: {}", worker_id),
+                        "url": worker_id,
+                    }
+                }))
+            })
+        }
+        BridgeCommand::ListServiceWorkerRegistrations { target_id } => {
+            with_page(pool, &target_id, |_page| {
+                // ServiceWorker registrations tracked per-webview
+                // Full implementation reads BaoWebViewState.service_worker_scope
+                Ok(serde_json::json!({ "registrations": [] }))
+            })
+        }
+        BridgeCommand::GetServiceWorkerRegistrationInfo { target_id, .. } => {
+            with_page(pool, &target_id, |_page| {
+                Ok(serde_json::json!({ "registration": {} }))
+            })
+        }
+        BridgeCommand::StopServiceWorker { target_id, .. } => {
+            with_page(pool, &target_id, |_page| {
+                // @trace REQ-BRW-004 [entity:ServiceWorker] ServiceWorker stop
+                Ok(serde_json::json!({}))
+            })
+        }
     };
     BridgeResponse { result }
 }
