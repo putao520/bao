@@ -23,6 +23,7 @@ pub use delegate::{
     BaoServoDelegate, BaoWebViewDelegate, WorkerHandle, WorkerId,
     WorkerMessageDirection, WorkerMessageEvent,
     WorkerErrorEvent, WorkerLifecycleState, WorkerTeardownPath,
+    WorkerTeardownResult, crash_safe_teardown_worker,
     WorkerScopeConfig, AutoCloseWorker,
     SharedWorkerId, SharedWorkerHandle, SharedWorkerConnectEvent,
     SharedWorkerScopeConfig, SharedWorkerPortRef,
@@ -178,31 +179,46 @@ impl BaoRuntime {
         // @trace REQ-BRW-004 [criterion:12..17] CRIT-STL-WK
         let scope_config = webview_state.borrow().worker_scope_config.clone();
 
-        // Create the scope initialization callback — installs
-        // DedicatedWorkerGlobalScope APIs + stealth properties on the Worker
-        // thread's global object.
-        // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
-        // @trace REQ-BRW-004 [criterion:12..17] stealth consistency
-        let scope_init = crate::runtime_bridge::create_worker_scope_init(scope_config.clone());
-
-        // Create the WebWorker with the inline script content and scope init.
-        // bao_engine::WebWorker spawns a thread with its own SpiderMonkey
-        // Runtime (Runtime::new_with_parent for cooperative GC) and JSContext,
-        // executes the script, and installs the scope init callback.
-        // @trace REQ-BRW-004 [criterion:7] Worker thread own Runtime/JSContext
-        // @trace REQ-BRW-004 [criterion:1] new Worker(url) creates worker thread
-        let web_worker = bao_engine::WebWorker::new_with_scope_init(script, Some(scope_init))
-            .map_err(|_| BrowserError::Init("Failed to create WebWorker".into()))?;
-
         // Create a WorkerHandle for lifecycle management.
-        // WorkerHandle tracks the closing/terminated state via Arc<AtomicBool>.
+        // WorkerHandle tracks the closing/terminated state via Arc<AtomicBool>
+        // and the worker_global_addr for REALM_PROFILES cleanup (criterion #18).
+        // @trace REQ-BRW-004 [entity:Worker] [criterion:18] REALM_PROFILES 条目注销
         let handle = WorkerHandle::new(script.to_string());
 
-        // Create channel bridge for page↔worker postMessage (DF-WK-4/5).
+        // Create the scope initialization callback — installs
+        // DedicatedWorkerGlobalScope APIs + stealth properties on the Worker
+        // thread's global object. Pass the WorkerHandle's global_addr_slot
+        // so the scope_init callback can write the Worker's global address
+        // for later REALM_PROFILES unregistration on teardown.
+        // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
+        // @trace REQ-BRW-004 [criterion:12..17] stealth consistency
+        // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
+        let global_addr_slot = handle.worker_global_addr_arc();
+        let scope_init = crate::runtime_bridge::create_worker_scope_init(
+            scope_config.clone(),
+            Some(global_addr_slot),
+        );
+
+        // Create channel bridge with structured-clone adapter endpoints.
         // The bridge holds mpsc channels for bidirectional structured-clone
-        // message passing (criterion #6).
+        // message passing (criterion #6). The adapter trait objects integrate
+        // with WebWorker::new_with_structured_clone.
         // @trace REQ-BRW-004 [criterion:6] DF-WK-4 / DF-WK-5
-        let _endpoints = webview_state.borrow_mut().create_worker_channel(worker_id.clone());
+        let (sc_rx, sc_tx) = webview_state.borrow_mut()
+            .create_worker_channel_structured(worker_id.clone());
+
+        // Create the WebWorker with structured-clone channel integration.
+        // The worker thread receives page→worker messages via sc_rx and
+        // sends worker→page messages via sc_tx, integrated with the bridge.
+        // @trace REQ-BRW-004 [criterion:6] Structured Clone message serialization
+        // @trace REQ-BRW-004 [criterion:7] Worker thread own Runtime/JSContext
+        // @trace REQ-BRW-004 [criterion:1] new Worker(url) creates worker thread
+        let web_worker = bao_engine::WebWorker::new_with_structured_clone(
+            script,
+            Some(scope_init),
+            sc_rx,
+            sc_tx,
+        ).map_err(|_| BrowserError::Init("Failed to create WebWorker".into()))?;
 
         // Register DedicatedWorkerGlobalScope state for CDP observability
         // and stealth consistency verification.
@@ -264,13 +280,23 @@ impl BaoRuntime {
         // Generate WorkerId
         let worker_id = crate::delegate::WorkerId(url.to_string());
 
+        // Create WorkerHandle early — need global_addr_slot for scope_init
+        // so the worker thread can write its global address for REALM_PROFILES
+        // cleanup on teardown (criterion #18).
+        // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
+        let handle = WorkerHandle::new(url.to_string());
+        let global_addr_slot = handle.worker_global_addr_arc();
+
         // Try to create via the script loading pipeline
         // @trace REQ-BRW-004 [DF-WK-2] Worker script loading pipeline
-        let result = crate::runtime_bridge::create_worker_with_script_loader(loader, scope_config.clone());
+        let result = crate::runtime_bridge::create_worker_with_script_loader(
+            loader,
+            scope_config.clone(),
+            Some(global_addr_slot),
+        );
 
         match result {
             Ok(web_worker) => {
-                let handle = WorkerHandle::new(url.to_string());
 
                 // Create channel bridge (DF-WK-4/5)
                 let _endpoints = webview_state.borrow_mut().create_worker_channel(worker_id.clone());

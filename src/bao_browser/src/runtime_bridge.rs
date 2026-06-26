@@ -1243,14 +1243,26 @@ pub type WorkerScopeInitFn = Box<dyn FnOnce(*mut mozjs::jsapi::JSContext, *mut m
 
 /// Create a scope initialization callback for a Worker thread.
 ///
-/// Takes the parent page's `WorkerScopeConfig` and returns a `WorkerScopeInitFn`
-/// that installs DedicatedWorkerGlobalScope APIs and stealth properties
-/// on the Worker's global object.
+/// Takes the parent page's `WorkerScopeConfig` and an optional shared
+/// `global_addr_slot` (from `WorkerHandle::worker_global_addr`). When the
+/// Worker's global object is created, the callback writes the global address
+/// into the slot so the main thread can later use it for REALM_PROFILES
+/// unregistration (SPEC criterion #18).
 ///
 /// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
 /// @trace REQ-BRW-004 [criterion:12..17] stealth consistency
-pub fn create_worker_scope_init(config: crate::delegate::WorkerScopeConfig) -> WorkerScopeInitFn {
+/// @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
+pub fn create_worker_scope_init(
+    config: crate::delegate::WorkerScopeConfig,
+    global_addr_slot: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+) -> WorkerScopeInitFn {
     Box::new(move |raw_cx: *mut mozjs::jsapi::JSContext, global: *mut mozjs::jsapi::JSObject| {
+        // Write the Worker's global address to the shared slot so the
+        // main thread's WorkerHandle can use it for REALM_PROFILES cleanup.
+        // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
+        if let Some(ref slot) = global_addr_slot {
+            slot.store(global as usize as u64, std::sync::atomic::Ordering::Release);
+        }
         unsafe { worker_scope_init_native(raw_cx, global, &config); }
     })
 }
@@ -1271,9 +1283,11 @@ pub fn create_worker_scope_init(config: crate::delegate::WorkerScopeConfig) -> W
 /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
 /// @trace REQ-BRW-004 [criterion:1] new Worker(url) creates worker thread
 /// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope API
+/// @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
 pub fn create_worker_with_script_loader(
     loader: crate::delegate::WorkerScriptLoader,
     config: crate::delegate::WorkerScopeConfig,
+    global_addr_slot: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<WebWorker, String> {
     use crate::delegate::{WorkerScriptSource, WorkerScriptLoadError};
 
@@ -1321,7 +1335,7 @@ pub fn create_worker_with_script_loader(
     };
 
     // Create the scope init callback
-    let scope_init = create_worker_scope_init(config);
+    let scope_init = create_worker_scope_init(config, global_addr_slot);
 
     // Create the WebWorker with the resolved script
     WebWorker::new_with_scope_init(&script_content, Some(scope_init))
@@ -1334,11 +1348,13 @@ pub fn create_worker_with_script_loader(
 /// (data: URLs, blob: URLs, or direct script strings).
 ///
 /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
+/// @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
 pub fn create_worker_with_inline_script(
     script: &str,
     config: crate::delegate::WorkerScopeConfig,
+    global_addr_slot: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<WebWorker, String> {
-    let scope_init = create_worker_scope_init(config);
+    let scope_init = create_worker_scope_init(config, global_addr_slot);
     WebWorker::new_with_scope_init(script, Some(scope_init))
         .map_err(|_| "Failed to create WebWorker".to_string())
 }
