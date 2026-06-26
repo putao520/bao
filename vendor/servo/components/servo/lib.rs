@@ -76,6 +76,30 @@ pub fn register_script_thread_callback(
 ) {
     script::script_thread::register_embedder_callback(webview_id, callback);
 }
+
+/// Register a callback to be executed on the Worker thread the next time a
+/// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
+/// constructing the Worker global object.
+///
+/// The callback receives `(cx: *mut c_void, global: *mut c_void)` which are
+/// actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+/// Cast them to the correct types in your callback.
+///
+/// This enables embedders (e.g., Bao) to register Rust host functions on
+/// the Worker's global object (DedicatedWorkerGlobalScope), making them
+/// available to Worker-scoped JavaScript. It is the Worker-scope analogue
+/// of `register_script_thread_callback`.
+///
+/// Use case (Bao): inject stealth profile inheritance (DEC-WK-007),
+/// establish WorkerHandle lifecycle tracking (DF-WK-1), and hook
+/// self.close()/importScripts natives (REQ-BRW-004 criteria #4/#5/#8).
+///
+/// Bao vendor patch (DEC-WK-001 / TASK-1: servo-native Worker path).
+pub fn register_worker_scope_callback(
+    callback: Box<dyn FnOnce(*mut std::ffi::c_void, *mut std::ffi::c_void) + Send>,
+) {
+    script::script_thread::register_worker_scope_callback(callback);
+}
 pub use servo_geometry::{
     DeviceIndependentIntRect, DeviceIndependentPixel, convert_rect_to_css_pixel,
 };

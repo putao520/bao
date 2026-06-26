@@ -40,6 +40,7 @@ use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::DomRoot;
+use crate::DomObject;
 use crate::dom::bindings::str::DOMString;
 use crate::dom::bindings::structuredclone;
 use crate::dom::bindings::trace::{CustomTraceable, RootedTraceableBox};
@@ -501,6 +502,34 @@ impl DedicatedWorkerGlobalScope {
                 );
                 let scope = global.upcast::<WorkerGlobalScope>();
                 let global_scope = global.upcast::<GlobalScope>();
+
+                // Bao vendor patch (DEC-WK-001 / TASK-1): drain embedder Worker scope
+                // callbacks so Bao can inject stealth profile + lifecycle hooks on the
+                // Worker thread (per BCE-20260621-001: DOM↔Node interop must happen on
+                // the owning thread). This mirrors `handle_evaluate_javascript`'s
+                // drain of `register_script_thread_callback`.
+                //
+                // The callback receives `(cx: *mut JSContext, global: *mut JSObject)`:
+                //   - cx: the Worker thread's SpiderMonkey JSContext
+                //   - global: the DedicatedWorkerGlobalScope JSObject
+                //
+                // Use case (Bao): install stealth profile inheritance (DEC-WK-007),
+                // WorkerHandle + WorkerChannelBridge tracking (DF-WK-1), and hook
+                // self.close()/importScripts natives (REQ-BRW-004 #4/#5/#8).
+                //
+                // Callbacks fire once per Worker scope creation; they are not scoped
+                // to a specific WebView because Workers are created via servo's DOM
+                // Worker::Constructor (https/http URLs only — DEC-WK-003 dual-track).
+                // @trace DEC-WK-001 servo-native Worker path (vendor patch)
+                // @trace REQ-BRW-004 [criterion:1,3,7] Worker thread owns Runtime/JSContext
+                for callback in crate::script_thread::drain_worker_scope_callbacks() {
+                    unsafe {
+                        callback(
+                            cx.raw_cx_no_gc() as *mut std::ffi::c_void,
+                            global_scope.reflector().get_jsobject().get() as *mut std::ffi::c_void,
+                        );
+                    }
+                }
 
                 let fetch_client = ModuleFetchClient {
                     insecure_requests_policy,

@@ -204,6 +204,63 @@ fn drain_embedder_callbacks(webview_id: WebViewId) -> Vec<EmbedderScriptCallback
     matching.into_iter().map(|(_, cb)| cb).collect()
 }
 
+// ============================================================================
+// Embedder Worker Scope Callbacks (Bao vendor patch — DEC-WK-001 / TASK-1)
+// ============================================================================
+// Mirrors `register_embedder_callback` but for servo-native DOM Worker scope
+// creation. When `DedicatedWorkerGlobalScope::run_worker_scope` finishes
+// building the Worker's global object, it drains these callbacks so the
+// embedder (Bao) can inject stealth profile + lifecycle tracking hooks on the
+// same thread that owns the Worker's JSContext (per BCE-20260621-001:
+// DOM/Node interop must happen on the owning thread).
+//
+// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
+// are the Worker thread's JSContext and DedicatedWorkerGlobalScope global.
+// Bao uses this to:
+//   - register a WorkerHandle + WorkerChannelBridge (DF-WK-1)
+//   - install stealth profile inheritance (DEC-WK-007 / CRIT-STL-WK)
+//   - hook self.close()/importScripts natives (criteria #4/#5/#8)
+//
+// Path routing (DEC-WK-003 dual-track):
+//   - https/http Worker scripts → servo DOM Worker → this callback fires
+//   - data:/blob:/file:/inline  → bao_engine::WebWorker (bypass, no servo DOM)
+type EmbedderWorkerScopeCallback = Box<dyn FnOnce(*mut c_void, *mut c_void) + Send>;
+
+static EMBEDDER_WORKER_SCOPE_CALLBACKS: std::sync::Mutex<Vec<EmbedderWorkerScopeCallback>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Register a callback to be executed on the Worker thread the next time a
+/// servo-native `DedicatedWorkerGlobalScope::run_worker_scope` finishes
+/// constructing the Worker global object.
+///
+/// The callback receives `(cx: *mut JSContext, global: *mut JSObject)` which
+/// are actually `(*mut mozjs::jsapi::JSContext, *mut mozjs::jsapi::JSObject)`.
+/// It runs on the Worker thread (not the ScriptThread).
+///
+/// Unlike the script-thread variant, callbacks registered here are not
+/// scoped to a specific WebView — Worker scope callbacks fire for any
+/// DedicatedWorker created via servo's DOM `new Worker()` constructor. This
+/// matches the embedder's need to uniformly inject stealth hooks across all
+/// Workers (DEC-WK-001: all three Worker types go through servo native path).
+pub fn register_worker_scope_callback(callback: EmbedderWorkerScopeCallback) {
+    EMBEDDER_WORKER_SCOPE_CALLBACKS
+        .lock()
+        .unwrap()
+        .push(callback);
+}
+
+/// Drain all pending Worker scope callbacks.
+///
+/// Called once per Worker scope creation; each callback runs at most once.
+/// This must be invoked from the Worker thread after the Worker's global
+/// object is constructed but before the event loop starts processing
+/// messages — see `DedicatedWorkerGlobalScope::run_worker_scope`.
+pub(crate) fn drain_worker_scope_callbacks() -> Vec<EmbedderWorkerScopeCallback> {
+    let mut guard = EMBEDDER_WORKER_SCOPE_CALLBACKS.lock().unwrap();
+    let drained: Vec<_> = guard.drain(..).collect();
+    drained
+}
+
 thread_local!(static SCRIPT_THREAD_ROOT: Cell<Option<*const ScriptThread>> = const { Cell::new(None) });
 
 fn with_optional_script_thread<R>(f: impl FnOnce(Option<&ScriptThread>) -> R) -> R {

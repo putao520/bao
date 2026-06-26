@@ -37,6 +37,10 @@ pub use delegate::{
     WorkerScriptType, WorkerScriptLoader, WorkerScriptLoadState,
     is_javascript_mime_type,
     BaoWebViewState,
+    ServiceWorkerHandle, ServiceWorkerRegistrationId,
+    ServiceWorkerRegistrationState, ServiceWorkerFetchInterceptMode,
+    ServiceWorkerGlobalScopeState, ServiceWorkerScopeConfig,
+    ServiceWorkerFetchEvent, ServiceWorkerRegistrationTracking,
 };
 pub use error::BrowserError;
 pub use page::{PageHandle, PageState};
@@ -45,7 +49,8 @@ pub use permission::{Permission, PermissionDenied, PermissionGuard};
 pub use screenshot::{encode_image, ScreenshotFormat};
 pub use runtime_bridge::{BridgeChannel, BridgeCommand, BridgeReceiver, BridgeResponse, EvaluateResult, RuntimeBridge,
     WorkerScopeInitFn, create_worker_scope_init,
-    create_worker_with_script_loader, create_worker_with_inline_script};
+    create_worker_with_script_loader, create_worker_with_inline_script,
+    register_worker_scope_callback_native};
 
 use std::rc::Rc;
 use std::sync::Arc;
