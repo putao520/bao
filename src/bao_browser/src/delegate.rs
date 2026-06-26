@@ -1179,6 +1179,12 @@ pub struct WorkerTeardownResult {
     pub realm_profile_unregistered: bool,
     /// Whether the closing flag was set (should always be true).
     pub closing_flag_set: bool,
+    /// True when the worker never registered a stealth profile (global
+    /// address was zero at teardown). Such a teardown is still crash-safe
+    /// because there is nothing to unregister — distinguishes "never
+    /// registered" (acceptable) from "registered but leaked" (regression).
+    /// @trace REQ-BRW-004 [criterion:18]
+    pub never_registered: bool,
 }
 
 impl WorkerTeardownResult {
@@ -1188,6 +1194,8 @@ impl WorkerTeardownResult {
     /// - The closing flag was set (worker was signaled to stop)
     /// - The thread was joined (no dangling threads)
     /// - The REALM_PROFILES entry was unregistered (no stale entries)
+    ///   — OR the worker never registered a profile (never_registered=true,
+    ///   i.e. it failed before scope_init, so there is nothing to leak)
     ///
     /// If `thread_joined` is false, the worker thread may still be running
     /// (detached after timeout). This is not ideal but is safe because:
@@ -1197,7 +1205,9 @@ impl WorkerTeardownResult {
     ///
     /// @trace REQ-BRW-004 [criterion:18]
     pub fn is_crash_safe(&self) -> bool {
-        self.closing_flag_set && self.thread_joined
+        self.closing_flag_set
+            && self.thread_joined
+            && (self.realm_profile_unregistered || self.never_registered)
     }
 }
 
@@ -1308,6 +1318,7 @@ pub fn crash_safe_teardown_worker(
         thread_joined,
         realm_profile_unregistered: realm_unregistered,
         closing_flag_set: true,
+        never_registered: handle.worker_global_addr() == 0,
     }
 }
 
@@ -3412,6 +3423,10 @@ impl BaoWebViewState {
             true
         };
 
+        // never_registered: true when no global address was ever set (worker
+        // failed before scope_init) — such a teardown is still crash-safe.
+        let never_registered = guard.handle().worker_global_addr() == 0;
+
         // Clean up associated state
         self.worker_channels.remove(worker_id);
         self.dedicated_worker_scopes.remove(worker_id);
@@ -3422,6 +3437,7 @@ impl BaoWebViewState {
             thread_joined,
             realm_profile_unregistered: realm_unregistered,
             closing_flag_set: true,
+            never_registered,
         })
     }
 
@@ -5668,6 +5684,7 @@ mod tests {
             thread_joined: true,
             realm_profile_unregistered: true,
             closing_flag_set: true,
+            never_registered: false,
         };
         assert!(result.is_crash_safe());
     }
@@ -5679,6 +5696,7 @@ mod tests {
             thread_joined: false,
             realm_profile_unregistered: true,
             closing_flag_set: true,
+            never_registered: false,
         };
         assert!(!result.is_crash_safe());
     }
@@ -5690,6 +5708,7 @@ mod tests {
             thread_joined: true,
             realm_profile_unregistered: true,
             closing_flag_set: false,
+            never_registered: false,
         };
         assert!(!result.is_crash_safe());
     }

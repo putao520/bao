@@ -1385,8 +1385,14 @@ unsafe fn worker_scope_init_native(
 
     // @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope API
     // Install the standard Web APIs that DedicatedWorkerGlobalScope requires:
-    // self/close/importScripts/setTimeout/fetch/crypto/performance/location/navigator
-    // These are the same host functions used by the Page Realm's Window global.
+    // setTimeout/fetch/crypto/performance/location/navigator/queueMicrotask/
+    // structuredClone/atob/btoa/web encodings.
+    //
+    // NOTE: self/close/importScripts are installed by `install_worker_lifecycle_natives`
+    // in bun_sm/src/web_worker.rs, which runs on the worker thread BEFORE this
+    // scope_init callback. This keeps the lifecycle natives (which need the
+    // closing flag) in the engine layer, and the Web APIs (which need
+    // bun_runtime) in the browser layer.
     let cx_nn = match NonNull::new(raw_cx) {
         Some(nn) => nn,
         None => return,

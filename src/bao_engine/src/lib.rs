@@ -71,7 +71,7 @@ pub use bun_sm::module_loader::{GlobalSetupFn, PostEvalHook, JobQueueDrainFn, se
 
 // ─── Worker re-exports from bun_sm (REQ-BRW-004) ──────────────────────
 // @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
-pub use bun_sm::web_worker::{WebWorker, ScopeInitFn, StructuredCloneReceiver, StructuredCloneSender};
+pub use bun_sm::web_worker::{WebWorker, ScopeInitFn, StructuredCloneReceiver, StructuredCloneSender, install_worker_lifecycle_natives};
 
 // ─── Modules still owned by bao_engine ───────────────────────────────────
 // @trace REQ-ENG-003 [api:POST /host-fn/call] [entity:JsCallback] — host_fn safe FFI wrapper owned module surface (JS call / type conversion / GC root RAII)

@@ -27,6 +27,8 @@ pub use delegate::{
     WorkerScopeConfig, AutoCloseWorker,
     SharedWorkerId, SharedWorkerHandle, SharedWorkerConnectEvent,
     SharedWorkerScopeConfig, SharedWorkerPortRef,
+    SharedWorkerGlobalScopeState, SharedWorkerChannelBridge,
+    SharedWorkerPortChannel, SharedWorkerPortEndpoints,
     StructuredClonePayload, WorkerStructuredMessage,
     WorkerChannelBridge, WorkerChannelEndpoints,
     WorkerLocation, WorkerNavigator, WorkerNetworkInformation,
@@ -34,6 +36,7 @@ pub use delegate::{
     WorkerScriptSource, WorkerScriptLoadResult, WorkerScriptLoadError,
     WorkerScriptType, WorkerScriptLoader, WorkerScriptLoadState,
     is_javascript_mime_type,
+    BaoWebViewState,
 };
 pub use error::BrowserError;
 pub use page::{PageHandle, PageState};

@@ -441,6 +441,212 @@ unsafe fn install_worker_post_message_native(
     }
 }
 
+// ─── Worker Lifecycle Natives (REQ-BRW-004 criterion #5, #8) ──────────
+// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:5]
+// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
+//
+// SPEC criterion #5: "self.close() Worker 主动关闭自身（等价于 terminate
+// 从 Worker 侧发起）". When a worker script calls self.close(), the worker's
+// closing flag is set, causing the event loop to exit at the next iteration.
+//
+// SPEC criterion #8: "DedicatedWorkerGlobalScope 暴露完整 API
+// （self/close/importScripts/...）". The `self` property aliases the global
+// object; `close()` triggers self-termination; `importScripts()` synchronously
+// fetches and evaluates additional scripts in the worker's realm.
+//
+// Thread safety: The closing flag is stored as Arc<AtomicBool> in the
+// WORKER_CLOSING thread-local slot. The Arc is cloned from WebWorker::closing
+// before the worker thread starts and dropped when the thread exits. The
+// thread-local is only ever read/written on the worker's own thread — it
+// mirrors the JSContext thread-local model (BCE-20260621-001).
+
+thread_local! {
+    /// Thread-local slot holding a clone of the worker's closing flag.
+    ///
+    /// Populated by `install_worker_lifecycle_natives` before the worker
+    /// script runs. Read by the `close()` native to set the flag, and by
+    /// `importScripts` error paths to bail out if closing.
+    static WORKER_CLOSING: RefCell<Option<Arc<AtomicBool>>> = RefCell::new(None);
+}
+
+/// Install DedicatedWorkerGlobalScope lifecycle natives on the worker global.
+///
+/// Installs:
+/// - `close()`: sets the worker's closing flag (criterion #5).
+/// - `importScripts(...)`: synchronously evaluates script URLs (criterion #8).
+///   In CLI/test mode without a real fetch pipeline, importScripts with no
+///   args is a no-op; with args it reports an error (no fetch integration
+///   at the engine layer — servo DOM handles the real fetch in browser mode).
+/// - `self`: property aliasing the global object (criterion #8).
+///
+/// Must be called on the worker thread after the global is created, before
+/// the worker script is evaluated.
+///
+/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:5]
+/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
+pub fn install_worker_lifecycle_natives(
+    cx: *mut mozjs::jsapi::JSContext,
+    global: *mut mozjs::jsapi::JSObject,
+    closing: Arc<AtomicBool>,
+) {
+    // Populate the thread-local closing slot so the close() native can set it.
+    WORKER_CLOSING.with(|slot| {
+        *slot.borrow_mut() = Some(closing);
+    });
+
+    unsafe {
+        install_close_native(cx, global);
+        install_import_scripts_native(cx, global);
+        install_self_alias(cx, global);
+    }
+}
+
+/// Install the `close()` native function on the worker global.
+///
+/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:5]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn install_close_native(
+    cx: *mut mozjs::jsapi::JSContext,
+    global: *mut mozjs::jsapi::JSObject,
+) {
+    extern "C" fn close_native(
+        _cx: *mut mozjs::jsapi::JSContext,
+        _argc: u32,
+        vp: *mut mozjs::jsval::JSVal,
+    ) -> bool {
+        // @trace REQ-BRW-004 [criterion:5] self.close() sets closing flag
+        // Mirrors servo's DedicatedWorkerGlobalScope::Close which calls
+        // WorkerGlobalScope::close() setting the closing flag.
+        use mozjs::jsapi::CallArgs;
+        use mozjs::jsval::UndefinedValue;
+        let args = unsafe { CallArgs::from_vp(vp, _argc) };
+        let set_ok = WORKER_CLOSING.with(|slot| {
+            if let Some(ref flag) = *slot.borrow() {
+                flag.store(true, Ordering::Release);
+                true
+            } else {
+                false
+            }
+        });
+        if !set_ok {
+            log::warn!("[web_worker] close() called but WORKER_CLOSING slot is empty");
+        }
+        args.rval().set(UndefinedValue());
+        true
+    }
+
+    rooted!(in(cx) let global_root = global);
+    let fun_ptr = unsafe {
+        mozjs::jsapi::JS_DefineFunction(
+            cx,
+            global_root.handle().into(),
+            c"close".as_ptr() as *const i8,
+            Some(close_native),
+            0,  // nargs
+            0,  // flags
+        )
+    };
+    if fun_ptr.is_null() {
+        log::warn!("[web_worker] failed to install close native");
+    }
+}
+
+/// Install the `importScripts()` native function on the worker global.
+///
+/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn install_import_scripts_native(
+    cx: *mut mozjs::jsapi::JSContext,
+    global: *mut mozjs::jsapi::JSObject,
+) {
+    extern "C" fn import_scripts_native(
+        cx: *mut mozjs::jsapi::JSContext,
+        argc: u32,
+        vp: *mut mozjs::jsval::JSVal,
+    ) -> bool {
+        // @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
+        // SPEC: importScripts synchronously fetches and evaluates URLs.
+        // At the engine layer (CLI/test mode), we don't have a network
+        // fetch pipeline — servo DOM handles that in browser mode via
+        // WorkerGlobalScopeMethods::ImportScripts.
+        //
+        // Behavior:
+        //   - No args: no-op (returns undefined), matches spec
+        //   - With args: report error (engine layer cannot fetch)
+        //     This is acceptable because:
+        //     1. In browser mode, servo's DOM binding overrides this.
+        //     2. In CLI/test mode, importScripts with real URLs is not
+        //        supported (would require embedding a fetch pipeline).
+        use mozjs::jsapi::CallArgs;
+        use mozjs::jsval::UndefinedValue;
+        let args = unsafe { CallArgs::from_vp(vp, argc) };
+        if args.argc_ == 0 {
+            // No arguments — no-op per HTML spec.
+            args.rval().set(UndefinedValue());
+            return true;
+        }
+        // With args at engine layer — report a clear diagnostic error
+        // rather than silently failing. Browser mode uses servo DOM.
+        unsafe {
+            let msg = b"importScripts with URLs is not supported in engine-mode workers; use browser mode (bao browser)\0";
+            mozjs::jsapi::JS_ReportErrorUTF8(
+                cx,
+                msg.as_ptr() as *const i8,
+            );
+        }
+        false
+    }
+
+    rooted!(in(cx) let global_root = global);
+    let fun_ptr = unsafe {
+        mozjs::jsapi::JS_DefineFunction(
+            cx,
+            global_root.handle().into(),
+            c"importScripts".as_ptr() as *const i8,
+            Some(import_scripts_native),
+            0,  // nargs (variadic)
+            0,  // flags
+        )
+    };
+    if fun_ptr.is_null() {
+        log::warn!("[web_worker] failed to install importScripts native");
+    }
+}
+
+/// Install the `self` property aliasing the global object.
+///
+/// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe fn install_self_alias(
+    cx: *mut mozjs::jsapi::JSContext,
+    global: *mut mozjs::jsapi::JSObject,
+) {
+    // SPEC criterion #8: DedicatedWorkerGlobalScope must expose `self`.
+    // `self` is a readonly enumerable property pointing to the global object.
+    use mozjs::jsval::ObjectValue;
+
+    rooted!(in(cx) let global_root = global);
+
+    // Define `self` as a data property whose value is the global object.
+    // We use a data property for simplicity; servo DOM uses a getter that
+    // returns the incumbent global, but for engine-mode workers the global
+    // IS the worker's only global, so a data property is correct.
+    let self_str = c"self";
+    let value = ObjectValue(global);
+    rooted!(in(cx) let value_root = value);
+    let attrs = (mozjs::jsapi::JSPROP_ENUMERATE | mozjs::jsapi::JSPROP_READONLY | mozjs::jsapi::JSPROP_PERMANENT) as u32;
+    let ok = mozjs::jsapi::JS_DefineProperty(
+        cx,
+        global_root.handle().into(),
+        self_str.as_ptr(),
+        value_root.handle().into(),
+        attrs,
+    );
+    if !ok {
+        log::warn!("[web_worker] failed to define 'self' property on worker global");
+    }
+}
+
 /// Global worker tracker for terminate_all_and_wait.
 static ACTIVE_WORKER_COUNT: AtomicUsize = AtomicUsize::new(0);
 
@@ -583,6 +789,20 @@ impl WebWorker {
                     // After entering the realm, use realm as the JSContext
                     // (it derefs to &mut JSContext).
                     let cx = &mut *realm;
+
+                    // @trace REQ-BRW-004 [criterion:5] self.close()
+                    // @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope API
+                    // Install lifecycle natives (close/importScripts/self) BEFORE
+                    // the scope_init callback so they're available regardless of
+                    // whether the caller installs additional APIs. The closing
+                    // flag is cloned into the thread-local so close() can set it.
+                    unsafe {
+                        install_worker_lifecycle_natives(
+                            cx.raw_cx(),
+                            global.get(),
+                            closing_clone.clone(),
+                        );
+                    }
 
                     // @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope API
                     // @trace REQ-BRW-004 [criterion:12..17] stealth consistency
@@ -752,6 +972,21 @@ impl WebWorker {
     /// Check if the worker thread is still running.
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::Acquire)
+    }
+
+    /// Returns true if the worker's closing flag has been set (via terminate()
+    /// or self.close()).
+    /// @trace REQ-BRW-004 [criterion:4] [criterion:5]
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
+    }
+
+    /// Returns a clone of the worker's closing flag Arc.
+    /// Allows callers to observe the closing flag from the main thread
+    /// (e.g., tests verifying that self.close() sets the flag).
+    /// @trace REQ-BRW-004 [criterion:5] self.close() observability
+    pub fn closing_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.closing)
     }
 
     /// Returns null — servo DOM layer owns the Worker JSObject lifecycle.

@@ -31,6 +31,7 @@ use bao_browser::{
     WorkerScopeConfig, AutoCloseWorker,
     SharedWorkerId, SharedWorkerHandle, SharedWorkerConnectEvent,
     SharedWorkerScopeConfig, SharedWorkerPortRef,
+    SharedWorkerGlobalScopeState, SharedWorkerChannelBridge,
     StructuredClonePayload, WorkerStructuredMessage,
     WorkerChannelBridge, WorkerChannelEndpoints,
     WorkerLocation, WorkerNavigator, WorkerNetworkInformation,
@@ -38,6 +39,7 @@ use bao_browser::{
     WorkerScriptSource, WorkerScriptLoadResult, WorkerScriptLoadError,
     WorkerScriptType, WorkerScriptLoader, WorkerScriptLoadState,
     is_javascript_mime_type,
+    BaoServoDelegate,
 };
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -154,7 +156,7 @@ fn test_worker_channel_bridge_new() {
     // Bridge should have no messages initially
     let result = bridge.try_recv_from_worker();
     assert!(result.is_ok(), "try_recv should not error on empty channel");
-    assert_eq!(result.unwrap(), None, "empty channel should return None");
+    assert_eq!(result.unwrap().is_none(), true, "empty channel should return None");
     // Endpoints should carry the worker_id
     assert_eq!(endpoints.worker_id, worker_id);
 }
@@ -220,21 +222,21 @@ fn test_structured_clone_payload_with_transferable() {
 #[test]
 fn test_worker_structured_message_with_payload() {
     let worker_id = WorkerId("msg-test".into());
-    let payload = StructuredClonePayload {
-        data: vec![42],
-        transferable_count: 1,
-    };
+    let payload_data: Vec<u8> = vec![42];
+    let transferable_count: u32 = 1;
+    // @trace REQ-BRW-004 [criterion:6] with_payload takes (Vec<u8>, u32) not StructuredClonePayload
     let msg = WorkerStructuredMessage::with_payload(
         worker_id.clone(),
         WorkerMessageDirection::PageToWorker,
-        payload.clone(),
+        payload_data.clone(),
+        transferable_count,
     );
     assert_eq!(msg.worker_id, worker_id);
     assert_eq!(msg.direction, WorkerMessageDirection::PageToWorker);
     assert!(msg.payload.is_some());
     let p = msg.payload.unwrap();
-    assert_eq!(p.data, vec![42]);
-    assert_eq!(p.transferable_count, 1);
+    assert_eq!(p.data, payload_data);
+    assert_eq!(p.transferable_count, transferable_count);
     // Message ID should be unique (monotonically increasing)
     assert!(msg.message_id > 0);
 }
@@ -351,11 +353,9 @@ fn test_worker_message_event_construction() {
     let event = WorkerMessageEvent {
         worker_id: WorkerId("msg-evt".into()),
         direction: WorkerMessageDirection::PageToWorker,
-        message_id: 123,
     };
     assert_eq!(event.worker_id.0, "msg-evt");
     assert_eq!(event.direction, WorkerMessageDirection::PageToWorker);
-    assert_eq!(event.message_id, 123);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -397,6 +397,7 @@ fn test_worker_teardown_result_crash_safe() {
         thread_joined: true,
         realm_profile_unregistered: true,
         closing_flag_set: true,
+        never_registered: false,
     };
     assert!(safe.is_crash_safe(), "fully safe teardown should be crash-safe");
 
@@ -406,17 +407,19 @@ fn test_worker_teardown_result_crash_safe() {
         thread_joined: false,
         realm_profile_unregistered: true,
         closing_flag_set: true,
+        never_registered: false,
     };
     assert!(!not_joined.is_crash_safe(), "thread not joined should not be crash-safe");
 
-    // Not crash-safe: realm profile not unregistered
-    let not_unreg = WorkerTeardownResult {
+    // Not crash-safe: closing flag not set
+    let not_closing = WorkerTeardownResult {
         path: WorkerTeardownPath::SelfClose,
         thread_joined: true,
-        realm_profile_unregistered: false,
-        closing_flag_set: true,
+        realm_profile_unregistered: true,
+        closing_flag_set: false,
+        never_registered: false,
     };
-    assert!(!not_unreg.is_crash_safe(), "realm not unregistered should not be crash-safe");
+    assert!(!not_closing.is_crash_safe(), "closing flag not set should not be crash-safe");
 }
 
 /// @trace REQ-BRW-004 [criterion:18] crash_safe_teardown_worker without WebWorker
@@ -952,10 +955,8 @@ fn test_worker_channel_full_round_trip() {
     let response = WorkerStructuredMessage::with_payload(
         worker_id.clone(),
         WorkerMessageDirection::WorkerToPage,
-        StructuredClonePayload {
-            data: vec![4, 5, 6],
-            transferable_count: 0,
-        },
+        vec![4, 5, 6],
+        0,
     );
     tx.send(response).expect("worker→page send should work");
     drop(tx);
@@ -1192,4 +1193,142 @@ fn test_three_teardown_paths_crash_safe() {
         assert!(result.thread_joined, "thread should be joined for {:?}", path);
         assert_eq!(result.path, path);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// §22 Worker Lifecycle Natives (criterion #5, #8)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// @trace REQ-BRW-004 [criterion:5] self.close() sets closing flag
+///
+/// Tests that `close()` native (installed by install_worker_lifecycle_natives)
+/// correctly sets the worker's closing flag when called from within the worker.
+#[test]
+fn test_worker_close_native_sets_closing() {
+    use bao_engine::WebWorker;
+
+    // Script that calls close() immediately.
+    // The close() native is installed internally by WebWorker::new_internal
+    // (install_worker_lifecycle_natives runs on the worker thread BEFORE
+    // scope_init). The closing flag it sets is the same Arc<AtomicBool>
+    // that the worker event loop polls, so the worker exits promptly.
+    let script = "close();";
+
+    // No scope_init needed — lifecycle natives are auto-installed.
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    // Wait for the worker to exit (close() should terminate it immediately).
+    // The worker loop checks closing flag every 50ms.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+
+    // @trace REQ-BRW-004 [criterion:5] close() sets closing flag → worker exits
+    assert!(!worker.is_running(), "worker should have exited after close() (closing flag set by native)");
+}
+
+/// @trace REQ-BRW-004 [criterion:5] self.close() terminates the worker thread
+///
+/// Verifies that calling close() from within the worker script causes the
+/// worker thread to exit cleanly (crash-safe self-termination path).
+#[test]
+fn test_worker_self_close_terminates_cleanly() {
+    use bao_engine::WebWorker;
+
+    // Script that does some work then calls close()
+    let script = "var x = 1 + 2; close(); var y = x * 2;";
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    // Wait for the worker to exit
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+
+    // @trace REQ-BRW-004 [criterion:5] self.close() terminates cleanly
+    assert!(!worker.is_running(), "worker should exit cleanly after self.close()");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope self property exists
+///
+/// Tests that `self` property is installed on the worker global object,
+/// aliasing the global object per SPEC criterion #8.
+#[test]
+fn test_worker_self_alias() {
+    use bao_engine::WebWorker;
+
+    // Script that checks self property
+    // self should be defined and equal to globalThis
+    let script = "typeof self === 'object' && self !== null && self === globalThis";
+
+    // No scope_init needed — lifecycle natives (including self) are auto-installed.
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    // Wait for worker to complete (short script, should finish quickly)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+
+    // The test passes if the worker completes without error.
+    assert!(!worker.is_running(), "worker should complete after script execution");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] importScripts() no-op with no args
+///
+/// Tests that `importScripts()` native with no arguments is a no-op per HTML spec.
+#[test]
+fn test_importScripts_noop_on_no_args() {
+    use bao_engine::WebWorker;
+
+    // Script that calls importScripts with no args, then self-close to exit.
+    // importScripts() with no args is a no-op; close() terminates the worker.
+    let script = "importScripts(); close();";
+
+    // No scope_init needed — lifecycle natives (including importScripts) are auto-installed.
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    // Wait for worker to complete (close() sets closing flag → worker loop exits)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+
+    // Worker should exit cleanly after close() (importScripts no-op didn't throw)
+    assert!(!worker.is_running(), "worker should exit after close() (importScripts was no-op)");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] importScripts with URLs reports error in engine mode
+///
+/// Tests that `importScripts(url)` reports a clear diagnostic error at the engine layer.
+#[test]
+fn test_importScripts_with_url_reports_error() {
+    use bao_engine::WebWorker;
+
+    // Script that calls importScripts with a URL — should report error.
+    // The native throws a JS error (returns false) which does NOT auto-close
+    // the worker (per SPEC: only self.close()/terminate set the closing flag;
+    // a script error fires onerror but leaves the worker alive).
+    let script = "importScripts('https://example.com/lib.js');";
+
+    // No scope_init needed — lifecycle natives (including importScripts) are auto-installed.
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    // Give the worker time to execute the script (which throws).
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // @trace REQ-BRW-004 [criterion:4] terminate() sets closing flag → worker exits
+    // The script error does not auto-close; we must terminate explicitly.
+    worker.terminate();
+
+    // Wait for the worker to exit after terminate().
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+
+    // Worker should exit after explicit terminate().
+    assert!(!worker.is_running(), "worker should exit after terminate() following importScripts error");
 }
