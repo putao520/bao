@@ -1899,7 +1899,12 @@ impl Drop for AutoCloseWorker {
         // or panic unwinding), we perform crash-safe teardown:
         // 1. Set the closing flag (signals worker event loop to exit)
         // 2. Unregister the Worker's stealth profile from REALM_PROFILES
-        // 3. Mark the Worker as terminated (for reap_terminated_workers)
+        // 3. Mark as terminated (RAII guarantee — when the guard is dropped,
+        //    the Worker is considered terminated regardless of thread state)
+        //
+        // The `terminated` flag is set here as an RAII guarantee. In the normal
+        // flow, terminate_all_workers() also sets terminated (after joining threads).
+        // Both paths are idempotent — mark_terminated() just sets an AtomicBool.
         //
         // The actual thread join is handled by either:
         // - WebWorker::Drop (for bao_engine workers), triggered when
@@ -1918,7 +1923,10 @@ impl Drop for AutoCloseWorker {
         // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
         // Unregister the Worker's stealth profile to prevent stale entries.
         self.handle.unregister_stealth_profile();
-        // Mark terminated so reap_terminated_workers can clean up.
+        // @trace REQ-BRW-004 [criterion:18] mark terminated (RAII guarantee)
+        // Mark terminated as RAII guarantee — the guard is the last line of defense.
+        // In the normal terminate_all_workers() flow, this runs after thread join.
+        // In the RAII Drop path (panic/BaoRuntime::drop), this is the final cleanup.
         self.handle.mark_terminated();
     }
 }
@@ -3284,8 +3292,6 @@ impl BaoWebViewState {
             // is still valid (before JSContext destruction).
             // @trace REQ-BRW-004 [criterion:18] REALM_PROFILES 条目注销
             guard.handle().unregister_stealth_profile();
-            // Mark as terminated so reap_terminated_workers can clean up.
-            guard.handle().mark_terminated();
         }
         // @trace REQ-BRW-004 [entity:Worker] [criterion:6] DF-WK-4 / DF-WK-5
         // Clear all channel bridges — dropping the senders/receivers signals
@@ -3305,6 +3311,14 @@ impl BaoWebViewState {
         // pthread_mutex_destroy returning EBUSY during TLS teardown does not
         // cause SIGSEGV, which was the root cause of PagePool 混沌 SIGSEGV.
         self.web_workers.clear();
+        // Phase 3: Mark all Workers as terminated after their threads have been joined.
+        // Now that WebWorker::Drop has joined the threads, the Worker threads have
+        // fully exited and their JSContexts are destroyed. Mark them terminated so
+        // reap_terminated_workers can clean up the tracking state.
+        // @trace REQ-BRW-004 [criterion:18] mark terminated after thread join
+        for guard in &self.active_workers {
+            guard.handle().mark_terminated();
+        }
     }
 
     /// Remove fully-terminated Workers from the tracking list.
@@ -5340,10 +5354,9 @@ mod tests {
     fn test_webview_state_reap_all_terminated() {
         let mut state = BaoWebViewState::default();
         state.track_worker(WorkerHandle::new("worker1.js".to_string()));
+        // terminate_all_workers() marks workers as terminated (Phase 3)
         state.terminate_all_workers();
-        for g in &state.active_workers {
-            g.handle().mark_terminated();
-        }
+        // reap_terminated_workers cleans up the tracking state
         state.reap_terminated_workers();
         assert!(state.active_workers.is_empty());
         assert_eq!(state.active_worker_count(), 0);
@@ -5418,16 +5431,15 @@ mod tests {
         assert_eq!(state.active_worker_count(), 2);
 
         // Navigation starts: terminate all
+        // terminate_all_workers() performs 3 phases:
+        //   Phase 1: set closing + unregister stealth profiles
+        //   Phase 2: web_workers.clear() (join threads)
+        //   Phase 3: mark terminated (threads have exited)
         state.terminate_all_workers();
         assert!(state.active_workers[0].handle().is_closing());
         assert!(state.active_workers[1].handle().is_closing());
-        // Not yet terminated (threads still running)
-        assert_eq!(state.active_worker_count(), 2);
-
-        // Workers finish teardown
-        for g in &state.active_workers {
-            g.handle().mark_terminated();
-        }
+        // After terminate_all_workers(), workers are marked terminated
+        // (Phase 3 runs after web_workers.clear() joins threads).
         assert_eq!(state.active_worker_count(), 0);
 
         // Load complete: reap

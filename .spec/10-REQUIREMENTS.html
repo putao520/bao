@@ -581,6 +581,74 @@
         
       <div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></div>
 
+      <div id="req-brw-004" data-req="REQ-BRW-004" data-req-status="approved" data-req-domain="BRW" data-req-category="business" data-req-entity="Worker,DedicatedWorkerGlobalScope,WorkerGlobalScope,WorkerLocation,WorkerNavigator" data-req-api="new Worker(url,options),worker.postMessage(msg,transfer),worker.terminate(),self.postMessage(msg,transfer),self.close(),self.addEventListener('message',fn)">
+        <h3>REQ-BRW-004: 浏览器 Web Worker API (Dedicated Worker)</h3>
+        <p>接入 Servo vendor 中的 DOM Worker 实现，支持浏览器风格的 Dedicated Worker（new Worker()），使 bao_browser 支持完整的 Web Worker API。</p>
+        <h4>验收标准</h4>
+        <ul>
+          <li id="new-workerurl-构造函数正常创建-worker-线程并执行脚本" data-criterion="new Worker(url) 构造函数正常创建 Worker 线程并执行脚本" data-criterion-id="REQ-BRW-004-C1">
+            new Worker(url) 构造函数正常创建 Worker 线程并执行脚本
+          </li>
+          <li id="worker.postmessagemsg-主线程向-worker-发送消息，worker-通过-onmessage-接收" data-criterion="worker.postMessage(msg) 主线程向 Worker 发送消息，Worker 通过 onmessage 接收" data-criterion-id="REQ-BRW-004-C2">
+            worker.postMessage(msg) 主线程向 Worker 发送消息，Worker 通过 onmessage 接收
+          </li>
+          <li id="self.postmessagemsg-worker-向主线程发送消息，主线程通过-worker.onmessage-接收" data-criterion="self.postMessage(msg) Worker 向主线程发送消息，主线程通过 worker.onmessage 接收" data-criterion-id="REQ-BRW-004-C3">
+            self.postMessage(msg) Worker 向主线程发送消息，主线程通过 worker.onmessage 接收
+          </li>
+          <li id="worker.terminate-终止-worker-线程（设置-closing-标志-+-js-interrupt-callback-返回-false）" data-criterion="worker.terminate() 终止 Worker 线程（设置 closing 标志 + JS interrupt callback 返回 false）" data-criterion-id="REQ-BRW-004-C4">
+            worker.terminate() 终止 Worker 线程（设置 closing 标志 + JS interrupt callback 返回 false）
+          </li>
+          <li id="self.close-worker-主动关闭自身（等价于-terminate-从-worker-侧发起）" data-criterion="self.close() Worker 主动关闭自身（等价于 terminate 从 Worker 侧发起）" data-criterion-id="REQ-BRW-004-C5">
+            self.close() Worker 主动关闭自身（等价于 terminate 从 Worker 侧发起）
+          </li>
+          <li id="structured-clone-消息序列化支持（对象/数组/buffer/arraybuffer/transferable）" data-criterion="Structured Clone 消息序列化支持（对象/数组/Buffer/ArrayBuffer/Transferable）" data-criterion-id="REQ-BRW-004-C6">
+            Structured Clone 消息序列化支持（对象/数组/Buffer/ArrayBuffer/Transferable）
+          </li>
+          <li id="worker-线程拥有独立-spidermonkey-runtime（runtime::new-with-parent-协作-gc）和-jscontext" data-criterion="Worker 线程拥有独立 SpiderMonkey Runtime（Runtime::new_with_parent 协作 GC）和 JSContext" data-criterion-id="REQ-BRW-004-C7">
+            Worker 线程拥有独立 SpiderMonkey Runtime（Runtime::new_with_parent 协作 GC）和 JSContext
+          </li>
+          <li id="dedicatedworkerglobalscope-暴露完整-api（self/close/importscripts/settimeout/fetch/crypto/performance/location/navigator）" data-criterion="DedicatedWorkerGlobalScope 暴露完整 API（self/close/importScripts/setTimeout/fetch/crypto/performance/location/navigator）" data-criterion-id="REQ-BRW-004-C8">
+            DedicatedWorkerGlobalScope 暴露完整 API（self/close/importScripts/setTimeout/fetch/crypto/performance/location/navigator）
+          </li>
+          <li id="onerror-事件正确传播到主线程（errorevent-包含-message/filename/lineno/colno）" data-criterion="onerror 事件正确传播到主线程（ErrorEvent 包含 message/filename/lineno/colno）" data-criterion-id="REQ-BRW-004-C9">
+            onerror 事件正确传播到主线程（ErrorEvent 包含 message/filename/lineno/colno）
+          </li>
+          <li id="页面卸载时自动终止所有-worker（globalscope::track-worker-+-autocloseworker）" data-criterion="页面卸载时自动终止所有 Worker（GlobalScope::track_worker + AutoCloseWorker）" data-criterion-id="REQ-BRW-004-C10">
+            页面卸载时自动终止所有 Worker（GlobalScope::track_worker + AutoCloseWorker）
+          </li>
+          <li id="bun-sm-webworker-stub-替换为-servo-真实实现（删除-bun-sm/src/web-worker.rs-空壳）" data-criterion="bun_sm::WebWorker stub 替换为 Servo 真实实现（删除 bun_sm/src/web_worker.rs 空壳）" data-criterion-id="REQ-BRW-004-C11">
+            bun_sm::WebWorker stub 替换为 Servo 真实实现（删除 bun_sm/src/web_worker.rs 空壳）
+          </li>
+        </ul>
+        <h4>关联设计</h4>
+        <p>
+          参见 02-SYSTEM.html §3 (Servo 组件分层) · vendor/servo/components/script/dom/workers/ (Servo DOM Worker 实现)
+        </p>
+        <p data-xref-type="req" data-xref-id="REQ-BRW-004">
+          关联实体: <span data-xref-type="entity" data-xref-id="Worker">Worker</span>
+          <span data-xref-type="entity" data-xref-id="DedicatedWorkerGlobalScope">DedicatedWorkerGlobalScope</span>
+          <span data-xref-type="entity" data-xref-id="WorkerGlobalScope">WorkerGlobalScope</span>
+        </p>
+        <p>关联测试: <span data-xref-type="test" data-xref-id="TEST-BRW-004"></span></p>
+        <div data-criteria="">
+          <strong>验收标准（客观可验证）：</strong>
+          <ol>
+            <li>evaluate_js_web("new Worker('worker.js')") 不抛异常，Worker 线程创建成功</li>
+            <li>worker.postMessage({x:1}) → Worker onmessage 收到 {x:1}</li>
+            <li>self.postMessage({y:2}) → 主线程 worker.onmessage 收到 {y:2}</li>
+            <li>worker.terminate() → Worker 线程退出，is_closing == true</li>
+            <li>Worker 内 self.close() → Worker 自行退出</li>
+            <li>Structured Clone 正确序列化/反序列化 {a:[1,2],b:new ArrayBuffer(8)}</li>
+            <li>Worker Runtime 与主线程 Runtime 协作 GC（Runtime::new_with_parent）</li>
+            <li>Worker 内 self.importScripts('lib.js') 正常加载</li>
+            <li>Worker 内 self.setTimeout(fn, 100) 正常触发</li>
+            <li>Worker 内 fetch() 正常发起 HTTP 请求</li>
+            <li>Worker onerror → 主线程 ErrorEvent 包含 message/filename/lineno</li>
+            <li>页面卸载 → 所有 Worker 自动终止</li>
+          </ol>
+        </div>
+      <div data-criterion-id="REQ-BRW-004-C12" data-criterion="CRIT-STL-WK navigator 一致: worker 内 navigator.userAgent/platform/hardwareConcurrency/language(s) === 主线程对应值 (关联 NFR-STL-WORKER-1 / DEC-WK-007)">CRIT-STL-WK navigator 一致: worker 内 navigator.userAgent/platform/hardwareConcurrency/language(s) === 主线程对应值 (关联 NFR-STL-WORKER-1 / DEC-WK-007)</div><div data-criterion-id="REQ-BRW-004-C13" data-criterion="CRIT-STL-WK Canvas 一致: worker 内 OffscreenCanvas toDataURL/getImageData 噪声与主线程同 profile (同 seed 产同结果)">CRIT-STL-WK Canvas 一致: worker 内 OffscreenCanvas toDataURL/getImageData 噪声与主线程同 profile (同 seed 产同结果)</div><div data-criterion-id="REQ-BRW-004-C14" data-criterion="CRIT-STL-WK WebGL 一致: worker 内 WebGL UNMASKED_VENDOR/RENDERER 及参数与主线程一致">CRIT-STL-WK WebGL 一致: worker 内 WebGL UNMASKED_VENDOR/RENDERER 及参数与主线程一致</div><div data-criterion-id="REQ-BRW-004-C15" data-criterion="CRIT-STL-WK Audio 一致: worker 内 AudioContext 指纹噪声与主线程同 profile">CRIT-STL-WK Audio 一致: worker 内 AudioContext 指纹噪声与主线程同 profile</div><div data-criterion-id="REQ-BRW-004-C16" data-criterion="CRIT-STL-WK 无原生泄漏: worker 内不存在任何未经 stealth 覆盖的 servo 原生指纹值 (与无 stealth 基线对比应不同)">CRIT-STL-WK 无原生泄漏: worker 内不存在任何未经 stealth 覆盖的 servo 原生指纹值 (与无 stealth 基线对比应不同)</div><div data-criterion-id="REQ-BRW-004-C17" data-criterion="CRIT-STL-WK 跨线程对比一致: new Worker 后 worker 回传指纹摘要 === 主线程指纹摘要 (CreepJS/sannysoft 式 worker-vs-main 比对通过)">CRIT-STL-WK 跨线程对比一致: new Worker 后 worker 回传指纹摘要 === 主线程指纹摘要 (CreepJS/sannysoft 式 worker-vs-main 比对通过)</div><div data-criterion-id="REQ-BRW-004-C18" data-criterion="worker terminate()/self.close()/页面卸载 三路径 teardown 均 crash-safe: worker 线程 JSContext 干净销毁 + 线程 join 无悬挂 + REALM_PROFILES 条目注销 + 无 EBUSY 类 mutex destroy SIGSEGV (回归覆盖 PagePool 混沌根因 / NFR-MEMSAF-001 / EBUSY patch); 并发创建-销毁 N 个 worker 循环零崩溃零泄漏 (关联 DF-WK-6 / DEC-WK-005 / DEC-WK-007)">worker terminate()/self.close()/页面卸载 三路径 teardown 均 crash-safe: worker 线程 JSContext 干净销毁 + 线程 join 无悬挂 + REALM_PROFILES 条目注销 + 无 EBUSY 类 mutex destroy SIGSEGV (回归覆盖 PagePool 混沌根因 / NFR-MEMSAF-001 / EBUSY patch); 并发创建-销毁 N 个 worker 循环零崩溃零泄漏 (关联 DF-WK-6 / DEC-WK-005 / DEC-WK-007)</div><div data-criterion-id="REQ-BRW-004-C19" data-criterion="ServiceWorker fetch 拦截 × stealth/CDP 边界一致: SW 拦截并转发的 fetch 仍走主页同一 stealth TLS(JA3/JA4)+HTTP2(AKAMAI) profile (不绕过反指纹); CDP Network 域可观测 SW 发起的请求/响应; SW 持久生命周期(跨页存活)下 profile 继承注册页且 terminate 后正确注销 (关联 DF-WK-8 / DF-WK-10 / NFR-STL-WORKER-1 / DEC-WK-007)">ServiceWorker fetch 拦截 × stealth/CDP 边界一致: SW 拦截并转发的 fetch 仍走主页同一 stealth TLS(JA3/JA4)+HTTP2(AKAMAI) profile (不绕过反指纹); CDP Network 域可观测 SW 发起的请求/响应; SW 持久生命周期(跨页存活)下 profile 继承注册页且 terminate 后正确注销 (关联 DF-WK-8 / DF-WK-10 / NFR-STL-WORKER-1 / DEC-WK-007)</div></div>
+
       <!-- ============================================================ -->
       <h2>§4 CDP 需求</h2>
       <!-- ============================================================ -->
@@ -1816,6 +1884,12 @@
             <td>Phase 2</td>
           </tr>
           <tr>
+            <td>REQ-BRW-004</td>
+            <td>浏览器 Web Worker API</td>
+            <td>bao_browser + servo/script/dom/workers</td>
+            <td>Phase 2</td>
+          </tr>
+          <tr>
             <td>REQ-CDP-001</td>
             <td>CDP Server</td>
             <td>bao_cdp</td>
@@ -2226,7 +2300,68 @@ tagged template literal 执行 shell 命令。
 
 ## 关联
 - REQ-ENG-18: Bun.shell Shell API — 同源需求
-- REQ-ENG-12: Bun.spawn/Bun.spawnSync — 子进程基础设施</p><div data-criterion="1. typeof Bun.Shell === 'function'">1. typeof Bun.Shell === 'function'</div><div data-criterion="2. new Bun.Shell() 创建 ShellInterpreter 实例">2. new Bun.Shell() 创建 ShellInterpreter 实例</div><div data-criterion="3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput">3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput</div><div data-criterion="4. ShellOutput.stdout/stderr/exitCode/success 属性完整">4. ShellOutput.stdout/stderr/exitCode/success 属性完整</div><div data-criterion="5. ShellOutput.lines()/text()/json()/bytes() 方法正常">5. ShellOutput.lines()/text()/json()/bytes() 方法正常</div><div data-criterion="6. pipeline 管道 (stdout→stdin) 正常工作">6. pipeline 管道 (stdout→stdin) 正常工作</div><div data-criterion="7. 变量插值 Bun.$`ls ${dir}` 正常展开">7. 变量插值 Bun.$`ls ${dir}` 正常展开</div><div data-criterion="8. 退出码非零时 success=false, exitCode 正确">8. 退出码非零时 success=false, exitCode 正确</div><div data-criterion="9. 完整 AST 解释: binary(&&/||)/subshell/if/elif/else/redirects">9. 完整 AST 解释: binary(&amp;&amp;/||)/subshell/if/elif/else/redirects</div><div data-criterion="10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)">10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><div id="test-bao-api-017" data-req-ref="REQ-BAO-API-017" data-test-categories="unit" data-test="TEST-BAO-API-017"><h4>TEST-BAO-API-017: REQ-BAO-API-017 单元测试</h4><p>Bun.listen/connect/udpSocket 网络桥接 API 测试：1. Bun.listen({port:0}) 返回 BunServer 对象，server.port &gt; 0 2. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise&lt;Socket&gt; 3. Socket.write/end/destroy 4. Bun.udpSocket({type:'udp4'}) 返回 Promise&lt;BunUdpSocket&gt; 5. BunUdpSocket.send/close 6. BunServer.stop() 7. TLS 模式 8. GcStore 回调清理</p></div><div id="test-bao-api-018" data-req-ref="REQ-BAO-API-018" data-test-categories="unit" data-test="TEST-BAO-API-018"><h4>TEST-BAO-API-018: REQ-BAO-API-018 单元测试</h4><p>Bun.Shell/$ Shell 解释器桥接 API 测试：1. typeof Bun.Shell === 'function' 2. new Bun.Shell() 创建 ShellInterpreter 3. Bun.$`echo hello` 执行命令 4. ShellOutput.stdout/stderr/exitCode/success 5. ShellOutput.lines()/text()/json()/bytes() 6. pipeline 管道 7. 变量插值 8. 退出码非零时 success=false</p></div><section data-bug-root-cause="待补充" data-bug-status="fixing" data-bug="BUG-ENG-369" id="bug-eng-369"><h3>BUG-ENG-369: </h3></section></main>
+- REQ-ENG-12: Bun.spawn/Bun.spawnSync — 子进程基础设施</p><div data-criterion="1. typeof Bun.Shell === 'function'">1. typeof Bun.Shell === 'function'</div><div data-criterion="2. new Bun.Shell() 创建 ShellInterpreter 实例">2. new Bun.Shell() 创建 ShellInterpreter 实例</div><div data-criterion="3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput">3. Bun.$`echo hello` 执行 shell 命令并返回 ShellOutput</div><div data-criterion="4. ShellOutput.stdout/stderr/exitCode/success 属性完整">4. ShellOutput.stdout/stderr/exitCode/success 属性完整</div><div data-criterion="5. ShellOutput.lines()/text()/json()/bytes() 方法正常">5. ShellOutput.lines()/text()/json()/bytes() 方法正常</div><div data-criterion="6. pipeline 管道 (stdout→stdin) 正常工作">6. pipeline 管道 (stdout→stdin) 正常工作</div><div data-criterion="7. 变量插值 Bun.$`ls ${dir}` 正常展开">7. 变量插值 Bun.$`ls ${dir}` 正常展开</div><div data-criterion="8. 退出码非零时 success=false, exitCode 正确">8. 退出码非零时 success=false, exitCode 正确</div><div data-criterion="9. 完整 AST 解释: binary(&&/||)/subshell/if/elif/else/redirects">9. 完整 AST 解释: binary(&amp;&amp;/||)/subshell/if/elif/else/redirects</div><div data-criterion="10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)">10. 复用 bun_shell_parser (Lexer/Parser/AST) + bun_spawn (子进程执行)</div><div data-criteria=""><strong>验收标准：</strong><ol><li>TODO: 定义验收标准</li></ol></div></section><div id="test-bao-api-017" data-req-ref="REQ-BAO-API-017" data-test-categories="unit" data-test="TEST-BAO-API-017"><h4>TEST-BAO-API-017: REQ-BAO-API-017 单元测试</h4><p>Bun.listen/connect/udpSocket 网络桥接 API 测试：1. Bun.listen({port:0}) 返回 BunServer 对象，server.port &gt; 0 2. Bun.connect({hostname,port,socket:{data,open,close}}) 返回 Promise&lt;Socket&gt; 3. Socket.write/end/destroy 4. Bun.udpSocket({type:'udp4'}) 返回 Promise&lt;BunUdpSocket&gt; 5. BunUdpSocket.send/close 6. BunServer.stop() 7. TLS 模式 8. GcStore 回调清理</p></div><div id="test-bao-api-018" data-req-ref="REQ-BAO-API-018" data-test-categories="unit" data-test="TEST-BAO-API-018"><h4>TEST-BAO-API-018: REQ-BAO-API-018 单元测试</h4><p>Bun.Shell/$ Shell 解释器桥接 API 测试：1. typeof Bun.Shell === 'function' 2. new Bun.Shell() 创建 ShellInterpreter 3. Bun.$`echo hello` 执行命令 4. ShellOutput.stdout/stderr/exitCode/success 5. ShellOutput.lines()/text()/json()/bytes() 6. pipeline 管道 7. 变量插值 8. 退出码非零时 success=false</p></div><section data-bug-root-cause="待补充" data-bug-status="fixing" data-bug="BUG-ENG-369" id="bug-eng-369"><h3>BUG-ENG-369: </h3></section><section data-nfr-category="reliability" data-nfr="WorkerScopeFingerprintConsistency" id="workerscopefingerprintconsistency"><h3>WorkerScopeFingerprintConsistency</h3><p>三类 Worker (Dedicated/Shared/Service) 全局作用域内的反指纹相关属性, 必须与创建它的页面主线程 stealth profile 完全一致; 不得暴露 servo 原生真实指纹。安全语义关联 NFR-SEC-001。关联 REQ-BRW-4 / DEC-WK-007。</p><table data-nfr-metrics=""><tr><th>指标</th><th>运算符</th><th>阈值</th><th>单位</th></tr><tr><td>worker_navigator_consistency</td><td>==</td><td>1</td><td>boolean</td></tr><tr><td>worker_canvas_webgl_audio_consistency</td><td>==</td><td>1</td><td>boolean</td></tr><tr><td>worker_no_native_leak</td><td>==</td><td>0</td><td>count</td></tr></table><script type="application/ld+json">{
+  "@type": "NFR",
+  "name": "WorkerScopeFingerprintConsistency",
+  "category": "reliability",
+  "metrics": [
+    {
+      "name": "worker_navigator_consistency",
+      "operator": "==",
+      "threshold": "1",
+      "unit": "boolean"
+    },
+    {
+      "name": "worker_canvas_webgl_audio_consistency",
+      "operator": "==",
+      "threshold": "1",
+      "unit": "boolean"
+    },
+    {
+      "name": "worker_no_native_leak",
+      "operator": "==",
+      "threshold": "0",
+      "unit": "count"
+    }
+  ]
+}</script></section><section data-nfr="" id="nfr-unnamed"><h3></h3><p>三类 Worker (DedicatedWorker/SharedWorker/ServiceWorker) 全局对象上 stealth 指纹与主线程一致性的非功能需求。
+
+覆盖范围:
+1. Navigator 一致性: worker 内 navigator.userAgent/platform/hardwareConcurrency/language(s) === 主线程对应值 (C12 验收标准)
+2. Canvas 一致性: worker 内 OffscreenCanvas toDataURL/getImageData 噪声与主线程同 profile (同 seed 产同结果) (C13)
+3. WebGL 一致性: worker 内 WebGL UNMASKED_VENDOR/RENDERER 及参数与主线程一致 (C14)
+4. Audio 一致性: worker 内 AudioContext 指纹噪声与主线程同 profile (C15)
+5. 无原生泄漏: worker 内不存在任何未经 stealth 覆盖的 servo 原生指纹值 (与无 stealth 基线对比应不同) (C16)
+6. 跨线程对比一致: new Worker 后 worker 回传指纹摘要 === 主线程指纹摘要 (CreepJS/sannysoft 式 worker-vs-main 比对通过) (C17)
+
+实现机制: DEC-WK-007 机制 3 (Arc&lt;StealthProfile&gt; 共享 + worker 全局 getter 注入)
+- worker 构造时注册 worker RealmId → 继承父页 Arc&lt;StealthProfile&gt;
+- worker 全局 stealth getter 按 RealmId 查找
+- terminate 时注销 RealmId
+
+关联: DEC-WK-007/DF-WK-3/DF-WK-9/DF-WK-10/REQ-BRW-4(C12-C17)</p><table data-nfr-metrics=""><tr><th>指标</th><th>运算符</th><th>阈值</th><th>单位</th></tr><tr><td>指纹一致性率</td><td>&gt;=</td><td>100</td><td>%</td></tr><tr><td>原生泄漏数</td><td>&lt;=</td><td>0</td><td>count</td></tr><tr><td>CreepJS worker-vs-main 通过率</td><td>&gt;=</td><td>100</td><td>%</td></tr></table><script type="application/ld+json">{
+  "@type": "NFR",
+  "metrics": [
+    {
+      "name": "指纹一致性率",
+      "operator": ">=",
+      "threshold": "100",
+      "unit": "%"
+    },
+    {
+      "name": "原生泄漏数",
+      "operator": "<=",
+      "threshold": "0",
+      "unit": "count"
+    },
+    {
+      "name": "CreepJS worker-vs-main 通过率",
+      "operator": ">=",
+      "threshold": "100",
+      "unit": "%"
+    }
+  ]
+}</script></section></main>
     <section id="testing" data-tests-section="">
       <h2>测试用例</h2>
       <div id="test-eng-008" data-test="TEST-ENG-008" data-req-ref="REQ-ENG-008" data-test-categories="unit">
@@ -2490,6 +2625,6 @@ tagged template literal 执行 shell 命令。
           src/bao_runtime/tests/vm_codegen_tests.rs
         </p>
       </div>
-    </section>
+    <div id="test-brw-004" data-req-ref="REQ-BRW-004" data-test-categories="unit" data-test="TEST-BRW-004"><h4>TEST-BRW-004: REQ-BRW-004 单元测试</h4><p>TODO: 为 REQ-BRW-004 编写测试用例</p></div></section>
   </body>
 </html>

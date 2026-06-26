@@ -1098,7 +1098,171 @@ JS 获得 return value
           }
         </script>
       </section>
-    </main>
+    <section data-flow-transform="DF-WK-4 page→worker postMessage: 主 worker.postMessage(v) → structuredclone::write(cx,v) → WorkerMessage(StructuredSerializedData) → crossbeam send WorkerScriptMsg::DOMMessage → worker 线程 recv → structuredclone::read 本地 Realm 重建 → 派发 message 事件。线程归属: 主 ScriptThread → worker 线程。铁律: 仅传序列化字节 + id 映射 (NFR-THREAD-SAFETY)。关联 DEC-WK-005/WorkerMessage/REQ-BRW-4。" data-flow-direction="event" data-flow-to="DedicatedWorkerGlobalScope" data-flow-from="Worker" data-dataflow-dimension="technical" data-dataflow="DF-WK-4" id="df-wk-4"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-4",
+  "dimension": "technical",
+  "from": {
+    "element": "Worker",
+    "port": "worker.postMessage(v) → structuredclone::write → WorkerMessage"
+  },
+  "to": {
+    "element": "DedicatedWorkerGlobalScope",
+    "port": "structuredclone::read → message 事件"
+  },
+  "direction": "event",
+  "transform": "DF-WK-4 page→worker postMessage: 主 worker.postMessage(v) → structuredclone::write(cx,v) → WorkerMessage(StructuredSerializedData) → crossbeam send WorkerScriptMsg::DOMMessage → worker 线程 recv → structuredclone::read 本地 Realm 重建 → 派发 message 事件。线程归属: 主 ScriptThread → worker 线程。铁律: 仅传序列化字节 + id 映射 (NFR-THREAD-SAFETY)。关联 DEC-WK-005/WorkerMessage/REQ-BRW-4。"
+}</script></section><section data-flow-transform="DF-WK-5 worker→page onmessage: worker self.postMessage(v) → structuredclone::write → channel → 父 ScriptThread 任务队列 → bao drain_callbacks()/spin_event_loop drain → structuredclone::read 在页 Realm 重建 → 触发 worker.onmessage。线程归属: worker 线程 → 主 ScriptThread。铁律: 投递经 bao 事件循环 drain; 序列化跨线程 (NFR-THREAD-SAFETY)。关联 DEC-WK-005/WorkerMessage/REQ-BRW-4。" data-flow-direction="event" data-flow-to="Worker" data-flow-from="DedicatedWorkerGlobalScope" data-dataflow-dimension="technical" data-dataflow="DF-WK-5" id="df-wk-5"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-5",
+  "dimension": "technical",
+  "from": {
+    "element": "DedicatedWorkerGlobalScope",
+    "port": "self.postMessage(v) → structuredclone::write → channel"
+  },
+  "to": {
+    "element": "Worker",
+    "port": "bao drain_callbacks → structuredclone::read → onmessage"
+  },
+  "direction": "event",
+  "transform": "DF-WK-5 worker→page onmessage: worker self.postMessage(v) → structuredclone::write → channel → 父 ScriptThread 任务队列 → bao drain_callbacks()/spin_event_loop drain → structuredclone::read 在页 Realm 重建 → 触发 worker.onmessage。线程归属: worker 线程 → 主 ScriptThread。铁律: 投递经 bao 事件循环 drain; 序列化跨线程 (NFR-THREAD-SAFETY)。关联 DEC-WK-005/WorkerMessage/REQ-BRW-4。"
+}</script></section><section data-flow-transform="DF-WK-6 terminate: 主 worker.terminate() → closing.swap(true, SeqCst) → 发 DedicatedWorkerControlMsg::Exit → request_interrupt_callback 中断 worker JS → worker 事件循环 is_closing() 退出 → 线程 join → 注销 worker 全局的 REALM_PROFILES 条目。线程归属: 主 ScriptThread → worker 线程。铁律: closing flag 原子传播; 线程 join 清理。关联 DEC-WK-005/DEC-WK-007/REQ-BRW-4。" data-flow-direction="event" data-flow-to="DedicatedWorkerGlobalScope" data-flow-from="Worker" data-dataflow-dimension="technical" data-dataflow="DF-WK-6" id="df-wk-6"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-6",
+  "dimension": "technical",
+  "from": {
+    "element": "Worker",
+    "port": "terminate() → closing.swap(true) → Exit 控制消息"
+  },
+  "to": {
+    "element": "DedicatedWorkerGlobalScope",
+    "port": "is_closing() 退出 → 线程 join → 注销 REALM_PROFILES"
+  },
+  "direction": "event",
+  "transform": "DF-WK-6 terminate: 主 worker.terminate() → closing.swap(true, SeqCst) → 发 DedicatedWorkerControlMsg::Exit → request_interrupt_callback 中断 worker JS → worker 事件循环 is_closing() 退出 → 线程 join → 注销 worker 全局的 REALM_PROFILES 条目。线程归属: 主 ScriptThread → worker 线程。铁律: closing flag 原子传播; 线程 join 清理。关联 DEC-WK-005/DEC-WK-007/REQ-BRW-4。"
+}</script></section><section data-flow-transform="DF-WK-7 SharedWorker 跨页路由 (增量): 多页 new SharedWorker(url) 同 name → constellation 路由到同一 worker 线程 → connect 事件派发 MessagePort → 各页经独立 port 通信。线程归属: 单 worker 线程服务多页 ScriptThread; 跨线程仅传序列化数据 + port id (NFR-THREAD-SAFETY)。关联 DEC-WK-001/DEC-WK-006/REQ-BRW-4。" data-flow-direction="event" data-flow-to="SharedWorkerGlobalScope" data-flow-from="SharedWorker" data-dataflow-dimension="technical" data-dataflow="DF-WK-7" id="df-wk-7"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-7",
+  "dimension": "technical",
+  "from": {
+    "element": "SharedWorker",
+    "port": "new SharedWorker(url,name) → constellation 路由同 name"
+  },
+  "to": {
+    "element": "SharedWorkerGlobalScope",
+    "port": "connect 事件 → MessagePort 每页独立"
+  },
+  "direction": "event",
+  "transform": "DF-WK-7 SharedWorker 跨页路由 (增量): 多页 new SharedWorker(url) 同 name → constellation 路由到同一 worker 线程 → connect 事件派发 MessagePort → 各页经独立 port 通信。线程归属: 单 worker 线程服务多页 ScriptThread; 跨线程仅传序列化数据 + port id (NFR-THREAD-SAFETY)。关联 DEC-WK-001/DEC-WK-006/REQ-BRW-4。"
+}</script></section><section data-flow-transform="DF-WK-2 脚本加载: worker 线程 (DedicatedWorkerGlobalScope) → 构建 RequestBuilder → global.fetch 经 servo resource_threads (bao-browser 桥) → process_response_eof (HTTP status + JS MIME 校验 + UTF-8 解码) → Classic/Module 编译 → scope.on_complete。线程归属: worker 线程。铁律: 复用 servo net 栈; 脚本源经字节流传输非 JSObject。Shared/Service 同构 (继承 WorkerGlobalScope 加载逻辑)。关联 DEC-WK-001/REQ-BRW-4。" data-flow-direction="sync" data-flow-to="bao-browser" data-flow-from="DedicatedWorkerGlobalScope" data-dataflow-dimension="technical" data-dataflow="DF-WK-2" id="df-wk-2"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-2",
+  "dimension": "technical",
+  "from": {
+    "element": "DedicatedWorkerGlobalScope",
+    "port": "RequestBuilder → global.fetch 脚本加载"
+  },
+  "to": {
+    "element": "bao-browser",
+    "port": "servo resource_threads → process_response_eof → scope.on_complete"
+  },
+  "direction": "sync",
+  "transform": "DF-WK-2 脚本加载: worker 线程 (DedicatedWorkerGlobalScope) → 构建 RequestBuilder → global.fetch 经 servo resource_threads (bao-browser 桥) → process_response_eof (HTTP status + JS MIME 校验 + UTF-8 解码) → Classic/Module 编译 → scope.on_complete。线程归属: worker 线程。铁律: 复用 servo net 栈; 脚本源经字节流传输非 JSObject。Shared/Service 同构 (继承 WorkerGlobalScope 加载逻辑)。关联 DEC-WK-001/REQ-BRW-4。"
+}</script></section><section data-flow-transform="DF-WK-11 Node Realm 构造函数暴露: bao-engine (Node Realm, evaluate_js 自动化脚本执行上下文) → 复用 install_lazy_dom_getters 模式 (bao_browser runtime_bridge) 经 JS_WrapObject 跨 Compartment 代理 → 向自动化脚本暴露 Worker/SharedWorker/ServiceWorker 构造函数。线程归属: 同一 ScriptThread 内 Page Realm 与 Node Realm (不跨线程)。铁律: cross-compartment proxy 同线程桥接, 符合同线程 DOM↔Node 互操作; 不跨线程传 JSObject 裸指针 (NFR-THREAD-SAFETY)。关联 DEC-WK-004/REQ-BRW-4。" data-flow-direction="event" data-flow-to="Worker" data-flow-from="bao-engine" data-dataflow-dimension="technical" data-dataflow="DF-WK-11" id="df-wk-11"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-11",
+  "dimension": "technical",
+  "from": {
+    "element": "bao-engine",
+    "port": "Node Realm cross-compartment proxy (install_lazy_dom_getters)"
+  },
+  "to": {
+    "element": "Worker",
+    "port": "暴露 Worker/SharedWorker/ServiceWorker 构造函数"
+  },
+  "direction": "event",
+  "transform": "DF-WK-11 Node Realm 构造函数暴露: bao-engine (Node Realm, evaluate_js 自动化脚本执行上下文) → 复用 install_lazy_dom_getters 模式 (bao_browser runtime_bridge) 经 JS_WrapObject 跨 Compartment 代理 → 向自动化脚本暴露 Worker/SharedWorker/ServiceWorker 构造函数。线程归属: 同一 ScriptThread 内 Page Realm 与 Node Realm (不跨线程)。铁律: cross-compartment proxy 同线程桥接, 符合同线程 DOM↔Node 互操作; 不跨线程传 JSObject 裸指针 (NFR-THREAD-SAFETY)。关联 DEC-WK-004/REQ-BRW-4。"
+}</script></section><section data-flow-transform="DF-WK-8 ServiceWorker 注册与拦截 (增量): navigator.serviceWorker.register(url,{scope}) → serviceworker_manager 注册 → scope 匹配的导航/fetch 经 SW 拦截 → fetch 事件。线程归属: SW 独立线程 + constellation serviceworker.rs 管理。铁律: 复用 servo 原生 SW 管理; 跨线程序列化传输。
+
+C19 硬现实偏离 (2026-06-26 architect consult 源码核验): servo 上游 ServiceWorker fetch 拦截是 `TODO XXXcreativcoder` 占位 (serviceworkerglobalscope.rs:558), 无 FetchEvent DOM 实装。SW fetch 经 servo 原生路径纯走不可达, 需 vendor patch (proposal-A: 实装 SW register+FetchEvent) 或 bao 层桥接拦截 (proposal-B) — 见 DEC-WK-008 (needHumanAudit=true)。C19 交付状态 = blocked-on-human-decision (非 SPEC 缺口, 是 servo 现实约束)。
+
+关联 DEC-WK-001/DEC-WK-006/DEC-WK-008(SW fetch 偏离)/REQ-BRW-4 C6/C19。" data-flow-direction="event" data-flow-to="ServiceWorkerGlobalScope" data-flow-from="ServiceWorker" data-dataflow-dimension="technical" data-dataflow="DF-WK-8" id="df-wk-8"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-8",
+  "dimension": "technical",
+  "from": {
+    "element": "ServiceWorker",
+    "port": "navigator.serviceWorker.register(url,scope) → serviceworker_manager"
+  },
+  "to": {
+    "element": "ServiceWorkerGlobalScope",
+    "port": "scope 匹配导航/fetch 拦截 → fetch 事件"
+  },
+  "direction": "event",
+  "transform": "DF-WK-8 ServiceWorker 注册与拦截 (增量): navigator.serviceWorker.register(url,{scope}) → serviceworker_manager 注册 → scope 匹配的导航/fetch 经 SW 拦截 → fetch 事件。线程归属: SW 独立线程 + constellation serviceworker.rs 管理。铁律: 复用 servo 原生 SW 管理; 跨线程序列化传输。\n\nC19 硬现实偏离 (2026-06-26 architect consult 源码核验): servo 上游 ServiceWorker fetch 拦截是 `TODO XXXcreativcoder` 占位 (serviceworkerglobalscope.rs:558), 无 FetchEvent DOM 实装。SW fetch 经 servo 原生路径纯走不可达, 需 vendor patch (proposal-A: 实装 SW register+FetchEvent) 或 bao 层桥接拦截 (proposal-B) — 见 DEC-WK-008 (needHumanAudit=true)。C19 交付状态 = blocked-on-human-decision (非 SPEC 缺口, 是 servo 现实约束)。\n\n关联 DEC-WK-001/DEC-WK-006/DEC-WK-008(SW fetch 偏离)/REQ-BRW-4 C6/C19。"
+}</script></section><section data-flow-transform="DF-WK-3 stealth 注入 (Dedicated): worker 全局建好 (DF-WK-1 后) → 注册 worker 全局地址到 bao-stealth REALM_PROFILES 继承父页 Arc<StealthProfile> → stealth getter 在 worker 内解析命中父页 profile (机制 3 已收敛, DEC-WK-007)。线程归属: worker 线程。铁律: D7 已收敛为机制 3 (Arc<StealthProfile> 共享 + per-Realm permanent getter, DEC-WK-007 source-verified engine_props.rs:325/1207); DashMap 跨线程读 profile (Arc 共享, 不传 JSObject, NFR-THREAD-SAFETY)。关联 DEC-WK-007/NFR-STL-WORKER-1/REQ-BRW-4。" data-flow-direction="event" data-flow-to="bao-stealth" data-flow-from="DedicatedWorkerGlobalScope" data-dataflow-dimension="technical" data-dataflow="DF-WK-3" id="df-wk-3"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-3",
+  "dimension": "technical",
+  "from": {
+    "element": "DedicatedWorkerGlobalScope",
+    "port": "首次解析 stealth getter"
+  },
+  "to": {
+    "element": "bao-stealth",
+    "port": "REALM_PROFILES 继承父页 Arc<StealthProfile>"
+  },
+  "direction": "event",
+  "transform": "DF-WK-3 stealth 注入 (Dedicated): worker 全局建好 (DF-WK-1 后) → 注册 worker 全局地址到 bao-stealth REALM_PROFILES 继承父页 Arc<StealthProfile> → stealth getter 在 worker 内解析命中父页 profile (机制 3 已收敛, DEC-WK-007)。线程归属: worker 线程。铁律: D7 已收敛为机制 3 (Arc<StealthProfile> 共享 + per-Realm permanent getter, DEC-WK-007 source-verified engine_props.rs:325/1207); DashMap 跨线程读 profile (Arc 共享, 不传 JSObject, NFR-THREAD-SAFETY)。关联 DEC-WK-007/NFR-STL-WORKER-1/REQ-BRW-4。"
+}</script></section><section data-flow-transform="DF-WK-9 stealth 注入 (Shared): SharedWorkerGlobalScope 首次解析 stealth getter → 按机制 3 (DEC-WK-007 已收敛) 从 bao-stealth REALM_PROFILES 继承父页 Arc<StealthProfile>。NFR-STL-WORKER-1 覆盖三类 worker, SharedWorker 与 Dedicated 同构 (source-verified engine_props.rs:325/1207)。线程归属: shared worker 线程。铁律: D7 已收敛; Arc 跨线程共享不传 JSObject (NFR-THREAD-SAFETY)。关联 DEC-WK-007/NFR-STL-WORKER-1/REQ-BRW-4。" data-flow-direction="event" data-flow-to="bao-stealth" data-flow-from="SharedWorkerGlobalScope" data-dataflow-dimension="technical" data-dataflow="DF-WK-9" id="df-wk-9"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-9",
+  "dimension": "technical",
+  "from": {
+    "element": "SharedWorkerGlobalScope",
+    "port": "首次解析 stealth getter"
+  },
+  "to": {
+    "element": "bao-stealth",
+    "port": "REALM_PROFILES 继承父页 Arc<StealthProfile>"
+  },
+  "direction": "event",
+  "transform": "DF-WK-9 stealth 注入 (Shared): SharedWorkerGlobalScope 首次解析 stealth getter → 按机制 3 (DEC-WK-007 已收敛) 从 bao-stealth REALM_PROFILES 继承父页 Arc<StealthProfile>。NFR-STL-WORKER-1 覆盖三类 worker, SharedWorker 与 Dedicated 同构 (source-verified engine_props.rs:325/1207)。线程归属: shared worker 线程。铁律: D7 已收敛; Arc 跨线程共享不传 JSObject (NFR-THREAD-SAFETY)。关联 DEC-WK-007/NFR-STL-WORKER-1/REQ-BRW-4。"
+}</script></section><section data-flow-transform="DF-WK-10 stealth 注入 (Service): ServiceWorkerGlobalScope 首次解析 stealth getter → 按机制 3 (DEC-WK-007 已收敛) 从 bao-stealth REALM_PROFILES 继承注册页 Arc<StealthProfile>。NFR-STL-WORKER-1 覆盖三类 worker, ServiceWorker 与 Dedicated 同构 (source-verified engine_props.rs:325/1207)。线程归属: service worker 线程。铁律: D7 已收敛; Arc 跨线程共享不传 JSObject (NFR-THREAD-SAFETY); SW 持久生命周期 profile 继承注册页且 terminate 后正确注销 (C19)。关联 DEC-WK-007/NFR-STL-WORKER-1/REQ-BRW-4 C19。" data-flow-direction="event" data-flow-to="bao-stealth" data-flow-from="ServiceWorkerGlobalScope" data-dataflow-dimension="technical" data-dataflow="DF-WK-10" id="df-wk-10"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-10",
+  "dimension": "technical",
+  "from": {
+    "element": "ServiceWorkerGlobalScope",
+    "port": "首次解析 stealth getter"
+  },
+  "to": {
+    "element": "bao-stealth",
+    "port": "REALM_PROFILES 继承注册页 Arc<StealthProfile>"
+  },
+  "direction": "event",
+  "transform": "DF-WK-10 stealth 注入 (Service): ServiceWorkerGlobalScope 首次解析 stealth getter → 按机制 3 (DEC-WK-007 已收敛) 从 bao-stealth REALM_PROFILES 继承注册页 Arc<StealthProfile>。NFR-STL-WORKER-1 覆盖三类 worker, ServiceWorker 与 Dedicated 同构 (source-verified engine_props.rs:325/1207)。线程归属: service worker 线程。铁律: D7 已收敛; Arc 跨线程共享不传 JSObject (NFR-THREAD-SAFETY); SW 持久生命周期 profile 继承注册页且 terminate 后正确注销 (C19)。关联 DEC-WK-007/NFR-STL-WORKER-1/REQ-BRW-4 C19。"
+}</script></section><section data-flow-transform="DF-WK-1 构造: Page Realm new Worker(url) (或 Node Realm 经 cross-compartment proxy) → servo Worker::Constructor → URL 解析 → 创建 3 通道对 (message/control/context) → thread::Builder::spawn worker OS 线程 → worker 线程 Runtime::new_with_parent 建独立 JSContext → context_receiver.recv() 同步就绪。
+
+源码核验收敛 (2026-06-26 architect consult): 注入窗口确证 — dedicatedworkerglobalscope.rs:502-503 / sharedworkerglobalscope.rs:404-405 / serviceworkerglobalscope.rs:406, 三处都是 `let scope = global.upcast::<WorkerGlobalScope>()` 之后、脚本 fetch/执行之前, 同构可复用同一 callback。servo lib.rs:73 已有 `register_script_thread_callback` (page callback); script_thread.rs:191 有 `register_embedder_callback` 模式 (Mutex<Vec<(WebViewId, Callback)>> + drain)。worker scope callback 复用同一模式, 一致性高。
+
+JSContext 模型 (BCE-20260621-001): servo run_worker_scope 内部 `Runtime::new_with_parent(Some(parent), ...)` 已正确协作 GC + thread-local cx; bao 注册的 callback 在 worker 线程执行只碰该线程 cx; 跨线程只传 Arc<StealthProfile> (DEC-WK-007 机制 3) + WebViewId, 不传 JSObject, 符合 BCE-20260621-001。
+
+线程归属: 主=页 ScriptThread, 新=worker 线程。铁律: worker JSContext 独立 thread-local (NFR-MEMSAF-001); 跨线程仅传通道端点 (Send 安全), 无 JSObject (NFR-THREAD-SAFETY)。关联 DEC-WK-001/DEC-WK-004/REQ-BRW-4。" data-flow-direction="event" data-flow-to="DedicatedWorkerGlobalScope" data-flow-from="Worker" data-dataflow-dimension="technical" data-dataflow="DF-WK-1" id="df-wk-1"><script type="application/ld+json">{
+  "@type": "Dataflow",
+  "id": "DF-WK-1",
+  "dimension": "technical",
+  "from": {
+    "element": "Worker",
+    "port": "Page/Node Realm new Worker(url) → servo Worker::Constructor → 3 通道对"
+  },
+  "to": {
+    "element": "DedicatedWorkerGlobalScope",
+    "port": "worker OS 线程 Runtime::new_with_parent → context_receiver.recv() 就绪"
+  },
+  "direction": "event",
+  "transform": "DF-WK-1 构造: Page Realm new Worker(url) (或 Node Realm 经 cross-compartment proxy) → servo Worker::Constructor → URL 解析 → 创建 3 通道对 (message/control/context) → thread::Builder::spawn worker OS 线程 → worker 线程 Runtime::new_with_parent 建独立 JSContext → context_receiver.recv() 同步就绪。\n\n源码核验收敛 (2026-06-26 architect consult): 注入窗口确证 — dedicatedworkerglobalscope.rs:502-503 / sharedworkerglobalscope.rs:404-405 / serviceworkerglobalscope.rs:406, 三处都是 `let scope = global.upcast::<WorkerGlobalScope>()` 之后、脚本 fetch/执行之前, 同构可复用同一 callback。servo lib.rs:73 已有 `register_script_thread_callback` (page callback); script_thread.rs:191 有 `register_embedder_callback` 模式 (Mutex<Vec<(WebViewId, Callback)>> + drain)。worker scope callback 复用同一模式, 一致性高。\n\nJSContext 模型 (BCE-20260621-001): servo run_worker_scope 内部 `Runtime::new_with_parent(Some(parent), ...)` 已正确协作 GC + thread-local cx; bao 注册的 callback 在 worker 线程执行只碰该线程 cx; 跨线程只传 Arc<StealthProfile> (DEC-WK-007 机制 3) + WebViewId, 不传 JSObject, 符合 BCE-20260621-001。\n\n线程归属: 主=页 ScriptThread, 新=worker 线程。铁律: worker JSContext 独立 thread-local (NFR-MEMSAF-001); 跨线程仅传通道端点 (Send 安全), 无 JSObject (NFR-THREAD-SAFETY)。关联 DEC-WK-001/DEC-WK-004/REQ-BRW-4。"
+}</script></section></main>
     <section id="testing" data-tests-section=""><h2>测试用例</h2></section>
   </body>
 </html>

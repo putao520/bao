@@ -1131,6 +1131,27 @@ impl PageHandle {
     pub fn close(&self) -> Result<(), BrowserError> {
         let mut borrow = self.inner.borrow_mut();
         if let Some(inner) = borrow.take() {
+            // @trace REQ-BRW-004 [entity:Worker] [criterion:10]
+            // SPEC criterion #10: "页面卸载时自动终止所有 Worker
+            // (GlobalScope::track_worker + AutoCloseWorker)".
+            // Explicitly terminate all Workers BEFORE dropping PageInner,
+            // ensuring correct teardown order:
+            //   1. Set closing flags + unregister stealth profiles (while JSContext alive)
+            //   2. Drop WebWorker instances (join threads)
+            //   3. AutoCloseWorker::Drop runs as idempotent cleanup
+            // Without this, BaoWebViewState field Drop order would drop web_workers
+            // (which joins threads) BEFORE active_workers (AutoCloseWorker), causing
+            // stealth profile unregistration to happen after thread exit.
+            {
+                let mut ws = inner.webview_state.borrow_mut();
+                if ws.active_worker_count() > 0 {
+                    log::debug!(
+                        "[page] close: terminating {} active workers",
+                        ws.active_worker_count()
+                    );
+                    ws.terminate_all_workers();
+                }
+            }
             let pg = *inner.page_global.borrow();
             let ng = *inner.node_realm_global.borrow();
             // BCE-20260621-001: remove per-page Node Realm entries via WebViewId

@@ -159,6 +159,10 @@ pub use counters::{Counters, create_counters_object};
 pub use bun_cpu_profiler::{BunCpuProfiler, CPUProfilerConfig};
 pub use hot_reloader::{HotReloader, ImportWatcher};
 pub use web_worker::WebWorker;
+// @trace REQ-BRW-004 [entity:DedicatedWorkerGlobalScope] [criterion:8]
+// ScopeInitFn: callback for installing DedicatedWorkerGlobalScope API
+// and stealth properties on Worker global objects.
+pub use web_worker::ScopeInitFn;
 pub use runtime_transpiler_cache::{RuntimeTranspilerCache, RuntimeTranspilerStore, IS_DISABLED as TRANSPILER_CACHE_IS_DISABLED, Entry as TranspilerCacheEntry, TranspilerCacheImplKind};
 pub use async_module::{AsyncModule, Queue as AsyncModuleQueue, InitOpts as AsyncModuleInitOpts};
 pub use validation_scope::ValidationScope;

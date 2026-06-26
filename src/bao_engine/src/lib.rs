@@ -69,6 +69,10 @@ pub use bun_sm::webcore_types;
 pub use bun_sm::module_loader;
 pub use bun_sm::module_loader::{GlobalSetupFn, PostEvalHook, JobQueueDrainFn, set_job_queue_drain};
 
+// ─── Worker re-exports from bun_sm (REQ-BRW-004) ──────────────────────
+// @trace REQ-BRW-004 [entity:Worker] [entity:DedicatedWorkerGlobalScope]
+pub use bun_sm::web_worker::{WebWorker, ScopeInitFn, StructuredCloneReceiver, StructuredCloneSender};
+
 // ─── Modules still owned by bao_engine ───────────────────────────────────
 // @trace REQ-ENG-003 [api:POST /host-fn/call] [entity:JsCallback] — host_fn safe FFI wrapper owned module surface (JS call / type conversion / GC root RAII)
 // @trace REQ-ENG-004 [api:POST /event-loop/drain] [entity:BaoRuntime] — Event Loop bridge (SpiderMonkey JobQueue → uSockets I/O) owned module surface

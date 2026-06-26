@@ -1,0 +1,4 @@
+# sourceInclude: oracle_gate / 模式检查的扫描范围限定
+# 只扫项目自有 crate，排除 Bun 上游代码的 TODO/FIXME 误报
+# 格式：glob 表达式（picomatch），相对于项目根（CWD）
+src/{bao_*,bun_sm}/**/*.rs

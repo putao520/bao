@@ -464,6 +464,7 @@ dependencies = [
  "bao_stealth",
  "base64",
  "bun_core",
+ "bun_http",
  "bun_runtime",
  "bun_sys",
  "cdp-server",
