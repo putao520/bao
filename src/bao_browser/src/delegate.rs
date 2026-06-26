@@ -2315,9 +2315,209 @@ impl WorkerScriptLoader {
         matches!(&self.source, WorkerScriptSource::Url(url)
             if url.starts_with("http://") || url.starts_with("https://"))
     }
+
+    /// Load the Worker script through the full DF-WK-2 pipeline.
+    ///
+    /// This method implements the complete Worker script loading pipeline:
+    ///   1. Resolve — URL parsing / data: / file: extraction
+    ///   2. Fetch — HTTP GET via bao_runtime's stealth HTTP client
+    ///   3. Validate — MIME type check (JS MIME types only)
+    ///   4. Decode — UTF-8 decode of response body
+    ///   5. Compile — SpiderMonkey compilation (Classic vs Module)
+    ///   6. Ready — script source available for evaluation
+    ///
+    /// For inline/data:/file: sources, steps 2–4 are skipped — content
+    /// is already available as a UTF-8 string.
+    ///
+    /// The `stealth_profile` is passed through to the HTTP client so that
+    /// Worker script fetches use the same TLS/HTTP2 fingerprint as the
+    /// parent page (SPEC criterion #12: CRIT-STL-WK).
+    ///
+    /// The `state_callback` is called at each pipeline stage transition,
+    /// enabling CDP observability of the loading progress.
+    ///
+    /// Returns `WorkerScriptLoadResult` on success, or `WorkerScriptLoadError`
+    /// at the stage where loading failed.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
+    ///   pipeline: fetch → MIME check → decode → compile
+    /// @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK: Worker fetch
+    ///   uses parent page's stealth TLS/HTTP2 profile
+    pub fn load<F>(
+        &self,
+        stealth_profile: &Option<bao_stealth::StealthProfile>,
+        mut state_callback: F,
+    ) -> Result<WorkerScriptLoadResult, WorkerScriptLoadError>
+    where
+        F: FnMut(WorkerScriptLoadState),
+    {
+        // Stage 1: Resolve the script source.
+        // @trace REQ-BRW-004 [DF-WK-2] URL resolve
+        state_callback(WorkerScriptLoadState::Pending);
+        let resolved = self.resolve()?;
+
+        let (source, final_url, mime_type) = match resolved {
+            WorkerScriptSource::Inline(content) => {
+                // Inline source: no fetch needed, skip to Ready.
+                // @trace REQ-BRW-004 [DF-WK-2] inline — no fetch
+                state_callback(WorkerScriptLoadState::Ready);
+                return Ok(WorkerScriptLoadResult {
+                    source: content,
+                    final_url: self.script_url().unwrap_or("inline").to_string(),
+                    mime_type: None,
+                });
+            }
+            WorkerScriptSource::Url(url_str) => {
+                // Stage 2: Fetch the script via HTTP.
+                // @trace REQ-BRW-004 [DF-WK-2] HTTP fetch
+                state_callback(WorkerScriptLoadState::Fetching);
+
+                let response = fetch_worker_script(&url_str, stealth_profile)
+                    .map_err(|e| WorkerScriptLoadError::NetworkError(e))?;
+
+                // Stage 3: Validate MIME type.
+                // @trace REQ-BRW-004 [DF-WK-2] JS MIME 校验
+                state_callback(WorkerScriptLoadState::Validating);
+
+                // Extract Content-Type header (case-insensitive).
+                let ct = response.headers.iter().find(|(k, _)| {
+                    k.eq_ignore_ascii_case("content-type")
+                }).map(|(_, v)| v.to_string());
+
+                if let Some(ref content_type) = ct {
+                    // Per DF-WK-2: "JS MIME 校验" — HTTP responses for Worker
+                    // scripts must have a JavaScript MIME type.
+                    Self::validate_mime_type(content_type, &url_str)?;
+                }
+                // If no Content-Type header, we proceed — some servers omit it
+                // for small scripts. The WHATWG spec says a missing MIME type
+                // is treated as "application/octet-stream" which would fail, but
+                // in practice browsers are lenient for same-origin Worker scripts.
+                // We log a warning but don't reject.
+                if ct.is_none() {
+                    log::warn!(
+                        "[WorkerScriptLoader] no Content-Type header for '{}', loading anyway",
+                        url_str
+                    );
+                }
+
+                // Stage 4: Decode response body as UTF-8.
+                // @trace REQ-BRW-004 [DF-WK-2] UTF-8 解码
+                state_callback(WorkerScriptLoadState::Decoding);
+
+                let source = String::from_utf8(response.body.to_vec()).map_err(|e| {
+                    WorkerScriptLoadError::Utf8DecodeError(format!(
+                        "Worker script response body is not valid UTF-8: {}", e
+                    ))
+                })?;
+
+                (source, url_str, ct)
+            }
+        };
+
+        // Stage 5: Compiling — SpiderMonkey compilation happens when
+        // the Worker thread evaluates the script via WebWorker::new.
+        // We mark this stage as a placeholder for CDP observability.
+        // @trace REQ-BRW-004 [DF-WK-2] Classic/Module 编译
+        state_callback(WorkerScriptLoadState::Compiling);
+
+        // Stage 6: Ready.
+        // @trace REQ-BRW-004 [DF-WK-2] script ready
+        state_callback(WorkerScriptLoadState::Ready);
+
+        Ok(WorkerScriptLoadResult {
+            source,
+            final_url,
+            mime_type,
+        })
+    }
+
+    /// Load the Worker script without state callbacks (simplified API).
+    ///
+    /// Equivalent to `load()` with a no-op state callback. Use when
+    /// CDP observability of loading stages is not needed.
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
+    pub fn load_simple(
+        &self,
+        stealth_profile: &Option<bao_stealth::StealthProfile>,
+    ) -> Result<WorkerScriptLoadResult, WorkerScriptLoadError> {
+        self.load(stealth_profile, |_| {})
+    }
+
+    /// Returns the script type for SpiderMonkey compilation options.
+    ///
+    /// Module Workers use ES module compilation; Classic Workers use
+    /// the default script compilation (DF-WK-2: "Classic/Module 编译").
+    ///
+    /// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
+    pub fn is_module(&self) -> bool {
+        matches!(self.script_type, WorkerScriptType::Module)
+    }
 }
 
-/// Tracks the loading state of a Worker script.
+/// Fetch a Worker script via HTTP using bao_runtime's stealth HTTP client.
+///
+/// Performs a synchronous GET request to the script URL. When a stealth
+/// profile is provided, the request uses the same TLS/HTTP2 fingerprint
+/// as the parent page (SPEC criterion #12: CRIT-STL-WK).
+///
+/// DF-WK-2: "线程归属: worker 线程" — this function runs on the Worker
+/// thread, not the main thread. The synchronous blocking call is safe here
+/// because the Worker thread has no event loop obligations during script load.
+///
+/// Returns the HTTP response (status, headers, body) on success, or an
+/// error message on failure.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
+/// @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK: stealth profile inheritance
+fn fetch_worker_script(
+    url: &str,
+    stealth_profile: &Option<bao_stealth::StealthProfile>,
+) -> Result<WorkerScriptFetchResponse, String> {
+    use bun_runtime::stealth_http::stealth_http_request;
+    use bun_http::Method;
+
+    // @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK
+    // The stealth profile is inherited from the parent page so that
+    // Worker script fetches produce the same TLS JA3/JA4 + HTTP2
+    // AKAMAI fingerprint. Without this, a Worker's script fetch would
+    // use a default fingerprint, leaking a distinct fingerprint that
+    // can be correlated back to the page (CreepJS worker-vs-main test).
+    let result = stealth_http_request(
+        stealth_profile,
+        Method::GET,
+        url,
+        &[],  // no custom headers for Worker script fetch
+        None, // no body for GET request
+    ).map_err(|e| {
+        format!("Failed to fetch Worker script from '{}': {}", url, e)
+    })?;
+
+    // Convert StealthSyncResult to our response type.
+    Ok(WorkerScriptFetchResponse {
+        status_code: result.status_code,
+        headers: result.headers.into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+        body: result.body.to_vec(),
+    })
+}
+
+/// Response from a Worker script HTTP fetch.
+///
+/// Owns all data with standard types (no CompactString/SmallVec) for
+/// simplicity in the script loading pipeline.
+///
+/// @trace REQ-BRW-004 [entity:Worker] [DF-WK-2]
+struct WorkerScriptFetchResponse {
+    /// HTTP status code (e.g., 200, 404).
+    status_code: u32,
+    /// Response headers as (name, value) pairs.
+    headers: Vec<(String, String)>,
+    /// Response body bytes.
+    body: Vec<u8>,
+}
 ///
 /// Used for CDP observability and lifecycle management. The Worker script
 /// loading process has these states:

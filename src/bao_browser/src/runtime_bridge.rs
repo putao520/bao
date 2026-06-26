@@ -1289,10 +1289,12 @@ pub fn create_worker_with_script_loader(
     config: crate::delegate::WorkerScopeConfig,
     global_addr_slot: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 ) -> Result<WebWorker, String> {
-    use crate::delegate::{WorkerScriptSource, WorkerScriptLoadError};
+    use crate::delegate::WorkerScriptLoadError;
 
-    // Resolve the script source
-    let resolved = loader.resolve().map_err(|e| {
+    // Run the full DF-WK-2 pipeline: resolve → fetch → MIME check → decode.
+    // @trace REQ-BRW-004 [DF-WK-2] Worker script loading pipeline
+    // @trace REQ-BRW-004 [criterion:12] CRIT-STL-WK: stealth profile for HTTP fetch
+    let load_result = loader.load_simple(&config.stealth_profile).map_err(|e| {
         match e {
             WorkerScriptLoadError::NetworkError(msg) => format!("Worker script network error: {}", msg),
             WorkerScriptLoadError::InvalidMimeType { received, url } => {
@@ -1304,41 +1306,24 @@ pub fn create_worker_with_script_loader(
         }
     })?;
 
-    // Get the script content for evaluation
-    let script_content = match resolved {
-        WorkerScriptSource::Inline(content) => content,
-        WorkerScriptSource::Url(url_str) => {
-            // For http:/https: URLs that couldn't be resolved to inline content,
-            // we pass the URL to WebWorker. In browser mode, servo's DOM Worker
-            // handles the actual HTTP fetch via its resource_threads.
-            // For bun_sm::WebWorker (CLI mode), the URL is logged but the
-            // worker cannot fetch remote scripts — it needs inline content.
-            //
-            // In production browser mode, servo's Worker::Constructor handles
-            // the full DF-WK-2 pipeline (fetch → MIME check → decode → compile).
-            // This code path is for fallback/test scenarios.
-            log::warn!(
-                "[create_worker_with_script_loader] URL-based Worker script '{}' \
-                 requires servo DOM Worker for HTTP fetch — using empty script as placeholder",
-                url_str
-            );
-            // Return an error for URL-based scripts that can't be resolved
-            // without servo's network stack. In browser mode, servo's
-            // Worker::Constructor handles this internally.
-            return Err(format!(
-                "Cannot load Worker script from URL '{}' without servo DOM Worker — \
-                 use create_worker_with_inline_script for inline scripts or let servo's \
-                 Worker::Constructor handle URL-based scripts",
-                url_str
-            ));
-        }
-    };
-
     // Create the scope init callback
     let scope_init = create_worker_scope_init(config, global_addr_slot);
 
-    // Create the WebWorker with the resolved script
-    WebWorker::new_with_scope_init(&script_content, Some(scope_init))
+    // Create the WebWorker with the loaded script
+    // @trace REQ-BRW-004 [DF-WK-2] Classic/Module 编译
+    // Module Workers use ES module compilation; Classic Workers use default
+    // script compilation. The WebWorker::new_with_scope_init currently uses
+    // mozjs's CompileOptionsWrapper which defaults to Classic mode.
+    // Module compilation support is a future enhancement.
+    if loader.is_module() {
+        log::warn!(
+            "[create_worker_with_script_loader] Module Worker script '{}' — \
+             ES module compilation not yet supported, treating as Classic",
+            load_result.final_url
+        );
+    }
+
+    WebWorker::new_with_scope_init(&load_result.source, Some(scope_init))
         .map_err(|_| "Failed to create WebWorker".to_string())
 }
 
