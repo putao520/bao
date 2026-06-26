@@ -8,6 +8,9 @@ use servo::{CookieSource, StorageType};
 use std::collections::HashSet;
 
 use crate::config::PageConfig;
+use crate::delegate::{
+    ServiceWorkerHandle, ServiceWorkerRegistrationId, ServiceWorkerRegistrationState,
+};
 use crate::error::BrowserError;
 use crate::page::PageHandle;
 use crate::page_pool::PagePool;
@@ -216,6 +219,49 @@ where
     let page = pool.get_page(id)
         .ok_or_else(|| format!("page not found: {target_id}"))?;
     f(&page)
+}
+
+/// Parse CDP registrationId into ServiceWorkerRegistrationId.
+///
+/// Format: "script_url::scope" (double-colon separator).
+/// Example: "sw.js::/" or "https://example.com/sw.js::/app/"
+///
+/// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+fn parse_sw_registration_id(registration_id: &str) -> Result<ServiceWorkerRegistrationId, String> {
+    let parts: Vec<&str> = registration_id.splitn(2, "::").collect();
+    if parts.len() != 2 {
+        return Err(format!(
+            "invalid registrationId format: {registration_id} (expected 'script_url::scope')"
+        ));
+    }
+    Ok(ServiceWorkerRegistrationId {
+        script_url: parts[0].to_string(),
+        scope: parts[1].to_string(),
+    })
+}
+
+/// Serialize ServiceWorkerHandle to CDP JSON format.
+///
+/// @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8 C6
+fn sw_registration_to_json(handle: ServiceWorkerHandle) -> Value {
+    // Per DEC-WK-008: fetch interception mode is tracked but servo upstream
+    // does not dispatch FetchEvent yet. CDP exposes the mode regardless.
+    let is_active = handle.registration_state() == ServiceWorkerRegistrationState::Activated;
+    serde_json::json!({
+        "registrationId": format!("{}::{}", handle.script_url, handle.scope),
+        "scriptURL": handle.script_url,
+        "scope": handle.scope,
+        "state": match handle.registration_state() {
+            ServiceWorkerRegistrationState::Idle => "idle",
+            ServiceWorkerRegistrationState::Installing => "installing",
+            ServiceWorkerRegistrationState::Installed => "installed",
+            ServiceWorkerRegistrationState::Activating => "activating",
+            ServiceWorkerRegistrationState::Activated => "activated",
+            ServiceWorkerRegistrationState::Redundant => "redundant",
+        },
+        "isFetchIntercepting": handle.is_intercepting_fetch(),
+        "isActive": is_active,
+    })
 }
 
 fn cmd_create_target(pool: &PagePool, url: &str) -> Result<Value, String> {
@@ -1223,6 +1269,9 @@ fn ok_empty() -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use serde_json::{json, Value};
+    use crate::delegate::{
+        ServiceWorkerHandle, ServiceWorkerRegistrationState,
+    };
 
     #[test]
     fn json_type_null_returns_undefined() {
@@ -1891,5 +1940,147 @@ mod tests {
     #[test]
     fn json_type_mixed_array() {
         assert_eq!(super::json_type(&json!([1, "two", null, true, {}])), "object");
+    }
+
+    // ─── ServiceWorker registration JSON serialization (REQ-BRW-4 C6/C19, DF-WK-8) ───
+    // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:6] [criterion:19]
+
+    #[test]
+    fn sw_registration_id_parses_double_colon_format() {
+        // @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+        let id = super::parse_sw_registration_id("sw.js::/").unwrap();
+        assert_eq!(id.script_url, "sw.js");
+        assert_eq!(id.scope, "/");
+    }
+
+    #[test]
+    fn sw_registration_id_parses_complex_scope() {
+        let id = super::parse_sw_registration_id("https://example.com/sw.js::/app/").unwrap();
+        assert_eq!(id.script_url, "https://example.com/sw.js");
+        assert_eq!(id.scope, "/app/");
+    }
+
+    #[test]
+    fn sw_registration_id_rejects_missing_separator() {
+        assert!(super::parse_sw_registration_id("sw.js").is_err());
+        assert!(super::parse_sw_registration_id("sw.js/").is_err());
+    }
+
+    #[test]
+    fn sw_registration_to_json_activated() {
+        // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:6] [criterion:19] DF-WK-8
+        let handle = ServiceWorkerHandle::new(
+            "sw.js".to_string(),
+            "/".to_string(),
+            None,
+        );
+        handle.transition_state(ServiceWorkerRegistrationState::Activated);
+        handle.enable_fetch_interception();
+
+        let json_val = super::sw_registration_to_json(handle);
+        assert_eq!(json_val["registrationId"], "sw.js::/");
+        assert_eq!(json_val["scriptURL"], "sw.js");
+        assert_eq!(json_val["scope"], "/");
+        assert_eq!(json_val["state"], "activated");
+        assert_eq!(json_val["isActive"], true);
+        // Per DEC-WK-008: fetch interception mode tracked in registry even
+        // though servo upstream does not dispatch FetchEvent yet.
+        assert_eq!(json_val["isFetchIntercepting"], true);
+    }
+
+    #[test]
+    fn sw_registration_to_json_installing_state() {
+        let handle = ServiceWorkerHandle::new(
+            "sw.js".to_string(),
+            "/".to_string(),
+            None,
+        );
+        // Default state is Installing
+        let json_val = super::sw_registration_to_json(handle);
+        assert_eq!(json_val["state"], "installing");
+        assert_eq!(json_val["isActive"], false);
+        assert_eq!(json_val["isFetchIntercepting"], false);
+    }
+
+    #[test]
+    fn sw_registration_to_json_all_states() {
+        // @trace REQ-BRW-4 [entity:ServiceWorker] DF-WK-8
+        let states_and_expected = vec![
+            (ServiceWorkerRegistrationState::Idle, "idle"),
+            (ServiceWorkerRegistrationState::Installing, "installing"),
+            (ServiceWorkerRegistrationState::Installed, "installed"),
+            (ServiceWorkerRegistrationState::Activating, "activating"),
+            (ServiceWorkerRegistrationState::Activated, "activated"),
+            (ServiceWorkerRegistrationState::Redundant, "redundant"),
+        ];
+        for (state, expected) in states_and_expected {
+            let handle = ServiceWorkerHandle::new(
+                "sw.js".to_string(),
+                "/".to_string(),
+                None,
+            );
+            handle.transition_state(state.clone());
+            let json_val = super::sw_registration_to_json(handle);
+            assert_eq!(json_val["state"], expected, "state mapping for {:?}", state);
+        }
+    }
+
+    #[test]
+    fn sw_registration_terminate_disables_fetch_interception() {
+        // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:19] DF-WK-8
+        // SPEC criterion #19: "terminate 后正确注销"
+        let handle = ServiceWorkerHandle::new(
+            "sw.js".to_string(),
+            "/".to_string(),
+            None,
+        );
+        handle.enable_fetch_interception();
+        assert!(handle.is_intercepting_fetch());
+
+        handle.terminate();
+
+        assert!(handle.is_closing());
+        // terminate() must disable fetch interception
+        assert!(!handle.is_intercepting_fetch());
+    }
+
+    #[test]
+    fn sw_registration_terminate_is_idempotent() {
+        let handle = ServiceWorkerHandle::new(
+            "sw.js".to_string(),
+            "/".to_string(),
+            None,
+        );
+        handle.terminate();
+        handle.terminate();
+        handle.terminate();
+        assert!(handle.is_closing());
+    }
+
+    #[test]
+    fn sw_registration_stealth_profile_inherited() {
+        // @trace REQ-BRW-4 [entity:ServiceWorker] [criterion:19] DF-WK-10
+        // SPEC: SW must inherit registering page's stealth profile.
+        let profile = bao_stealth::StealthProfile::chrome_default();
+        let handle = ServiceWorkerHandle::new(
+            "sw.js".to_string(),
+            "/".to_string(),
+            Some(profile.clone()),
+        );
+        assert!(handle.stealth_profile.is_some());
+        // Stealth profile is preserved across registry lookups
+        let json_val = super::sw_registration_to_json(handle.clone());
+        // Note: stealth profile is internal state, not serialized to CDP JSON
+        // (it's used for stealth consistency verification, not CDP reporting)
+        assert_eq!(json_val["scriptURL"], "sw.js");
+        assert!(handle.stealth_profile.is_some());
+    }
+
+    #[test]
+    fn sw_registration_id_format_with_colon_in_url() {
+        // Edge case: URL containing colon (not double-colon) should parse correctly
+        let id = super::parse_sw_registration_id("https://a.io/sw.js::/scope").unwrap();
+        assert_eq!(id.script_url, "https://a.io/sw.js");
+        assert_eq!(id.scope, "/scope");
     }
 }

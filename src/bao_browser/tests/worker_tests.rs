@@ -1332,3 +1332,270 @@ fn test_importScripts_with_url_reports_error() {
     // Worker should exit after explicit terminate().
     assert!(!worker.is_running(), "worker should exit after terminate() following importScripts error");
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// §23 DedicatedWorkerGlobalScope API (criterion #8) — location/navigator natives
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Test pattern: the script verifies a property and only calls close() if the
+// assertion passes. If the property is missing, close() is NOT called, the
+// worker keeps running, and the test times out → FAIL.
+// This makes the tests actually verify behavior (not just "script finished").
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope — self.location exists
+///
+/// Tests that `self.location` is installed on the worker global object as
+/// a WorkerLocation-like object per SPEC entity:WorkerLocation.
+/// The script calls close() only if self.location is an object.
+#[test]
+fn test_worker_location_native_installed() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        if (typeof self.location === 'object' && self.location !== null) {
+            close();
+        }
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit via close() — self.location must be installed as object");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope — self.location.href is string
+#[test]
+fn test_worker_location_href_string() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        if (typeof self.location.href === 'string') {
+            close();
+        }
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — self.location.href must be a string");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope — self.location has origin field
+#[test]
+fn test_worker_location_origin_field() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        if (typeof self.location.origin === 'string') {
+            close();
+        }
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — self.location.origin must be a string");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope — self.navigator exists
+///
+/// Tests that `self.navigator` is installed on the worker global object as
+/// a WorkerNavigator-like object per SPEC entity:WorkerNavigator.
+#[test]
+fn test_worker_navigator_native_installed() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        if (typeof self.navigator === 'object' && self.navigator !== null) {
+            close();
+        }
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — self.navigator must be installed as object");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope — navigator.hardwareConcurrency
+#[test]
+fn test_worker_navigator_hardware_concurrency() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        if (typeof self.navigator.hardwareConcurrency === 'number' && self.navigator.hardwareConcurrency > 0) {
+            close();
+        }
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — navigator.hardwareConcurrency must be a positive number");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope — navigator.userAgent is string
+#[test]
+fn test_worker_navigator_user_agent_string() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        if (typeof self.navigator.userAgent === 'string') {
+            close();
+        }
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — navigator.userAgent must be a string");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope — navigator.language is string
+#[test]
+fn test_worker_navigator_language_string() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        if (typeof self.navigator.language === 'string') {
+            close();
+        }
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — navigator.language must be a string");
+}
+
+/// @trace REQ-BRW-004 [criterion:8] DedicatedWorkerGlobalScope — navigator.platform is string
+#[test]
+fn test_worker_navigator_platform_string() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        if (typeof self.navigator.platform === 'string') {
+            close();
+        }
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — navigator.platform must be a string");
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// §24 onerror Event Propagation (criterion #9)
+// ═══════════════════════════════════════════════════════════════════════
+//
+// Test pattern: the script registers onerror that calls close() when invoked,
+// then throws an error. If onerror is NOT dispatched, close() is never called
+// and the worker stays running → test times out → FAIL.
+
+/// @trace REQ-BRW-004 [criterion:9] onerror event — script error triggers onerror
+///
+/// Tests that when a worker script throws an uncaught error, the worker's
+/// `onerror` handler (if registered) is invoked per SPEC criterion #9.
+#[test]
+fn test_worker_onerror_invoked_on_script_error() {
+    use bao_engine::WebWorker;
+
+    // Register onerror that calls close(), then throw.
+    // If onerror fires, close() terminates the worker.
+    // If onerror does NOT fire, worker stays running → test times out.
+    let script = r#"
+        self.onerror = function(event) {
+            close();
+        };
+        throw new Error("test error for onerror");
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — onerror must be dispatched on script error (close() called from onerror)");
+}
+
+/// @trace REQ-BRW-004 [criterion:9] onerror event — ErrorEvent fields present
+///
+/// Tests that the onerror handler receives an event with message, filename,
+/// lineno, and colno fields per SPEC criterion #9.
+#[test]
+fn test_worker_onerror_error_event_fields() {
+    use bao_engine::WebWorker;
+
+    // onerror verifies all 4 ErrorEvent fields, then closes only if all present.
+    let script = r#"
+        self.onerror = function(event) {
+            var hasMessage = typeof event.message === 'string';
+            var hasFilename = typeof event.filename === 'string';
+            var hasLineno = typeof event.lineno === 'number';
+            var hasColno = typeof event.colno === 'number';
+            if (hasMessage && hasFilename && hasLineno && hasColno) {
+                close();
+            }
+        };
+        throw new Error("field test");
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — onerror event must have message/filename/lineno/colno fields");
+}
+
+/// @trace REQ-BRW-004 [criterion:9] onerror — message contains error text
+///
+/// Tests that the onerror event message contains the thrown error's message text.
+#[test]
+fn test_worker_onerror_message_contains_error_text() {
+    use bao_engine::WebWorker;
+
+    let script = r#"
+        self.onerror = function(event) {
+            if (event.message && event.message.indexOf('unique-error-marker') !== -1) {
+                close();
+            }
+        };
+        throw new Error("unique-error-marker for onerror");
+    "#;
+
+    let worker = WebWorker::new_with_scope_init(script, None).expect("worker creation");
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while worker.is_running() && std::time::Instant::now() < deadline {
+        std::thread::yield_now();
+    }
+    assert!(!worker.is_running(), "worker should exit — onerror message must contain the error text");
+}

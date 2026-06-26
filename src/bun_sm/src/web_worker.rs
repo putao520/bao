@@ -394,6 +394,7 @@ unsafe fn install_worker_post_message_native(
             // @trace REQ-BRW-004 [criterion:6] structuredclone::write
             // Supports objects/arrays/ArrayBuffer/Buffer/Transferable (criterion #6).
             let value: JSVal = unsafe { *args.argv_ };
+            eprintln!("[DEBUG post_message_native] value={:?} argc={}", value, args.argc_);
             let serialized = unsafe { structured_clone_write(cx, value) };
             match serialized {
                 Ok(bytes) => {
