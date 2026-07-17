@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-07-17T16:14:12.918Z",
+  "updatedAt": "2026-07-17T16:15:26.022Z",
   "updatedBy": "",
   "counters": {},
   "meta": {
@@ -17,6 +17,11 @@
     },
     "sessions": {
       "sessions": {
+        "019f70dc-75a0-7f22-9b64-fdda6e17f148": {
+          "firstSeen": "2026-07-17T16:15:26.008Z",
+          "bootstrapped": true,
+          "lastSeen": "2026-07-17T16:15:26.008Z"
+        },
         "019f70db-5804-72a2-8aaf-0bdf4418d81d": {
           "firstSeen": "2026-07-17T16:14:12.913Z",
           "bootstrapped": true,
