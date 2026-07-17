@@ -1,22 +1,21 @@
 # 快速开始
 
-5 分钟上手 `bao_cdp_client`。
+5 分钟上手浏览器控制 API。**对外请依赖公共 package `bao`**（`bao_cdp_client` 仅 monorepo 内部实现）。
 
 ## 安装
 
-`bao_cdp_client` 是 Bao workspace 内部 crate,通过 git path 引用:
-
 ```toml
 [dependencies]
-bao_cdp_client = { path = "../bao/src/bao_cdp_client" }
-# 或 git URL:
-# bao_cdp_client = { git = "https://github.com/putao520/bao", branch = "master" }
+# 唯一公共入口（整栈始终链接）
+bao = { path = "../bao/src/bao" }
+# 或:
+# bao = { git = "https://github.com/putao520/bao", package = "bao" }
 ```
 
 ## 最小示例
 
 ```rust
-use bao_cdp_client::Browser;
+use bao::Browser;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let browser = Browser::connect("memory://bao")?;
@@ -44,7 +43,7 @@ Connected: Browser(memory://bao, kind=InMemory)
 同进程集成 — servo WebView 与 CDP client 共享 JSContext,零网络往返。
 
 ```rust
-use bao_cdp_client::Browser;
+use bao::Browser;
 use std::sync::Arc;
 
 let browser = Browser::connect("memory://bao")?;
@@ -56,7 +55,7 @@ let browser = Browser::connect("memory://bao")?;
 ### 2. 外部 Chrome — 直连(`ws://`)
 
 ```rust
-use bao_cdp_client::Browser;
+use bao::Browser;
 
 let browser = Browser::connect("ws://127.0.0.1:9222")?;
 let mut transport = browser.build_websocket_transport()?;
@@ -76,7 +75,7 @@ google-chrome --headless \
 ### 3. 外部 Chrome — HTTP discover(`http://`)
 
 ```rust
-use bao_cdp_client::Browser;
+use bao::Browser;
 
 // GET /json/version 拿 webSocketDebuggerUrl,自动转 ws://
 let browser = Browser::connect("http://127.0.0.1:9222")?;
@@ -87,8 +86,8 @@ let browser = Browser::connect("http://127.0.0.1:9222")?;
 ## 典型工作流
 
 ```rust
-use bao_cdp_client::{Browser, Cookie, ScreenshotFormat};
-use bao_cdp_client::types::Viewport;
+use bao::{Browser, Cookie, ScreenshotFormat};
+use bao::Viewport;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let browser = Browser::connect("memory://bao")?;
@@ -128,7 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## 错误处理
 
 ```rust
-use bao_cdp_client::{Browser, ConnectError, CdpError};
+use bao::{Browser, ConnectError, CdpError};
 
 match Browser::connect("ftp://x") {
     Ok(browser) => { /* ... */ },

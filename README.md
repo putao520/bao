@@ -23,20 +23,25 @@
 
 ```bash
 # 克隆
-git clone <repo-url> bao && cd bao
+git clone https://github.com/putao520/bao.git && cd bao
 
-# 构建(首次构建 mozjs 从源码编译 SpiderMonkey,耗时较长)
+# 构建(首次构建 mozjs 从源码编译 SpiderMonkey,耗时较长；需 nightly + clang/C++)
 cargo build
 
-# 构建二进制
+# 构建 CLI 二进制
 cargo build -p bao_bin
-# 产物:target/debug/bao
+# 产物: target/debug/bao
 
-# 运行测试
+# 校验统一库 package
+cargo check -p bao
+cargo test -p bao
+
+# 全仓测试(更重)
 cargo test
 ```
 
-> **mozjs 首次编译**:从源码编译 SpiderMonkey,需要 C++ 编译器 + 较长时间。已内置 EBUSY patch,`cargo test` 默认多线程零 SIGSEGV。
+> **mozjs 首次编译**:从源码编译 SpiderMonkey,需要 C++ 编译器 + 较长时间。已内置 EBUSY patch,`cargo test` 默认多线程零 SIGSEGV。  
+> **平台**:当前主路径以 **Linux x86_64** 为主；macOS/Windows 事件循环尚未全平台证明可编。
 
 ## 快速开始
 
@@ -291,39 +296,33 @@ bao browser [--url URL]          # 启动浏览器
 
 ## 架构概览
 
+对外只暴露 **一个** Cargo package：`bao`（整栈始终链接）。下图中的 `bao_*` 是 monorepo **内部**分层，**不要**在宿主项目里分别 path 依赖。
+
 ```
 ┌──────────────────────────────────────────────────────────┐
-│                     bao (CLI binary)                      │
+│  公共 package: bao  (唯一对外 lib 入口)                    │
+│  re-export: BaoRuntime / Browser / StealthProfile / …    │
+├──────────────────────────────────────────────────────────┤
+│                     bao CLI binary                        │
 │            bao_bin → bao_cli (clap subcommands)           │
 ├────────────┬────────────┬──────────┬─────────────────────┤
+│ (internal) │ (internal) │(internal)│ (internal)          │
 │ bao_engine │ bao_browser│ bao_cdp  │ bao_stealth         │
 │ SpiderMonkey│  Servo 桥  │ CDP WS   │ 反指纹              │
-│ JSC→SM 桥  │ PagePool   │ Router   │ TLS JA3/JA4         │
-│ context/   │ PageHandle │ 12 域    │ HTTP2 AKAMAI        │
-│ job_queue  │ evaluate   │ Session  │ Canvas/WebGL/Audio  │
 ├────────────┴────────────┴──────────┴─────────────────────┤
-│ bao_cdp_client  Playwright 风格高层 API(Browser/Page/...) │
-├──────────────────────────────────────────────────────────┤
-│ bao_runtime  Node.js/Bun 兼容(fs/http/crypto/sqlite/ffi) │
-├──────────────────────────────────────────────────────────┤
-│ bao_uloop  事件循环(epoll tick,共享 FilePoll fd)         │
+│ (internal) bao_cdp_client / bao_runtime / bao_uloop       │
 ├──────────────────────────────────────────────────────────┤
 │          Bun ~85 个纯 Rust crate(零修改复用)             │
 ├──────────────────────────────────────────────────────────┤
-│ mozjs(SpiderMonkey FFI) · libservo · boringssl · cdp-protocol │
+│ mozjs · libservo · boringssl · cdp-protocol              │
 └──────────────────────────────────────────────────────────┘
 ```
 
-| crate | 职责 |
-|-------|------|
-| `bao_engine` | SpiderMonkey 引擎封装(re-export `bun_sm` 核心类型 + `context` + `job_queue`) |
-| `bao_runtime` | Node.js/Bun API 兼容层;`BaoRuntime`(Node.js 运行时入口) |
-| `bao_browser` | servo 集成桥;`BaoRuntime`(浏览器) + `PagePool` + `PageHandle` |
-| `bao_cdp` | CDP Server + servo 桥 |
-| `bao_cdp_client` | Playwright 风格高层 API(`Browser::connect`) |
-| `bao_stealth` | 反指纹(`StealthProfile` + `StealthEngine`) |
-| `bao_uloop` | 事件循环(epoll tick) |
-| `bao_cli` / `bao_bin` | CLI(`bao` binary) |
+| crate | 对外？ | 职责 |
+|-------|--------|------|
+| **`bao`** | **是（唯一公共 lib）** | 整栈 re-export；宿主只依赖此 package |
+| `bao_engine` 等 | 否（内部） | monorepo 实现分层；见 [CLAUDE.md](./CLAUDE.md) |
+| `bao_cli` / `bao_bin` | CLI 二进制 | `bao` 命令行入口 |
 
 ## 文档
 
@@ -334,27 +333,37 @@ bao browser [--url URL]          # 启动浏览器
   - `03-PROCESS.html` — 核心流程(JS 执行管线 · 渲染管线 · CDP 路由)
   - `05-IMPLEMENTATION.html` — 实施路线图(5 阶段)
 
-## Cargo 依赖(嵌入到自己项目)
+## Cargo 依赖（嵌入到自己项目）
 
-**只依赖一个公共 package：`bao`。** 整栈（引擎 + 浏览器 + Node/Bun API + CDP + Stealth）始终链接，**不使用** Cargo product features 拆分能力。
+**只依赖一个公共 package：`bao`。** 整栈（引擎 + 浏览器 + Node/Bun API + CDP + Stealth）始终链接；**禁止**再写多个 `path = "src/bao_*"` 依赖；**不使用** Cargo product features 拆分能力。
 
 ```toml
 [dependencies]
-# path：本仓库内嵌
-bao = { path = "path/to/bao/src/bao" }
+# 本仓库内嵌（package 路径是 src/bao，crate 名是 bao）
+bao = { path = "../bao/src/bao" }
 
-# 或 git（package 名必须是 bao）
+# 或 git
 # bao = { git = "https://github.com/putao520/bao", package = "bao" }
 ```
 
 ```rust
-use bao::{BaoConfig, BaoRuntime, Browser, StealthProfile};
+use bao::{BaoConfig, BaoRuntime, Browser, PageConfig, StealthProfile};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _runtime = BaoRuntime::new(BaoConfig::default())?;
+    let _ = StealthProfile::firefox_default();
+    let _browser = Browser::connect("ws://127.0.0.1:9222")?;
+    Ok(())
+}
 ```
 
-内部 crate（`bao_browser` / `bao_engine` / …）是 monorepo 实现细节，**不要**在宿主项目里写多 path 依赖。  
-完整方案见 [docs/unified-library-integration.md](./docs/unified-library-integration.md)。
+| 错误（不要这样写） | 正确 |
+|--------------------|------|
+| `bao_browser = { path = "src/bao_browser" }` 等一串 | 仅 `bao = { path = "…/src/bao" }` 或 git `package = "bao"` |
+| `use bao_browser::…` / `use bao_stealth::…` | `use bao::…` |
 
-构建前提（fail-closed，缺依赖则编译失败）：nightly + clang/C++ + `vendor/`（mozjs/servo/boringssl 等）。详见该文档 §6。
+完整方案见 [docs/unified-library-integration.md](./docs/unified-library-integration.md)。  
+构建前提（fail-closed）：nightly + clang/C++ + `vendor/`（mozjs/servo/boringssl 等）。
 
 ## 许可证
 

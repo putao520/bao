@@ -87,7 +87,7 @@ members = [
 version = "0.0.0"
 edition = "2024"
 license = "MIT OR MPL-2.0"
-repository = "https://github.com/user/bao"
+repository = "https://github.com/putao520/bao"
 
 [workspace.dependencies]
 mozjs = { path = "vendor/mozjs/mozjs" }
