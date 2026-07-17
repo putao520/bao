@@ -432,6 +432,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao"
+version = "0.1.0"
+dependencies = [
+ "bao_browser",
+ "bao_cdp",
+ "bao_cdp_client",
+ "bao_engine",
+ "bao_native_stubs",
+ "bao_stealth",
+ "bao_uloop",
+ "bun_runtime",
+]
+
+[[package]]
 name = "bao_bin"
 version = "0.1.0"
 dependencies = [
@@ -5222,8 +5236,6 @@ dependencies = [
 [[package]]
 name = "ipc-channel"
 version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "347ef783e380784658248bdb0b87ca1293e3e3df3fc7dee061e129aa5f013d61"
 dependencies = [
  "crossbeam-channel",
  "libc",
@@ -8491,6 +8503,7 @@ dependencies = [
  "accesskit",
  "crossbeam-channel",
  "euclid",
+ "ipc-channel",
  "keyboard-types",
  "malloc_size_of_derive",
  "rustc-hash",

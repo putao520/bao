@@ -111,6 +111,7 @@ Bun workspace 中 ~85 个纯 Rust crate(零 JSC)是经过生产验证的高性�
 
 | crate | 路径 | 职责 |
 |-------|------|------|
+| `bao` | `src/bao` | **对外唯一公共 lib**：整栈 re-export（引擎+浏览器+runtime+CDP+Stealth 始终链接，无产品 feature 拆分） |
 | `bao_engine` | `src/bao_engine` | SpiderMonkey 引擎封装,re-export `bun_sm` 核心类型;`context` + `job_queue` 自有模块 |
 | `bao_runtime` | `src/bao_runtime`(crate 名 `bun_runtime`) | Node.js/Bun API 兼容层;`BaoRuntime`(Node.js 运行时入口) |
 | `bao_browser` | `src/bao_browser` | servo 集成桥;`BaoRuntime`(浏览器运行时) + `PagePool` + `PageHandle` + `BaoServoDelegate` |

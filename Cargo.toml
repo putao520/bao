@@ -2,6 +2,8 @@
 resolver = "2"
 exclude = ["vendor/servo", "vendor/mozjs"]
 members = [
+    # Public unified library entry (consumers depend on package `bao` only).
+    "src/bao",
     "src/bao_engine",
     "src/bao_engine_macros",
     "src/bao_crypto",
@@ -90,6 +92,7 @@ repository = "https://github.com/user/bao"
 [workspace.dependencies]
 mozjs = { path = "vendor/mozjs/mozjs" }
 mozjs_sys = { path = "vendor/mozjs/mozjs-sys" }
+bao = { path = "src/bao" }
 bao_crypto = { path = "src/bao_crypto" }
 bao_boringssl_bridge = { path = "src/bao_boringssl_bridge" }
 bao_native_stubs = { path = "src/bao_native_stubs" }
@@ -375,3 +378,8 @@ new_ret_no_self = "allow"
 map_identity = "allow"
 
 
+
+[patch.crates-io]
+# BAO PATCH (BCE-20260627-009): Vendor ipc-channel to enable per-instance RouterProxy
+# (thread-local router infrastructure, see servo/components/shared/base/ipc_router.rs).
+ipc-channel = { path = "vendor/ipc-channel" }

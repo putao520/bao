@@ -122,8 +122,8 @@ Stealth 各维度(都由 `StealthProfile::firefox_default()` 自动启用):
 ### 例 4:Headless 多页面库(Rust API)
 
 ```rust
-use bao_browser::{BaoConfig, BaoRuntime, PageConfig, ScreenshotFormat};
-use bao_stealth::StealthProfile;
+// 统一库入口：只依赖 package `bao`（整栈始终链接，无产品 feature 拆分）
+use bao::{BaoConfig, BaoRuntime, PageConfig, ScreenshotFormat, StealthProfile};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 浏览器运行时(全局唯一 servo + 每页一线程)
@@ -220,10 +220,10 @@ const { chromium } = require('playwright');
 })();
 ```
 
-**Rust 侧用 `bao_cdp_client`**(Playwright 风格高层 API,按 URL scheme 路由):
+**Rust 侧用统一库 `bao`**(Playwright 风格高层 API,按 URL scheme 路由):
 
 ```rust
-use bao_cdp_client::Browser;
+use bao::Browser;
 
 // 同进程 servo(memory:// scheme → InMemoryTransport,零网络往返)
 let browser = Browser::connect("memory://bao")?;
@@ -239,9 +239,9 @@ assert!(browser.is_websocket());
 ## Stealth 反指纹 API
 
 ```rust
-use bao_stealth::{StealthEngine, StealthProfile};
+use bao::{StealthEngine, StealthProfile};
 
-// 预置 profile
+// 预置 profile（运行时配置；整栈始终链接，不是 Cargo feature）
 let ff = StealthProfile::firefox_default();   // Firefox ESR 指纹
 let ch = StealthProfile::chrome_default();    // Chrome 指纹
 
@@ -336,15 +336,25 @@ bao browser [--url URL]          # 启动浏览器
 
 ## Cargo 依赖(嵌入到自己项目)
 
+**只依赖一个公共 package：`bao`。** 整栈（引擎 + 浏览器 + Node/Bun API + CDP + Stealth）始终链接，**不使用** Cargo product features 拆分能力。
+
 ```toml
 [dependencies]
-bao_browser     = { path = "src/bao_browser" }     # 浏览器运行时 + PagePool
-bao_engine      = { path = "src/bao_engine" }      # SpiderMonkey 引擎封装
-bao_stealth     = { path = "src/bao_stealth" }     # 反指纹
-bao_cdp         = { path = "src/bao_cdp" }         # CDP Server
-bao_cdp_client  = { path = "src/bao_cdp_client" }  # 高层 CDP 客户端
-bao_runtime     = { path = "src/bao_runtime" }     # Node.js 兼容(crate 名 bun_runtime)
+# path：本仓库内嵌
+bao = { path = "path/to/bao/src/bao" }
+
+# 或 git（package 名必须是 bao）
+# bao = { git = "https://github.com/putao520/bao", package = "bao" }
 ```
+
+```rust
+use bao::{BaoConfig, BaoRuntime, Browser, StealthProfile};
+```
+
+内部 crate（`bao_browser` / `bao_engine` / …）是 monorepo 实现细节，**不要**在宿主项目里写多 path 依赖。  
+完整方案见 [docs/unified-library-integration.md](./docs/unified-library-integration.md)。
+
+构建前提（fail-closed，缺依赖则编译失败）：nightly + clang/C++ + `vendor/`（mozjs/servo/boringssl 等）。详见该文档 §6。
 
 ## 许可证
 
