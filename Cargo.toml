@@ -8,6 +8,7 @@ members = [
     "src/bao_engine_macros",
     "src/bao_crypto",
     "src/bao_runtime",
+    "src/bao_workflow_host",
     "src/bao_browser",
     "src/bao_cli",
     "src/bao_bundler",
@@ -198,6 +199,7 @@ bun_options_types = { path = "src/options_types" }
 bun_bunfig = { path = "src/bunfig" }
 bun_output = { path = "src/output" }
 bun_runtime = { path = "src/bao_runtime" }
+bao_workflow_host = { path = "src/bao_workflow_host" }
 bun_which = { path = "src/which" }
 bun_transpiler = { path = "src/transpiler" }
 

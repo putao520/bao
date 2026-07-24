@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 bao_engine = { path = "../bao_engine" }
+bao_workflow_host = { path = "../bao_workflow_host" }
 bao_stealth = { path = "../bao_stealth" }
 bao_boringssl_bridge = { path = "../bao_boringssl_bridge" }
 bun_boringssl_sys = { path = "../boringssl_sys" }

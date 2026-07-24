@@ -648,6 +648,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bao_workflow_host"
+version = "0.1.0"
+dependencies = [
+ "bun_core",
+ "mozjs",
+ "mozjs_sys",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2006,6 +2015,7 @@ dependencies = [
  "bao_native_stubs",
  "bao_stealth",
  "bao_uloop",
+ "bao_workflow_host",
  "bcrypt",
  "bun_alloc",
  "bun_ast",

@@ -14,6 +14,7 @@ pub mod bun_sqlite;
 pub mod bun_ffi;
 pub mod bun_test;
 pub mod bao_browser_global;
+pub mod workflow_host_global;
 pub mod dispatch;
 pub mod fetch_api;
 // @trace REQ-ENG-010 [entity:FetchTasklet] — async HTTP integration helper

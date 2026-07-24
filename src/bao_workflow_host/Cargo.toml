@@ -1,0 +1,15 @@
+[package]
+name = "bao_workflow_host"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "CC Dynamic Workflow host inject for Bao Bun (plan-25) — thin crate for dual-def-free tests"
+
+[dependencies]
+mozjs.workspace = true
+mozjs_sys.workspace = true
+bun_core = { path = "../bun_core" }
+
+[dev-dependencies]
+# Intentionally no bao_engine / bun_runtime: those dual-define symbols and
+# block integration test link. Runtime proof uses mozjs Runtime directly.
