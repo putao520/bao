@@ -27,6 +27,8 @@ pub fn force_link_product_native_symbols() {
     let _ = WTF__dtoa as *const () as usize;
     let _ = URL__fromString as *const () as usize;
     let _ = __bun_regex_compile as *const () as usize;
+    // linux_trace RealImpl lives in `linux_trace` module (STUB-INVENTORY).
+    crate::linux_trace::force_link_linux_trace();
 }
 
 // ── process reload / stdio ────────────────────────────────────────────────
@@ -512,11 +514,15 @@ fn _touch_dead() {
     let _ = dead_string_value();
 }
 
-// ── regex (regex crate) / linux_trace residual ────────────────────────────
+// ── regex (regex crate) residual ──────────────────────────────────────────
 // install_types::NodeLinker declares `extern "Rust"` — use Rust ABI (no
 // `extern "C"`). Pattern is compiled with the `regex` crate.
 //
 // @trace STUB-INVENTORY: __bun_regex_* RealImpl via regex crate
+//
+// Bun__linux_trace_* → `crate::linux_trace` (RealImpl, correct ABI).
+// Do NOT reintroduce the old 8-arg Chrome-trace noop here (dual-def + ABI
+// mismatch with bun_core::perf::sys / perf.zig).
 
 /// Compile `pattern` with no flags. `None` ⇔ invalid regex.
 /// Rust ABI matches `bun_install_types::NodeLinker` declarer.
@@ -549,24 +555,6 @@ pub fn __bun_regex_drop(regex: core::ptr::NonNull<()>) {
     unsafe {
         drop(Box::from_raw(regex.as_ptr() as *mut regex::Regex));
     }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__linux_trace_init() -> bool {
-    false
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__linux_trace_emit(
-    _id: u32,
-    _name: *const c_char,
-    _cat: *const c_char,
-    _phase: u8,
-    _ts: u64,
-    _pid: u32,
-    _tid: u32,
-    _extra: *const c_char,
-) {
 }
 
 // ── TLS residual (root_certs / BoringSSL EX_free) ─────────────────────────

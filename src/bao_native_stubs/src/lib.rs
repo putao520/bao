@@ -19,8 +19,10 @@
 //! - WTF__DumpStackTrace: real backtrace output
 //!
 //! ## Remaining no-op stubs (require architecture work)
-//! - Bun__linux_trace_* (see STUB-INVENTORY.md NoopBlocker residual)
 //! - WTF__releaseFastMallocFreeMemoryForThisThread → real owner: bun_alloc
+//!
+//! ## Moved to product RealImpl (do NOT reintroduce — dual-def)
+//! - Bun__linux_trace_* → `bun_runtime::linux_trace`
 //!
 //! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load time,
 //! so integration tests don't need explicit force_link() calls.
@@ -85,9 +87,8 @@ pub fn force_link() {
         Bun__registerSignalsForForwarding(0, core::ptr::null(), 0);
         Bun__unregisterSignalsForForwarding();
 
-        // bun_perf / bun_resolver / bun_core dependency chain
-        let _ = Bun__linux_trace_init();
-        Bun__linux_trace_emit(0, core::ptr::null(), core::ptr::null(), 0, 0, 0, 0, core::ptr::null());
+        // Bun__linux_trace_* — real owner: bun_runtime::linux_trace
+        // Do NOT reintroduce noops (STUB-INVENTORY dual-def iron rule).
         let _ = Bun__StackCheck__getMaxStack();
         // Force-link all c_lib_stubs symbols
         c_lib_stubs::force_c_lib_stubs();
@@ -247,7 +248,7 @@ pub extern "C" fn on_before_reload_process_linux() {
 // ──────────────────────────────────────────────────────────────
 // Symbols referenced by bun_resolver/bun_perf/bun_ast dependency chain
 // ──────────────────────────────────────────────────────────────
-// Bun__linux_trace_init/emit — provided above (no-op stubs)
+// Bun__linux_trace_* — real owner: bun_runtime::linux_trace (not here)
 // __bun_resolver_init_package_manager — provided above (no-op stub)
 // Bun__StackCheck__getMaxStack — provided above
 
@@ -501,23 +502,9 @@ pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic
 // breaks consumer lib-test link (gsc-frog-tools).
 
 // ──────────────────────────────────────────────────────────────
-// bun_perf Linux trace — no-op stubs (Bao uses log crate instead)
+// Bun__linux_trace_* — REAL owner: bun_runtime::linux_trace
+// Do NOT reintroduce no-op stubs here (dual-def with product path).
 // ──────────────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__linux_trace_init() -> bool { false }
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__linux_trace_emit(
-    _id: u32,
-    _name: *const c_char,
-    _cat: *const c_char,
-    _phase: u8,
-    _ts: u64,
-    _pid: u32,
-    _tid: u32,
-    _extra: *const c_char,
-) {}
 
 // ──────────────────────────────────────────────────────────────
 // bun_core::StackCheck — returns stack end pointer

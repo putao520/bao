@@ -94,6 +94,8 @@ pub mod product_process_exit;
 pub mod product_buffered_reader;
 // @trace STUB-INVENTORY: product residual RealImpl rehomed from bao_native_stubs
 pub mod product_native_symbols;
+// @trace STUB-INVENTORY: Bun__linux_trace_* RealImpl (cross-platform; residual=0)
+pub mod linux_trace;
 
 pub use runtime::BaoRuntime;
 
