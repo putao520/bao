@@ -90,9 +90,9 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 ### NoopBlocker — **P0 residual** (need real owner tasks)
 
-| Symbol / group | Owner task | Product force? | Why P0 |
-|----------------|------------|----------------|--------|
-| `Bun__linux_trace_*` | `bun_perf` or drop call sites | via runtime | Always false / empty |
+| Symbol / group | Owner task | Product force? | Status | Why P0 |
+|----------------|------------|----------------|--------|--------|
+| `Bun__linux_trace_*` (`init` / `emit` / `close`) | product single site → prefer `bun_perf` / `bun_core::perf` | via runtime product (**not** stubs) | 🔶 **in progress** | Always false / empty in product + stubs; ABI mismatch vs `bun_core::perf::sys` callers |
 
 ### Dead (must not reintroduce)
 
@@ -124,12 +124,96 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 1. ~~**P0** — Real `ProcessExit` + `BufferedReaderParentLink` for Subprocess/Shell (product spawn).~~ **DONE** (P1/P2 real owners + P3 residual delete; residual=0).
 2. ~~**P0** — `bun_url`: drop dead FFI stubs; finish pure-Rust WHATWG surface.~~ **DONE** (`whatwg` pure + product `URL__*` RealImpl; stub noops deleted).
-3. **P0** — Move remaining RealImpl out of this crate → drop hard dep from `bun_runtime`.
+3. **P0** — Move remaining RealImpl out of this crate → drop hard dep from `bun_runtime` (dev-only force_link only).
 4. ~~**P1** — Real WTF numeric parsers or pure-Rust call-site replacements.~~ **DONE** (`bun_core::{fmt,wtf}` pure + product no_mangle).
 5. ~~**P1** — Regex for `PnpmMatcher` via `regex` crate.~~ **DONE** (`product_native_symbols` RealImpl).
 6. **P1** — CLI crates (`src/cli`) must consume product PE/BR owners (single `link_impl` site) if co-linked — do not reintroduce product residual noops.
-7. **P1** — `Bun__linux_trace_*` residual noops.
-8. ~~**P1** — `WTF__releaseFastMallocFreeMemoryForThisThread` residual noop.~~ **DONE** (real owner: `bun_alloc` `mi_collect(false)`; empty stubs deleted from this crate + `product_native_symbols`).
+7. **P1 / next wave** — `Bun__linux_trace_*` **real** implementation + ABI unify (🔶 in progress) — see below.
+8. ~~**P1 / next wave** — `WTF__releaseFastMallocFreeMemoryForThisThread`.~~ **DONE** (`bun_alloc` `mi_collect(false)`; empty stubs deleted).
+
+---
+
+## Next wave — `linux_trace` + `FastMalloc` (Win / macOS / Linux)
+
+> Scope: residual NoopBlocker → unique real owners on product path.  
+> **Policy (iron):** no env switch for capability · no Cargo feature to hide stubs · **product never links `bao_native_stubs`** · platform via `cfg(target_os)` only.
+
+### Status snapshot
+
+| Item | Residual | Notes |
+|------|----------|-------|
+| **FastMalloc** `WTF__releaseFastMallocFreeMemoryForThisThread` | ✅ **0** | Real owner `bun_alloc` → `mi_collect(false)` (portable mimalloc); stubs + product empty deleted |
+| **linux_trace** `Bun__linux_trace_*` | 🔶 **in progress** | Product + stubs still always-false / empty; ABI mismatch open |
+| **Product never links stubs** | ✅ | `bao` no dep / no force_link |
+| **No env / no capability feature** | ✅ policy | Permanent; code review gate |
+
+### Goals
+
+| Symbol group | Real behavior (target) | Owner | After code E |
+|--------------|------------------------|-------|--------------|
+| `Bun__linux_trace_init` / `emit` / `close` | Linux ftrace marker when tracefs usable; honest disable on other OS | product single site (`product_native_symbols` or `bun_perf` / `bun_core::perf`) | delete stub defs; residual=0 |
+| `WTF__releaseFastMallocFreeMemoryForThisThread` | Thread allocator free-list / cache release | ✅ `bun_alloc` | done |
+
+### ABI note (`linux_trace` — must unify in code E)
+
+Call sites disagree today — code E **must pick one ABI** and fix all declarers + defs:
+
+| Surface | Current decl shape (observed) | Notes |
+|---------|-------------------------------|-------|
+| `bun_core::perf::sys` / `bun_perf` | `init() -> c_int`; `emit(name: *const c_char, duration_ns: i64) -> c_int`; `close()` | Canonical Bun ftrace (linux_perf_tracing.cpp era) |
+| `product_native_symbols` / `bao_native_stubs` residual | `init() -> bool`; `emit(id, name, cat, phase, ts, pid, tid, extra)` void | **Mismatch** — residual shape; **must not** ship dual ABIs |
+
+**DoD:** one ABI SSOT (prefer `bun_core::perf::sys`), one `#[no_mangle]` def, zero stub def on product link.
+
+### Compatibility matrix (target backends)
+
+Compile-time `cfg(target_os)` only — **not** env/feature capability gates.
+
+#### A. `Bun__linux_trace_*` (ftrace-class host tracing) — 🔶 residual open
+
+| OS | Backend | `init` | `emit` | `close` | Product always-on? |
+|----|---------|--------|--------|---------|-------------------|
+| **Linux** | **tracefs / ftrace** — open `trace_marker` (debugfs fallback); write duration events matching Bun `C\|…` format | Probe marker path; success only if writable | Write event line; no-op if init failed | Close FD | **Yes** — symbol always linked; probe may report unsupported |
+| **Android** | Same as Linux when tracefs present | Same | Same | Same | **Yes** |
+| **macOS** | **Not ftrace** — host spans use **os_signpost / os_log** via `bun_perf::Darwin` (separate path) | `linux_trace_init` → honest **unsupported** (0/false); do not pretend ftrace | no-op | no-op | **Yes** — symbols present; Darwin is real macOS tracer |
+| **Windows** | No ftrace; `bun_perf` **Disabled** backend | honest unsupported | no-op | no-op | **Yes** — symbols present; no ETW fake unless dedicated later owner |
+
+| OS | Forbidden |
+|----|-----------|
+| All | Env/feature to swap stub↔real; product force_link of stub `linux_trace_*`; dual-def stub+product |
+| macOS/Win | Deleting symbols while call sites remain; silent dual empty bodies as “done” |
+
+#### B. `WTF__releaseFastMallocFreeMemoryForThisThread` — ✅ residual=0
+
+| OS | Backend (shipped) | Behavior | Product always-on? |
+|----|-------------------|----------|-------------------|
+| **Linux** | **mimalloc** `mi_collect(false)` via `bun_mimalloc_sys` | Release this thread’s free memory toward OS/arena | **Yes** |
+| **macOS** | Same (`mi_collect` portable) | Same | **Yes** |
+| **Windows** | Same (`mi_collect` portable) | Same | **Yes** |
+
+| OS | Forbidden |
+|----|-----------|
+| All | Reintroduce empty `{}` in stubs or `product_native_symbols` (dual-def / fake complete) |
+
+### Residual table (this wave)
+
+| ID | Item | Residual | Code E | Notes |
+|----|------|----------|--------|-------|
+| **NW-LT** | `Bun__linux_trace_*` real body + ABI unify | 🔶 **in progress** | open | Product + stubs residual empty/false |
+| **NW-FM** | `WTF__releaseFastMallocFreeMemoryForThisThread` | ✅ **0** | closed | `bun_alloc` `mi_collect(false)` |
+| **NW-STUB-DEL-LT** | Delete `linux_trace` stub defs after unique product owner | 🔶 blocked on NW-LT | open | No dual-def |
+| **NW-PRODUCT-LINK** | Product never links `bao_native_stubs` | ✅ | closed | `bao` no dep / no force_link |
+| **NW-POLICY** | No env switch · no feature hide · always-on | ✅ policy | permanent | Enforce on code review |
+
+> When NW-LT + NW-STUB-DEL-LT close: next-wave residual=0 for these symbols. **Until then do not** claim full stub eradication for `linux_trace`.
+
+### Acceptance checklist (remaining = linux_trace)
+
+1. Single ABI + single `#[no_mangle]` for `linux_trace_*` matching `bun_core::perf` callers.
+2. Linux: real tracefs probe + write; macOS/Win: honest unsupported (Darwin/Disabled for actual spans).
+3. `rg` product link graph: **0** `bao_native_stubs` in default `bao` deps; **0** dual-def.
+4. **No** new env; **no** capability feature; platform via `cfg(target_os)`.
+5. Flip NW-LT residual → 0 in this inventory + audit-26.
 
 ---
 
@@ -141,3 +225,4 @@ On full product path (`bao` → runtime → `bun_install` + this crate):
 - **Never** stub a `#[no_mangle]` already exported by C lib or owner crate.
 - Prefer **delete stub** over weak-link / rename hacks.
 - **Do not delete** product-required closed-set noops until real `link_impl` exists (frog-tools link fails).
+- **Product does not link this crate** — residual noops here are for **dev/test force_link only** until deleted; product owner must land first.
