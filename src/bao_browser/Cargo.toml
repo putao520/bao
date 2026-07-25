@@ -18,7 +18,6 @@ bao_stealth = { path = "../bao_stealth" }
 bao_engine = { path = "../bao_engine" }
 bun_runtime.workspace = true
 bun_http.workspace = true
-bao_native_stubs = { path = "../bao_native_stubs" }
 cdp-server = { path = "../cdp-server" }
 bun_core.workspace = true
 bun_sys.workspace = true

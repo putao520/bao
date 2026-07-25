@@ -65,12 +65,6 @@ use bao_cdp::servo_bridge::bridge_channel;
 use bao_cdp_client::bridge::{translate, ServoEvent};
 use cdp_server::{CdpServer, DomainRegistry, EmptyHandler, EventBroadcaster, EventSender, ServerConfig};
 
-// Force-link bao_native_stubs (dispatch no-op stubs + C library bridges).
-// Without this anchor, the linker GCs the entire bao_native_stubs compilation
-// unit, causing undefined __bun_dispatch__* and C symbol errors in test binaries.
-#[used]
-static BAO_NATIVE_STUBS_ANCHOR: unsafe extern "C" fn() = bao_native_stubs::__force_link_entry;
-
 pub struct BaoRuntime {
     servo: Rc<Servo>,
     delegate: Rc<BaoServoDelegate>,
