@@ -88,8 +88,10 @@ pub mod bun_udp;
 pub mod bun_shell;
 pub mod bun_password;
 pub mod install;
-// @trace STUB-INVENTORY: product residual closed-set dispatch (no stubs hard-dep)
-pub mod product_dispatch_residual;
+// @trace STUB-INVENTORY: product real ProcessExit owners (no link_noop) — residual=0 for PE
+pub mod product_process_exit;
+// @trace STUB-INVENTORY: product real BufferedReaderParentLink owners (no link_noop) — residual=0 for BR
+pub mod product_buffered_reader;
 // @trace STUB-INVENTORY: product residual RealImpl rehomed from bao_native_stubs
 pub mod product_native_symbols;
 
@@ -191,8 +193,8 @@ pub fn force_link_bun_install() {
 }
 
 // @trace STUB-INVENTORY: default product path must not force-link bao_native_stubs.
-// Residual closed-set dispatch → product_dispatch_residual (this crate).
-// Real C libs → force_link_native_c_libs. Do not reintroduce BAO_NATIVE_STUBS_ANCHOR.
+// Closed-set PE/BR → product_process_exit + product_buffered_reader (real link_impl).
+// Real C libs → force_link_native_c_libs. Do not reintroduce BAO_NATIVE_STUBS_ANCHOR / link_noop residual.
 
 // Real C-lib force-link (former bao_native_stubs::force_c_lib_stubs chain):
 // quic.c (bun_uws_sys) needs liblsquic; TLS needs boringssl; loop from bao_uloop.
@@ -206,8 +208,10 @@ fn force_link_native_c_libs() {
     let _ = bao_uloop::us_loop_run_bun_tick as *const () as usize;
     let _ = bao_uloop::us_wakeup_loop as *const () as usize;
     let _ = bao_uloop::uws_get_loop as *const () as usize;
-    // Retain product residual closed-set dispatch + RealImpl compilation units.
-    product_dispatch_residual::force_link_product_dispatch_residual();
+    // Retain product real ProcessExit + BufferedReader + RealImpl compilation units.
+    // product_dispatch_residual deleted (P3): PE/BR noops residual=0.
+    product_process_exit::force_link_product_process_exit();
+    product_buffered_reader::force_link_product_buffered_reader();
     product_native_symbols::force_link_product_native_symbols();
 }
 
