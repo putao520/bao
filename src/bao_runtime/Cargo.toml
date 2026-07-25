@@ -92,11 +92,10 @@ bao_uloop = { path = "../bao_uloop" }
 bao_cdp = { path = "../bao_cdp" }
 cdp-server = { path = "../cdp-server" }
 tempfile = "3"
-# Optional test-only residual: unit/integration tests that still call
-# bao_native_stubs::force_link(). Product path must not depend on this.
-# Dual-def risk if tests force-link stubs while product_dispatch_residual
-# also defines closed-set symbols — prefer dropping force_link in tests.
-bao_native_stubs = { path = "../bao_native_stubs" }
+# Do NOT dev-dep bao_native_stubs: product residual + product_native_symbols +
+# product_buffered_reader own the closed-set / RealImpl symbols; co-linking
+# stubs dual-defs (STUB-INVENTORY dual-def iron rule). Tests force-link via
+# bao_uloop / product #[used] anchors only.
 
 # Node.js conformance suite (ported from ~/code/rust/bun/test/js/node/, MIT).
 # Lives in a subdirectory so each module is a separate test binary.

@@ -681,23 +681,14 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
 // Dual-def rule (full product path always links `bun_install` via `bun_runtime`):
 // NEVER list variants that already have `link_impl_*!` in a co-linked crate.
 //   - LifecycleScript / SecurityScan → real impls in bun_install
-//     (lifecycle_script_runner.rs / PackageManager/security_scanner.rs)
-// Listing them here dual-defines `__bun_dispatch__*__LifecycleScript/*SecurityScan__*`
-// and breaks consumer lib-test link (gsc-frog-tools). CLI-only variants
-// (FilterRunHandle / MultiRun* / TestParallelWorker*) stay as noops because
-// `bun_cli` is not on the product link graph.
+//   - All other BufferedReaderParentLink arms → `bun_runtime::product_buffered_reader`
+//   - All other ProcessExit arms → `bun_runtime::product_process_exit`
+// Do NOT reintroduce `link_noop_*` for those — dual-def with product.
+// Listing co-owned variants dual-defines `__bun_dispatch__*__…` and breaks
+// consumer lib-test link (gsc-frog-tools / `cargo test -p bun_runtime`).
 
-bun_io::link_noop_BufferedReaderParentLink!(
-    SubprocessPipeReader, ShellPipeReader, ShellIoReader, FileReader,
-    FileResponseStream, Terminal, CronRegister, CronRemove,
-    FilterRunHandle, MultiRunPipeReader, TestParallelWorkerPipe
-);
-
-bun_spawn::link_noop_ProcessExit!(
-    Subprocess, Shell,
-    FilterRunHandle, MultiRunHandle, TestParallelWorker,
-    CronRegister, CronRemove, ChromeProcess, HostProcess
-);
+// BufferedReaderParentLink: no link_noop — product_buffered_reader owns the set.
+// ProcessExit: no link_noop — product_process_exit owns the set.
 
 // ──────────────────────────────────────────────────────────────
 // §3  Miscellaneous extern "C" stubs

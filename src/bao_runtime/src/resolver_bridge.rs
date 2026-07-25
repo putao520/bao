@@ -97,7 +97,7 @@ mod tests {
     use tempfile::TempDir;
 
     fn tempdir() -> TempDir {
-        bao_native_stubs::force_link();
+        bao_uloop::force_link();
         install(); // initialize thread-local Resolver
         TempDir::new().expect("create temp dir")
     }
@@ -126,7 +126,7 @@ mod tests {
     // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_not_found() {
-        bao_native_stubs::force_link();
+        bao_uloop::force_link();
         install();
         let result = resolve_via_bun_resolver("./nonexistent", Some(PathBuf::from(bun_core_cwd()).as_path()));
         assert!(result.is_none());
@@ -199,7 +199,7 @@ mod tests {
     // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_resolve_via_bun_resolver_no_base_dir_uses_cwd() {
-        bao_native_stubs::force_link();
+        bao_uloop::force_link();
         install();
         let result = resolve_via_bun_resolver("./nonexistent_in_cwd", None);
         // Should not panic, even if file not found
@@ -257,7 +257,7 @@ mod tests {
     // @trace TEST-ENG-005 [req:REQ-ENG-005] [level:unit]
     #[test]
     fn test_install_idempotent() {
-        bao_native_stubs::force_link();
+        bao_uloop::force_link();
         install();
         install(); // second call should be a no-op, not panic
     }

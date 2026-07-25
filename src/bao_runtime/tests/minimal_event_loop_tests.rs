@@ -16,8 +16,8 @@ use bun_event_loop::MiniEventLoop::MiniEventLoop;
 // is not GC'd — `bun_io::posix_event_loop::FilePoll::on_update` references it
 // at link time.
 fn force_uloop_link() {
+    // Product path owns residual/RealImpl (no bao_native_stubs co-link).
     bao_uloop::force_link();
-    bao_native_stubs::force_link();
     // Ensure dispatch module's extern "Rust" symbols survive link-time GC.
     // The module is `pub` in bao_runtime, so just referencing it here is enough.
     let _ = bun_runtime::dispatch::__bun_run_file_poll as unsafe extern "Rust" fn(*mut bun_io::posix_event_loop::FilePoll, i64);
