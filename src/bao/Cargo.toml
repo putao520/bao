@@ -16,13 +16,11 @@ path = "src/lib.rs"
 # Full stack always linked. No product *capability* features (browser/CDP/stealth).
 # Stealth / Permission optionality is runtime config only.
 #
-# Engineering feature `native-stubs` (NON-default): force-link the residual
-# bao_native_stubs crate from this facade. Default product path does NOT
-# directly depend on or force-link stubs (see STUB-INVENTORY.md). Residual
-# symbols still arrive transitively via bun_runtime until P0 owners finish.
+# Product never depends on or force-links bao_native_stubs (no native-stubs feature).
+# Residual symbols arrive via real owners (product_process_exit / product_buffered_reader /
+# product_native_symbols / bun_*) — see STUB-INVENTORY.md.
 [features]
 default = []
-native-stubs = ["dep:bao_native_stubs"]
 
 [dependencies]
 bao_browser = { path = "../bao_browser" }
@@ -32,7 +30,6 @@ bao_cdp = { path = "../bao_cdp" }
 bao_cdp_client = { path = "../bao_cdp_client" }
 bao_stealth = { path = "../bao_stealth" }
 bao_uloop = { path = "../bao_uloop" }
-bao_native_stubs = { path = "../bao_native_stubs", optional = true }
 
 [lints]
 workspace = true

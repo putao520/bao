@@ -9,7 +9,7 @@
 
 | Crate | Hard dep on `bao_native_stubs`? | `force_link` / `__force_link_entry` anchor |
 |-------|----------------------------------|-------------------------------------------|
-| **`bao` (public package)** | **No (feature `native-stubs`, non-default)** | **None (default)** |
+| **`bao` (public package)** | **No (never: no feature, no optional dep)** | **None** |
 | `bun_runtime` (`bao_runtime`) | **dev-only** (tests may force_link) | product: `product_process_exit` + `product_buffered_reader` + `product_native_symbols` (no PE/BR link_noop residual) |
 | `bao_browser` | **No** (dropped hard dep) | **None** |
 | `bao_engine` | **dev-only** | test anchor only |
@@ -17,7 +17,8 @@
 | `bao_uloop` | **dev-only** | — |
 | `bao_workflow_host` | **No** (by design — dual-def free) | — |
 
-**Default product (`bao` without features):** does **not** *directly* depend on or force-link `bao_native_stubs`.  
+**Default product (`bao`):** does **not** depend on, feature-gate, or force-link `bao_native_stubs` (no optional dep).  
+
 **PE/BR closed-set residual:** **0** — real owners in `bun_runtime::product_process_exit` + `product_buffered_reader` (P1/P2); `product_dispatch_residual` deleted (P3). Other NoopBlocker `#[no_mangle]` may still live in this crate until owner tasks finish.
 
 ---

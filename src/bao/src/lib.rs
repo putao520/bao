@@ -40,12 +40,9 @@
 
 #![allow(unused_imports)]
 
-// Residual stub force-link is opt-in only (`features = ["native-stubs"]`).
-// Default product path must not pull/force noops from this facade.
-// @trace STUB-INVENTORY: default product does not force-link bao_native_stubs
-#[cfg(feature = "native-stubs")]
-#[used]
-static BAO_NATIVE_STUBS_ANCHOR: unsafe extern "C" fn() = bao_native_stubs::__force_link_entry;
+// @trace STUB-INVENTORY: product never depends on or force-links bao_native_stubs
+// Residual symbols: product_process_exit / product_buffered_reader /
+// product_native_symbols / bun_* true owners — never reintroduce link_noop.
 
 // ── Namespaced full surfaces (always available) ───────────────────────────
 
@@ -139,20 +136,24 @@ mod tests {
                 "public package must always depend on {dep} (unified full stack)"
             );
         }
-        // Engineering feature only: native-stubs is optional + non-default.
-        // Product capabilities (browser/CDP/stealth) must stay always-on deps.
+        // Product must never depend on or feature-gate stubs (ignore comment lines).
+        let code_lines = || {
+            manifest.lines().filter(|l| {
+                let t = l.trim_start();
+                !t.is_empty() && !t.starts_with('#')
+            })
+        };
         assert!(
-            manifest.contains("native-stubs"),
-            "manifest must document native-stubs engineering feature"
+            code_lines().all(|l| !l.contains("native-stubs")),
+            "native-stubs feature must be removed (product never force-links stubs)"
+        );
+        assert!(
+            code_lines().all(|l| !l.contains("bao_native_stubs")),
+            "bao must not declare dep on bao_native_stubs (even optional)"
         );
         assert!(
             manifest.contains("default = []"),
-            "native-stubs must not be in default features (default product must not force stubs)"
-        );
-        // Optional dep line still names the package (path optional = true).
-        assert!(
-            manifest.contains("bao_native_stubs"),
-            "optional residual dep bao_native_stubs must remain named for feature wire-up"
+            "product has no capability features; default remains empty"
         );
     }
 
