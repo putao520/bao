@@ -11,18 +11,13 @@
 
 use core::ffi::{c_int, c_void};
 
-/// Mutex size exported for uSockets loop.c validation.
-/// `loop.c` checks `Bun__lock__size == sizeof(loop->data.mutex)` at init.
-/// On Linux, `zig_mutex_t = uint32_t` (4 bytes) — a userspace spinlock, not
-/// pthread_mutex_t. The C struct `us_internal_loop_data_t.mutex` is `zig_mutex_t`.
-#[unsafe(no_mangle)]
-pub static Bun__lock__size: usize = core::mem::size_of::<u32>();
-
-/// epoll_pwait2 kernel support check. Returns 1 (Linux 5.11+ always supports it).
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__isEpollPwait2SupportedOnLinuxKernel() -> c_int {
-    1
-}
+// Dual-def rule (full product path always co-links higher crates):
+//   - `Bun__lock__size`              → real export in `bun_threading::Mutex`
+//   - `Bun__isEpollPwait2SupportedOnLinuxKernel` → real export in `bun_analytics`
+// Do NOT redefine them here. libusockets.a resolves them from those crates when
+// the product graph (bun_runtime → bun_install / bun_threading / analytics) is
+// linked. Tier-0-only consumers that need a stand-in must dep those crates or
+// provide their own single definition — dual-def breaks gsc-frog-tools lib test.
 
 /// Fatal panic from C. Called by uSockets on unrecoverable errors.
 #[unsafe(no_mangle)]

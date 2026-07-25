@@ -103,14 +103,15 @@ pub unsafe extern "C" fn BUN__warn__extra_ca_load_failed(
 // C-library → Rust hooks (non-duplicate subset)
 // ──────────────────────────────────────────────────────────────
 //
-// The following hooks live in `bun_uws_sys/src/c_hooks.rs` (co-located
-// with the C code that references them) and must NOT be duplicated here:
+// The following hooks live in co-located / owning crates and must NOT be
+// duplicated here (dual-def breaks product lib-test link):
 //
-//   - Bun__JSC_onBeforeWait       — JSC VM pre-wait hook
-//   - Bun__panic                  — fatal panic from C
-//   - sys_epoll_pwait2            — Linux syscall wrapper
-//   - Bun__lock__size             — mutex size validation
-//   - Bun__isEpollPwait2SupportedOnLinuxKernel — epoll_pwait2 check
+//   - Bun__JSC_onBeforeWait       — bun_uws_sys/src/c_hooks.rs
+//   - Bun__panic                  — bun_uws_sys/src/c_hooks.rs
+//   - sys_epoll_pwait2            — bun_uws_sys/src/c_hooks.rs
+//   - Bun__lock__size             — bun_threading::Mutex (real size of ReleaseImpl)
+//   - Bun__isEpollPwait2SupportedOnLinuxKernel — bun_analytics (kernel version check)
+//   - __bun_crash_handler_out_of_memory — bun_crash_handler
 //
 // Remaining hooks that are specific to bao_native_stubs' link scope:
 //   - Bun__Node__UseSystemCA      — system CA flag (root_certs.cpp)

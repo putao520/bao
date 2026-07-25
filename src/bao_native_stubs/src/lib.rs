@@ -610,9 +610,10 @@ pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic
 // ──────────────────────────────────────────────────────────────
 // Misc stubs
 // ──────────────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __bun_crash_handler_out_of_memory() -> *mut c_void { unsafe { libc::abort() } }
+// `__bun_crash_handler_out_of_memory` — real export in `bun_crash_handler`
+// (returns `!`). Do NOT stub here: full product path always co-links
+// bun_crash_handler (via bun_install / bao_engine / js_parser). Dual-def
+// breaks consumer lib-test link (gsc-frog-tools).
 
 // ──────────────────────────────────────────────────────────────
 // bun_perf Linux trace — no-op stubs (Bao uses log crate instead)
@@ -676,16 +677,24 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
 // The proc-macro `link_interface!` auto-generates `link_noop_<Iface>!` which
 // produces `#[unsafe(no_mangle)] extern "Rust"` stubs for every listed variant.
 // Symbols live in this compilation unit, so the linker pulls them in automatically.
+//
+// Dual-def rule (full product path always links `bun_install` via `bun_runtime`):
+// NEVER list variants that already have `link_impl_*!` in a co-linked crate.
+//   - LifecycleScript / SecurityScan → real impls in bun_install
+//     (lifecycle_script_runner.rs / PackageManager/security_scanner.rs)
+// Listing them here dual-defines `__bun_dispatch__*__LifecycleScript/*SecurityScan__*`
+// and breaks consumer lib-test link (gsc-frog-tools). CLI-only variants
+// (FilterRunHandle / MultiRun* / TestParallelWorker*) stay as noops because
+// `bun_cli` is not on the product link graph.
 
 bun_io::link_noop_BufferedReaderParentLink!(
     SubprocessPipeReader, ShellPipeReader, ShellIoReader, FileReader,
     FileResponseStream, Terminal, CronRegister, CronRemove,
-    FilterRunHandle, MultiRunPipeReader, TestParallelWorkerPipe,
-    LifecycleScript, SecurityScan
+    FilterRunHandle, MultiRunPipeReader, TestParallelWorkerPipe
 );
 
 bun_spawn::link_noop_ProcessExit!(
-    Subprocess, LifecycleScript, SecurityScan, Shell,
+    Subprocess, Shell,
     FilterRunHandle, MultiRunHandle, TestParallelWorker,
     CronRegister, CronRemove, ChromeProcess, HostProcess
 );

@@ -19,7 +19,6 @@
 #![allow(clippy::missing_safety_doc)]
 
 use core::ffi::{c_int, c_uint, c_void};
-use core::ptr;
 
 use bun_uws_sys::{Loop, PosixLoop};
 
@@ -253,262 +252,80 @@ unsafe fn accept_poll_event(poll: *mut BaoPoll) -> u64 {
     buf
 }
 
-// ──────────────── FFI: us_poll_* ABI ────────────────
+// ──────────────── FFI: us_poll_* ABI (BUG-353 class, C-exclusive) ────────────────
+//
+// Same dual-def class as BUG-353 loop symbols: libusockets.a (epoll_kqueue.c)
+// already provides every `us_poll_*` / `us_create_poll` / `us_internal_poll_*`
+// / `us_internal_accept_poll_event` symbol. Defining them as Rust
+// `#[no_mangle]` dual-defines against the static archive and breaks consumer
+// link (gsc-frog-tools lib test). CLAUDE.md L13/L26: do not hand-translate C
+// symbols that already exist in libusockets.a.
+//
+// bao_uloop's remaining role for poll is:
+//   - BaoPoll layout helpers (bitfield accessors for FilePoll graft)
+//   - dispatch_ready_polls (FilePoll tagged-pointer path)
+//   - private accept_poll_event / update_pending_ready_polls helpers
 
-/// Allocate a new `us_poll_t` with trailing extension bytes.
-/// `fallthrough=0` increments `loop->num_polls`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_create_poll(
-    loop_: *mut Loop,
-    fallthrough: c_int,
-    ext_size: c_uint,
-) -> *mut BaoPoll {
-    let total = core::mem::size_of::<BaoPoll>() + ext_size as usize;
-    let p = unsafe { libc::calloc(1, total) as *mut BaoPoll };
-    if p.is_null() {
-        return ptr::null_mut();
-    }
-    if fallthrough == 0 {
-        unsafe {
-            (*loop_).num_polls += 1;
-        }
-    }
-    // Clear any tag bits that might be in the returned pointer
-    // (matches upstream CLEAR_POINTER_TAG on the malloc result)
-    clear_pointer_tag(p as *mut c_void) as *mut BaoPoll
-}
+unsafe extern "C" {
+    /// Allocate a new `us_poll_t` with trailing extension bytes.
+    /// `fallthrough=0` increments `loop->num_polls`. Provided by libusockets.a.
+    pub unsafe fn us_create_poll(
+        loop_: *mut Loop,
+        fallthrough: c_int,
+        ext_size: c_uint,
+    ) -> *mut BaoPoll;
 
-/// Free a poll and decrement `loop->num_polls`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_free(p: *mut BaoPoll, loop_: *mut Loop) {
-    if p.is_null() {
-        return;
-    }
-    unsafe {
-        (*loop_).num_polls -= 1;
-        libc::free(p as *mut c_void);
-    }
-}
+    /// Free a poll and decrement `loop->num_polls`. Provided by libusockets.a.
+    pub unsafe fn us_poll_free(p: *mut BaoPoll, loop_: *mut Loop);
 
-/// Initialize a poll's fd and poll_type fields.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_init(p: *mut BaoPoll, fd: c_int, poll_type: c_int) {
-    unsafe {
-        (*p).set_fd(fd);
-        (*p).set_poll_type(poll_type);
-    }
-}
+    /// Initialize a poll's fd and poll_type fields. Provided by libusockets.a.
+    pub unsafe fn us_poll_init(p: *mut BaoPoll, fd: c_int, poll_type: c_int);
 
-/// Return the fd.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_fd(p: *mut BaoPoll) -> c_int {
-    unsafe { (*p).fd() }
-}
+    /// Return the fd. Provided by libusockets.a.
+    pub unsafe fn us_poll_fd(p: *mut BaoPoll) -> c_int;
 
-/// Return the epoll events currently armed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_events(p: *mut BaoPoll) -> c_int {
-    unsafe { (*p).events() }
-}
+    /// Return the epoll events currently armed. Provided by libusockets.a.
+    pub unsafe fn us_poll_events(p: *mut BaoPoll) -> c_int;
 
-/// Return the poll kind (low 3 bits of poll_type).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_internal_poll_type(p: *mut BaoPoll) -> c_int {
-    unsafe { (*p).kind() }
-}
+    /// Return the poll kind (low 3 bits of poll_type). Provided by libusockets.a.
+    pub unsafe fn us_internal_poll_type(p: *mut BaoPoll) -> c_int;
 
-/// Set the poll kind while preserving the polling direction bits.
-/// Note: this is a *change* operation, not a *set* — the polling bits
-/// are preserved from the existing value.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_internal_poll_set_type(p: *mut BaoPoll, poll_type: c_int) {
-    unsafe {
-        let old = (*p).poll_type();
-        (*p).set_poll_type(poll_type | (old & POLL_TYPE_POLLING_MASK));
-    }
-}
+    /// Set the poll kind while preserving the polling direction bits.
+    /// Provided by libusockets.a.
+    pub unsafe fn us_internal_poll_set_type(p: *mut BaoPoll, poll_type: c_int);
 
-/// Return a pointer to the trailing extension bytes.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_ext(p: *mut BaoPoll) -> *mut c_void {
-    unsafe { p.add(1) as *mut c_void }
-}
+    /// Return a pointer to the trailing extension bytes. Provided by libusockets.a.
+    pub unsafe fn us_poll_ext(p: *mut BaoPoll) -> *mut c_void;
 
-/// Register a poll into the epoll set with the given events.
-/// Sets the polling bits in poll_type and calls `epoll_ctl(ADD)`.
-///
-/// `event.data.ptr = p` (untagged — the dispatch loop uses
-/// `CLEAR_POINTER_TAG` to distinguish from FilePoll tagged pointers).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_start(p: *mut BaoPoll, loop_: *mut Loop, events: c_int) {
-    unsafe { let _ = us_poll_start_rc(p, loop_, events); }
-}
+    /// Register a poll into the epoll set with the given events.
+    /// Provided by libusockets.a.
+    pub unsafe fn us_poll_start(p: *mut BaoPoll, loop_: *mut Loop, events: c_int);
 
-/// Same as `us_poll_start` but returns the epoll_ctl return code.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_start_rc(p: *mut BaoPoll, loop_: *mut Loop, events: c_int) -> c_int {
-    unsafe {
-        // Set the polling direction bits in poll_type
-        let kind = (*p).kind();
-        let new_pt = kind
-            | if events & libc::EPOLLIN != 0 { POLL_TYPE_POLLING_IN } else { 0 }
-            | if events & libc::EPOLLOUT != 0 { POLL_TYPE_POLLING_OUT } else { 0 };
-        (*p).set_poll_type(new_pt);
+    /// Same as `us_poll_start` but returns the epoll_ctl return code.
+    /// Provided by libusockets.a.
+    pub unsafe fn us_poll_start_rc(
+        p: *mut BaoPoll,
+        loop_: *mut Loop,
+        events: c_int,
+    ) -> c_int;
 
-        let mut event: libc::epoll_event = core::mem::zeroed();
-        let mut ev = events;
-        // If neither readable nor writable, add error/hangup detection
-        if ev & libc::EPOLLIN == 0 && ev & libc::EPOLLOUT == 0 {
-            ev |= libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR;
-        }
-        event.events = ev as u32;
-        event.u64 = p as usize as u64;
-        let epfd = (*loop_).fd;
-        let mut ret: c_int;
-        loop {
-            ret = libc::epoll_ctl(epfd, libc::EPOLL_CTL_ADD, (*p).fd(), &mut event);
-            if ret != -1 || bun_sys::e_from_negated(ret) != bun_sys::E::EINTR {
-                break;
-            }
-        }
-        ret
-    }
-}
+    /// Modify the events a poll is registered for. Provided by libusockets.a.
+    pub unsafe fn us_poll_change(p: *mut BaoPoll, loop_: *mut Loop, events: c_int);
 
-/// Modify the events a poll is registered for.
-/// Calls `epoll_ctl(MOD)` and updates pending ready polls.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_change(p: *mut BaoPoll, loop_: *mut Loop, events: c_int) {
-    unsafe {
-        let old_events = (*p).events();
-        if old_events == events {
-            return;
-        }
+    /// Remove a poll from the epoll set. Provided by libusockets.a.
+    pub unsafe fn us_poll_stop(p: *mut BaoPoll, loop_: *mut Loop);
 
-        // Update the polling direction bits
-        let kind = (*p).kind();
-        let new_pt = kind
-            | if events & libc::EPOLLIN != 0 { POLL_TYPE_POLLING_IN } else { 0 }
-            | if events & libc::EPOLLOUT != 0 { POLL_TYPE_POLLING_OUT } else { 0 };
-        (*p).set_poll_type(new_pt);
+    /// Resize a poll's extension area. Provided by libusockets.a.
+    pub unsafe fn us_poll_resize(
+        p: *mut BaoPoll,
+        loop_: *mut Loop,
+        old_ext_size: c_uint,
+        ext_size: c_uint,
+    ) -> *mut BaoPoll;
 
-        let mut event: libc::epoll_event = core::mem::zeroed();
-        let mut ev = events;
-        if ev & libc::EPOLLIN == 0 && ev & libc::EPOLLOUT == 0 {
-            ev |= libc::EPOLLRDHUP | libc::EPOLLHUP | libc::EPOLLERR;
-        }
-        event.events = ev as u32;
-        event.u64 = p as usize as u64;
-        let epfd = (*loop_).fd;
-        loop {
-            let rc = libc::epoll_ctl(epfd, libc::EPOLL_CTL_MOD, (*p).fd(), &mut event);
-            if rc != -1 || *libc::__errno_location() != libc::EINTR {
-                break;
-            }
-        }
-
-        // Update pending ready polls (null out removed events)
-        update_pending_ready_polls(loop_, p, p, old_events, events);
-    }
-}
-
-/// Remove a poll from the epoll set.
-/// Calls `epoll_ctl(DEL)` and nulls the poll in pending ready events.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_stop(p: *mut BaoPoll, loop_: *mut Loop) {
-    unsafe {
-        let old_events = (*p).events();
-        let epfd = (*loop_).fd;
-        let mut event: libc::epoll_event = core::mem::zeroed();
-        loop {
-            let rc = libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, (*p).fd(), &mut event);
-            if rc != -1 || *libc::__errno_location() != libc::EINTR {
-                break;
-            }
-        }
-
-        // Null out this poll in the pending ready poll list
-        update_pending_ready_polls(loop_, p, ptr::null_mut(), old_events, 0);
-    }
-}
-
-/// Resize a poll's extension area. If the new size is larger, realloc and
-/// re-register with epoll. Returns the (possibly new) pointer.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_poll_resize(
-    p: *mut BaoPoll,
-    loop_: *mut Loop,
-    old_ext_size: c_uint,
-    ext_size: c_uint,
-) -> *mut BaoPoll {
-    let old_size = core::mem::size_of::<BaoPoll>() + old_ext_size as usize;
-    let new_size = core::mem::size_of::<BaoPoll>() + ext_size as usize;
-    if new_size <= old_size {
-        return p;
-    }
-
-    unsafe {
-        let new_p = libc::calloc(1, new_size) as *mut BaoPoll;
-        if new_p.is_null() {
-            return p;
-        }
-        ptr::copy_nonoverlapping(p as *const u8, new_p as *mut u8, old_size);
-
-        // Increment poll count for the new poll (the old one will be freed separately)
-        (*loop_).num_polls += 1;
-
-        let events = (*p).events();
-        // Reset polling bits so us_poll_change re-registers cleanly
-        let kind = (*new_p).kind();
-        (*new_p).set_poll_type(kind);
-        us_poll_change(new_p, loop_, events);
-
-        // Update pending ready polls to point to new_p instead of p
-        update_pending_ready_polls(loop_, p, new_p, events, events);
-
-        new_p
-    }
-}
-
-/// Read from the poll's fd (eventfd/timerfd) to re-arm level-triggered.
-/// Matches upstream `us_internal_accept_poll_event`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn us_internal_accept_poll_event(p: *mut BaoPoll) -> usize {
-    unsafe { accept_poll_event(p) as usize }
-}
-
-// ──────────────── pending ready poll update ────────────────
-
-/// Update the `ready_polls` array when a poll is modified or removed.
-/// Matches upstream `us_internal_loop_update_pending_ready_polls`.
-///
-/// On epoll, each poll appears at most once in `ready_polls`, so we only
-/// need to scan from `current_ready_poll` onwards and update at most 1 entry.
-unsafe fn update_pending_ready_polls(
-    loop_: *mut Loop,
-    old_poll: *mut BaoPoll,
-    new_poll: *mut BaoPoll,
-    _old_events: c_int,
-    _new_events: c_int,
-) {
-    unsafe {
-        let loop_ptr: *mut PosixLoop = loop_;
-        let num_ready = (*loop_ptr).num_ready_polls;
-        let current = (*loop_ptr).current_ready_poll;
-
-        // On epoll, at most 1 entry per poll
-        let mut remaining = 1;
-        let mut i = current;
-        while i < num_ready && remaining > 0 {
-            let event = (*loop_ptr).ready_polls[i as usize];
-            let poll_ptr = event.u64 as usize as *mut BaoPoll;
-            if poll_ptr == old_poll {
-                (*loop_ptr).ready_polls[i as usize].u64 = new_poll as usize as u64;
-                remaining -= 1;
-            }
-            i += 1;
-        }
-    }
+    /// Read from the poll's fd (eventfd/timerfd) to re-arm level-triggered.
+    /// Provided by libusockets.a.
+    pub unsafe fn us_internal_accept_poll_event(p: *mut BaoPoll) -> usize;
 }
 
 // ──────────────── dispatch entry point ────────────────
@@ -558,23 +375,11 @@ pub(crate) unsafe fn dispatch_ready_polls(loop_: *mut Loop) {
 
 // ──────────────── force_link ────────────────
 
-/// Force the linker to keep bao_uloop's poll ABI symbols.
+/// Poll ABI symbols now resolve from libusockets.a (C-exclusive, BUG-353 class).
+/// Kept as a no-op so existing `force_link()` call sites compile unchanged.
 #[inline(never)]
 pub fn force_link_poll() {
-    let _ = us_create_poll as unsafe extern "C" fn(_, _, _) -> *mut BaoPoll;
-    let _ = us_poll_free as unsafe extern "C" fn(_, _);
-    let _ = us_poll_init as unsafe extern "C" fn(_, _, _);
-    let _ = us_poll_fd as unsafe extern "C" fn(_) -> c_int;
-    let _ = us_poll_events as unsafe extern "C" fn(_) -> c_int;
-    let _ = us_internal_poll_type as unsafe extern "C" fn(_) -> c_int;
-    let _ = us_internal_poll_set_type as unsafe extern "C" fn(_, _);
-    let _ = us_poll_ext as unsafe extern "C" fn(_) -> *mut c_void;
-    let _ = us_poll_start as unsafe extern "C" fn(_, _, _);
-    let _ = us_poll_start_rc as unsafe extern "C" fn(_, _, _) -> c_int;
-    let _ = us_poll_change as unsafe extern "C" fn(_, _, _);
-    let _ = us_poll_stop as unsafe extern "C" fn(_, _);
-    let _ = us_poll_resize as unsafe extern "C" fn(_, _, _, _) -> *mut BaoPoll;
-    let _ = us_internal_accept_poll_event as unsafe extern "C" fn(_) -> usize;
+    // C static archive is always linked via bun_uws_sys — no Rust force needed.
 }
 
 // ──────────────── tests ────────────────
@@ -582,6 +387,7 @@ pub fn force_link_poll() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::ptr;
 
     // ──── BaoPoll layout ────
 

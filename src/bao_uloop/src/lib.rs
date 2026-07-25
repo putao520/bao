@@ -846,7 +846,8 @@ pub unsafe extern "C" fn Bun__internal_ensureDateHeaderTimerIsEnabled(_loop: *mu
 /// them here. Only dispatch stubs and Bun__ addrinfo stubs remain local.
 #[inline(never)]
 pub fn force_link() {
-    // Loop symbols: now extern "C" from C/C++ libs — no force needed.
+    // Loop + poll ABI: now extern "C" from C/C++ libs — no force needed.
+    poll::force_link_poll();
 
     // Dispatch stubs (still local #[no_mangle])
     let _ = us_dispatch_open as unsafe extern "C" fn(_, _, _, _) -> *mut c_void;
