@@ -36,7 +36,9 @@
         ├── bao_cdp_client
         ├── bao_stealth
         ├── bao_uloop
-        └── bao_native_stubs
+        └── (optional direct) bao_native_stubs  # feature `native-stubs`, NON-default
+            # residual still arrives transitively via bun_runtime hard-dep
+            # until RealImpl/dispatch noops move to owners — STUB-INVENTORY.md
 ```
 
 稳定顶层 API（示例，完整见 `bao` crate docs）：

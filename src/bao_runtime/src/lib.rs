@@ -186,8 +186,26 @@ pub fn force_link_bun_install() {
     let _ = bun_install::Subcommand::Install;
 }
 
-// Force-link bao_native_stubs (dispatch no-op stubs + C library bridges).
-// Without this anchor, the linker GCs the entire bao_native_stubs compilation
-// unit, causing undefined __bun_dispatch__* and C symbol errors in test binaries.
+// Force-link residual bao_native_stubs (RealImpl + closed-set dispatch noops).
+// Public package `bao` does not force this; bun_runtime does until owners absorb
+// remaining RealImpl (posix_spawn_bun, …). See STUB-INVENTORY.md.
+// Dual-def rule: never reintroduce LifecycleScript/SecurityScan link_noop.
 #[used]
 static BAO_NATIVE_STUBS_ANCHOR: unsafe extern "C" fn() = bao_native_stubs::__force_link_entry;
+
+// Real C-lib force-link (also via stubs force_c_lib; keep direct for GC safety):
+// quic.c (bun_uws_sys) needs liblsquic; TLS needs boringssl; loop from bao_uloop.
+#[inline(never)]
+fn force_link_native_c_libs() {
+    let _ = bun_lsquic_sys::force_link as *const () as usize;
+    let _ = bun_lsquic_sys::force_link_lshpack as *const () as usize;
+    let _ = bun_boringssl_sys::force_link as *const () as usize;
+    let _ = bao_uloop::force_link as *const () as usize;
+    // Keep loop entry symbols live without calling with null (null-deref risk).
+    let _ = bao_uloop::us_loop_run_bun_tick as *const () as usize;
+    let _ = bao_uloop::us_wakeup_loop as *const () as usize;
+    let _ = bao_uloop::uws_get_loop as *const () as usize;
+}
+
+#[used]
+static FORCE_NATIVE_C_LIBS: fn() = force_link_native_c_libs;

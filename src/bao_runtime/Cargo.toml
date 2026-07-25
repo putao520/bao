@@ -22,7 +22,8 @@ libffi = "3"
 serde_json = "1"
 dashmap.workspace = true
 
-# C library symbol providers (pure Rust replacements)
+# Residual RealImpl + closed-set dispatch noops (STUB-INVENTORY).
+# Must stay hard-dep until owners absorb RealImpl (posix_spawn_bun, …).
 bao_native_stubs = { path = "../bao_native_stubs" }
 
 # Package manager (auto-install, lockfile, npm registry)
@@ -36,6 +37,9 @@ bun_core = { path = "../bun_core" }
 bun_url = { path = "../url" }
 bun_uws = { path = "../uws" }
 bun_uws_sys = { path = "../uws_sys" }
+# Real owner of liblsquic.a / liblshpack.a — product force_link (not via stubs).
+# @trace STUB-INVENTORY: replaces bao_native_stubs::force_c_lib_stubs lsquic leg
+bun_lsquic_sys = { path = "../lsquic_sys" }
 bun_spawn = { path = "../spawn" }
 bun_spawn_sys = { path = "../spawn_sys" }
 # @trace REQ-BAO-API-018 [dep:bun_shell_parser] — Shell lexer/parser/AST (replaces hand-written shell parsing)
@@ -89,6 +93,9 @@ bao_uloop = { path = "../bao_uloop" }
 bao_cdp = { path = "../bao_cdp" }
 cdp-server = { path = "../cdp-server" }
 tempfile = "3"
+# Test-only residual stubs force_link (resolver_bridge / event_loop tests).
+# Default product path of bun_runtime must NOT hard-dep or force-link stubs
+# (@trace STUB-INVENTORY / ca936823 follow-up).
 
 # Node.js conformance suite (ported from ~/code/rust/bun/test/js/node/, MIT).
 # Lives in a subdirectory so each module is a separate test binary.

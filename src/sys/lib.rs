@@ -7317,24 +7317,37 @@ pub fn set_file_offset(fd: Fd, offset: u64) -> Maybe<()> {
 }
 
 // ── nonblocking read/write (preadv2/pwritev2 RWF_NOWAIT on Linux) ──
+// Real libc wrappers (owner: bun_sys). Former bao_native_stubs returned -1
+// (NoopBlocker); do not reintroduce stubs — see bao_native_stubs/STUB-INVENTORY.md.
 
+/// Linux `preadv2(2)` — real implementation (was a -1 stub in bao_native_stubs).
 #[cfg(any(target_os = "linux", target_os = "android"))]
-unsafe extern "C" {
-    fn sys_preadv2(
-        fd: c_int,
-        iov: *const libc::iovec,
-        iovcnt: c_int,
-        off: i64,
-        flags: u32,
-    ) -> isize;
-    fn sys_pwritev2(
-        fd: c_int,
-        iov: *const libc::iovec,
-        iovcnt: c_int,
-        off: i64,
-        flags: u32,
-    ) -> isize;
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sys_preadv2(
+    fd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    off: i64,
+    flags: u32,
+) -> isize {
+    // SAFETY: caller passes live iov array of length iovcnt; fd is caller-owned.
+    unsafe { libc::preadv2(fd, iov, iovcnt, off, flags as c_int) as isize }
 }
+
+/// Linux `pwritev2(2)` — real implementation (was undeclared; only declared via extern).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sys_pwritev2(
+    fd: c_int,
+    iov: *const libc::iovec,
+    iovcnt: c_int,
+    off: i64,
+    flags: u32,
+) -> isize {
+    // SAFETY: caller passes live iov array of length iovcnt; fd is caller-owned.
+    unsafe { libc::pwritev2(fd, iov, iovcnt, off, flags as c_int) as isize }
+}
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 const RWF_NOWAIT: u32 = 0x00000008;
 

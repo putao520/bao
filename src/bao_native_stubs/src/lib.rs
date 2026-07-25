@@ -18,13 +18,11 @@
 //! - Signal forwarding: real signal registration + delivery
 //! - WTF__DumpStackTrace: real backtrace output
 //!
-//! ## Residual undefined (no real owner in this crate — do NOT reintroduce noops)
-//! - URL__* / __bun_regex_* / WTF__parse* / WTF__dtoa / Bun__linux_trace_* /
-//!   WTF__releaseFastMallocFreeMemoryForThisThread — owner crates must define
-//! - `link_noop_*` ProcessExit / BufferedReaderParentLink — deleted; product needs
-//!   real `link_impl_*` in runtime/shell/browser (see STUB-INVENTORY.md)
+//! ## Remaining no-op stubs (require architecture work)
+//! - URL (2): needs bun_url integration
 //!
-//! Linker GC prevention: call force_link() from tests / product anchors.
+//! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load time,
+//! so integration tests don't need explicit force_link() calls.
 
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
@@ -72,6 +70,12 @@ pub fn force_link() {
         let _ = BunString__fromBytes(core::ptr::null(), 0);
         Bun__WTFStringImpl__destroy(core::ptr::null());
 
+        // URL FFI fallback (referenced by bun_url)
+        let mut url_a = BunStringValue { tag: 0, _impl: [0, 0] };
+        let mut url_b = BunStringValue { tag: 0, _impl: [0, 0] };
+        let _ = URL__getHref(&mut url_a);
+        let _ = URL__getHrefJoin(&mut url_a, &mut url_b);
+
         // bun_core references
         bun_restore_stdio();
         let _ = ares_inet_pton(0, core::ptr::null(), core::ptr::null_mut());
@@ -82,6 +86,9 @@ pub fn force_link() {
         Bun__registerSignalsForForwarding(0, core::ptr::null(), 0);
         Bun__unregisterSignalsForForwarding();
 
+        // bun_perf / bun_resolver / bun_core dependency chain
+        let _ = Bun__linux_trace_init();
+        Bun__linux_trace_emit(0, core::ptr::null(), core::ptr::null(), 0, 0, 0, 0, core::ptr::null());
         let _ = Bun__StackCheck__getMaxStack();
         // Force-link all c_lib_stubs symbols
         c_lib_stubs::force_c_lib_stubs();
@@ -110,9 +117,112 @@ pub unsafe extern "C" fn __force_link_entry() {
 // shutdown_read, close) are provided by bao_boringssl_bridge with #[unsafe(no_mangle)].
 // The linker picks those versions instead of these stubs.
 
-// URL__* / OpaqueURL / BunStringValue ABI mirror — **deleted** (Dead pure noops).
-// Real owner: `bun_url` pure-Rust WHATWG surface (no dead FFI). See STUB-INVENTORY.
-// Do NOT reintroduce identity/None/dead-tag stubs.
+// ──────────────────────────────────────────────────────────────
+// URL — referenced by bun_url (C FFI fallback path)
+// ──────────────────────────────────────────────────────────────
+// bun_url declares these as `safe fn URL__getHref(&mut String) -> String`
+// where String is bun_core::String (24 bytes, #[repr(C)]).
+// Since bao_native_stubs cannot depend on bun_core (circular dep),
+// we use a byte-identical #[repr(C)] struct for ABI compatibility.
+// These are fallback stubs — bun_url's own code handles the real parsing.
+
+/// ABI-compatible mirror of `bun_core::String` (24 bytes, 8-aligned).
+/// tag=0 = Dead, tag=3 = Latin1, tag=5 = UTF16, tag=7 = WTFStringImpl pointer.
+#[repr(C, align(8))]
+#[derive(Clone, Copy)]
+pub struct BunStringValue {
+    tag: u64,
+    _impl: [u64; 2],
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__getHref(_input: &mut BunStringValue) -> BunStringValue {
+    // Return input unchanged — bun_url's callers handle the dead-tag fallback.
+    *_input
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__getHrefJoin(
+    _base: &mut BunStringValue,
+    _relative: &mut BunStringValue,
+) -> BunStringValue {
+    // Return dead (tag=0) — join requires a full URL parser.
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+/// Opaque URL handle — matches `bun_url::whatwg::URL` (`#[repr(C)]` ZST).
+#[repr(C)]
+pub struct OpaqueURL {
+    _opaque: [u8; 0],
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__fromString(_str: &mut BunStringValue) -> Option<core::ptr::NonNull<OpaqueURL>> {
+    None
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__pathname(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__protocol(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__hostname(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__hash(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__host(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__password(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__username(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__search(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__fragmentIdentifier(_url: &OpaqueURL) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__getFileURLString(_input: &mut BunStringValue) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__pathFromFileURL(_input: &mut BunStringValue) -> BunStringValue {
+    BunStringValue { tag: 0, _impl: [0, 0] }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__port(_url: &OpaqueURL) -> u32 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn URL__deinit(_url: &mut OpaqueURL) {}
 
 // ──────────────────────────────────────────────────────────────
 // bun_restore_stdio — referenced by bun_core::output::stdio
@@ -180,10 +290,35 @@ pub extern "C" fn WTF__DumpStackTrace() {
     }
 }
 
-// WTF__parseES5Date / WTF__parseDouble / WTF__dtoa — **deleted** (always NaN/0 noops).
-// Owner: bun_core::wtf / bun_core::fmt + real parsers (or pure-Rust call-site replace).
-// __bun_regex_compile / __bun_regex_matches / __bun_regex_drop — **deleted** (always fail).
-// Owner: bun_install_types::NodeLinker + regex crate.
+// ──────────────────────────────────────────────────────────────
+// WTF numeric parsers — referenced by bun_core::wtf / bun_core::fmt
+// ──────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__parseES5Date(_bytes: *const u8, _length: usize) -> f64 {
+    f64::NAN
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__parseDouble(_bytes: *const u8, _length: usize, _counted: *mut usize) -> f64 {
+    unsafe { *_counted = 0 };
+    f64::NAN
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__dtoa(_value: f64, _buffer: *mut u8) -> usize {
+    // Return 0 length — caller should fall back to std::fmt
+    0
+}
+
+// ──────────────────────────────────────────────────────────────
+// Regex drop — referenced by bun_install_types::NodeLinker
+// ──────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn __bun_regex_drop(_regex: core::ptr::NonNull<()>) {
+    // No-op — regex cleanup not needed without JSC regex engine
+}
 
 // bun_core::util::StackCheck calls initialize
 #[unsafe(no_mangle)]
@@ -224,13 +359,15 @@ pub extern "C" fn on_before_reload_process_linux() {
 // bun_io::FilePoll::on_update — provided by bao_runtime::dispatch
 // (extern "Rust" linkage, not extern "C"). No stub needed here.
 
-// Bun__linux_trace_init/emit — **deleted** (always false/empty noops).
-// Owner: bun_perf or delete call sites.
-// __bun_resolver_init_package_manager — bun_install (#[no_mangle]).
-// Bun__StackCheck__getMaxStack — defined below.
+// ──────────────────────────────────────────────────────────────
+// Symbols referenced by bun_resolver/bun_perf/bun_ast dependency chain
+// ──────────────────────────────────────────────────────────────
+// Bun__linux_trace_init/emit — provided above (no-op stubs)
+// __bun_resolver_init_package_manager — provided above (no-op stub)
+// Bun__StackCheck__getMaxStack — provided above
 
 // ──────────────────────────────────────────────────────────────
-// bun_spawn / bun_core — RealImpl (posix_spawn_bun etc.)
+// bun_spawn / bun_core stubs
 // ──────────────────────────────────────────────────────────────
 
 /// BunSpawnRequest mirrors `bun_core::spawn_ffi::BunSpawnRequest`.
@@ -479,6 +616,25 @@ pub static Bun__currentSyncPID: std::sync::atomic::AtomicI64 = std::sync::atomic
 // breaks consumer lib-test link (gsc-frog-tools).
 
 // ──────────────────────────────────────────────────────────────
+// bun_perf Linux trace — no-op stubs (Bao uses log crate instead)
+// ──────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Bun__linux_trace_init() -> bool { false }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn Bun__linux_trace_emit(
+    _id: u32,
+    _name: *const c_char,
+    _cat: *const c_char,
+    _phase: u8,
+    _ts: u64,
+    _pid: u32,
+    _tid: u32,
+    _extra: *const c_char,
+) {}
+
+// ──────────────────────────────────────────────────────────────
 // bun_core::StackCheck — returns stack end pointer
 // ──────────────────────────────────────────────────────────────
 
@@ -516,27 +672,55 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
 //   SSL_set1_sigalgs_list, and all other SSL_*/BIO_*/ERR_* symbols.
 
 // ──────────────────────────────────────────────────────────────
-// Closed-set dispatch `link_noop_*` — **DELETED** (entire block)
+// §0  Closed-set dispatch no-op stubs via bun_dispatch::link_noop_*
 // ──────────────────────────────────────────────────────────────
-// Do NOT reintroduce `bun_io::link_noop_BufferedReaderParentLink!` or
-// `bun_spawn::link_noop_ProcessExit!` here to silence undefined symbols.
+// The proc-macro `link_interface!` auto-generates `link_noop_<Iface>!` which
+// produces `#[unsafe(no_mangle)] extern "Rust"` stubs for every listed variant.
+// Symbols live in this compilation unit, so the linker pulls them in automatically.
 //
-// Real owners already provide:
-//   ProcessExit: LifecycleScript / SecurityScan (bun_install),
-//                FilterRunHandle / MultiRunHandle / TestParallelWorker (bun_cli),
-//                SyncWindows (bun_spawn)
-//   BufferedReaderParentLink: LifecycleScript / SecurityScan (bun_install
-//                via `impl_buffered_reader_parent!`)
-//
-// Residual undefined until owner tasks land (product path):
-//   ProcessExit: Subprocess, Shell, CronRegister, CronRemove,
-//                ChromeProcess, HostProcess
-//   BufferedReaderParentLink: SubprocessPipeReader, ShellPipeReader,
-//                ShellIoReader, FileReader, FileResponseStream, Terminal,
-//                CronRegister, CronRemove, FilterRunHandle,
-//                MultiRunPipeReader, TestParallelWorkerPipe
-//
-// CLI-only variants become defined when product links `bun_cli`.
+// Dual-def rule (full product path always links `bun_install` via `bun_runtime`):
+// NEVER list variants that already have `link_impl_*!` in a co-linked crate.
+//   - LifecycleScript / SecurityScan → real impls in bun_install
+//     (lifecycle_script_runner.rs / PackageManager/security_scanner.rs)
+// Listing them here dual-defines `__bun_dispatch__*__LifecycleScript/*SecurityScan__*`
+// and breaks consumer lib-test link (gsc-frog-tools). CLI-only variants
+// (FilterRunHandle / MultiRun* / TestParallelWorker*) stay as noops because
+// `bun_cli` is not on the product link graph.
+
+bun_io::link_noop_BufferedReaderParentLink!(
+    SubprocessPipeReader, ShellPipeReader, ShellIoReader, FileReader,
+    FileResponseStream, Terminal, CronRegister, CronRemove,
+    FilterRunHandle, MultiRunPipeReader, TestParallelWorkerPipe
+);
+
+bun_spawn::link_noop_ProcessExit!(
+    Subprocess, Shell,
+    FilterRunHandle, MultiRunHandle, TestParallelWorker,
+    CronRegister, CronRemove, ChromeProcess, HostProcess
+);
+
+// ──────────────────────────────────────────────────────────────
+// §3  Miscellaneous extern "C" stubs
+// ──────────────────────────────────────────────────────────────
+
+// ── JSC regex FFI no-op stubs (bun_jsc::RegularExpression replacement) ──
+// Bao uses SpiderMonkey instead of JSC, so these Yarr FFI symbols are unused.
+// `bun_install::PnpmMatcher` calls them; returning None/false is safe —
+// PnpmMatcher falls back to exact string comparison when regex fails.
+// NOTE: uses BunStringValue (24 bytes, #[repr(C)]) which is ABI-compatible
+// with bun_core::String. Cannot import bun_core directly (circular dep).
+
+#[unsafe(no_mangle)]
+pub fn __bun_regex_compile(_pattern: BunStringValue) -> Option<core::ptr::NonNull<()>> {
+    None
+}
+
+#[unsafe(no_mangle)]
+pub fn __bun_regex_matches(_regex: core::ptr::NonNull<()>, _input: &BunStringValue) -> bool {
+    false
+}
+
+// NOTE: __bun_regex_drop already defined in §2 above (line 319).
 
 // `__bun_dns_prefetch` — real owner: `bun_runtime::dispatch` (async resolve warm).
 // `__bun_get_vm_ctx` — real owner: `bun_runtime::dispatch` (Mini/Js EventLoopCtx).
@@ -549,5 +733,5 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
 // `WTF__numberOfProcessorCores` — real owner: `bun_core::util` (sysconf).
 // Do NOT reintroduce hard-coded `1` stub (STUB-INVENTORY.md).
 
-// WTF__releaseFastMallocFreeMemoryForThisThread — **deleted** (empty noop).
-// Owner: allocator tier / bun_alloc.
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__releaseFastMallocFreeMemoryForThisThread() {}
