@@ -27,7 +27,7 @@
 #![allow(clippy::missing_safety_doc)]
 #![allow(clippy::not_unsafe_ptr_arg_deref)]
 
-use core::ffi::{c_char, c_int, c_long, c_short, c_void};
+use core::ffi::{c_char, c_int, c_short, c_void};
 
 mod c_lib_stubs;
 
@@ -722,51 +722,16 @@ pub fn __bun_regex_matches(_regex: core::ptr::NonNull<()>, _input: &BunStringVal
 
 // NOTE: __bun_regex_drop already defined in §2 above (line 319).
 
-// ── DNS prefetch no-op stub ──
-// `bun_install` calls `bun_dns::__bun_dns_prefetch` to warm the DNS cache
-// before fetching packages. In Bao's non-JSC context this is handled by
-// `bun_dns::internal::prefetch` directly; this stub prevents linker errors
-// when the JSC-tier definition is absent.
+// `__bun_dns_prefetch` — real owner: `bun_runtime::dispatch` (async resolve warm).
+// `__bun_get_vm_ctx` — real owner: `bun_runtime::dispatch` (Mini/Js EventLoopCtx).
+// Do NOT reintroduce Mini+null / empty noops (STUB-INVENTORY.md). Dual-def
+// with bun_runtime breaks product + gsc-frog-tools lib-test link.
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __bun_dns_prefetch(
-    _loop_: *mut c_void,
-    _hostname: *const u8,
-    _len: usize,
-    _port: u16,
-) {
-    // No-op: DNS prefetch is non-critical for package installation.
-}
+// `sys_preadv2` / `sys_pwritev2` — real owner: `bun_sys` (libc wrappers).
+// Do NOT reintroduce -1 stubs (STUB-INVENTORY.md).
 
-#[unsafe(no_mangle)]
-pub extern "C" fn __bun_get_vm_ctx(
-    _kind: bun_io::AllocatorType,
-) -> bun_io::EventLoopCtx {
-    bun_io::EventLoopCtx {
-        kind: bun_io::EventLoopCtxKind::Mini,
-        owner: std::ptr::null_mut(),
-    }
-}
-
-#[cfg(target_os = "linux")]
-#[unsafe(no_mangle)]
-pub extern "C" fn sys_preadv2(
-    _fd: c_int,
-    _iov: *const std::ffi::c_void,
-    _iovcnt: c_int,
-    _offset: c_long,
-    _flags: c_uint,
-) -> c_long {
-    -1
-}
-
-#[cfg(target_os = "linux")]
-use std::ffi::c_uint;
-
-#[unsafe(no_mangle)]
-pub extern "C" fn WTF__numberOfProcessorCores() -> c_int {
-    1
-}
+// `WTF__numberOfProcessorCores` — real owner: `bun_core::util` (sysconf).
+// Do NOT reintroduce hard-coded `1` stub (STUB-INVENTORY.md).
 
 #[unsafe(no_mangle)]
 pub extern "C" fn WTF__releaseFastMallocFreeMemoryForThisThread() {}

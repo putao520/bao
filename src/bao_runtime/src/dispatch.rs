@@ -138,3 +138,81 @@ pub unsafe extern "Rust" fn __bun_run_file_poll(
         | poll_tag::LIFECYCLE_SCRIPT_SUBPROCESS_OUTPUT_READER => {}
     }
 }
+
+// ──────────────────────────────────────────────────────────────
+// Link-time hooks formerly stubbed in bao_native_stubs (eradicate noops)
+// ──────────────────────────────────────────────────────────────
+
+/// Process-global / thread-local event-loop context selector.
+///
+/// Declared `extern "Rust"` from `bun_io::posix_event_loop`. Real owner is
+/// this crate (not bao_native_stubs). Mini uses the thread-local
+/// `MiniEventLoop`; Js uses SpiderMonkey `BaoEventLoop::current()`.
+///
+/// # Safety
+/// `kind` selects among process-initialized loops. Callers must not use the
+/// returned `EventLoopCtx` after the underlying loop is destroyed.
+#[unsafe(no_mangle)]
+pub fn __bun_get_vm_ctx(kind: bun_io::AllocatorType) -> bun_io::EventLoopCtx {
+    match kind {
+        bun_io::AllocatorType::Mini => {
+            // Prefer an already-published Mini loop; otherwise init the
+            // thread-local singleton (install / non-JS paths).
+            let ptr = bun_event_loop::MiniEventLoop::GLOBAL.with(|g| g.get());
+            let ptr = if ptr.is_null() {
+                bun_event_loop::MiniEventLoop::init_global(None, None)
+            } else {
+                ptr
+            };
+            // SAFETY: init_global / GLOBAL guarantee a live MiniEventLoop for
+            // this thread; EventLoopCtx holds a raw owner pointer only.
+            unsafe {
+                bun_io::EventLoopCtx::new(bun_io::EventLoopCtxKind::Mini, ptr)
+            }
+        }
+        bun_io::AllocatorType::Js => {
+            // SpiderMonkey BaoEventLoop (link_impl EventLoopCtx Js arm lives in bun_sm).
+            let cell = bao_engine::dispatch_sm::BaoEventLoop::current();
+            let owner_ptr = cell as *const _ as *mut core::ffi::c_void;
+            // SAFETY: current() returns the live thread-local BaoEventLoop.
+            unsafe {
+                bun_io::EventLoopCtx::new(bun_io::EventLoopCtxKind::Js, owner_ptr)
+            }
+        }
+    }
+}
+
+/// DNS cache warm — declared `extern "Rust"` from `bun_dns`.
+///
+/// Real owner: this crate (was empty noop in bao_native_stubs). Prefetch is a
+/// performance hint: spawn a non-blocking resolve when hostname is valid UTF-8.
+/// Failures are ignored (connect path still resolves).
+#[unsafe(no_mangle)]
+pub extern "Rust" fn __bun_dns_prefetch(
+    _loop_: *mut core::ffi::c_void,
+    hostname: *const u8,
+    len: usize,
+    port: u16,
+) {
+    if hostname.is_null() || len == 0 {
+        return;
+    }
+    // SAFETY: bun_dns::prefetch passes a live NUL-or-length-bounded hostname slice.
+    let bytes = unsafe { core::slice::from_raw_parts(hostname, len) };
+    let Ok(host) = core::str::from_utf8(bytes) else {
+        return;
+    };
+    // Skip empty / obviously invalid hosts.
+    if host.is_empty() || host.contains('\0') {
+        return;
+    }
+    let host = host.to_owned();
+    // Fire-and-forget OS resolve into the process DNS cache (libc getaddrinfo).
+    // std::net::ToSocketAddrs performs the same resolution connect would.
+    let _ = std::thread::Builder::new()
+        .name("bao-dns-prefetch".into())
+        .spawn(move || {
+            use std::net::ToSocketAddrs;
+            let _ = (host.as_str(), port).to_socket_addrs();
+        });
+}

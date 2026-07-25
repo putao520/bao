@@ -624,20 +624,20 @@ pub(crate) fn is_exiting() -> bool {
 }
 
 // libc process-termination entry points used by `exit` /
-// `raise_ignoring_panic_handler_raw` below. All take by-value `c_int` or no
-// args and are `noreturn`/kernel-validated — no memory-safety preconditions,
-// so `safe fn` discharges the link-time proof and the call sites are plain
-// calls. `#[link_name]` avoids colliding with this module's own `pub fn exit`.
+// `raise_ignoring_panic_handler_raw` below. Signature must stay
+// `unsafe extern "C"` so rustc's `suspicious_runtime_symbol_definitions`
+// (runtime symbol `exit`) accepts them under `-D warnings`.
+// `#[link_name]` avoids colliding with this module's own `pub fn exit`.
 unsafe extern "C" {
     #[link_name = "abort"]
-    safe fn libc_abort() -> !;
+    fn libc_abort() -> !;
     #[link_name = "raise"]
-    safe fn libc_raise(sig: c_int) -> c_int;
+    fn libc_raise(sig: c_int) -> c_int;
     #[cfg(unix)]
     #[link_name = "exit"]
-    safe fn libc_exit(code: c_int) -> !;
+    fn libc_exit(code: c_int) -> !;
     #[cfg(all(unix, not(target_os = "macos")))]
-    safe fn quick_exit(code: c_int) -> !;
+    fn quick_exit(code: c_int) -> !;
 }
 
 /// Flushes stdout and stderr (in exit/quick_exit callback) and exits with the given code.
@@ -663,7 +663,8 @@ pub fn exit(code: u32) -> ! {
 
     #[cfg(target_os = "macos")]
     {
-        libc_exit(code as i32)
+        // SAFETY: libc exit never returns; code is by-value.
+        unsafe { libc_exit(code as i32) }
     }
     #[cfg(windows)]
     {
@@ -673,10 +674,13 @@ pub fn exit(code: u32) -> ! {
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        if env::ENABLE_ASAN {
-            libc_exit(code as i32);
+        // SAFETY: libc exit/quick_exit never return; code is by-value.
+        unsafe {
+            if env::ENABLE_ASAN {
+                libc_exit(code as i32);
+            }
+            quick_exit(code as c_int);
         }
-        quick_exit(code as c_int);
     }
 }
 
@@ -738,9 +742,12 @@ pub fn raise_ignoring_panic_handler_raw(sig: c_int) -> ! {
         }
     }
 
-    // kill self — `raise`/`abort` have no preconditions (see `safe fn` decls above).
-    let _ = libc_raise(sig);
-    libc_abort();
+    // kill self — raise/abort take by-value signal / no args.
+    // SAFETY: kernel-validated; never returns from abort.
+    unsafe {
+        let _ = libc_raise(sig);
+        libc_abort();
+    }
 }
 
 #[derive(Default)]

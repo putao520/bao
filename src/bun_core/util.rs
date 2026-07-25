@@ -2991,19 +2991,39 @@ pub fn get_thread_count() -> u16 {
             // `WTF::numberOfProcessorCores()` → sysconf(_SC_NPROCESSORS_ONLN)
             // on POSIX / GetSystemInfo on Windows. **Not** the same as
             // `std::thread::available_parallelism()`, which on Linux also
-            // consults sched_getaffinity + cgroup cpu.max quota; on
-            // cgroup-limited CI runners or P/E-core machines the two diverge,
-            // changing bundler `max_threads` (and per-thread mimalloc arena
-            // RSS) vs the Zig binary. Declare the C symbol locally — `jsc`
-            // is above `bun_core` in the crate DAG so we can't `use` it, but
-            // the symbol is always linked (wtf-bindings.cpp).
-            unsafe extern "C" {
-                safe fn WTF__numberOfProcessorCores() -> core::ffi::c_int;
-            }
+            // consults sched_getaffinity + cgroup cpu.max quota.
+            // Real owner: this crate (was hard-coded `1` in bao_native_stubs).
             WTF__numberOfProcessorCores().max(1) as u16
         });
         raw.clamp(MIN, MAX)
     })
+}
+
+/// Online processor count — WTF ABI (`sysconf(_SC_NPROCESSORS_ONLN)` on POSIX).
+///
+/// Defined here so product paths do not need the bao_native_stubs hard-coded
+/// `return 1` NoopBlocker. Keep signature stable for any remaining `extern "C"`
+/// call sites outside this module.
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__numberOfProcessorCores() -> core::ffi::c_int {
+    #[cfg(unix)]
+    {
+        // SAFETY: sysconf is thread-safe; -1 means unknown → fall back to 1.
+        let n = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_ONLN) };
+        if n > 0 {
+            return n as core::ffi::c_int;
+        }
+        1
+    }
+    #[cfg(not(unix))]
+    {
+        // Non-POSIX: best-effort online count without cgroup affinity quirks
+        // only matters on Linux product path; Windows builds use this fallback.
+        std::thread::available_parallelism()
+            .map(|n| n.get() as core::ffi::c_int)
+            .unwrap_or(1)
+            .max(1)
+    }
 }
 
 // ── errno_to_zig_err ──────────────────────────────────────────────────────

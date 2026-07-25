@@ -40,7 +40,10 @@
 
 #![allow(unused_imports)]
 
-// Force-link C stubs so consumer binaries do not GC native symbols.
+// Residual stub force-link is opt-in only (`features = ["native-stubs"]`).
+// Default product path must not pull/force noops from this facade.
+// @trace STUB-INVENTORY: default product does not force-link bao_native_stubs
+#[cfg(feature = "native-stubs")]
 #[used]
 static BAO_NATIVE_STUBS_ANCHOR: unsafe extern "C" fn() = bao_native_stubs::__force_link_entry;
 
@@ -129,7 +132,6 @@ mod tests {
             "bao_cdp_client",
             "bao_stealth",
             "bao_uloop",
-            "bao_native_stubs",
         ];
         for dep in required {
             assert!(
@@ -137,10 +139,20 @@ mod tests {
                 "public package must always depend on {dep} (unified full stack)"
             );
         }
-        // No product feature table that could disable capabilities.
+        // Engineering feature only: native-stubs is optional + non-default.
+        // Product capabilities (browser/CDP/stealth) must stay always-on deps.
         assert!(
-            !manifest.contains("[features]"),
-            "public package must not define Cargo [features] for product capability splits"
+            manifest.contains("native-stubs"),
+            "manifest must document native-stubs engineering feature"
+        );
+        assert!(
+            manifest.contains("default = []"),
+            "native-stubs must not be in default features (default product must not force stubs)"
+        );
+        // Optional dep line still names the package (path optional = true).
+        assert!(
+            manifest.contains("bao_native_stubs"),
+            "optional residual dep bao_native_stubs must remain named for feature wire-up"
         );
     }
 
