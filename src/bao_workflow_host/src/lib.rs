@@ -1,12 +1,13 @@
 //! CC Dynamic Workflow host globals on Bao Bun / SpiderMonkey.
 //!
 //! Installs `agent` / `parallel` / `pipeline` / `phase` / `log` / `args` / `budget`
-//! for Claude Code workflow scripts (plan-25). Agent work is bridged via a
-//! thread-local [`WorkflowHostCallbacks`] set by the Frog runner before eval.
+//! / nested `workflow` for Claude Code workflow scripts (plan-25). Agent work is
+//! bridged via a thread-local [`WorkflowHostCallbacks`] set by the Frog runner
+//! before eval.
 //!
 //! Thin crate (no `bun_install` / `bao_native_stubs`) so host tests can link.
 //!
-//! @trace plan-25 L2 install_workflow_host_on_bun
+//! @trace plan-25 L2 install_workflow_host_on_bun Wave H
 
 #![allow(unsafe_op_in_unsafe_fn)]
 
@@ -43,6 +44,12 @@ pub trait WorkflowHostCallbacks: Send {
     fn agent(&mut self, prompt: &str, opts_json: &str) -> StdResult<String, String>;
     fn args_json(&self) -> String;
     fn budget_json(&self) -> String;
+    /// Nested `workflow(name|ref, args)` — P1 (Wave H1).
+    /// Default: not configured (scripts that nest without Frog bridge fail closed).
+    fn workflow_nested(&mut self, name_or_ref: &str, args_json: &str) -> StdResult<String, String> {
+        let _ = (name_or_ref, args_json);
+        Err("workflow nest: not configured".into())
+    }
 }
 
 thread_local! {
@@ -114,8 +121,20 @@ pub unsafe fn install_workflow_host_on_global(
         0,
         JSPROP_ENUMERATE as u32,
     );
+    // H1: nested workflow(name|ref, args)
+    JS_DefineFunction(
+        cx,
+        global,
+        c"__wf_workflow".as_ptr(),
+        Some(wf_workflow_fn),
+        2,
+        JSPROP_ENUMERATE as u32,
+    );
 
     // JS surface matching CC host API (async-friendly)
+    // H3: parallel uses Promise.all (true barrier), not serial for-await.
+    // H1: workflow shim for nested runs.
+    // H11: Date.now / Math.random throw non-deterministic.
     let shim = r#"(function(){
   globalThis.phase = function(title){ globalThis.__wf_phase(String(title)); };
   globalThis.log = function(msg){ globalThis.__wf_log(String(msg)); };
@@ -125,11 +144,10 @@ pub unsafe fn install_workflow_host_on_global(
     try { return JSON.parse(raw); } catch (_) { return raw; }
   };
   globalThis.parallel = async function(thunks){
-    const out = [];
-    for (const t of thunks) {
-      try { out.push(await t()); } catch (_) { out.push(null); }
-    }
-    return out;
+    const results = await Promise.all((thunks||[]).map(async (t) => {
+      try { return await t(); } catch (_) { return null; }
+    }));
+    return results;
   };
   globalThis.pipeline = async function(items, ...stages){
     const list = Array.from(items || []);
@@ -143,6 +161,14 @@ pub unsafe fn install_workflow_host_on_global(
       } catch (_) { return null; }
     }));
   };
+  globalThis.workflow = async function(nameOrRef, args){
+    const name = typeof nameOrRef === 'string'
+      ? nameOrRef
+      : (nameOrRef && nameOrRef.scriptPath) || String(nameOrRef);
+    const a = args == null ? '{}' : JSON.stringify(args);
+    const raw = globalThis.__wf_workflow(String(name), a);
+    try { return JSON.parse(raw); } catch (_) { return raw; }
+  };
   try {
     globalThis.args = JSON.parse(globalThis.__wf_args_json());
   } catch (_) { globalThis.args = {}; }
@@ -150,7 +176,7 @@ pub unsafe fn install_workflow_host_on_global(
     const b = globalThis.__wf_budget_json();
     globalThis.budget = (b === 'null' || b === '') ? null : JSON.parse(b);
   } catch (_) { globalThis.budget = null; }
-  // Deterministic host: throw on forbidden APIs
+  // Deterministic host: throw on forbidden APIs (H11)
   const ban = (name) => { throw new Error("workflow host: non-deterministic API '" + name + "' is forbidden"); };
   Date.now = function(){ ban('Date.now'); };
   Math.random = function(){ ban('Math.random'); };
@@ -223,6 +249,44 @@ unsafe extern "C" fn wf_agent_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) 
         "{}".into()
     };
     let res: Option<StdResult<String, String>> = with_workflow_host(|h| h.agent(&prompt, &opts));
+    match res {
+        Some(Ok(raw)) => {
+            let c = ZBox::from_bytes(raw.as_bytes());
+            let js_str = JS_NewStringCopyZ(cx, c.as_ptr());
+            if !js_str.is_null() {
+                args.rval().set(StringValue(&*js_str));
+            } else {
+                args.rval().set(UndefinedValue());
+            }
+            true
+        }
+        Some(Err(e)) => {
+            let c = ZBox::from_bytes(e.as_bytes());
+            JS_ReportErrorUTF8(cx, c"%s".as_ptr(), c.as_ptr());
+            false
+        }
+        None => {
+            JS_ReportErrorUTF8(cx, c"workflow host callbacks not installed".as_ptr());
+            false
+        }
+    }
+}
+
+#[allow(unsafe_op_in_unsafe_fn)]
+unsafe extern "C" fn wf_workflow_fn(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+    let args = CallArgs::from_vp(vp, argc);
+    let name = if argc > 0 {
+        crate::js_to_rust_string(cx, *args.get(0).ptr)
+    } else {
+        String::new()
+    };
+    let args_json = if argc > 1 {
+        crate::js_to_rust_string(cx, *args.get(1).ptr)
+    } else {
+        "{}".into()
+    };
+    let res: Option<StdResult<String, String>> =
+        with_workflow_host(|h| h.workflow_nested(&name, &args_json));
     match res {
         Some(Ok(raw)) => {
             let c = ZBox::from_bytes(raw.as_bytes());
