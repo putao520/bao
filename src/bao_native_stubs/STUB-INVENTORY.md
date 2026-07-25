@@ -10,7 +10,7 @@
 | Crate | Hard dep on `bao_native_stubs`? | `force_link` / `__force_link_entry` anchor |
 |-------|----------------------------------|-------------------------------------------|
 | **`bao` (public package)** | **No (feature `native-stubs`, non-default)** | **None (default)** |
-| `bun_runtime` (`bao_runtime`) | **Yes (residual RealImpl + dispatch noops)** | `BAO_NATIVE_STUBS_ANCHOR` → `__force_link_entry` |
+| `bun_runtime` (`bao_runtime`) | **dev-only** (tests may force_link) | product: `product_process_exit` + `product_buffered_reader` + `product_native_symbols` (no PE/BR link_noop residual) |
 | `bao_browser` | **No** (dropped hard dep) | **None** |
 | `bao_engine` | **dev-only** | test anchor only |
 | `bun_core` | **dev-only** | test-only `force_link()` |
@@ -18,7 +18,7 @@
 | `bao_workflow_host` | **No** (by design — dual-def free) | — |
 
 **Default product (`bao` without features):** does **not** *directly* depend on or force-link `bao_native_stubs`.  
-**Residual:** product still **transitively** links stubs via `bun_runtime` until remaining RealImpl + dispatch noops move to owners (P0 table).
+**PE/BR closed-set residual:** **0** — real owners in `bun_runtime::product_process_exit` + `product_buffered_reader` (P1/P2); `product_dispatch_residual` deleted (P3). Other NoopBlocker `#[no_mangle]` may still live in this crate until owner tasks finish.
 
 ---
 
@@ -77,8 +77,6 @@
 | `__bun_regex_compile/matches/drop` | regex crate + install_types | via runtime | Always fail → exact-string fallback |
 | `Bun__linux_trace_*` | `bun_perf` or drop call sites | via runtime | Always false / empty |
 | `WTF__releaseFastMallocFreeMemoryForThisThread` | allocator tier | via runtime | Empty |
-| **ProcessExit** noops: Subprocess, Shell, Cron*, ChromeProcess, HostProcess, FilterRun*, MultiRun*, TestParallelWorker | `bao_runtime` / shell / browser / CLI | via runtime | Closed-set link needs defs; real only for LifecycleScript/SecurityScan/SyncWindows |
-| **BufferedReaderParentLink** noops: SubprocessPipeReader, Shell*, FileReader, FileResponseStream, Terminal, Cron*, FilterRun*, MultiRun*, TestParallelWorkerPipe | runtime / shell / http | via runtime | LifecycleScript/SecurityScan have real `link_impl` |
 
 ### Dead (must not reintroduce)
 
@@ -92,6 +90,9 @@
 | `__bun_crash_handler_out_of_memory` stub | Real `!` in `bun_crash_handler` |
 | `Bun__lock__size` / epoll_pwait2 kernel check stubs | `bun_threading` / `bun_analytics` |
 | link_noop LifecycleScript / SecurityScan | Real `link_impl` in `bun_install` |
+| **ProcessExit** product residual `link_noop_*` (Subprocess, Shell, Cron*, ChromeProcess, HostProcess, FilterRun*, MultiRun*, TestParallelWorker) | Real `link_impl` in `bun_runtime::product_process_exit` (P1); residual module deleted (P3). LifecycleScript/SecurityScan/SyncWindows already owned. **residual=0** |
+| **BufferedReaderParentLink** product residual `link_noop_*` (SubprocessPipeReader, Shell*, FileReader, FileResponseStream, Terminal, Cron*, FilterRun*, MultiRun*, TestParallelWorkerPipe) | Real `impl_buffered_reader_parent!` in `bun_runtime::product_buffered_reader` (P2); residual module deleted (P3). LifecycleScript/SecurityScan already owned. **residual=0** |
+| `product_dispatch_residual` module | Deleted P3 after PE/BR true owners landed |
 | `sys_preadv2` return -1 stub | Real in `bun_sys` |
 | `__bun_get_vm_ctx` Mini+null stub | Real in `bun_runtime::dispatch` |
 | `__bun_dns_prefetch` empty stub | Real in `bun_runtime::dispatch` |
@@ -101,12 +102,12 @@
 
 ## Eradication backlog (ordered)
 
-1. **P0** — Real `ProcessExit` + `BufferedReaderParentLink` for Subprocess/Shell (product spawn).
+1. ~~**P0** — Real `ProcessExit` + `BufferedReaderParentLink` for Subprocess/Shell (product spawn).~~ **DONE** (P1/P2 real owners + P3 residual delete; residual=0).
 2. **P0** — `bun_url`: drop dead FFI stubs; finish pure-Rust WHATWG surface.
 3. **P0** — Move remaining RealImpl out of this crate → drop hard dep from `bun_runtime`.
 4. **P1** — Real WTF numeric parsers or pure-Rust call-site replacements.
 5. **P1** — Regex for `PnpmMatcher` via `regex` crate.
-6. **P1** — Split CLI-only closed-set noops when product no longer needs exhaustive defs.
+6. **P1** — CLI crates (`src/cli`) must consume product PE/BR owners (single `link_impl` site) if co-linked — do not reintroduce product residual noops.
 
 ---
 
