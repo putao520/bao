@@ -32,7 +32,7 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 **PE/BR closed-set residual:** **0** — real owners in `bun_runtime::product_process_exit` + `product_buffered_reader` (P1/P2); `product_dispatch_residual` deleted (P3).  
 
-**Next-wave residual:** `FastMalloc` ✅ closed (`bun_alloc` `mi_collect`); `linux_trace` 🔶 **in progress** — see § Next wave + residual table.
+**Next-wave residual:** `FastMalloc` ✅ + `linux_trace` ✅ both residual=0 (Win/macOS/Linux).
 
 ---
 
@@ -92,7 +92,6 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 | Symbol / group | Owner task | Product force? | Status | Why P0 |
 |----------------|------------|----------------|--------|--------|
-| `Bun__linux_trace_*` (`init` / `emit` / `close`) | product single site → prefer `bun_perf` / `bun_core::perf` | via runtime product (**not** stubs) | 🔶 **in progress** | Always false / empty in product + stubs; ABI mismatch vs `bun_core::perf::sys` callers |
 
 ### Dead (must not reintroduce)
 
@@ -128,7 +127,7 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 4. ~~**P1** — Real WTF numeric parsers or pure-Rust call-site replacements.~~ **DONE** (`bun_core::{fmt,wtf}` pure + product no_mangle).
 5. ~~**P1** — Regex for `PnpmMatcher` via `regex` crate.~~ **DONE** (`product_native_symbols` RealImpl).
 6. **P1** — CLI crates (`src/cli`) must consume product PE/BR owners (single `link_impl` site) if co-linked — do not reintroduce product residual noops.
-7. **P1 / next wave** — `Bun__linux_trace_*` **real** implementation + ABI unify (🔶 in progress) — see below.
+7. ~~**P1 / next wave** — `Bun__linux_trace_*`.~~ **DONE** (`bao_runtime::linux_trace` a74be633).
 8. ~~**P1 / next wave** — `WTF__releaseFastMallocFreeMemoryForThisThread`.~~ **DONE** (`bun_alloc` `mi_collect(false)`; empty stubs deleted).
 
 ---
@@ -143,7 +142,7 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 | Item | Residual | Notes |
 |------|----------|-------|
 | **FastMalloc** `WTF__releaseFastMallocFreeMemoryForThisThread` | ✅ **0** | Real owner `bun_alloc` → `mi_collect(false)` (portable mimalloc); stubs + product empty deleted |
-| **linux_trace** `Bun__linux_trace_*` | 🔶 **in progress** | Product + stubs still always-false / empty; ABI mismatch open |
+| **linux_trace** `Bun__linux_trace_*` | ✅ **0** | `bao_runtime::linux_trace` RealImpl Win/macOS/Linux |
 | **Product never links stubs** | ✅ | `bao` no dep / no force_link |
 | **No env / no capability feature** | ✅ policy | Permanent; code review gate |
 
@@ -199,9 +198,8 @@ Compile-time `cfg(target_os)` only — **not** env/feature capability gates.
 
 | ID | Item | Residual | Code E | Notes |
 |----|------|----------|--------|-------|
-| **NW-LT** | `Bun__linux_trace_*` real body + ABI unify | 🔶 **in progress** | open | Product + stubs residual empty/false |
-| **NW-FM** | `WTF__releaseFastMallocFreeMemoryForThisThread` | ✅ **0** | closed | `bun_alloc` `mi_collect(false)` |
-| **NW-STUB-DEL-LT** | Delete `linux_trace` stub defs after unique product owner | 🔶 blocked on NW-LT | open | No dual-def |
+| **NW-LT** | **NW-FM** | `WTF__releaseFastMallocFreeMemoryForThisThread` | ✅ **0** | closed | `bun_alloc` `mi_collect(false)` |
+| **NW-STUB-DEL-LT** | Delete `linux_trace` stub defs after unique product owner | ✅ **0** | closed | stubs deleted with RealImpl |
 | **NW-PRODUCT-LINK** | Product never links `bao_native_stubs` | ✅ | closed | `bao` no dep / no force_link |
 | **NW-POLICY** | No env switch · no feature hide · always-on | ✅ policy | permanent | Enforce on code review |
 
