@@ -22,11 +22,10 @@ libffi = "3"
 serde_json = "1"
 dashmap.workspace = true
 
-# Residual RealImpl + closed-set dispatch noops (STUB-INVENTORY).
-# Must stay hard-dep until owners absorb RealImpl (posix_spawn_bun, …).
-bao_native_stubs = { path = "../bao_native_stubs" }
-
 # Package manager (auto-install, lockfile, npm registry)
+# @trace STUB-INVENTORY: default product must NOT hard-dep bao_native_stubs.
+# Closed-set residual dispatch → product_dispatch_residual.rs; C libs →
+# force_link_native_c_libs. RealImpl still only in stubs = residual owner task.
 bun_install = { path = "../install" }
 
 # Bun 纯 Rust crate（L0-L3 层，零 JSC 依赖）
@@ -93,9 +92,11 @@ bao_uloop = { path = "../bao_uloop" }
 bao_cdp = { path = "../bao_cdp" }
 cdp-server = { path = "../cdp-server" }
 tempfile = "3"
-# Test-only residual stubs force_link (resolver_bridge / event_loop tests).
-# Default product path of bun_runtime must NOT hard-dep or force-link stubs
-# (@trace STUB-INVENTORY / ca936823 follow-up).
+# Optional test-only residual: unit/integration tests that still call
+# bao_native_stubs::force_link(). Product path must not depend on this.
+# Dual-def risk if tests force-link stubs while product_dispatch_residual
+# also defines closed-set symbols — prefer dropping force_link in tests.
+bao_native_stubs = { path = "../bao_native_stubs" }
 
 # Node.js conformance suite (ported from ~/code/rust/bun/test/js/node/, MIT).
 # Lives in a subdirectory so each module is a separate test binary.

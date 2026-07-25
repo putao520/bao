@@ -88,6 +88,10 @@ pub mod bun_udp;
 pub mod bun_shell;
 pub mod bun_password;
 pub mod install;
+// @trace STUB-INVENTORY: product residual closed-set dispatch (no stubs hard-dep)
+pub mod product_dispatch_residual;
+// @trace STUB-INVENTORY: product residual RealImpl rehomed from bao_native_stubs
+pub mod product_native_symbols;
 
 pub use runtime::BaoRuntime;
 
@@ -186,14 +190,11 @@ pub fn force_link_bun_install() {
     let _ = bun_install::Subcommand::Install;
 }
 
-// Force-link residual bao_native_stubs (RealImpl + closed-set dispatch noops).
-// Public package `bao` does not force this; bun_runtime does until owners absorb
-// remaining RealImpl (posix_spawn_bun, …). See STUB-INVENTORY.md.
-// Dual-def rule: never reintroduce LifecycleScript/SecurityScan link_noop.
-#[used]
-static BAO_NATIVE_STUBS_ANCHOR: unsafe extern "C" fn() = bao_native_stubs::__force_link_entry;
+// @trace STUB-INVENTORY: default product path must not force-link bao_native_stubs.
+// Residual closed-set dispatch → product_dispatch_residual (this crate).
+// Real C libs → force_link_native_c_libs. Do not reintroduce BAO_NATIVE_STUBS_ANCHOR.
 
-// Real C-lib force-link (also via stubs force_c_lib; keep direct for GC safety):
+// Real C-lib force-link (former bao_native_stubs::force_c_lib_stubs chain):
 // quic.c (bun_uws_sys) needs liblsquic; TLS needs boringssl; loop from bao_uloop.
 #[inline(never)]
 fn force_link_native_c_libs() {
@@ -205,6 +206,9 @@ fn force_link_native_c_libs() {
     let _ = bao_uloop::us_loop_run_bun_tick as *const () as usize;
     let _ = bao_uloop::us_wakeup_loop as *const () as usize;
     let _ = bao_uloop::uws_get_loop as *const () as usize;
+    // Retain product residual closed-set dispatch + RealImpl compilation units.
+    product_dispatch_residual::force_link_product_dispatch_residual();
+    product_native_symbols::force_link_product_native_symbols();
 }
 
 #[used]
