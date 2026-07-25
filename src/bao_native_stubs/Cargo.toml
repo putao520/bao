@@ -7,9 +7,8 @@ license = "MIT"
 
 [dependencies]
 libc = "0.2"
-bun_io = { path = "../io" }
-bun_spawn = { path = "../spawn" }
-bun_sys = { path = "../sys" }
+# bun_io / bun_spawn / bun_sys removed: only used for deleted link_noop_* /
+# preadv stubs. Real link_impl / sys wrappers live in owner crates.
 # Wave 74-LOOP-A: mio-backed loop core now lives in bao_uloop. Making it
 # a normal dep means any crate that pulls in bao_native_stubs (most test
 # binaries do, via dev-dependencies) also drags in bao_uloop's
