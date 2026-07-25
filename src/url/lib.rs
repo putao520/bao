@@ -34,56 +34,138 @@ pub mod route_param {
 }
 pub use route_param::List as ParamsList;
 
-// ── whatwg (WTF::URL FFI shim, MOVE_DOWN from bun_jsc) ────────────────────
+// ── whatwg (pure-Rust WHATWG surface; was WTF::URL FFI) ───────────────────
 // Ground truth: src/jsc/URL.zig. The JS-value entry points (`hrefFromJS`, `fromJS`)
-// stay in tier-6 `bun_jsc` as extension methods — they need JSValue/JSGlobalObject.
-// Everything else is a thin extern-"C" wrapper around WTF::URL and is JSC-agnostic.
+// stay in tier-6 as extension methods — they need JSValue/JSGlobalObject.
+// All string/parse entry points are pure Rust over `super::URL::parse` /
+// `OwnedURL` so product no longer needs WebKit `URL__*` noops.
+//
+// @trace STUB-INVENTORY: pure-Rust bun_url WHATWG (drop dead URL__* FFI)
 pub mod whatwg {
+    use core::ptr::NonNull;
+
     use super::BunString as String;
-    use super::strings;
 
-    /// Opaque handle to a heap-allocated WTF::URL (C++). Always behind `*mut URL`.
-    /// Construct via `from_string`/`from_utf8`; free via `deinit`.
-    #[repr(C)]
+    /// Heap-owned URL. Mirrors the old WTF::URL handle shape (`NonNull<URL>` +
+    /// `deinit`) so `hosted_git_info` / install keep working without C++.
+    /// Free **only** via [`URL::deinit`] / `Box::from_raw` — no `Drop` (callers
+    /// own the pointer explicitly, matching Zig/C++).
     pub struct URL {
-        _opaque: [u8; 0],
+        href: Box<[u8]>,
     }
 
-    // TODO(port): move to <area>_sys
-    // PORT NOTE: getters take `*const URL` — the C++ side (BunString.cpp) never mutates the
-    // WTF::URL on read. `URL__deinit` keeps `*mut` (it `delete`s). `BunString*` inputs stay
-    // `*mut` to match the C ABI; callers pass a mutable local copy (see below).
-    // SAFETY (safe fn): `URL` is an opaque ZST handle (never null when behind `&`);
-    // `String` is a `#[repr(C)]` Copy POD that C++ reads (`BunString::toWTFString() const`).
-    // Getters take `&URL` (C++ never mutates on read); `deinit` takes `&mut URL` (consumes).
-    // `URL__originLength` keeps a raw `(*const u8, usize)` slice pair → stays `unsafe fn`.
-    unsafe extern "C" {
-        // `URL__fromJS` / `URL__getHrefFromJS` intentionally omitted — tier-6 (bun_jsc).
-        safe fn URL__fromString(str: &mut String) -> Option<core::ptr::NonNull<URL>>;
-        safe fn URL__protocol(url: &URL) -> String;
-        safe fn URL__href(url: &URL) -> String;
-        safe fn URL__username(url: &URL) -> String;
-        safe fn URL__password(url: &URL) -> String;
-        safe fn URL__search(url: &URL) -> String;
-        safe fn URL__host(url: &URL) -> String;
-        safe fn URL__hostname(url: &URL) -> String;
-        safe fn URL__port(url: &URL) -> u32;
-        safe fn URL__deinit(url: &mut URL);
-        safe fn URL__pathname(url: &URL) -> String;
-        safe fn URL__getFileURLString(input: &mut String) -> String;
-        safe fn URL__pathFromFileURL(input: &mut String) -> String;
-        safe fn URL__hash(url: &URL) -> String;
-        safe fn URL__fragmentIdentifier(url: &URL) -> String;
-        fn URL__originLength(latin1_slice: *const u8, len: usize) -> u32;
+    impl URL {
+        fn parsed(&self) -> super::URL<'_> {
+            super::URL::parse(&self.href)
+        }
+
+        fn component_string(&self, pick: impl FnOnce(super::URL<'_>) -> &[u8]) -> String {
+            let bytes = pick(self.parsed());
+            // View into self.href — caller must consume before deinit (Zig parity).
+            String::from_bytes(bytes)
+        }
+
+        pub fn from_string(str: &String) -> Option<NonNull<URL>> {
+            let utf8 = str.to_utf8();
+            let bytes = utf8.slice();
+            Self::from_utf8(bytes)
+        }
+
+        pub fn from_utf8(input: &[u8]) -> Option<NonNull<URL>> {
+            if input.is_empty() {
+                return None;
+            }
+            let parsed = super::URL::parse(input);
+            // Require a protocol (same gate as `href_from_string`).
+            if parsed.protocol.is_empty() {
+                return None;
+            }
+            let owned = Box::new(URL {
+                href: input.to_vec().into_boxed_slice(),
+            });
+            // SAFETY: freshly allocated; unique owner until deinit.
+            Some(unsafe { NonNull::new_unchecked(Box::into_raw(owned)) })
+        }
+
+        /// Includes the leading '#'.
+        pub fn hash(&self) -> String {
+            self.component_string(|u| u.hash)
+        }
+        /// Exactly the same as `hash`, excluding the leading '#'.
+        pub fn fragment_identifier(&self) -> String {
+            self.component_string(|u| {
+                if u.hash.starts_with(b"#") {
+                    &u.hash[1..]
+                } else {
+                    u.hash
+                }
+            })
+        }
+        pub fn protocol(&self) -> String {
+            // Zig/WTF returns scheme with trailing ':'.
+            let p = self.parsed().protocol;
+            if p.is_empty() {
+                return String::empty();
+            }
+            let mut buf = Vec::with_capacity(p.len() + 1);
+            buf.extend_from_slice(p);
+            buf.push(b':');
+            string_from_owned_bytes(buf)
+        }
+        pub fn href(&self) -> String {
+            String::from_bytes(&self.href)
+        }
+        pub fn username(&self) -> String {
+            self.component_string(|u| u.username)
+        }
+        pub fn password(&self) -> String {
+            self.component_string(|u| u.password)
+        }
+        pub fn search(&self) -> String {
+            self.component_string(|u| u.search)
+        }
+        /// Host WITHOUT the port (Bun naming; opposite of JS `host`).
+        pub fn host(&self) -> String {
+            self.component_string(|u| u.hostname)
+        }
+        /// Host WITH the port (Bun naming; opposite of JS `hostname`).
+        pub fn hostname(&self) -> String {
+            self.component_string(|u| u.host)
+        }
+        /// Returns `u32::MAX` if the port is not set. Otherwise, the result is
+        /// guaranteed to be within the `u16` range.
+        pub fn port(&self) -> u32 {
+            let p = self.parsed().port;
+            if p.is_empty() {
+                return u32::MAX;
+            }
+            bun_core::fmt::parse_int::<u16>(p, 10)
+                .map(|v| v as u32)
+                .unwrap_or(u32::MAX)
+        }
+        pub fn pathname(&self) -> String {
+            self.component_string(|u| u.pathname)
+        }
+        /// Frees the heap URL. Must be called exactly once per successful
+        /// `from_string` / `from_utf8`. After this, the pointer is dangling.
+        pub fn deinit(&mut self) {
+            // SAFETY: `self` is the unique owner produced by `Box::into_raw`.
+            unsafe {
+                drop(Box::from_raw(self as *mut URL));
+            }
+        }
     }
 
-    // PORT NOTE: Zig takes `bun.String` by value then `var input = str; f(&input)` to
-    // obtain a mutable address for C ABI. We take `&String` (matching existing call sites
-    // in this crate) and — since `bun_core::String: Copy` — bit-copy into a mutable
-    // local and pass `&mut local`. This mirrors the Zig spec exactly and avoids casting
-    // a shared-ref-derived pointer to `*mut` (read-only provenance). The C++ side
-    // (`BunString::toWTFString() const`) does not mutate, but the local-copy form is
-    // sound regardless.
+    /// Leak-backed owned `String` for free-function return values that outlive
+    /// a local buffer (no WTF heap on product path). Rare call sites only
+    /// (file URL conversion / join).
+    fn string_from_owned_bytes(bytes: Vec<u8>) -> String {
+        if bytes.is_empty() {
+            return String::empty();
+        }
+        let leaked: &'static [u8] = Box::leak(bytes.into_boxed_slice());
+        String::static_(leaked)
+    }
 
     /// Validates the URL and returns the href. If parsing fails, returns `Dead`.
     pub fn href_from_string(str: &String) -> String {
@@ -132,97 +214,82 @@ pub mod whatwg {
             buf.extend_from_slice(&dir[..dir_end]);
         }
         buf.extend_from_slice(rel_bytes);
-        String::from_bytes(&buf)
-    }
-    pub fn file_url_from_string(str: &String) -> String {
-        let mut input = *str;
-        URL__getFileURLString(&mut input)
-    }
-    pub fn path_from_file_url(str: &String) -> String {
-        let mut input = *str;
-        URL__pathFromFileURL(&mut input)
-    }
-    /// Returns the origin (`scheme://host[:port]`) prefix of `slice` as a borrowed
-    /// subslice, or `None` if `slice` does not parse as a valid WHATWG URL.
-    ///
-    /// Backed by `WTF::URL::pathStart()` via `URL__originLength` (BunString.cpp).
-    #[inline]
-    pub fn origin_from_slice(slice: &[u8]) -> Option<&[u8]> {
-        // A valid URL will not have non-ASCII bytes in its origin, so it suffices
-        // to hand C++ only the leading ASCII prefix (latin1-safe).
-        let first_non_ascii = strings::first_non_ascii(slice).map_or(slice.len(), |i| i as usize);
-        // SAFETY: ptr/len derived from a valid slice prefix; C++ only reads.
-        let len = unsafe { URL__originLength(slice.as_ptr(), first_non_ascii) } as usize;
-        if len == 0 || len > first_non_ascii {
-            return None;
-        }
-        Some(&slice[..len])
+        string_from_owned_bytes(buf)
     }
 
-    impl URL {
-        pub fn from_string(str: &String) -> Option<core::ptr::NonNull<URL>> {
-            let mut input = *str;
-            URL__fromString(&mut input)
+    /// `path` → `file://…` (absolute paths get a leading `/` after the scheme).
+    pub fn file_url_from_string(str: &String) -> String {
+        let utf8 = str.to_utf8();
+        let path = utf8.slice();
+        if path.is_empty() {
+            return String::dead();
         }
-        pub fn from_utf8(input: &[u8]) -> Option<core::ptr::NonNull<URL>> {
-            Self::from_string(&String::borrow_utf8(input))
+        // Already a file URL — return as-is.
+        if path.starts_with(b"file:") {
+            return *str;
         }
-        /// Includes the leading '#'.
-        pub fn hash(&self) -> String {
-            URL__hash(self)
+        let mut buf: Vec<u8> = Vec::with_capacity(path.len() + 8);
+        buf.extend_from_slice(b"file://");
+        if !path.starts_with(b"/") {
+            buf.push(b'/');
         }
-        /// Exactly the same as `hash`, excluding the leading '#'.
-        pub fn fragment_identifier(&self) -> String {
-            URL__fragmentIdentifier(self)
+        // Percent-encode only the characters WHATWG requires for path segments.
+        for &c in path {
+            match c {
+                b'%' | b'?' | b'#' | b' ' | 0x00..=0x1f | 0x7f..=0xff => {
+                    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                    buf.push(b'%');
+                    buf.push(HEX[(c >> 4) as usize]);
+                    buf.push(HEX[(c & 0xf) as usize]);
+                }
+                _ => buf.push(c),
+            }
         }
-        pub fn protocol(&self) -> String {
-            URL__protocol(self)
+        string_from_owned_bytes(buf)
+    }
+
+    /// `file://host/path` → `/path` (host stripped; percent sequences kept).
+    pub fn path_from_file_url(str: &String) -> String {
+        let utf8 = str.to_utf8();
+        let s = utf8.slice();
+        let rest = if let Some(r) = s.strip_prefix(b"file://") {
+            r
+        } else if let Some(r) = s.strip_prefix(b"file:") {
+            r
+        } else {
+            return String::dead();
+        };
+        // `file:///path` → path starts at first `/`
+        // `file://localhost/path` → skip host
+        // `file:/path` → already path-like
+        let path = if rest.starts_with(b"/") {
+            rest
+        } else if let Some(idx) = rest.iter().position(|&c| c == b'/') {
+            &rest[idx..]
+        } else if rest.is_empty() {
+            b"/"
+        } else {
+            // No slash after host — treat whole remainder as path with leading /
+            return string_from_owned_bytes({
+                let mut v = Vec::with_capacity(rest.len() + 1);
+                v.push(b'/');
+                v.extend_from_slice(rest);
+                v
+            });
+        };
+        string_from_owned_bytes(path.to_vec())
+    }
+
+    /// Returns the origin (`scheme://host[:port]`) prefix of `slice` as a borrowed
+    /// subslice, or `None` if `slice` does not parse as a valid URL with protocol.
+    #[inline]
+    pub fn origin_from_slice(slice: &[u8]) -> Option<&[u8]> {
+        let url = super::URL::parse(slice);
+        if url.protocol.is_empty() || url.origin.is_empty() {
+            return None;
         }
-        pub fn href(&self) -> String {
-            URL__href(self)
-        }
-        pub fn username(&self) -> String {
-            URL__username(self)
-        }
-        pub fn password(&self) -> String {
-            URL__password(self)
-        }
-        pub fn search(&self) -> String {
-            URL__search(self)
-        }
-        /// Returns the host WITHOUT the port.
-        ///
-        /// Note that this does NOT match JS behavior, which returns the host with the port. See
-        /// `hostname` for the JS equivalent of `host`.
-        ///
-        /// ```text
-        /// URL("http://example.com:8080").host() => "example.com"
-        /// ```
-        pub fn host(&self) -> String {
-            URL__host(self)
-        }
-        /// Returns the host WITH the port.
-        ///
-        /// Note that this does NOT match JS behavior which returns the host without the port. See
-        /// `host` for the JS equivalent of `hostname`.
-        ///
-        /// ```text
-        /// URL("http://example.com:8080").hostname() => "example.com:8080"
-        /// ```
-        pub fn hostname(&self) -> String {
-            URL__hostname(self)
-        }
-        /// Returns `u32::MAX` if the port is not set. Otherwise, the result is
-        /// guaranteed to be within the `u16` range.
-        pub fn port(&self) -> u32 {
-            URL__port(self)
-        }
-        pub fn pathname(&self) -> String {
-            URL__pathname(self)
-        }
-        pub fn deinit(&mut self) {
-            URL__deinit(self)
-        }
+        // origin is a subslice of `slice` (parser only re-slices the input).
+        Some(url.origin)
     }
 }
 // Re-export the free helpers at crate root so lower-tier callers can write

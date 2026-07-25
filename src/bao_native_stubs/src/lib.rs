@@ -19,7 +19,8 @@
 //! - WTF__DumpStackTrace: real backtrace output
 //!
 //! ## Remaining no-op stubs (require architecture work)
-//! - URL (2): needs bun_url integration
+//! - Bun__linux_trace_* / WTF__releaseFastMallocFreeMemoryForThisThread
+//!   (see STUB-INVENTORY.md NoopBlocker residual)
 //!
 //! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load time,
 //! so integration tests don't need explicit force_link() calls.
@@ -70,11 +71,9 @@ pub fn force_link() {
         let _ = BunString__fromBytes(core::ptr::null(), 0);
         Bun__WTFStringImpl__destroy(core::ptr::null());
 
-        // URL FFI fallback (referenced by bun_url)
-        let mut url_a = BunStringValue { tag: 0, _impl: [0, 0] };
-        let mut url_b = BunStringValue { tag: 0, _impl: [0, 0] };
-        let _ = URL__getHref(&mut url_a);
-        let _ = URL__getHrefJoin(&mut url_a, &mut url_b);
+        // URL__* / WTF__parse* / __bun_regex_* — real owners in
+        // bun_runtime::product_native_symbols + bun_url pure path / bun_core.
+        // Do NOT reintroduce noops (STUB-INVENTORY dual-def iron rule).
 
         // bun_core references
         bun_restore_stdio();
@@ -118,111 +117,18 @@ pub unsafe extern "C" fn __force_link_entry() {
 // The linker picks those versions instead of these stubs.
 
 // ──────────────────────────────────────────────────────────────
-// URL — referenced by bun_url (C FFI fallback path)
+// URL__* — real owner: bun_runtime::product_native_symbols + bun_url::whatwg
+// pure path. Do NOT reintroduce dead/identity noops (STUB-INVENTORY).
 // ──────────────────────────────────────────────────────────────
-// bun_url declares these as `safe fn URL__getHref(&mut String) -> String`
-// where String is bun_core::String (24 bytes, #[repr(C)]).
-// Since bao_native_stubs cannot depend on bun_core (circular dep),
-// we use a byte-identical #[repr(C)] struct for ABI compatibility.
-// These are fallback stubs — bun_url's own code handles the real parsing.
 
 /// ABI-compatible mirror of `bun_core::String` (24 bytes, 8-aligned).
-/// tag=0 = Dead, tag=3 = Latin1, tag=5 = UTF16, tag=7 = WTFStringImpl pointer.
+/// Kept for remaining stub symbols that cannot depend on bun_core.
 #[repr(C, align(8))]
 #[derive(Clone, Copy)]
 pub struct BunStringValue {
     tag: u64,
     _impl: [u64; 2],
 }
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__getHref(_input: &mut BunStringValue) -> BunStringValue {
-    // Return input unchanged — bun_url's callers handle the dead-tag fallback.
-    *_input
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__getHrefJoin(
-    _base: &mut BunStringValue,
-    _relative: &mut BunStringValue,
-) -> BunStringValue {
-    // Return dead (tag=0) — join requires a full URL parser.
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-/// Opaque URL handle — matches `bun_url::whatwg::URL` (`#[repr(C)]` ZST).
-#[repr(C)]
-pub struct OpaqueURL {
-    _opaque: [u8; 0],
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__fromString(_str: &mut BunStringValue) -> Option<core::ptr::NonNull<OpaqueURL>> {
-    None
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__pathname(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__protocol(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__hostname(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__hash(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__host(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__password(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__username(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__search(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__fragmentIdentifier(_url: &OpaqueURL) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__getFileURLString(_input: &mut BunStringValue) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__pathFromFileURL(_input: &mut BunStringValue) -> BunStringValue {
-    BunStringValue { tag: 0, _impl: [0, 0] }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__port(_url: &OpaqueURL) -> u32 {
-    0
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn URL__deinit(_url: &mut OpaqueURL) {}
 
 // ──────────────────────────────────────────────────────────────
 // bun_restore_stdio — referenced by bun_core::output::stdio
@@ -291,34 +197,13 @@ pub extern "C" fn WTF__DumpStackTrace() {
 }
 
 // ──────────────────────────────────────────────────────────────
-// WTF numeric parsers — referenced by bun_core::wtf / bun_core::fmt
+// WTF__parseES5Date / parseDouble / dtoa — real owner: bun_core pure +
+// bun_runtime::product_native_symbols no_mangle. Do NOT reintroduce NaN/0
+// noops (STUB-INVENTORY).
+//
+// __bun_regex_* — real owner: bun_runtime::product_native_symbols (regex crate).
+// Do NOT reintroduce always-fail noops (STUB-INVENTORY).
 // ──────────────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn WTF__parseES5Date(_bytes: *const u8, _length: usize) -> f64 {
-    f64::NAN
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn WTF__parseDouble(_bytes: *const u8, _length: usize, _counted: *mut usize) -> f64 {
-    unsafe { *_counted = 0 };
-    f64::NAN
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn WTF__dtoa(_value: f64, _buffer: *mut u8) -> usize {
-    // Return 0 length — caller should fall back to std::fmt
-    0
-}
-
-// ──────────────────────────────────────────────────────────────
-// Regex drop — referenced by bun_install_types::NodeLinker
-// ──────────────────────────────────────────────────────────────
-
-#[unsafe(no_mangle)]
-pub extern "C" fn __bun_regex_drop(_regex: core::ptr::NonNull<()>) {
-    // No-op — regex cleanup not needed without JSC regex engine
-}
 
 // bun_core::util::StackCheck calls initialize
 #[unsafe(no_mangle)]
@@ -694,25 +579,6 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
 // §3  Miscellaneous extern "C" stubs
 // ──────────────────────────────────────────────────────────────
 
-// ── JSC regex FFI no-op stubs (bun_jsc::RegularExpression replacement) ──
-// Bao uses SpiderMonkey instead of JSC, so these Yarr FFI symbols are unused.
-// `bun_install::PnpmMatcher` calls them; returning None/false is safe —
-// PnpmMatcher falls back to exact string comparison when regex fails.
-// NOTE: uses BunStringValue (24 bytes, #[repr(C)]) which is ABI-compatible
-// with bun_core::String. Cannot import bun_core directly (circular dep).
-
-#[unsafe(no_mangle)]
-pub fn __bun_regex_compile(_pattern: BunStringValue) -> Option<core::ptr::NonNull<()>> {
-    None
-}
-
-#[unsafe(no_mangle)]
-pub fn __bun_regex_matches(_regex: core::ptr::NonNull<()>, _input: &BunStringValue) -> bool {
-    false
-}
-
-// NOTE: __bun_regex_drop already defined in §2 above (line 319).
-
 // `__bun_dns_prefetch` — real owner: `bun_runtime::dispatch` (async resolve warm).
 // `__bun_get_vm_ctx` — real owner: `bun_runtime::dispatch` (Mini/Js EventLoopCtx).
 // Do NOT reintroduce Mini+null / empty noops (STUB-INVENTORY.md). Dual-def
@@ -723,6 +589,10 @@ pub fn __bun_regex_matches(_regex: core::ptr::NonNull<()>, _input: &BunStringVal
 
 // `WTF__numberOfProcessorCores` — real owner: `bun_core::util` (sysconf).
 // Do NOT reintroduce hard-coded `1` stub (STUB-INVENTORY.md).
+
+// `URL__*` / `WTF__parseES5Date` / `WTF__parseDouble` / `WTF__dtoa` /
+// `__bun_regex_compile|matches|drop` — real owners in bun_url / bun_core /
+// bun_runtime::product_native_symbols. Do NOT reintroduce noops.
 
 #[unsafe(no_mangle)]
 pub extern "C" fn WTF__releaseFastMallocFreeMemoryForThisThread() {}

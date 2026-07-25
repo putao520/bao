@@ -2057,6 +2057,7 @@ dependencies = [
  "log",
  "mozjs",
  "mozjs_sys",
+ "regex",
  "rusqlite",
  "rust-argon2",
  "serde_json",

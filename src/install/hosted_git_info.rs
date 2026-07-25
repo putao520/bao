@@ -361,21 +361,20 @@ pub struct StringPair {
 // parse_url
 // ──────────────────────────────────────────────────────────────────────────
 
-/// RAII handle over a heap-allocated `WTF::URL` (C++). The allocation comes from
-/// `URL__fromString` (C++ `new`), so it MUST be freed via `URL__deinit` — wrapping
-/// the pointer in `Box` is allocator-mismatch UB and never runs the C++ destructor.
+/// RAII handle over a heap-allocated pure-Rust `bun_url::whatwg::URL`.
+/// Freed via `deinit` (Box::from_raw) — never free with plain `drop(Box)` of a
+/// ZST view; the pointer is produced by `URL::from_string` / `from_utf8`.
 pub struct OwnedJscUrl(NonNull<JscUrl>);
 impl core::ops::Deref for OwnedJscUrl {
     type Target = JscUrl;
     fn deref(&self) -> &JscUrl {
-        // SAFETY: `from_string`/`from_utf8` returned a live heap WTF::URL we own.
+        // SAFETY: `from_string`/`from_utf8` returned a live heap URL we own.
         unsafe { self.0.as_ref() }
     }
 }
 impl Drop for OwnedJscUrl {
     fn drop(&mut self) {
-        // SAFETY: pointer is the unique owner of a `new WTF::URL` from C++; `deinit`
-        // calls `URL__deinit` which `delete`s it.
+        // SAFETY: unique owner of a whatwg::URL from Box::into_raw.
         unsafe { self.0.as_mut() }.deinit();
     }
 }

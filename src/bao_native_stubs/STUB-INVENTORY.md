@@ -68,14 +68,16 @@
 | `__bun_get_vm_ctx` | `bun_runtime::dispatch` | Real Mini/Js ctx (was Mini+null) |
 | `__bun_dns_prefetch` | `bun_runtime::dispatch` | Async resolve warm path |
 | `WTF__numberOfProcessorCores` | `bun_core::util` | Real `sysconf(_SC_NPROCESSORS_ONLN)` |
+| `URL__*` (getters + fromString/deinit/file/originLength/getHref*) | `bun_url::whatwg` pure + `product_native_symbols` | Pure WHATWG parse; noops deleted |
+| `WTF__parseES5Date` | `bun_core::wtf` + product no_mangle | Pure ES5 ISO-8601 → ms |
+| `WTF__parseDouble` | `bun_core::fmt::parse_double_raw` + product no_mangle | Pure partial JS double |
+| `WTF__dtoa` | `bun_core::fmt::dtoa_into` + product no_mangle | Pure f64→ASCII |
+| `__bun_regex_compile/matches/drop` | `product_native_symbols` (`regex` crate) | Real compile/match; Rust ABI |
 
 ### NoopBlocker — **P0 residual** (need real owner tasks)
 
 | Symbol / group | Owner task | Product force? | Why P0 |
 |----------------|------------|----------------|--------|
-| `URL__*` (all getters + fromString/deinit/file) | `bun_url` pure-Rust / drop FFI | via runtime | Dead/identity/None — bun_url still declares extern |
-| `WTF__parseES5Date` / `parseDouble` / `dtoa` | `bun_core::wtf` / `fmt` | via runtime | Always NaN / length 0 |
-| `__bun_regex_compile/matches/drop` | regex crate + install_types | via runtime | Always fail → exact-string fallback |
 | `Bun__linux_trace_*` | `bun_perf` or drop call sites | via runtime | Always false / empty |
 | `WTF__releaseFastMallocFreeMemoryForThisThread` | allocator tier | via runtime | Empty |
 
@@ -98,17 +100,21 @@
 | `__bun_get_vm_ctx` Mini+null stub | Real in `bun_runtime::dispatch` |
 | `__bun_dns_prefetch` empty stub | Real in `bun_runtime::dispatch` |
 | `WTF__numberOfProcessorCores` return 1 stub | Real in `bun_core::util` |
+| `URL__*` dead/identity/None stubs | Pure `bun_url::whatwg` + product RealImpl |
+| `WTF__parseES5Date` / `parseDouble` / `dtoa` NaN/0 stubs | Pure `bun_core` + product RealImpl |
+| `__bun_regex_*` always-fail stubs | `regex` crate RealImpl in product |
 
 ---
 
 ## Eradication backlog (ordered)
 
 1. ~~**P0** — Real `ProcessExit` + `BufferedReaderParentLink` for Subprocess/Shell (product spawn).~~ **DONE** (P1/P2 real owners + P3 residual delete; residual=0).
-2. **P0** — `bun_url`: drop dead FFI stubs; finish pure-Rust WHATWG surface.
+2. ~~**P0** — `bun_url`: drop dead FFI stubs; finish pure-Rust WHATWG surface.~~ **DONE** (`whatwg` pure + product `URL__*` RealImpl; stub noops deleted).
 3. **P0** — Move remaining RealImpl out of this crate → drop hard dep from `bun_runtime`.
-4. **P1** — Real WTF numeric parsers or pure-Rust call-site replacements.
-5. **P1** — Regex for `PnpmMatcher` via `regex` crate.
+4. ~~**P1** — Real WTF numeric parsers or pure-Rust call-site replacements.~~ **DONE** (`bun_core::{fmt,wtf}` pure + product no_mangle).
+5. ~~**P1** — Regex for `PnpmMatcher` via `regex` crate.~~ **DONE** (`product_native_symbols` RealImpl).
 6. **P1** — CLI crates (`src/cli`) must consume product PE/BR owners (single `link_impl` site) if co-linked — do not reintroduce product residual noops.
+7. **P1** — `Bun__linux_trace_*` / `WTF__releaseFastMallocFreeMemoryForThisThread` residual noops.
 
 ---
 

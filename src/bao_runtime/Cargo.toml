@@ -85,6 +85,8 @@ getrandom = { workspace = true }
 hex = "0.4"
 flate2.workspace = true
 bun_brotli = { path = "../brotli" }
+# @trace STUB-INVENTORY: real __bun_regex_* for PnpmMatcher (was always-fail noop)
+regex = "1"
 
 [dev-dependencies]
 bao_engine = { path = "../bao_engine" }

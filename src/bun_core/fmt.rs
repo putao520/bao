@@ -1021,6 +1021,95 @@ impl From<InvalidCharacter> for crate::Error {
     }
 }
 
+/// Pure JS/WTF-style partial double parse over Latin-1 bytes.
+///
+/// Consumes an optional sign, integer/fraction digits, and optional
+/// scientific exponent. Writes the number of consumed bytes to `counted`.
+/// Returns the parsed value, or `NaN` when no numeric prefix is present
+/// (`*counted == 0`). Does **not** accept `inf`/`nan` (JS-number semantics).
+///
+/// @trace STUB-INVENTORY: pure-Rust owner for `WTF__parseDouble` (no WebKit FFI)
+pub fn parse_double_raw(buf: &[u8], counted: &mut usize) -> f64 {
+    *counted = 0;
+    if buf.is_empty() {
+        return f64::NAN;
+    }
+
+    let mut i = 0usize;
+    // Leading whitespace (JS ToNumber / parseFloat accept it).
+    while i < buf.len() && matches!(buf[i], b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'\x0b') {
+        i += 1;
+    }
+    if i >= buf.len() {
+        return f64::NAN;
+    }
+
+    let start = i;
+    let mut neg = false;
+    match buf[i] {
+        b'+' => i += 1,
+        b'-' => {
+            neg = true;
+            i += 1;
+        }
+        _ => {}
+    }
+    if i >= buf.len() {
+        return f64::NAN;
+    }
+
+    let num_start = i;
+    let mut saw_digit = false;
+    while i < buf.len() && buf[i].is_ascii_digit() {
+        saw_digit = true;
+        i += 1;
+    }
+    if i < buf.len() && buf[i] == b'.' {
+        i += 1;
+        while i < buf.len() && buf[i].is_ascii_digit() {
+            saw_digit = true;
+            i += 1;
+        }
+    }
+    if !saw_digit {
+        return f64::NAN;
+    }
+
+    // Optional exponent.
+    if i < buf.len() && (buf[i] == b'e' || buf[i] == b'E') {
+        let exp_mark = i;
+        i += 1;
+        if i < buf.len() && (buf[i] == b'+' || buf[i] == b'-') {
+            i += 1;
+        }
+        let exp_digits = i;
+        while i < buf.len() && buf[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == exp_digits {
+            // Bare `e` / `e+` without digits — roll back (JS parseFloat keeps mantissa).
+            i = exp_mark;
+        }
+    }
+
+    let end = i;
+    // Parse the numeric span with std (ASCII digits only — no UTF-8 round-trip cost beyond str).
+    let slice = &buf[num_start..end];
+    // SAFETY: slice is pure ASCII digits / `.` / `e` / sign — always valid UTF-8.
+    let s = unsafe { core::str::from_utf8_unchecked(slice) };
+    let mut val = match s.parse::<f64>() {
+        Ok(v) => v,
+        Err(_) => return f64::NAN,
+    };
+    if neg {
+        val = -val;
+    }
+    // Count includes leading whitespace (JS parseFloat advances the whole prefix).
+    let _ = start;
+    *counted = end;
+    val
+}
+
 /// `WTF.parseDouble` — partial-match Latin-1 double parser. Returns `Ok` if
 /// any numeric prefix was consumed; `Err(InvalidCharacter)` on empty input or
 /// when no leading digit/sign was recognised.
@@ -1029,42 +1118,32 @@ pub fn parse_double(buf: &[u8]) -> Result<f64, InvalidCharacter> {
         return Err(InvalidCharacter);
     }
     let mut count: usize = 0;
-    // SAFETY: `buf` is a valid slice; WTF reads at most `len` Latin-1 bytes.
-    let res = unsafe { WTF__parseDouble(buf.as_ptr(), buf.len(), &raw mut count) };
+    let res = parse_double_raw(buf, &mut count);
     if count == 0 {
         return Err(InvalidCharacter);
     }
     Ok(res)
 }
 
-// `WTF__parseDouble` — WebKit's JS-semantics double parser (Latin-1 input,
-// reports prefix length). Declared here (not via `bun_string`) so tier-0
-// callers can parse floats with no UTF-8 validation. Link-time symbol
-// provided by `src/jsc/bindings/wtf-bindings.cpp`.
-unsafe extern "C" {
-    fn WTF__parseDouble(bytes: *const u8, length: usize, counted: *mut usize) -> f64;
-}
-
 /// `std.fmt.parseFloat(f64, buf)` — full-match parse of `s` as an `f64`.
 /// Returns `None` on empty input, trailing garbage (`b"1.5x"`), or non-numeric
-/// input. Backed by `WTF__parseDouble` (no `&str` round-trip — digits are
-/// ASCII, validation is wasted work).
+/// input. Backed by [`parse_double_raw`] (no `&str` round-trip for the scan —
+/// only the numeric prefix is re-parsed).
 ///
-/// `WTF::parseDouble` rejects `inf`/`nan` (JS-number semantics); those are
-/// special-cased here so callers ported from `std.fmt.parseFloat` keep the
+/// Pure path rejects `inf`/`nan` in the double scan (JS-number semantics); those
+/// are special-cased here so callers ported from `std.fmt.parseFloat` keep the
 /// same surface.
 pub fn parse_f64(s: &[u8]) -> Option<f64> {
     if s.is_empty() {
         return None;
     }
     let mut count: usize = 0;
-    // SAFETY: `s` is a valid slice; WTF reads at most `len` Latin-1 bytes.
-    let res = unsafe { WTF__parseDouble(s.as_ptr(), s.len(), &raw mut count) };
+    let res = parse_double_raw(s, &mut count);
     if count == s.len() {
         return Some(res);
     }
     if count == 0 {
-        // WTF__parseDouble doesn't recognise inf/nan; std.fmt.parseFloat does.
+        // parse_double_raw doesn't recognise inf/nan; std.fmt.parseFloat does.
         let (neg, rest) = match s[0] {
             b'-' => (true, &s[1..]),
             b'+' => (false, &s[1..]),
@@ -3353,18 +3432,37 @@ pub struct FormatDouble {
     pub number: f64,
 }
 
-// TODO(port): move to <area>_sys
-unsafe extern "C" {
-    // `&mut [u8; 124]` is ABI-identical to the C `char *` argument (thin
-    // non-null pointer to 124 writable bytes); the type encodes WTF__dtoa's
-    // only precondition (≥124-byte writable buffer), so `safe fn` discharges
-    // the link-time proof and callers need no `unsafe` block.
-    safe fn WTF__dtoa(buf: &mut [u8; 124], number: f64) -> usize;
+/// Pure double→ASCII into a fixed 124-byte scratch buffer (WTF `dtoa` surface).
+///
+/// Uses Rust `{number}` formatting (shortest round-trip for finite values via
+/// `std`); specials emit `Infinity` / `-Infinity` / `NaN`. Returns the byte
+/// length written (never exceeds 124).
+///
+/// @trace STUB-INVENTORY: pure-Rust owner for `WTF__dtoa` (no WebKit FFI)
+pub fn dtoa_into(buf: &mut [u8; 124], number: f64) -> usize {
+    use std::io::Write as _;
+    let mut cursor = std::io::Cursor::new(&mut buf[..]);
+    let result = if number.is_nan() {
+        write!(cursor, "NaN")
+    } else if number.is_infinite() {
+        if number.is_sign_negative() {
+            write!(cursor, "-Infinity")
+        } else {
+            write!(cursor, "Infinity")
+        }
+    } else {
+        // `{number}` uses the same grisu/ryu-class path as Display for f64.
+        write!(cursor, "{number}")
+    };
+    match result {
+        Ok(()) => cursor.position() as usize,
+        Err(_) => 0,
+    }
 }
 
 impl FormatDouble {
     pub fn dtoa(buf: &mut [u8; 124], number: f64) -> &[u8] {
-        let len = WTF__dtoa(buf, number);
+        let len = dtoa_into(buf, number);
         &buf[..len]
     }
 
@@ -3372,7 +3470,7 @@ impl FormatDouble {
         if number == 0.0 && number.is_sign_negative() {
             return b"-0";
         }
-        let len = WTF__dtoa(buf, number);
+        let len = dtoa_into(buf, number);
         &buf[..len]
     }
 }
