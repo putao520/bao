@@ -1003,17 +1003,52 @@ pub fn page_size() -> usize {
 // ── wtf (FastMalloc thread-cache release) ─────────────────────────────────
 // Source: src/jsc/WTF.zig `releaseFastMallocFreeMemoryForThisThread`.
 // MOVE_DOWN from bun_jsc so bun_threading (T2) can call it without a T6 dep.
-pub mod wtf {
-    unsafe extern "C" {
-        // Defined in WebKit's WTF (linked into the final binary).
-        // No preconditions; thread-safe.
-        safe fn WTF__releaseFastMallocFreeMemoryForThisThread();
-    }
+// Real owner: this crate via `mi_collect(false)` (bun_mimalloc_sys) — portable
+// Win/Mac/Linux. Empty NoopBlockers in bao_native_stubs / product_native_symbols
+// must not reappear (dual-def iron rule).
+// @trace STUB-INVENTORY: WTF__releaseFastMallocFreeMemoryForThisThread RealImpl
 
+/// Release thread-local FastMalloc free memory (mimalloc thread cache).
+///
+/// ABI matches WebKit WTF / Bun Zig binding. Body calls `mi_collect(false)` so
+/// free pages return without a forced full-heap purge. Safe to call multiple
+/// times from any thread (mimalloc thread-local collect; no preconditions).
+#[unsafe(no_mangle)]
+pub extern "C" fn WTF__releaseFastMallocFreeMemoryForThisThread() {
+    // `mi_collect` is declared `safe fn` in bun_mimalloc_sys (no preconditions).
+    // force=false matches BundleThread / MimallocArena call sites and Zig WTF.
+    mimalloc::mi_collect(false);
+}
+
+pub mod wtf {
     #[inline]
     pub fn release_fast_malloc_free_memory_for_this_thread() {
-        // Zig: jsc.markBinding(@src()) — debug-only binding marker, dropped at T0.
-        WTF__releaseFastMallocFreeMemoryForThisThread()
+        // Single body: C ABI export above (shared with product/extern callers).
+        crate::WTF__releaseFastMallocFreeMemoryForThisThread();
+    }
+}
+
+#[cfg(test)]
+mod wtf_release_tests {
+    use super::*;
+    use core::ffi::c_void;
+
+    #[test]
+    fn release_fast_malloc_twice_no_panic() {
+        WTF__releaseFastMallocFreeMemoryForThisThread();
+        WTF__releaseFastMallocFreeMemoryForThisThread();
+        wtf::release_fast_malloc_free_memory_for_this_thread();
+    }
+
+    #[test]
+    fn allocate_with_mi_malloc_then_collect_no_panic() {
+        // Exercise mimalloc path then release thread free memory twice.
+        let p: *mut c_void = mimalloc::mi_malloc(4096);
+        assert!(!p.is_null(), "mi_malloc(4096) must succeed");
+        // SAFETY: p was allocated by mi_malloc above.
+        unsafe { mimalloc::mi_free(p) };
+        WTF__releaseFastMallocFreeMemoryForThisThread();
+        WTF__releaseFastMallocFreeMemoryForThisThread();
     }
 }
 

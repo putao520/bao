@@ -19,8 +19,8 @@
 //! - WTF__DumpStackTrace: real backtrace output
 //!
 //! ## Remaining no-op stubs (require architecture work)
-//! - Bun__linux_trace_* / WTF__releaseFastMallocFreeMemoryForThisThread
-//!   (see STUB-INVENTORY.md NoopBlocker residual)
+//! - Bun__linux_trace_* (see STUB-INVENTORY.md NoopBlocker residual)
+//! - WTF__releaseFastMallocFreeMemoryForThisThread → real owner: bun_alloc
 //!
 //! Linker GC prevention: a ctor in .init_array auto-calls force_link() at load time,
 //! so integration tests don't need explicit force_link() calls.
@@ -593,6 +593,7 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
 // `URL__*` / `WTF__parseES5Date` / `WTF__parseDouble` / `WTF__dtoa` /
 // `__bun_regex_compile|matches|drop` — real owners in bun_url / bun_core /
 // bun_runtime::product_native_symbols. Do NOT reintroduce noops.
-
-#[unsafe(no_mangle)]
-pub extern "C" fn WTF__releaseFastMallocFreeMemoryForThisThread() {}
+//
+// `WTF__releaseFastMallocFreeMemoryForThisThread` — real owner: `bun_alloc`
+// (`mi_collect(false)` via bun_mimalloc_sys). Do NOT reintroduce empty noop
+// (dual-def with bun_alloc breaks product + test link).

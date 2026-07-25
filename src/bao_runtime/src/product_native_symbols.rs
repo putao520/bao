@@ -230,8 +230,8 @@ pub extern "C" fn WTF__dtoa(buf: &mut [u8; 124], number: f64) -> usize {
     bun_core::fmt::dtoa_into(buf, number)
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn WTF__releaseFastMallocFreeMemoryForThisThread() {}
+// `WTF__releaseFastMallocFreeMemoryForThisThread` — real owner: `bun_alloc`
+// (`mi_collect(false)`). Do NOT reintroduce empty noop (dual-def iron rule).
 
 // ── BunString / WTFString (simplified product residual) ───────────────────
 

@@ -3,7 +3,18 @@
 > SSOT for product-path stub eradication.  
 > Policy: **no new noop stubs to silence dual-def**. Full-real preferred.  
 > Residual NoopBlocker = P0 until real owner lands.  
-> Updated: 2026-07-25
+> Updated: 2026-07-25 (next wave: `linux_trace` + `FastMalloc`)
+
+## Product policy (iron · always-on)
+
+| Rule | Meaning | Forbidden |
+|------|---------|-----------|
+| **No env switch for capability** | Do **not** add `BAO_*` / `FROG_*` / new `BUN_*` env to select stub vs real, or to hide missing symbols | “set env → full product”; env-gated noop |
+| **No Cargo feature to hide stubs** | Do **not** reintroduce `native-stubs` / capability features that strip half the host surface | `cfg(feature=…)` product capability split; “turn off feature = green” |
+| **Product never links stubs** | Public `bao` has **no** dep / optional dep / `force_link` on `bao_native_stubs` | product hard-dep, `__force_link_entry` in product binary, dual-def with stub noops |
+| **Unique real `#[no_mangle]`** | Each exported symbol has **one** real body (owner crate); residual noops only until code E lands, then delete from stubs | dual-def; silent empty body as “done” |
+
+Platform differences use **`cfg(target_os)` compile-time backends** (Linux / macOS / Windows), not runtime env/feature capability gates.
 
 ## Force-link map (product)
 
@@ -19,7 +30,9 @@
 
 **Default product (`bao`):** does **not** depend on, feature-gate, or force-link `bao_native_stubs` (no optional dep).  
 
-**PE/BR closed-set residual:** **0** — real owners in `bun_runtime::product_process_exit` + `product_buffered_reader` (P1/P2); `product_dispatch_residual` deleted (P3). Other NoopBlocker `#[no_mangle]` may still live in this crate until owner tasks finish.
+**PE/BR closed-set residual:** **0** — real owners in `bun_runtime::product_process_exit` + `product_buffered_reader` (P1/P2); `product_dispatch_residual` deleted (P3).  
+
+**Next-wave residual:** `FastMalloc` ✅ closed (`bun_alloc` `mi_collect`); `linux_trace` 🔶 **in progress** — see § Next wave + residual table.
 
 ---
 
@@ -73,13 +86,13 @@
 | `WTF__parseDouble` | `bun_core::fmt::parse_double_raw` + product no_mangle | Pure partial JS double |
 | `WTF__dtoa` | `bun_core::fmt::dtoa_into` + product no_mangle | Pure f64→ASCII |
 | `__bun_regex_compile/matches/drop` | `product_native_symbols` (`regex` crate) | Real compile/match; Rust ABI |
+| `WTF__releaseFastMallocFreeMemoryForThisThread` | `bun_alloc` | Real `mi_collect(false)` via bun_mimalloc_sys; empty stubs deleted |
 
 ### NoopBlocker — **P0 residual** (need real owner tasks)
 
 | Symbol / group | Owner task | Product force? | Why P0 |
 |----------------|------------|----------------|--------|
 | `Bun__linux_trace_*` | `bun_perf` or drop call sites | via runtime | Always false / empty |
-| `WTF__releaseFastMallocFreeMemoryForThisThread` | allocator tier | via runtime | Empty |
 
 ### Dead (must not reintroduce)
 
@@ -103,6 +116,7 @@
 | `URL__*` dead/identity/None stubs | Pure `bun_url::whatwg` + product RealImpl |
 | `WTF__parseES5Date` / `parseDouble` / `dtoa` NaN/0 stubs | Pure `bun_core` + product RealImpl |
 | `__bun_regex_*` always-fail stubs | `regex` crate RealImpl in product |
+| `WTF__releaseFastMallocFreeMemoryForThisThread` empty stub | Real in `bun_alloc` (`mi_collect(false)`) |
 
 ---
 
@@ -114,7 +128,8 @@
 4. ~~**P1** — Real WTF numeric parsers or pure-Rust call-site replacements.~~ **DONE** (`bun_core::{fmt,wtf}` pure + product no_mangle).
 5. ~~**P1** — Regex for `PnpmMatcher` via `regex` crate.~~ **DONE** (`product_native_symbols` RealImpl).
 6. **P1** — CLI crates (`src/cli`) must consume product PE/BR owners (single `link_impl` site) if co-linked — do not reintroduce product residual noops.
-7. **P1** — `Bun__linux_trace_*` / `WTF__releaseFastMallocFreeMemoryForThisThread` residual noops.
+7. **P1** — `Bun__linux_trace_*` residual noops.
+8. ~~**P1** — `WTF__releaseFastMallocFreeMemoryForThisThread` residual noop.~~ **DONE** (real owner: `bun_alloc` `mi_collect(false)`; empty stubs deleted from this crate + `product_native_symbols`).
 
 ---
 
