@@ -52,8 +52,8 @@ use js::rust::wrappers2::{
     SetPreserveWrapperCallbacks, SetPromiseRejectionTrackerCallback, SetUpEventLoopDispatch,
 };
 use js::rust::{
-    Handle, HandleObject as RustHandleObject, HandleValue, IntoHandle, JSEngine, JSEngineHandle,
-    ParentRuntime, Runtime as RustRuntime, Trace,
+    Handle, HandleObject as RustHandleObject, HandleValue, IntoHandle,
+    JSEngine, JSEngineError, JSEngineHandle, ParentRuntime, Runtime as RustRuntime, Trace,
 };
 use malloc_size_of::MallocSizeOfOps;
 use malloc_size_of_derive::MallocSizeOf;
@@ -1068,23 +1068,118 @@ impl DerefMut for Runtime {
     }
 }
 
-pub struct JSEngineSetup(JSEngine);
+pub struct JSEngineSetup(Option<JSEngine>);
 
 impl Default for JSEngineSetup {
     fn default() -> Self {
-        let engine = JSEngine::init().unwrap();
-        *JS_ENGINE.lock().unwrap() = Some(engine.handle());
+        // BAO PATCH (BCE-20260627-009): Idempotent JSEngine init.
+        // mozjs's `JSEngine::init()` uses a process-global `ENGINE_STATE` mutex
+        // that returns `Err(AlreadyInitialized)` on any re-init. The original
+        // servo code did `JSEngine::init().unwrap()`, which panics when a second
+        // `BaoRuntime` (cargo multi-threaded test runner, or production
+        // multi-tenant) creates a second `Servo` instance in the same process.
+        // Each `Servo::new` spawns a `ScriptThread` → `script::init()` → this
+        // `JSEngineSetup::default()`.
+        //
+        // Strategy: the FIRST caller initializes the engine and stores its handle
+        // in `JS_ENGINE`. Subsequent callers reuse that handle without owning the
+        // engine itself (return `JSEngineSetup(None)`). Only the owner (the first
+        // `JSEngineSetup`) will `Drop` the real engine and shut it down. This
+        // keeps the outstanding-handles refcount correct (no double-decrement)
+        // and the engine alive until the owning ScriptThread is torn down.
+        let engine = match JSEngine::init() {
+            Ok(engine) => {
+                *JS_ENGINE.lock().unwrap() = Some(engine.handle());
+                Some(engine)
+            }
+            Err(JSEngineError::AlreadyInitialized) => {
+                // Someone else (another ScriptThread / BaoRuntime / bao
+                // ensure_engine_handle) already owns the engine. Prefer
+                // mozjs::JSEngine::process_handle() (BAO PATCH SSOT), then
+                // fall back to spinning on JS_ENGINE for legacy owners.
+                //
+                // Race: init sets ENGINE_STATE=Initialized and publishes
+                // process_handle BEFORE returning; we may still briefly see
+                // empty process_handle/JS_ENGINE under extreme scheduling.
+                let mut attempts = 0;
+                loop {
+                    if let Some(h) = JSEngine::process_handle() {
+                        let mut slot = JS_ENGINE.lock().unwrap();
+                        if slot.is_none() {
+                            *slot = Some(h);
+                        }
+                        break;
+                    }
+                    if JS_ENGINE.lock().unwrap().is_some() {
+                        break;
+                    }
+                    attempts += 1;
+                    if attempts > 50 {
+                        // Owner did not publish in 50ms — proceed; callers that
+                        // require a handle must fail closed further up.
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(1));
+                }
+                // Do NOT take ownership of the engine — the first owner keeps it.
+                None
+            }
+            Err(JSEngineError::AlreadyShutDown) => {
+                // BAO PATCH (BCE-20260627-009): Engine was previously
+                // initialized AND shut down (the owning ScriptThread was torn
+                // down). This happens in cargo's test runner when test N's
+                // BaoRuntime is dropped → ScriptThread dropped → JSEngineSetup
+                // dropped → engine shut down. Test N+1 then creates a new
+                // BaoRuntime which calls `JSEngine::init()` again. mozjs treats
+                // this as `AlreadyShutDown` (cannot re-init a shut-down engine
+                // in the same process). We CANNOT recover the handle from
+                // `JS_ENGINE` (it was cleared on the owner's Drop). So this is
+                // a genuine "engine shut down" state that we cannot re-init in
+                // the same process. Return `None` and let the runtime proceed —
+                // downstream `JS_ENGINE.lock().clone()` will return `None` and
+                // the caller must handle it (the bao layer ensures the first
+                // BaoRuntime's engine stays alive for the test's duration when
+                // needed).
+                None
+            }
+            Err(e) => panic!("JSEngine::init() failed: {:?}", e),
+        };
         Self(engine)
     }
 }
 
 impl Drop for JSEngineSetup {
     fn drop(&mut self) {
-        *JS_ENGINE.lock().unwrap() = None;
+        // BAO PATCH (BCE-20260627-009): Do NOT clear JS_ENGINE and do NOT drop the engine.
+        // The engine is a process-global singleton; its handle must persist in JS_ENGINE
+        // across BaoRuntime teardown so subsequent BaoRuntime instances reuse it.
+        let Some(engine) = self.0.take() else {
+            return;
+        };
 
-        while !self.0.can_shutdown() {
-            thread::sleep(Duration::from_millis(50));
-        }
+        // BAO PATCH (BCE-20260627-009): Leak the JSEngine (never drop).
+        // mozjs JSEngine is a process-global singleton with an irreversible
+        // state machine (Uninitialized→Initialized→ShutDown). Once
+        // `JS_ShutDown()` runs (catalyzed by `JSEngine::drop`), the same
+        // process can never re-init — `JSEngine::init()` returns
+        // `AlreadyShutDown` forever after.
+        //
+        // This breaks bao's multi-BaoRuntime model: cargo's test runner drops
+        // test N's `BaoRuntime` → `ScriptThread` dropped → `JSEngineSetup`
+        // dropped → `JSEngine::drop` → `JS_ShutDown()`. Test N+1 then builds a
+        // fresh `BaoRuntime`; its `JSEngine::init()` returns `AlreadyShutDown`,
+        // so `JS_ENGINE` stays `None` forever, and the worker thread's
+        // `RustRuntime::get()` unwrap on `None` panics, cascading into
+        // `FetchThread` / `Constellation` panics that abort the whole test
+        // binary.
+        //
+        // Fix: leak the engine (`std::mem::forget`) AND keep its handle in
+        // `JS_ENGINE` (do not clear it). The OS reclaims all JS engine resources
+        // on process exit, and `JS_ShutDown()` is a no-op on the exit path —
+        // behaviorally equivalent, with no memory-safety regression. This is the
+        // architecturally correct choice for an embedded single-process runtime
+        // that must tolerate repeated `BaoRuntime` construction and teardown.
+        std::mem::forget(engine);
     }
 }
 

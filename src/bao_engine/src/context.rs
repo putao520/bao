@@ -190,7 +190,8 @@ fn ensure_engine_handle_locked() -> Result<mozjs::rust::JSEngineHandle, JsError>
     if let Some(handle) = ENGINE_HANDLE.get() {
         return Ok(handle.clone());
     }
-    // This thread must initialize the engine.
+    // This thread must initialize the engine — or recover a handle if another
+    // path (servo JSEngineSetup / concurrent ensure) already called JS_Init.
     // First check if this thread already has it in TLS (unlikely on first call).
     let (engine, handle) = ENGINE_TLS.with(|tls| {
         if tls.is_some() {
@@ -202,23 +203,55 @@ fn ensure_engine_handle_locked() -> Result<mozjs::rust::JSEngineHandle, JsError>
                 .handle();
             return Ok((None, handle));
         }
-        let engine = mozjs::rust::JSEngine::init().map_err(|e| JsError {
-            message: format!("Failed to init JSEngine: {:?}", e).into(),
-            filename: "<engine>".into(),
-            line: 0,
-            column: 0,
-            stack: None,
-        })?;
-        let handle = engine.handle();
-        tls.set(Some(engine));
-        Ok((Some(handle.clone()), handle))
+        match mozjs::rust::JSEngine::init() {
+            Ok(engine) => {
+                let handle = engine.handle();
+                tls.set(Some(engine));
+                Ok((Some(handle.clone()), handle))
+            }
+            Err(mozjs::rust::JSEngineError::AlreadyInitialized) => {
+                // Winner may be servo (JSEngineSetup) or another bao thread.
+                // mozjs publishes PROCESS_ENGINE_OUTSTANDING; prefer that, then
+                // spin briefly for ENGINE_HANDLE if the winner is still storing.
+                if let Some(h) = mozjs::rust::JSEngine::process_handle() {
+                    return Ok((Some(h.clone()), h));
+                }
+                for _ in 0..50 {
+                    if let Some(h) = ENGINE_HANDLE.get() {
+                        return Ok((None, h.clone()));
+                    }
+                    if let Some(h) = mozjs::rust::JSEngine::process_handle() {
+                        return Ok((Some(h.clone()), h));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(JsError {
+                    message: "Failed to init JSEngine: AlreadyInitialized \
+                              (no process handle published)"
+                        .into(),
+                    filename: "<engine>".into(),
+                    line: 0,
+                    column: 0,
+                    stack: None,
+                })
+            }
+            Err(e) => Err(JsError {
+                message: format!("Failed to init JSEngine: {:?}", e).into(),
+                filename: "<engine>".into(),
+                line: 0,
+                column: 0,
+                stack: None,
+            }),
+        }
     })?;
     // Store the handle in the global OnceLock so other threads can access it.
     if let Some(handle_to_store) = engine {
         let global_handle = ENGINE_HANDLE.get_or_init(|| handle_to_store);
         Ok(global_handle.clone())
     } else {
-        Ok(handle)
+        // TLS reuse path — still ensure process OnceLock is populated if empty.
+        let global_handle = ENGINE_HANDLE.get_or_init(|| handle.clone());
+        Ok(global_handle.clone())
     }
 }
 

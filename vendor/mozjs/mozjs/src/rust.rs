@@ -16,7 +16,7 @@ use std::ptr::{self, NonNull};
 use std::slice;
 use std::str;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use self::wrappers::{
     StackGCVectorStringAtIndex, StackGCVectorStringLength, StackGCVectorValueAtIndex,
@@ -170,6 +170,14 @@ enum EngineState {
 
 static ENGINE_STATE: Mutex<EngineState> = Mutex::new(EngineState::Uninitialized);
 
+/// Process-wide handle published by the first successful [`JSEngine::init`].
+///
+/// BAO PATCH: callers that race `JSEngine::init` (servo `JSEngineSetup` vs
+/// bao `ensure_engine_handle` / `for_test`) previously saw `AlreadyInitialized`
+/// with no way to obtain a `JSEngineHandle`. The winner stores its outstanding
+/// counter here so losers can [`JSEngine::process_handle`] instead of failing.
+static PROCESS_ENGINE_OUTSTANDING: OnceLock<Arc<AtomicU32>> = OnceLock::new();
+
 #[derive(Debug)]
 pub enum JSEngineError {
     AlreadyInitialized,
@@ -217,11 +225,27 @@ impl JSEngine {
             Err(JSEngineError::InitFailed)
         } else {
             *state = EngineState::Initialized;
+            let outstanding = Arc::new(AtomicU32::new(0));
+            // Publish before releasing ENGINE_STATE so concurrent losers that
+            // observe AlreadyInitialized can immediately process_handle().
+            let _ = PROCESS_ENGINE_OUTSTANDING.set(outstanding.clone());
             Ok(JSEngine {
-                outstanding_handles: Arc::new(AtomicU32::new(0)),
+                outstanding_handles: outstanding,
                 marker: PhantomData,
             })
         }
+    }
+
+    /// Clone a process-wide handle if the engine has already been initialized.
+    ///
+    /// BAO PATCH: recover after `Err(AlreadyInitialized)` so secondary init
+    /// paths (bao `ensure_engine_handle`, servo `JSEngineSetup`) can create
+    /// Runtimes without owning the engine.
+    pub fn process_handle() -> Option<JSEngineHandle> {
+        PROCESS_ENGINE_OUTSTANDING.get().map(|arc| {
+            arc.fetch_add(1, Ordering::SeqCst);
+            JSEngineHandle(arc.clone())
+        })
     }
 
     pub fn can_shutdown(&self) -> bool {
