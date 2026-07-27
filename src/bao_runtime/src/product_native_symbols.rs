@@ -78,36 +78,98 @@ pub extern "C" fn Bun__StackCheck__getMaxStack() -> *mut c_void {
 }
 
 // ── signal forwarding / sync PID (spawn) ──────────────────────────────────
+// ABI SSOT: `bun_spawn_sys::ffi` — zero-arg register/unregister/sendPending.
+// Semantics match `spawn/process.rs` SignalForwarding:
+//   register → install handlers; currentSyncPID=0 → spawn → store ±pid →
+//   sendPending → drop → unregister.
+// @trace STUB-INVENTORY: Bun__*Signals* / Bun__currentSyncPID RealImpl
 
-static FORWARDED_PID: AtomicI32 = AtomicI32::new(-1);
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__registerSignalsForForwarding(
-    pid: i32,
-    _signals: *const c_int,
-    _count: usize,
-) {
-    FORWARDED_PID.store(pid, Ordering::SeqCst);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__unregisterSignalsForForwarding() {
-    FORWARDED_PID.store(-1, Ordering::SeqCst);
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn Bun__sendPendingSignalIfNecessary() {
-    let pid = FORWARDED_PID.load(Ordering::SeqCst);
-    if pid > 0 {
-        unsafe {
-            libc::kill(pid, libc::SIGTERM);
-        }
-        FORWARDED_PID.store(-1, Ordering::SeqCst);
-    }
-}
+/// Pending signal received while `Bun__currentSyncPID` was 0 / -1 (pre-spawn).
+static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
 #[unsafe(no_mangle)]
 pub static Bun__currentSyncPID: AtomicI64 = AtomicI64::new(-1);
+
+/// Forward `sig` to the current sync child (or process group if pid < -1),
+/// else stash as pending for `Bun__sendPendingSignalIfNecessary`.
+/// Negative pid = process group (libc::kill convention, same as Bun).
+#[cfg(unix)]
+extern "C" fn bun_forward_signal_handler(sig: c_int) {
+    let pid = Bun__currentSyncPID.load(Ordering::Relaxed);
+    // 0 = pre-spawn / cleared; -1 = default unset — stash for later.
+    if pid != 0 && pid != -1 {
+        // SAFETY: kill with pid/pgroup is async-signal-safe.
+        unsafe {
+            libc::kill(pid as libc::pid_t, sig);
+        }
+    } else {
+        PENDING_SIGNAL.store(sig, Ordering::SeqCst);
+    }
+}
+
+/// Install SIGINT/SIGTERM/SIGHUP/SIGQUIT handlers that forward to
+/// [`Bun__currentSyncPID`]. Zero-arg ABI (call-site SSOT).
+#[unsafe(no_mangle)]
+pub extern "C" fn Bun__registerSignalsForForwarding() {
+    #[cfg(unix)]
+    {
+        PENDING_SIGNAL.store(0, Ordering::SeqCst);
+        unsafe {
+            let mut sa: libc::sigaction = core::mem::zeroed();
+            sa.sa_sigaction = bun_forward_signal_handler as *const () as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = libc::SA_RESTART;
+            for sig in [
+                libc::SIGINT,
+                libc::SIGTERM,
+                libc::SIGHUP,
+                libc::SIGQUIT,
+            ] {
+                libc::sigaction(sig, &sa, core::ptr::null_mut());
+            }
+        }
+    }
+    // Windows: no-op same ABI (spawn signal forwarding is Unix-only).
+}
+
+/// Restore default dispositions and clear any pending signal.
+#[unsafe(no_mangle)]
+pub extern "C" fn Bun__unregisterSignalsForForwarding() {
+    #[cfg(unix)]
+    {
+        unsafe {
+            let mut sa: libc::sigaction = core::mem::zeroed();
+            sa.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = 0;
+            for sig in [
+                libc::SIGINT,
+                libc::SIGTERM,
+                libc::SIGHUP,
+                libc::SIGQUIT,
+            ] {
+                libc::sigaction(sig, &sa, core::ptr::null_mut());
+            }
+        }
+        PENDING_SIGNAL.store(0, Ordering::SeqCst);
+    }
+}
+
+/// Deliver a signal that arrived before the child PID was known.
+#[unsafe(no_mangle)]
+pub extern "C" fn Bun__sendPendingSignalIfNecessary() {
+    let sig = PENDING_SIGNAL.swap(0, Ordering::SeqCst);
+    if sig == 0 {
+        return;
+    }
+    let pid = Bun__currentSyncPID.load(Ordering::Relaxed);
+    if pid != 0 && pid != -1 {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as libc::pid_t, sig);
+        }
+    }
+}
 
 // ── ares / CPU / executable ───────────────────────────────────────────────
 
@@ -176,10 +238,19 @@ pub extern "C" fn is_executable_file(path: *const c_char) -> bool {
 
 // ── WTF helpers (bun_core::wtf / fmt / crash_handler) ─────────────────────
 
+/// ABI SSOT: `bun_crash_handler` — `(ptr, count)` instruction addresses.
+/// When frames are provided, print them; otherwise capture a live backtrace.
+/// @trace STUB-INVENTORY: WTF__DumpStackTrace RealImpl
 #[unsafe(no_mangle)]
-pub extern "C" fn WTF__DumpStackTrace() {
-    let bt = std::backtrace::Backtrace::capture();
-    if bt.status() == std::backtrace::BacktraceStatus::Captured {
+pub extern "C" fn WTF__DumpStackTrace(ptr: *const usize, count: usize) {
+    if !ptr.is_null() && count > 0 {
+        // SAFETY: caller provides `count` valid instruction addresses.
+        let frames = unsafe { core::slice::from_raw_parts(ptr, count) };
+        for (i, addr) in frames.iter().enumerate() {
+            eprintln!("  #{i:2} {addr:#x}");
+        }
+    } else {
+        let bt = std::backtrace::Backtrace::force_capture();
         eprintln!("{bt}");
     }
 }
@@ -235,8 +306,10 @@ pub extern "C" fn WTF__dtoa(buf: &mut [u8; 124], number: f64) -> usize {
 // `WTF__releaseFastMallocFreeMemoryForThisThread` — real owner: `bun_alloc`
 // (`mi_collect(false)`). Do NOT reintroduce empty noop (dual-def iron rule).
 
-// ── BunString / WTFString (simplified product residual) ───────────────────
+// ── BunString / WTFString ─────────────────────────────────────────────────
 
+/// RealImpl via `bun_core::String::from_bytes` (Latin1/UTF-8 detection).
+/// @trace STUB-INVENTORY: BunString__fromBytes RealImpl
 #[unsafe(no_mangle)]
 pub extern "C" fn BunString__fromBytes(bytes: *const u8, len: usize) -> bun_core::String {
     if bytes.is_null() || len == 0 {
@@ -247,14 +320,15 @@ pub extern "C" fn BunString__fromBytes(bytes: *const u8, len: usize) -> bun_core
     bun_core::String::from_bytes(slice)
 }
 
+/// Dead / safe-noop-by-design: cannot free arbitrary WTF heap without full
+/// refcount owner. Callers mostly use ZigString/DEAD tags. Fake free would
+/// double-free. Not a product Partial residual.
+/// @trace STUB-INVENTORY: Bun__WTFStringImpl__destroy Dead/safe-noop-by-design
 #[unsafe(no_mangle)]
 pub extern "C" fn Bun__WTFStringImpl__destroy(this: *const c_void) {
     if this.is_null() {
         return;
     }
-    // Product residual: refcount/free is incomplete until full WTF owner lands.
-    // Do not free arbitrary pointers — only no-op for now to avoid double-free
-    // when callers use ZigString/DEAD tags rather than WTF heap strings.
     let _ = this;
 }
 

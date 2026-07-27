@@ -82,9 +82,11 @@ pub fn force_link() {
         let _ = ares_inet_pton(0, core::ptr::null(), core::ptr::null_mut());
 
         // bun_core::StackCheck / bun_crash_handler / bun_spawn
-        let _ = Bun__StackCheck__initialize();
-        WTF__DumpStackTrace();
-        Bun__registerSignalsForForwarding(0, core::ptr::null(), 0);
+        // ABI aligned with product_native_symbols (product owner); stubs = dev/test only.
+        Bun__StackCheck__initialize();
+        WTF__DumpStackTrace(core::ptr::null(), 0);
+        Bun__registerSignalsForForwarding();
+        Bun__sendPendingSignalIfNecessary();
         Bun__unregisterSignalsForForwarding();
 
         // Bun__linux_trace_* — real owner: bun_runtime::linux_trace
@@ -188,12 +190,22 @@ pub extern "C" fn ares_inet_pton(af: c_int, src: *const c_char, dst: *mut c_void
 // Symbols still referenced by upstream Bun crates
 // ──────────────────────────────────────────────────────────────
 
-// bun_crash_handler calls WTF__DumpStackTrace
+// ── Crash / stack / signals — ABI must match product_native_symbols ─────
+// Product owner = `bun_runtime::product_native_symbols`. This crate is
+// **dev/test force_link only**; do not expand product surface here.
+
+/// ABI: `(ptr, count)` — same as product / `bun_crash_handler`.
 #[unsafe(no_mangle)]
-pub extern "C" fn WTF__DumpStackTrace() {
-    let bt = std::backtrace::Backtrace::capture();
-    if bt.status() == std::backtrace::BacktraceStatus::Captured {
-        eprintln!("{}", bt);
+pub extern "C" fn WTF__DumpStackTrace(ptr: *const usize, count: usize) {
+    if !ptr.is_null() && count > 0 {
+        // SAFETY: caller provides `count` valid instruction addresses.
+        let frames = unsafe { core::slice::from_raw_parts(ptr, count) };
+        for (i, addr) in frames.iter().enumerate() {
+            eprintln!("  #{i:2} {addr:#x}");
+        }
+    } else {
+        let bt = std::backtrace::Backtrace::force_capture();
+        eprintln!("{bt}");
     }
 }
 
@@ -206,31 +218,86 @@ pub extern "C" fn WTF__DumpStackTrace() {
 // Do NOT reintroduce always-fail noops (STUB-INVENTORY).
 // ──────────────────────────────────────────────────────────────
 
-// bun_core::util::StackCheck calls initialize
+/// ABI: void — same as product / `bun_core::util::StackCheck`.
 #[unsafe(no_mangle)]
-pub extern "C" fn Bun__StackCheck__initialize() -> usize { 8 * 1024 * 1024 }
+pub extern "C" fn Bun__StackCheck__initialize() {
+    // Bounds resolved lazily via getMaxStack (product RealImpl).
+}
 
-// bun_spawn::process calls signal forwarding
+// bun_spawn::process signal forwarding — ABI: zero-arg (spawn_sys SSOT).
+// RealImpl mirrors product_native_symbols (PENDING + Bun__currentSyncPID).
 use std::sync::atomic::{AtomicI32, Ordering};
 
-static FORWARDED_PID: AtomicI32 = AtomicI32::new(-1);
+static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+#[cfg(unix)]
+extern "C" fn bun_forward_signal_handler(sig: c_int) {
+    let pid = Bun__currentSyncPID.load(Ordering::Relaxed);
+    if pid != 0 && pid != -1 {
+        unsafe {
+            libc::kill(pid as libc::pid_t, sig);
+        }
+    } else {
+        PENDING_SIGNAL.store(sig, Ordering::SeqCst);
+    }
+}
 
 #[unsafe(no_mangle)]
-pub extern "C" fn Bun__registerSignalsForForwarding(pid: i32, _signals: *const c_int, _count: usize) {
-    FORWARDED_PID.store(pid, Ordering::SeqCst);
+pub extern "C" fn Bun__registerSignalsForForwarding() {
+    #[cfg(unix)]
+    {
+        PENDING_SIGNAL.store(0, Ordering::SeqCst);
+        unsafe {
+            let mut sa: libc::sigaction = core::mem::zeroed();
+            sa.sa_sigaction = bun_forward_signal_handler as *const () as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = libc::SA_RESTART;
+            for sig in [
+                libc::SIGINT,
+                libc::SIGTERM,
+                libc::SIGHUP,
+                libc::SIGQUIT,
+            ] {
+                libc::sigaction(sig, &sa, core::ptr::null_mut());
+            }
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Bun__unregisterSignalsForForwarding() {
-    FORWARDED_PID.store(-1, Ordering::SeqCst);
+    #[cfg(unix)]
+    {
+        unsafe {
+            let mut sa: libc::sigaction = core::mem::zeroed();
+            sa.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = 0;
+            for sig in [
+                libc::SIGINT,
+                libc::SIGTERM,
+                libc::SIGHUP,
+                libc::SIGQUIT,
+            ] {
+                libc::sigaction(sig, &sa, core::ptr::null_mut());
+            }
+        }
+        PENDING_SIGNAL.store(0, Ordering::SeqCst);
+    }
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn Bun__sendPendingSignalIfNecessary() {
-    let pid = FORWARDED_PID.load(Ordering::SeqCst);
-    if pid > 0 {
-        unsafe { libc::kill(pid, libc::SIGTERM); }
-        FORWARDED_PID.store(-1, Ordering::SeqCst);
+    let sig = PENDING_SIGNAL.swap(0, Ordering::SeqCst);
+    if sig == 0 {
+        return;
+    }
+    let pid = Bun__currentSyncPID.load(Ordering::Relaxed);
+    if pid != 0 && pid != -1 {
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(pid as libc::pid_t, sig);
+        }
     }
 }
 

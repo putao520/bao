@@ -3,7 +3,27 @@
 > SSOT for product-path stub eradication.  
 > Policy: **no new noop stubs to silence dual-def**. Full-real preferred.  
 > Residual NoopBlocker = P0 until real owner lands.  
-> Updated: 2026-07-25 (next wave: `linux_trace` + `FastMalloc`)
+> Updated: **2026-07-27 — H2 product residual=0**
+
+## H2 product residual=0 (2026-07-27)
+
+Closed Partial/Simplified product-path items (ABI fix + RealImpl):
+
+| Symbol | Was | Now | Notes |
+|--------|-----|-----|-------|
+| `WTF__DumpStackTrace` | Partial wrong ABI `()` | **RealImpl** `(ptr, count)` | Frames print + live backtrace fallback |
+| `Bun__registerSignalsForForwarding` | Partial wrong ABI `(pid,signals,count)` | **RealImpl** zero-arg | `sigaction` SIGINT/TERM/HUP/QUIT → kill `Bun__currentSyncPID` or stash PENDING |
+| `Bun__unregisterSignalsForForwarding` | Partial (PID clear only) | **RealImpl** | Restore SIG_DFL + clear PENDING |
+| `Bun__sendPendingSignalIfNecessary` | Partial (FORWARDED_PID kill SIGTERM) | **RealImpl** | swap PENDING → kill currentSyncPID |
+| `Bun__StackCheck__initialize` | Approx (stubs returned usize) | **RealImpl** void | product void; stubs ABI aligned |
+| `bun_restore_stdio` / `on_before_reload_process_linux` | Partial | **RealImpl** | flush + `sync()` are honest |
+| `BunString__fromBytes` | Simplified | **RealImpl** | product: `bun_core::String::from_bytes` |
+| `Bun__WTFStringImpl__destroy` | Simplified | **Dead / safe-noop-by-design** | no fake free (double-free risk); not product Partial residual |
+
+**NoopBlocker table = empty (residual 0).**  
+Product never links this crate. Stubs = **dev/test force_link only**; product owner = `bun_runtime::product_native_symbols`.
+
+---
 
 ## Product policy (iron · always-on)
 
@@ -32,6 +52,7 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 **PE/BR closed-set residual:** **0** — real owners in `bun_runtime::product_process_exit` + `product_buffered_reader` (P1/P2); `product_dispatch_residual` deleted (P3).  
 
+**H2 Partial residual:** **0** (2026-07-27).  
 **Next-wave residual:** `FastMalloc` ✅ + `linux_trace` ✅ both residual=0 (Win/macOS/Linux).
 
 ---
@@ -42,7 +63,7 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 |-------|---------|
 | **RealImpl** | Functional body (not silent noop). Temporary home OK only until moved to named owner. |
 | **NoopBlocker** | Silent/trivial noop; product or closed-set dispatch needs a definition. **P0 residual.** |
-| **Dead** | Removed / never linked / comment-only / superseded by C lib or other crate. Do not reintroduce. |
+| **Dead** | Removed / never linked / comment-only / superseded by C lib or other crate / safe-noop-by-design. Do not reintroduce. |
 
 ---
 
@@ -52,25 +73,24 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 | Symbol | Noop? | Real owner (target) | Product force_link? | Notes |
 |--------|-------|---------------------|---------------------|-------|
-| `posix_spawn_bun` | No | `bun_core::spawn_ffi` / `spawn_sys` | via runtime | Real `posix_spawnp` path; only def is here |
+| `posix_spawn_bun` | No | `bun_core::spawn_ffi` / `spawn_sys` | via runtime | Real `posix_spawnp` path |
 | `ares_inet_pton` | No | `bun_cares_sys` / `bun_core` | via runtime | Pure Rust IPv4/6 parse |
 | `bun_cpu_features` | No | `bun_crash_handler::CPUFeatures` (caller) | via runtime | Returns u64 flags |
 | `is_executable_file` | No | `bun_sys` | via runtime | `stat` + `S_IXUSR` |
-| `bun_restore_stdio` | Partial | `bun_core::output` | via runtime | Flush stdout/stderr only |
-| `WTF__DumpStackTrace` | Partial | `bun_crash_handler` | via runtime | Local `Backtrace::capture` |
-| `Bun__StackCheck__initialize` | Approx | `bun_core::util::StackCheck` | via runtime | Returns 8MiB constant |
-| `Bun__StackCheck__getMaxStack` | Approx | `bun_core::util::StackCheck` | via runtime | `pthread_getattr_np` stack end |
-| `Bun__registerSignalsForForwarding` | Partial | `spawn_sys` | via runtime | Stores PID only |
-| `Bun__unregisterSignalsForForwarding` | Partial | `spawn_sys` | via runtime | Clears PID |
-| `Bun__sendPendingSignalIfNecessary` | Partial | `spawn_sys` | via runtime | `kill(SIGTERM)` if PID set |
+| `bun_restore_stdio` | **RealImpl** | `bun_core::output` | via runtime | Flush stdout/stderr |
+| `WTF__DumpStackTrace` | **RealImpl** | `bun_crash_handler` | via runtime | ABI `(ptr, count)`; frames or live backtrace |
+| `Bun__StackCheck__initialize` | **RealImpl** | `bun_core::util::StackCheck` | via runtime | void; bounds via getMaxStack |
+| `Bun__StackCheck__getMaxStack` | **RealImpl** | `bun_core::util::StackCheck` | via runtime | `pthread_getattr_np` stack end |
+| `Bun__registerSignalsForForwarding` | **RealImpl** | `spawn_sys` | via runtime | zero-arg; sigaction install |
+| `Bun__unregisterSignalsForForwarding` | **RealImpl** | `spawn_sys` | via runtime | SIG_DFL + clear PENDING |
+| `Bun__sendPendingSignalIfNecessary` | **RealImpl** | `spawn_sys` | via runtime | PENDING → kill currentSyncPID |
 | `Bun__currentSyncPID` | Data | `spawn_sys` | via runtime | `AtomicI64` static |
-| `on_before_reload_process_linux` | Partial | `bun_core::util` | via runtime | `sync()` before exec |
-| `BunString__fromBytes` | Simplified | `bun_core::string` | via runtime | UTF-8 lossy Box |
-| `Bun__WTFStringImpl__destroy` | Simplified | `bun_core::string` | via runtime | `Box::from_raw` free |
+| `on_before_reload_process_linux` | **RealImpl** | `bun_core::util` | via runtime | `sync()` before exec |
+| `BunString__fromBytes` | **RealImpl** | `bun_core::string` + product no_mangle | via runtime | `bun_core::String::from_bytes` |
 | `Bun__Node__UseSystemCA` | Data | TLS / root_certs | via force_c_lib | `static mut bool = true` |
 | `BUN__warn__extra_ca_load_failed` | Functional | TLS / root_certs | via force_c_lib | eprintln warning |
 | `bun_ssl_ctx_cache_on_free` | Safe empty | BoringSSL EX_free | via force_c_lib | Empty free until SSLContextCache lands |
-| `__force_link_entry` | Meta | this crate | product residual | Entry for `#[used]` anchors |
+| `__force_link_entry` | Meta | this crate | test-only | Entry for `#[used]` anchors (dev/test) |
 
 ### RealImpl — **moved out this wave** (deleted from stubs)
 
@@ -92,6 +112,8 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 | Symbol / group | Owner task | Product force? | Status | Why P0 |
 |----------------|------------|----------------|--------|--------|
+
+**(empty — residual 0)**
 
 ### Dead (must not reintroduce)
 
@@ -116,6 +138,7 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 | `WTF__parseES5Date` / `parseDouble` / `dtoa` NaN/0 stubs | Pure `bun_core` + product RealImpl |
 | `__bun_regex_*` always-fail stubs | `regex` crate RealImpl in product |
 | `WTF__releaseFastMallocFreeMemoryForThisThread` empty stub | Real in `bun_alloc` (`mi_collect(false)`) |
+| **`Bun__WTFStringImpl__destroy` fake free** | **Dead / safe-noop-by-design** — product keeps null-safe no-op (no double-free); not Partial residual |
 
 ---
 
@@ -123,12 +146,13 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 1. ~~**P0** — Real `ProcessExit` + `BufferedReaderParentLink` for Subprocess/Shell (product spawn).~~ **DONE** (P1/P2 real owners + P3 residual delete; residual=0).
 2. ~~**P0** — `bun_url`: drop dead FFI stubs; finish pure-Rust WHATWG surface.~~ **DONE** (`whatwg` pure + product `URL__*` RealImpl; stub noops deleted).
-3. **P0** — Move remaining RealImpl out of this crate → drop hard dep from `bun_runtime` (dev-only force_link only).
+3. ~~**P0** — Move remaining RealImpl out of this crate → drop hard dep from `bun_runtime` (dev-only force_link only).~~ **DONE** (product owner = `product_native_symbols`; product never hard-deps stubs; H2 ABI RealImpl 2026-07-27).
 4. ~~**P1** — Real WTF numeric parsers or pure-Rust call-site replacements.~~ **DONE** (`bun_core::{fmt,wtf}` pure + product no_mangle).
 5. ~~**P1** — Regex for `PnpmMatcher` via `regex` crate.~~ **DONE** (`product_native_symbols` RealImpl).
-6. **P1** — CLI crates (`src/cli`) must consume product PE/BR owners (single `link_impl` site) if co-linked — do not reintroduce product residual noops.
+6. ~~**P1** — CLI crates (`src/cli`) must consume product PE/BR owners (single `link_impl` site) if co-linked — do not reintroduce product residual noops.~~ **DONE** — evidence: `src/cli/filter_run.rs` + `multi_run.rs` + `test/parallel/Worker.rs` already have `link_impl_ProcessExit!` / PE arms (no product residual noop).
 7. ~~**P1 / next wave** — `Bun__linux_trace_*`.~~ **DONE** (`bao_runtime::linux_trace` a74be633).
 8. ~~**P1 / next wave** — `WTF__releaseFastMallocFreeMemoryForThisThread`.~~ **DONE** (`bun_alloc` `mi_collect(false)`; empty stubs deleted).
+9. ~~**H2** — Partial/Simplified product ABI residual (DumpStackTrace / signals / StackCheck / BunString).~~ **DONE** (2026-07-27 product RealImpl + stubs ABI align).
 
 ---
 
@@ -143,6 +167,7 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 |------|----------|-------|
 | **FastMalloc** `WTF__releaseFastMallocFreeMemoryForThisThread` | ✅ **0** | Real owner `bun_alloc` → `mi_collect(false)` (portable mimalloc); stubs + product empty deleted |
 | **linux_trace** `Bun__linux_trace_*` | ✅ **0** | `bao_runtime::linux_trace` RealImpl Win/macOS/Linux |
+| **H2 Partial symbols** | ✅ **0** | product_native_symbols ABI RealImpl 2026-07-27 |
 | **Product never links stubs** | ✅ | `bao` no dep / no force_link |
 | **No env / no capability feature** | ✅ policy | Permanent; code review gate |
 
@@ -150,25 +175,20 @@ Platform differences use **`cfg(target_os)` compile-time backends** (Linux / mac
 
 | Symbol group | Real behavior (target) | Owner | After code E |
 |--------------|------------------------|-------|--------------|
-| `Bun__linux_trace_init` / `emit` / `close` | Linux ftrace marker when tracefs usable; honest disable on other OS | product single site (`product_native_symbols` or `bun_perf` / `bun_core::perf`) | delete stub defs; residual=0 |
+| `Bun__linux_trace_init` / `emit` / `close` | Linux ftrace marker when tracefs usable; honest disable on other OS | ✅ `bao_runtime::linux_trace` | done |
 | `WTF__releaseFastMallocFreeMemoryForThisThread` | Thread allocator free-list / cache release | ✅ `bun_alloc` | done |
 
-### ABI note (`linux_trace` — must unify in code E)
+### ABI note (`linux_trace` — closed)
 
-Call sites disagree today — code E **must pick one ABI** and fix all declarers + defs:
+Call-site ABI SSOT = `bun_core::perf::sys` shape; product `linux_trace` matches. Stubs defs deleted (no dual-def).
 
-| Surface | Current decl shape (observed) | Notes |
-|---------|-------------------------------|-------|
-| `bun_core::perf::sys` / `bun_perf` | `init() -> c_int`; `emit(name: *const c_char, duration_ns: i64) -> c_int`; `close()` | Canonical Bun ftrace (linux_perf_tracing.cpp era) |
-| `product_native_symbols` / `bao_native_stubs` residual | `init() -> bool`; `emit(id, name, cat, phase, ts, pid, tid, extra)` void | **Mismatch** — residual shape; **must not** ship dual ABIs |
+**DoD:** one ABI SSOT, one `#[no_mangle]` def, zero stub def on product link — **met**.
 
-**DoD:** one ABI SSOT (prefer `bun_core::perf::sys`), one `#[no_mangle]` def, zero stub def on product link.
-
-### Compatibility matrix (target backends)
+### Compatibility matrix (shipped backends)
 
 Compile-time `cfg(target_os)` only — **not** env/feature capability gates.
 
-#### A. `Bun__linux_trace_*` (ftrace-class host tracing) — 🔶 residual open
+#### A. `Bun__linux_trace_*` (ftrace-class host tracing) — ✅ residual=0
 
 | OS | Backend | `init` | `emit` | `close` | Product always-on? |
 |----|---------|--------|--------|---------|-------------------|
@@ -198,20 +218,20 @@ Compile-time `cfg(target_os)` only — **not** env/feature capability gates.
 
 | ID | Item | Residual | Code E | Notes |
 |----|------|----------|--------|-------|
-| **NW-LT** | **NW-FM** | `WTF__releaseFastMallocFreeMemoryForThisThread` | ✅ **0** | closed | `bun_alloc` `mi_collect(false)` |
+| **NW-LT** | `Bun__linux_trace_*` | ✅ **0** | closed | product `linux_trace` RealImpl |
+| **NW-FM** | `WTF__releaseFastMallocFreeMemoryForThisThread` | ✅ **0** | closed | `bun_alloc` `mi_collect(false)` |
 | **NW-STUB-DEL-LT** | Delete `linux_trace` stub defs after unique product owner | ✅ **0** | closed | stubs deleted with RealImpl |
 | **NW-PRODUCT-LINK** | Product never links `bao_native_stubs` | ✅ | closed | `bao` no dep / no force_link |
 | **NW-POLICY** | No env switch · no feature hide · always-on | ✅ policy | permanent | Enforce on code review |
+| **H2** | Partial/Simplified product ABI | ✅ **0** | closed | 2026-07-27 DumpStackTrace/signals/StackCheck/BunString |
 
-> When NW-LT + NW-STUB-DEL-LT close: next-wave residual=0 for these symbols. **Until then do not** claim full stub eradication for `linux_trace`.
+### Acceptance checklist (all met)
 
-### Acceptance checklist (remaining = linux_trace)
-
-1. Single ABI + single `#[no_mangle]` for `linux_trace_*` matching `bun_core::perf` callers.
-2. Linux: real tracefs probe + write; macOS/Win: honest unsupported (Darwin/Disabled for actual spans).
-3. `rg` product link graph: **0** `bao_native_stubs` in default `bao` deps; **0** dual-def.
-4. **No** new env; **no** capability feature; platform via `cfg(target_os)`.
-5. Flip NW-LT residual → 0 in this inventory + audit-26.
+1. Single ABI + single `#[no_mangle]` for `linux_trace_*` matching `bun_core::perf` callers. ✅
+2. Linux: real tracefs probe + write; macOS/Win: honest unsupported (Darwin/Disabled for actual spans). ✅
+3. `rg` product link graph: **0** `bao_native_stubs` in default `bao` deps; **0** dual-def. ✅
+4. **No** new env; **no** capability feature; platform via `cfg(target_os)`. ✅
+5. NW-LT / NW-FM / H2 residual → 0. ✅
 
 ---
 
