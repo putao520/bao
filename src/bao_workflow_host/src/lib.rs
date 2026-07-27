@@ -65,11 +65,17 @@ pub fn take_workflow_host_callbacks() -> Option<Box<dyn WorkflowHostCallbacks>> 
     HOST.with(|h| h.borrow_mut().take())
 }
 
+/// Invoke host callbacks without holding the TLS `RefCell` borrow across `f`.
+///
+/// Nested `workflow()` re-enters SM eval and must `set`/`take` child callbacks while
+/// the parent call is still on the stack. Holding `borrow_mut` across `f` panics on
+/// that re-entry — take ownership for the duration of `f`, then restore parent.
 pub fn with_workflow_host<R>(f: impl FnOnce(&mut dyn WorkflowHostCallbacks) -> R) -> Option<R> {
-    HOST.with(|h| {
-        let mut g = h.borrow_mut();
-        g.as_mut().map(|cb| f(cb.as_mut()))
-    })
+    let mut cb = take_workflow_host_callbacks()?;
+    let result = f(cb.as_mut());
+    // Child nested eval may leave HOST empty (or stale); always restore parent.
+    set_workflow_host_callbacks(cb);
+    Some(result)
 }
 
 /// Install CC workflow host globals on the realm global (and optional Bun object).
