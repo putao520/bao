@@ -270,8 +270,8 @@ unsafe fn populate_bun_object(
 
     // Bao.browser 全局对象(连接 CDP client — REQ-BAO-API-008)
     crate::bao_browser_global::install_bao_browser_on_bun(cx, bun_obj);
-    // CC Dynamic Workflow host marker on Bun (plan-25); globals installed on realm separately.
-    crate::workflow_host_global::install_workflow_host_on_bun(cx, bun_obj);
+    // IDE/CC workflow host inject is **not** part of Bao's general Bun install.
+    // Products (e.g. Frog) call their own host inject after JsContext setup.
 
     // @trace REQ-BAO-API-017 [api:Bun.listen/Bun.connect/Bun.udpSocket] — native TCP/UDP server
     unsafe { crate::bun_listen::install(cx, bun_obj); }
