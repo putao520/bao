@@ -116,12 +116,15 @@ static ENGINE_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 // AtomicU8 状态机,首次 init 后所有 get() 是无锁 atomic load。
 static ENGINE_HANDLE: OnceLock<mozjs::rust::JSEngineHandle> = OnceLock::new();
 
-/// Process-global lock serializing JSEngine/Runtime creation in `for_test()`.
-/// SpiderMonkey's Runtime is process-global; concurrent `for_test()` calls
-/// race the init and the loser fails. The lock lets the first caller init;
-/// subsequent callers reuse the alive Runtime (checked via `Runtime::get()`).
-/// This removes the need for per-test-crate Mutex workarounds.
-static FOR_TEST_INIT_LOCK: Mutex<()> = Mutex::new(());
+/// Process-global lock serializing JSEngine init (and `for_test` Runtime setup).
+///
+/// `JSEngine` is a process-wide singleton (`JSEngine::init` may succeed only once).
+/// Concurrent callers of `ensure_engine_handle` / `init_runtime` / `for_test` /
+/// `BaoRuntime` must share this lock on the slow path so only one thread calls
+/// `JSEngine::init()`; others double-check `ENGINE_HANDLE` after acquiring the lock.
+/// Without this, two threads can both miss the `ENGINE_HANDLE` fast-path and the
+/// second hits `AlreadyInitialized`.
+static ENGINE_INIT_LOCK: Mutex<()> = Mutex::new(());
 
 thread_local! {
     /// Per-thread JSEngine (only the initializing thread stores it here).
@@ -156,32 +159,55 @@ thread_local! {
 // design — it forces correct lifecycle management.
 
 /// Get or initialize the per-process JSEngine, returning a handle.
-/// The first thread to call this initializes the JSEngine (stored in ENGINE_TLS
-/// on that thread for lifetime), and stores a cloned handle in ENGINE_HANDLE
-/// (process-wide OnceLock). Subsequent threads just clone the handle.
-/// Get or initialize the per-process JSEngine, returning a handle.
+///
 /// The first thread to call this initializes the JSEngine (stored in ENGINE_TLS
 /// on that thread for lifetime), and stores a cloned handle in ENGINE_HANDLE
 /// (process-wide OnceLock). Subsequent threads just clone the handle.
 ///
 /// Worker threads call this to obtain the process-global JSEngine handle,
 /// then create their own `Runtime::new(handle)` on the worker thread.
+///
+/// Concurrent `for_test` / `init_runtime` / `BaoRuntime` paths all go through
+/// here and share [`ENGINE_INIT_LOCK`] on the slow path (see that static).
 pub fn ensure_engine_handle() -> Result<mozjs::rust::JSEngineHandle, JsError> {
-    // Fast path: engine already initialized, just clone the handle.
+    // Fast path: engine already initialized, just clone the handle (no lock).
     if let Some(handle) = ENGINE_HANDLE.get() {
         return Ok(handle.clone());
     }
-    // Slow path: this thread must initialize the engine.
+    // Slow path: serialize init so only one thread calls JSEngine::init().
+    let _guard = ENGINE_INIT_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    ensure_engine_handle_locked()
+}
+
+/// Slow-path body for [`ensure_engine_handle`]. Caller must hold [`ENGINE_INIT_LOCK`]
+/// (or already observe a populated `ENGINE_HANDLE` via the unlocked fast path).
+/// Double-checks `ENGINE_HANDLE` so a waiter that lost the race returns the
+/// winner's handle without calling `JSEngine::init()` again.
+fn ensure_engine_handle_locked() -> Result<mozjs::rust::JSEngineHandle, JsError> {
+    // Double-check under lock: another thread may have finished init while we waited.
+    if let Some(handle) = ENGINE_HANDLE.get() {
+        return Ok(handle.clone());
+    }
+    // This thread must initialize the engine.
     // First check if this thread already has it in TLS (unlikely on first call).
     let (engine, handle) = ENGINE_TLS.with(|tls| {
         if tls.is_some() {
-            let handle = tls.0.borrow().as_ref().expect("ENGINE_TLS is Some but inner is None").handle();
+            let handle = tls
+                .0
+                .borrow()
+                .as_ref()
+                .expect("ENGINE_TLS is Some but inner is None")
+                .handle();
             return Ok((None, handle));
         }
         let engine = mozjs::rust::JSEngine::init().map_err(|e| JsError {
             message: format!("Failed to init JSEngine: {:?}", e).into(),
             filename: "<engine>".into(),
-            line: 0, column: 0, stack: None,
+            line: 0,
+            column: 0,
+            stack: None,
         })?;
         let handle = engine.handle();
         tls.set(Some(engine));
@@ -273,10 +299,13 @@ impl JsContext {
     /// SIGSEGV in mozjs's C++ TLS teardown (`mozilla::detail::MutexImpl`).
     #[doc(hidden)]
     pub fn for_test() -> Result<Self, JsError> {
-        // Serialize JSEngine/Runtime init across concurrent test threads.
-        // The guard is held for the whole call so the Runtime::get() reuse check
-        // sees the first caller's finished init before any other caller proceeds.
-        let _init_guard = FOR_TEST_INIT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Hold ENGINE_INIT_LOCK for the whole call so concurrent for_test /
+        // ensure_engine_handle / init_runtime share one serialized init path.
+        // Uses ensure_engine_handle_locked (not ensure_engine_handle) to avoid
+        // re-locking the non-reentrant Mutex.
+        let _init_guard = ENGINE_INIT_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // Refuse to create a new Runtime after the engine has been shut down.
         // JS_ShutDown is irreversible — calling Runtime::new after it will crash.
         if ENGINE_SHUTDOWN.load(Ordering::SeqCst) {
@@ -294,7 +323,7 @@ impl JsContext {
             return Ok(cx);
         }
 
-        let engine_handle = ensure_engine_handle()?;
+        let engine_handle = ensure_engine_handle_locked()?;
         let runtime = mozjs::rust::Runtime::new(engine_handle);
 
         let cx = mozjs::rust::Runtime::get().ok_or_else(|| JsError {
