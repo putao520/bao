@@ -5,10 +5,14 @@
 use der::asn1::{BitString, OctetString};
 use der::{AnyRef, Choice, Decode, Encode, Sequence};
 use js::context::JSContext;
-use ml_dsa::{
-    B32, EncodedVerifyingKey, KeyGen, MlDsa44, MlDsa65, MlDsa87, Signature, VerifyingKey,
+use ml_dsa::common::getrandom::{
+    SysRng,
+    rand_core::TryRng,
 };
-use pkcs8::rand_core::{OsRng, RngCore};
+use ml_dsa::{
+    B32, EncodedVerifyingKey, Keypair, MlDsa44, MlDsa65, MlDsa87, Signature, SigningKey,
+    VerifyingKey,
+};
 use pkcs8::spki::AlgorithmIdentifier;
 use pkcs8::{ObjectIdentifier, PrivateKeyInfo, SubjectPublicKeyInfo};
 
@@ -152,9 +156,9 @@ pub(crate) fn sign(
                     "The key handle is not representing an ML-DSA-44 private key".to_string(),
                 )));
             };
-            let key_pair = MlDsa44::key_gen_internal(seed);
-            let sk = key_pair.signing_key();
-            sk.sign_randomized(message, context, &mut OsRng)
+            let sk = SigningKey::<MlDsa44>::from_seed(seed);
+            sk.expanded_key()
+                .sign_randomized(message, context, &mut SysRng)
                 .map_err(|_| {
                     Error::Operation(Some("ML-DSA-44 failed to sign the message".to_string()))
                 })?
@@ -167,9 +171,9 @@ pub(crate) fn sign(
                     "The key handle is not representing an ML-DSA-65 private key".to_string(),
                 )));
             };
-            let key_pair = MlDsa65::key_gen_internal(seed);
-            let sk = key_pair.signing_key();
-            sk.sign_randomized(message, context, &mut OsRng)
+            let sk = SigningKey::<MlDsa65>::from_seed(seed);
+            sk.expanded_key()
+                .sign_randomized(message, context, &mut SysRng)
                 .map_err(|_| {
                     Error::Operation(Some("ML-DSA-65 failed to sign the message".to_string()))
                 })?
@@ -182,9 +186,9 @@ pub(crate) fn sign(
                     "The key handle is not representing an ML-DSA-87 private key".to_string(),
                 )));
             };
-            let key_pair = MlDsa87::key_gen_internal(seed);
-            let sk = key_pair.signing_key();
-            sk.sign_randomized(message, context, &mut OsRng)
+            let sk = SigningKey::<MlDsa87>::from_seed(seed);
+            sk.expanded_key()
+                .sign_randomized(message, context, &mut SysRng)
                 .map_err(|_| {
                     Error::Operation(Some("ML-DSA-87 failed to sign the message".to_string()))
                 })?
@@ -305,7 +309,9 @@ pub(crate) fn generate_key(
     // parameter set indicated by the name member of normalizedAlgorithm.
     // Step 3. If the key generation step fails, then throw an OperationError.
     let mut seed_bytes = vec![0u8; 32];
-    OsRng.fill_bytes(&mut seed_bytes);
+    SysRng.try_fill_bytes(&mut seed_bytes).map_err(|_| {
+        Error::Operation(Some("Failed to generate random seed for ML-DSA key".to_string()))
+    })?;
     let (private_key_handle, public_key_handle) =
         convert_seed_to_handles(normalized_algorithm.name, &seed_bytes, None, None)?;
 
@@ -1103,16 +1109,16 @@ fn convert_seed_to_handles(
         .map_err(|_| Error::Data(Some("Failed to parse the seed bytes".to_string())))?;
     let handles = match algorithm_name {
         CryptoAlgorithm::MlDsa44 => {
-            let key_pair = MlDsa44::key_gen_internal(&seed);
+            let sk = SigningKey::<MlDsa44>::from_seed(&seed);
             if let Some(private_key_bytes) = private_key_bytes &&
-                private_key_bytes != key_pair.signing_key().encode().as_slice()
+                private_key_bytes != sk.expanded_key().to_expanded().as_slice()
             {
                 return Err(Error::Data(Some(
                     "The expanded private key does not match the seed".to_string(),
                 )));
             }
             if let Some(public_key_bytes) = public_key_bytes &&
-                public_key_bytes != key_pair.verifying_key().encode().as_slice()
+                public_key_bytes != sk.verifying_key().encode().as_slice()
             {
                 return Err(Error::Data(Some(
                     "The public key does not match the seed".to_string(),
@@ -1121,20 +1127,20 @@ fn convert_seed_to_handles(
 
             (
                 Handle::MlDsa44PrivateKey(seed),
-                Handle::MlDsa44PublicKey(Box::new(key_pair.verifying_key().encode())),
+                Handle::MlDsa44PublicKey(Box::new(sk.verifying_key().encode())),
             )
         },
         CryptoAlgorithm::MlDsa65 => {
-            let key_pair = MlDsa65::key_gen_internal(&seed);
+            let sk = SigningKey::<MlDsa65>::from_seed(&seed);
             if let Some(private_key_bytes) = private_key_bytes &&
-                private_key_bytes != key_pair.signing_key().encode().as_slice()
+                private_key_bytes != sk.expanded_key().to_expanded().as_slice()
             {
                 return Err(Error::Data(Some(
                     "The expanded private key does not match the seed".to_string(),
                 )));
             }
             if let Some(public_key_bytes) = public_key_bytes &&
-                public_key_bytes != key_pair.verifying_key().encode().as_slice()
+                public_key_bytes != sk.verifying_key().encode().as_slice()
             {
                 return Err(Error::Data(Some(
                     "The public key does not match the seed".to_string(),
@@ -1143,20 +1149,20 @@ fn convert_seed_to_handles(
 
             (
                 Handle::MlDsa65PrivateKey(seed),
-                Handle::MlDsa65PublicKey(Box::new(key_pair.verifying_key().encode())),
+                Handle::MlDsa65PublicKey(Box::new(sk.verifying_key().encode())),
             )
         },
         CryptoAlgorithm::MlDsa87 => {
-            let key_pair = MlDsa87::key_gen_internal(&seed);
+            let sk = SigningKey::<MlDsa87>::from_seed(&seed);
             if let Some(private_key_bytes) = private_key_bytes &&
-                private_key_bytes != key_pair.signing_key().encode().as_slice()
+                private_key_bytes != sk.expanded_key().to_expanded().as_slice()
             {
                 return Err(Error::Data(Some(
                     "The expanded private key does not match the seed".to_string(),
                 )));
             }
             if let Some(public_key_bytes) = public_key_bytes &&
-                public_key_bytes != key_pair.verifying_key().encode().as_slice()
+                public_key_bytes != sk.verifying_key().encode().as_slice()
             {
                 return Err(Error::Data(Some(
                     "The public key does not match the seed".to_string(),
@@ -1165,7 +1171,7 @@ fn convert_seed_to_handles(
 
             (
                 Handle::MlDsa87PrivateKey(seed),
-                Handle::MlDsa87PublicKey(Box::new(key_pair.verifying_key().encode())),
+                Handle::MlDsa87PublicKey(Box::new(sk.verifying_key().encode())),
             )
         },
         _ => {
@@ -1217,24 +1223,24 @@ fn convert_public_key_to_handle(
 fn convert_handle_to_seed_and_public_key(handle: &Handle) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let result = match handle {
         Handle::MlDsa44PrivateKey(seed) => {
-            let key_pair = MlDsa44::key_gen_internal(seed);
+            let sk = SigningKey::<MlDsa44>::from_seed(seed);
             (
                 seed.to_vec(),
-                key_pair.verifying_key().encode().as_slice().to_vec(),
+                sk.verifying_key().encode().as_slice().to_vec(),
             )
         },
         Handle::MlDsa65PrivateKey(seed) => {
-            let key_pair = MlDsa65::key_gen_internal(seed);
+            let sk = SigningKey::<MlDsa65>::from_seed(seed);
             (
                 seed.to_vec(),
-                key_pair.verifying_key().encode().as_slice().to_vec(),
+                sk.verifying_key().encode().as_slice().to_vec(),
             )
         },
         Handle::MlDsa87PrivateKey(seed) => {
-            let key_pair = MlDsa87::key_gen_internal(seed);
+            let sk = SigningKey::<MlDsa87>::from_seed(seed);
             (
                 seed.to_vec(),
-                key_pair.verifying_key().encode().as_slice().to_vec(),
+                sk.verifying_key().encode().as_slice().to_vec(),
             )
         },
         _ => {
