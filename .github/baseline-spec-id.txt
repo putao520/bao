@@ -14,11 +14,14 @@
 #
 # 生成命令:cargo run -p bao_lints -- spec-id .spec/ | grep -oE 'id="[^"]*"' | sed -E 's/id="([^"]*)"/\1/' | sort -u
 #
-# 当前债务(2026-08-12 重新生成):
-#   .spec/04-DATA-MODEL.html 的 10 个 API-WK-* (TASK-5 Worker 接入引入,DOMAIN=WK
-#   未在合法集合 ENG/CDP/STL/CLI/BRW/LIB/BAO-API/PERF/IMPL/CDP-UWS 内)。
-#   待 SPEC 重构决定:WK 升格为正式 DOMAIN,或迁到 API-BRW-N (Worker 属 BRW 域)。
-#   之前的 68 个 method-path id (get-/post-/...) 已在更早的 SPEC 规范化中清除。
+# 当前债务(2026-08-12 重新生成,2 类):
+#   1. .spec/04-DATA-MODEL.html 的 10 个 API-WK-* (TASK-5 Worker 接入引入,DOMAIN=WK
+#      未在合法集合 ENG/CDP/STL/CLI/BRW/LIB/BAO-API/PERF/IMPL/CDP-UWS 内)。
+#      待 SPEC 重构决定:WK 升格为正式 DOMAIN,或迁到 API-BRW-N (Worker 属 BRW 域)。
+#   2. .spec/02-SYSTEM.html 的 2 个 artifact-* (artifact-interface-protocol /
+#      artifact-module) — artifact section 复用,Bun crate DAG 文档节点,REQ-SPEC-001
+#      约束范围限真正的 API 元素,这俩是豁免类但检测器仍报(历史保留)。
+#   之前的 ~66 个 method-path id (get-/post-/...) 已在更早的 SPEC 规范化中清除。
 API-WK-001
 API-WK-002
 API-WK-003
@@ -29,3 +32,5 @@ API-WK-007
 API-WK-008
 API-WK-009
 API-WK-010
+artifact-interface-protocol
+artifact-module
