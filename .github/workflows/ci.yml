@@ -38,7 +38,7 @@ jobs:
         with:
           components: rustfmt
 
-      - name: cargo fmt --check (no --all: --all recurses into vendor/servo)
+      - name: "cargo fmt --check (no --all: --all recurses into vendor/servo)"
         run: cargo fmt -- --check
 
   check:
