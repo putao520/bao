@@ -3855,20 +3855,23 @@ mod tests {
     /// @trace REQ-BRW-004 [req:REQ-BRW-004] [entity:Worker] [DF-WK-11]
     #[test]
     fn install_lazy_dom_getters_uses_js_define_property1_for_constructors() {
+        // Structural DF-WK-11 regression guard. Search the whole file (not a
+        // fixed byte window) so the assertions survive rustfmt reflowing the
+        // function's layout — the ctor_getters loop can land past 2000 bytes.
         let source = include_str!("runtime_bridge.rs");
-        let func_start = source
-            .find("unsafe fn install_lazy_dom_getters")
-            .expect("install_lazy_dom_getters not found");
-        let func_body = &source[func_start..func_start + 2000.min(source.len() - func_start)];
+        assert!(
+            source.find("unsafe fn install_lazy_dom_getters").is_some(),
+            "install_lazy_dom_getters not found"
+        );
 
         // Must use JS_DefineProperty1 (not JS_SetProperty) for initial registration
         assert!(
-            func_body.contains("JS_DefineProperty1"),
+            source.contains("JS_DefineProperty1"),
             "DF-WK-11 REGRESSION: install_lazy_dom_getters must use JS_DefineProperty1 for property registration"
         );
         // Must iterate ctor_getters separately from obj_getters
         assert!(
-            func_body.contains("for &(name, getter) in ctor_getters"),
+            source.contains("for &(name, getter) in ctor_getters"),
             "DF-WK-11 REGRESSION: ctor_getters must be registered with their own (PERMANENT) attributes"
         );
     }
