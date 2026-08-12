@@ -78,9 +78,10 @@ fmt-check:
 fmt:
     cargo fmt
 
-# clippy(默认开 warnings,核心 bao_* crate)。
+# clippy(核心 crate 本身,--no-deps 不查 Bun 上游依赖的历史 lint)。
+# 注意 bao_runtime 目录的 package 名是 bun_runtime。
 lint: codegen
-    cargo clippy --jobs {{jobs}} -p bao_bin -p bao_browser -p bao_cdp -p bao_runtime
+    cargo clippy --jobs {{jobs}} --no-deps -p bao_bin -p bao_browser -p bao_cdp -p bun_runtime
 
 # clippy 整个 workspace 并拒绝 warnings(严格,慢)。
 lint-strict: codegen
