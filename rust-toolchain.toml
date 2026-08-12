@@ -1,2 +1,8 @@
 [toolchain]
-channel = "nightly"
+# Pinned to a specific nightly. Bao's heavy native stack (mozjs compiles
+# SpiderMonkey, servo) needs a stable, known-good toolchain — chasing the
+# floating `nightly` channel breaks on upstream comptime/intrinsic tightening
+# (e.g. `core::mem::type_info` comptime-fn rules). CI and local share this pin.
+# Bump deliberately after verifying the build on the new date.
+channel = "nightly-2026-07-20"
+components = ["rustfmt", "clippy"]

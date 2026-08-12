@@ -34,7 +34,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust nightly (rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-20
         with:
           components: rustfmt
 
@@ -50,7 +52,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust nightly (rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-20
 
       - name: Install C/C++ toolchain + pkg-config (mozjs 从源码编译 SpiderMonkey 需要)
         run: |
@@ -104,7 +108,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install Rust nightly (rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-07-20
         with:
           components: clippy
 
