@@ -41,6 +41,13 @@ fn cdp_webdriver_override_forced_false() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -75,6 +82,13 @@ fn cdp_webdriver_override_non_configurable() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -157,6 +171,13 @@ fn cdp_permissions_api_not_broken_by_hooks() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -197,6 +218,13 @@ fn cdp_no_cdc_globals_in_hooks() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let combined = hooks.combined_js();
 
@@ -235,6 +263,13 @@ fn cdp_no_devtools_console_helpers_in_hooks() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let combined = hooks.combined_js();
 
@@ -273,6 +308,13 @@ fn cdp_combined_js_has_all_overrides() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let combined = hooks.combined_js();
 
@@ -313,6 +355,13 @@ fn cdp_individual_hooks_nonempty() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
 
     // Assert — each hook must produce non-trivial JS
@@ -360,6 +409,13 @@ fn cdp_webgl1_and_webgl2_both_patched() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -401,6 +457,13 @@ fn cdp_webgl_extensions_patched_both_contexts() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -439,6 +502,13 @@ fn cdp_all_screen_properties_overridden() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -486,6 +556,13 @@ fn cdp_all_navigator_properties_overridden() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let js = hooks.navigator_js();
 
@@ -533,6 +610,13 @@ fn cdp_hook_output_deterministic() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
     let hooks2 = StealthHooks::from_profile(
         &profile.canvas,
@@ -546,6 +630,13 @@ fn cdp_hook_output_deterministic() {
         &profile.timing,
         &profile.clientrects,
         &profile.screen_display,
+        &profile.plugin,
+        &profile.speech,
+        &profile.media_devices,
+        &profile.permissions,
+        &profile.webgl_context,
+        &profile.connection,
+        &profile.iframe,
     );
 
     // Assert — same profile must produce identical hook JS
@@ -592,6 +683,13 @@ fn cdp_firefox_chrome_hooks_differ() {
         &ff_profile.timing,
         &ff_profile.clientrects,
         &ff_profile.screen_display,
+        &ff_profile.plugin,
+        &ff_profile.speech,
+        &ff_profile.media_devices,
+        &ff_profile.permissions,
+        &ff_profile.webgl_context,
+        &ff_profile.connection,
+        &ff_profile.iframe,
     );
     let ch_hooks = StealthHooks::from_profile(
         &ch_profile.canvas,
@@ -605,6 +703,13 @@ fn cdp_firefox_chrome_hooks_differ() {
         &ch_profile.timing,
         &ch_profile.clientrects,
         &ch_profile.screen_display,
+        &ch_profile.plugin,
+        &ch_profile.speech,
+        &ch_profile.media_devices,
+        &ch_profile.permissions,
+        &ch_profile.webgl_context,
+        &ch_profile.connection,
+        &ch_profile.iframe,
     );
 
     // Assert — navigator JS must differ (different UA, vendor, platform)
